@@ -23,8 +23,10 @@ def web_client(tmp_path, monkeypatch):
     (tmp_path / "analytics").mkdir()
     (tmp_path / "extracts").mkdir()
     from src.db import close_system_db
+
     close_system_db()
     from app.main import create_app
+
     app = create_app()
     yield TestClient(app)
     close_system_db()
@@ -35,11 +37,15 @@ def _create_user(client, email, password="UserPass1!"):
     from argon2 import PasswordHasher
     from src.db import get_system_db
     from src.repositories.users import UserRepository
+
     ph = PasswordHasher()
     conn = get_system_db()
     user_id = email.split("@")[0]
     UserRepository(conn).create(
-        id=user_id, email=email, name=user_id, password_hash=ph.hash(password),
+        id=user_id,
+        email=email,
+        name=user_id,
+        password_hash=ph.hash(password),
     )
     conn.close()
     r = client.post("/auth/token", json={"email": email, "password": password})
@@ -113,17 +119,20 @@ class TestStoreOwners:
         web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("a1"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=a_cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=a_cookies,
         )
         web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("a2"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=a_cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=a_cookies,
         )
         web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("b1"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=b_cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=b_cookies,
         )
         # A third user with no uploads must NOT appear.
         _, _ = _create_user(web_client, "carol@x.com")
@@ -140,12 +149,14 @@ class TestStoreOwners:
         web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("a-only"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=a_cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=a_cookies,
         )
         web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("b-only"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=b_cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=b_cookies,
         )
         # Filter by Alice's id → only Alice's entity comes back.
         r = web_client.get(f"/api/store/entities?owner={a_id}", cookies=a_cookies)
@@ -174,6 +185,7 @@ class TestStorePreview:
     def test_preview_does_not_persist(self, web_client):
         from src.repositories.store_entities import StoreEntitiesRepository
         from src.db import get_system_db
+
         _, cookies = _create_user(web_client, "preview2@x.com")
         web_client.post(
             "/api/store/entities/preview",
@@ -481,7 +493,8 @@ class TestStoreV49Metadata:
             "/api/store/entities",
             files={"file": ("s.zip", zip_bytes, "application/zip")},
             data={
-                "type": "skill", "description": _OK_DESC,
+                "type": "skill",
+                "description": _OK_DESC,
                 "tagline": "x" * 201,
             },
             cookies=cookies,
@@ -490,7 +503,8 @@ class TestStoreV49Metadata:
         assert r.json()["detail"] == "tagline_too_long"
 
     def test_put_updates_title_and_tagline_and_recomputes_synthetic_on_rename(
-        self, web_client,
+        self,
+        web_client,
     ):
         _, cookies = _create_user(web_client, "v49put@x.com")
         zip_bytes = _make_skill_zip("starter-name")
@@ -535,6 +549,7 @@ class TestStoreV49Metadata:
         the API returns it verbatim — proves read paths consume the column
         rather than recomputing ``<name>-by-<owner_username>`` on the fly."""
         from src.db import get_system_db
+
         _, cookies = _create_user(web_client, "synthread@x.com")
         up = web_client.post(
             "/api/store/entities",
@@ -606,7 +621,8 @@ class TestStoreSecurityFixes:
         c = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("vid4"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
         )
         eid = c.json()["id"]
         u = web_client.put(
@@ -670,20 +686,23 @@ class TestStoreSecurityFixes:
         c = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("f4-skill"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
         )
         eid = c.json()["id"]
 
         ph = PasswordHasher()
         conn = get_system_db()
         UserRepository(conn).create(
-            id="adm-f4", email="adm-f4@x.com", name="adm",
+            id="adm-f4",
+            email="adm-f4@x.com",
+            name="adm",
             password_hash=ph.hash("AdminPass1!"),
         )
         grant_admin(conn, "adm-f4")
-        admin_token = web_client.post(
-            "/auth/token", json={"email": "adm-f4@x.com", "password": "AdminPass1!"}
-        ).json()["access_token"]
+        admin_token = web_client.post("/auth/token", json={"email": "adm-f4@x.com", "password": "AdminPass1!"}).json()[
+            "access_token"
+        ]
         admin_cookies = {"access_token": admin_token}
 
         u = web_client.put(
@@ -700,7 +719,8 @@ class TestStoreSecurityFixes:
         c = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("f4b-skill"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
         )
         eid = c.json()["id"]
         _, intruder_cookies = _create_user(web_client, "intruder-f4@x.com")
@@ -726,20 +746,23 @@ class TestStoreSecurityFixes:
         c = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("ui-skill"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
         )
         eid = c.json()["id"]
 
         ph = PasswordHasher()
         conn = get_system_db()
         UserRepository(conn).create(
-            id="adm-ui", email="adm-ui@x.com", name="adm",
+            id="adm-ui",
+            email="adm-ui@x.com",
+            name="adm",
             password_hash=ph.hash("AdminPass1!"),
         )
         grant_admin(conn, "adm-ui")
-        admin_token = web_client.post(
-            "/auth/token", json={"email": "adm-ui@x.com", "password": "AdminPass1!"}
-        ).json()["access_token"]
+        admin_token = web_client.post("/auth/token", json={"email": "adm-ui@x.com", "password": "AdminPass1!"}).json()[
+            "access_token"
+        ]
         admin_cookies = {"access_token": admin_token}
 
         page = web_client.get(f"/marketplace/flea/{eid}", cookies=admin_cookies)
@@ -760,7 +783,8 @@ class TestStoreSecurityFixes:
         r1 = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("collide"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=a_cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=a_cookies,
         )
         assert r1.status_code == 201, r1.text
         assert r1.json()["invocation_name"] == "collide-by-alice-smith"
@@ -769,7 +793,8 @@ class TestStoreSecurityFixes:
         r2 = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("collide"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=b_cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=b_cookies,
         )
         assert r2.status_code == 409, r2.text
         assert r2.json()["detail"] == "conflict_global_suffix"
@@ -810,7 +835,8 @@ class TestStoreSecurityFixes:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("bad.zip", bad_zip, "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
         )
         assert r.status_code == 422, r.text
         assert r.json()["detail"] == "zip_unsafe_path"
@@ -828,7 +854,8 @@ class TestStoreSecurityFixes:
             r = web_client.post(
                 "/api/store/entities",
                 files={"file": ("s.zip", _make_skill_zip(skill_name), "application/zip")},
-                data={"type": "skill", "description": _OK_DESC}, cookies=cookies,
+                data={"type": "skill", "description": _OK_DESC},
+                cookies=cookies,
             )
             assert r.status_code == 201, r.text
 
@@ -840,7 +867,8 @@ class TestStoreBundle:
         return web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip(name), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
         )
 
     def test_bundle_zip_contains_manifest_and_entity_tree(self, web_client):
@@ -894,11 +922,13 @@ class TestStoreBundle:
         web_client.post(
             "/api/store/entities",
             files={"file": ("p.zip", _make_plugin_zip("filter-out"), "application/zip")},
-            data={"type": "plugin", "description": _OK_DESC}, cookies=cookies,
+            data={"type": "plugin", "description": _OK_DESC},
+            cookies=cookies,
         )
 
         only_skill = web_client.get(
-            "/api/store/bundle.zip?type=skill", cookies=cookies,
+            "/api/store/bundle.zip?type=skill",
+            cookies=cookies,
         )
         assert only_skill.headers["x-bundle-entry-count"] == "1"
 
@@ -913,19 +943,23 @@ class TestStoreBundle:
         r = self._upload_skill(web_client, owner_cookies, name="rt-skill")
         eid = r.json()["id"]
         bundle_bytes = web_client.get(
-            "/api/store/bundle.zip", cookies=owner_cookies,
+            "/api/store/bundle.zip",
+            cookies=owner_cookies,
         ).content
 
         # Wipe Store DB rows + on-disk dir to simulate empty target.
         conn = get_system_db()
         conn.execute("DELETE FROM store_entities WHERE id = ?", [eid])
         import shutil as _shutil
+
         _shutil.rmtree(tmp_path / "store" / eid, ignore_errors=True)
 
         # Promote a different user to admin and import.
         ph = PasswordHasher()
         UserRepository(conn).create(
-            id="adm-bundle", email="adm-bundle@x.com", name="adm",
+            id="adm-bundle",
+            email="adm-bundle@x.com",
+            name="adm",
             password_hash=ph.hash("AdminPass1!"),
         )
         grant_admin(conn, "adm-bundle")
@@ -966,7 +1000,8 @@ class TestStoreBundle:
         r = self._upload_skill(web_client, owner_cookies, name="orphan-skill")
         eid = r.json()["id"]
         bundle_bytes = web_client.get(
-            "/api/store/bundle.zip", cookies=owner_cookies,
+            "/api/store/bundle.zip",
+            cookies=owner_cookies,
         ).content
 
         # Delete the owner + the entity (simulate fresh target instance).
@@ -976,11 +1011,14 @@ class TestStoreBundle:
         # so email lookup misses. Brute SQL.
         conn.execute("UPDATE users SET email = 'gone@x.com' WHERE email = 'vanishing@x.com'")
         import shutil as _shutil
+
         _shutil.rmtree(tmp_path / "store" / eid, ignore_errors=True)
 
         ph = PasswordHasher()
         UserRepository(conn).create(
-            id="adm-stub", email="adm-stub@x.com", name="adm",
+            id="adm-stub",
+            email="adm-stub@x.com",
+            name="adm",
             password_hash=ph.hash("AdminPass1!"),
         )
         grant_admin(conn, "adm-stub")
@@ -1000,9 +1038,7 @@ class TestStoreBundle:
         assert body["imported"] == 1
         assert body["stub_users_created"] == 1
 
-        stub = conn.execute(
-            "SELECT id, active FROM users WHERE email = 'vanishing@x.com'"
-        ).fetchone()
+        stub = conn.execute("SELECT id, active FROM users WHERE email = 'vanishing@x.com'").fetchone()
         assert stub is not None
         assert stub[0].startswith("imported-")
         assert stub[1] is False  # disabled
@@ -1017,13 +1053,16 @@ class TestStoreBundle:
         r = self._upload_skill(web_client, owner_cookies, name="skip-existing")
         eid = r.json()["id"]
         bundle_bytes = web_client.get(
-            "/api/store/bundle.zip", cookies=owner_cookies,
+            "/api/store/bundle.zip",
+            cookies=owner_cookies,
         ).content
 
         conn = get_system_db()
         ph = PasswordHasher()
         UserRepository(conn).create(
-            id="adm-skip", email="adm-skip@x.com", name="adm",
+            id="adm-skip",
+            email="adm-skip@x.com",
+            name="adm",
             password_hash=ph.hash("AdminPass1!"),
         )
         grant_admin(conn, "adm-skip")
@@ -1042,8 +1081,11 @@ class TestStoreBundle:
         )
         assert imp.status_code == 200
         assert imp.json() == {
-            "imported": 0, "replaced": 0, "skipped": 1,
-            "stub_users_created": 0, "errors": [],
+            "imported": 0,
+            "replaced": 0,
+            "skipped": 1,
+            "stub_users_created": 0,
+            "errors": [],
         }
 
     def test_import_bundle_admin_only(self, web_client):
@@ -1051,20 +1093,30 @@ class TestStoreBundle:
         # Build the smallest valid bundle: just manifest.json + no entries.
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
-            zf.writestr("manifest.json", json.dumps({
-                "format": 1, "generated_at": "2026-01-01T00:00:00Z",
-                "entry_count": 0, "entries": [],
-            }))
+            zf.writestr(
+                "manifest.json",
+                json.dumps(
+                    {
+                        "format": 1,
+                        "generated_at": "2026-01-01T00:00:00Z",
+                        "entry_count": 0,
+                        "entries": [],
+                    }
+                ),
+            )
         r = web_client.post(
             "/api/store/import-bundle",
             files={"file": ("b.zip", buf.getvalue(), "application/zip")},
-            data={"mode": "merge"}, cookies=cookies,
+            data={"mode": "merge"},
+            cookies=cookies,
         )
         # require_admin denies non-admin with 403.
         assert r.status_code == 403, r.text
 
     def test_bundle_zip_filters_quarantined_for_non_owner(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """Codex adversarial review [CRITICAL]: GET /bundle.zip used
         ``repo.list(...)`` without a visibility filter. An
@@ -1080,6 +1132,7 @@ class TestStoreBundle:
         eid_public = r.json()["id"]
 
         from src.db import get_system_db
+
         # Owner also has a SECOND skill that we manually flip to
         # visibility=pending (simulating in-review).
         r = self._upload_skill(web_client, owner_cookies, name="bundle-pending")
@@ -1095,9 +1148,7 @@ class TestStoreBundle:
         with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
             names = zf.namelist()
         # Snoop sees the approved entity ...
-        assert any(f"entities/{eid_public}/" in n for n in names), (
-            "approved entity must be present in bundle"
-        )
+        assert any(f"entities/{eid_public}/" in n for n in names), "approved entity must be present in bundle"
         # ... but NEVER the pending one.
         assert not any(f"entities/{eid_pending}/" in n for n in names), (
             "non-admin must NOT see pending entities via bundle.zip"
@@ -1117,6 +1168,7 @@ class TestStoreBundle:
         from src.repositories.store_entities import StoreEntitiesRepository
 
         from src.db import get_system_db
+
         owner_id, owner_cookies = _create_user(web_client, "bundle-mine@x.com")
         r = self._upload_skill(web_client, owner_cookies, name="mine-pending")
         eid = r.json()["id"]
@@ -1128,9 +1180,7 @@ class TestStoreBundle:
         assert r.status_code == 200
         with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
             names = zf.namelist()
-        assert any(f"entities/{eid}/" in n for n in names), (
-            "owner must see their OWN pending entity in their bundle"
-        )
+        assert any(f"entities/{eid}/" in n for n in names), "owner must see their OWN pending entity in their bundle"
 
     def test_bundle_zip_admin_sees_all(self, web_client):
         """Admin sees pending entries from other users too."""
@@ -1138,6 +1188,7 @@ class TestStoreBundle:
         from tests.helpers.auth import grant_admin
 
         from src.db import get_system_db
+
         owner_id, owner_cookies = _create_user(web_client, "bundle-other-owner@x.com")
         r = self._upload_skill(web_client, owner_cookies, name="other-pending")
         eid = r.json()["id"]
@@ -1154,9 +1205,7 @@ class TestStoreBundle:
         assert r.status_code == 200
         with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
             names = zf.namelist()
-        assert any(f"entities/{eid}/" in n for n in names), (
-            "admin must see pending entities from any owner"
-        )
+        assert any(f"entities/{eid}/" in n for n in names), "admin must see pending entities from any owner"
 
 
 class TestInstallCycle:
@@ -1238,15 +1287,15 @@ class TestInstallCycle:
         from src.db import get_system_db as _gdb
         from src.repositories.users import UserRepository
         from tests.helpers.auth import grant_admin
+
         ph = PasswordHasher()
         conn = _gdb()
-        UserRepository(conn).create(id="adm-hd", email="adm-hd@x.com", name="adm",
-                                    password_hash=ph.hash("AdminPass1!"))
+        UserRepository(conn).create(id="adm-hd", email="adm-hd@x.com", name="adm", password_hash=ph.hash("AdminPass1!"))
         grant_admin(conn, "adm-hd")
         conn.close()
-        admin_token = web_client.post(
-            "/auth/token", json={"email": "adm-hd@x.com", "password": "AdminPass1!"}
-        ).json()["access_token"]
+        admin_token = web_client.post("/auth/token", json={"email": "adm-hd@x.com", "password": "AdminPass1!"}).json()[
+            "access_token"
+        ]
         d = web_client.delete(
             f"/api/store/entities/{eid}?hard=true",
             cookies={"access_token": admin_token},
@@ -1256,9 +1305,13 @@ class TestInstallCycle:
         assert d.status_code == 204, d.text
 
         # GET 404 + install row gone.
-        assert web_client.get(
-            f"/api/store/entities/{eid}", cookies=owner_cookies,
-        ).status_code == 404
+        assert (
+            web_client.get(
+                f"/api/store/entities/{eid}",
+                cookies=owner_cookies,
+            ).status_code
+            == 404
+        )
         ms = web_client.get("/api/my-stack", cookies=u_cookies).json()
         assert all(e["entity_id"] != eid for e in ms["store"])
 
@@ -1283,44 +1336,55 @@ class TestMarketplaceBundle:
 
     def _zip_entries(self, content: bytes) -> set[str]:
         import io, zipfile
+
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
             return set(zf.namelist())
 
     def _read_zip_file(self, content: bytes, name: str) -> bytes:
         import io, zipfile
+
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
             return zf.read(name)
 
     def test_skill_and_agent_merge_into_one_bundle(self, web_client):
         import json as _json
+
         owner_id, owner_cookies = _create_user(web_client, "owner@bundle.x")
         # Two skills + one agent + one plugin
         skill_a = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("alpha"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
         ).json()["id"]
         skill_b = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("beta"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
         ).json()["id"]
         agent_c = web_client.post(
             "/api/store/entities",
             files={"file": ("a.zip", _make_agent_zip("gamma"), "application/zip")},
-            data={"type": "agent", "description": _OK_DESC}, cookies=owner_cookies,
+            data={"type": "agent", "description": _OK_DESC},
+            cookies=owner_cookies,
         ).json()["id"]
         plugin_d = web_client.post(
             "/api/store/entities",
             files={"file": ("p.zip", _make_plugin_zip("delta"), "application/zip")},
-            data={"type": "plugin", "description": _OK_DESC}, cookies=owner_cookies,
+            data={"type": "plugin", "description": _OK_DESC},
+            cookies=owner_cookies,
         ).json()["id"]
 
         _, installer_cookies = _create_user(web_client, "installer@bundle.x")
         for eid in (skill_a, skill_b, agent_c, plugin_d):
-            assert web_client.post(
-                f"/api/store/entities/{eid}/install", cookies=installer_cookies,
-            ).status_code == 200
+            assert (
+                web_client.post(
+                    f"/api/store/entities/{eid}/install",
+                    cookies=installer_cookies,
+                ).status_code
+                == 200
+            )
 
         r = web_client.get("/marketplace.zip", cookies=installer_cookies)
         assert r.status_code == 200, r.text
@@ -1337,16 +1401,22 @@ class TestMarketplaceBundle:
         assert f"plugins/store-{plugin_d}/.claude-plugin/plugin.json" in names
 
         # Manifest has exactly two plugin entries: the bundle + the standalone.
-        manifest = _json.loads(self._read_zip_file(
-            r.content, ".claude-plugin/marketplace.json",
-        ))
+        manifest = _json.loads(
+            self._read_zip_file(
+                r.content,
+                ".claude-plugin/marketplace.json",
+            )
+        )
         names_in_catalog = sorted(p["name"] for p in manifest["plugins"])
         assert names_in_catalog == ["delta-by-owner", "flea"]
 
         # Bundle's own plugin.json carries the synth fields.
-        bundle_pj = _json.loads(self._read_zip_file(
-            r.content, "plugins/flea/.claude-plugin/plugin.json",
-        ))
+        bundle_pj = _json.loads(
+            self._read_zip_file(
+                r.content,
+                "plugins/flea/.claude-plugin/plugin.json",
+            )
+        )
         assert bundle_pj["name"] == "flea"
         assert bundle_pj["version"]  # non-empty hash
 
@@ -1355,7 +1425,8 @@ class TestMarketplaceBundle:
         eid = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("solo"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
         ).json()["id"]
         _, installer_cookies = _create_user(web_client, "ib@x.x")
         web_client.post(f"/api/store/entities/{eid}/install", cookies=installer_cookies)
@@ -1373,12 +1444,14 @@ class TestMarketplaceBundle:
         a = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("keepme"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
         ).json()["id"]
         b = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("dropme"), "application/zip")},
-            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
         ).json()["id"]
         _, installer_cookies = _create_user(web_client, "ic@x.x")
         web_client.post(f"/api/store/entities/{a}/install", cookies=installer_cookies)
@@ -1438,26 +1511,24 @@ class TestMyStackOptout:
     def _seed_admin_grant(self, conn, *, user_id, marketplace, plugin, group_name="Test"):
         """Helper: register marketplace + plugin, put user in a group with grant."""
         from datetime import datetime, timezone
+
         conn.execute(
-            "INSERT INTO marketplace_registry (id, name, url, registered_at) "
-            "VALUES (?, ?, ?, ?)",
-            [marketplace, marketplace.upper(),
-             f"https://example/{marketplace}.git", datetime.now(timezone.utc)],
+            "INSERT INTO marketplace_registry (id, name, url, registered_at) VALUES (?, ?, ?, ?)",
+            [marketplace, marketplace.upper(), f"https://example/{marketplace}.git", datetime.now(timezone.utc)],
         )
         conn.execute(
-            "INSERT INTO marketplace_plugins (marketplace_id, name, version, raw, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            [marketplace, plugin, "1.0",
-             json.dumps({"name": plugin, "version": "1.0"}),
-             datetime.now(timezone.utc)],
+            "INSERT INTO marketplace_plugins (marketplace_id, name, version, raw, updated_at) VALUES (?, ?, ?, ?, ?)",
+            [marketplace, plugin, "1.0", json.dumps({"name": plugin, "version": "1.0"}), datetime.now(timezone.utc)],
         )
         from src.repositories.user_groups import UserGroupsRepository
         from src.repositories.user_group_members import UserGroupMembersRepository
         from src.repositories.resource_grants import ResourceGrantsRepository
+
         gid = UserGroupsRepository(conn).create(name=group_name)["id"]
         UserGroupMembersRepository(conn).add_member(user_id, gid, source="admin")
         grant_id = ResourceGrantsRepository(conn).create(
-            group_id=gid, resource_type="marketplace_plugin",
+            group_id=gid,
+            resource_type="marketplace_plugin",
             resource_id=f"{marketplace}/{plugin}",
         )
         return gid, grant_id
@@ -1466,6 +1537,7 @@ class TestMyStackOptout:
         """Model B: granted plugins start unsubscribed (`enabled=False`).
         Toggling enabled=True writes a subscription; enabled=False removes it."""
         from src.db import get_system_db
+
         user_id, cookies = _create_user(web_client, "stack@x.com")
         conn = get_system_db()
         self._seed_admin_grant(conn, user_id=user_id, marketplace="mkt-x", plugin="alpha")
@@ -1506,27 +1578,34 @@ class TestMyStackOptout:
         ph = PasswordHasher()
         conn = get_system_db()
         UserRepository(conn).create(
-            id="adm", email="adm@x.com", name="adm", password_hash=ph.hash("AdminPass1!"),
+            id="adm",
+            email="adm@x.com",
+            name="adm",
+            password_hash=ph.hash("AdminPass1!"),
         )
         grant_admin(conn, "adm")
         conn.close()
-        admin_token = web_client.post(
-            "/auth/token", json={"email": "adm@x.com", "password": "AdminPass1!"}
-        ).json()["access_token"]
+        admin_token = web_client.post("/auth/token", json={"email": "adm@x.com", "password": "AdminPass1!"}).json()[
+            "access_token"
+        ]
         admin_cookies = {"access_token": admin_token}
 
         # Regular user with a grant + an opt-out.
         user_id, user_cookies = _create_user(web_client, "stack2@x.com")
         conn = get_system_db()
         gid, grant_id = self._seed_admin_grant(
-            conn, user_id=user_id, marketplace="mkt-y", plugin="beta",
+            conn,
+            user_id=user_id,
+            marketplace="mkt-y",
+            plugin="beta",
             group_name="Other",
         )
         conn.close()
 
         r = web_client.put(
             "/api/my-stack/curated/mkt-y/beta",
-            json={"enabled": True}, cookies=user_cookies,
+            json={"enabled": True},
+            cookies=user_cookies,
         )
         assert r.status_code == 200
 
@@ -1538,10 +1617,16 @@ class TestMyStackOptout:
         from src.repositories.user_curated_subscriptions import (
             UserCuratedSubscriptionsRepository,
         )
+
         conn = get_system_db()
         try:
-            assert UserCuratedSubscriptionsRepository(conn).is_subscribed(
-                user_id, "mkt-y", "beta",
-            ) is False
+            assert (
+                UserCuratedSubscriptionsRepository(conn).is_subscribed(
+                    user_id,
+                    "mkt-y",
+                    "beta",
+                )
+                is False
+            )
         finally:
             conn.close()

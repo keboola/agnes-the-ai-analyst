@@ -62,10 +62,7 @@ SA_EMAIL_ENV = "GOOGLE_ADMIN_SDK_SA_EMAIL"
 
 SCOPE = "https://www.googleapis.com/auth/admin.directory.group.readonly"
 
-_METADATA_SA_URL = (
-    "http://metadata.google.internal/computeMetadata/v1/instance/"
-    "service-accounts/default/email"
-)
+_METADATA_SA_URL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email"
 
 
 def fetch_user_groups(email: str) -> List[str]:
@@ -112,17 +109,13 @@ def _fetch_real(email: str) -> List[str]:
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
     except ImportError:
-        logger.warning(
-            "google-api-python-client / google-auth not installed; "
-            "skipping group fetch"
-        )
+        logger.warning("google-api-python-client / google-auth not installed; skipping group fetch")
         return []
 
     subject = os.environ.get(SUBJECT_ENV, "").strip()
     if not subject:
         logger.warning(
-            "%s not set; skipping group fetch (keyless DWD requires an "
-            "admin email to impersonate)",
+            "%s not set; skipping group fetch (keyless DWD requires an admin email to impersonate)",
             SUBJECT_ENV,
         )
         return []
@@ -148,7 +141,8 @@ def _fetch_real(email: str) -> List[str]:
             subject=subject,
         )
         service = build(
-            "admin", "directory_v1",
+            "admin",
+            "directory_v1",
             credentials=creds,
             cache_discovery=False,
         )
@@ -160,11 +154,15 @@ def _fetch_real(email: str) -> List[str]:
     page_token: str | None = None
     try:
         while True:
-            resp = service.groups().list(
-                userKey=email,
-                maxResults=200,
-                pageToken=page_token,
-            ).execute()
+            resp = (
+                service.groups()
+                .list(
+                    userKey=email,
+                    maxResults=200,
+                    pageToken=page_token,
+                )
+                .execute()
+            )
             for g in resp.get("groups", []):
                 gid = g.get("email")
                 if gid:
@@ -273,8 +271,7 @@ def apply_user_groups(user_id: str, email: str, conn) -> SyncResult:
 
     if not group_emails:
         logger.info(
-            "Google group sync for %s: empty result, "
-            "preserving existing memberships",
+            "Google group sync for %s: empty result, preserving existing memberships",
             email,
         )
         result.soft_failed = True
@@ -301,7 +298,9 @@ def apply_user_groups(user_id: str, email: str, conn) -> SyncResult:
         # who need the strict policy can run the prefix-cleanup admin path.
         logger.info(
             "Google group sync for %s denied: no group with prefix %r in %s",
-            email, prefix, fetched,
+            email,
+            prefix,
+            fetched,
         )
         result.denied = True
         return result
@@ -341,7 +340,9 @@ def apply_user_groups(user_id: str, email: str, conn) -> SyncResult:
             group_ids.append(g["id"])
 
         members_repo.replace_google_sync_groups(
-            user_id, group_ids, added_by="system:google-sync",
+            user_id,
+            group_ids,
+            added_by="system:google-sync",
         )
     except Exception as e:  # noqa: BLE001 - fail-soft by design
         logger.warning("Group write failed for %s: %s", email, e)
@@ -350,9 +351,11 @@ def apply_user_groups(user_id: str, email: str, conn) -> SyncResult:
 
     result.applied = True
     logger.info(
-        "Google group sync for %s: %d group(s) "
-        "(filtered from %d fetched, prefix=%r) [%s]",
-        email, len(group_ids), len(fetched), prefix,
+        "Google group sync for %s: %d group(s) (filtered from %d fetched, prefix=%r) [%s]",
+        email,
+        len(group_ids),
+        len(fetched),
+        prefix,
         ", ".join(relevant),
     )
     return result

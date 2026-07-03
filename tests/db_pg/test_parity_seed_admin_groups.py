@@ -12,6 +12,7 @@ The fix seeds the groups through the factory (``ensure_system``) and looks them
 up through the factory (``get_by_name``). These tests exercise that exact
 sequence and assert the seed admin resolves as an admin on DuckDB AND Postgres.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -62,9 +63,7 @@ def test_system_groups_seeded_on_both_backends(_env):
     _seed_like_lifespan("seed_admin", "seed@example.com")
 
     names = {g["name"] for g in user_groups_repo().list_all()}
-    assert {SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP} <= names, (
-        f"[{_env}] system groups missing after seed: {names}"
-    )
+    assert {SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP} <= names, f"[{_env}] system groups missing after seed: {names}"
 
 
 def test_seed_admin_has_admin_access_on_both_backends(_env):
@@ -89,8 +88,7 @@ def test_everyone_membership_resolves_on_both_backends(_env):
     everyone = user_groups_repo().get_by_name(SYSTEM_EVERYONE_GROUP)
     assert everyone is not None
     assert everyone["id"] in _user_group_ids("seed_admin"), (
-        f"[{_env}] seed admin not resolved into Everyone — Everyone-scoped "
-        f"grants would not surface for them."
+        f"[{_env}] seed admin not resolved into Everyone — Everyone-scoped grants would not surface for them."
     )
 
 

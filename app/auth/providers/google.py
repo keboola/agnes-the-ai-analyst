@@ -115,6 +115,7 @@ async def google_callback(request: Request):
                 # doesn't block sign-in.
                 try:
                     from src.repositories import user_curated_subscriptions_repo
+
                     user_curated_subscriptions_repo().fanout_system_for_user(user_id)
                 except Exception:
                     logger.exception(
@@ -139,9 +140,7 @@ async def google_callback(request: Request):
             # instance. ``soft_failed`` (empty fetch / API error) does NOT
             # trigger the gate, so transient outages can't lock users out.
             if sync_result.denied:
-                return RedirectResponse(
-                    url="/login?error=not_in_allowed_group"
-                )
+                return RedirectResponse(url="/login?error=not_in_allowed_group")
         finally:
             conn.close()
 
@@ -161,8 +160,11 @@ async def google_callback(request: Request):
         use_secure = os.environ.get("DOMAIN", "") != ""
         response = RedirectResponse(url=target, status_code=302)
         response.set_cookie(
-            key="access_token", value=jwt_token,
-            httponly=True, max_age=86400, samesite="lax",
+            key="access_token",
+            value=jwt_token,
+            httponly=True,
+            max_age=86400,
+            samesite="lax",
             secure=use_secure,
         )
         return response

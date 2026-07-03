@@ -23,6 +23,7 @@ from src.repositories import (
     user_groups_repo,
     users_repo,
 )
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -51,6 +52,7 @@ def _audit(user_id: str, action: str, result: str | None = None) -> None:
     """Fire-and-forget audit log entry. Swallows all errors."""
     try:
         from src.db import get_system_db
+
         audit_conn = get_system_db()
         audit_repo().log(
             user_id=user_id,
@@ -271,10 +273,7 @@ async def refresh_groups(
         }
 
     def _all_names() -> list[str]:
-        return sorted(
-            row["name"]
-            for row in members_repo.list_groups_with_meta_for_user(user["id"])
-        )
+        return sorted(row["name"] for row in members_repo.list_groups_with_meta_for_user(user["id"]))
 
     before = _synced_names()
     result = apply_user_groups(user["id"], user["email"], conn)
@@ -287,11 +286,7 @@ async def refresh_groups(
     _audit(
         user["id"],
         "auth.refresh_groups",
-        result=(
-            "applied" if result.applied
-            else "denied" if result.denied
-            else "soft_failed"
-        ),
+        result=("applied" if result.applied else "denied" if result.denied else "soft_failed"),
     )
 
     return RefreshGroupsResponse(
