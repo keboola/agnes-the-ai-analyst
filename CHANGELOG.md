@@ -15,6 +15,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.4] - 2026-07-03
+
+### Added
+
+### Changed
+
+### Fixed
 - New users are auto-assigned to the `Everyone` system group at creation across all creation paths (Google OAuth first sign-in, bootstrap, admin create, marketplace import stubs) unless `AGNES_GROUP_EVERYONE_EMAIL` maps `Everyone` to a Workspace group; schema v86 backfills existing users on env-unset deployments (#748).
 
 ### Removed
