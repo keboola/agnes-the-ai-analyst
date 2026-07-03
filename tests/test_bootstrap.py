@@ -229,6 +229,22 @@ class TestBootstrap:
         finally:
             conn.close()
 
+    def test_bootstrap_survives_everyone_grant_failure(self, fresh_client, monkeypatch):
+        """A transient failure in the non-critical Everyone grant must not
+        fail the bootstrap — the operator still gets their admin token."""
+        import app.auth.group_sync as group_sync
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("transient db error")
+
+        monkeypatch.setattr(group_sync, "ensure_everyone_membership", _boom)
+        resp = fresh_client.post(
+            "/auth/bootstrap",
+            json={"email": "admin@test.com", "name": "Admin"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["access_token"]
+
     def test_full_agent_flow(self, fresh_client):
         """Simulate full AI agent deployment flow."""
         # 1. Health check (no auth — minimal endpoint)

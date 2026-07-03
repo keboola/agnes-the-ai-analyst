@@ -195,10 +195,17 @@ async def bootstrap(
     # for both the create and activate-existing-seed branches above, so this
     # sits at the same shared point as the Admin grant rather than inside
     # either branch — opt-out is not meaningful here (there's no "later" to
-    # opt out from before the very first admin exists).
-    from app.auth.group_sync import ensure_everyone_membership
+    # opt out from before the very first admin exists). Fail-soft like the
+    # other creation paths: the grant is not critical to issuing the token.
+    try:
+        from app.auth.group_sync import ensure_everyone_membership
 
-    ensure_everyone_membership(user_id, added_by="auth.bootstrap")
+        ensure_everyone_membership(user_id, added_by="auth.bootstrap")
+    except Exception:
+        logger.exception(
+            "ensure_everyone_membership failed for bootstrap user %s",
+            body.email,
+        )
 
     token = create_access_token(user_id=user_id, email=body.email)
     return TokenResponse(
