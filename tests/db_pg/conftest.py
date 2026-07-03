@@ -124,6 +124,28 @@ def _start_pgserver() -> Iterator[str]:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _reap_orphaned_pgserver_data_dirs() -> None:
+    """Best-effort removal of ``agnes-pgserver-*`` dirs orphaned by hard-killed runs.
+
+    A run killed hard (SIGKILL, OOM, disk full) never reaches
+    ``_start_pgserver``'s ``finally``, leaving ~300 MB data dirs in $TMPDIR
+    forever — with ``cleanup_mode=None`` pgserver never stops or removes
+    anything itself. Reap them at session start; concurrent worktree sessions
+    are protected by the reaper's postmaster.pid liveness check and
+    minimum-age guard. Under xdist only gw0 scans — the reap is global, one
+    worker suffices.
+    """
+    if os.environ.get("PYTEST_XDIST_WORKER", "gw0") != "gw0":
+        return
+    import tempfile
+    from pathlib import Path
+
+    from tests.db_pg.pgserver_reaper import reap_orphaned_pgserver_dirs
+
+    reap_orphaned_pgserver_dirs(Path(tempfile.gettempdir()))
+
+
 @pytest.fixture(scope="session")
 def pg_backend() -> str:
     """Expose the resolved backend name to tests that want to assert it."""
