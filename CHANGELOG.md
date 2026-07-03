@@ -17,6 +17,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 ### Removed
+- Unused externally-branded icon asset from `app/web/static/` — added in #724 without description or code references; instance branding is driven by instance config (`get_instance_logo_svg()`), and deployment-specific assets belong in the consuming deployment's own repo, not the public distribution.
 
 ### Internal
 
