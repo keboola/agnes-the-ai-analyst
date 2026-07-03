@@ -80,18 +80,28 @@ def test_toolbar_html_present_when_debug(app_with_toolbar):
     # under pytest-split shard 4, `/first-time-setup` came back 200 text/html
     # with an empty body (no markup) even though the toolbar injects fine on
     # `/login` — and on the same route in isolation locally. Scan all candidates
-    # and pass on the first that carries the markup; only skip when NONE do.
-    saw_html_200 = False
+    # and pass on the first that carries the markup. A non-empty HTML 200
+    # without markup on ALL rendered routes is a real regression → fail; skip
+    # only when no route rendered a non-empty body at all.
+    rendered_routes = []
     for path in ("/dashboard", "/first-time-setup", "/login", "/admin/access"):
         resp = client.get(path, follow_redirects=False)
         if resp.status_code == 200 and "text/html" in resp.headers.get("content-type", ""):
-            saw_html_200 = True
             body = resp.text.lower()
+            if not body.strip():
+                # Empty 200 bodies happen under pytest-split sharding (see
+                # comment above) — not a rendering opportunity, don't count it.
+                continue
+            rendered_routes.append(path)
             if "djdt" in body or "fastdebug" in body:
                 return  # toolbar is wired up on at least one route — contract met
+    if rendered_routes:
+        pytest.fail(
+            f"DEBUG=1 but no toolbar markup on any rendered HTML 200 route ({rendered_routes}); "
+            "toolbar injection is broken"
+        )
     pytest.skip(
-        f"no HTML 200 route carried toolbar markup in TestClient (saw_html_200={saw_html_200}); "
-        "toolbar injection cannot be verified here",
+        "no HTML 200 route rendered a non-empty body in TestClient; toolbar injection cannot be verified here",
     )
 
 
