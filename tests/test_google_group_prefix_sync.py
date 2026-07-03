@@ -69,6 +69,71 @@ def _system_db():
     return get_system_db()
 
 
+class TestAutoEveryoneAtFirstSignIn:
+    """Issue #748: a brand-new Google sign-in must land the user in the
+    seeded Everyone group (source='system_seed') when
+    AGNES_GROUP_EVERYONE_EMAIL is unset — restoring the pre-PR#131 default
+    for the common (non-Workspace-mapped-Everyone) deployment shape.
+    """
+
+    def test_new_user_gets_everyone_system_seed_row(self, google_callback_env):
+        env = google_callback_env
+        env["monkeypatch"].delenv("AGNES_GROUP_EVERYONE_EMAIL", raising=False)
+        env["monkeypatch"].delenv("AGNES_GOOGLE_GROUP_PREFIX", raising=False)
+        _set_fetch(env["monkeypatch"], [])
+
+        resp = env["client"].get("/auth/google/callback?code=x&state=y")
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/dashboard"
+
+        conn = _system_db()
+        try:
+            from src.repositories.users import UserRepository
+            from src.repositories.user_groups import UserGroupsRepository
+            from src.repositories.user_group_members import (
+                UserGroupMembersRepository,
+            )
+
+            user = UserRepository(conn).get_by_email("tester@example.com")
+            assert user is not None
+
+            everyone = UserGroupsRepository(conn).get_by_name("Everyone")
+            assert everyone is not None
+
+            rows = UserGroupMembersRepository(conn).list_groups_with_meta_for_user(user["id"])
+            matching = [r for r in rows if r["group_id"] == everyone["id"]]
+            assert len(matching) == 1, f"expected exactly one Everyone row, got {matching}"
+            assert matching[0]["source"] == "system_seed"
+        finally:
+            conn.close()
+
+    def test_existing_user_relogin_does_not_gain_everyone_via_this_path(self, google_callback_env):
+        """The helper only fires in the new-user branch — a second login
+        for the SAME user must not re-trigger the grant call (idempotent
+        either way, but this asserts the call-site placement: only one
+        Everyone row, not one per login)."""
+        env = google_callback_env
+        env["monkeypatch"].delenv("AGNES_GROUP_EVERYONE_EMAIL", raising=False)
+        _set_fetch(env["monkeypatch"], [])
+
+        env["client"].get("/auth/google/callback?code=x&state=y")
+        env["client"].get("/auth/google/callback?code=x&state=y")
+
+        conn = _system_db()
+        try:
+            from src.repositories.users import UserRepository
+            from src.repositories.user_group_members import (
+                UserGroupMembersRepository,
+            )
+
+            user = UserRepository(conn).get_by_email("tester@example.com")
+            rows = UserGroupMembersRepository(conn).list_groups_with_meta_for_user(user["id"])
+            everyone_rows = [r for r in rows if r["name"] == "Everyone"]
+            assert len(everyone_rows) == 1
+        finally:
+            conn.close()
+
+
 class TestPrefixFilter:
     def test_prefix_filter_keeps_only_matching_groups(self, google_callback_env):
         env = google_callback_env
@@ -102,11 +167,16 @@ class TestPrefixFilter:
             group_ids = UserGroupMembersRepository(conn).list_groups_for_user(user["id"])
             ug = UserGroupsRepository(conn)
             names = sorted(ug.get(gid)["name"] for gid in group_ids)
+            # Everyone (system_seed, issue #748 auto-grant-at-creation)
+            # plus the two prefix-matched google_sync groups.
             assert names == [
+                "Everyone",
                 "grp_acme_eng@example.com",
                 "grp_acme_finance@example.com",
             ]
             for n in names:
+                if n == "Everyone":
+                    continue
                 assert ug.get_by_name(n)["created_by"] == "system:google-sync"
         finally:
             conn.close()
@@ -128,11 +198,13 @@ class TestPrefixFilter:
         assert resp.status_code in (302, 307)
         assert resp.headers["location"] == "/login?error=not_in_allowed_group"
 
-        # No group memberships were written for the user (the gate fired
+        # No google_sync group memberships were written (the gate fired
         # before replace_google_sync_groups). The user row may exist
         # because user creation happens before the gate — that's the
         # documented behavior; admins can mark the row inactive if they
-        # want a hard block.
+        # want a hard block. The Everyone system_seed grant (issue #748)
+        # is part of that same creation-time step and is likewise
+        # unaffected by the later deny gate.
         conn = _system_db()
         try:
             from src.repositories.users import UserRepository
@@ -142,8 +214,9 @@ class TestPrefixFilter:
 
             user = UserRepository(conn).get_by_email("tester@example.com")
             if user:
-                groups = UserGroupMembersRepository(conn).list_groups_for_user(user["id"])
-                assert groups == []
+                groups = UserGroupMembersRepository(conn).list_groups_with_meta_for_user(user["id"])
+                assert [g["name"] for g in groups] == ["Everyone"]
+                assert groups[0]["source"] == "system_seed"
         finally:
             conn.close()
 
@@ -174,7 +247,8 @@ class TestPrefixFilter:
             user = UserRepository(conn).get_by_email("tester@example.com")
             group_ids = UserGroupMembersRepository(conn).list_groups_for_user(user["id"])
             names = sorted(UserGroupsRepository(conn).get(gid)["name"] for gid in group_ids)
-            assert names == ["grp_a@example.com", "grp_b@example.com"]
+            # Everyone (system_seed, issue #748) plus the two mirrored groups.
+            assert names == ["Everyone", "grp_a@example.com", "grp_b@example.com"]
         finally:
             conn.close()
 
@@ -258,6 +332,42 @@ class TestSystemMapping:
         finally:
             conn.close()
 
+    def test_everyone_email_set_first_signin_has_no_system_seed_row(self, google_callback_env):
+        """Issue #748 dual-mode, Workspace-controlled half: when
+        AGNES_GROUP_EVERYONE_EMAIL is set, a brand-new user's Everyone
+        membership must come ONLY from google_sync (the row asserted in
+        test_everyone_email_routes_to_seeded_everyone_row above) — the
+        auto-grant-at-creation helper (app.auth.group_sync.ensure_everyone_membership)
+        must no-op and NOT add a competing system_seed row.
+        """
+        env = google_callback_env
+        env["monkeypatch"].setenv("AGNES_GROUP_EVERYONE_EMAIL", "grp_acme_everyone@example.com")
+        # No prefix and no matching group in the fetch — isolates the
+        # creation-time helper from the google_sync write path entirely,
+        # so any Everyone row found afterward must have come from the
+        # (should-be-skipped) auto-grant helper.
+        _set_fetch(env["monkeypatch"], ["unrelated@example.com"])
+
+        env["client"].get("/auth/google/callback?code=x&state=y")
+
+        conn = _system_db()
+        try:
+            from src.repositories.users import UserRepository
+            from src.repositories.user_groups import UserGroupsRepository
+            from src.repositories.user_group_members import (
+                UserGroupMembersRepository,
+            )
+
+            user = UserRepository(conn).get_by_email("tester@example.com")
+            assert user is not None
+            everyone_row = UserGroupsRepository(conn).get_by_name("Everyone")
+            group_ids = UserGroupMembersRepository(conn).list_groups_for_user(user["id"])
+            assert everyone_row["id"] not in group_ids, (
+                "ensure_everyone_membership must no-op when AGNES_GROUP_EVERYONE_EMAIL is set"
+            )
+        finally:
+            conn.close()
+
 
 class TestIdempotency:
     def test_second_login_does_not_duplicate_groups(self, google_callback_env):
@@ -282,9 +392,12 @@ class TestIdempotency:
 
             user = UserRepository(conn).get_by_email("tester@example.com")
             group_ids = UserGroupMembersRepository(conn).list_groups_for_user(user["id"])
-            # Exactly one membership: same group, deduplicated by the
-            # (user_id, group_id) PK in user_group_members.
-            assert len(group_ids) == 1
+            # Exactly two memberships: the prefix-matched google_sync group
+            # (deduplicated by the (user_id, group_id) PK in
+            # user_group_members) plus the Everyone system_seed row granted
+            # once at creation (issue #748) — the second login does not
+            # re-invoke the creation-time grant.
+            assert len(group_ids) == 2
 
             # Exactly one user_groups row for that name (ensure() is
             # get-or-create, the second login picks up the existing row).

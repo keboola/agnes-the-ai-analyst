@@ -107,6 +107,21 @@ async def google_callback(request: Request):
             if not user:
                 user_id = str(uuid.uuid4())
                 repo.create(id=user_id, email=email, name=name)
+                # Issue #748: auto-grant Everyone at creation (source=
+                # 'system_seed') unless AGNES_GROUP_EVERYONE_EMAIL maps
+                # Everyone to a Workspace group — then apply_user_groups
+                # below is the sole writer. Creation-time only: never
+                # called again for a returning user, so an admin's manual
+                # removal later sticks.
+                try:
+                    from app.auth.group_sync import ensure_everyone_membership
+
+                    ensure_everyone_membership(user_id, added_by="auth.google:first-signin")
+                except Exception:
+                    logger.exception(
+                        "ensure_everyone_membership failed for new user %s",
+                        email,
+                    )
                 # v39: subscribe new user to every system plugin so the
                 # mandatory tier reaches them on their first session
                 # without an admin reconcile. Fail-soft — the import +

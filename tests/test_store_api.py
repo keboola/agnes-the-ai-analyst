@@ -813,7 +813,6 @@ class TestStoreSecurityFixes:
         mid-creation inside the [before, after] window.
         """
         import tempfile as _tempfile
-        from pathlib import Path as _Path
 
         # FastAPI app runs in-process under TestClient → patching the
         # tempfile module here also redirects the server-side mkdtemp call.
@@ -1043,6 +1042,18 @@ class TestStoreBundle:
         assert stub[0].startswith("imported-")
         assert stub[1] is False  # disabled
 
+        # Issue #748: the stub still gets Everyone (source='system_seed') —
+        # it never hits the normal user-creation call sites (Google
+        # sign-in, POST /api/users, bootstrap), so this import path is
+        # its only chance to be granted the default membership.
+        from src.repositories.user_group_members import UserGroupMembersRepository
+
+        stub_id = stub[0]
+        rows = UserGroupMembersRepository(conn).list_groups_with_meta_for_user(stub_id)
+        everyone_rows = [row for row in rows if row["name"] == "Everyone"]
+        assert len(everyone_rows) == 1
+        assert everyone_rows[0]["source"] == "system_seed"
+
     def test_import_bundle_skip_mode_keeps_existing(self, web_client):
         from argon2 import PasswordHasher
         from src.db import get_system_db
@@ -1050,8 +1061,7 @@ class TestStoreBundle:
         from tests.helpers.auth import grant_admin
 
         _, owner_cookies = _create_user(web_client, "skip@x.com")
-        r = self._upload_skill(web_client, owner_cookies, name="skip-existing")
-        eid = r.json()["id"]
+        self._upload_skill(web_client, owner_cookies, name="skip-existing")
         bundle_bytes = web_client.get(
             "/api/store/bundle.zip",
             cookies=owner_cookies,
@@ -1335,13 +1345,15 @@ class TestMarketplaceBundle:
     Store entities stay standalone."""
 
     def _zip_entries(self, content: bytes) -> set[str]:
-        import io, zipfile
+        import io
+        import zipfile
 
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
             return set(zf.namelist())
 
     def _read_zip_file(self, content: bytes, name: str) -> bytes:
-        import io, zipfile
+        import io
+        import zipfile
 
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
             return zf.read(name)

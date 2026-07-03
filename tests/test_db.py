@@ -1,8 +1,5 @@
 """Tests for src.db — DuckDB connection management and schema."""
 
-import os
-import tempfile
-
 import duckdb
 import pytest
 
@@ -287,7 +284,7 @@ class TestMigrationSafety:
         """Data inserted before migration is preserved after migration runs."""
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import duckdb as _duckdb
-        from src.db import _ensure_schema, get_schema_version, _SYSTEM_SCHEMA
+        from src.db import _ensure_schema, get_schema_version
 
         db_path = tmp_path / "state" / "system.duckdb"
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -503,7 +500,6 @@ class TestMigrationSafety:
         """
         from src.db import (
             SCHEMA_VERSION,
-            _ensure_schema,
             get_schema_version,
             get_system_db,
         )
@@ -1321,7 +1317,6 @@ class TestV13ToV14Migration:
 
     def _create_v13_db(self, tmp_path, monkeypatch):
         """Create a v13 database with some data including orphan records."""
-        import json
         import uuid
         import duckdb as _duckdb
 
@@ -1454,7 +1449,6 @@ class TestV13ToV14Migration:
     def test_v13_to_v14_fk_constraints_added(self, tmp_path, monkeypatch):
         """v13→v14 finalize must add FK constraints on user_group_members and resource_grants."""
         db_path, *_ = self._create_v13_db(tmp_path, monkeypatch)
-        import duckdb as _duckdb
         from src.db import get_system_db
 
         conn = get_system_db()
@@ -1733,9 +1727,22 @@ class TestV17ToV18Migration:
                     ).fetchone(),
                 )
 
+            def _has_membership_in(uid: str, group_id: str) -> bool:
+                return bool(
+                    conn.execute(
+                        "SELECT 1 FROM user_group_members WHERE user_id = ? AND group_id = ?",
+                        [uid, group_id],
+                    ).fetchone(),
+                )
+
             assert _has_membership(local_admin_uid), "system_seed in unmapped Admin must survive"
             assert _has_membership(local_everyone_uid), "system_seed in unmapped Everyone must survive"
-            assert not _has_membership(stranded_gsync_uid), (
+            # Checked in the specific gsync_gid group, not "any row at all"
+            # — v85->v86 (issue #748) runs later in this same upgrade pass
+            # and legitimately backfills stranded_gsync_uid into Everyone
+            # (it's a plain user with no prior Everyone row), which is
+            # unrelated to this assertion's concern.
+            assert not _has_membership_in(stranded_gsync_uid, gsync_gid), (
                 "non-google source in google_sync group must drop unconditionally"
             )
         finally:
@@ -1764,6 +1771,165 @@ class TestV17ToV18Migration:
             close_system_db()
 
         # Second open should not regress version or error.
+        conn = get_system_db()
+        try:
+            from src.db import SCHEMA_VERSION
+
+            assert get_schema_version(conn) == SCHEMA_VERSION
+        finally:
+            conn.close()
+            close_system_db()
+
+
+class TestV85ToV86Migration:
+    """Issue #748: backfill users missing an Everyone row.
+
+    Env unset — every user without a system_seed/google_sync/admin row in
+    the seeded Everyone group gets one (source='system_seed',
+    added_by='system:v86-backfill'), mirroring v13's Everyone backfill.
+    Env set (AGNES_GROUP_EVERYONE_EMAIL) — Everyone is Workspace-controlled;
+    the backfill no-ops (mirrors the v18 env-conditional precedent).
+    """
+
+    def test_v85_to_v86_backfills_users_missing_everyone_when_env_unset(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import uuid
+        from src.db import close_system_db, get_schema_version, get_system_db
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv(
+            "JWT_SECRET_KEY",
+            "test-jwt-secret-key-minimum-32-chars!!",
+        )
+        monkeypatch.delenv("AGNES_GROUP_EVERYONE_EMAIL", raising=False)
+        close_system_db()
+
+        # Open at full target version, plant a user with no Everyone row
+        # (and one that already has it, for idempotency), then rewind
+        # schema_version to 85 so the v85->v86 step runs on next open.
+        conn = get_system_db()
+        try:
+            everyone_gid = conn.execute(
+                "SELECT id FROM user_groups WHERE name = 'Everyone' AND is_system",
+            ).fetchone()[0]
+
+            missing_uid = str(uuid.uuid4())
+            already_uid = str(uuid.uuid4())
+            for uid, email in [
+                (missing_uid, "missing-everyone@x"),
+                (already_uid, "already-everyone@x"),
+            ]:
+                conn.execute(
+                    "INSERT INTO users (id, email, name) VALUES (?, ?, ?)",
+                    [uid, email, email],
+                )
+            conn.execute(
+                "INSERT INTO user_group_members (user_id, group_id, source, added_by) "
+                "VALUES (?, ?, 'admin', 'admin@x')",
+                [already_uid, everyone_gid],
+            )
+
+            conn.execute("UPDATE schema_version SET version = 85")
+        finally:
+            conn.close()
+            close_system_db()
+
+        conn = get_system_db()
+        try:
+            from src.db import SCHEMA_VERSION
+
+            assert get_schema_version(conn) == SCHEMA_VERSION
+
+            rows = conn.execute(
+                "SELECT source FROM user_group_members WHERE user_id = ? AND group_id = ?",
+                [missing_uid, everyone_gid],
+            ).fetchall()
+            assert len(rows) == 1, f"expected exactly one backfilled row, got {rows}"
+            assert rows[0][0] == "system_seed"
+
+            # The already-member row is untouched (still 'admin', not
+            # duplicated).
+            rows2 = conn.execute(
+                "SELECT source FROM user_group_members WHERE user_id = ? AND group_id = ?",
+                [already_uid, everyone_gid],
+            ).fetchall()
+            assert rows2 == [("admin",)]
+        finally:
+            conn.close()
+            close_system_db()
+
+    def test_v85_to_v86_noops_when_env_set(self, tmp_path, monkeypatch):
+        import uuid
+        from src.db import close_system_db, get_schema_version, get_system_db
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv(
+            "JWT_SECRET_KEY",
+            "test-jwt-secret-key-minimum-32-chars!!",
+        )
+        monkeypatch.setenv("AGNES_GROUP_EVERYONE_EMAIL", "everyone@workspace.test")
+        close_system_db()
+
+        conn = get_system_db()
+        try:
+            everyone_gid = conn.execute(
+                "SELECT id FROM user_groups WHERE name = 'Everyone' AND is_system",
+            ).fetchone()[0]
+
+            missing_uid = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO users (id, email, name) VALUES (?, ?, ?)",
+                [missing_uid, "no-backfill@x", "no-backfill@x"],
+            )
+
+            conn.execute("UPDATE schema_version SET version = 85")
+        finally:
+            conn.close()
+            close_system_db()
+
+        conn = get_system_db()
+        try:
+            from src.db import SCHEMA_VERSION
+
+            assert get_schema_version(conn) == SCHEMA_VERSION
+
+            rows = conn.execute(
+                "SELECT 1 FROM user_group_members WHERE user_id = ? AND group_id = ?",
+                [missing_uid, everyone_gid],
+            ).fetchall()
+            assert rows == [], (
+                "backfill must no-op when AGNES_GROUP_EVERYONE_EMAIL is set — Everyone is Workspace-controlled"
+            )
+        finally:
+            conn.close()
+            close_system_db()
+
+    def test_v85_to_v86_idempotent(self, tmp_path, monkeypatch):
+        """Running migrations on an already-v86 DB is a no-op."""
+        from src.db import close_system_db, get_schema_version, get_system_db
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv(
+            "JWT_SECRET_KEY",
+            "test-jwt-secret-key-minimum-32-chars!!",
+        )
+        close_system_db()
+
+        conn = get_system_db()
+        try:
+            from src.db import SCHEMA_VERSION
+
+            assert get_schema_version(conn) == SCHEMA_VERSION
+        finally:
+            conn.close()
+            close_system_db()
+
         conn = get_system_db()
         try:
             from src.db import SCHEMA_VERSION

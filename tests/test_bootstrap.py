@@ -1,6 +1,5 @@
 """Tests for bootstrap endpoint — first admin user creation."""
 
-import os
 import pytest
 from fastapi.testclient import TestClient
 
@@ -79,9 +78,8 @@ class TestBootstrap:
             },
         )
         assert resp.status_code == 200
+        assert "access_token" in resp.json()
 
-        # Token works
-        token = resp.json()["access_token"]
         resp2 = fresh_client.get("/api/health")
         assert resp2.status_code == 200
 
@@ -178,6 +176,58 @@ class TestBootstrap:
             },
         )
         assert resp.status_code == 403
+
+    def test_bootstrap_fresh_user_joins_admin_and_everyone(self, fresh_client):
+        """Issue #748: bootstrap grants Admin (pre-existing) AND Everyone
+        (new) so the very first admin also sees Everyone-scoped grants."""
+        resp = fresh_client.post(
+            "/auth/bootstrap",
+            json={
+                "email": "admin@test.com",
+                "name": "Admin",
+            },
+        )
+        assert resp.status_code == 200
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from src.repositories.user_group_members import UserGroupMembersRepository
+
+        conn = get_system_db()
+        try:
+            user = UserRepository(conn).get_by_email("admin@test.com")
+            assert user is not None
+            rows = UserGroupMembersRepository(conn).list_groups_with_meta_for_user(user["id"])
+            names = {r["name"] for r in rows}
+            assert {"Admin", "Everyone"} <= names
+            everyone_row = next(r for r in rows if r["name"] == "Everyone")
+            assert everyone_row["source"] == "system_seed"
+        finally:
+            conn.close()
+
+    def test_bootstrap_activate_seed_user_joins_admin_and_everyone(self, seeded_client):
+        """Same grant applies on the activate-existing-seed branch."""
+        resp = seeded_client.post(
+            "/auth/bootstrap",
+            json={
+                "email": "existing@test.com",
+                "password": "newpass123",
+            },
+        )
+        assert resp.status_code == 200
+
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from src.repositories.user_group_members import UserGroupMembersRepository
+
+        conn = get_system_db()
+        try:
+            user = UserRepository(conn).get_by_email("existing@test.com")
+            assert user is not None
+            rows = UserGroupMembersRepository(conn).list_groups_with_meta_for_user(user["id"])
+            names = {r["name"] for r in rows}
+            assert {"Admin", "Everyone"} <= names
+        finally:
+            conn.close()
 
     def test_full_agent_flow(self, fresh_client):
         """Simulate full AI agent deployment flow."""

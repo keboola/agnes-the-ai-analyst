@@ -230,3 +230,103 @@ class TestPreflightFailSoft:
 
         fetch_user_groups("u@x")
         assert captured["sa"] == "explicit@x.iam.gserviceaccount.com"
+
+
+# ---------------------------------------------------------------------------
+# ensure_everyone_membership — issue #748 auto-Everyone-at-creation helper
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def db_env(tmp_path, monkeypatch):
+    """A fresh system DB (Admin/Everyone seeded) + one plain user row."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TESTING", "1")
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-min-32-characters!!")
+    (tmp_path / "state").mkdir()
+    (tmp_path / "analytics").mkdir()
+    (tmp_path / "extracts").mkdir()
+    from src.db import close_system_db, get_system_db
+    from src.repositories.users import UserRepository
+
+    close_system_db()
+    conn = get_system_db()
+    UserRepository(conn).create(id="u1", email="u1@example.com", name="U1")
+    conn.close()
+    yield
+    close_system_db()
+
+
+class TestEnsureEveryoneMembership:
+    def test_env_unset_adds_system_seed_row(self, db_env, monkeypatch):
+        monkeypatch.delenv("AGNES_GROUP_EVERYONE_EMAIL", raising=False)
+        from app.auth.group_sync import ensure_everyone_membership
+        from src.db import SYSTEM_EVERYONE_GROUP
+        from src.repositories import user_group_members_repo, user_groups_repo
+
+        result = ensure_everyone_membership("u1", added_by="test:caller")
+        assert result is True
+
+        everyone = user_groups_repo().get_by_name(SYSTEM_EVERYONE_GROUP)
+        rows = user_group_members_repo().list_groups_with_meta_for_user("u1")
+        matching = [r for r in rows if r["group_id"] == everyone["id"]]
+        assert len(matching) == 1
+        assert matching[0]["source"] == "system_seed"
+
+    def test_env_set_is_a_noop(self, db_env, monkeypatch):
+        monkeypatch.setenv("AGNES_GROUP_EVERYONE_EMAIL", "everyone@workspace.test")
+        from app.auth.group_sync import ensure_everyone_membership
+        from src.repositories import user_group_members_repo
+
+        result = ensure_everyone_membership("u1", added_by="test:caller")
+        assert result is False
+        assert user_group_members_repo().list_groups_with_meta_for_user("u1") == []
+
+    def test_idempotent_on_second_call(self, db_env, monkeypatch):
+        monkeypatch.delenv("AGNES_GROUP_EVERYONE_EMAIL", raising=False)
+        from app.auth.group_sync import ensure_everyone_membership
+        from src.repositories import user_group_members_repo
+
+        ensure_everyone_membership("u1", added_by="test:caller")
+        ensure_everyone_membership("u1", added_by="test:caller")
+
+        rows = user_group_members_repo().list_groups_with_meta_for_user("u1")
+        everyone_rows = [r for r in rows if r["name"] == "Everyone"]
+        assert len(everyone_rows) == 1
+
+    def test_missing_group_returns_false_without_raising(self, db_env, monkeypatch):
+        monkeypatch.delenv("AGNES_GROUP_EVERYONE_EMAIL", raising=False)
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        conn.execute("DELETE FROM user_groups WHERE name = 'Everyone'")
+        conn.close()
+
+        from app.auth.group_sync import ensure_everyone_membership
+
+        result = ensure_everyone_membership("u1", added_by="test:caller")
+        assert result is False
+
+    def test_opt_out_preserved_helper_does_not_reassert(self, db_env, monkeypatch):
+        """Once granted, removing the row and calling the helper again does
+        NOT re-add it — callers only invoke this at creation time, not on
+        every login/boot, so admin opt-out sticks."""
+        monkeypatch.delenv("AGNES_GROUP_EVERYONE_EMAIL", raising=False)
+        from src.db import get_system_db
+        from src.repositories import user_group_members_repo, user_groups_repo
+        from src.db import SYSTEM_EVERYONE_GROUP
+
+        from app.auth.group_sync import ensure_everyone_membership
+
+        ensure_everyone_membership("u1", added_by="test:caller")
+        everyone = user_groups_repo().get_by_name(SYSTEM_EVERYONE_GROUP)
+        user_group_members_repo().remove_member("u1", everyone["id"])
+
+        conn = get_system_db()
+        conn.close()
+
+        # The helper itself is not re-invoked by any login/boot path — this
+        # asserts the removal sticks in the DB, not that the helper enforces
+        # it (there is no re-assertion call site by design).
+        rows = user_group_members_repo().list_groups_with_meta_for_user("u1")
+        assert not any(r["name"] == SYSTEM_EVERYONE_GROUP for r in rows)

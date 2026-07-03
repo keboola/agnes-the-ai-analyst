@@ -190,6 +190,16 @@ async def bootstrap(
             added_by="auth.bootstrap",
         )
 
+    # Issue #748: also grant Everyone (unless AGNES_GROUP_EVERYONE_EMAIL maps
+    # it to a Workspace group). Bootstrap is a first-install flow that runs
+    # for both the create and activate-existing-seed branches above, so this
+    # sits at the same shared point as the Admin grant rather than inside
+    # either branch — opt-out is not meaningful here (there's no "later" to
+    # opt out from before the very first admin exists).
+    from app.auth.group_sync import ensure_everyone_membership
+
+    ensure_everyone_membership(user_id, added_by="auth.bootstrap")
+
     token = create_access_token(user_id=user_id, email=body.email)
     return TokenResponse(
         access_token=token,

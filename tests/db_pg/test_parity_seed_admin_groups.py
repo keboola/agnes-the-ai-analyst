@@ -92,6 +92,47 @@ def test_everyone_membership_resolves_on_both_backends(_env):
     )
 
 
+def test_ensure_everyone_membership_grants_on_both_backends(_env, monkeypatch):
+    """Issue #748: ``app.auth.group_sync.ensure_everyone_membership`` routes
+    through the ``src.repositories`` factory pair exclusively, so a
+    creation-time grant must resolve identically on DuckDB and Postgres —
+    same pattern as the seed-admin bug this file otherwise covers (a raw
+    DuckDB group lookup writing an id absent from Postgres)."""
+    monkeypatch.delenv("AGNES_GROUP_EVERYONE_EMAIL", raising=False)
+    from src.db import SYSTEM_EVERYONE_GROUP
+    from src.repositories import user_group_members_repo, user_groups_repo, users_repo
+    from app.auth.group_sync import ensure_everyone_membership
+
+    _seed_like_lifespan("seed_admin", "seed@example.com")
+    users_repo().create(id="grant-check", email="grant-check@example.com", name="U")
+
+    result = ensure_everyone_membership("grant-check", added_by="test:parity")
+    assert result is True, f"[{_env}] ensure_everyone_membership returned False unexpectedly"
+
+    everyone = user_groups_repo().get_by_name(SYSTEM_EVERYONE_GROUP)
+    assert everyone is not None, f"[{_env}] Everyone group not resolvable"
+    rows = user_group_members_repo().list_groups_with_meta_for_user("grant-check")
+    matching = [r for r in rows if r["group_id"] == everyone["id"]]
+    assert len(matching) == 1, f"[{_env}] expected exactly one Everyone row, got {matching}"
+    assert matching[0]["source"] == "system_seed"
+
+
+def test_ensure_everyone_membership_env_set_noop_on_both_backends(_env, monkeypatch):
+    """Dual-mode: env set → no local grant written on either backend."""
+    monkeypatch.setenv("AGNES_GROUP_EVERYONE_EMAIL", "everyone@workspace.test")
+    from src.repositories import user_group_members_repo, users_repo
+    from app.auth.group_sync import ensure_everyone_membership
+
+    _seed_like_lifespan("seed_admin", "seed@example.com")
+    users_repo().create(id="grant-check-mapped", email="grant-check-mapped@example.com", name="U")
+
+    result = ensure_everyone_membership("grant-check-mapped", added_by="test:parity")
+    assert result is False, f"[{_env}] must no-op when AGNES_GROUP_EVERYONE_EMAIL is set"
+
+    rows = user_group_members_repo().list_groups_with_meta_for_user("grant-check-mapped")
+    assert rows == [], f"[{_env}] no membership rows expected, got {rows}"
+
+
 def test_ensure_system_creates_absent_group_both_backends(_env):
     """The fresh-PG bug was that nothing *creates* the system groups on Postgres
     (Admin/Everyone are protected from deletion + the fixtures pre-seed them, so

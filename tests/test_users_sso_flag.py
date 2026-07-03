@@ -235,6 +235,31 @@ def test_system_seed_membership_in_env_mapped_everyone_is_not_sso(fresh_db, monk
     )
 
 
+def test_new_user_via_api_stays_local_when_everyone_env_mapped(fresh_db, monkeypatch):
+    """Issue #748 regression: ``ensure_everyone_membership`` is a no-op when
+    AGNES_GROUP_EVERYONE_EMAIL is set, so a user freshly created through
+    POST /api/users must NOT gain a system_seed Everyone row and must NOT
+    be flagged is_sso_user — the auto-grant-at-creation helper must never
+    fight the Workspace-authoritative membership set."""
+    from app.main import app
+
+    monkeypatch.setenv("AGNES_GROUP_EVERYONE_EMAIL", "everyone@workspace.test")
+
+    client = TestClient(app)
+    _, token = _seed_admin()
+
+    resp = client.post(
+        "/api/users",
+        json={"email": "fresh-mapped@test", "name": "Fresh"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 201
+    uid = resp.json()["id"]
+
+    payload = _user_payload(client, token, uid)
+    assert payload["is_sso_user"] is False
+
+
 def test_admin_source_membership_in_env_mapped_admin_is_not_sso(fresh_db, monkeypatch):
     """Mirror of the Everyone case for the Admin system group: a manually-
     added (source='admin') membership in env-mapped Admin must not be

@@ -1,6 +1,5 @@
 """Tests for FastAPI endpoints."""
 
-import os
 import pytest
 from fastapi.testclient import TestClient
 
@@ -162,6 +161,30 @@ class TestUsersCRUD:
         assert resp.status_code == 201
         assert resp.json()["email"] == "new@acme.com"
 
+    def test_create_user_joins_everyone(self, seeded_client):
+        """Issue #748: POST /api/users grants the new user Everyone
+        (source='system_seed') by default (AGNES_GROUP_EVERYONE_EMAIL unset)."""
+        client, admin_token, _ = seeded_client
+        resp = client.post(
+            "/api/users",
+            json={"email": "everyone-check@acme.com", "name": "New User"},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 201
+        new_id = resp.json()["id"]
+
+        from src.db import get_system_db
+        from src.repositories.user_group_members import UserGroupMembersRepository
+
+        conn = get_system_db()
+        try:
+            rows = UserGroupMembersRepository(conn).list_groups_with_meta_for_user(new_id)
+            everyone_rows = [r for r in rows if r["name"] == "Everyone"]
+            assert len(everyone_rows) == 1
+            assert everyone_rows[0]["source"] == "system_seed"
+        finally:
+            conn.close()
+
     def test_create_duplicate_user(self, seeded_client):
         client, admin_token, _ = seeded_client
         resp = client.post(
@@ -199,7 +222,6 @@ class TestMemory:
             headers=headers,
         )
         assert resp.status_code == 201
-        item_id = resp.json()["id"]
 
         # List
         resp = client.get("/api/memory", headers=headers)

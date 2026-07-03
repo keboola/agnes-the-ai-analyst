@@ -171,6 +171,64 @@ class TestApplyUserGroups:
             "grp_acme_finance@example.com",
         }
 
+    def test_resync_preserves_system_seed_everyone_row(self, client, monkeypatch):
+        """Issue #748: the creation-time Everyone grant (source='system_seed')
+        must survive an ``apply_user_groups`` re-sync — ``replace_google_sync_groups``
+        only touches ``source='google_sync'`` rows for this user."""
+        from app.auth.group_sync import ensure_everyone_membership
+        from src.db import SYSTEM_EVERYONE_GROUP
+
+        user_id, _ = _create_user(client)
+        ensure_everyone_membership(user_id, added_by="test:seed")
+
+        _set_fetch(monkeypatch, ["team@example.com"])
+        from app.auth.group_sync import apply_user_groups
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            result = apply_user_groups(user_id, "alice@example.com", conn)
+        finally:
+            conn.close()
+
+        assert result.applied is True
+        from src.repositories import user_group_members_repo
+
+        rows = user_group_members_repo().list_groups_with_meta_for_user(user_id)
+        everyone_rows = [r for r in rows if r["name"] == SYSTEM_EVERYONE_GROUP]
+        assert len(everyone_rows) == 1
+        assert everyone_rows[0]["source"] == "system_seed"
+
+    def test_opt_out_from_everyone_not_reasserted_by_resync(self, client, monkeypatch):
+        """Issue #748: if an admin removes a user's Everyone membership,
+        a subsequent Google re-sync must NOT re-add it — the creation-time
+        grant is not re-asserted at login."""
+        from app.auth.group_sync import ensure_everyone_membership
+        from src.db import SYSTEM_EVERYONE_GROUP
+        from src.repositories import user_group_members_repo, user_groups_repo
+
+        user_id, _ = _create_user(client)
+        ensure_everyone_membership(user_id, added_by="test:seed")
+
+        everyone = user_groups_repo().get_by_name(SYSTEM_EVERYONE_GROUP)
+        user_group_members_repo().remove_member(user_id, everyone["id"])
+
+        _set_fetch(monkeypatch, ["team@example.com"])
+        from app.auth.group_sync import apply_user_groups
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            apply_user_groups(user_id, "alice@example.com", conn)
+        finally:
+            conn.close()
+
+        rows = user_group_members_repo().list_groups_with_meta_for_user(user_id)
+        assert not any(r["name"] == SYSTEM_EVERYONE_GROUP for r in rows), (
+            "Everyone must NOT be re-added by a Google sync re-run after "
+            "an admin removed it — the creation-time grant is not re-asserted"
+        )
+
 
 class TestRefreshGroupsEndpoint:
     def test_applies_and_reports_added(self, client, monkeypatch):
