@@ -1473,7 +1473,7 @@ async def catalog_table_detail(
                 if can_access(user["id"], ResourceType.DATA_PACKAGE.value, p["id"], conn):
                     has_grant = True
     except Exception:
-        logger.warning("could not enumerate parent packages for %s", table_id)
+        logger.warning("could not enumerate parent packages for %s", table_id, exc_info=True)
     if not (is_admin or has_grant):
         raise HTTPException(status_code=403, detail="access_denied")
 
@@ -1507,7 +1507,7 @@ async def catalog_table_detail(
                     }
                 )
     except Exception:
-        logger.warning("could not load profile for %s", table_id)
+        logger.warning("could not load profile for %s", table_id, exc_info=True)
 
     # Fallback: when table_profiles has no row (table never synced, or
     # profile was wiped), introspect schema via the same code path the
@@ -1531,7 +1531,7 @@ async def catalog_table_detail(
                     }
                 )
         except Exception:
-            logger.warning("schema introspection fallback failed for %s", table_id)
+            logger.warning("schema introspection fallback failed for %s", table_id, exc_info=True)
 
     last_sync_state = sync_state_repo().get_table_state(table_id) or {}
 
