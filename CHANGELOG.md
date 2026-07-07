@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.10] - 2026-07-07
+
+### Added
 - `connectors` (the per-tenant connector-params overlay) is now an editable section in `/admin/server-config` (UI + API), so operators can manage it without hand-editing the overlay file on the server
 
 ### Changed
