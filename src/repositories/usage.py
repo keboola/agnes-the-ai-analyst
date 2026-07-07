@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import duckdb
+
+from services.session_processors.usage_lib import (
+    _MARKETPLACE_30D_TRACKER,
+    WINDOW_30D_REFRESH_SECONDS,
+    _aggregate_events,
+)
 
 
 # Group-by buckets shared by the /telemetry/query endpoint. The first element
@@ -601,7 +607,7 @@ class UsageRepository:
 
     def tokens_daily_series(self, username: str, days: int) -> list[dict]:
         rows = self.conn.execute(
-            f"""
+            """
             SELECT
                 CAST(started_at AS DATE) AS day,
                 COALESCE(SUM(input_tokens), 0)          AS input_tokens,
@@ -1144,6 +1150,194 @@ class UsageRepository:
             self.conn.execute("ROLLBACK")
             raise
         return out
+
+    # ------------------------------------------------------------------
+    # marketplace usage rollup producer (#728).  Mirrored in UsagePgRepository.
+    #
+    # Rebuilds usage_tool_daily (legacy) + usage_marketplace_item_daily +
+    # usage_marketplace_item_window from usage_events. ``since_day=None``
+    # means a FULL rebuild (covers every day with data, not just a rolling
+    # window) — callers wanting the cheap incremental refresh pass an
+    # explicit cutoff (e.g. today - 7 days, the scheduler-tick behaviour).
+    # Attribution (`_attribute_event`) and aggregation (`_aggregate_events`)
+    # are pure-Python and shared with the PG sibling via
+    # ``services.session_processors.usage_lib`` — only the SQL differs
+    # per backend.
+    # ------------------------------------------------------------------
+
+    def _curated_flea_lookup(self) -> tuple[set, dict, set]:
+        curated_plugins = {r[0] for r in self.conn.execute("SELECT DISTINCT name FROM marketplace_plugins").fetchall()}
+        flea_entities = {
+            r[0]: r[1]
+            for r in self.conn.execute(
+                "SELECT synthetic_name, type FROM store_entities WHERE visibility_status='approved'"
+            ).fetchall()
+        }
+        flea_plugins = {synthetic for synthetic, ent_type in flea_entities.items() if ent_type == "plugin"}
+        return curated_plugins, flea_entities, flea_plugins
+
+    def _last_30d_due(self) -> bool:
+        row = self.conn.execute(
+            "SELECT processed_at FROM session_processor_state WHERE processor_name = ? AND session_file = '__rollup__'",
+            [_MARKETPLACE_30D_TRACKER],
+        ).fetchone()
+        if row is None:
+            return True
+        last = row[0]
+        if last is None:
+            return True
+        now = datetime.now(timezone.utc)
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return (now - last).total_seconds() >= WINDOW_30D_REFRESH_SECONDS
+
+    def _mark_last_30d_refreshed(self) -> None:
+        # Pass the timestamp explicitly — DuckDB parses bare current_timestamp
+        # in an ON CONFLICT … DO UPDATE SET clause as a column name on the
+        # right-hand side, then can't bind it.
+        now = datetime.now(timezone.utc)
+        self.conn.execute(
+            """
+            INSERT INTO session_processor_state
+                (processor_name, session_file, username, processed_at, items_extracted)
+            VALUES (?, '__rollup__', 'system', ?, 0)
+            ON CONFLICT (processor_name, session_file) DO UPDATE SET
+                processed_at = EXCLUDED.processed_at
+            """,
+            [_MARKETPLACE_30D_TRACKER, now],
+        )
+
+    def _rebuild_window(
+        self, period_label: str, cutoff_day, curated_plugins: set, flea_entities: dict, flea_plugins: set
+    ) -> None:
+        events = self.conn.execute(
+            """
+            SELECT
+                CAST(occurred_at AS DATE) AS day,
+                user_id,
+                is_error,
+                skill_name,
+                subagent_type,
+                command_name,
+                event_type
+            FROM usage_events
+            WHERE CAST(occurred_at AS DATE) >= ?
+            """,
+            [cutoff_day],
+        ).fetchall()
+        buckets = _aggregate_events(events, curated_plugins, flea_entities, flea_plugins, group_by_day=False)
+        self.conn.execute(
+            "DELETE FROM usage_marketplace_item_window WHERE period_label = ?",
+            [period_label],
+        )
+        if buckets:
+            self.conn.executemany(
+                """
+                INSERT INTO usage_marketplace_item_window
+                    (period_label, source, type, parent_plugin, name, invocations, distinct_users)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (period_label, source, type_, parent, name, v["count"], len(v["users"]))
+                    for (source, type_, parent, name), v in buckets.items()
+                ],
+            )
+
+    def rebuild_rollups(self, *, since_day: "date | None" = None, force_30d: bool = False) -> None:
+        """Rebuild marketplace + legacy tool rollups from usage_events.
+
+        ``since_day=None`` triggers a FULL rebuild: the effective cutoff
+        becomes the earliest day present in ``usage_events`` (or today, if
+        the table is empty), so every historical day's fact row is
+        refreshed — not just the last 7 days. Callers driving the
+        steady-state scheduler tick pass an explicit ``since_day`` (today -
+        7 days) to keep the cheap incremental behaviour.
+
+        All updates run in a single transaction so a partial failure never
+        leaves the rollup set inconsistent.
+        """
+        if since_day is None:
+            row = self.conn.execute("SELECT MIN(CAST(occurred_at AS DATE)) FROM usage_events").fetchone()
+            since_day = row[0] if row and row[0] else datetime.now(timezone.utc).date()
+
+        curated_plugins, flea_entities, flea_plugins = self._curated_flea_lookup()
+        do_30d = force_30d or self._last_30d_due()
+
+        try:
+            self.conn.execute("BEGIN")
+
+            # ---- Legacy: usage_tool_daily (unchanged) ----
+            self.conn.execute("DELETE FROM usage_tool_daily WHERE day >= ?", [since_day])
+            self.conn.execute(
+                """
+                INSERT INTO usage_tool_daily
+                    (day, tool_name, source, invocations, error_count, distinct_users, distinct_sessions)
+                SELECT
+                    CAST(occurred_at AS DATE) AS day,
+                    tool_name,
+                    source,
+                    COUNT(*) AS invocations,
+                    SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS error_count,
+                    COUNT(DISTINCT username) AS distinct_users,
+                    COUNT(DISTINCT session_id) AS distinct_sessions
+                FROM usage_events
+                WHERE CAST(occurred_at AS DATE) >= ?
+                  AND tool_name IS NOT NULL
+                GROUP BY day, tool_name, source
+                """,
+                [since_day],
+            )
+
+            # ---- New: usage_marketplace_item_daily ----
+            daily_events = self.conn.execute(
+                """
+                SELECT
+                    CAST(occurred_at AS DATE) AS day,
+                    user_id,
+                    is_error,
+                    skill_name,
+                    subagent_type,
+                    command_name,
+                    event_type
+                FROM usage_events
+                WHERE CAST(occurred_at AS DATE) >= ?
+                """,
+                [since_day],
+            ).fetchall()
+            daily_buckets = _aggregate_events(
+                daily_events, curated_plugins, flea_entities, flea_plugins, group_by_day=True
+            )
+            self.conn.execute("DELETE FROM usage_marketplace_item_daily WHERE day >= ?", [since_day])
+            if daily_buckets:
+                self.conn.executemany(
+                    """
+                    INSERT INTO usage_marketplace_item_daily
+                        (day, source, type, parent_plugin, name, count, distinct_users, error_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (day, source, type_, parent, name, v["count"], len(v["users"]), v["errors"])
+                        for (day, source, type_, parent, name), v in daily_buckets.items()
+                    ],
+                )
+
+            # ---- usage_marketplace_item_window period_label='last_7d' (full) ----
+            cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).date()
+            self._rebuild_window("last_7d", cutoff_7d, curated_plugins, flea_entities, flea_plugins)
+
+            # ---- usage_marketplace_item_window period_label='last_30d' (hourly) ----
+            if do_30d:
+                cutoff_30d = (datetime.now(timezone.utc) - timedelta(days=30)).date()
+                self._rebuild_window("last_30d", cutoff_30d, curated_plugins, flea_entities, flea_plugins)
+                self._mark_last_30d_refreshed()
+
+            self.conn.execute("COMMIT")
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
 
 def _percentile(values: list[float], p: float) -> float:

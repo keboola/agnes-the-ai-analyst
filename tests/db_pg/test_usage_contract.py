@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import sqlalchemy as sa
 
 
 # ---------------------------------------------------------------------------
@@ -414,3 +415,230 @@ def test_delete_older_than_removes_only_events_before_cutoff(usage_repo):
     assert repo.count_events() == 1
     # Idempotent: nothing left older than the cutoff.
     assert repo.delete_older_than(30) == 0
+
+
+# ---------------------------------------------------------------------------
+# rebuild_rollups (#728 — dual-backend marketplace usage rollup producer)
+# ---------------------------------------------------------------------------
+
+
+def _insert(repo, conn, backend, table, cols, rows):
+    """Backend-aware raw INSERT — mirrors test_reports_contract.py's ``_insert``.
+
+    Used to seed the marketplace_plugins / store_entities lookup tables and
+    full-shape usage_events rows (skill_name / subagent_type / command_name)
+    that the plain ``_seed_event`` helper above doesn't carry.
+    """
+    collist = ", ".join(cols)
+    if backend == "duckdb":
+        ph = ", ".join(["?"] * len(cols))
+        sql = f"INSERT INTO {table} ({collist}) VALUES ({ph})"
+        for r in rows:
+            conn.execute(sql, [r[c] for c in cols])
+    else:
+        ph = ", ".join(f":{c}" for c in cols)
+        sql = f"INSERT INTO {table} ({collist}) VALUES ({ph})"
+        with repo._engine.begin() as c:
+            for r in rows:
+                c.execute(sa.text(sql), {k: r[k] for k in cols})
+
+
+def _seed_curated_plugin(repo, conn, backend, plugin_name, marketplace_id="mp"):
+    _insert(
+        repo,
+        conn,
+        backend,
+        "marketplace_registry",
+        ["id", "name", "url"],
+        [{"id": marketplace_id, "name": marketplace_id.upper(), "url": "https://example.test/repo.git"}],
+    )
+    _insert(
+        repo,
+        conn,
+        backend,
+        "marketplace_plugins",
+        ["marketplace_id", "name"],
+        [{"marketplace_id": marketplace_id, "name": plugin_name}],
+    )
+
+
+def _seed_full_event(
+    repo,
+    conn,
+    backend,
+    *,
+    event_id,
+    occurred_at,
+    skill_name=None,
+    subagent_type=None,
+    command_name=None,
+    event_type="tool_use",
+    tool_name=None,
+    username="alice",
+    user_id="uid-alice",
+    session_id="s1",
+    session_file="s1.jsonl",
+):
+    cols = [
+        "id",
+        "session_id",
+        "session_file",
+        "username",
+        "user_id",
+        "event_type",
+        "tool_name",
+        "skill_name",
+        "subagent_type",
+        "command_name",
+        "is_error",
+        "source",
+        "occurred_at",
+        "processor_version",
+    ]
+    _insert(
+        repo,
+        conn,
+        backend,
+        "usage_events",
+        cols,
+        [
+            {
+                "id": event_id,
+                "session_id": session_id,
+                "session_file": session_file,
+                "username": username,
+                "user_id": user_id,
+                "event_type": event_type,
+                "tool_name": tool_name,
+                "skill_name": skill_name,
+                "subagent_type": subagent_type,
+                "command_name": command_name,
+                "is_error": False,
+                "source": "builtin",
+                "occurred_at": occurred_at,
+                "processor_version": 5,
+            }
+        ],
+    )
+
+
+def test_rebuild_rollups_daily_fact_identical_across_backends(usage_repo):
+    """Same seed -> identical usage_marketplace_item_daily row on both engines."""
+    repo, conn, backend = usage_repo
+    _seed_curated_plugin(repo, conn, backend, "myplug")
+    today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+    for i in range(3):
+        _seed_full_event(
+            repo,
+            conn,
+            backend,
+            event_id=f"ep-{i}",
+            occurred_at=today,
+            tool_name="Skill",
+            skill_name="myplug:design",
+        )
+
+    repo.rebuild_rollups(since_day=today.date())
+
+    if backend == "duckdb":
+        rows = conn.execute(
+            "SELECT source, type, parent_plugin, name, count FROM usage_marketplace_item_daily "
+            "WHERE type='skill' ORDER BY name"
+        ).fetchall()
+    else:
+        with repo._engine.connect() as c:
+            rows = c.execute(
+                sa.text(
+                    "SELECT source, type, parent_plugin, name, count FROM usage_marketplace_item_daily "
+                    "WHERE type='skill' ORDER BY name"
+                )
+            ).fetchall()
+    assert [tuple(r) for r in rows] == [("curated", "skill", "myplug", "design", 3)]
+
+
+def test_rebuild_rollups_since_day_none_is_full_rebuild(usage_repo):
+    """since_day=None must cover ALL history, not just the last 7 days — the
+    #728 semantics fix (docstring already promised this; code defaulted to
+    today-7). Seeds a 20-day-old event and asserts it lands in the daily
+    fact table when since_day is omitted."""
+    repo, conn, backend = usage_repo
+    _seed_curated_plugin(repo, conn, backend, "myplug")
+    old_day = datetime.now(timezone.utc) - timedelta(days=20)
+    _seed_full_event(
+        repo,
+        conn,
+        backend,
+        event_id="old-1",
+        occurred_at=old_day,
+        tool_name="Skill",
+        skill_name="myplug:design",
+    )
+
+    repo.rebuild_rollups()  # since_day=None -> full rebuild
+
+    if backend == "duckdb":
+        n = conn.execute(
+            "SELECT COUNT(*) FROM usage_marketplace_item_daily WHERE type='skill' AND name='design'"
+        ).fetchone()[0]
+    else:
+        with repo._engine.connect() as c:
+            n = c.execute(
+                sa.text("SELECT COUNT(*) FROM usage_marketplace_item_daily WHERE type='skill' AND name='design'")
+            ).scalar()
+    assert n == 1
+
+
+def test_rebuild_rollups_explicit_cutoff_is_incremental(usage_repo):
+    """An explicit since_day only rebuilds days >= cutoff — the steady-state
+    scheduler-tick behaviour. A 20-day-old event must NOT appear when the
+    cutoff is 'today'."""
+    repo, conn, backend = usage_repo
+    _seed_curated_plugin(repo, conn, backend, "myplug")
+    today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+    old_day = today - timedelta(days=20)
+    _seed_full_event(
+        repo,
+        conn,
+        backend,
+        event_id="old-2",
+        occurred_at=old_day,
+        tool_name="Skill",
+        skill_name="myplug:design",
+    )
+
+    repo.rebuild_rollups(since_day=today.date())
+
+    if backend == "duckdb":
+        n = conn.execute("SELECT COUNT(*) FROM usage_marketplace_item_daily").fetchone()[0]
+    else:
+        with repo._engine.connect() as c:
+            n = c.execute(sa.text("SELECT COUNT(*) FROM usage_marketplace_item_daily")).scalar()
+    assert n == 0
+
+
+def test_rebuild_rollups_force_30d_populates_window(usage_repo):
+    repo, conn, backend = usage_repo
+    _seed_curated_plugin(repo, conn, backend, "myplug")
+    today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+    _seed_full_event(
+        repo,
+        conn,
+        backend,
+        event_id="e1",
+        occurred_at=today,
+        tool_name="Skill",
+        skill_name="myplug:design",
+    )
+
+    repo.rebuild_rollups(since_day=today.date(), force_30d=True)
+
+    if backend == "duckdb":
+        n = conn.execute("SELECT COUNT(*) FROM usage_marketplace_item_window WHERE period_label='last_30d'").fetchone()[
+            0
+        ]
+    else:
+        with repo._engine.connect() as c:
+            n = c.execute(
+                sa.text("SELECT COUNT(*) FROM usage_marketplace_item_window WHERE period_label='last_30d'")
+            ).scalar()
+    assert n >= 1
