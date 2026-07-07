@@ -525,6 +525,17 @@ def list_tables(as_json: bool = typer.Option(False, "--json")):
             typer.echo(
                 f"  {t['name']:30s} src={t.get('source_type', '?'):10s} mode={t.get('query_mode', '?'):6s} bucket={t.get('bucket', ''):20s}"
             )
+            # #754 — surface WHY a table shows 0 rows synced (sync_state's
+            # status + persisted skip-reason/error), so "N total, 0 synced"
+            # is explained right here instead of requiring a separate
+            # `GET /api/admin/registry` inspection.
+            sync_status = t.get("last_sync_status")
+            if sync_status:
+                line = f"    sync={sync_status}"
+                reason = t.get("last_sync_error")
+                if reason:
+                    line += f" ({reason})"
+                typer.echo(line)
 
 
 @admin_app.command("unregister-table")

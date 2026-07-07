@@ -105,3 +105,50 @@ def test_clear_for_table_only_targets_named_table(sync_repo):
     # Untouched sibling survives.
     assert repo.get_table_state("t.keep") is not None
     assert repo.get_sync_history("t.keep") != []
+
+
+# ---------------------------------------------------------------------------
+# set_skipped (#754) — per-table skip reason, mirrors set_error's shape.
+# ---------------------------------------------------------------------------
+
+
+def test_set_skipped_creates_row_with_reason(sync_repo):
+    repo, _, _ = sync_repo
+
+    repo.set_skipped("bucket.orders", "in_flight")
+
+    state = repo.get_table_state("bucket.orders")
+    assert state["status"] == "skipped"
+    assert state["error"] == "in_flight"
+    # First-ever skip (no prior sync) must not claim a sync happened.
+    assert state["last_sync"] is None
+
+
+def test_set_skipped_preserves_prior_sync_fields(sync_repo):
+    repo, _, _ = sync_repo
+
+    repo.update_sync(table_id="bucket.orders", rows=42, file_size_bytes=1024, hash="abc123")
+    repo.set_skipped("bucket.orders", "source_filter")
+
+    state = repo.get_table_state("bucket.orders")
+    assert state["status"] == "skipped"
+    assert state["error"] == "source_filter"
+    # Untouched — the last successful sync's data stays visible to the
+    # manifest / `agnes pull` while this run's skip reason is recorded.
+    assert state["rows"] == 42
+    assert state["hash"] == "abc123"
+    assert state["last_sync"] is not None
+
+
+def test_update_sync_clears_a_prior_skip(sync_repo):
+    """A table that gets skipped one run and materializes successfully the
+    next must flip back to status='ok' — mirrors `update_sync` already
+    clearing a prior `set_error`."""
+    repo, _, _ = sync_repo
+
+    repo.set_skipped("bucket.orders", "not_in_target")
+    repo.update_sync(table_id="bucket.orders", rows=1, file_size_bytes=10, hash="h1")
+
+    state = repo.get_table_state("bucket.orders")
+    assert state["status"] == "ok"
+    assert state["error"] in (None, "")

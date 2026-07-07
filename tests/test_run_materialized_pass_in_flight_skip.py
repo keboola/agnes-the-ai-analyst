@@ -36,6 +36,7 @@ def fake_registry_with_one_materialized(monkeypatch, tmp_path):
     class _State:
         def __init__(self, conn):
             self.set_error_calls = []
+            self.set_skipped_calls = []
             self.update_sync_calls = []
 
         def get_last_sync(self, _id):
@@ -43,6 +44,9 @@ def fake_registry_with_one_materialized(monkeypatch, tmp_path):
 
         def set_error(self, table_id, msg):
             self.set_error_calls.append((table_id, msg))
+
+        def set_skipped(self, table_id, reason):
+            self.set_skipped_calls.append((table_id, reason))
 
         def update_sync(self, **kw):
             self.update_sync_calls.append(kw)
@@ -134,6 +138,7 @@ def test_in_flight_recorded_as_skipped_not_error(fake_registry_with_one_material
     skipped = summary["skipped"][0]
     assert skipped == {"table": "in_flight_t", "reason": "in_flight"}
     assert state.set_error_calls == []
+    assert state.set_skipped_calls == [("in_flight_t", "in_flight")]
     assert state.update_sync_calls == []
 
 
@@ -194,6 +199,9 @@ def fake_registry_with_three_materialized(monkeypatch, tmp_path):
             return None
 
         def set_error(self, *a, **kw):
+            pass
+
+        def set_skipped(self, *a, **kw):
             pass
 
         def update_sync(self, **kw):

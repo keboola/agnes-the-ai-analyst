@@ -2386,10 +2386,22 @@ async def list_registry(
 ):
     """Get full table registry.
 
-    Each table row is enriched with `last_sync_error` from sync_state so
-    operators can see WHY a row isn't materializing without trawling
-    scheduler logs. None for rows that have never errored or have already
-    recovered (status='ok'); the per-row error message string otherwise.
+    Each table row is enriched with its `sync_state` counterpart (#754) so
+    the admin dashboard (`admin_sync.html`) and `agnes admin list-tables`
+    can explain a "N total, 0 synced" run without trawling scheduler logs:
+
+      - `last_sync_status`: 'ok' | 'error' | 'skipped' | 'pending' (never
+        synced). Mirrors `sync_state.status`, defaulted to 'pending' when
+        no sync_state row exists yet.
+      - `last_sync_error`: the persisted error/skip-reason string when
+        `last_sync_status` is 'error' or 'skipped'; None otherwise.
+      - `last_sync`: full ISO timestamp of the last successful sync, or
+        None if never synced. (`last_sync_display` below is the
+        pre-existing truncated "YYYY-MM-DD HH:MM" form, kept for backward
+        compatibility with any existing consumer.)
+      - `rows` / `file_size_bytes`: the last successful sync's row count /
+        parquet size, so the dashboard's "Rows" / "Size" columns aren't
+        silently blank for tables that DID sync.
     """
     repo = table_registry_repo()
     tables = repo.list_all()
@@ -2398,22 +2410,13 @@ async def list_registry(
     # `sync_state` for large registries. The sync_state row is keyed on
     # `table_id` which mirrors `table_registry.name` (see comment in
     # _run_materialized_pass / _build_manifest_for_user about name vs id).
-    # One query covers both error message (only when status='error') and
-    # last_sync timestamp so operators can see both staleness and failure.
-    error_by_name: Dict[str, Optional[str]] = {}
-    sync_by_name: Dict[str, Optional[str]] = {}
+    state_by_name: Dict[str, Dict[str, Any]] = {}
     try:
         rows = sync_state_repo().get_all_states()
         for row in rows:
             tid = row.get("table_id")
-            status = row.get("status")
-            error = row.get("error")
-            ls = row.get("last_sync")
-            err = error if (status == "error" and error) else None
-            if err:
-                error_by_name[tid] = err
-            if ls:
-                sync_by_name[tid] = str(ls)[:16]  # "YYYY-MM-DD HH:MM"
+            if tid:
+                state_by_name[tid] = row
     except Exception:
         # Defensive: if sync_state is unreadable for any reason, the
         # registry response still serializes — operators just lose the
@@ -2422,8 +2425,17 @@ async def list_registry(
 
     for t in tables:
         # Sync_state.table_id == table_registry.name by convention.
-        t["last_sync_error"] = error_by_name.get(t.get("name"))
-        t["last_sync_display"] = sync_by_name.get(t.get("name"))
+        state = state_by_name.get(t.get("name"))
+        status = state.get("status") if state else None
+        error = state.get("error") if state else None
+        ls = state.get("last_sync") if state else None
+
+        t["last_sync_status"] = status or "pending"
+        t["last_sync_error"] = error if (status in ("error", "skipped") and error) else None
+        t["last_sync"] = ls.isoformat() if hasattr(ls, "isoformat") else ls
+        t["last_sync_display"] = str(ls)[:16] if ls else None  # "YYYY-MM-DD HH:MM"
+        t["rows"] = state.get("rows") if state else None
+        t["file_size_bytes"] = state.get("file_size_bytes") if state else None
 
     return {"tables": tables, "count": len(tables)}
 

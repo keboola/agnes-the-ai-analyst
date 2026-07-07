@@ -43,6 +43,11 @@
   .status-error   { background: #fee2e2; color: #b91c1c; }
   .status-pending { background: #f3f4f6; color: #6b7280; }
   .status-running { background: #fef3c7; color: #92400e; }
+  .status-skipped { background: #e0e7ff; color: #3730a3; }
+
+  .zero-explain {
+    font-size: 12px; color: var(--text-secondary, #6b7280); margin: -12px 0 20px;
+  }
 
   .error-cell { font-size: 11px; color: #b91c1c; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -97,6 +102,7 @@
       <div class="value error" id="stat-errors">—</div>
     </div>
   </div>
+  <div class="zero-explain" id="zero-explain"></div>
 
   <!-- Table -->
   <div class="data-table-wrap">
@@ -176,7 +182,7 @@ function renderTable() {
   tbody.innerHTML = "";
   for (const r of filtered) {
     const status = r.last_sync_status || (r.last_sync ? "ok" : "pending");
-    const pillClass = status === "ok" ? "status-ok" : status === "error" ? "status-error" : status === "running" ? "status-running" : "status-pending";
+    const pillClass = status === "ok" ? "status-ok" : status === "error" ? "status-error" : status === "running" ? "status-running" : status === "skipped" ? "status-skipped" : "status-pending";
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td><a href="/admin/tables" style="font-weight:500;color:var(--text-primary,#111827);text-decoration:none;">${esc(r.id)}</a></td>
@@ -200,6 +206,34 @@ function updateSummary() {
   document.getElementById("stat-synced").textContent = synced;
   document.getElementById("stat-never").textContent = never;
   document.getElementById("stat-errors").textContent = errors;
+  renderZeroExplain(total, synced);
+}
+
+// #754 — "0 synced" alone doesn't say WHY. Break the non-synced rows down
+// by status + persisted reason (skip reason / error message) so an
+// operator sees "0 synced — 3 skipped (not_due), 2 failed (timeout)."
+// instead of having to open each row or trawl container logs.
+function renderZeroExplain(total, synced) {
+  const el = document.getElementById("zero-explain");
+  if (!el) return;
+  if (total === 0 || synced > 0) {
+    el.textContent = "";
+    return;
+  }
+  const groups = new Map();
+  for (const r of allRows) {
+    const status = r.last_sync_status || "pending";
+    const reason = r.last_sync_error || "";
+    const key = status + "|" + reason;
+    groups.set(key, (groups.get(key) || 0) + 1);
+  }
+  const label = { pending: "never synced", error: "failed", skipped: "skipped" };
+  const parts = [...groups.entries()].map(([key, count]) => {
+    const [status, reason] = key.split("|");
+    const word = label[status] || status;
+    return reason ? `${count} ${word} (${reason})` : `${count} ${word}`;
+  });
+  el.textContent = `0 synced — ${parts.join(", ")}.`;
 }
 
 async function loadRegistry() {

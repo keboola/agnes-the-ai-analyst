@@ -135,6 +135,38 @@ class TestListTables:
         data = json.loads(result.output)
         assert data["count"] == 1
 
+    def test_list_tables_text_surfaces_sync_status_and_reason(self):
+        """#754: `agnes admin list-tables` must surface WHY a table shows
+        0 rows synced — the per-row line includes the sync status and,
+        when the table errored or was skipped, the persisted reason."""
+        payload = {
+            "count": 2,
+            "tables": [
+                {
+                    "name": "orders",
+                    "source_type": "keboola",
+                    "query_mode": "local",
+                    "bucket": "in.c-crm",
+                    "last_sync_status": "error",
+                    "last_sync_error": "connection refused",
+                },
+                {
+                    "name": "customers",
+                    "source_type": "keboola",
+                    "query_mode": "local",
+                    "bucket": "in.c-crm",
+                    "last_sync_status": "ok",
+                    "last_sync_error": None,
+                },
+            ],
+        }
+        with patch("cli.commands.admin.api_get", return_value=_resp(200, payload)):
+            result = runner.invoke(app, ["admin", "list-tables"])
+        assert result.exit_code == 0
+        assert "error" in result.output
+        assert "connection refused" in result.output
+        assert "ok" in result.output
+
 
 class TestMetadataShow:
     def test_metadata_show_columns(self):
