@@ -65,7 +65,7 @@ from app.instance_config import (
 )
 from app.utils import get_store_dir
 from src.db import get_system_db
-from src.store_categories import STORE_CATEGORIES, is_valid_category
+from src.store_categories import STORE_CATEGORIES, normalize_category
 from src.store_guardrails import InlineResult, run_inline_checks, run_llm_review
 from src.store_guardrails.runner import (
     default_api_key_loader,
@@ -1282,6 +1282,77 @@ async def list_entity_files(
     return {"files": files}
 
 
+_STATUS_HINTS: dict = {
+    "pending_inline": "Inline checks are still running — retry in a few seconds.",
+    "pending_llm": (
+        "The automated review is running. It usually finishes within a few "
+        "minutes; poll this endpoint (or `agnes store status --wait`) until "
+        "it resolves."
+    ),
+    "approved": "Review passed — the entity is live in the flea market.",
+    "blocked_inline": ("The upload failed the deterministic checks. Fix the reported issues and upload again."),
+    "blocked_llm": (
+        "The automated review blocked this version. Inspect the findings, fix "
+        "the bundle, and submit an update — or ask an admin to override."
+    ),
+    "review_error": (
+        "The automated review errored (timeout or missing LLM credentials on "
+        "the server). Ask an admin to retry the review from the admin queue."
+    ),
+    "overridden": "An admin force-published this version — it is live.",
+}
+
+
+@router.get("/entities/{entity_id}/status")
+async def get_entity_status(
+    entity_id: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Owner-facing review-pipeline status for an entity.
+
+    After ``POST /entities`` the guardrail review runs asynchronously;
+    until now the only signal the uploader got was a 409
+    ``prior_version_pending`` on the next PUT. This endpoint closes the
+    loop: latest submission status + an actionable hint, so
+    ``agnes store status <id> [--wait]`` can watch the verdict land.
+
+    Owner or admin only — the payload exposes review-pipeline internals
+    (LLM findings, error causes) that aren't part of the public listing.
+    """
+    entity = store_entities_repo().get(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="entity_not_found")
+    if entity["owner_user_id"] != user["id"] and not is_user_admin(user["id"], conn):
+        raise HTTPException(status_code=403, detail="not_owner")
+
+    sub = store_submissions_repo().latest_for_entity(entity_id)
+    submission = None
+    hint = _STATUS_HINTS.get("approved")
+    if sub:
+        findings = sub.get("llm_findings") or {}
+        submission = {
+            "id": sub["id"],
+            "status": sub["status"],
+            "version": sub.get("version"),
+            "error": findings.get("error") if isinstance(findings, dict) else None,
+            "risk_level": findings.get("risk_level") if isinstance(findings, dict) else None,
+            "summary": findings.get("summary") if isinstance(findings, dict) else None,
+            "created_at": _to_iso(sub.get("created_at")),
+            "updated_at": _to_iso(sub.get("updated_at")),
+        }
+        hint = _STATUS_HINTS.get(sub["status"], "")
+    return {
+        "entity_id": entity_id,
+        "name": entity["name"],
+        "type": entity["type"],
+        "visibility_status": entity.get("visibility_status") or "approved",
+        "version_no": entity.get("version_no"),
+        "submission": submission,
+        "hint": hint,
+    }
+
+
 @router.get("/entities/{entity_id}/photo")
 async def get_entity_photo(
     entity_id: str,
@@ -1545,9 +1616,21 @@ async def create_entity(
     except (KeyError, ValueError):
         raise HTTPException(status_code=400, detail="invalid_email")
 
-    # Category: must be one of caller's groups.
-    if category and not is_valid_category(category):
-        raise HTTPException(status_code=400, detail="invalid_category")
+    # Category: controlled taxonomy, matched case-insensitively and
+    # persisted in canonical casing (listing filters compare exact strings).
+    if category:
+        canonical_category = normalize_category(category)
+        if canonical_category is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "invalid_category",
+                    "given": category,
+                    "valid": list(STORE_CATEGORIES),
+                    "hint": "Pass one of the listed categories (matching is case-insensitive).",
+                },
+            )
+        category = canonical_category
 
     video_url = _validate_video_url(video_url)
 
@@ -1921,8 +2004,19 @@ async def _update_entity_locked(
             },
         )
 
-    if category and not is_valid_category(category):
-        raise HTTPException(status_code=400, detail="invalid_category")
+    if category:
+        canonical_category = normalize_category(category)
+        if canonical_category is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "invalid_category",
+                    "given": category,
+                    "valid": list(STORE_CATEGORIES),
+                    "hint": "Pass one of the listed categories (matching is case-insensitive).",
+                },
+            )
+        category = canonical_category
 
     video_url = _validate_video_url(video_url)
 
@@ -1969,7 +2063,6 @@ async def _update_entity_locked(
         rename_to = new_name
 
     new_version: Optional[str] = None
-    new_size: Optional[int] = None
     inline_after_update: Optional[InlineResult] = None
     new_version_dir: Optional[Path] = None  # set when bundle uploaded
     new_version_no: Optional[int] = None
@@ -1982,7 +2075,6 @@ async def _update_entity_locked(
         tmp, size = await _stream_to_temp(file, MAX_ZIP_SIZE, suffix=".zip")
         tmp.close()
         scratch = Path(tempfile.mkdtemp(prefix="agnes_store_"))
-        existing_plugin = _plugin_dir(entity_id)
         # New version number is max(version_history.n) + 1, NOT
         # entity.version_no + 1. Under deferred promotion (v37+),
         # entity.version_no stays at the last *approved* version while
@@ -2016,7 +2108,7 @@ async def _update_entity_locked(
             # Bake into the staging dir — _bake_plugin_tree creates the
             # target if missing and does its own rmtree on existing
             # children, so the staging path being fresh is fine.
-            new_size = _bake_plugin_tree(
+            _bake_plugin_tree(
                 type_=entity["type"],
                 extracted_root=scratch,
                 plugin_dir=staging_plugin,

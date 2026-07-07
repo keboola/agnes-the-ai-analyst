@@ -14,6 +14,7 @@ status-quo error message.
 
 Closes #160 §4.7.
 """
+
 from __future__ import annotations
 
 import json
@@ -27,10 +28,20 @@ _WRAP_KEYS = ("hint", "suggestion")
 # Keys to render first in the key/value block (when present); other keys
 # follow in declaration order so a future server-side detail addition
 # surfaces automatically without a renderer change.
-_PRIORITY_KEYS = ("kind", "reason", "path", "registered_as",
-                  "billing_project", "data_project", "scan_bytes",
-                  "limit_bytes", "tables", "current", "limit",
-                  "retry_after_seconds")
+_PRIORITY_KEYS = (
+    "kind",
+    "reason",
+    "path",
+    "registered_as",
+    "billing_project",
+    "data_project",
+    "scan_bytes",
+    "limit_bytes",
+    "tables",
+    "current",
+    "limit",
+    "retry_after_seconds",
+)
 
 
 def render_error(status_code: int, body: Any) -> str:
@@ -39,10 +50,17 @@ def render_error(status_code: int, body: Any) -> str:
     Recognized shapes (pretty-printed):
     - ``{"detail": {"kind": str, ...}}`` — typed BqAccessError
     - ``{"detail": {"reason": str, ...}}`` — guardrail / RBAC dicts
+    - ``{"detail": {"code": str, ...}}`` — store upload/update errors;
+      ``code == "validation_failed"`` additionally renders every issue in
+      the nested ``checks`` as one actionable line (never truncated — the
+      historical flatten-and-truncate hid all but the first issue, forcing
+      submitters into a fix-and-retry loop).
     Anything else: fallback ``f"HTTP {status_code}: {str(body)[:500]}"``.
     """
     detail = _detail_dict(body)
-    if detail is not None and ("kind" in detail or "reason" in detail):
+    if detail is not None and detail.get("code") == "validation_failed":
+        return _format_validation_failed(status_code, detail)
+    if detail is not None and ("kind" in detail or "reason" in detail or "code" in detail):
         return _format_dict(status_code, detail)
     if isinstance(body, dict) and isinstance(body.get("detail"), str):
         return f"HTTP {status_code}: {body['detail']}"
@@ -70,7 +88,10 @@ def _format_dict(status_code: int, detail: dict) -> str:
     other must still appear in the key/value section so its value isn't
     silently dropped. Devin Review iter #4 caught this.
     """
-    label_key = "kind" if detail.get("kind") else ("reason" if detail.get("reason") else None)
+    label_key = next(
+        (k for k in ("kind", "reason", "code") if detail.get(k)),
+        None,
+    )
     label = detail.get(label_key) if label_key else "error"
     lines: list[str] = [f"Error: {label} (HTTP {status_code})"]
 
@@ -121,3 +142,50 @@ def _kv_line(key: str, value: Any) -> str:
     else:
         rendered = str(value)
     return f"  {key}: {rendered}"
+
+
+def _format_validation_failed(status_code: int, detail: dict) -> str:
+    """Render the store-upload 422 with one line per guardrail issue.
+
+    Shape (see ``_reject_inline_or_continue`` in ``app/api/store.py``)::
+
+        {"code": "validation_failed",
+         "checks": {"manifest": {"status", "issues"},
+                    "content":  {"status", "issues"},
+                    "quality":  {"status", "issues"}}}
+
+    Passing checks are omitted; every issue of every failing check is
+    printed in full — file, field, code, then the hint wrapped at 80
+    cols. No truncation: the whole point is that the submitter fixes
+    everything in ONE round instead of replaying upload-fix-upload.
+    """
+    lines: list[str] = [f"Error: validation_failed (HTTP {status_code})"]
+    checks = detail.get("checks")
+    if not isinstance(checks, dict):
+        return "\n".join(lines)
+    for check_name, check in checks.items():
+        if not isinstance(check, dict) or check.get("status") == "pass":
+            continue
+        issues = check.get("issues") or []
+        lines.append(f"  {check_name}: {check.get('status', 'fail')} ({len(issues)} issue(s))")
+        for issue in issues:
+            if not isinstance(issue, dict):
+                lines.append(f"    - {issue}")
+                continue
+            where = issue.get("file") or "<bundle>"
+            field = issue.get("field")
+            code = issue.get("code", "issue")
+            head = f"    - {where}"
+            if field:
+                head += f" [{field}]"
+            head += f": {code}"
+            lines.append(head)
+            hint = issue.get("hint")
+            if hint:
+                lines.append(fill(
+                    str(hint),
+                    width=80,
+                    initial_indent="        ",
+                    subsequent_indent="        ",
+                ))
+    return "\n".join(lines)

@@ -26,7 +26,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 
 from . import (
     content_check,
@@ -99,11 +99,30 @@ def run_inline_checks(
     AND a plugin agent description failed" combos.
     """
     content = content_check.check(plugin_dir)
+    if type_ in ("skill", "agent"):
+        # Skill/agent bakes write a SYNTHETIC .claude-plugin/plugin.json
+        # whose description IS the submission description. An issue
+        # attributed to that file points the submitter at a manifest they
+        # never wrote (and must not add — the upload rejects ZIPs that
+        # contain one). Drop it here; the submission-level check below
+        # evaluates the same string and owns the actionable message.
+        kept = [i for i in (content.get("issues") or []) if i.get("file") != ".claude-plugin/plugin.json"]
+        content = {"status": "fail" if kept else "pass", "issues": kept}
     submission_desc = content_check.check_submission_description(description)
     if submission_desc.get("issues"):
         # Merge the submission-level issues into the same bag. Mark the
         # aggregate status fail if either component- or submission-level
         # check failed.
+        if type_ in ("skill", "agent"):
+            md_name = "SKILL.md" if type_ == "skill" else "the agent .md"
+            for issue in submission_desc["issues"]:
+                issue["hint"] = (
+                    f"{issue.get('hint', '')} For {type_} uploads the tile "
+                    f"description comes from the --description flag (or the "
+                    f"description field in the upload form), falling back to "
+                    f"{md_name} frontmatter `description`. Do not add a "
+                    f".claude-plugin/plugin.json to the ZIP."
+                ).strip()
         merged_issues = list(content.get("issues") or []) + list(submission_desc["issues"])
         content = {
             "status": "fail" if merged_issues else "pass",
@@ -160,12 +179,15 @@ def run_llm_review(
     # forever). Explicit repos can still be injected by tests.
     if subs_repo is None:
         from src.repositories import store_submissions_repo
+
         subs_repo = store_submissions_repo()
     if ents_repo is None:
         from src.repositories import store_entities_repo
+
         ents_repo = store_entities_repo()
     if audit is None:
         from src.repositories import audit_repo
+
         audit = audit_repo()
     try:
         sub = subs_repo.get(submission_id)
@@ -232,8 +254,7 @@ def run_llm_review(
                 params={"verdict": verdict},
                 result="error",
             )
-            return LlmResult(verdict=verdict, reviewed_by_model=model,
-                             error=verdict["error"])
+            return LlmResult(verdict=verdict, reviewed_by_model=model, error=verdict["error"])
 
         passed = llm_review.is_safe(verdict)
         if passed:
@@ -288,7 +309,8 @@ def run_llm_review(
             superseded_reason: Optional[str] = None
             if entity_id:
                 visibility_flipped = ents_repo.set_visibility_if_pending(
-                    entity_id, "approved",
+                    entity_id,
+                    "approved",
                 )
                 ent_row = ents_repo.get(entity_id) or {}
                 current_visibility = ent_row.get("visibility_status")
@@ -312,21 +334,25 @@ def run_llm_review(
                     # Surfaced live on a development deployment with
                     # an entity that had 5+ identical-hash history rows.
                     from app.api.store import _version_no_for_submission
+
                     target_version_no = _version_no_for_submission(
-                        ent_row, submission_id,
+                        ent_row,
+                        submission_id,
                     )
                     # Forward-only promotion. A late verdict landing for
                     # an older submission must NOT demote the live bundle
                     # past a version that was approved more recently.
-                    if (target_version_no is not None
-                            and target_version_no > int(ent_row.get("version_no") or 0)):
+                    if target_version_no is not None and target_version_no > int(ent_row.get("version_no") or 0):
                         # Atomic helper: swap live bundle first, then
                         # update the DB. Eliminates the
                         # "DB promoted but live still on prior bytes"
                         # window flagged by adversarial review.
                         from app.api.store import promote_to_version
+
                         promoted_to = promote_to_version(
-                            entity_id, target_version_no, ents_repo,
+                            entity_id,
+                            target_version_no,
+                            ents_repo,
                         )
                 else:
                     # Entity left the serve-able states between BG
@@ -404,9 +430,11 @@ def run_llm_review(
                 user_id=submitter_id,
                 action="store.submission.blocked_llm",
                 resource=f"store_submission:{submission_id}",
-                params={"risk_level": verdict.get("risk_level"),
-                        "finding_count": len(verdict.get("findings") or []),
-                        "model": model},
+                params={
+                    "risk_level": verdict.get("risk_level"),
+                    "finding_count": len(verdict.get("findings") or []),
+                    "model": model,
+                },
                 result="blocked",
             )
 
@@ -420,6 +448,7 @@ def run_llm_review(
 
 # Convenience: default factories the API layer wires up. Kept here so
 # tests can swap in mocks without monkeypatching the API module.
+
 
 def default_api_key_loader() -> str:
     """Read ANTHROPIC_API_KEY from the environment.

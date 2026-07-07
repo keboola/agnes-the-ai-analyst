@@ -793,6 +793,7 @@ class TestStoreSmoke:
         "POST /api/store/entities/{entity_id}/install",
         "DELETE /api/store/entities/{entity_id}/install",
         "POST /api/store/entities/{entity_id}/rate",
+        "GET /api/store/entities/{entity_id}/status",
         "DELETE /api/store/entities/{entity_id}",
         "GET /api/store/bundle.zip",
         "POST /api/store/import-bundle",
@@ -851,6 +852,20 @@ class TestFleaUploadSmoke:
         )
         assert r.status_code == 201
         assert r.json()["visibility_status"] == "approved"
+
+    def test_entity_status(self, seeded_app_both):
+        """GET /entities/{id}/status — owner-facing review-pipeline status."""
+        r = self._upload(
+            seeded_app_both["client"], _admin_headers(seeded_app_both), make_skill_zip("smoke-skill-status")
+        )
+        assert r.status_code == 201
+        eid = r.json()["id"]
+        s = seeded_app_both["client"].get(f"/api/store/entities/{eid}/status", headers=_admin_headers(seeded_app_both))
+        assert s.status_code == 200, s.text
+        body = s.json()
+        assert body["entity_id"] == eid
+        assert body["visibility_status"] == "approved"
+        assert body["submission"]["status"] == "approved"
 
     def test_upload_fails_short_description(self, seeded_app_both):
         r = self._upload(
