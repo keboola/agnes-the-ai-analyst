@@ -25,12 +25,21 @@ push runs when several SessionEnd hooks fire at once; the rest exit silently.
 Private filter: a session whose id is on the ``/agnes-private`` list
 (``cli/lib/private_list.py``) is never uploaded; the skip is audit-logged to
 ``agnes-sessions-private-skipped.txt``.
+
+Token redaction (#753): before either a session transcript or
+CLAUDE.local.md leaves the client, JWT-shaped substrings (the Agnes PAT
+format) are stripped via ``cli.lib.transcript_redact`` — this is the second
+line of defense against the bootstrap heredoc pasting the raw PAT into the
+setup session's transcript. The upload ledger still records the on-disk
+file size (not the redacted upload size) so size-based dedup/grow detection
+is unaffected.
 """
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 
 import typer
@@ -41,6 +50,7 @@ from cli.error_render import render_error
 from cli.lib.private_list import read_all_private
 from cli.lib.push_lock import acquire_or_skip
 from cli.lib.session_paths import list_session_files
+from cli.lib.transcript_redact import redact_bytes, redact_text
 from cli.lib.upload_log import (
     mark_failed_permanent,
     mark_private_skipped,
@@ -74,12 +84,19 @@ def _is_permanent_failure(info: dict) -> bool:
 
 
 def _upload_one(transcript: Path) -> tuple[bool, dict]:
-    """Upload a single session jsonl. Returns (success, error_or_meta)."""
+    """Upload a single session jsonl. Returns (success, error_or_meta).
+
+    The on-disk bytes are redacted (JWT-shaped tokens stripped, #753) into an
+    in-memory buffer before upload — transcripts are bounded in size, so
+    holding a redacted copy in memory is fine. The ledger records the
+    on-disk size (see the caller), not this redacted buffer's size.
+    """
     if not transcript.exists():
         return False, {"file": transcript.name, "error": "file not found on disk"}
     try:
-        with open(transcript, "rb") as fh:
-            resp = api_post("/api/upload/sessions", files={"file": (transcript.name, fh)})
+        raw = transcript.read_bytes()
+        buf = BytesIO(redact_bytes(raw))
+        resp = api_post("/api/upload/sessions", files={"file": (transcript.name, buf)})
     except Exception as exc:
         return False, {"file": transcript.name, "error": str(exc)}
     if resp.status_code == 200:
@@ -298,10 +315,12 @@ def push(
             # Transient (401 / 408 / 429 / 5xx / network / file-not-found):
             # leave it OUT of the ledger so the next push retries.
 
-        # Upload CLAUDE.local.md from the anchored workspace root.
+        # Upload CLAUDE.local.md from the anchored workspace root. Redacted
+        # (#753) for the same reason as sessions — analysts sometimes paste
+        # tokens/credentials into it while documenting local setup.
         if has_local_md:
             try:
-                content = local_md.read_text(encoding="utf-8")
+                content = redact_text(local_md.read_text(encoding="utf-8"))
                 resp = api_post("/api/upload/local-md", json={"content": content})
                 if resp.status_code == 200:
                     results["local_md"] = True

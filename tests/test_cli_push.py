@@ -246,6 +246,69 @@ def test_push_json_output(tmp_path, monkeypatch):
     assert data["private_skipped"] == 0
 
 
+# ---------- Token redaction (#753) -------------------------------------------
+
+
+_JWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+
+
+def test_push_redacts_jwt_in_session_transcript(tmp_path, monkeypatch):
+    """A JWT-shaped token embedded in a transcript must not reach the server,
+    but the on-disk ledger size stays the RAW size (not the redacted size)."""
+    _stub_config(monkeypatch, tmp_path)
+    calls = _record_uploads(monkeypatch)
+    content = json.dumps({"type": "tool_use", "input": {"command": f"echo {_JWT}"}}) + "\n"
+    transcript = _make_jsonl(tmp_path, "abc.jsonl", content=content)
+    raw_size = transcript.stat().st_size
+    _stub_sessions(monkeypatch, [transcript])
+
+    result = runner.invoke(push_app, ["--quiet"])
+    assert result.exit_code == 0
+
+    sessions_calls = [c for c in calls if c[0] == "/api/upload/sessions"]
+    assert len(sessions_calls) == 1
+    uploaded_fh = sessions_calls[0][1]["files"]["file"][1]
+    uploaded_bytes = uploaded_fh.read()
+    assert _JWT.encode() not in uploaded_bytes
+    assert b"[REDACTED-JWT]" in uploaded_bytes
+
+    # Ledger still records the ON-DISK size, unaffected by redaction.
+    assert read_uploaded(tmp_path) == {"abc": raw_size}
+
+
+def test_push_redacts_jwt_in_local_md(tmp_path, monkeypatch):
+    _stub_config(monkeypatch, tmp_path)
+    _stub_sessions(monkeypatch, [])
+    calls = _record_uploads(monkeypatch)
+
+    claude = tmp_path / ".claude"
+    claude.mkdir()
+    (claude / "CLAUDE.local.md").write_text(f"my token is {_JWT}", encoding="utf-8")
+
+    result = runner.invoke(push_app, ["--quiet"])
+    assert result.exit_code == 0
+
+    md_calls = [c for c in calls if c[0] == "/api/upload/local-md"]
+    assert len(md_calls) == 1
+    uploaded_content = md_calls[0][1]["json"]["content"]
+    assert _JWT not in uploaded_content
+    assert "[REDACTED-JWT]" in uploaded_content
+
+
+def test_push_still_skips_private_session_when_it_contains_a_jwt(tmp_path, monkeypatch):
+    """Private-listed sessions still never reach the upload call at all —
+    redaction and the private filter are independent layers."""
+    _stub_config(monkeypatch, tmp_path)
+    calls = _record_uploads(monkeypatch)
+    transcript = _make_jsonl(tmp_path, "sid-private.jsonl", content=f"token: {_JWT}\n")
+    _stub_sessions(monkeypatch, [transcript])
+    add_private(tmp_path, "sid-private")
+
+    result = runner.invoke(push_app, ["--quiet"])
+    assert result.exit_code == 0
+    assert [c for c in calls if c[0] == "/api/upload/sessions"] == []
+
+
 # ---------- Private filter ---------------------------------------------------
 
 
