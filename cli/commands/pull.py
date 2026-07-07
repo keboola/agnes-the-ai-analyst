@@ -209,6 +209,21 @@ def pull(
         typer.echo(f"Updated {result.tables_updated} tables ({result.parquets_total} total).")
     typer.echo(f"Rules: {result.rules_count}.")
 
+    # #754 — an empty manifest with zero errors is ambiguous: it means
+    # either "nothing is registered on the server yet" or "your account
+    # has no group grants for any table" — NOT a transport/server failure
+    # (those already land in `result.errors` via the `except` in
+    # `run_pull`'s manifest-fetch step and are reported below). Pre-fix
+    # this printed only the bare "Updated 0 tables (0 total)." line above
+    # with no hint which of the two it was.
+    if result.parquets_total == 0 and not result.errors:
+        typer.echo(
+            "No tables available to pull — either nothing is registered on "
+            "the server yet, or your account has no group grants for any "
+            "table. Ask your admin to register a table and/or grant your "
+            "group access (`agnes admin grant`)."
+        )
+
     # v49 (Task 8.12): per-type status block surfaced from `SyncReport`.
     # The new per-type sync loop in ``cli/lib/pull_sync.py`` reports
     # added/updated/removed counts for direct_tables, data_packages, and

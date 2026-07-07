@@ -4,8 +4,6 @@ import ipaddress
 import socket
 from unittest.mock import patch
 
-import pytest
-
 
 def _auth(token):
     return {"Authorization": f"Bearer {token}"}
@@ -326,6 +324,47 @@ class TestAdminRegistry:
         c = seeded_app["client"]
         resp = c.get("/api/admin/registry")
         assert resp.status_code == 401
+
+    def test_list_registry_surfaces_sync_state_fields(self, seeded_app):
+        """#754: the admin_sync.html dashboard (and `agnes admin
+        list-tables`) render `last_sync` / `last_sync_status` / `rows` /
+        `file_size_bytes` straight off this response — pre-fix the
+        endpoint only ever returned `last_sync_error` / `last_sync_display`,
+        so those columns silently rendered as "never synced" / "0 synced"
+        even for tables that had synced fine. Three registry rows, one per
+        outcome: never-synced, synced ok, and errored."""
+        from src.repositories import sync_state_repo, table_registry_repo
+
+        registry = table_registry_repo()
+        registry.register(id="never", name="never", source_type="keboola", bucket="in.c-x")
+        registry.register(id="synced", name="synced", source_type="keboola", bucket="in.c-x")
+        registry.register(id="failed", name="failed", source_type="keboola", bucket="in.c-x")
+
+        state = sync_state_repo()
+        state.update_sync(table_id="synced", rows=100, file_size_bytes=2048, hash="abc")
+        state.set_error("failed", "connection refused")
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/registry", headers=_auth(token))
+        assert resp.status_code == 200
+        by_name = {t["name"]: t for t in resp.json()["tables"]}
+
+        never = by_name["never"]
+        assert never["last_sync"] is None
+        assert never["last_sync_status"] == "pending"
+        assert never["rows"] is None
+        assert never["file_size_bytes"] is None
+
+        synced = by_name["synced"]
+        assert synced["last_sync"] is not None
+        assert synced["last_sync_status"] == "ok"
+        assert synced["rows"] == 100
+        assert synced["file_size_bytes"] == 2048
+
+        failed = by_name["failed"]
+        assert failed["last_sync_status"] == "error"
+        assert failed["last_sync_error"] == "connection refused"
 
 
 class TestRegisterTable:
