@@ -126,11 +126,7 @@ def test_preamble_step_zero_d_reference_only_when_trust_block_emitted():
     # generic safety advice, valid regardless of trust block).
     assert "NODE_TLS_REJECT_UNAUTHORIZED" in no_ca
 
-    fake_ca = (
-        "-----BEGIN CERTIFICATE-----\n"
-        "FAKEFAKEFAKE\n"
-        "-----END CERTIFICATE-----\n"
-    )
+    fake_ca = "-----BEGIN CERTIFICATE-----\nFAKEFAKEFAKE\n-----END CERTIFICATE-----\n"
     with_ca = "\n".join(resolve_lines("agnes.whl", ca_pem=fake_ca))
     # Trust block emits step 0 → preamble's step 0(d) reference is now valid.
     assert "step 0(d)" in with_ca
@@ -144,11 +140,7 @@ def test_finale_bullets_match_emitted_steps():
     of plugin grants)."""
     from app.web.setup_instructions import resolve_lines
 
-    fake_ca = (
-        "-----BEGIN CERTIFICATE-----\n"
-        "FAKE\n"
-        "-----END CERTIFICATE-----\n"
-    )
+    fake_ca = "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n"
 
     # No ca, no plugins: marketplace bullet present, CA bullet absent.
     plain = "\n".join(resolve_lines("agnes.whl"))
@@ -161,9 +153,7 @@ def test_finale_bullets_match_emitted_steps():
     assert "~/.agnes/marketplace/.git/" in ca_only
 
     # plugins only: marketplace bullet yes, CA bullet no.
-    pl_only = "\n".join(
-        resolve_lines("agnes.whl", plugin_install_names=["foo"], server_host="h")
-    )
+    pl_only = "\n".join(resolve_lines("agnes.whl", plugin_install_names=["foo"], server_host="h"))
     assert "Which CA bundle source got picked" not in pl_only
     assert "~/.agnes/marketplace/.git/" in pl_only
 
@@ -192,11 +182,7 @@ def test_trust_block_rc_heredoc_writes_exactly_8_lines():
     the reset script's `skip = N` so the two stay in sync."""
     from app.web.setup_instructions import _tls_trust_block
 
-    fake_ca = (
-        "-----BEGIN CERTIFICATE-----\n"
-        "FAKE\n"
-        "-----END CERTIFICATE-----\n"
-    )
+    fake_ca = "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n"
     lines = _tls_trust_block(fake_ca)
     joined = "\n".join(lines)
 
@@ -213,7 +199,7 @@ def test_trust_block_rc_heredoc_writes_exactly_8_lines():
     assert len(body_lines) == 8, (
         f"Heredoc body has {len(body_lines)} lines; reset script awk "
         f"skips 8 lines, so any drift leaves stray lines in the rc file. "
-        f"Body was:\n" + "\n".join(f"  {i+1:2d} {ln!r}" for i, ln in enumerate(body_lines))
+        f"Body was:\n" + "\n".join(f"  {i + 1:2d} {ln!r}" for i, ln in enumerate(body_lines))
     )
     # First body line MUST be the marker (anchor for the reset awk).
     assert body_lines[0] == "# AGNES_CA_PEM_TRUST — added by Agnes setup"
@@ -228,11 +214,7 @@ def test_trust_block_rc_heredoc_count_matches_reset_script_skip():
     from pathlib import Path
     from app.web.setup_instructions import _tls_trust_block
 
-    fake_ca = (
-        "-----BEGIN CERTIFICATE-----\n"
-        "FAKE\n"
-        "-----END CERTIFICATE-----\n"
-    )
+    fake_ca = "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n"
     joined = "\n".join(_tls_trust_block(fake_ca))
     start = joined.index("<<'AGNES_RC_BLOCK'")
     end = joined.index("\nAGNES_RC_BLOCK\n", start)
@@ -260,11 +242,7 @@ def test_trust_block_step_0c_does_not_reference_stale_step_number():
     not name a stale step number."""
     from app.web.setup_instructions import resolve_lines
 
-    fake_ca = (
-        "-----BEGIN CERTIFICATE-----\n"
-        "FAKE\n"
-        "-----END CERTIFICATE-----\n"
-    )
+    fake_ca = "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n"
     joined = "\n".join(resolve_lines("agnes.whl", ca_pem=fake_ca))
     # The stale "step 7's marketplace add" string must be gone.
     assert "step 7's marketplace add" not in joined
@@ -316,7 +294,15 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     # Step 9 — restart-claude. Step 10 — Confirm.
     assert "9) Restart Claude Code" in joined
     assert "10) Confirm:" in joined
-    for stray in ("4) Confirm:", "5) Confirm:", "6) Confirm:", "7) Confirm:", "8) Confirm:", "9) Confirm:", "11) Confirm:"):
+    for stray in (
+        "4) Confirm:",
+        "5) Confirm:",
+        "6) Confirm:",
+        "7) Confirm:",
+        "8) Confirm:",
+        "9) Confirm:",
+        "11) Confirm:",
+    ):
         assert stray not in joined
     # Crucial ordering invariants for the new layout.
     install_idx = joined.index("1) Install the CLI")
@@ -443,7 +429,7 @@ def test_resolve_lines_with_ca_pem_emits_cross_platform_substeps():
     joined = "\n".join(resolve_lines("agnes.whl", ca_pem=_FAKE_CA_PEM))
 
     # (a) Platform detection — uname-driven, with all three families covered.
-    assert "case \"$(uname -s)\" in" in joined
+    assert 'case "$(uname -s)" in' in joined
     assert "Darwin" in joined and "PLATFORM=macos" in joined
     assert "Linux" in joined and "PLATFORM=linux" in joined
     # MINGW/MSYS/CYGWIN cover Git Bash on Windows.
@@ -495,15 +481,15 @@ def test_resolve_lines_with_ca_pem_uses_combined_bundle_for_replace_envs():
 
 def test_resolve_lines_with_ca_pem_switches_step_one_to_curl_then_local_install():
     """Step 1's install path differs by has_ca:
-      - has_ca=True  → curl-then-local-install (avoids rustls CaUsedAsEndEntity)
-      - has_ca=False → direct `uv tool install <https-url>` (legacy)
+    - has_ca=True  → curl-then-local-install (avoids rustls CaUsedAsEndEntity)
+    - has_ca=False → direct `uv tool install <https-url>` (legacy)
     """
     from app.web.setup_instructions import resolve_lines
 
     joined_ca = "\n".join(resolve_lines("agnes-1.0-py3-none-any.whl", ca_pem=_FAKE_CA_PEM))
     # curl-with-cacert downloads the wheel locally...
     assert "curl -fsSL --cacert ~/.agnes/ca.pem" in joined_ca
-    assert 'WHEEL=/tmp/agnes-1.0-py3-none-any.whl' in joined_ca
+    assert "WHEEL=/tmp/agnes-1.0-py3-none-any.whl" in joined_ca
     # ...then uv installs from the local file with --native-tls.
     assert 'uv tool install --native-tls --force "$WHEEL"' in joined_ca
     # The direct `uv tool install <server-url>` form must NOT appear in the ca_pem path.
@@ -624,17 +610,12 @@ def test_resolve_lines_no_sslverify_downgrade_anywhere():
 
     for kwargs in (
         {"plugin_install_names": ["foo"], "server_host": "agnes.example.com"},
-        {"plugin_install_names": ["foo"], "server_host": "agnes.example.com",
-         "ca_pem": _FAKE_CA_PEM},
+        {"plugin_install_names": ["foo"], "server_host": "agnes.example.com", "ca_pem": _FAKE_CA_PEM},
         {"plugin_install_names": [], "server_host": "agnes.example.com"},
     ):
         joined = "\n".join(resolve_lines("agnes.whl", **kwargs))
-        assert "git config --global" not in joined, (
-            f"sslVerify downgrade leaked through with kwargs={kwargs!r}"
-        )
-        assert "sslVerify false" not in joined, (
-            f"sslVerify downgrade leaked through with kwargs={kwargs!r}"
-        )
+        assert "git config --global" not in joined, f"sslVerify downgrade leaked through with kwargs={kwargs!r}"
+        assert "sslVerify false" not in joined, f"sslVerify downgrade leaked through with kwargs={kwargs!r}"
 
 
 def test_resolve_lines_ca_pem_empty_string_is_treated_as_absent():
@@ -769,11 +750,7 @@ def test_unified_flow_uses_only_agnes_verbs():
     """
     from app.web.setup_instructions import resolve_lines
 
-    fake_ca = (
-        "-----BEGIN CERTIFICATE-----\n"
-        "FAKE\n"
-        "-----END CERTIFICATE-----\n"
-    )
+    fake_ca = "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n"
 
     # Check both layouts (with and without marketplace) and both has_ca
     # variants, since each path stitches together different helper output.
@@ -806,6 +783,7 @@ def test_install_page_uses_versioned_wheel_url(monkeypatch, tmp_path):
 
     from fastapi.testclient import TestClient
     from app.main import app
+
     client = TestClient(app)
     resp = client.get("/setup", headers={"host": "agnes.test", "Accept": "text/html"})
     assert resp.status_code == 200
@@ -819,6 +797,7 @@ def test_install_page_uses_versioned_wheel_url(monkeypatch, tmp_path):
 # wired to seed-resident connector-*/SKILL.md files (bundled snapshot
 # fallback when no Initial Workspace Template is configured).
 # ---------------------------------------------------------------------------
+
 
 def test_connectors_block_renders_all_three_asks():
     """Step 8 must contain a default-yes ask for Asana, Google Workspace,
@@ -980,11 +959,13 @@ def test_restart_claude_substitutes_workspace_dir():
     user sees their actual `~/Desktop/<brand>` path, not a literal placeholder."""
     from app.web.setup_instructions import resolve_lines
 
-    joined = "\n".join(resolve_lines(
-        "agnes.whl",
-        instance_brand="Foundry AI",
-        workspace_dir="FoundryAI",
-    ))
+    joined = "\n".join(
+        resolve_lines(
+            "agnes.whl",
+            instance_brand="Foundry AI",
+            workspace_dir="FoundryAI",
+        )
+    )
     assert "9) Restart Claude Code" in joined
     assert "~/Desktop/FoundryAI" in joined
     assert "{workspace_dir}" not in joined
@@ -1076,6 +1057,7 @@ def test_gws_prompt_emits_pass_fail_contract():
 # Step 2 — install location decision tree (refuse / silent / confirm).
 # ---------------------------------------------------------------------------
 
+
 def test_step_2_uses_three_branch_decision_tree():
     """Step 2 must use a refuse / proceed-silently / confirm-once tree
     instead of hard-coding `~/Desktop/<workspace_dir>` as the only
@@ -1139,7 +1121,7 @@ def test_step_2_uses_three_branch_decision_tree():
     # No auto-mkdir from the very-old flow.
     assert 'mkdir -p "$HOME/Agnes"' not in joined
     assert 'New-Item -ItemType Directory -Force -Path "$HOME\\Agnes"' not in joined
-    assert "Set-Location \"$HOME\\Agnes\"" not in joined
+    assert 'Set-Location "$HOME\\Agnes"' not in joined
 
 
 def test_step_2_substitutes_custom_brand_and_workspace_dir():
@@ -1147,11 +1129,13 @@ def test_step_2_substitutes_custom_brand_and_workspace_dir():
     against the operator's configured values, no placeholders leak."""
     from app.web.setup_instructions import resolve_lines
 
-    joined = "\n".join(resolve_lines(
-        "agnes.whl",
-        instance_brand="Foundry AI",
-        workspace_dir="FoundryAI",
-    ))
+    joined = "\n".join(
+        resolve_lines(
+            "agnes.whl",
+            instance_brand="Foundry AI",
+            workspace_dir="FoundryAI",
+        )
+    )
     assert "2) Confirm the install location." in joined
     # Default path threads through both the silent-proceed reference and
     # the confirm-prompt 'default' branch.
@@ -1175,8 +1159,18 @@ def test_step_2_refuse_branch_lists_home_and_system_paths():
     # All paths the refuse line claims to block must appear in the
     # rendered script so the AI follower can match against pwd output.
     for path in (
-        "$HOME", "/tmp", "/etc", "/usr", "/var",
-        "/opt", "/root", "/bin", "/sbin", "/boot", "/sys", "/proc",
+        "$HOME",
+        "/tmp",
+        "/etc",
+        "/usr",
+        "/var",
+        "/opt",
+        "/root",
+        "/bin",
+        "/sbin",
+        "/boot",
+        "/sys",
+        "/proc",
     ):
         assert path in joined, f"refuse path {path!r} missing"
 

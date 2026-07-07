@@ -282,9 +282,7 @@ def test_push_mixes_private_and_public_correctly(tmp_path, monkeypatch):
     result = runner.invoke(push_app, ["--quiet"])
     assert result.exit_code == 0
 
-    uploaded_names = [
-        c[1]["files"]["file"][0] for c in calls if c[0] == "/api/upload/sessions"
-    ]
+    uploaded_names = [c[1]["files"]["file"][0] for c in calls if c[0] == "/api/upload/sessions"]
     assert uploaded_names == ["sid-public.jsonl"]
     audit = private_skipped_log_path(tmp_path).read_text(encoding="utf-8")
     assert "sid-secret" in audit
@@ -314,6 +312,7 @@ def test_push_dry_run_shows_private_skip(tmp_path, monkeypatch):
 def _stub_api_post_status(monkeypatch, status: int) -> None:
     def _fixed(*a, **kw):
         return _FakeResp(status)
+
     monkeypatch.setattr("cli.commands.push.api_post", _fixed)
 
 

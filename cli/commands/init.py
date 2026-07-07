@@ -157,10 +157,7 @@ def _cleanup_stale_ca_env_vars() -> None:
             del os.environ[var]
             cleared_process.append((var, cur))
     for name, path in cleared_process:
-        typer.echo(
-            f"agnes init: cleared stale process env {name}={path} "
-            f"(file does not exist)"
-        )
+        typer.echo(f"agnes init: cleared stale process env {name}={path} (file does not exist)")
 
     if not _is_windows_host():
         return
@@ -210,11 +207,13 @@ init_app = typer.Typer(help="Bootstrap an analyst workspace in this directory")
 @init_app.callback(invoke_without_command=True)
 def init(
     server_url: Optional[str] = typer.Option(
-        None, "--server-url",
+        None,
+        "--server-url",
         help="Agnes server URL. Required unless --bundle is provided.",
     ),
     token: Optional[str] = typer.Option(
-        None, "--token",
+        None,
+        "--token",
         help=(
             "Personal access token. Can also be supplied via the "
             "AGNES_TOKEN env var or --token-file (see also). Inline "
@@ -224,7 +223,8 @@ def init(
         ),
     ),
     token_file: Optional[str] = typer.Option(
-        None, "--token-file",
+        None,
+        "--token-file",
         help=(
             "Path to a file whose first non-blank line is the PAT. Wins "
             "over AGNES_TOKEN env when both are set; loses to an explicit "
@@ -233,7 +233,8 @@ def init(
         ),
     ),
     bundle: Optional[str] = typer.Option(
-        None, "--bundle",
+        None,
+        "--bundle",
         help=(
             "Path to an Agnes Cowork Setup Bundle (a directory containing "
             ".agnes-bundle.json, or the .zip file itself). When provided, "
@@ -245,7 +246,8 @@ def init(
     force: bool = typer.Option(False, "--force", help="Re-initialize an existing workspace"),
     workspace_str: Optional[str] = typer.Option(None, "--workspace", help="Target dir (default: cwd)"),
     skip_materialize: bool = typer.Option(
-        False, "--skip-materialize",
+        False,
+        "--skip-materialize",
         help=(
             "Skip materialized-mode tables on the first pull. The first "
             "init can otherwise spend tens of minutes silently downloading "
@@ -287,9 +289,7 @@ def init(
                 if not _candidate.exists():
                     _candidate = bundle_path / ".agnes-bundle.json"
                 bundle_json_path = _candidate
-                bundle_data = json.loads(
-                    bundle_json_path.read_text(encoding="utf-8")
-                )
+                bundle_data = json.loads(bundle_json_path.read_text(encoding="utf-8"))
             elif bundle_path.suffix == ".zip":
                 # ZIP file: extract bundle JSON in memory.
                 # Supports both flat ZIPs (legacy) and folder-prefixed ZIPs
@@ -312,32 +312,42 @@ def init(
                                 bundle_json_name = candidates[0]
                                 break
                     if bundle_json_name is None:
-                        raise ValueError(
-                            "agnes-bundle.json not found inside the ZIP"
-                        )
-                    bundle_data = json.loads(
-                        zf.read(bundle_json_name).decode("utf-8")
-                    )
+                        raise ValueError("agnes-bundle.json not found inside the ZIP")
+                    bundle_data = json.loads(zf.read(bundle_json_name).decode("utf-8"))
                 bundle_json_path = None  # nothing to delete from disk
             else:
-                raise ValueError(
-                    f"--bundle must be a directory or a .zip file, got: {bundle_path}"
-                )
+                raise ValueError(f"--bundle must be a directory or a .zip file, got: {bundle_path}")
         except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
-            typer.echo(render_error(0, {"detail": {
-                "kind": "partial_state",
-                "hint": f"Could not read bundle from {bundle!r}: {exc}",
-            }}), err=True)
+            typer.echo(
+                render_error(
+                    0,
+                    {
+                        "detail": {
+                            "kind": "partial_state",
+                            "hint": f"Could not read bundle from {bundle!r}: {exc}",
+                        }
+                    },
+                ),
+                err=True,
+            )
             raise typer.Exit(1)
 
         bundle_server_url = bundle_data.get("server_url", "").rstrip("/")
         setup_token_raw = bundle_data.get("setup_token", "")
 
         if not bundle_server_url or not setup_token_raw:
-            typer.echo(render_error(0, {"detail": {
-                "kind": "partial_state",
-                "hint": "Bundle is missing server_url or setup_token.",
-            }}), err=True)
+            typer.echo(
+                render_error(
+                    0,
+                    {
+                        "detail": {
+                            "kind": "partial_state",
+                            "hint": "Bundle is missing server_url or setup_token.",
+                        }
+                    },
+                ),
+                err=True,
+            )
             raise typer.Exit(1)
 
         if not server_url:
@@ -347,29 +357,46 @@ def init(
         typer.echo(f"Connecting to {server_url} …")
         try:
             import httpx as _httpx
+
             exchange_resp = _httpx.post(
                 f"{server_url}/api/auth/exchange-setup-token",
                 json={"setup_token": setup_token_raw},
                 timeout=30,
             )
             if exchange_resp.status_code == 401:
-                typer.echo(render_error(401, {"detail": {
-                    "kind": "auth_failed",
-                    "hint": (
-                        "Setup token is invalid, expired, or already used. "
-                        "Download a new bundle from Agnes and try again."
+                typer.echo(
+                    render_error(
+                        401,
+                        {
+                            "detail": {
+                                "kind": "auth_failed",
+                                "hint": (
+                                    "Setup token is invalid, expired, or already used. "
+                                    "Download a new bundle from Agnes and try again."
+                                ),
+                            }
+                        },
                     ),
-                }}), err=True)
+                    err=True,
+                )
                 raise typer.Exit(1)
             exchange_resp.raise_for_status()
             exchange_data = exchange_resp.json()
         except typer.Exit:
             raise
         except Exception as exc:
-            typer.echo(render_error(0, {"detail": {
-                "kind": "server_unreachable",
-                "hint": f"Token exchange failed: {exc}",
-            }}), err=True)
+            typer.echo(
+                render_error(
+                    0,
+                    {
+                        "detail": {
+                            "kind": "server_unreachable",
+                            "hint": f"Token exchange failed: {exc}",
+                        }
+                    },
+                ),
+                err=True,
+            )
             raise typer.Exit(1)
 
         if not token:
@@ -389,10 +416,18 @@ def init(
     # provided it above).
     # ------------------------------------------------------------------
     if not server_url:
-        typer.echo(render_error(0, {"detail": {
-            "kind": "partial_state",
-            "hint": "Supply --server-url or use --bundle to provide it automatically.",
-        }}), err=True)
+        typer.echo(
+            render_error(
+                0,
+                {
+                    "detail": {
+                        "kind": "partial_state",
+                        "hint": "Supply --server-url or use --bundle to provide it automatically.",
+                    }
+                },
+            ),
+            err=True,
+        )
         raise typer.Exit(1)
 
     server_url = server_url.rstrip("/")
@@ -418,10 +453,18 @@ def init(
                     token = line
                     break
         except OSError as exc:
-            typer.echo(render_error(0, {"detail": {
-                "kind": "partial_state",
-                "hint": f"--token-file {token_file!r} could not be read: {exc}",
-            }}), err=True)
+            typer.echo(
+                render_error(
+                    0,
+                    {
+                        "detail": {
+                            "kind": "partial_state",
+                            "hint": f"--token-file {token_file!r} could not be read: {exc}",
+                        }
+                    },
+                ),
+                err=True,
+            )
             raise typer.Exit(1)
     if token is None:
         token = os.environ.get("AGNES_TOKEN", "").strip() or None
@@ -437,13 +480,21 @@ def init(
             except (OSError, ValueError):
                 pass
     if not token:
-        typer.echo(render_error(0, {"detail": {
-            "kind": "partial_state",
-            "hint": (
-                "Supply a token via --token, --token-file, AGNES_TOKEN env var, "
-                "or run `agnes auth login` first."
+        typer.echo(
+            render_error(
+                0,
+                {
+                    "detail": {
+                        "kind": "partial_state",
+                        "hint": (
+                            "Supply a token via --token, --token-file, AGNES_TOKEN env var, "
+                            "or run `agnes auth login` first."
+                        ),
+                    }
+                },
             ),
-        }}), err=True)
+            err=True,
+        )
         raise typer.Exit(1)
 
     # Best-effort cleanup before ANY TLS handshake fires below — stale
@@ -489,10 +540,18 @@ def init(
             existing = ""
     if (sentinel_says_inited or claude_md_says_inited) and not force:
         if sentinel_says_inited:
-            typer.echo(render_error(0, {"detail": {
-                "kind": "partial_state",
-                "hint": "Workspace already initialized. Re-run with --force to redo.",
-            }}), err=True)
+            typer.echo(
+                render_error(
+                    0,
+                    {
+                        "detail": {
+                            "kind": "partial_state",
+                            "hint": "Workspace already initialized. Re-run with --force to redo.",
+                        }
+                    },
+                ),
+                err=True,
+            )
             raise typer.Exit(1)
         # CLAUDE.md substring matches but no sentinel — previous default-
         # mode init was killed mid-flight (issue #259). Resume rather
@@ -518,20 +577,36 @@ def init(
         with _override_server_env(server_url, token):
             resp = api_get("/api/catalog/tables")
         if resp.status_code == 401:
-            typer.echo(render_error(401, {"detail": {
-                "kind": "auth_failed",
-                "hint": f"Token expired or invalid — get a fresh one at {server_url}/setup",
-            }}), err=True)
+            typer.echo(
+                render_error(
+                    401,
+                    {
+                        "detail": {
+                            "kind": "auth_failed",
+                            "hint": f"Token expired or invalid — get a fresh one at {server_url}/setup",
+                        }
+                    },
+                ),
+                err=True,
+            )
             raise typer.Exit(1)
         resp.raise_for_status()
     except typer.Exit:
         raise
     except Exception as exc:
-        typer.echo(render_error(0, {"detail": {
-            "kind": "server_unreachable",
-            "hint": f"Cannot reach {server_url} — check network or server status",
-            "message": str(exc),
-        }}), err=True)
+        typer.echo(
+            render_error(
+                0,
+                {
+                    "detail": {
+                        "kind": "server_unreachable",
+                        "hint": f"Cannot reach {server_url} — check network or server status",
+                        "message": str(exc),
+                    }
+                },
+            ),
+            err=True,
+        )
         raise typer.Exit(1)
 
     # ------------------------------------------------------------------
@@ -590,9 +665,7 @@ def init(
         # "no override" and fall through. Default flow is safe.
         override_status = None
 
-    override_active = bool(
-        override_status and override_status.configured
-    )
+    override_active = bool(override_status and override_status.configured)
 
     if override_active:
         # Override flow: apply_override does its own download +
@@ -600,6 +673,7 @@ def init(
         # ExtractResult so we can mention counts in the final summary.
         try:
             import importlib.metadata as _md
+
             agnes_version = _md.version("agnes-the-ai-analyst")
         except Exception:
             agnes_version = "unknown"
@@ -633,8 +707,7 @@ def init(
                 typer.echo(f"Backed up existing CLAUDE.md → {backup_path.name}")
             except OSError as exc:
                 typer.echo(
-                    f"Warning: could not write CLAUDE.md backup ({exc}); "
-                    f"continuing with --force overwrite",
+                    f"Warning: could not write CLAUDE.md backup ({exc}); continuing with --force overwrite",
                     err=True,
                 )
 
@@ -646,11 +719,19 @@ def init(
                 welcome_resp = api_get("/api/welcome", params={"server_url": server_url})
             welcome_resp.raise_for_status()
         except Exception as exc:
-            typer.echo(render_error(0, {"detail": {
-                "kind": "server_unreachable",
-                "hint": "Failed to fetch CLAUDE.md from /api/welcome",
-                "message": str(exc),
-            }}), err=True)
+            typer.echo(
+                render_error(
+                    0,
+                    {
+                        "detail": {
+                            "kind": "server_unreachable",
+                            "hint": "Failed to fetch CLAUDE.md from /api/welcome",
+                            "message": str(exc),
+                        }
+                    },
+                ),
+                err=True,
+            )
             raise typer.Exit(1)
         welcome_content = welcome_resp.json().get("content", "")
         claude_md.write_text(welcome_content, encoding="utf-8")
@@ -667,10 +748,13 @@ def init(
         settings_path = workspace / ".claude" / "settings.json"
         if not settings_path.exists():
             settings_path.parent.mkdir(parents=True, exist_ok=True)
-            settings_path.write_text(json.dumps(
-                {"model": "sonnet", "permissions": {"allow": ["Read", "Bash", "Bash(agnes *)", "Grep", "Glob"]}},
-                indent=2,
-            ), encoding="utf-8")
+            settings_path.write_text(
+                json.dumps(
+                    {"model": "sonnet", "permissions": {"allow": ["Read", "Bash", "Bash(agnes *)", "Grep", "Glob"]}},
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
 
         # ------------------------------------------------------------------
         # Step 6: CLAUDE.local.md stub — only when absent. `--force` does NOT
@@ -728,16 +812,26 @@ def init(
         # was a 44-minute silent download on the very first install.
         # Pass it through to run_pull.
         result: PullResult = run_pull(
-            server_url, token, workspace,
+            server_url,
+            token,
+            workspace,
             skip_materialize=skip_materialize,
             show_progress=True,
         )
     except Exception as exc:
-        typer.echo(render_error(0, {"detail": {
-            "kind": "manifest_unauthorized",
-            "hint": "Initial pull failed — workspace partially set up",
-            "message": str(exc),
-        }}), err=True)
+        typer.echo(
+            render_error(
+                0,
+                {
+                    "detail": {
+                        "kind": "manifest_unauthorized",
+                        "hint": "Initial pull failed — workspace partially set up",
+                        "message": str(exc),
+                    }
+                },
+            ),
+            err=True,
+        )
         raise typer.Exit(1)
 
     # `run_pull` records per-stage failures into `result.errors` and only
@@ -748,12 +842,20 @@ def init(
     # against /api/catalog/tables but lacks resource_grants for any tables.
     manifest_err = next((e for e in result.errors if e.get("stage") == "manifest"), None)
     if manifest_err:
-        typer.echo(render_error(0, {"detail": {
-            "kind": "manifest_unauthorized",
-            "hint": "Manifest fetch failed — workspace partially set up. "
-                    "Check that the PAT has resource_grants for at least one table.",
-            "message": manifest_err.get("error", ""),
-        }}), err=True)
+        typer.echo(
+            render_error(
+                0,
+                {
+                    "detail": {
+                        "kind": "manifest_unauthorized",
+                        "hint": "Manifest fetch failed — workspace partially set up. "
+                        "Check that the PAT has resource_grants for at least one table.",
+                        "message": manifest_err.get("error", ""),
+                    }
+                },
+            ),
+            err=True,
+        )
         raise typer.Exit(1)
 
     if not override_active:
@@ -774,8 +876,7 @@ def init(
             # branch only fires on a broken install. Better than crashing.
             template = "# Agnes workspace\n\nCreated: {created_at}\nServer: {server_url}\n"
         workspace_md = (
-            template
-            .replace("{created_at}", datetime.now(timezone.utc).isoformat())
+            template.replace("{created_at}", datetime.now(timezone.utc).isoformat())
             .replace("{server_url}", server_url)
             .replace("{workspace_path}", str(workspace))
         )
@@ -801,6 +902,7 @@ def init(
         # skips the file.
         try:
             from cli.lib.initial_workspace import write_agnes_env
+
             write_agnes_env(workspace, server_url, token)
         except Exception as e:
             # Best-effort — failure here doesn't block init. Seed skills
@@ -814,6 +916,7 @@ def init(
         sentinel.parent.mkdir(parents=True, exist_ok=True)
         try:
             import importlib.metadata as _md
+
             agnes_version = _md.version("agnes-the-ai-analyst")
         except Exception:
             agnes_version = "unknown"
@@ -879,10 +982,7 @@ def init(
             f"to download). Catalog still serves all registered tables."
         )
     else:
-        typer.echo(
-            f"  Tables   : {result.tables_updated}/{result.parquets_total} "
-            f"local materialized rows fetched"
-        )
+        typer.echo(f"  Tables   : {result.tables_updated}/{result.parquets_total} local materialized rows fetched")
     typer.echo(f"  Rules    : {result.rules_count}")
     typer.echo(f"  Workspace: {workspace}")
     typer.echo("")
