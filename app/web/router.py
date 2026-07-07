@@ -1473,7 +1473,7 @@ async def catalog_table_detail(
                 if can_access(user["id"], ResourceType.DATA_PACKAGE.value, p["id"], conn):
                     has_grant = True
     except Exception:
-        logger.warning("could not enumerate parent packages for %s", table_id)
+        logger.warning("could not enumerate parent packages for %s", table_id, exc_info=True)
     if not (is_admin or has_grant):
         raise HTTPException(status_code=403, detail="access_denied")
 
