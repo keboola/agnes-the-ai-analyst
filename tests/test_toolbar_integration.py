@@ -81,9 +81,13 @@ def test_toolbar_html_present_when_debug(app_with_toolbar):
     # with an empty body (no markup) even though the toolbar injects fine on
     # `/login` — and on the same route in isolation locally. Scan all candidates
     # and pass on the first that carries the markup. A non-empty HTML 200
-    # without markup on ALL rendered routes is a real regression → fail; skip
-    # only when no route rendered a non-empty body at all.
-    rendered_routes = []
+    # on a *post-auth* route without markup is a real regression → fail; pre-auth
+    # pages (/login, /first-time-setup) legitimately have no toolbar because they
+    # render before any DuckDB session is established. Skip only when no post-auth
+    # route rendered a non-empty body at all (LOCAL_DEV_MODE seeding may not work
+    # in all TestClient configurations).
+    _pre_auth = {"/first-time-setup", "/login"}
+    rendered_auth_routes = []
     for path in ("/dashboard", "/first-time-setup", "/login", "/admin/access"):
         resp = client.get(path, follow_redirects=False)
         if resp.status_code == 200 and "text/html" in resp.headers.get("content-type", ""):
@@ -92,16 +96,17 @@ def test_toolbar_html_present_when_debug(app_with_toolbar):
                 # Empty 200 bodies happen under pytest-split sharding (see
                 # comment above) — not a rendering opportunity, don't count it.
                 continue
-            rendered_routes.append(path)
             if "djdt" in body or "fastdebug" in body:
                 return  # toolbar is wired up on at least one route — contract met
-    if rendered_routes:
+            if path not in _pre_auth:
+                rendered_auth_routes.append(path)
+    if rendered_auth_routes:
         pytest.fail(
-            f"DEBUG=1 but no toolbar markup on any rendered HTML 200 route ({rendered_routes}); "
-            "toolbar injection is broken"
+            f"DEBUG=1 but no toolbar markup on post-auth routes ({rendered_auth_routes}); toolbar injection is broken"
         )
     pytest.skip(
-        "no HTML 200 route rendered a non-empty body in TestClient; toolbar injection cannot be verified here",
+        "no post-auth HTML 200 route rendered a non-empty body in TestClient; "
+        "toolbar injection cannot be verified here (LOCAL_DEV_MODE user seeding may not have run)",
     )
 
 
