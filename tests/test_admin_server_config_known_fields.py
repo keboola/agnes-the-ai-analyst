@@ -48,10 +48,16 @@ def test_known_field_billing_project_renders_in_ui(seeded_app, monkeypatch, tmp_
     state = tmp_path / "state"
     state.mkdir(parents=True, exist_ok=True)
     import yaml as _yaml
-    (state / "instance.yaml").write_text(_yaml.dump({
-        "data_source": {"type": "bigquery", "bigquery": {"project": "p"}},
-    }))
+
+    (state / "instance.yaml").write_text(
+        _yaml.dump(
+            {
+                "data_source": {"type": "bigquery", "bigquery": {"project": "p"}},
+            }
+        )
+    )
     import app.instance_config as ic
+
     ic._instance_config = None
     try:
         c = seeded_app["client"]
@@ -77,10 +83,16 @@ def test_known_field_value_unset_when_yaml_missing(seeded_app, monkeypatch, tmp_
     state = tmp_path / "state"
     state.mkdir(parents=True, exist_ok=True)
     import yaml as _yaml
-    (state / "instance.yaml").write_text(_yaml.dump({
-        "data_source": {"type": "bigquery", "bigquery": {"project": "data-proj"}},
-    }))
+
+    (state / "instance.yaml").write_text(
+        _yaml.dump(
+            {
+                "data_source": {"type": "bigquery", "bigquery": {"project": "data-proj"}},
+            }
+        )
+    )
     import app.instance_config as ic
+
     ic._instance_config = None
     try:
         c = seeded_app["client"]
@@ -133,10 +145,16 @@ def test_nested_field_renders_as_structured_form_not_json_blob(seeded_app, monke
     state = tmp_path / "state"
     state.mkdir(parents=True, exist_ok=True)
     import yaml as _yaml
-    (state / "instance.yaml").write_text(_yaml.dump({
-        "data_source": {"type": "bigquery", "bigquery": {"project": "p"}},
-    }))
+
+    (state / "instance.yaml").write_text(
+        _yaml.dump(
+            {
+                "data_source": {"type": "bigquery", "bigquery": {"project": "p"}},
+            }
+        )
+    )
     import app.instance_config as ic
+
     ic._instance_config = None
     try:
         c = seeded_app["client"]
@@ -151,15 +169,18 @@ def test_nested_field_renders_as_structured_form_not_json_blob(seeded_app, monke
         # Renderer must ship the structured nested-field path. The JS uses
         # dotted-path data-key for child inputs (e.g. data-key="bigquery.billing_project")
         # and the collector reconstructs nested patches.
-        assert "nested-field" in body or "renderNestedField" in body or "dotted" in body or 'data-nested' in body, \
+        assert "nested-field" in body or "renderNestedField" in body or "dotted" in body or "data-nested" in body, (
             "renderer JS must support structured nested-field rendering"
+        )
         # The collector must understand dotted-path keys (parent.child) and
         # rebuild a nested patch from them — replaces the old JSON-textarea path.
-        assert "splitDotted" in body or '.split(".")' in body or "dotKey" in body or "nestedKey" in body, \
+        assert "splitDotted" in body or '.split(".")' in body or "dotKey" in body or "nestedKey" in body, (
             "collector JS must rebuild nested patches from dotted-path keys"
+        )
         # Display-only mode must be GONE — child rows are now first-class inputs.
-        assert "data-display-only" not in body, \
+        assert "data-display-only" not in body, (
             "display-only fallback path must be removed; child fields are now editable"
+        )
     finally:
         ic._instance_config = None
 
@@ -179,8 +200,9 @@ def test_bigquery_subfields_populated(seeded_app):
     assert "max_bytes_per_materialize" in fields
     # legacy_wrap_views was removed in #160 — VIEW/MATERIALIZED_VIEW are now
     # always wrapped via bigquery_query() (the previous opt-in path).
-    assert "legacy_wrap_views" not in fields, \
+    assert "legacy_wrap_views" not in fields, (
         "legacy_wrap_views config knob was removed; #160 makes the wrap behavior unconditional"
+    )
     assert fields["max_bytes_per_materialize"]["kind"] == "int"
     assert fields["max_bytes_per_materialize"]["default"] == 10737418240
 
@@ -239,12 +261,59 @@ def test_desktop_is_editable_section(seeded_app):
     assert "url_scheme" in fields
 
 
+def test_connectors_is_editable_section(seeded_app):
+    """connectors (the per-tenant params overlay served by
+    /api/connectors/params) is editable via the server-config API, so
+    operators don't have to hand-edit the overlay file on the VM."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/api/admin/server-config", headers=_auth(token))
+    assert r.status_code == 200, r.text
+    assert "connectors" in r.json()["editable_sections"]
+
+
+def test_post_connectors_section_persists(seeded_app, tmp_path, monkeypatch):
+    """POST flow accepts the connectors overlay and lands it on disk."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    state = tmp_path / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    import app.instance_config as ic
+
+    ic._instance_config = None
+    try:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        r = c.post(
+            "/api/admin/server-config",
+            headers=_auth(token),
+            json={
+                "sections": {
+                    "connectors": {
+                        "globals": {"AGNES_INSTANCE_BRAND": "Acme Analytics"},
+                        "connector-atlassian": {
+                            "ATLASSIAN_BASE_URL": "https://acme.atlassian.net",
+                        },
+                    },
+                },
+            },
+        )
+        assert r.status_code in (200, 204), r.text
+        import yaml as _yaml
+
+        loaded = _yaml.safe_load((state / "instance.yaml").read_text())
+        assert loaded["connectors"]["globals"]["AGNES_INSTANCE_BRAND"] == "Acme Analytics"
+        assert loaded["connectors"]["connector-atlassian"]["ATLASSIAN_BASE_URL"] == "https://acme.atlassian.net"
+    finally:
+        ic._instance_config = None
+
+
 def test_post_openmetadata_section_persists(seeded_app, tmp_path, monkeypatch):
     """openmetadata is now in _EDITABLE_SECTIONS; POST flow accepts it."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     state = tmp_path / "state"
     state.mkdir(parents=True, exist_ok=True)
     import app.instance_config as ic
+
     ic._instance_config = None
     try:
         c = seeded_app["client"]
@@ -265,6 +334,7 @@ def test_post_openmetadata_section_persists(seeded_app, tmp_path, monkeypatch):
         assert r.status_code in (200, 204), r.text
         # Verify it landed on disk.
         import yaml as _yaml
+
         loaded = _yaml.safe_load((state / "instance.yaml").read_text())
         assert loaded["openmetadata"]["url"] == "https://om.example.com"
         assert loaded["openmetadata"]["cache_ttl_seconds"] == 1800
@@ -278,6 +348,7 @@ def test_post_desktop_section_persists(seeded_app, tmp_path, monkeypatch):
     state = tmp_path / "state"
     state.mkdir(parents=True, exist_ok=True)
     import app.instance_config as ic
+
     ic._instance_config = None
     try:
         c = seeded_app["client"]
@@ -289,6 +360,7 @@ def test_post_desktop_section_persists(seeded_app, tmp_path, monkeypatch):
         )
         assert r.status_code in (200, 204), r.text
         import yaml as _yaml
+
         loaded = _yaml.safe_load((state / "instance.yaml").read_text())
         assert loaded["desktop"]["jwt_issuer"] == "data-analyst"
     finally:
@@ -303,13 +375,19 @@ def test_save_section_with_nested_field_merges_correctly(seeded_app, tmp_path, m
     state = tmp_path / "state"
     state.mkdir(parents=True, exist_ok=True)
     import yaml as _yaml
-    (state / "instance.yaml").write_text(_yaml.dump({
-        "data_source": {
-            "type": "bigquery",
-            "bigquery": {"project": "data-proj", "location": "us-central1"},
-        },
-    }))
+
+    (state / "instance.yaml").write_text(
+        _yaml.dump(
+            {
+                "data_source": {
+                    "type": "bigquery",
+                    "bigquery": {"project": "data-proj", "location": "us-central1"},
+                },
+            }
+        )
+    )
     import app.instance_config as ic
+
     ic._instance_config = None
     try:
         c = seeded_app["client"]

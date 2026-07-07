@@ -11,10 +11,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `connectors` (the per-tenant connector-params overlay) is now an editable section in `/admin/server-config` (UI + API), so operators can manage it without hand-editing the overlay file on the server
 
 ### Changed
 
 ### Fixed
+- Operator-provisioned Google Workspace OAuth credentials (server env vars `AGNES_GWS_CLIENT_ID`/`AGNES_GWS_CLIENT_SECRET`, admin vault, or `instance.gws.*`) reach analysts again: `GET /api/connectors/params` merges them into the `connector-gws` params (overlay keys win), so `agnes init` writes them to the analyst `.env` and the connector-gws skill takes its fast operator-provisioned branch instead of always falling back to the manual GCP-project walkthrough. The secret VALUE still never transits — only the `*_ENV` pointer
 
 ### Removed
 

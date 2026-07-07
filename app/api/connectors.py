@@ -151,13 +151,34 @@ async def get_params(
     **Secret VALUES never go through this endpoint** — only the *name* of
     the env var that holds the secret on the server. The seed skill
     resolves the actual secret from its own shell env at runtime.
+
+    Server-resolved GWS fallback: operators can provision the shared
+    Google Workspace OAuth client outside the overlay — server env vars
+    (``AGNES_GWS_CLIENT_ID``/``AGNES_GWS_CLIENT_SECRET``), the admin
+    vault, or ``instance.gws.*`` in instance.yaml (resolution order in
+    :func:`app.instance_config.get_gws_oauth_credentials`). When that
+    resolves to a configured client, the equivalent ``connector-gws``
+    params are merged into the response so `agnes init` writes them into
+    the analyst's ``.env`` and the connector-gws seed skill takes its
+    fast operator-provisioned branch. Overlay keys win — the overlay
+    stays the per-connector source of truth; the merge only backfills.
+
+    The client_secret VALUE deliberately does NOT ride along, keeping
+    this endpoint's no-secrets contract intact even though a GWS
+    Desktop-app client secret is closer to an app identifier than a
+    credential (the analyst-side skill ultimately writes it into
+    client_secret.json). Analysts get the ``*_ENV`` pointer; when their
+    shell env lacks the value, the skill asks the operator for it — one
+    string, instead of the full manual GCP-project walkthrough.
     """
     from app.api.admin import _load_current_instance_yaml
 
     cfg = _load_current_instance_yaml()
     section = cfg.get("connectors") if isinstance(cfg, dict) else None
     if not isinstance(section, dict):
-        return ConnectorsParamsResponse()
+        # No overlay is NOT an early return: the server-resolved GWS
+        # fallback below must still get a chance to populate params.
+        section = {}
 
     globals_block: dict[str, str] = {}
     raw_globals = section.get("globals")
@@ -193,15 +214,34 @@ async def get_params(
     unknown = sorted(set(per_connector) - known_slugs)
     if unknown:
         logger.warning(
-            "connectors.params: ignoring unknown slugs in instance.yaml "
-            "(not in manifest): %s",
+            "connectors.params: ignoring unknown slugs in instance.yaml (not in manifest): %s",
             unknown,
         )
-    filtered = {
-        slug: params
-        for slug, params in per_connector.items()
-        if slug in known_slugs
-    }
+    filtered = {slug: params for slug, params in per_connector.items() if slug in known_slugs}
+
+    # Server-resolved GWS fallback (see docstring). Gated on the manifest
+    # advertising connector-gws so a fork that strips the connector from
+    # its seed doesn't get phantom params in every analyst's .env. Runs
+    # AFTER the allowlist filter on purpose — the injected slug is
+    # manifest-known by construction, and injecting earlier would make
+    # the unknown-slug warning above misattribute it to instance.yaml.
+    if "connector-gws" in known_slugs:
+        from app.instance_config import get_gws_oauth_credentials
+
+        creds = get_gws_oauth_credentials()
+        if creds.get("configured"):
+            server_gws = {
+                "AGNES_GWS_CLIENT_ID": creds["client_id"],
+                # Pointer to the env var holding the secret — never the
+                # secret value itself (endpoint contract above).
+                "AGNES_GWS_CLIENT_SECRET_ENV": "AGNES_GWS_CLIENT_SECRET",
+            }
+            if creds.get("project_id"):
+                server_gws["AGNES_GWS_PROJECT_ID"] = creds["project_id"]
+            filtered["connector-gws"] = {
+                **server_gws,
+                **filtered.get("connector-gws", {}),
+            }
 
     return ConnectorsParamsResponse(
         params=filtered,
