@@ -203,7 +203,106 @@ def test_send_writes_to_stdin(manager: ChatManager):
     asyncio.run(_run())
 
 
-def test_cancel_emits_synthetic_tool_result(manager: ChatManager):
+def test_send_user_message_emits_chat_message_usage_event(manager: ChatManager, monkeypatch):
+    """Every user chat turn lands one chat.message row in usage_events (via
+    the server-event emitter) so /admin/telemetry and the adoption DAU count
+    web + Slack chat activity, not just desktop CC sessions."""
+    import app.chat.manager as manager_mod
+
+    emitted: list[dict] = []
+
+    class _FakeUsageRepo:
+        def emit_server_event(self, **kw):
+            emitted.append(kw)
+            return "evt-1"
+
+    class _FakeUsersRepo:
+        def get_by_email(self, email):
+            return {"id": "user-123", "email": email}
+
+    monkeypatch.setattr(manager_mod, "usage_repo", lambda: _FakeUsageRepo())
+    monkeypatch.setattr(manager_mod, "users_repo", lambda: _FakeUsersRepo())
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        await manager.send_user_message(s.id, "hello")
+        await manager.kill(s.id, reason="test_done")
+        handle.emit_eof()
+        await attach_task
+        return s.id
+
+    sid = asyncio.run(_run())
+    assert len(emitted) == 1
+    ev = emitted[0]
+    assert ev["event_type"] == "chat.message"
+    assert ev["username"] == "u@x"
+    assert ev["user_id"] == "user-123"
+    assert ev["props"] == {"surface": "web", "session_id": sid}
+
+
+def test_send_user_message_emit_failure_does_not_break_send(manager: ChatManager, monkeypatch):
+    """A broken telemetry backend must never block a chat turn."""
+    import app.chat.manager as manager_mod
+
+    def _boom():
+        raise RuntimeError("telemetry down")
+
+    monkeypatch.setattr(manager_mod, "usage_repo", _boom)
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        await manager.send_user_message(s.id, "hello")
+        assert any(b'"hello"' in b for b in handle._stdin_buf)
+        await manager.kill(s.id, reason="test_done")
+        handle.emit_eof()
+        await attach_task
+
+    asyncio.run(_run())
+
+
+def test_send_user_message_emits_slack_surface(manager: ChatManager, monkeypatch):
+    """Slack DM turns carry surface='slack_dm' in the emitted event props."""
+    import app.chat.manager as manager_mod
+
+    emitted: list[dict] = []
+
+    class _FakeUsageRepo:
+        def emit_server_event(self, **kw):
+            emitted.append(kw)
+            return "evt-1"
+
+    monkeypatch.setattr(manager_mod, "usage_repo", lambda: _FakeUsageRepo())
+    monkeypatch.setattr(manager_mod, "users_repo", lambda: (_ for _ in ()).throw(RuntimeError("no users db")))
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="D123")
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        await manager.send_user_message(s.id, "hello")
+        await manager.kill(s.id, reason="test_done")
+        handle.emit_eof()
+        await attach_task
+
+    asyncio.run(_run())
+    assert len(emitted) == 1
+    assert emitted[0]["props"]["surface"] == "slack_dm"
+    # users lookup failed → falls back to user_id=None, username still set
+    assert emitted[0]["user_id"] is None
+    assert emitted[0]["username"] == "u@x"
+
     async def _run():
         handle = FakeHandle()
         manager._provider.spawn = AsyncMock(return_value=handle)
@@ -1049,8 +1148,7 @@ def test_linger_bails_when_runner_dies_during_inflight_turn(tmp_path):
         # tick cycles to notice the state transition.
         await asyncio.sleep(0.2)
         assert live.linger_task is None or live.linger_task.done(), (
-            "linger task must complete (not spin) when runner died "
-            "mid-turn with no sinks attached"
+            "linger task must complete (not spin) when runner died mid-turn with no sinks attached"
         )
         # And no pause was issued (state was already DEAD, not ACTIVE).
         assert not provider.paused, "DEAD session must not be paused"
@@ -1529,15 +1627,9 @@ def test_resume_from_row_co_session_uses_ephemeral_dir(manager: ChatManager, mon
 
     async def _run():
         s = await manager.create_session(user_email="owner@x", surface=Surface.WEB)
-        manager._repo._conn.execute(
-            "UPDATE chat_sessions SET is_co_session = TRUE WHERE id = ?", [s.id]
-        )
-        manager._repo.add_session_participant(
-            session_id=s.id, user_email="owner@x", user_id="u1", role="owner"
-        )
-        manager._repo.add_session_participant(
-            session_id=s.id, user_email="peer@x", user_id="u2", role="collaborator"
-        )
+        manager._repo._conn.execute("UPDATE chat_sessions SET is_co_session = TRUE WHERE id = ?", [s.id])
+        manager._repo.add_session_participant(session_id=s.id, user_email="owner@x", user_id="u1", role="owner")
+        manager._repo.add_session_participant(session_id=s.id, user_email="peer@x", user_id="u2", role="collaborator")
         manager._repo.set_sandbox_ref(s.id, sandbox_id="sbx-co", runner_pid=42)
 
         handle = FakeHandle()
