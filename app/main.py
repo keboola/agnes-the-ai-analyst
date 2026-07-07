@@ -28,6 +28,7 @@ except ImportError:
         message=r"authlib\.jose module is deprecated.*",
     )
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -370,6 +371,47 @@ async def _start_slack_socket_transport(app) -> None:
     except Exception:
         logger.exception("Slack Socket Mode disabled: start() failed")
         app.state.slack_socket_dispatcher = None
+
+
+def _state_checkpoint_interval_s() -> float:
+    """Interval for the periodic system.duckdb CHECKPOINT task (#710).
+
+    ``AGNES_STATE_CHECKPOINT_INTERVAL_S`` env override; default 300 s.
+    ``0`` (or any non-positive value) disables the task. Unparsable
+    values fall back to the default rather than silently disabling a
+    durability safeguard.
+    """
+    raw = os.environ.get("AGNES_STATE_CHECKPOINT_INTERVAL_S")
+    if raw is None or raw.strip() == "":
+        return 300.0
+    try:
+        interval = float(raw)
+    except ValueError:
+        logger.warning("AGNES_STATE_CHECKPOINT_INTERVAL_S=%r is not a number; using default 300s", raw)
+        return 300.0
+    return max(interval, 0.0)
+
+
+async def _state_checkpoint_loop(interval_s: float) -> None:
+    """Periodically fold the system.duckdb WAL into the main file (#710).
+
+    The app's long-lived singleton connection makes DuckDB defer its own
+    threshold checkpoint indefinitely, so without this loop the state-DB
+    WAL grows unbounded between graceful restarts (observed: 18.7 MB /
+    2 days on prod) and a non-graceful exit puts days of user/PAT/grant
+    writes at the mercy of a cross-version WAL replay. CHECKPOINT runs in
+    a worker thread — it can block while DuckDB flushes a large WAL.
+    """
+    from src.db import checkpoint_system_db
+
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            await asyncio.to_thread(checkpoint_system_db)
+        except Exception:
+            # checkpoint_system_db already swallows DB errors; this guards
+            # the loop itself (e.g. to_thread failure) so it never dies.
+            logger.exception("state-checkpoint tick failed; loop continues")
 
 
 @asynccontextmanager
@@ -923,8 +965,27 @@ async def lifespan(app):
     # endpoint would otherwise raise "Task group is not initialized".
     from app.api.mcp_streamable import streamable_session_manager_lifespan
 
+    # Periodic system.duckdb CHECKPOINT (#710) — see _state_checkpoint_loop.
+    # Started here (worker-only), not create_app(): the uvicorn --reload
+    # master must not touch system.duckdb (same reasoning as the seeding
+    # above). Postgres-state instances are covered by the no-open-singleton
+    # guard inside checkpoint_system_db().
+    _checkpoint_interval = _state_checkpoint_interval_s()
+    _checkpoint_task = None
+    if _checkpoint_interval > 0:
+        _checkpoint_task = asyncio.create_task(_state_checkpoint_loop(_checkpoint_interval), name="state-checkpoint")
+        logger.info("Periodic state-DB CHECKPOINT every %.0fs", _checkpoint_interval)
+    else:
+        logger.info("Periodic state-DB CHECKPOINT disabled (AGNES_STATE_CHECKPOINT_INTERVAL_S=0)")
+
     async with streamable_session_manager_lifespan(app):
         yield
+    if _checkpoint_task is not None:
+        _checkpoint_task.cancel()
+        try:
+            await _checkpoint_task
+        except (asyncio.CancelledError, Exception):
+            pass  # shutdown path — close_system_db() below does the final CHECKPOINT
     _socket_disp = getattr(app.state, "slack_socket_dispatcher", None)
     if _socket_disp is not None:
         try:
