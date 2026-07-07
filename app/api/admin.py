@@ -264,6 +264,7 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "materialize",
     "guardrails",
     "marketplace",
+    "connectors",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -856,6 +857,25 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "(e.g. an internal wiki page listing curators accountable for "
                 "the curated marketplace). Empty → the link is hidden. "
                 "Validated against private-IP allowlist on save (SSRF guard)."
+            ),
+        },
+    },
+    # Per-tenant connector params served by GET /api/connectors/params and
+    # written into every analyst's `.claude/agnes/.env` by `agnes init`.
+    # Only `globals` is registry-known — the sibling keys are per-connector
+    # slugs (connector-gws, connector-atlassian, …) whose set comes from the
+    # seed manifest at runtime, so they can't be enumerated statically here.
+    # Operators add them via the section's JSON editor; unknown slugs are
+    # dropped (with a server-side warning) by the manifest allowlist in
+    # app/api/connectors.py.
+    "connectors": {
+        "globals": {
+            "kind": "object",
+            "hint": (
+                "Instance-wide params written to every analyst's .env "
+                "(e.g. AGNES_INSTANCE_BRAND). Secret VALUES don't belong "
+                "here — use *_ENV keys naming the env var that holds the "
+                "secret."
             ),
         },
     },

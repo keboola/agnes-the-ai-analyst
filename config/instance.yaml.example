@@ -626,6 +626,16 @@ chat:
 # endpoint /api/connectors/params returns {}), seed skills fall back to
 # interactive prompts.
 #
+# GWS exception: when the shared Google Workspace OAuth client is
+# provisioned outside this overlay (server env vars AGNES_GWS_CLIENT_ID /
+# AGNES_GWS_CLIENT_SECRET, the admin vault, or `instance.gws.*` above),
+# /api/connectors/params merges the equivalent `connector-gws` keys into
+# its response automatically — no need to repeat them here. Keys set here
+# win over the server-resolved values.
+#
+# This section is also editable at runtime via /admin/server-config
+# (persisted to the DATA_DIR/state/instance.yaml overlay).
+#
 # connectors:
 #   globals:
 #     AGNES_INSTANCE_BRAND: Acme Analytics
