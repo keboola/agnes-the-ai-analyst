@@ -4,10 +4,13 @@ from typer.testing import CliRunner
 
 # CI-safety: Typer/rich emits ANSI escapes in --help output. Strip before asserts.
 _ANSI_RE = __import__("re").compile(r"\x1b\[[0-9;]*m")
+
+
 def _clean(s: str) -> str:
     return _ANSI_RE.sub("", s)
 
-from cli.commands.init import init_app
+
+from cli.commands.init import init_app  # noqa: E402
 
 runner = CliRunner()
 
@@ -60,11 +63,17 @@ def test_init_writes_expected_files(tmp_path, monkeypatch):
     monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
     monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
 
-    result = runner.invoke(init_app, [
-        "--server-url", "http://test.example.com",
-        "--token", "test-pat",
-        "--workspace", str(tmp_path),
-    ])
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://test.example.com",
+            "--token",
+            "test-pat",
+            "--workspace",
+            str(tmp_path),
+        ],
+    )
     assert result.exit_code == 0, result.output
     assert (tmp_path / "CLAUDE.md").exists()
     assert "agnes pull" in (tmp_path / "CLAUDE.md").read_text()
@@ -76,6 +85,7 @@ def test_init_writes_expected_files(tmp_path, monkeypatch):
     # init anchors the workspace root in config so `agnes push` (and its
     # SessionEnd hook) can find the Claude Code session folder.
     from cli.config import get_workspace_root
+
     assert get_workspace_root() == str(tmp_path.resolve())
 
 
@@ -86,15 +96,25 @@ def test_init_no_dead_dirs_zero_grants(tmp_path, monkeypatch):
     monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
     monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
 
-    runner.invoke(init_app, [
-        "--server-url", "http://x",
-        "--token", "t",
-        "--workspace", str(tmp_path),
-    ])
+    runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token",
+            "t",
+            "--workspace",
+            str(tmp_path),
+        ],
+    )
     for forbidden in [
-        "data/parquet", "data/duckdb", "data/metadata",
-        "user/artifacts", "user/sessions",
-        "server/parquet", ".claude/rules",
+        "data/parquet",
+        "data/duckdb",
+        "data/metadata",
+        "user/artifacts",
+        "user/sessions",
+        "server/parquet",
+        ".claude/rules",
     ]:
         assert not (tmp_path / forbidden).exists(), f"forbidden created: {forbidden}"
 
@@ -107,22 +127,34 @@ def test_init_force_preserves_local_md(tmp_path, monkeypatch):
     monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
 
     # First init seeds the workspace + writes the default CLAUDE.local.md stub.
-    r1 = runner.invoke(init_app, [
-        "--server-url", "http://x",
-        "--token", "t",
-        "--workspace", str(tmp_path),
-    ])
+    r1 = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token",
+            "t",
+            "--workspace",
+            str(tmp_path),
+        ],
+    )
     assert r1.exit_code == 0, r1.output
     (tmp_path / ".claude" / "CLAUDE.local.md").write_text("# my notes")
 
     # Second init with --force must overwrite CLAUDE.md but leave the
     # operator-written CLAUDE.local.md alone.
-    r2 = runner.invoke(init_app, [
-        "--server-url", "http://x",
-        "--token", "t",
-        "--workspace", str(tmp_path),
-        "--force",
-    ])
+    r2 = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token",
+            "t",
+            "--workspace",
+            str(tmp_path),
+            "--force",
+        ],
+    )
     assert r2.exit_code == 0, r2.output
     assert "my notes" in (tmp_path / ".claude" / "CLAUDE.local.md").read_text()
 
@@ -140,16 +172,20 @@ def test_init_force_backs_up_existing_claude_md(tmp_path, monkeypatch):
     monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
 
     # Seed an existing CLAUDE.md the operator has edited.
-    (tmp_path / "CLAUDE.md").write_text(
-        "# AI Data Analyst\n\nMy custom edits — must survive reinit.\n"
-    )
+    (tmp_path / "CLAUDE.md").write_text("# AI Data Analyst\n\nMy custom edits — must survive reinit.\n")
 
-    r = runner.invoke(init_app, [
-        "--server-url", "http://x",
-        "--token", "t",
-        "--workspace", str(tmp_path),
-        "--force",
-    ])
+    r = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token",
+            "t",
+            "--workspace",
+            str(tmp_path),
+            "--force",
+        ],
+    )
     assert r.exit_code == 0, r.output
 
     # Backup file: glob since the timestamp is dynamic.
@@ -180,11 +216,17 @@ def test_init_deletes_bootstrap_token_file(tmp_path, monkeypatch):
     token_file = bootstrap_dir / "token"
     token_file.write_text("eyJ-bootstrap-pat\n", encoding="utf-8")
 
-    result = runner.invoke(init_app, [
-        "--server-url", "http://x",
-        "--token-file", str(token_file),
-        "--workspace", str(tmp_path / "ws"),
-    ])
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token-file",
+            str(token_file),
+            "--workspace",
+            str(tmp_path / "ws"),
+        ],
+    )
     assert result.exit_code == 0, result.output
     assert not token_file.exists(), "~/.agnes/token should be deleted after init"
 
@@ -200,11 +242,17 @@ def test_init_succeeds_when_bootstrap_token_absent(tmp_path, monkeypatch):
     monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
     monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
 
-    result = runner.invoke(init_app, [
-        "--server-url", "http://x",
-        "--token", "inline-pat",
-        "--workspace", str(tmp_path / "ws"),
-    ])
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token",
+            "inline-pat",
+            "--workspace",
+            str(tmp_path / "ws"),
+        ],
+    )
     assert result.exit_code == 0, result.output
 
 
@@ -214,18 +262,25 @@ def test_init_partial_state_friendly_exit(tmp_path, monkeypatch):
     workspace = tmp_path
     (workspace / "CLAUDE.md").write_text("# AI Data Analyst\n")
     # Without --force, init should refuse and print a hint
-    result = runner.invoke(init_app, [
-        "--server-url", "http://x",
-        "--token", "t",
-        "--workspace", str(workspace),
-    ])
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token",
+            "t",
+            "--workspace",
+            str(workspace),
+        ],
+    )
     assert result.exit_code == 1
-    assert "Traceback" not in (_clean(result.output) + _clean(result.stderr or ''))
+    assert "Traceback" not in (_clean(result.output) + _clean(result.stderr or ""))
 
 
 def test_init_auth_failed_on_401(tmp_path, monkeypatch):
     """PAT verify endpoint returns 401 -> auth_failed typed error, exit 1."""
     from unittest.mock import MagicMock
+
     monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
 
     def _api_get(path, *args, **kwargs):
@@ -236,11 +291,17 @@ def test_init_auth_failed_on_401(tmp_path, monkeypatch):
 
     monkeypatch.setattr("cli.commands.init.api_get", _api_get, raising=False)
 
-    result = runner.invoke(init_app, [
-        "--server-url", "http://x",
-        "--token", "bad-pat",
-        "--workspace", str(tmp_path),
-    ])
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token",
+            "bad-pat",
+            "--workspace",
+            str(tmp_path),
+        ],
+    )
     assert result.exit_code == 1
     output = result.output + (result.stderr or "")
     assert "Traceback" not in output
@@ -257,11 +318,17 @@ def test_init_server_unreachable_on_connect_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr("cli.commands.init.api_get", _api_get, raising=False)
 
-    result = runner.invoke(init_app, [
-        "--server-url", "http://unreachable.example.com",
-        "--token", "test-pat",
-        "--workspace", str(tmp_path),
-    ])
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://unreachable.example.com",
+            "--token",
+            "test-pat",
+            "--workspace",
+            str(tmp_path),
+        ],
+    )
     assert result.exit_code == 1
     output = result.output + (result.stderr or "")
     assert "Traceback" not in output
@@ -300,11 +367,17 @@ def test_init_manifest_unauthorized_when_pull_records_manifest_error(tmp_path, m
 
     monkeypatch.setattr("cli.commands.init.run_pull", _fake_run_pull, raising=False)
 
-    result = runner.invoke(init_app, [
-        "--server-url", "http://x",
-        "--token", "t",
-        "--workspace", str(tmp_path),
-    ])
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token",
+            "t",
+            "--workspace",
+            str(tmp_path),
+        ],
+    )
     assert result.exit_code == 1
     output = result.output + (result.stderr or "")
     assert "Traceback" not in output
@@ -335,10 +408,15 @@ def test_init_uses_explicit_token_arg_not_stale_disk_token(tmp_path, monkeypatch
     # Seed a stale token on disk — this is what the bug exposed: the verify
     # call would prefer this over the --token arg.
     token_file = cfg_dir / "token.json"
-    token_file.write_text(json.dumps({
-        "access_token": "STALE-DO-NOT-USE",
-        "email": "old@example.com",
-    }), encoding="utf-8")
+    token_file.write_text(
+        json.dumps(
+            {
+                "access_token": "STALE-DO-NOT-USE",
+                "email": "old@example.com",
+            }
+        ),
+        encoding="utf-8",
+    )
 
     captured = {"verify_token": None}
 
@@ -349,6 +427,7 @@ def test_init_uses_explicit_token_arg_not_stale_disk_token(tmp_path, monkeypatch
         # value.
         if path == "/api/catalog/tables":
             from cli.config import get_token
+
             captured["verify_token"] = get_token()
         resp = MagicMock()
         resp.status_code = 200
@@ -365,12 +444,18 @@ def test_init_uses_explicit_token_arg_not_stale_disk_token(tmp_path, monkeypatch
     monkeypatch.setattr("cli.commands.init.api_get", _api_get, raising=False)
     monkeypatch.setattr("cli.lib.pull.api_get", _api_get, raising=False)
 
-    result = runner.invoke(init_app, [
-        "--server-url", "http://x",
-        "--token", "FRESH-PAT-FROM-USER",
-        "--workspace", str(tmp_path / "ws"),
-        "--force",
-    ])
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token",
+            "FRESH-PAT-FROM-USER",
+            "--workspace",
+            str(tmp_path / "ws"),
+            "--force",
+        ],
+    )
 
     assert captured["verify_token"] == "FRESH-PAT-FROM-USER", (
         "Step 2 verify call must use the explicit --token arg, "
@@ -516,7 +601,9 @@ def test_shortcut_idempotent_no_duplicate(tmp_path, monkeypatch):
 
     bashrc = home / ".bashrc"
     content = bashrc.read_text(encoding="utf-8")
-    assert content.count("# >>> agnes launcher: myworkspace <<<") == 1, "Marker appears more than once — shortcut is not idempotent"
+    assert content.count("# >>> agnes launcher: myworkspace <<<") == 1, (
+        "Marker appears more than once — shortcut is not idempotent"
+    )
 
 
 def test_shortcut_no_shortcut_flag_writes_nothing(tmp_path, monkeypatch):
@@ -575,9 +662,7 @@ def test_init_no_shortcut_flag_accepted(tmp_path, monkeypatch):
     bashrc = home / ".bashrc"
     for rc in (zshrc, bashrc):
         if rc.exists():
-            assert "# >>> agnes launcher" not in rc.read_text(), (
-                f"{rc} contains launcher marker despite --no-shortcut"
-            )
+            assert "# >>> agnes launcher" not in rc.read_text(), f"{rc} contains launcher marker despite --no-shortcut"
 
 
 def test_init_writes_shortcut_and_reports_it(tmp_path, monkeypatch):
@@ -715,3 +800,15 @@ def test_shortcut_skips_when_name_has_no_alphanumerics(tmp_path, monkeypatch, ca
     assert not (home / ".bashrc").exists()
     captured = capsys.readouterr()
     assert "skipping shortcut" in captured.err
+
+
+def test_launcher_word_avoids_shell_builtin_collision():
+    """A workspace named 'Test' would produce 'test' which shadows the POSIX
+    built-in; the guard appends 'ai' so the function name is 'testai'."""
+    from cli.lib import shortcut as sc
+
+    assert sc._launcher_word("Test") == "testai"
+    assert sc._launcher_word("CD") == "cdai"
+    # Non-built-in names are unaffected.
+    assert sc._launcher_word("MyWorkspace") == "myworkspace"
+    assert sc._launcher_word("Agnes") == "agnes"

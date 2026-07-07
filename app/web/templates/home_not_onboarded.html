@@ -84,8 +84,8 @@
                 aria-label="I'm already set up — close this setup hero">&times;</button>
 
         {# Progress meta — visual hint that the wizard is bounded ("~15 min,
-           one-time, reversible"). Six steps total when home_automode is
-           enabled, five when it's disabled (the "Launch Claude with
+           one-time, reversible"). Five steps total when home_automode is
+           enabled, four when it's disabled (the "Launch Claude with
            auto-approve" step hides via {% if home_automode.show %}).
            Pre-empt: when more steps land in future iterations, just
            bump the total_steps default; per-step numbering inside
@@ -248,7 +248,7 @@ What can I help you with?
             <p class="step-lede">
                 Click the button below. {{ instance_brand }} generates a one-time install script
                 (with a 90-day login token) and copies it to your clipboard. Then paste it into the
-                Claude prompt from Step&nbsp;4 (<kbd>⌘</kbd>+<kbd>V</kbd> on macOS,
+                Claude prompt{% if home_automode.show %} from Step&nbsp;4{% endif %} (<kbd>⌘</kbd>+<kbd>V</kbd> on macOS,
                 <kbd>Ctrl</kbd>+<kbd>V</kbd> on Windows) and hit Enter. The script installs ~20 things
                 (the marketplace, your team's plugins, data package definitions, hooks that keep
                 everything in sync) into <code>~/Desktop/{{ workspace_dir }}</code>.

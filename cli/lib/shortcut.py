@@ -34,6 +34,54 @@ from pathlib import Path
 import typer
 
 
+# POSIX built-ins / common commands that must not be shadowed by the launcher.
+# Sourced from the POSIX spec plus a handful of universally-present utilities.
+_SHELL_BUILTINS: frozenset[str] = frozenset(
+    {
+        "alias",
+        "bg",
+        "break",
+        "builtin",
+        "cd",
+        "command",
+        "continue",
+        "echo",
+        "eval",
+        "exec",
+        "exit",
+        "export",
+        "false",
+        "fc",
+        "fg",
+        "getopts",
+        "hash",
+        "jobs",
+        "kill",
+        "let",
+        "local",
+        "logout",
+        "printf",
+        "pwd",
+        "read",
+        "readonly",
+        "return",
+        "set",
+        "shift",
+        "source",
+        "test",
+        "times",
+        "trap",
+        "true",
+        "type",
+        "ulimit",
+        "umask",
+        "unalias",
+        "unset",
+        "wait",
+    }
+)
+
+
 def _launcher_word(workspace_name: str) -> str:
     """Derive a shell-safe launcher word from the workspace folder name.
 
@@ -44,8 +92,15 @@ def _launcher_word(workspace_name: str) -> str:
     (e.g. ``FoundryAI`` → ``foundryai``) are unaffected, so the
     ``bin/<word>`` IWT convention still resolves.  Returns ``""`` when the
     name has no alphanumeric characters at all (caller skips + warns).
+
+    Appends ``"ai"`` when the sanitized word collides with a POSIX shell
+    built-in (e.g. workspace ``"Test"`` → ``"testai"`` rather than ``"test"``
+    which would shadow the built-in).
     """
-    return re.sub(r"[^A-Za-z0-9]", "", workspace_name).lower()
+    word = re.sub(r"[^A-Za-z0-9]", "", workspace_name).lower()
+    if word in _SHELL_BUILTINS:
+        word = word + "ai"
+    return word
 
 
 # The open/close sentinels embed the workspace word so each workspace gets its
