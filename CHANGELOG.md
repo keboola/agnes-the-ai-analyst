@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- Collections hybrid search: IDF-weighted lexical scoring (a chunk matching a term rare across the candidate set outweighs one matching only common terms), min-max normalized components, and a deterministic tie-break — on tiny corpora, the old "fraction of query terms present" score tied at 1.0 and was broken arbitrarily by DB fetch order. Results now carry a calibrated `confidence` ("high"/"medium"/"low") that stays "low" on small/undiscriminating corpora or thin score margins, surfaced next to the score on the collection detail page; the library pages also gained a short explainer of what to upload and how search works (#756)
 
 ### Removed
 

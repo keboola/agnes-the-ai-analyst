@@ -545,6 +545,21 @@ class TestSearch:
         assert any("magic" in (r.get("text") or "") for r in results)
         assert results[0]["filename"] == "d.txt"
 
+    def test_search_results_carry_confidence(self, seeded_app):
+        """#756: the calibrated confidence label from retrieval.search()
+        must pass through the API response unchanged."""
+        c = seeded_app["client"]
+        self._seed_corpus_with_chunk(seeded_app, "Confident", "the magic keyword appears here", grant=True)
+        resp = c.get(
+            "/api/collections/search",
+            params={"q": "magic keyword"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 200, resp.text
+        results = resp.json()["results"]
+        assert results
+        assert results[0]["confidence"] in ("high", "medium", "low")
+
     def test_search_fail_closed_excludes_ungranted(self, seeded_app):
         c = seeded_app["client"]
         # Collection is NOT granted to analyst1.
