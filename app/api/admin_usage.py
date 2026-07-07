@@ -15,7 +15,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -376,6 +376,19 @@ def reprocess_usage(
     except Exception as e:
         logger.exception("reprocess failed")
         raise HTTPException(status_code=500, detail=f"reprocess failed: {e}")
+
+    # Full rebuild (since_day=None) immediately re-establishes a consistent
+    # rollup state — #728. Right after reset_all, usage_events is empty (the
+    # next scheduler tick re-scans every session jsonl and repopulates it);
+    # the real payoff is that any FUTURE rollup rebuild that finds re-ingested
+    # history covers it in full, since the free-function's old "since_day=None
+    # -> today-7" default (the bug this PR fixes) used to leave days 8+ back
+    # empty forever after a reprocess. Best-effort: a failure here shouldn't
+    # fail the reprocess request itself (the reset already succeeded).
+    try:
+        usage_repo().rebuild_rollups(force_30d=True)
+    except Exception:
+        logger.exception("usage rollup rebuild after reprocess failed; continuing")
 
     try:
         audit_repo().log(
