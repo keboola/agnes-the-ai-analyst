@@ -277,9 +277,7 @@ class MarketplaceItemLookup:
 
     def __init__(self, conn):
         self._curated_plugins: set[str] = {
-            row[0] for row in conn.execute(
-                "SELECT DISTINCT name FROM marketplace_plugins"
-            ).fetchall()
+            row[0] for row in conn.execute("SELECT DISTINCT name FROM marketplace_plugins").fetchall()
         }
         # v49 phase-5: lookup table keyed by `synthetic_name` (the
         # `<name>-by-<owner>` slug baked into the served plugin tree). Claude
@@ -288,7 +286,8 @@ class MarketplaceItemLookup:
         # (un-suffixed) never landed. Type comes along so the rollup writer
         # knows whether to record the invocation as skill / agent / plugin.
         self._flea_entities: dict[str, str] = {
-            row[0]: row[1] for row in conn.execute(
+            row[0]: row[1]
+            for row in conn.execute(
                 "SELECT synthetic_name, type FROM store_entities WHERE visibility_status='approved'"
             ).fetchall()
         }
@@ -300,8 +299,7 @@ class MarketplaceItemLookup:
         # Code resolves at install time (v49 phase-4: `data["name"] = suffixed`
         # in `_bake_plugin_tree` for type='plugin' entities).
         self._flea_plugins: set[str] = {
-            synthetic for synthetic, ent_type in self._flea_entities.items()
-            if ent_type == "plugin"
+            synthetic for synthetic, ent_type in self._flea_entities.items() if ent_type == "plugin"
         }
 
     def resolve(self, event: ParsedEvent) -> tuple[str, str, str | None, str | None]:
@@ -492,9 +490,15 @@ def _identifier_split(skill_name, subagent_type, command_name, event_type):
     return None, None, None
 
 
-def _attribute_event(curated_plugins: set[str], flea_entities: dict[str, str],
-                     flea_plugins: set[str],
-                     skill_name, subagent_type, command_name, event_type):
+def _attribute_event(
+    curated_plugins: set[str],
+    flea_entities: dict[str, str],
+    flea_plugins: set[str],
+    skill_name,
+    subagent_type,
+    command_name,
+    event_type,
+):
     """Resolve one event to (source, type, parent_plugin, name).
 
     Returns None when the event doesn't belong in marketplace rollups
@@ -530,8 +534,7 @@ def _attribute_event(curated_plugins: set[str], flea_entities: dict[str, str],
     return None
 
 
-def _aggregate_events(events_rows, curated_plugins, flea_entities,
-                      flea_plugins, *, group_by_day: bool):
+def _aggregate_events(events_rows, curated_plugins, flea_entities, flea_plugins, *, group_by_day: bool):
     """Walk raw event rows and produce aggregated buckets.
 
     ``events_rows`` shape: (day, user_id, is_error, skill_name, subagent_type,
@@ -546,8 +549,7 @@ def _aggregate_events(events_rows, curated_plugins, flea_entities,
     leaf: dict[tuple, dict] = {}
     for row in events_rows:
         day, uid, is_err, sk, sa, cm, etype = row
-        attributed = _attribute_event(curated_plugins, flea_entities, flea_plugins,
-                                      sk, sa, cm, etype)
+        attributed = _attribute_event(curated_plugins, flea_entities, flea_plugins, sk, sa, cm, etype)
         if attributed is None:
             continue
         source, type_, parent, name = attributed
@@ -594,8 +596,7 @@ def _aggregate_events(events_rows, curated_plugins, flea_entities,
 def _last_30d_due(conn) -> bool:
     """True if the 30d window has not been refreshed within the threshold."""
     row = conn.execute(
-        "SELECT processed_at FROM session_processor_state "
-        "WHERE processor_name = ? AND session_file = '__rollup__'",
+        "SELECT processed_at FROM session_processor_state WHERE processor_name = ? AND session_file = '__rollup__'",
         [_MARKETPLACE_30D_TRACKER],
     ).fetchone()
     if row is None:
@@ -651,18 +652,14 @@ def rebuild_rollups(conn, *, since_day=None, force_30d: bool = False) -> None:
     # v49 phase-5: dict keyed by `synthetic_name` (matches the JSONL invocation
     # local-part) instead of `name`. `flea_plugins` set drives the
     # `<plugin>:<inner>` nested-attribution branch in `_attribute_event`.
-    curated_plugins = {
-        r[0] for r in conn.execute("SELECT DISTINCT name FROM marketplace_plugins").fetchall()
-    }
+    curated_plugins = {r[0] for r in conn.execute("SELECT DISTINCT name FROM marketplace_plugins").fetchall()}
     flea_entities = {
-        r[0]: r[1] for r in conn.execute(
+        r[0]: r[1]
+        for r in conn.execute(
             "SELECT synthetic_name, type FROM store_entities WHERE visibility_status='approved'"
         ).fetchall()
     }
-    flea_plugins = {
-        synthetic for synthetic, ent_type in flea_entities.items()
-        if ent_type == "plugin"
-    }
+    flea_plugins = {synthetic for synthetic, ent_type in flea_entities.items() if ent_type == "plugin"}
 
     do_30d = force_30d or _last_30d_due(conn)
 
@@ -708,7 +705,10 @@ def rebuild_rollups(conn, *, since_day=None, force_30d: bool = False) -> None:
             [since_day],
         ).fetchall()
         daily_buckets = _aggregate_events(
-            daily_events, curated_plugins, flea_entities, flea_plugins,
+            daily_events,
+            curated_plugins,
+            flea_entities,
+            flea_plugins,
             group_by_day=True,
         )
         conn.execute("DELETE FROM usage_marketplace_item_daily WHERE day >= ?", [since_day])
@@ -728,14 +728,24 @@ def rebuild_rollups(conn, *, since_day=None, force_30d: bool = False) -> None:
         # ---- New: usage_marketplace_item_window period_label='last_7d' (full) ----
         cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).date()
         _rebuild_window(
-            conn, "last_7d", cutoff_7d, curated_plugins, flea_entities, flea_plugins,
+            conn,
+            "last_7d",
+            cutoff_7d,
+            curated_plugins,
+            flea_entities,
+            flea_plugins,
         )
 
         # ---- New: usage_marketplace_item_window period_label='last_30d' (hourly) ----
         if do_30d:
             cutoff_30d = (datetime.now(timezone.utc) - timedelta(days=30)).date()
             _rebuild_window(
-                conn, "last_30d", cutoff_30d, curated_plugins, flea_entities, flea_plugins,
+                conn,
+                "last_30d",
+                cutoff_30d,
+                curated_plugins,
+                flea_entities,
+                flea_plugins,
             )
             _mark_last_30d_refreshed(conn)
 
@@ -748,8 +758,7 @@ def rebuild_rollups(conn, *, since_day=None, force_30d: bool = False) -> None:
         raise
 
 
-def _rebuild_window(conn, period_label: str, cutoff_day, curated_plugins,
-                    flea_entities, flea_plugins) -> None:
+def _rebuild_window(conn, period_label: str, cutoff_day, curated_plugins, flea_entities, flea_plugins) -> None:
     """Full DELETE+INSERT of one period_label in usage_marketplace_item_window.
 
     Caller wraps the call in a BEGIN/COMMIT transaction along with the
@@ -771,7 +780,10 @@ def _rebuild_window(conn, period_label: str, cutoff_day, curated_plugins,
         [cutoff_day],
     ).fetchall()
     buckets = _aggregate_events(
-        events, curated_plugins, flea_entities, flea_plugins,
+        events,
+        curated_plugins,
+        flea_entities,
+        flea_plugins,
         group_by_day=False,
     )
     conn.execute(

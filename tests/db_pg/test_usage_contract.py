@@ -72,10 +72,22 @@ def usage_repo(request, tmp_path, pg_engine, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _seed_summary(repo, *, session_file, username, user_id=None, started_at,
-                  primary_model="claude-x", input_tokens=0, output_tokens=0,
-                  cache_read_tokens=0, cache_creation_tokens=0,
-                  tool_calls=0, tool_errors=0, user_messages=0):
+def _seed_summary(
+    repo,
+    *,
+    session_file,
+    username,
+    user_id=None,
+    started_at,
+    primary_model="claude-x",
+    input_tokens=0,
+    output_tokens=0,
+    cache_read_tokens=0,
+    cache_creation_tokens=0,
+    tool_calls=0,
+    tool_errors=0,
+    user_messages=0,
+):
     repo.upsert_summary(
         {
             "session_file": session_file,
@@ -99,8 +111,7 @@ def _seed_summary(repo, *, session_file, username, user_id=None, started_at,
     )
 
 
-def _seed_event(repo, *, event_id, username, session_file, occurred_at,
-                tool_name="Read", user_id=None):
+def _seed_event(repo, *, event_id, username, session_file, occurred_at, tool_name="Read", user_id=None):
     repo.upsert_events(
         [
             {
@@ -170,8 +181,11 @@ def test_reset_all_zeroes_tables_and_returns_counts(usage_repo):
     counts = repo.reset_all()
     # All five usage tables are reported.
     assert set(counts.keys()) == {
-        "events", "session_summary", "tool_daily",
-        "marketplace_item_daily", "marketplace_item_window",
+        "events",
+        "session_summary",
+        "tool_daily",
+        "marketplace_item_daily",
+        "marketplace_item_window",
     }
     assert counts["events"] == 1
     assert counts["session_summary"] == 2
@@ -224,8 +238,14 @@ def test_list_sessions_for_user_admin_filters_on_user_id_or_username(usage_repo)
     assert files == {"u/s1.jsonl", "u/s2.jsonl"}
     # 9-column shape.
     assert set(rows[0].keys()) == {
-        "session_file", "session_id", "started_at", "ended_at",
-        "active_seconds", "wall_seconds", "tool_calls", "tool_errors",
+        "session_file",
+        "session_id",
+        "started_at",
+        "ended_at",
+        "active_seconds",
+        "wall_seconds",
+        "tool_calls",
+        "tool_errors",
         "primary_model",
     }
 
@@ -242,11 +262,19 @@ def test_list_sessions_for_user_self_filters_on_username_only(usage_repo):
     assert files == {"d/s1.jsonl"}
     # 14-column shape.
     assert set(rows[0].keys()) == {
-        "session_file", "session_id", "started_at", "ended_at",
-        "active_seconds", "wall_seconds",
-        "user_messages", "tool_calls", "tool_errors",
-        "input_tokens", "output_tokens",
-        "cache_read_tokens", "cache_creation_tokens",
+        "session_file",
+        "session_id",
+        "started_at",
+        "ended_at",
+        "active_seconds",
+        "wall_seconds",
+        "user_messages",
+        "tool_calls",
+        "tool_errors",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_creation_tokens",
         "primary_model",
     }
 
@@ -255,14 +283,26 @@ def test_tokens_totals_and_by_model(usage_repo):
     repo, _, _ = usage_repo
     now = datetime.now(timezone.utc)
     _seed_summary(
-        repo, session_file="t/s1.jsonl", username="erin", started_at=now,
+        repo,
+        session_file="t/s1.jsonl",
+        username="erin",
+        started_at=now,
         primary_model="claude-a",
-        input_tokens=10, output_tokens=20, cache_read_tokens=3, cache_creation_tokens=2,
+        input_tokens=10,
+        output_tokens=20,
+        cache_read_tokens=3,
+        cache_creation_tokens=2,
     )
     _seed_summary(
-        repo, session_file="t/s2.jsonl", username="erin", started_at=now,
+        repo,
+        session_file="t/s2.jsonl",
+        username="erin",
+        started_at=now,
         primary_model="claude-b",
-        input_tokens=100, output_tokens=200, cache_read_tokens=0, cache_creation_tokens=0,
+        input_tokens=100,
+        output_tokens=200,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
     )
 
     totals = repo.tokens_totals("erin")
@@ -283,10 +323,12 @@ def test_tokens_totals_and_by_model(usage_repo):
 def test_tokens_top_sessions_orders_by_total(usage_repo):
     repo, _, _ = usage_repo
     now = datetime.now(timezone.utc)
-    _seed_summary(repo, session_file="ts/small.jsonl", username="frank", started_at=now,
-                  input_tokens=1, output_tokens=1)
-    _seed_summary(repo, session_file="ts/big.jsonl", username="frank", started_at=now,
-                  input_tokens=1000, output_tokens=1000)
+    _seed_summary(
+        repo, session_file="ts/small.jsonl", username="frank", started_at=now, input_tokens=1, output_tokens=1
+    )
+    _seed_summary(
+        repo, session_file="ts/big.jsonl", username="frank", started_at=now, input_tokens=1000, output_tokens=1000
+    )
 
     top = repo.tokens_top_sessions("frank", limit=10)
     assert top[0]["session_file"] == "ts/big.jsonl"
@@ -299,8 +341,7 @@ def test_tokens_top_sessions_orders_by_total(usage_repo):
 def test_tokens_daily_series_window(usage_repo):
     repo, _, _ = usage_repo
     now = datetime.now(timezone.utc)
-    _seed_summary(repo, session_file="ds/s1.jsonl", username="grace", started_at=now,
-                  input_tokens=5, output_tokens=5)
+    _seed_summary(repo, session_file="ds/s1.jsonl", username="grace", started_at=now, input_tokens=5, output_tokens=5)
 
     series = repo.tokens_daily_series("grace", days=30)
     assert len(series) == 1
@@ -314,12 +355,30 @@ def test_tokens_daily_series_filters_username_and_days(usage_repo):
     reflects only the requested user's in-window totals."""
     repo, _, _ = usage_repo
     now = datetime.now(timezone.utc)
-    _seed_summary(repo, session_file="ds/current.jsonl", username="grace",
-                  started_at=now - timedelta(days=5), input_tokens=5, output_tokens=5)
-    _seed_summary(repo, session_file="ds/old.jsonl", username="grace",
-                  started_at=now - timedelta(days=45), input_tokens=500, output_tokens=500)
-    _seed_summary(repo, session_file="ds/other.jsonl", username="heidi",
-                  started_at=now - timedelta(days=5), input_tokens=50, output_tokens=50)
+    _seed_summary(
+        repo,
+        session_file="ds/current.jsonl",
+        username="grace",
+        started_at=now - timedelta(days=5),
+        input_tokens=5,
+        output_tokens=5,
+    )
+    _seed_summary(
+        repo,
+        session_file="ds/old.jsonl",
+        username="grace",
+        started_at=now - timedelta(days=45),
+        input_tokens=500,
+        output_tokens=500,
+    )
+    _seed_summary(
+        repo,
+        session_file="ds/other.jsonl",
+        username="heidi",
+        started_at=now - timedelta(days=5),
+        input_tokens=50,
+        output_tokens=50,
+    )
 
     series = repo.tokens_daily_series("grace", days=30)
     assert len(series) == 1
@@ -340,10 +399,16 @@ def test_delete_older_than_removes_only_events_before_cutoff(usage_repo):
     dialect-specific interval arithmetic)."""
     repo, _, _ = usage_repo
     now = datetime.now(timezone.utc)
-    _seed_event(repo, event_id="old", username="alice",
-                session_file="retention/old.jsonl", occurred_at=now - timedelta(days=40))
-    _seed_event(repo, event_id="recent", username="alice",
-                session_file="retention/recent.jsonl", occurred_at=now - timedelta(days=5))
+    _seed_event(
+        repo, event_id="old", username="alice", session_file="retention/old.jsonl", occurred_at=now - timedelta(days=40)
+    )
+    _seed_event(
+        repo,
+        event_id="recent",
+        username="alice",
+        session_file="retention/recent.jsonl",
+        occurred_at=now - timedelta(days=5),
+    )
 
     assert repo.delete_older_than(30) == 1
     assert repo.count_events() == 1
