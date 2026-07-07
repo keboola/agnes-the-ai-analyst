@@ -19,6 +19,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+## [0.74.5] - 2026-07-07
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
 - Test-suite disk hygiene: `pytest.ini` now sets `tmp_path_retention_count = 1` (down from the default 3) — a full-suite run writes 20–50 GB of DuckDB/parquet/pgserver fixtures into pytest's basetemp, and retaining the last 3 sessions accumulated 56+ GB and filled the disk, failing a run with thousands of spurious errors. Retaining a single session lets the next run's startup sweep reclaim the prior one (~3× less peak). Deliberately keeps the default `tmp_path_retention_policy = all` rather than `failed`: `failed` deletes each passing test's `tmp_path` mid-session, which desyncs the cached DuckDB system-DB connection (`get_system_db()` singleton) from disk and makes later tests fail with duplicate-key errors in the `seeded_app` fixture. A session-scoped reaper fixture (`tests/db_pg/pgserver_reaper.py`) additionally removes `agnes-pgserver-*` data dirs orphaned by hard-killed runs (older than 1 h, `postmaster.pid` process gone); live concurrent-worktree sessions are never touched.
 
 ## [0.74.4] - 2026-07-03
