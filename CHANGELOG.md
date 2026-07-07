@@ -15,6 +15,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.6] - 2026-07-07
+
+### Added
+
+### Changed
+
+### Fixed
 - Tokenize the last hardcoded success-green (`#10b981`) in `/admin/users` — the enabled-state toggle slider now uses `var(--ds-accent-success-line)` like the copy-button fixed in #667, so it follows theme overrides.
 
 ### Removed
