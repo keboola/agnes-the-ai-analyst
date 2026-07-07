@@ -18,6 +18,7 @@ from services.session_processors.usage_lib import rebuild_rollups
 def _fresh_db(tmp_path, monkeypatch) -> duckdb.DuckDBPyConnection:
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     import src.db as db_module
+
     db_module._system_db_conn = None
     db_module._system_db_path = None
     return db_module.get_system_db()
@@ -25,8 +26,7 @@ def _fresh_db(tmp_path, monkeypatch) -> duckdb.DuckDBPyConnection:
 
 def _seed_curated_plugin(conn, plugin_name: str, marketplace_id: str = "mp") -> None:
     conn.execute(
-        "INSERT OR IGNORE INTO marketplace_registry (id, name, url) "
-        "VALUES (?, ?, 'https://example.test/repo.git')",
+        "INSERT OR IGNORE INTO marketplace_registry (id, name, url) VALUES (?, ?, 'https://example.test/repo.git')",
         [marketplace_id, marketplace_id.upper()],
     )
     conn.execute(
@@ -67,9 +67,13 @@ def _seed_event(
 ):
     """Insert a minimal usage_event row with the relevant identifier."""
     import hashlib
-    eid = event_id or hashlib.sha256(
-        f"{session_id}|{occurred_at}|{tool_name}|{skill_name}|{subagent_type}|{command_name}".encode()
-    ).hexdigest()
+
+    eid = (
+        event_id
+        or hashlib.sha256(
+            f"{session_id}|{occurred_at}|{tool_name}|{skill_name}|{subagent_type}|{command_name}".encode()
+        ).hexdigest()
+    )
     conn.execute(
         """
         INSERT OR IGNORE INTO usage_events
@@ -78,8 +82,20 @@ def _seed_event(
              source, ref_id, occurred_at, processor_version)
         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'builtin', NULL, ?, 5)
         """,
-        [eid, session_id, session_file, username, user_id, event_type,
-         tool_name, skill_name, subagent_type, command_name, is_error, occurred_at],
+        [
+            eid,
+            session_id,
+            session_file,
+            username,
+            user_id,
+            event_type,
+            tool_name,
+            skill_name,
+            subagent_type,
+            command_name,
+            is_error,
+            occurred_at,
+        ],
     )
 
 
@@ -90,8 +106,7 @@ class TestRebuildRollupsToolDaily:
         conn = _fresh_db(tmp_path, monkeypatch)
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
         for i in range(3):
-            _seed_event(conn, occurred_at=today, tool_name="Bash",
-                        event_id=f"eid-bash-{i}")
+            _seed_event(conn, occurred_at=today, tool_name="Bash", event_id=f"eid-bash-{i}")
         rebuild_rollups(conn, since_day=today.date())
         rows = conn.execute("SELECT * FROM usage_tool_daily").fetchall()
         assert len(rows) == 1
@@ -103,11 +118,17 @@ class TestRebuildRollupsToolDaily:
     def test_distinct_users(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
-        _seed_event(conn, occurred_at=today, tool_name="Bash",
-                    username="alice", event_id="e-a")
-        _seed_event(conn, occurred_at=today, tool_name="Bash",
-                    username="bob", user_id="uid-bob",
-                    session_id="s2", session_file="s2.jsonl", event_id="e-b")
+        _seed_event(conn, occurred_at=today, tool_name="Bash", username="alice", event_id="e-a")
+        _seed_event(
+            conn,
+            occurred_at=today,
+            tool_name="Bash",
+            username="bob",
+            user_id="uid-bob",
+            session_id="s2",
+            session_file="s2.jsonl",
+            event_id="e-b",
+        )
         rebuild_rollups(conn, since_day=today.date())
         row = conn.execute("SELECT distinct_users FROM usage_tool_daily").fetchone()
         assert row[0] == 2
@@ -121,8 +142,7 @@ class TestMarketplaceItemDaily:
         _seed_curated_plugin(conn, "myplug")
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
         for i in range(3):
-            _seed_event(conn, occurred_at=today, tool_name="Skill",
-                        skill_name="myplug:design", event_id=f"ep-{i}")
+            _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id=f"ep-{i}")
         rebuild_rollups(conn, since_day=today.date())
         rows = conn.execute(
             "SELECT source, type, parent_plugin, name, count "
@@ -137,16 +157,19 @@ class TestMarketplaceItemDaily:
         conn = _fresh_db(tmp_path, monkeypatch)
         _seed_curated_plugin(conn, "myplug")
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
-        _seed_event(conn, occurred_at=today, tool_name="Skill",
-                    skill_name="myplug:design", event_id="e-s1")
-        _seed_event(conn, occurred_at=today, tool_name="Skill",
-                    skill_name="myplug:design", event_id="e-s2")
-        _seed_event(conn, occurred_at=today, tool_name="Task", event_type="subagent",
-                    subagent_type="myplug:helper", event_id="e-a1")
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id="e-s1")
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id="e-s2")
+        _seed_event(
+            conn,
+            occurred_at=today,
+            tool_name="Task",
+            event_type="subagent",
+            subagent_type="myplug:helper",
+            event_id="e-a1",
+        )
         rebuild_rollups(conn, since_day=today.date())
         row = conn.execute(
-            "SELECT count FROM usage_marketplace_item_daily "
-            "WHERE type='plugin' AND name='myplug'"
+            "SELECT count FROM usage_marketplace_item_daily WHERE type='plugin' AND name='myplug'"
         ).fetchone()
         assert row is not None
         assert row[0] == 3
@@ -158,12 +181,10 @@ class TestMarketplaceItemDaily:
         conn = _fresh_db(tmp_path, monkeypatch)
         _seed_flea_entity(conn, "ent-1", "flea-skill", type_="skill")
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
-        _seed_event(conn, occurred_at=today, tool_name="Skill",
-                    skill_name="flea:flea-skill-by-alice", event_id="ef-1")
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="flea:flea-skill-by-alice", event_id="ef-1")
         rebuild_rollups(conn, since_day=today.date())
         row = conn.execute(
-            "SELECT source, type, parent_plugin, name "
-            "FROM usage_marketplace_item_daily WHERE source='flea'"
+            "SELECT source, type, parent_plugin, name FROM usage_marketplace_item_daily WHERE source='flea'"
         ).fetchone()
         assert row == ("flea", "skill", "", "flea-skill-by-alice")
 
@@ -184,15 +205,33 @@ class TestMarketplaceItemDaily:
         # Two nested skills, one of them invoked by two distinct users —
         # plugin-level distinct_users should be 2 (union of children),
         # not 3 (sum of per-child counts).
-        _seed_event(conn, occurred_at=today, tool_name="Skill",
-                    skill_name="my-plug-by-alice:setup",
-                    user_id="uid-alice", username="alice", event_id="p1")
-        _seed_event(conn, occurred_at=today, tool_name="Skill",
-                    skill_name="my-plug-by-alice:setup",
-                    user_id="uid-bob", username="bob", event_id="p2")
-        _seed_event(conn, occurred_at=today, tool_name="Skill",
-                    skill_name="my-plug-by-alice:review",
-                    user_id="uid-alice", username="alice", event_id="p3")
+        _seed_event(
+            conn,
+            occurred_at=today,
+            tool_name="Skill",
+            skill_name="my-plug-by-alice:setup",
+            user_id="uid-alice",
+            username="alice",
+            event_id="p1",
+        )
+        _seed_event(
+            conn,
+            occurred_at=today,
+            tool_name="Skill",
+            skill_name="my-plug-by-alice:setup",
+            user_id="uid-bob",
+            username="bob",
+            event_id="p2",
+        )
+        _seed_event(
+            conn,
+            occurred_at=today,
+            tool_name="Skill",
+            skill_name="my-plug-by-alice:review",
+            user_id="uid-alice",
+            username="alice",
+            event_id="p3",
+        )
         rebuild_rollups(conn, since_day=today.date())
         # Plugin-level aggregated row.
         row = conn.execute(
@@ -214,8 +253,7 @@ class TestMarketplaceItemDaily:
         conn = _fresh_db(tmp_path, monkeypatch)
         # No marketplace plugin seeded — prefix `ghost` is unknown.
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
-        _seed_event(conn, occurred_at=today, tool_name="Skill",
-                    skill_name="ghost:foo", event_id="e-ghost")
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="ghost:foo", event_id="e-ghost")
         rebuild_rollups(conn, since_day=today.date())
         n = conn.execute("SELECT COUNT(*) FROM usage_marketplace_item_daily").fetchone()[0]
         assert n == 0
@@ -235,8 +273,7 @@ class TestMarketplaceItemDaily:
         — built-in commands like /exit don't get marketplace attribution)."""
         conn = _fresh_db(tmp_path, monkeypatch)
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
-        _seed_event(conn, occurred_at=today, event_type="slash_command",
-                    command_name="exit", event_id="e-exit")
+        _seed_event(conn, occurred_at=today, event_type="slash_command", command_name="exit", event_id="e-exit")
         rebuild_rollups(conn, since_day=today.date())
         n = conn.execute("SELECT COUNT(*) FROM usage_marketplace_item_daily").fetchone()[0]
         assert n == 0
@@ -247,12 +284,10 @@ class TestMarketplaceItemDaily:
         conn = _fresh_db(tmp_path, monkeypatch)
         _seed_curated_plugin(conn, "compound")
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
-        _seed_event(conn, occurred_at=today, event_type="slash_command",
-                    command_name="compound:debug", event_id="e-cd")
+        _seed_event(conn, occurred_at=today, event_type="slash_command", command_name="compound:debug", event_id="e-cd")
         rebuild_rollups(conn, since_day=today.date())
         rows = conn.execute(
-            "SELECT source, type, parent_plugin, name, count "
-            "FROM usage_marketplace_item_daily WHERE type='skill'"
+            "SELECT source, type, parent_plugin, name, count FROM usage_marketplace_item_daily WHERE type='skill'"
         ).fetchall()
         assert rows == [("curated", "skill", "compound", "debug", 1)]
 
@@ -270,12 +305,24 @@ class TestMarketplaceItemWindow:
         now = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
         day1 = now - timedelta(days=5)
         day2 = now - timedelta(days=1)
-        _seed_event(conn, occurred_at=day1, tool_name="Skill",
-                    skill_name="myplug:design", username="alice",
-                    user_id="uid-alice", event_id="ed1")
-        _seed_event(conn, occurred_at=day2, tool_name="Skill",
-                    skill_name="myplug:design", username="alice",
-                    user_id="uid-alice", event_id="ed2")
+        _seed_event(
+            conn,
+            occurred_at=day1,
+            tool_name="Skill",
+            skill_name="myplug:design",
+            username="alice",
+            user_id="uid-alice",
+            event_id="ed1",
+        )
+        _seed_event(
+            conn,
+            occurred_at=day2,
+            tool_name="Skill",
+            skill_name="myplug:design",
+            username="alice",
+            user_id="uid-alice",
+            event_id="ed2",
+        )
         rebuild_rollups(conn, since_day=day1.date())
 
         # Daily fact: two rows, each distinct_users=1
@@ -299,12 +346,11 @@ class TestMarketplaceItemWindow:
         conn = _fresh_db(tmp_path, monkeypatch)
         _seed_curated_plugin(conn, "myplug")
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
-        _seed_event(conn, occurred_at=today, tool_name="Skill",
-                    skill_name="myplug:design", event_id="e1")
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id="e1")
         rebuild_rollups(conn, since_day=today.date())
-        n = conn.execute(
-            "SELECT COUNT(*) FROM usage_marketplace_item_window WHERE period_label='last_30d'"
-        ).fetchone()[0]
+        n = conn.execute("SELECT COUNT(*) FROM usage_marketplace_item_window WHERE period_label='last_30d'").fetchone()[
+            0
+        ]
         assert n >= 1  # plugin row + skill row
 
     def test_30d_window_throttled_until_force(self, tmp_path, monkeypatch):
@@ -313,27 +359,22 @@ class TestMarketplaceItemWindow:
         conn = _fresh_db(tmp_path, monkeypatch)
         _seed_curated_plugin(conn, "myplug")
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
-        _seed_event(conn, occurred_at=today, tool_name="Skill",
-                    skill_name="myplug:design", event_id="e1")
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id="e1")
         rebuild_rollups(conn, since_day=today.date())
         # tracker timestamp recorded — capture it
         t1 = conn.execute(
-            "SELECT processed_at FROM session_processor_state "
-            "WHERE processor_name='marketplace_rollup_30d'"
+            "SELECT processed_at FROM session_processor_state WHERE processor_name='marketplace_rollup_30d'"
         ).fetchone()[0]
         # Add a second event and rebuild without force — tracker shouldn't move
-        _seed_event(conn, occurred_at=today, tool_name="Skill",
-                    skill_name="myplug:design", event_id="e2")
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id="e2")
         rebuild_rollups(conn, since_day=today.date())
         t2 = conn.execute(
-            "SELECT processed_at FROM session_processor_state "
-            "WHERE processor_name='marketplace_rollup_30d'"
+            "SELECT processed_at FROM session_processor_state WHERE processor_name='marketplace_rollup_30d'"
         ).fetchone()[0]
         assert t1 == t2, "30d tracker should not advance within throttle window"
         # force=True bumps it
         rebuild_rollups(conn, since_day=today.date(), force_30d=True)
         t3 = conn.execute(
-            "SELECT processed_at FROM session_processor_state "
-            "WHERE processor_name='marketplace_rollup_30d'"
+            "SELECT processed_at FROM session_processor_state WHERE processor_name='marketplace_rollup_30d'"
         ).fetchone()[0]
         assert t3 > t1

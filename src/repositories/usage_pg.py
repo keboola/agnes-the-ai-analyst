@@ -4,6 +4,7 @@ Mirrors ``src/repositories/usage.py``. ``INSERT OR IGNORE`` becomes
 ``ON CONFLICT DO NOTHING``; ``INSERT OR REPLACE`` becomes
 ``ON CONFLICT (...) DO UPDATE SET ...``.
 """
+
 from __future__ import annotations
 
 import json
@@ -18,38 +19,66 @@ from src.repositories.usage import _slow_actions_from_raw
 
 
 _EVENT_COLS = [
-    "id", "session_id", "session_file", "username",
-    "event_uuid", "parent_uuid", "event_type",
-    "tool_name", "skill_name", "subagent_type", "command_name",
-    "is_error", "source", "ref_id", "model", "cwd",
-    "occurred_at", "processor_version", "user_id",
+    "id",
+    "session_id",
+    "session_file",
+    "username",
+    "event_uuid",
+    "parent_uuid",
+    "event_type",
+    "tool_name",
+    "skill_name",
+    "subagent_type",
+    "command_name",
+    "is_error",
+    "source",
+    "ref_id",
+    "model",
+    "cwd",
+    "occurred_at",
+    "processor_version",
+    "user_id",
 ]
 
 # Group-by buckets for /telemetry/query — PG dialect.
 # 'day' uses CAST(... AS DATE) which is identical to DuckDB.
 _GROUP_BY_COLUMNS = {
-    "day":       ("CAST(occurred_at AS DATE)", "day"),
-    "username":  ("username", "username"),
+    "day": ("CAST(occurred_at AS DATE)", "day"),
+    "username": ("username", "username"),
     "tool_name": ("tool_name", "tool_name"),
-    "source":    ("source", "source"),
-    "ref_id":    ("ref_id", "ref_id"),
+    "source": ("source", "source"),
+    "ref_id": ("ref_id", "ref_id"),
 }
 
 _SESSION_SORT_KEYS = {
-    "started_at": "started_at", "ended_at": "ended_at",
-    "tool_calls": "tool_calls", "tool_errors": "tool_errors",
-    "active_seconds": "active_seconds", "username": "username",
+    "started_at": "started_at",
+    "ended_at": "ended_at",
+    "tool_calls": "tool_calls",
+    "tool_errors": "tool_errors",
+    "active_seconds": "active_seconds",
+    "username": "username",
     "primary_model": "primary_model",
 }
 
 _SESSION_COLS = [
-    "session_file", "session_id", "username",
-    "started_at", "ended_at", "active_seconds", "wall_seconds",
-    "user_messages", "assistant_messages",
-    "tool_calls", "tool_errors",
-    "skill_invocations", "subagent_dispatches",
-    "mcp_calls", "slash_commands",
-    "distinct_tools", "distinct_skills", "primary_model",
+    "session_file",
+    "session_id",
+    "username",
+    "started_at",
+    "ended_at",
+    "active_seconds",
+    "wall_seconds",
+    "user_messages",
+    "assistant_messages",
+    "tool_calls",
+    "tool_errors",
+    "skill_invocations",
+    "subagent_dispatches",
+    "mcp_calls",
+    "slash_commands",
+    "distinct_tools",
+    "distinct_skills",
+    "primary_model",
 ]
 
 
@@ -66,20 +95,21 @@ class UsagePgRepository:
         where = ["occurred_at >= :since"]
         params: dict = {"since": filters["since"]}
         if filters.get("username"):
-            where.append("username = :username"); params["username"] = filters["username"]
+            where.append("username = :username")
+            params["username"] = filters["username"]
         if filters.get("tool_name"):
-            where.append("tool_name = :tool_name"); params["tool_name"] = filters["tool_name"]
+            where.append("tool_name = :tool_name")
+            params["tool_name"] = filters["tool_name"]
         if filters.get("source"):
-            where.append("source = :source"); params["source"] = filters["source"]
+            where.append("source = :source")
+            params["source"] = filters["source"]
         if filters.get("event_type"):
-            where.append("event_type = :event_type"); params["event_type"] = filters["event_type"]
+            where.append("event_type = :event_type")
+            params["event_type"] = filters["event_type"]
         if filters.get("only_errors"):
             where.append("is_error = TRUE")
         if filters.get("q"):
-            where.append(
-                "(tool_name LIKE :q OR skill_name LIKE :q OR subagent_type LIKE :q "
-                "OR command_name LIKE :q)"
-            )
+            where.append("(tool_name LIKE :q OR skill_name LIKE :q OR subagent_type LIKE :q OR command_name LIKE :q)")
             params["q"] = f"%{filters['q']}%"
         return " AND ".join(where), params
 
@@ -94,10 +124,7 @@ class UsagePgRepository:
                 ),
                 {"cutoff": cutoff, "lim": limit},
             ).fetchall()
-        return [
-            {"tool_name": r[0], "source": r[1], "invocations": int(r[2])}
-            for r in rows
-        ]
+        return [{"tool_name": r[0], "source": r[1], "invocations": int(r[2])} for r in rows]
 
     def summary_top_users(self, cutoff: datetime, limit: int = 10) -> List[dict]:
         with self._engine.connect() as conn:
@@ -125,8 +152,12 @@ class UsagePgRepository:
                 {"cutoff": cutoff, "lim": limit},
             ).fetchall()
         return [
-            {"tool_name": r[0], "invocations": int(r[1]), "errors": int(r[2]),
-             "rate": float(r[2]) / float(r[1]) if r[1] else 0.0}
+            {
+                "tool_name": r[0],
+                "invocations": int(r[1]),
+                "errors": int(r[2]),
+                "rate": float(r[2]) / float(r[1]) if r[1] else 0.0,
+            }
             for r in rows
         ]
 
@@ -220,13 +251,22 @@ class UsagePgRepository:
             ).fetchone()
 
         top_tables = [
-            {"table_id": r[0], "queries": int(r[1]), "scan_bytes": int(r[2] or 0),
-             "remote": int(r[3] or 0), "local": int(r[4] or 0)}
+            {
+                "table_id": r[0],
+                "queries": int(r[1]),
+                "scan_bytes": int(r[2] or 0),
+                "remote": int(r[3] or 0),
+                "local": int(r[4] or 0),
+            }
             for r in top_rows
         ]
         frequency = [
-            {"day": r[0].isoformat() if r[0] else None, "table_id": r[1],
-             "remote": int(r[2] or 0), "local": int(r[3] or 0)}
+            {
+                "day": r[0].isoformat() if r[0] else None,
+                "table_id": r[1],
+                "remote": int(r[2] or 0),
+                "local": int(r[3] or 0),
+            }
             for r in freq_rows
         ]
         return {
@@ -252,9 +292,9 @@ class UsagePgRepository:
             return [{"value": r[0], "count": r[1]} for r in rows]
 
         return {
-            "users":       _facet("username", 50),
-            "tools":       _facet("tool_name", 50),
-            "sources":     _facet("source", 20),
+            "users": _facet("username", 50),
+            "tools": _facet("tool_name", 50),
+            "sources": _facet("source", 20),
             "event_types": _facet("event_type", 20),
         }
 
@@ -272,8 +312,7 @@ class UsagePgRepository:
                 params,
             ).fetchone()
         total, users, tools, errors = (int(x or 0) for x in row)
-        return {"events_total": total, "distinct_users": users,
-                "distinct_tools": tools, "errors": errors}
+        return {"events_total": total, "distinct_users": users, "distinct_tools": tools, "errors": errors}
 
     def usage_query(
         self,
@@ -296,20 +335,21 @@ class UsagePgRepository:
         if group_by and group_by in _GROUP_BY_COLUMNS:
             expr, alias = _GROUP_BY_COLUMNS[group_by]
             valid_sort = {
-                "bucket":            expr,
-                "invocations":       "COUNT(*)",
-                "distinct_users":    "COUNT(DISTINCT username)",
+                "bucket": expr,
+                "invocations": "COUNT(*)",
+                "distinct_users": "COUNT(DISTINCT username)",
                 "distinct_sessions": "COUNT(DISTINCT session_id)",
-                "errors":            "SUM(CASE WHEN is_error THEN 1 ELSE 0 END)",
+                "errors": "SUM(CASE WHEN is_error THEN 1 ELSE 0 END)",
             }
             order_expr = valid_sort.get(sort_col, "COUNT(*)")
             with self._engine.connect() as conn:
-                total_buckets = int(conn.execute(
-                    sa.text(
-                        f"SELECT COUNT(DISTINCT {expr}) FROM usage_events WHERE {where_sql}"
-                    ),
-                    params,
-                ).scalar() or 0)
+                total_buckets = int(
+                    conn.execute(
+                        sa.text(f"SELECT COUNT(DISTINCT {expr}) FROM usage_events WHERE {where_sql}"),
+                        params,
+                    ).scalar()
+                    or 0
+                )
                 rows = conn.execute(
                     sa.text(
                         f"""SELECT {expr} AS bucket,
@@ -326,40 +366,53 @@ class UsagePgRepository:
                 ).fetchall()
             out = [
                 {
-                    "bucket":            (str(r[0]) if r[0] is not None else None),
-                    "invocations":       int(r[1] or 0),
-                    "distinct_users":    int(r[2] or 0),
+                    "bucket": (str(r[0]) if r[0] is not None else None),
+                    "invocations": int(r[1] or 0),
+                    "distinct_users": int(r[2] or 0),
                     "distinct_sessions": int(r[3] or 0),
-                    "errors":            int(r[4] or 0),
+                    "errors": int(r[4] or 0),
                 }
                 for r in rows
             ]
             return {
-                "group_by":    group_by,
+                "group_by": group_by,
                 "group_alias": alias,
-                "rows":        out,
-                "total":       total_buckets,
-                "limit":       limit,
-                "offset":      offset,
+                "rows": out,
+                "total": total_buckets,
+                "limit": limit,
+                "offset": offset,
                 "next_offset": offset + limit if (offset + limit) < total_buckets else None,
             }
 
         # ungrouped — raw events
         _COLS = [
-            "id", "occurred_at", "username", "source", "ref_id", "event_type",
-            "tool_name", "skill_name", "subagent_type", "command_name", "is_error",
-            "session_id", "model",
+            "id",
+            "occurred_at",
+            "username",
+            "source",
+            "ref_id",
+            "event_type",
+            "tool_name",
+            "skill_name",
+            "subagent_type",
+            "command_name",
+            "is_error",
+            "session_id",
+            "model",
         ]
         valid_sort_raw = {"occurred_at": "occurred_at", "invocations": "occurred_at"}
         order_expr = valid_sort_raw.get(sort_col, "occurred_at")
         with self._engine.connect() as conn:
-            total = int(conn.execute(
-                sa.text(f"SELECT COUNT(*) FROM usage_events WHERE {where_sql}"),
-                params,
-            ).scalar() or 0)
+            total = int(
+                conn.execute(
+                    sa.text(f"SELECT COUNT(*) FROM usage_events WHERE {where_sql}"),
+                    params,
+                ).scalar()
+                or 0
+            )
             rows = conn.execute(
                 sa.text(
-                    f"""SELECT {','.join(_COLS)}
+                    f"""SELECT {",".join(_COLS)}
                        FROM usage_events WHERE {where_sql}
                        ORDER BY {order_expr} {sort_dir}
                        LIMIT :lim OFFSET :off"""
@@ -373,11 +426,11 @@ class UsagePgRepository:
                 d["occurred_at"] = d["occurred_at"].isoformat()
             out.append(d)
         return {
-            "group_by":    None,
-            "rows":        out,
-            "total":       total,
-            "limit":       limit,
-            "offset":      offset,
+            "group_by": None,
+            "rows": out,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
             "next_offset": offset + limit if (offset + limit) < total else None,
         }
 
@@ -390,9 +443,11 @@ class UsagePgRepository:
         where = ["started_at >= :since"]
         params: dict = {"since": filters["since"]}
         if filters.get("username"):
-            where.append("username = :username"); params["username"] = filters["username"]
+            where.append("username = :username")
+            params["username"] = filters["username"]
         if filters.get("model"):
-            where.append("primary_model = :model"); params["model"] = filters["model"]
+            where.append("primary_model = :model")
+            params["model"] = filters["model"]
         if filters.get("only_errors"):
             where.append("tool_errors > 0")
         if filters.get("q"):
@@ -409,8 +464,7 @@ class UsagePgRepository:
             ).scalar()
         return int(v or 0)
 
-    def sessions_list(self, filters: dict, *, sort_col: str, direction: str,
-                      limit: int, offset: int) -> List[dict]:
+    def sessions_list(self, filters: dict, *, sort_col: str, direction: str, limit: int, offset: int) -> List[dict]:
         where_sql, params = self._sessions_where(filters)
         col = _SESSION_SORT_KEYS.get(sort_col, "started_at")
         direction = "ASC" if direction.upper() == "ASC" else "DESC"
@@ -418,7 +472,7 @@ class UsagePgRepository:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
-                    f"""SELECT {','.join(_SESSION_COLS)}
+                    f"""SELECT {",".join(_SESSION_COLS)}
                        FROM usage_session_summary WHERE {where_sql}
                        ORDER BY {col} {direction}
                        LIMIT :lim OFFSET :off"""
@@ -441,11 +495,10 @@ class UsagePgRepository:
                 ),
                 params,
             ).fetchone()
-        sessions_total, users, error_sessions, tool_calls_total, tool_errors_total = (
-            int(x or 0) for x in row
-        )
+        sessions_total, users, error_sessions, tool_calls_total, tool_errors_total = (int(x or 0) for x in row)
         return {
-            "sessions_total": sessions_total, "distinct_users": users,
+            "sessions_total": sessions_total,
+            "distinct_users": users,
             "error_sessions": error_sessions,
             "tool_calls_total": tool_calls_total,
             "tool_errors_total": tool_errors_total,
@@ -471,15 +524,22 @@ class UsagePgRepository:
                 {"since": since},
             ).fetchall()
         return {
-            "users":  [{"value": r[0], "count": r[1]} for r in users],
+            "users": [{"value": r[0], "count": r[1]} for r in users],
             "models": [{"value": r[0], "count": r[1]} for r in models],
         }
 
     def get_session_summary(self, session_file: str) -> dict | None:
         """Return a summary row dict for a single session_file, or None."""
         _KEYS = (
-            "session_id", "started_at", "ended_at", "active_seconds", "wall_seconds",
-            "user_messages", "assistant_messages", "tool_calls", "tool_errors",
+            "session_id",
+            "started_at",
+            "ended_at",
+            "active_seconds",
+            "wall_seconds",
+            "user_messages",
+            "assistant_messages",
+            "tool_calls",
+            "tool_errors",
             "primary_model",
         )
         with self._engine.connect() as conn:
@@ -498,8 +558,14 @@ class UsagePgRepository:
     def list_sessions_for_user_admin(self, *, user_id: str, username: str) -> List[dict]:
         """PG mirror of UsageRepository.list_sessions_for_user_admin (9 cols)."""
         cols = [
-            "session_file", "session_id", "started_at", "ended_at",
-            "active_seconds", "wall_seconds", "tool_calls", "tool_errors",
+            "session_file",
+            "session_id",
+            "started_at",
+            "ended_at",
+            "active_seconds",
+            "wall_seconds",
+            "tool_calls",
+            "tool_errors",
             "primary_model",
         ]
         with self._engine.connect() as conn:
@@ -522,11 +588,19 @@ class UsagePgRepository:
     def list_sessions_for_user_self(self, username: str) -> list[dict]:
         """PG mirror of UsageRepository.list_sessions_for_user_self (14 cols)."""
         cols = [
-            "session_file", "session_id", "started_at", "ended_at",
-            "active_seconds", "wall_seconds",
-            "user_messages", "tool_calls", "tool_errors",
-            "input_tokens", "output_tokens",
-            "cache_read_tokens", "cache_creation_tokens",
+            "session_file",
+            "session_id",
+            "started_at",
+            "ended_at",
+            "active_seconds",
+            "wall_seconds",
+            "user_messages",
+            "tool_calls",
+            "tool_errors",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
             "primary_model",
         ]
         with self._engine.connect() as conn:
@@ -615,8 +689,11 @@ class UsagePgRepository:
             ).fetchall()
         return [
             {
-                "model": m, "input": int(i or 0), "output": int(o or 0),
-                "cache_read": int(cr or 0), "cache_creation": int(cc or 0),
+                "model": m,
+                "input": int(i or 0),
+                "output": int(o or 0),
+                "cache_read": int(cr or 0),
+                "cache_creation": int(cc or 0),
                 "sessions": int(s or 0),
                 "total": int((i or 0) + (o or 0) + (cr or 0) + (cc or 0)),
             }
@@ -649,8 +726,10 @@ class UsagePgRepository:
                 "session_id": sid,
                 "started_at": st.isoformat() if hasattr(st, "isoformat") else st,
                 "primary_model": pm,
-                "input": int(i or 0), "output": int(o or 0),
-                "cache_read": int(cr or 0), "cache_creation": int(cc or 0),
+                "input": int(i or 0),
+                "output": int(o or 0),
+                "cache_read": int(cr or 0),
+                "cache_creation": int(cc or 0),
                 "total": int(tt or 0),
             }
             for (sf, sid, st, pm, i, o, cr, cc, tt) in rows
@@ -687,8 +766,7 @@ class UsagePgRepository:
     # adoption dashboard reads (Postgres).  Mirrors UsageRepository.
     # ------------------------------------------------------------------
 
-    _TOKEN_SUM = ("input_tokens + output_tokens "
-                  "+ cache_read_tokens + cache_creation_tokens")
+    _TOKEN_SUM = "input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens"
 
     def adoption_kpis(self, since: datetime) -> dict:
         with self._engine.connect() as conn:
@@ -715,11 +793,16 @@ class UsagePgRepository:
                 {"since": since},
             ).scalar()
         return {
-            "active_seconds": int(s[0] or 0), "wall_seconds": int(s[1] or 0),
-            "sessions": int(s[2] or 0), "prompts": int(s[3] or 0),
-            "skill_invocations": int(s[4] or 0), "tokens": int(s[5] or 0),
-            "tool_calls": int(s[6] or 0), "tool_errors": int(s[7] or 0),
-            "active_users": int(s[8] or 0), "distinct_skills": int(dskills or 0),
+            "active_seconds": int(s[0] or 0),
+            "wall_seconds": int(s[1] or 0),
+            "sessions": int(s[2] or 0),
+            "prompts": int(s[3] or 0),
+            "skill_invocations": int(s[4] or 0),
+            "tokens": int(s[5] or 0),
+            "tool_calls": int(s[6] or 0),
+            "tool_errors": int(s[7] or 0),
+            "active_users": int(s[8] or 0),
+            "distinct_skills": int(dskills or 0),
         }
 
     def adoption_sessions_series(self, start_date: date) -> Dict[date, dict]:
@@ -739,10 +822,17 @@ class UsagePgRepository:
                 ),
                 {"sd": start_date},
             ).fetchall()
-        return {r[0]: {"active_seconds": int(r[1] or 0), "wall_seconds": int(r[2] or 0),
-                       "sessions": int(r[3] or 0), "prompts": int(r[4] or 0),
-                       "tokens": int(r[5] or 0), "tool_calls": int(r[6] or 0)}
-                for r in rows}
+        return {
+            r[0]: {
+                "active_seconds": int(r[1] or 0),
+                "wall_seconds": int(r[2] or 0),
+                "sessions": int(r[3] or 0),
+                "prompts": int(r[4] or 0),
+                "tokens": int(r[5] or 0),
+                "tool_calls": int(r[6] or 0),
+            }
+            for r in rows
+        }
 
     def adoption_events_series(self, start_date: date) -> Dict[date, dict]:
         with self._engine.connect() as conn:
@@ -757,11 +847,9 @@ class UsagePgRepository:
                 ),
                 {"sd": start_date},
             ).fetchall()
-        return {r[0]: {"active_users": int(r[1] or 0), "skill_events": int(r[2] or 0)}
-                for r in rows}
+        return {r[0]: {"active_users": int(r[1] or 0), "skill_events": int(r[2] or 0)} for r in rows}
 
-    def adoption_top_users(self, since: datetime, limit: int = 10,
-                           q: Optional[str] = None) -> List[dict]:
+    def adoption_top_users(self, since: datetime, limit: int = 10, q: Optional[str] = None) -> List[dict]:
         where = ["started_at >= :since"]
         params: dict = {"since": since, "lim": limit}
         if q:
@@ -777,16 +865,24 @@ class UsagePgRepository:
                                COALESCE(SUM({self._TOKEN_SUM}), 0),
                                MAX(ended_at)
                           FROM usage_session_summary
-                          WHERE {' AND '.join(where)}
+                          WHERE {" AND ".join(where)}
                           GROUP BY COALESCE(user_id, username)
                           ORDER BY total_active DESC LIMIT :lim"""
                 ),
                 params,
             ).fetchall()
-        return [{"user_id": r[0], "username": r[1], "active_seconds": int(r[2] or 0),
-                 "sessions": int(r[3] or 0), "prompts": int(r[4] or 0),
-                 "tokens": int(r[5] or 0),
-                 "last_active": r[6].isoformat() if r[6] else None} for r in rows]
+        return [
+            {
+                "user_id": r[0],
+                "username": r[1],
+                "active_seconds": int(r[2] or 0),
+                "sessions": int(r[3] or 0),
+                "prompts": int(r[4] or 0),
+                "tokens": int(r[5] or 0),
+                "last_active": r[6].isoformat() if r[6] else None,
+            }
+            for r in rows
+        ]
 
     def adoption_top_skills(self, since: datetime, limit: int = 10) -> List[dict]:
         with self._engine.connect() as conn:
@@ -800,8 +896,7 @@ class UsagePgRepository:
                 ),
                 {"since": since, "lim": limit},
             ).fetchall()
-        return [{"skill_name": r[0], "invocations": int(r[1]), "distinct_users": int(r[2])}
-                for r in rows]
+        return [{"skill_name": r[0], "invocations": int(r[1]), "distinct_users": int(r[2])} for r in rows]
 
     # ── per-user variants ─────────────────────────────────────────────
 
@@ -847,18 +942,21 @@ class UsagePgRepository:
                 p,
             ).fetchall()
         return {
-            "active_seconds": int(s[0] or 0), "wall_seconds": int(s[1] or 0),
-            "sessions": int(s[2] or 0), "prompts": int(s[3] or 0),
-            "tokens": int(s[4] or 0), "tool_calls": int(s[5] or 0),
+            "active_seconds": int(s[0] or 0),
+            "wall_seconds": int(s[1] or 0),
+            "sessions": int(s[2] or 0),
+            "prompts": int(s[3] or 0),
+            "tokens": int(s[4] or 0),
+            "tool_calls": int(s[5] or 0),
             "tool_errors": int(s[6] or 0),
             "last_active": s[7].isoformat() if s[7] else None,
-            "distinct_tools": int(e[0] or 0), "distinct_skills": int(e[1] or 0),
+            "distinct_tools": int(e[0] or 0),
+            "distinct_skills": int(e[1] or 0),
             "active_days": int(e[2] or 0),
             "models": [{"model": m[0], "count": int(m[1])} for m in models],
         }
 
-    def adoption_user_sessions_series(self, start_date: date, user_id: str,
-                                      username: str) -> Dict[date, dict]:
+    def adoption_user_sessions_series(self, start_date: date, user_id: str, username: str) -> Dict[date, dict]:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
@@ -876,13 +974,19 @@ class UsagePgRepository:
                 ),
                 {"sd": start_date, "uid": user_id, "uname": username},
             ).fetchall()
-        return {r[0]: {"active_seconds": int(r[1] or 0), "wall_seconds": int(r[2] or 0),
-                       "sessions": int(r[3] or 0), "prompts": int(r[4] or 0),
-                       "tokens": int(r[5] or 0), "tool_calls": int(r[6] or 0)}
-                for r in rows}
+        return {
+            r[0]: {
+                "active_seconds": int(r[1] or 0),
+                "wall_seconds": int(r[2] or 0),
+                "sessions": int(r[3] or 0),
+                "prompts": int(r[4] or 0),
+                "tokens": int(r[5] or 0),
+                "tool_calls": int(r[6] or 0),
+            }
+            for r in rows
+        }
 
-    def adoption_user_events_series(self, start_date: date, user_id: str,
-                                    username: str) -> Dict[date, dict]:
+    def adoption_user_events_series(self, start_date: date, user_id: str, username: str) -> Dict[date, dict]:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
@@ -897,8 +1001,7 @@ class UsagePgRepository:
             ).fetchall()
         return {r[0]: {"skill_events": int(r[1] or 0)} for r in rows}
 
-    def adoption_user_top_skills(self, since: datetime, user_id: str, username: str,
-                                 limit: int = 10) -> List[dict]:
+    def adoption_user_top_skills(self, since: datetime, user_id: str, username: str, limit: int = 10) -> List[dict]:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
@@ -913,8 +1016,7 @@ class UsagePgRepository:
             ).fetchall()
         return [{"skill_name": r[0], "invocations": int(r[1])} for r in rows]
 
-    def adoption_user_top_tools(self, since: datetime, user_id: str, username: str,
-                                limit: int = 10) -> List[dict]:
+    def adoption_user_top_tools(self, since: datetime, user_id: str, username: str, limit: int = 10) -> List[dict]:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
@@ -937,11 +1039,7 @@ class UsagePgRepository:
         if not rows:
             return 0
         placeholders = ",".join(f":{c}" for c in _EVENT_COLS)
-        sql = (
-            f"INSERT INTO usage_events ({','.join(_EVENT_COLS)}) "
-            f"VALUES ({placeholders}) "
-            f"ON CONFLICT (id) DO NOTHING"
-        )
+        sql = f"INSERT INTO usage_events ({','.join(_EVENT_COLS)}) VALUES ({placeholders}) ON CONFLICT (id) DO NOTHING"
         with self._engine.begin() as conn:
             for r in rows:
                 params = {c: r.get(c) for c in _EVENT_COLS}
@@ -1071,16 +1169,12 @@ class UsagePgRepository:
     def purge_for_session(self, session_file: str) -> int:
         with self._engine.begin() as conn:
             rows = conn.execute(
-                sa.text(
-                    "DELETE FROM usage_events WHERE session_file = :sf RETURNING 1"
-                ),
+                sa.text("DELETE FROM usage_events WHERE session_file = :sf RETURNING 1"),
                 {"sf": session_file},
             ).all()
             events_deleted = len(rows)
             conn.execute(
-                sa.text(
-                    "DELETE FROM usage_session_summary WHERE session_file = :sf"
-                ),
+                sa.text("DELETE FROM usage_session_summary WHERE session_file = :sf"),
                 {"sf": session_file},
             )
         return events_deleted
@@ -1113,10 +1207,7 @@ class UsagePgRepository:
         with self._engine.begin() as conn:
             if clear_processors:
                 state_rows = conn.execute(
-                    sa.text(
-                        "DELETE FROM session_processor_state "
-                        "WHERE processor_name = ANY(:names) RETURNING 1"
-                    ),
+                    sa.text("DELETE FROM session_processor_state WHERE processor_name = ANY(:names) RETURNING 1"),
                     {"names": list(clear_processors)},
                 ).all()
                 out["state_rows"] = len(state_rows)
@@ -1127,8 +1218,6 @@ class UsagePgRepository:
                 ("marketplace_item_daily", "usage_marketplace_item_daily"),
                 ("marketplace_item_window", "usage_marketplace_item_window"),
             ):
-                rows = conn.execute(
-                    sa.text(f"DELETE FROM {table} RETURNING 1")
-                ).all()
+                rows = conn.execute(sa.text(f"DELETE FROM {table} RETURNING 1")).all()
                 out[key] = len(rows)
         return out
