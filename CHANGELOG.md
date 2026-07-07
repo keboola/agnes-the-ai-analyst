@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.15] - 2026-07-07
+
+### Added
 - BigQuery job labels (`workload_type`, `agent_name`, `environment`, `user_id`) on agent-issued BQ jobs. The **hybrid** path labels its billable jobs; the `/api/v2/scan` and remote-`/api/query` paths label only the dry-run cost estimate — their billable execution runs through the DuckDB BigQuery extension, which (like sync/snapshot) cannot carry job labels. Full billable-job attribution for those paths is a follow-up slice (bytes/slot capture).
 
 ### Changed
