@@ -19,6 +19,7 @@ from app.chat.profiles import get_profile
 from app.chat.provider import SandboxHandle, SandboxProvider
 from app.chat.types import ChatSession, SessionState, Surface
 from app.chat.workdir import WorkdirManager
+from src.repositories import usage_repo, users_repo
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,10 @@ class LiveSession:
     handle: Optional[SandboxHandle]
     started_at: datetime
     last_activity: datetime
+    # Surface the session was created on (web / slack_dm / slack_thread) —
+    # carried onto emitted chat.message usage events so telemetry can slice
+    # chat activity per surface without a chat_sessions join.
+    surface: str = Surface.WEB.value
     crash_count: int = 0
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     tasks: list[asyncio.Task] = field(default_factory=list)
@@ -369,6 +374,7 @@ class ChatManager:
             handle=handle,
             started_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
+            surface=getattr(session.surface, "value", str(session.surface)),
             sinks=[],
             participant_emails=emails,
             session_dir=session_dir,
@@ -529,6 +535,7 @@ class ChatManager:
             handle=handle,
             started_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
+            surface=getattr(session.surface, "value", str(session.surface)),
             sinks=[],
             session_dir=session_dir,
             active_since=_t.monotonic(),
@@ -887,6 +894,32 @@ class ChatManager:
             live.tasks.append(new_pump)
             # Loop back to wait on the new handle.
 
+    def _emit_chat_message_event(self, live: LiveSession, sender: str) -> None:
+        """Emit one ``chat.message`` usage event per user chat turn.
+
+        Web and Slack turns both funnel through send_user_message, so this is
+        the single chokepoint that makes interactive chat visible in
+        /admin/telemetry and the adoption DAU — usage_events otherwise only
+        sees desktop CC sessions (agnes push) and server product events.
+        Best-effort by contract: telemetry must never block or fail a send.
+        """
+        try:
+            user_id: Optional[str] = None
+            try:
+                row = users_repo().get_by_email(sender)
+                user_id = (row or {}).get("id")
+            except Exception:
+                # Identity resolution is best-effort; username still keys the event.
+                pass
+            usage_repo().emit_server_event(
+                event_type="chat.message",
+                user_id=user_id,
+                username=sender,
+                props={"surface": live.surface, "session_id": live.chat_id},
+            )
+        except Exception:
+            logger.warning("usage_events emit failed for chat.message (session %s)", live.chat_id)
+
     async def send_user_message(self, chat_id: str, text: str, *, sender_email: Optional[str] = None) -> None:
         live = self._live.get(chat_id)
         # Resume on-demand: PAUSED live session (Slack DM after hours, web race).
@@ -971,6 +1004,7 @@ class ChatManager:
             content=text,
             sender_email=sender_email or live.user_email,
         )
+        self._emit_chat_message_event(live, sender)
         payload = json.dumps({"type": "user_msg", "text": text}) + "\n"
         async with live._stdin_lock:
             live.handle.stdin.write(payload.encode("utf-8"))
