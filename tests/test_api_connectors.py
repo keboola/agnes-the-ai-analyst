@@ -131,6 +131,15 @@ def test_params_filters_overlay_to_manifest_allowlist(client_with_admin, monkeyp
     """
     client, token = client_with_admin
 
+    # GWS pinned to unconfigured (same rationale as
+    # test_params_empty_when_overlay_absent): the exact-equality assert
+    # below would flake for a developer whose local env / instance.yaml
+    # configures the shared GWS OAuth client.
+    monkeypatch.setattr(
+        "app.instance_config.get_gws_oauth_credentials",
+        lambda: _gws_creds(configured=False),
+    )
+
     # Synthesize the overlay shape `_load_current_instance_yaml` returns.
     # Three keys exercise the three branches: one valid manifest slug
     # (asana — should survive), one typo of a real slug (atlasian —
