@@ -84,13 +84,13 @@
                 aria-label="I'm already set up — close this setup hero">&times;</button>
 
         {# Progress meta — visual hint that the wizard is bounded ("~15 min,
-           one-time, reversible"). Six steps total when home_automode is
-           enabled, five when it's disabled (the "Launch Claude with
+           one-time, reversible"). Five steps total when home_automode is
+           enabled, four when it's disabled (the "Launch Claude with
            auto-approve" step hides via {% if home_automode.show %}).
            Pre-empt: when more steps land in future iterations, just
            bump the total_steps default; per-step numbering inside
            .install-block carries its own count already. #}
-        {% set total_steps = 6 if home_automode.show else 5 %}
+        {% set total_steps = 5 if home_automode.show else 4 %}
         <div class="setup-meta" aria-label="Setup overview">
             <span class="setup-chip">Step 1 of {{ total_steps }}</span>
             <span class="setup-chip-quiet">~15 min total</span>
@@ -248,7 +248,7 @@ What can I help you with?
             <p class="step-lede">
                 Click the button below. {{ instance_brand }} generates a one-time install script
                 (with a 90-day login token) and copies it to your clipboard. Then paste it into the
-                Claude prompt from Step&nbsp;4 (<kbd>⌘</kbd>+<kbd>V</kbd> on macOS,
+                Claude prompt{% if home_automode.show %} from Step&nbsp;4{% endif %} (<kbd>⌘</kbd>+<kbd>V</kbd> on macOS,
                 <kbd>Ctrl</kbd>+<kbd>V</kbd> on Windows) and hit Enter. The script installs ~20 things
                 (the marketplace, your team's plugins, data package definitions, hooks that keep
                 everything in sync) into <code>~/Desktop/{{ workspace_dir }}</code>.
@@ -284,95 +284,19 @@ What can I help you with?
                 your first <code>agnes pull</code> (~30 seconds after the script ends). This page will
                 update on its own.
             </div>
-        </div>
-
-        {# Step 6 — Optional one-word shortcut. Mirrors the design spec's
-           final step: a shell alias that drops the analyst into the
-           workspace folder and launches Claude with a single keyword.
-           Pure quality-of-life polish, gated by an inline <details>
-           so the wizard stays compact for analysts who just want the
-           default `claude` invocation. #}
-        <div class="install-block">
-            <div class="step-num" aria-hidden="true"><span>{% if home_automode.show %}6{% else %}5{% endif %}</span></div>
-            <div class="label">Optional: create a one-word shortcut for next time</div>
-            <p class="step-lede">
-                So you can stop retyping the long flag and stop typing <code>cd</code>. Adds a shell
-                function that <em>both</em> changes into your <code>{{ workspace_dir }}</code> folder
-                <em>and</em> launches Claude &mdash; one word, anywhere on your machine. <strong>~30&nbsp;seconds.</strong>
-            </p>
-
-            <p class="step-mode-heading">Pick a permission level:</p>
-
-            <div class="mode-tabs" role="tablist" aria-label="Permission level">
-                <button type="button" role="tab" class="mode-tab is-active"
-                        data-mode-tab="auto" aria-selected="true">Auto (safer &mdash; recommended)</button>
-                <button type="button" role="tab" class="mode-tab"
-                        data-mode-tab="yolo" aria-selected="false">YOLO (faster, broader)</button>
-            </div>
-
-            {# AUTO mode panel — `--permission-mode auto` is the right default. #}
-            <div data-mode-panel="auto">
-                <p class="mode-panel-lede"><code>--permission-mode auto</code> &mdash; auto-approves edits and safe read-only commands; still asks before anything destructive. Right default for most people.</p>
-                <div class="os-tabs" role="tablist" aria-label="Operating system">
-                    <button type="button" role="tab" class="os-tab is-active"
-                            data-os-tab="unix" aria-selected="true">macOS / Linux (zsh)</button>
-                    <button type="button" role="tab" class="os-tab"
-                            data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
-                </div>
-                <div class="install-cmd" role="tabpanel" data-os-panel="unix">
-                    <span class="multiline" id="install-cmd-shortcut-auto-unix">echo '{{ workspace_dir | lower }}() { cd ~/Desktop/{{ workspace_dir }} &amp;&amp; claude --permission-mode auto "$@"; }' &gt;&gt; ~/.zshrc &amp;&amp; source ~/.zshrc</span>
-                    <button class="copy-btn" data-copy-target="install-cmd-shortcut-auto-unix">Copy</button>
-                </div>
-                <div class="install-cmd" role="tabpanel" data-os-panel="windows" hidden>
-                    <span class="multiline" id="install-cmd-shortcut-auto-windows">if (!(Test-Path $PROFILE)) { New-Item $PROFILE -Force }; Add-Content $PROFILE '', 'function {{ workspace_dir | lower }} { Push-Location "$env:USERPROFILE\Desktop\{{ workspace_dir }}"; claude --permission-mode auto @args }'</span>
-                    <button class="copy-btn" data-copy-target="install-cmd-shortcut-auto-windows">Copy</button>
-                </div>
-                <p class="step-lede" style="margin-top: 8px;">
-                    Now typing <code>{{ workspace_dir | lower }}</code> from any terminal hops into the
-                    <code>{{ workspace_dir }}</code> folder and launches Claude in auto mode. Same on
-                    day&nbsp;1 as day&nbsp;100.
-                </p>
-            </div>
-
-            {# YOLO mode panel — `--dangerously-skip-permissions` skips every prompt. #}
-            <div data-mode-panel="yolo" hidden>
-                <p class="mode-panel-lede"><code>--dangerously-skip-permissions</code> &mdash; auto-approves <em>everything</em>, no prompts. Faster, broader blast radius. Read the security callout below first.</p>
-                <div class="os-tabs" role="tablist" aria-label="Operating system">
-                    <button type="button" role="tab" class="os-tab is-active"
-                            data-os-tab="unix" aria-selected="true">macOS / Linux (zsh)</button>
-                    <button type="button" role="tab" class="os-tab"
-                            data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
-                </div>
-                <div class="install-cmd" role="tabpanel" data-os-panel="unix">
-                    <span class="multiline" id="install-cmd-shortcut-yolo-unix">echo 'yolo() { cd ~/Desktop/{{ workspace_dir }} &amp;&amp; claude --dangerously-skip-permissions "$@"; }' &gt;&gt; ~/.zshrc &amp;&amp; source ~/.zshrc</span>
-                    <button class="copy-btn" data-copy-target="install-cmd-shortcut-yolo-unix">Copy</button>
-                </div>
-                <div class="install-cmd" role="tabpanel" data-os-panel="windows" hidden>
-                    <span class="multiline" id="install-cmd-shortcut-yolo-windows">if (!(Test-Path $PROFILE)) { New-Item $PROFILE -Force }; Add-Content $PROFILE '', 'function yolo { Push-Location "$env:USERPROFILE\Desktop\{{ workspace_dir }}"; claude --dangerously-skip-permissions @args }'</span>
-                    <button class="copy-btn" data-copy-target="install-cmd-shortcut-yolo-windows">Copy</button>
-                </div>
-                <p class="step-lede" style="margin-top: 8px;">
-                    Now typing <code>yolo</code> from any terminal hops into the
-                    <code>{{ workspace_dir }}</code> folder and launches Claude in full auto-approve.
-                    Use it when you trust the work; switch back to <code>{{ workspace_dir | lower }}</code>
-                    (auto mode) when you don't.
-                </p>
-            </div>
-
-            <div class="install-note">
-                Bash users: swap <code>~/.zshrc</code> for <code>~/.bashrc</code>. The shortcut is reversible &mdash; open the rc file and delete the function line to remove it.
-            </div>
 
             <div class="callout-rec">
                 <strong>The install bundled a curated security allowlist &mdash; review it before going further.</strong>
                 {{ instance_brand }}'s setup script installed a reviewed <code>~/.claude/settings.local.json</code> for you,
-                with sensible defaults: read freely, run common dev tools, gate destructive ops. This is your
-                actual safety net &mdash; the auto / YOLO mode is only safe because of it.
+                with sensible defaults: read freely, run common dev tools, gate destructive ops.
                 <br><br>
                 Open the file (<code>open ~/.claude/settings.local.json</code> on macOS, or in VS Code) and
                 skim what's allowed and what's gated. Add or remove rules as you learn what you trust.
                 <a href="/setup-advanced#yolo">More on the allowlist &rarr;</a>
             </div>
+
+            {# One-word launcher shortcut is now created automatically
+               by `agnes init` — no manual step needed. #}
         </div>
 
         {# Setup-finish strip — flex row matching design spec: hourglass +
@@ -439,12 +363,12 @@ What can I help you with?
                 <div class="session-content">
                     <h3>Launch your workspace</h3>
                     <p><strong>Open a terminal</strong> &mdash; in VS Code, press <kbd>⌘</kbd>+<kbd>`</kbd> (Mac) or <kbd>Ctrl</kbd>+<kbd>`</kbd> (Windows). On macOS you can also open the standalone Terminal app from Spotlight.</p>
-                    <p><strong>Type one word</strong> &mdash; <code>{{ workspace_dir | lower }}</code> (or <code>claude</code> if you skipped Step&nbsp;6) &mdash; and hit Enter.</p>
+                    <p><strong>Type one word</strong> &mdash; <code>{{ workspace_dir | lower }}</code> &mdash; and hit Enter.</p>
                     <div class="terminal-frame">
                         <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">~/Desktop/{{ workspace_dir }} &nbsp;&mdash;&nbsp; zsh</span></div>
                         <div class="terminal-body"><span class="prompt">$</span><span class="you">{{ workspace_dir | lower }}</span></div>
                     </div>
-                    <p class="annotation">That single word jumps into your <code>~/Desktop/{{ workspace_dir }}</code> folder <em>and</em> launches Claude in one go &mdash; same on day&nbsp;1 as day&nbsp;100. No <code>cd</code>, no flags, no setup to remember. (The shortcut was installed in Step&nbsp;6 of the setup above.)</p>
+                    <p class="annotation">That single word jumps into your <code>~/Desktop/{{ workspace_dir }}</code> folder <em>and</em> launches Claude in one go &mdash; same on day&nbsp;1 as day&nbsp;100. No <code>cd</code>, no flags, no setup to remember. (The shortcut is created automatically by <code>agnes init</code>.)</p>
                 </div>
             </div>
 
@@ -601,7 +525,7 @@ Want me to draft a 1-page brief, or dig into one of these?
                         <li>Open VS Code &rarr; <strong>File &rarr; Open Folder</strong> &rarr; select your <code>~/Desktop/{{ workspace_dir }}</code> folder.</li>
                         <li>Open terminal: <kbd>⌘</kbd>+<kbd>`</kbd> (macOS) or <kbd>Ctrl</kbd>+<kbd>`</kbd> (Windows).</li>
                         <li>Right-click the terminal tab &rarr; <em>"Move Terminal into Editor Area"</em>. Split with <kbd>⌘</kbd>+<kbd>\</kbd> &mdash; one panel for the conversation, one for diffs.</li>
-                        <li>Type <code>claude</code> (or <code>{{ workspace_dir | lower }}</code> if you set the Step&nbsp;6 shortcut). The welcome menu fires &mdash; pick a project or describe what you want.</li>
+                        <li>Type <code>{{ workspace_dir | lower }}</code> (or <code>claude</code>). The welcome menu fires &mdash; pick a project or describe what you want.</li>
                     </ol>
                 </div>
                 <div class="when-to-use">
@@ -808,15 +732,12 @@ What would you like to do?
     }
     document.querySelectorAll('.copy-btn[data-copy-target]').forEach(wireCopy);
 
-    // OS tab switching for Step 1. Flips both the command panel AND the
+    // OS tab switching. Flips both the command panel AND the
     // P0-1 terminal-howto body so the howto matches the active OS.
     document.querySelectorAll('.os-tab[data-os-tab]').forEach(function (tab) {
         tab.addEventListener('click', function () {
             var target = tab.getAttribute('data-os-tab');
-            // Scope OS-tab switching to the nearest mode-panel when nested
-            // inside one (Step 6's Auto/YOLO panels each have their own
-            // OS toggle); otherwise scope to the install-block.
-            var scope = tab.closest('[data-mode-panel]') || tab.closest('.install-block') || document;
+            var scope = tab.closest('.install-block') || document;
             scope.querySelectorAll('.os-tab[data-os-tab]').forEach(function (t) {
                 var on = t.getAttribute('data-os-tab') === target;
                 t.classList.toggle('is-active', on);
@@ -832,27 +753,6 @@ What would you like to do?
             // P0-1 — flip the howto bodies in lockstep.
             scope.querySelectorAll('[data-howto-panel]').forEach(function (p) {
                 if (p.getAttribute('data-howto-panel') === target) {
-                    p.removeAttribute('hidden');
-                } else {
-                    p.setAttribute('hidden', '');
-                }
-            });
-        });
-    });
-
-    // Mode tabs — Step 6's Auto / YOLO toggle. Mirrors os-tab handler
-    // but switches `[data-mode-panel]` siblings.
-    document.querySelectorAll('.mode-tab[data-mode-tab]').forEach(function (tab) {
-        tab.addEventListener('click', function () {
-            var target = tab.getAttribute('data-mode-tab');
-            var scope = tab.closest('.install-block') || document;
-            scope.querySelectorAll('.mode-tab[data-mode-tab]').forEach(function (t) {
-                var on = t.getAttribute('data-mode-tab') === target;
-                t.classList.toggle('is-active', on);
-                t.setAttribute('aria-selected', on ? 'true' : 'false');
-            });
-            scope.querySelectorAll('[data-mode-panel]').forEach(function (p) {
-                if (p.getAttribute('data-mode-panel') === target) {
                     p.removeAttribute('hidden');
                 } else {
                     p.setAttribute('hidden', '');

@@ -20,6 +20,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.74.8] - 2026-07-07
+
+### Added
+
+- `agnes init` now automatically installs a one-word launcher shortcut (`<workspace_name_lowercased>`) into the user's shell config (`~/.zshrc` / `~/.bashrc` on POSIX, PowerShell `$PROFILE` on Windows). The shortcut changes into the workspace and launches Claude with `--permission-mode auto`; when the IWT supplies a `bin/<word>` launcher it routes through it so the welcome skill fires. Cross-platform, idempotent (per-workspace marker — re-running `agnes init` never duplicates, and a second workspace on the same machine gets its own block), and reversible. If a same-named shell function from the old manual step already exists, the new block is appended (last definition wins) and the user is told the old line is a harmless leftover. Use `agnes init --no-shortcut` to opt out.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+- Manual "Optional: create a one-word shortcut" step removed from `/home` setup wizard — shortcut is now created automatically by `agnes init`.
+
+### Internal
+
 ## [0.74.7] - 2026-07-07
 
 ### Added
