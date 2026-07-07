@@ -48,11 +48,14 @@ def test_render_setup_instructions_wires_all_placeholders():
 
 
 def test_init_step_warns_about_transcript_exposure():
-    """#580 Finding 1: the step that writes the raw PAT to ~/.agnes/token
-    must explicitly call out the transcript exposure (the heredoc lands in
-    the uploaded session transcript) and remind the user that `/agnes-private`
-    keeps the bootstrap session out of `agnes push`, and that `agnes init`
-    deletes the transient token file once consumed.
+    """#580 Finding 1 / #753: the step that writes the raw PAT to
+    ~/.agnes/token must explicitly call out the transcript exposure (the
+    heredoc lands in the session transcript) and that `agnes init` deletes
+    the transient token file once consumed. Since #753, the copy no longer
+    tells the user to run `/agnes-private` THEMSELVES before pasting — that
+    was only a recommendation, easy to miss — it instead states that
+    `agnes init` auto-marks the bootstrap session private, and reserves
+    `/agnes-private` for any OTHER sensitive session.
     """
     from app.web.setup_instructions import _init_lines
 
@@ -63,6 +66,20 @@ def test_init_step_warns_about_transcript_exposure():
     # The deletion guarantee is documented inline so the user understands the
     # transcript copy — not the on-disk file — is the residual risk.
     assert "~/.agnes/token" in joined
+    # #753: auto-private is now unconditional, not a user action to remember.
+    assert "auto-marks" in joined
+    assert "no action needed from you" in joined
+
+
+def test_step4_tip_reflects_auto_private_of_bootstrap_session():
+    """#753: the step-4 `/agnes-private` tip must not imply the user still
+    needs to act on the bootstrap session — that's now automatic — while
+    still documenting `/agnes-private` for any OTHER sensitive session."""
+    from app.web.setup_instructions import _init_lines
+
+    joined = "\n".join(_init_lines())
+    assert "already auto-marked the bootstrap session" in joined
+    assert "OTHER sensitive session" in joined
 
 
 def test_resolve_lines_no_plugins_unified_layout():
