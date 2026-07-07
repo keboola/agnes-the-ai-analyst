@@ -15,6 +15,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.13] - 2026-07-07
+
+### Added
+
+### Changed
+
+### Fixed
 - Bundled seed refreshed to upstream seed `main` (`0b6bebf3`): the `connector-gws` skill's Branch B (no operator-provisioned OAuth app detected) now first tells the analyst to ask their operator to provision the shared Google OAuth app, and only walks through the manual GCP-console setup on explicit opt-in — most analysts are not GCP admins and stalled mid-walkthrough
 
 ### Removed
