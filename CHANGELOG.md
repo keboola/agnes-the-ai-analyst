@@ -19,7 +19,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
-- Catalog table-detail page (`/catalog/t/{table_id}`) no longer swallows the profile-load / schema-introspection fallback exception silently — both `except` blocks in `app/web/router.py` now log with `exc_info=True`, so the real cause (e.g. DuckDB catalog contention during a concurrent `SyncOrchestrator.rebuild()`) is visible in logs instead of a bare warning.
+
+## [0.74.7] - 2026-07-07
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+- Catalog table-detail page (`/catalog/t/{table_id}`) no longer swallows exceptions silently — all three `except` blocks in `app/web/router.py` (package-enumeration, profile-load, schema-introspection fallback) now log with `exc_info=True`, so the real cause (e.g. DuckDB catalog contention during a concurrent `SyncOrchestrator.rebuild()`) is visible in logs instead of a bare warning.
 
 ## [0.74.6] - 2026-07-07
 
