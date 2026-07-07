@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.12] - 2026-07-07
+
+### Added
 - Interactive chat turns (web + Slack) now emit a `chat.message` usage event (`source='server'`, surface + session id in props), so `/admin/telemetry` and the adoption dashboard's active-user counts include chat activity — previously `usage_events` only saw desktop CC sessions (`agnes push`) and server product events
 
 ### Changed
