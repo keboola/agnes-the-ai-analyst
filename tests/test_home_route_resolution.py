@@ -245,8 +245,9 @@ def test_home_renders_manual_gws_branch_when_unset(fresh_db, monkeypatch):
     resp = c.get("/home", cookies={"access_token": sess})
     assert resp.status_code == 200
     body = resp.text
-    # Manual setup walkthrough renders
-    assert "Run `gws auth setup` for me" in body
+    # Operator-first path renders before the manual walkthrough
+    assert "offer the operator path" in body
+    assert "run `gws auth setup` for me" in body
     # No leaked client_id placeholder
     assert "GOOGLE_WORKSPACE_CLI_CLIENT_ID=" not in body
 
