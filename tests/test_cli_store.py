@@ -389,3 +389,84 @@ def test_admin_store_push_directory_without_manifest_exit_2(tmp_path):
     )
     assert r.exit_code == 2
     assert "manifest.json" in _clean(r.output)
+
+
+# ---------------------------------------------------------------------------
+# `agnes store status` — review-pipeline status + --wait polling.
+# ---------------------------------------------------------------------------
+
+
+def _status_body(status: str, error: str | None = None) -> dict:
+    return {
+        "entity_id": "e1",
+        "name": "my-skill",
+        "type": "skill",
+        "visibility_status": "pending" if status.startswith("pending") else "approved",
+        "version_no": 1,
+        "submission": {
+            "id": "s1",
+            "status": status,
+            "version": "abc",
+            "error": error,
+            "risk_level": None,
+            "summary": None,
+            "created_at": "2026-01-01T00:00:00",
+            "updated_at": "2026-01-01T00:00:00",
+        },
+        "hint": "Some actionable hint.",
+    }
+
+
+def test_store_status_renders(monkeypatch):
+    import cli.commands.store as store_mod
+
+    monkeypatch.setattr(
+        store_mod, "api_get_json", lambda path: _status_body("approved")
+    )
+    result = runner.invoke(store_app, ["status", "e1"])
+    assert result.exit_code == 0, result.output
+    out = _clean(result.output)
+    assert "approved" in out
+    assert "my-skill" in out
+
+
+def test_store_status_review_error_nonzero_exit(monkeypatch):
+    import cli.commands.store as store_mod
+
+    monkeypatch.setattr(
+        store_mod, "api_get_json",
+        lambda path: _status_body("review_error", error="timeout_or_crash"),
+    )
+    result = runner.invoke(store_app, ["status", "e1"])
+    assert result.exit_code == 1
+    assert "review_error" in _clean(result.output)
+    assert "timeout_or_crash" in _clean(result.output)
+
+
+def test_store_status_wait_polls_until_terminal(monkeypatch):
+    import cli.commands.store as store_mod
+
+    responses = iter([
+        _status_body("pending_llm"),
+        _status_body("pending_llm"),
+        _status_body("approved"),
+    ])
+    monkeypatch.setattr(store_mod, "api_get_json", lambda path: next(responses))
+    monkeypatch.setattr(store_mod.time, "sleep", lambda s: None)
+    result = runner.invoke(store_app, ["status", "e1", "--wait"])
+    assert result.exit_code == 0, result.output
+    assert "approved" in _clean(result.output)
+
+
+def test_store_status_wait_times_out(monkeypatch):
+    import cli.commands.store as store_mod
+
+    monkeypatch.setattr(
+        store_mod, "api_get_json", lambda path: _status_body("pending_llm")
+    )
+    fake_now = iter(range(0, 10_000, 100))
+    monkeypatch.setattr(store_mod.time, "monotonic", lambda: float(next(fake_now)))
+    monkeypatch.setattr(store_mod.time, "sleep", lambda s: None)
+    result = runner.invoke(store_app, ["status", "e1", "--wait", "--timeout", "300"])
+    assert result.exit_code == 2
+    assert "still" in _clean(result.output).lower()

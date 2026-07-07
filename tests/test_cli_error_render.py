@@ -116,3 +116,57 @@ def test_renders_empty_string_as_empty_marker(render_error):
     assert "billing_project: (empty)" in out, \
         f"empty billing_project must render as (empty); got:\n{out}"
     assert "data_project: prj-example" in out
+
+
+def test_renders_code_labeled_detail(render_error):
+    """`{detail: {code, message, submission_id}}` (store 409s like
+    prior_version_pending) renders as a labeled block, not a truncated
+    python-dict dump."""
+    body = {"detail": {
+        "code": "prior_version_pending",
+        "message": "A previous edit is still under review.",
+        "submission_id": "abc123",
+    }}
+    out = render_error(409, body)
+    assert out.startswith("Error: prior_version_pending (HTTP 409)")
+    assert "abc123" in out
+    assert "under review" in out
+
+
+def test_renders_validation_failed_issue_per_line(render_error):
+    """The store 422 validation_failed body carries nested checks with an
+    issues list — every issue must surface as one actionable line (file,
+    field, code, hint), with nothing truncated."""
+    issues = [
+        {
+            "file": f"skills/s{i}/SKILL.md",
+            "field": "frontmatter.description",
+            "code": "too_short",
+            "hint": f"Description number {i} is too short (minimum 60 characters). "
+                    "Say when to use the skill and what it does.",
+        }
+        for i in range(8)
+    ]
+    body = {"detail": {
+        "code": "validation_failed",
+        "checks": {
+            "manifest": {"status": "pass", "issues": []},
+            "content": {"status": "fail", "issues": issues},
+            "quality": {"status": "pass", "issues": []},
+        },
+    }}
+    out = render_error(422, body)
+    assert out.startswith("Error: validation_failed (HTTP 422)")
+    # Every single issue is present — no first-issue-only truncation.
+    for i in range(8):
+        assert f"skills/s{i}/SKILL.md" in out
+        assert f"Description number {i}" in out
+    assert "..." not in out
+    # Passing checks stay quiet.
+    assert "manifest" not in out
+
+
+def test_validation_failed_without_issues_still_renders(render_error):
+    body = {"detail": {"code": "validation_failed", "checks": {"content": {"status": "fail"}}}}
+    out = render_error(422, body)
+    assert "validation_failed" in out

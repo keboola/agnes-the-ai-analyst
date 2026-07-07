@@ -283,3 +283,58 @@ class TestInlineResult:
         assert r.static_security["status"] == "pass"
         assert r.content["status"] == "pass"
         assert r.passed
+
+
+class TestSkillDescriptionAttribution:
+    """Skill/agent uploads bake a SYNTHETIC .claude-plugin/plugin.json whose
+    description is the submission description. When that description fails
+    the floor, the rejection must point at the --description flag / SKILL.md
+    frontmatter — not at a plugin.json file the submitter never wrote."""
+
+    def _bake_skill(self, plugin_dir, description):
+        import json as _json
+        _write_skill_md(plugin_dir)
+        target = plugin_dir / ".claude-plugin"
+        target.mkdir(exist_ok=True)
+        (target / "plugin.json").write_text(
+            _json.dumps({"name": "test-skill-by-user", "description": description or ""}),
+            encoding="utf-8",
+        )
+
+    def test_short_description_not_blamed_on_synthetic_plugin_json(self, plugin_dir):
+        self._bake_skill(plugin_dir, "short")
+        r = run_inline_checks(plugin_dir, type_="skill", description="short")
+        assert r.content["status"] == "fail"
+        files = {i.get("file") for i in r.content["issues"]}
+        assert ".claude-plugin/plugin.json" not in files
+        assert "<submission>" in files
+
+    def test_submission_hint_names_description_flag(self, plugin_dir):
+        self._bake_skill(plugin_dir, "short")
+        r = run_inline_checks(plugin_dir, type_="skill", description="short")
+        sub_issues = [i for i in r.content["issues"] if i.get("file") == "<submission>"]
+        assert sub_issues, "expected a submission-level description issue"
+        hint = sub_issues[0]["hint"]
+        assert "--description" in hint
+        assert "plugin.json" in hint
+
+    def test_plugin_uploads_keep_plugin_json_attribution(self, plugin_dir):
+        """Real plugin uploads DID author plugin.json — attribution stays."""
+        import json as _json
+        target = plugin_dir / ".claude-plugin"
+        target.mkdir(exist_ok=True)
+        (target / "plugin.json").write_text(
+            _json.dumps({"name": "p", "description": "short"}), encoding="utf-8"
+        )
+        r = run_inline_checks(
+            plugin_dir, type_="plugin",
+            description="Use when checking that plugin manifest attribution is preserved",
+        )
+        files = {i.get("file") for i in r.content["issues"]}
+        assert ".claude-plugin/plugin.json" in files
+
+    def test_good_description_still_passes(self, plugin_dir):
+        good = "Use when verifying that a healthy skill bundle sails through the content gate"
+        self._bake_skill(plugin_dir, good)
+        r = run_inline_checks(plugin_dir, type_="skill", description=good)
+        assert r.content["status"] == "pass"

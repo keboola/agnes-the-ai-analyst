@@ -33,6 +33,8 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/stack/browse": ("stack browse", "stack_browse"),
     # Store thumbs up/down ratings (issue #398).
     "/api/store/entities/{entity_id}/rate": ("store rate", "store_rate"),
+    # Owner-facing review-pipeline status (upload-friction feedback).
+    "/api/store/entities/{entity_id}/status": ("store status", "store_status"),
     # Collections — bring-your-files (Slice 2). The read surfaces are
     # triple-surface; the multipart-upload + file-mutation paths are _EXEMPT
     # below (binary upload has no MCP analogue).
