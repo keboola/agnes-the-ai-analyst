@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- Sync outcomes ("N total, 0 synced" with no explanation) now record a per-table reason: the Keboola extractor subprocess's per-table failures are persisted to `sync_state` (previously discarded beyond a truncated log line), materialized-pass skips with a bounded, meaningful cause (`source_filter` / `not_in_target` / `in_flight`) persist a `status='skipped'` row via the new `sync_state.set_skipped()`, and `GET /api/admin/registry` now returns the `last_sync` / `last_sync_status` / `rows` / `file_size_bytes` fields the admin Sync dashboard already expected (a field-name mismatch had silently zeroed out the "Synced" / "Errors" summary cards regardless of actual sync state). The dashboard also explains a "0 synced" run with a one-line reason breakdown, and `agnes admin list-tables` / `agnes pull` (on an empty-but-error-free manifest) surface the same reasons (#754)
 
 ### Removed
 

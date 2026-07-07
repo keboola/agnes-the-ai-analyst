@@ -13,7 +13,7 @@ def _clean(s: str) -> str:
     return _ANSI_RE.sub("", s)
 
 
-from cli.commands.pull import pull_app
+from cli.commands.pull import pull_app  # noqa: E402
 
 runner = CliRunner()
 
@@ -162,6 +162,39 @@ def test_pull_exits_zero_when_no_errors(tmp_path, monkeypatch):
     assert _run_pull_in(tmp_path, monkeypatch, []).exit_code == 0
     assert _run_pull_in(tmp_path, monkeypatch, ["--quiet"]).exit_code == 0
     assert _run_pull_in(tmp_path, monkeypatch, ["--json"]).exit_code == 0
+
+
+def test_pull_empty_manifest_explains_zero_tables(tmp_path, monkeypatch):
+    """#754: an empty manifest with no transport/server errors (real
+    `run_pull` reaches this branch only when the manifest fetch itself
+    succeeded — see `cli/lib/pull.py:run_pull` step 1) must print an
+    explanatory line distinguishing "nothing granted/registered" from a
+    transport failure, instead of the bare pre-fix
+    "Updated 0 tables (0 total)." with zero context."""
+    from cli.lib.hooks import install_claude_hooks
+
+    install_claude_hooks(tmp_path)
+    result = _run_pull_in(tmp_path, monkeypatch, [])
+    assert result.exit_code == 0
+    out = _clean(result.stdout)
+    assert "no tables" in out.lower() or "nothing" in out.lower()
+    assert "grant" in out.lower() or "regist" in out.lower()
+
+
+def test_pull_empty_manifest_silent_under_quiet(tmp_path, monkeypatch):
+    """The explanatory line is a non-error UX nicety — must NOT print under
+    `--quiet` (the SessionStart hook path stays silent on success)."""
+    result = _run_pull_in(tmp_path, monkeypatch, ["--quiet"])
+    assert result.exit_code == 0
+    assert result.stdout.strip() == ""
+
+
+def test_pull_empty_manifest_silent_under_json(tmp_path, monkeypatch):
+    """`--json` output stays machine-readable — no extra prose line mixed
+    into the JSON payload."""
+    result = _run_pull_in(tmp_path, monkeypatch, ["--json"])
+    assert result.exit_code == 0
+    json.loads(_clean(result.stdout).strip())  # must still parse cleanly
 
 
 def test_pull_no_server_friendly_exit(tmp_path, monkeypatch):

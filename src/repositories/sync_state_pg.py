@@ -148,6 +148,21 @@ class SyncStatePgRepository:
                 {"t": table_id, "err": error_message},
             )
 
+    def set_skipped(self, table_id: str, reason: str) -> None:
+        """Mirrors ``SyncStateRepository.set_skipped`` — see its docstring
+        for the reasoning (#754) on which skip reasons are worth persisting."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    """INSERT INTO sync_state (table_id, status, error)
+                       VALUES (:t, 'skipped', :reason)
+                       ON CONFLICT (table_id) DO UPDATE SET
+                         status = 'skipped',
+                         error = EXCLUDED.error"""
+                ),
+                {"t": table_id, "reason": reason},
+            )
+
     def clear_error(self, table_id: str) -> None:
         with self._engine.begin() as conn:
             conn.execute(
