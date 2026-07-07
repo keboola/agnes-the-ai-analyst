@@ -303,6 +303,8 @@ def test_send_user_message_emits_slack_surface(manager: ChatManager, monkeypatch
     assert emitted[0]["user_id"] is None
     assert emitted[0]["username"] == "u@x"
 
+
+def test_cancel_emits_synthetic_tool_result(manager: ChatManager):
     async def _run():
         handle = FakeHandle()
         manager._provider.spawn = AsyncMock(return_value=handle)
