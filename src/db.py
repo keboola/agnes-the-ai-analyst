@@ -6139,18 +6139,24 @@ def checkpoint_system_db() -> bool:
     singleton — never opens one implicitly) or when DuckDB refused (e.g.
     "there are other transactions active"); refusal is expected under
     load and simply means the next tick retries.
+
+    Holds ``_system_db_lock`` for the read-and-execute, like every other
+    accessor of the ``_system_db_conn`` global — without it a tick can
+    race the DATA_DIR-reopen branch in ``get_system_db()`` and execute
+    on an already-closed native connection.
     """
-    if _system_db_conn is None:
-        return False
-    try:
-        _system_db_conn.execute("CHECKPOINT")
-        logger.debug("checkpoint_system_db: CHECKPOINT ok")
-        return True
-    except Exception as exc:
-        # Concurrent transactions make DuckDB refuse a plain CHECKPOINT;
-        # deliberately NOT `FORCE CHECKPOINT`, which would abort them.
-        logger.warning("checkpoint_system_db: CHECKPOINT failed (%s); will retry next tick", exc)
-        return False
+    with _system_db_lock:
+        if _system_db_conn is None:
+            return False
+        try:
+            _system_db_conn.execute("CHECKPOINT")
+            logger.debug("checkpoint_system_db: CHECKPOINT ok")
+            return True
+        except Exception as exc:
+            # Concurrent transactions make DuckDB refuse a plain CHECKPOINT;
+            # deliberately NOT `FORCE CHECKPOINT`, which would abort them.
+            logger.warning("checkpoint_system_db: CHECKPOINT failed (%s); will retry next tick", exc)
+            return False
 
 
 def close_analytics_db() -> None:
