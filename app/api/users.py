@@ -271,9 +271,21 @@ async def create_user(
 
     user_id = str(uuid.uuid4())
     repo.create(id=user_id, email=payload.email, name=payload.name)
-    # New users start with no group memberships — admin promotion is an
-    # explicit follow-up step (POST /api/admin/users/{id}/memberships with
-    # the Admin group_id, or POST /api/admin/groups/{admin_id}/members).
+    # New users are auto-granted the Everyone system group at creation
+    # (source='system_seed', issue #748) unless AGNES_GROUP_EVERYONE_EMAIL
+    # maps Everyone to a Workspace group instead. Admin promotion (Admin
+    # group) remains an explicit follow-up step (POST
+    # /api/admin/users/{id}/memberships with the Admin group_id, or
+    # POST /api/admin/groups/{admin_id}/members).
+    try:
+        from app.auth.group_sync import ensure_everyone_membership
+
+        ensure_everyone_membership(user_id, added_by="api.users:create")
+    except Exception:
+        logger.exception(
+            "ensure_everyone_membership failed for new user %s",
+            payload.email,
+        )
     # v39: subscribe to every system plugin so the mandatory tier
     # reaches the new user on first sign-in without admin reconcile.
     try:

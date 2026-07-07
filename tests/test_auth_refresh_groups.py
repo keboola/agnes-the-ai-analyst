@@ -22,8 +22,10 @@ def client(tmp_path, monkeypatch):
     (tmp_path / "analytics").mkdir()
     (tmp_path / "extracts").mkdir()
     from src.db import close_system_db
+
     close_system_db()
     from app.main import create_app
+
     app = create_app()
     yield TestClient(app)
     close_system_db()
@@ -33,11 +35,14 @@ def _create_user(client: TestClient, email: str = "alice@example.com") -> tuple[
     from argon2 import PasswordHasher
     from src.db import get_system_db
     from src.repositories.users import UserRepository
+
     ph = PasswordHasher()
     conn = get_system_db()
     user_id = email.split("@")[0]
     UserRepository(conn).create(
-        id=user_id, email=email, name=user_id,
+        id=user_id,
+        email=email,
+        name=user_id,
         password_hash=ph.hash("UserPass1!"),
     )
     conn.close()
@@ -49,11 +54,13 @@ def _create_user(client: TestClient, email: str = "alice@example.com") -> tuple[
 def _set_fetch(monkeypatch, groups: list[str]) -> None:
     """Stub out the Admin SDK fetch with a fixed group list."""
     import app.auth.group_sync as gs_mod
+
     monkeypatch.setattr(gs_mod, "fetch_user_groups", lambda email: list(groups))
 
 
 def _synced_names(user_id: str) -> set[str]:
     from src.db import get_system_db
+
     conn = get_system_db()
     try:
         rows = conn.execute(
@@ -84,6 +91,7 @@ class TestApplyUserGroups:
 
         from app.auth.group_sync import apply_user_groups
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             result = apply_user_groups(user_id, "alice@example.com", conn)
@@ -102,6 +110,7 @@ class TestApplyUserGroups:
         _set_fetch(monkeypatch, ["existing@example.com"])
         from app.auth.group_sync import apply_user_groups
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             apply_user_groups(user_id, "alice@example.com", conn)
@@ -126,6 +135,7 @@ class TestApplyUserGroups:
 
         from app.auth.group_sync import apply_user_groups
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             result = apply_user_groups(user_id, "alice@example.com", conn)
@@ -138,14 +148,18 @@ class TestApplyUserGroups:
     def test_prefix_filter_drops_non_matching(self, client, monkeypatch):
         user_id, _ = _create_user(client)
         monkeypatch.setenv("AGNES_GOOGLE_GROUP_PREFIX", "grp_acme_")
-        _set_fetch(monkeypatch, [
-            "grp_acme_eng@example.com",
-            "grp_acme_finance@example.com",
-            "drinks@example.com",
-        ])
+        _set_fetch(
+            monkeypatch,
+            [
+                "grp_acme_eng@example.com",
+                "grp_acme_finance@example.com",
+                "drinks@example.com",
+            ],
+        )
 
         from app.auth.group_sync import apply_user_groups
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             result = apply_user_groups(user_id, "alice@example.com", conn)
@@ -156,6 +170,64 @@ class TestApplyUserGroups:
             "grp_acme_eng@example.com",
             "grp_acme_finance@example.com",
         }
+
+    def test_resync_preserves_system_seed_everyone_row(self, client, monkeypatch):
+        """Issue #748: the creation-time Everyone grant (source='system_seed')
+        must survive an ``apply_user_groups`` re-sync — ``replace_google_sync_groups``
+        only touches ``source='google_sync'`` rows for this user."""
+        from app.auth.group_sync import ensure_everyone_membership
+        from src.db import SYSTEM_EVERYONE_GROUP
+
+        user_id, _ = _create_user(client)
+        ensure_everyone_membership(user_id, added_by="test:seed")
+
+        _set_fetch(monkeypatch, ["team@example.com"])
+        from app.auth.group_sync import apply_user_groups
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            result = apply_user_groups(user_id, "alice@example.com", conn)
+        finally:
+            conn.close()
+
+        assert result.applied is True
+        from src.repositories import user_group_members_repo
+
+        rows = user_group_members_repo().list_groups_with_meta_for_user(user_id)
+        everyone_rows = [r for r in rows if r["name"] == SYSTEM_EVERYONE_GROUP]
+        assert len(everyone_rows) == 1
+        assert everyone_rows[0]["source"] == "system_seed"
+
+    def test_opt_out_from_everyone_not_reasserted_by_resync(self, client, monkeypatch):
+        """Issue #748: if an admin removes a user's Everyone membership,
+        a subsequent Google re-sync must NOT re-add it — the creation-time
+        grant is not re-asserted at login."""
+        from app.auth.group_sync import ensure_everyone_membership
+        from src.db import SYSTEM_EVERYONE_GROUP
+        from src.repositories import user_group_members_repo, user_groups_repo
+
+        user_id, _ = _create_user(client)
+        ensure_everyone_membership(user_id, added_by="test:seed")
+
+        everyone = user_groups_repo().get_by_name(SYSTEM_EVERYONE_GROUP)
+        user_group_members_repo().remove_member(user_id, everyone["id"])
+
+        _set_fetch(monkeypatch, ["team@example.com"])
+        from app.auth.group_sync import apply_user_groups
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            apply_user_groups(user_id, "alice@example.com", conn)
+        finally:
+            conn.close()
+
+        rows = user_group_members_repo().list_groups_with_meta_for_user(user_id)
+        assert not any(r["name"] == SYSTEM_EVERYONE_GROUP for r in rows), (
+            "Everyone must NOT be re-added by a Google sync re-run after "
+            "an admin removed it — the creation-time grant is not re-asserted"
+        )
 
 
 class TestRefreshGroupsEndpoint:

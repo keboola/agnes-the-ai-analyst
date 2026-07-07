@@ -107,6 +107,21 @@ async def google_callback(request: Request):
             if not user:
                 user_id = str(uuid.uuid4())
                 repo.create(id=user_id, email=email, name=name)
+                # Issue #748: auto-grant Everyone at creation (source=
+                # 'system_seed') unless AGNES_GROUP_EVERYONE_EMAIL maps
+                # Everyone to a Workspace group — then apply_user_groups
+                # below is the sole writer. Creation-time only: never
+                # called again for a returning user, so an admin's manual
+                # removal later sticks.
+                try:
+                    from app.auth.group_sync import ensure_everyone_membership
+
+                    ensure_everyone_membership(user_id, added_by="auth.google:first-signin")
+                except Exception:
+                    logger.exception(
+                        "ensure_everyone_membership failed for new user %s",
+                        email,
+                    )
                 # v39: subscribe new user to every system plugin so the
                 # mandatory tier reaches them on their first session
                 # without an admin reconcile. Fail-soft — the import +
@@ -115,6 +130,7 @@ async def google_callback(request: Request):
                 # doesn't block sign-in.
                 try:
                     from src.repositories import user_curated_subscriptions_repo
+
                     user_curated_subscriptions_repo().fanout_system_for_user(user_id)
                 except Exception:
                     logger.exception(
@@ -139,9 +155,7 @@ async def google_callback(request: Request):
             # instance. ``soft_failed`` (empty fetch / API error) does NOT
             # trigger the gate, so transient outages can't lock users out.
             if sync_result.denied:
-                return RedirectResponse(
-                    url="/login?error=not_in_allowed_group"
-                )
+                return RedirectResponse(url="/login?error=not_in_allowed_group")
         finally:
             conn.close()
 
@@ -161,8 +175,11 @@ async def google_callback(request: Request):
         use_secure = os.environ.get("DOMAIN", "") != ""
         response = RedirectResponse(url=target, status_code=302)
         response.set_cookie(
-            key="access_token", value=jwt_token,
-            httponly=True, max_age=86400, samesite="lax",
+            key="access_token",
+            value=jwt_token,
+            httponly=True,
+            max_age=86400,
+            samesite="lax",
             secure=use_secure,
         )
         return response

@@ -62,10 +62,7 @@ SA_EMAIL_ENV = "GOOGLE_ADMIN_SDK_SA_EMAIL"
 
 SCOPE = "https://www.googleapis.com/auth/admin.directory.group.readonly"
 
-_METADATA_SA_URL = (
-    "http://metadata.google.internal/computeMetadata/v1/instance/"
-    "service-accounts/default/email"
-)
+_METADATA_SA_URL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email"
 
 
 def fetch_user_groups(email: str) -> List[str]:
@@ -112,17 +109,13 @@ def _fetch_real(email: str) -> List[str]:
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
     except ImportError:
-        logger.warning(
-            "google-api-python-client / google-auth not installed; "
-            "skipping group fetch"
-        )
+        logger.warning("google-api-python-client / google-auth not installed; skipping group fetch")
         return []
 
     subject = os.environ.get(SUBJECT_ENV, "").strip()
     if not subject:
         logger.warning(
-            "%s not set; skipping group fetch (keyless DWD requires an "
-            "admin email to impersonate)",
+            "%s not set; skipping group fetch (keyless DWD requires an admin email to impersonate)",
             SUBJECT_ENV,
         )
         return []
@@ -148,7 +141,8 @@ def _fetch_real(email: str) -> List[str]:
             subject=subject,
         )
         service = build(
-            "admin", "directory_v1",
+            "admin",
+            "directory_v1",
             credentials=creds,
             cache_discovery=False,
         )
@@ -160,11 +154,15 @@ def _fetch_real(email: str) -> List[str]:
     page_token: str | None = None
     try:
         while True:
-            resp = service.groups().list(
-                userKey=email,
-                maxResults=200,
-                pageToken=page_token,
-            ).execute()
+            resp = (
+                service.groups()
+                .list(
+                    userKey=email,
+                    maxResults=200,
+                    pageToken=page_token,
+                )
+                .execute()
+            )
             for g in resp.get("groups", []):
                 gid = g.get("email")
                 if gid:
@@ -273,8 +271,7 @@ def apply_user_groups(user_id: str, email: str, conn) -> SyncResult:
 
     if not group_emails:
         logger.info(
-            "Google group sync for %s: empty result, "
-            "preserving existing memberships",
+            "Google group sync for %s: empty result, preserving existing memberships",
             email,
         )
         result.soft_failed = True
@@ -301,7 +298,9 @@ def apply_user_groups(user_id: str, email: str, conn) -> SyncResult:
         # who need the strict policy can run the prefix-cleanup admin path.
         logger.info(
             "Google group sync for %s denied: no group with prefix %r in %s",
-            email, prefix, fetched,
+            email,
+            prefix,
+            fetched,
         )
         result.denied = True
         return result
@@ -341,7 +340,9 @@ def apply_user_groups(user_id: str, email: str, conn) -> SyncResult:
             group_ids.append(g["id"])
 
         members_repo.replace_google_sync_groups(
-            user_id, group_ids, added_by="system:google-sync",
+            user_id,
+            group_ids,
+            added_by="system:google-sync",
         )
     except Exception as e:  # noqa: BLE001 - fail-soft by design
         logger.warning("Group write failed for %s: %s", email, e)
@@ -350,9 +351,90 @@ def apply_user_groups(user_id: str, email: str, conn) -> SyncResult:
 
     result.applied = True
     logger.info(
-        "Google group sync for %s: %d group(s) "
-        "(filtered from %d fetched, prefix=%r) [%s]",
-        email, len(group_ids), len(fetched), prefix,
+        "Google group sync for %s: %d group(s) (filtered from %d fetched, prefix=%r) [%s]",
+        email,
+        len(group_ids),
+        len(fetched),
+        prefix,
         ", ".join(relevant),
     )
     return result
+
+
+_everyone_missing_warned = False
+
+
+def ensure_everyone_membership(user_id: str, added_by: str) -> bool:
+    """Grant ``user_id`` a ``source='system_seed'`` row in the Everyone group.
+
+    Dual-mode with ``EVERYONE_EMAIL_ENV`` (issue #748):
+
+    - **Env unset/empty** (the common case) — Everyone is a plain local
+      broadcast group. Every user-creation path calls this so new users
+      land in Everyone by default, restoring the pre-PR#131 behavior
+      while keeping every row traceable to a real source (here,
+      ``system_seed`` + ``added_by``).
+    - **Env set** — Everyone is mirrored from a Workspace group via
+      ``apply_user_groups`` (``source='google_sync'``); this helper
+      becomes a no-op so it doesn't fight the Workspace-authoritative
+      membership set with a stray local row.
+
+    Called at CREATION time only, never re-asserted at login/boot — an
+    admin who manually removes a member via the admin path stays removed.
+    Callers only invoke this once, at creation, so it never re-adds a row
+    an admin already deleted later.
+
+    Returns ``True`` iff a membership write was attempted (the group
+    existed and ``add_member`` ran) — not "row was newly inserted";
+    ``add_member`` is itself idempotent. Returns ``False`` when the env
+    var routes Everyone to Workspace, or when the Everyone system group
+    is missing (unhealthy install / a test fixture that never seeded
+    system groups) — logged once at warning level so repeated calls
+    during a single unhealthy run don't spam.
+
+    Routes through the ``src.repositories`` factory functions exclusively
+    (never the raw DuckDB system-connection getter, never direct repo
+    instantiation) so the active backend (DuckDB or Postgres) is
+    respected — required by the dual-backend contract and enforced by
+    ``tests/test_backend_split_guard.py``.
+    """
+    global _everyone_missing_warned
+
+    if os.environ.get(EVERYONE_EMAIL_ENV, "").strip():
+        logger.debug(
+            "ensure_everyone_membership: %s is set — Everyone is "
+            "Workspace-controlled, skipping local auto-grant for %s",
+            EVERYONE_EMAIL_ENV,
+            user_id,
+        )
+        return False
+
+    from src.db import SYSTEM_EVERYONE_GROUP
+    from src.repositories import user_group_members_repo, user_groups_repo
+
+    everyone = user_groups_repo().get_by_name(SYSTEM_EVERYONE_GROUP)
+    if not everyone:
+        if not _everyone_missing_warned:
+            logger.warning(
+                "ensure_everyone_membership: %r system group not found — "
+                "skipping auto-grant for %s (subsequent occurrences logged "
+                "at debug)",
+                SYSTEM_EVERYONE_GROUP,
+                user_id,
+            )
+            _everyone_missing_warned = True
+        else:
+            logger.debug(
+                "ensure_everyone_membership: %r system group still not found — skipping auto-grant for %s",
+                SYSTEM_EVERYONE_GROUP,
+                user_id,
+            )
+        return False
+
+    user_group_members_repo().add_member(
+        user_id=user_id,
+        group_id=everyone["id"],
+        source="system_seed",
+        added_by=added_by,
+    )
+    return True

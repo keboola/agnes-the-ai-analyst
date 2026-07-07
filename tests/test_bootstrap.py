@@ -1,6 +1,5 @@
 """Tests for bootstrap endpoint — first admin user creation."""
 
-import os
 import pytest
 from fastapi.testclient import TestClient
 
@@ -11,6 +10,7 @@ def fresh_client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
     from app.main import create_app
+
     app = create_app()
     return TestClient(app)
 
@@ -23,6 +23,7 @@ def seeded_client(tmp_path, monkeypatch):
     from app.main import create_app
     from src.db import get_system_db
     from src.repositories.users import UserRepository
+
     conn = get_system_db()
     UserRepository(conn).create(id="existing", email="existing@test.com", name="E")
     conn.close()
@@ -33,11 +34,13 @@ def seeded_client(tmp_path, monkeypatch):
 def password_user_client(tmp_path, monkeypatch):
     """Client with a user who already has a password set — bootstrap must be disabled."""
     from argon2 import PasswordHasher
+
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
     from app.main import create_app
     from src.db import get_system_db
     from src.repositories.users import UserRepository
+
     conn = get_system_db()
     UserRepository(conn).create(
         id="existing",
@@ -52,10 +55,13 @@ def password_user_client(tmp_path, monkeypatch):
 class TestBootstrap:
     def test_bootstrap_on_empty_db(self, fresh_client):
         """First call creates admin and returns token."""
-        resp = fresh_client.post("/auth/bootstrap", json={
-            "email": "admin@test.com",
-            "name": "Admin",
-        })
+        resp = fresh_client.post(
+            "/auth/bootstrap",
+            json={
+                "email": "admin@test.com",
+                "name": "Admin",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["email"] == "admin@test.com"
@@ -64,83 +70,180 @@ class TestBootstrap:
 
     def test_bootstrap_with_password(self, fresh_client):
         """Bootstrap with password sets password hash."""
-        resp = fresh_client.post("/auth/bootstrap", json={
-            "email": "admin@test.com",
-            "password": "securepass123",
-        })
+        resp = fresh_client.post(
+            "/auth/bootstrap",
+            json={
+                "email": "admin@test.com",
+                "password": "securepass123",
+            },
+        )
         assert resp.status_code == 200
+        assert "access_token" in resp.json()
 
-        # Token works
-        token = resp.json()["access_token"]
         resp2 = fresh_client.get("/api/health")
         assert resp2.status_code == 200
 
     def test_bootstrap_activates_seed_user(self, seeded_client):
         """Bootstrap activates a password-less seed user (SEED_ADMIN_EMAIL scenario)."""
-        resp = seeded_client.post("/auth/bootstrap", json={
-            "email": "existing@test.com",
-            "password": "newpass123",
-        })
+        resp = seeded_client.post(
+            "/auth/bootstrap",
+            json={
+                "email": "existing@test.com",
+                "password": "newpass123",
+            },
+        )
         assert resp.status_code == 200
         assert resp.json()["role"] == "admin"
 
         # Login now works
-        login = seeded_client.post("/auth/password/login", json={
-            "email": "existing@test.com",
-            "password": "newpass123",
-        })
+        login = seeded_client.post(
+            "/auth/password/login",
+            json={
+                "email": "existing@test.com",
+                "password": "newpass123",
+            },
+        )
         assert login.status_code == 200
 
     def test_bootstrap_disabled_when_password_user_exists(self, password_user_client):
         """Bootstrap fails with 403 when any user already has a password set."""
-        resp = password_user_client.post("/auth/bootstrap", json={
-            "email": "hacker@evil.com",
-            "password": "should-not-work",
-        })
+        resp = password_user_client.post(
+            "/auth/bootstrap",
+            json={
+                "email": "hacker@evil.com",
+                "password": "should-not-work",
+            },
+        )
         assert resp.status_code == 403
         assert "password already exists" in resp.json()["detail"]
 
     def test_bootstrap_then_login(self, fresh_client):
         """After bootstrap with password, /auth/token login works; without password it requires OAuth."""
         # Bootstrap with a password
-        fresh_client.post("/auth/bootstrap", json={
-            "email": "admin@test.com",
-            "password": "adminpass123",
-        })
+        fresh_client.post(
+            "/auth/bootstrap",
+            json={
+                "email": "admin@test.com",
+                "password": "adminpass123",
+            },
+        )
 
         # Normal password login succeeds
-        resp = fresh_client.post("/auth/token", json={
-            "email": "admin@test.com",
-            "password": "adminpass123",
-        })
+        resp = fresh_client.post(
+            "/auth/token",
+            json={
+                "email": "admin@test.com",
+                "password": "adminpass123",
+            },
+        )
         assert resp.status_code == 200
         assert resp.json()["role"] == "admin"
 
     def test_bootstrap_no_password_token_rejected(self, fresh_client):
         """After passwordless bootstrap, /auth/token must reject the user (OAuth-only flow)."""
-        fresh_client.post("/auth/bootstrap", json={
-            "email": "admin@test.com",
-        })
+        fresh_client.post(
+            "/auth/bootstrap",
+            json={
+                "email": "admin@test.com",
+            },
+        )
 
-        resp = fresh_client.post("/auth/token", json={
-            "email": "admin@test.com",
-        })
+        resp = fresh_client.post(
+            "/auth/token",
+            json={
+                "email": "admin@test.com",
+            },
+        )
         assert resp.status_code == 401
 
     def test_bootstrap_second_call_fails_once_password_set(self, fresh_client):
         """Endpoint self-deactivates once any user has a password."""
         # First call WITH password — locks bootstrap
-        fresh_client.post("/auth/bootstrap", json={
-            "email": "admin@test.com",
-            "password": "realpass123",
-        })
+        fresh_client.post(
+            "/auth/bootstrap",
+            json={
+                "email": "admin@test.com",
+                "password": "realpass123",
+            },
+        )
 
         # Any subsequent bootstrap attempt fails
-        resp = fresh_client.post("/auth/bootstrap", json={
-            "email": "second@test.com",
-            "password": "other-pass",
-        })
+        resp = fresh_client.post(
+            "/auth/bootstrap",
+            json={
+                "email": "second@test.com",
+                "password": "other-pass",
+            },
+        )
         assert resp.status_code == 403
+
+    def test_bootstrap_fresh_user_joins_admin_and_everyone(self, fresh_client):
+        """Issue #748: bootstrap grants Admin (pre-existing) AND Everyone
+        (new) so the very first admin also sees Everyone-scoped grants."""
+        resp = fresh_client.post(
+            "/auth/bootstrap",
+            json={
+                "email": "admin@test.com",
+                "name": "Admin",
+            },
+        )
+        assert resp.status_code == 200
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from src.repositories.user_group_members import UserGroupMembersRepository
+
+        conn = get_system_db()
+        try:
+            user = UserRepository(conn).get_by_email("admin@test.com")
+            assert user is not None
+            rows = UserGroupMembersRepository(conn).list_groups_with_meta_for_user(user["id"])
+            names = {r["name"] for r in rows}
+            assert {"Admin", "Everyone"} <= names
+            everyone_row = next(r for r in rows if r["name"] == "Everyone")
+            assert everyone_row["source"] == "system_seed"
+        finally:
+            conn.close()
+
+    def test_bootstrap_activate_seed_user_joins_admin_and_everyone(self, seeded_client):
+        """Same grant applies on the activate-existing-seed branch."""
+        resp = seeded_client.post(
+            "/auth/bootstrap",
+            json={
+                "email": "existing@test.com",
+                "password": "newpass123",
+            },
+        )
+        assert resp.status_code == 200
+
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from src.repositories.user_group_members import UserGroupMembersRepository
+
+        conn = get_system_db()
+        try:
+            user = UserRepository(conn).get_by_email("existing@test.com")
+            assert user is not None
+            rows = UserGroupMembersRepository(conn).list_groups_with_meta_for_user(user["id"])
+            names = {r["name"] for r in rows}
+            assert {"Admin", "Everyone"} <= names
+        finally:
+            conn.close()
+
+    def test_bootstrap_survives_everyone_grant_failure(self, fresh_client, monkeypatch):
+        """A transient failure in the non-critical Everyone grant must not
+        fail the bootstrap — the operator still gets their admin token."""
+        import app.auth.group_sync as group_sync
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("transient db error")
+
+        monkeypatch.setattr(group_sync, "ensure_everyone_membership", _boom)
+        resp = fresh_client.post(
+            "/auth/bootstrap",
+            json={"email": "admin@test.com", "name": "Admin"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["access_token"]
 
     def test_full_agent_flow(self, fresh_client):
         """Simulate full AI agent deployment flow."""
@@ -150,9 +253,13 @@ class TestBootstrap:
         assert resp.json()["status"] == "ok"
 
         # 2. Bootstrap admin
-        resp = fresh_client.post("/auth/bootstrap", json={
-            "email": "agent@company.com", "name": "AI Agent",
-        })
+        resp = fresh_client.post(
+            "/auth/bootstrap",
+            json={
+                "email": "agent@company.com",
+                "name": "AI Agent",
+            },
+        )
         assert resp.status_code == 200
         token = resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -168,9 +275,14 @@ class TestBootstrap:
         assert len(resp.json()) == 1
 
         # 5. Add analyst user
-        resp = fresh_client.post("/api/users", json={
-            "email": "analyst@company.com", "name": "Analyst",
-        }, headers=headers)
+        resp = fresh_client.post(
+            "/api/users",
+            json={
+                "email": "analyst@company.com",
+                "name": "Analyst",
+            },
+            headers=headers,
+        )
         assert resp.status_code == 201
 
         # 6. Verify via detailed health (requires auth)

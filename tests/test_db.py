@@ -1,6 +1,4 @@
 """Tests for src.db — DuckDB connection management and schema."""
-import os
-import tempfile
 
 import duckdb
 import pytest
@@ -13,6 +11,7 @@ def _probe_open_duckdb(path: str, queue) -> None:
     needs the worker to be importable by name.
     """
     import duckdb
+
     try:
         c = duckdb.connect(path)
         c.execute("SELECT 1").fetchone()
@@ -40,11 +39,21 @@ class TestGetSystemDb:
                 ).fetchall()
             }
             expected = {
-                "schema_version", "users", "sync_state", "sync_history",
-                "user_sync_settings", "knowledge_items", "knowledge_votes",
-                "audit_log", "telegram_links", "pending_codes",
-                "script_registry", "table_registry", "table_profiles",
-                "metric_definitions", "column_metadata",
+                "schema_version",
+                "users",
+                "sync_state",
+                "sync_history",
+                "user_sync_settings",
+                "knowledge_items",
+                "knowledge_votes",
+                "audit_log",
+                "telegram_links",
+                "pending_codes",
+                "script_registry",
+                "table_registry",
+                "table_profiles",
+                "metric_definitions",
+                "column_metadata",
             }
             assert expected.issubset(tables), f"Missing: {expected - tables}"
             # v19: legacy tables MUST NOT exist on a fresh install.
@@ -58,9 +67,7 @@ class TestGetSystemDb:
         from src.db import get_system_db
 
         conn = get_system_db()
-        conn.execute(
-            "INSERT INTO users (id, email, name) VALUES ('u1', 'test@test.com', 'Test')"
-        )
+        conn.execute("INSERT INTO users (id, email, name) VALUES ('u1', 'test@test.com', 'Test')")
         conn.close()
 
         conn2 = get_system_db()
@@ -117,31 +124,42 @@ class TestV1ToV2Migration:
         conn.execute("CREATE TABLE IF NOT EXISTS users (id VARCHAR PRIMARY KEY, email VARCHAR)")
         conn.execute("CREATE TABLE IF NOT EXISTS sync_state (table_id VARCHAR PRIMARY KEY)")
         conn.execute("CREATE TABLE IF NOT EXISTS sync_history (id VARCHAR PRIMARY KEY, table_id VARCHAR)")
-        conn.execute("CREATE TABLE IF NOT EXISTS user_sync_settings (user_id VARCHAR, dataset VARCHAR, PRIMARY KEY(user_id, dataset))")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS user_sync_settings (user_id VARCHAR, dataset VARCHAR, PRIMARY KEY(user_id, dataset))"
+        )
         conn.execute("CREATE TABLE IF NOT EXISTS knowledge_items (id VARCHAR PRIMARY KEY, title VARCHAR)")
-        conn.execute("CREATE TABLE IF NOT EXISTS knowledge_votes (item_id VARCHAR, user_id VARCHAR, PRIMARY KEY(item_id, user_id))")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS knowledge_votes (item_id VARCHAR, user_id VARCHAR, PRIMARY KEY(item_id, user_id))"
+        )
         conn.execute("CREATE TABLE IF NOT EXISTS audit_log (id VARCHAR PRIMARY KEY, action VARCHAR)")
         conn.execute("CREATE TABLE IF NOT EXISTS telegram_links (user_id VARCHAR PRIMARY KEY, chat_id BIGINT)")
         conn.execute("CREATE TABLE IF NOT EXISTS pending_codes (code VARCHAR PRIMARY KEY, chat_id BIGINT)")
         conn.execute("CREATE TABLE IF NOT EXISTS script_registry (id VARCHAR PRIMARY KEY, name VARCHAR, source TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS table_profiles (table_id VARCHAR PRIMARY KEY, profile JSON)")
-        conn.execute("CREATE TABLE IF NOT EXISTS dataset_permissions (user_id VARCHAR, dataset VARCHAR, PRIMARY KEY(user_id, dataset))")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dataset_permissions (user_id VARCHAR, dataset VARCHAR, PRIMARY KEY(user_id, dataset))"
+        )
         conn.close()
 
         # Now open via get_system_db which should run migration
         from src.db import get_system_db, get_schema_version
+
         conn2 = get_system_db()
         try:
             from src.db import SCHEMA_VERSION
+
             assert get_schema_version(conn2) == SCHEMA_VERSION
             # Verify old data preserved
             row = conn2.execute("SELECT name, folder FROM table_registry WHERE id='t1'").fetchone()
             assert row[0] == "Test"
             assert row[1] == "f1"
             # Verify new columns exist
-            cols = {r[0] for r in conn2.execute(
-                "SELECT column_name FROM information_schema.columns WHERE table_name='table_registry'"
-            ).fetchall()}
+            cols = {
+                r[0]
+                for r in conn2.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name='table_registry'"
+                ).fetchall()
+            }
             assert "source_type" in cols
             assert "bucket" in cols
             assert "source_table" in cols
@@ -190,6 +208,7 @@ class TestMigrationSafety:
     def _create_v2_db(self, db_path):
         """Create a minimal v2-schema DuckDB file at db_path."""
         import duckdb as _duckdb
+
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = _duckdb.connect(str(db_path))
         try:
@@ -265,7 +284,7 @@ class TestMigrationSafety:
         """Data inserted before migration is preserved after migration runs."""
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import duckdb as _duckdb
-        from src.db import _ensure_schema, get_schema_version, _SYSTEM_SCHEMA
+        from src.db import _ensure_schema, get_schema_version
 
         db_path = tmp_path / "state" / "system.duckdb"
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -288,9 +307,7 @@ class TestMigrationSafety:
                     registered_at TIMESTAMP DEFAULT current_timestamp
                 );
             """)
-            conn.execute(
-                "INSERT INTO table_registry (id, name, description) VALUES ('row1', 'MyTable', 'kept')"
-            )
+            conn.execute("INSERT INTO table_registry (id, name, description) VALUES ('row1', 'MyTable', 'kept')")
             # Stub remaining tables
             for ddl in [
                 "CREATE TABLE IF NOT EXISTS users (id VARCHAR PRIMARY KEY, email VARCHAR)",
@@ -311,10 +328,9 @@ class TestMigrationSafety:
             _ensure_schema(conn)
 
             from src.db import SCHEMA_VERSION
+
             assert get_schema_version(conn) == SCHEMA_VERSION
-            row = conn.execute(
-                "SELECT name, description FROM table_registry WHERE id='row1'"
-            ).fetchone()
+            row = conn.execute("SELECT name, description FROM table_registry WHERE id='row1'").fetchone()
             assert row is not None, "Pre-migration row was lost"
             assert row[0] == "MyTable"
             assert row[1] == "kept"
@@ -373,7 +389,9 @@ class TestMigrationSafety:
             conn.close()
 
     def test_split_brain_future_version_with_missing_tables_self_heals(
-        self, tmp_path, monkeypatch,
+        self,
+        tmp_path,
+        monkeypatch,
     ):
         """Regression for a shared dev-VM split-brain incident.
 
@@ -428,14 +446,12 @@ class TestMigrationSafety:
             tables_before = {
                 r[0]
                 for r in conn.execute(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = ?",
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = ?",
                     ["main"],
                 ).fetchall()
             }
             assert not (expected_tables & tables_before), (
-                "fixture started with a non-empty schema; expected only "
-                "schema_version to be present"
+                "fixture started with a non-empty schema; expected only schema_version to be present"
             )
 
             _ensure_schema(conn)
@@ -445,15 +461,13 @@ class TestMigrationSafety:
             tables_after = {
                 r[0]
                 for r in conn.execute(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = ?",
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = ?",
                     ["main"],
                 ).fetchall()
             }
             missing = expected_tables - tables_after
             assert not missing, (
-                f"self-heal must create v13-era tables on a future-version DB, "
-                f"missing: {sorted(missing)}"
+                f"self-heal must create v13-era tables on a future-version DB, missing: {sorted(missing)}"
             )
 
             # The future-version contract still holds: version row untouched.
@@ -462,7 +476,9 @@ class TestMigrationSafety:
             conn.close()
 
     def test_pre_migration_snapshot_excludes_post_self_heal_tables(
-        self, tmp_path, monkeypatch,
+        self,
+        tmp_path,
+        monkeypatch,
     ):
         """The pre-migration snapshot must capture the on-disk DB state
         *before* any DDL runs, so operators reading the snapshot for
@@ -484,7 +500,6 @@ class TestMigrationSafety:
         """
         from src.db import (
             SCHEMA_VERSION,
-            _ensure_schema,
             get_schema_version,
             get_system_db,
         )
@@ -502,23 +517,21 @@ class TestMigrationSafety:
             # Drop the cached connection so the snapshot file isn't
             # locked when we re-open it.
             from src import db as _db
+
             _db._system_db_conn = None
             _db._system_db_path = None
 
         snapshot = tmp_path / "state" / "system.duckdb.pre-migrate"
-        assert snapshot.exists(), (
-            "fixture precondition: snapshot must be written for a v2→vN "
-            "migration"
-        )
+        assert snapshot.exists(), "fixture precondition: snapshot must be written for a v2→vN migration"
 
         import duckdb as _duckdb
+
         snap = _duckdb.connect(str(snapshot), read_only=True)
         try:
             tables_in_snapshot = {
                 r[0]
                 for r in snap.execute(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = 'main'"
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
                 ).fetchall()
             }
         finally:
@@ -530,12 +543,12 @@ class TestMigrationSafety:
         # snapshot was contaminated by a self-heal pass running before
         # the snapshot copy.
         post_v2_tables = {
-            "view_ownership",        # v10 (#100)
+            "view_ownership",  # v10 (#100)
             "marketplace_registry",  # v11
-            "marketplace_plugins",   # v11
-            "user_groups",           # v11+ / v13
-            "user_group_members",    # v13 (#106)
-            "resource_grants",       # v13 (#106)
+            "marketplace_plugins",  # v11
+            "user_groups",  # v11+ / v13
+            "user_group_members",  # v13 (#106)
+            "resource_grants",  # v13 (#106)
         }
         leaked = post_v2_tables & tables_in_snapshot
         assert not leaked, (
@@ -580,11 +593,28 @@ class TestSchemaV4:
                 ).fetchall()
             }
             expected = {
-                "id", "name", "display_name", "category", "description",
-                "type", "unit", "grain", "table_name", "tables",
-                "expression", "time_column", "dimensions", "filters",
-                "synonyms", "notes", "sql", "sql_variants", "validation",
-                "source", "created_at", "updated_at",
+                "id",
+                "name",
+                "display_name",
+                "category",
+                "description",
+                "type",
+                "unit",
+                "grain",
+                "table_name",
+                "tables",
+                "expression",
+                "time_column",
+                "dimensions",
+                "filters",
+                "synonyms",
+                "notes",
+                "sql",
+                "sql_variants",
+                "validation",
+                "source",
+                "created_at",
+                "updated_at",
             }
             assert expected.issubset(cols), f"Missing columns: {expected - cols}"
         finally:
@@ -604,8 +634,13 @@ class TestSchemaV4:
                 ).fetchall()
             }
             expected = {
-                "table_id", "column_name", "basetype", "description",
-                "confidence", "source", "updated_at",
+                "table_id",
+                "column_name",
+                "basetype",
+                "description",
+                "confidence",
+                "source",
+                "updated_at",
             }
             assert expected.issubset(cols), f"Missing columns: {expected - cols}"
         finally:
@@ -627,7 +662,9 @@ class TestSchemaV4:
                 "INSERT INTO schema_version (version) VALUES (3);"
             )
             # Create the tables that exist in v3 (minimal stubs)
-            conn.execute("CREATE TABLE IF NOT EXISTS table_registry (id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL, is_public BOOLEAN DEFAULT true)")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS table_registry (id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL, is_public BOOLEAN DEFAULT true)"
+            )
             for ddl in [
                 "CREATE TABLE IF NOT EXISTS users (id VARCHAR PRIMARY KEY, email VARCHAR)",
                 "CREATE TABLE IF NOT EXISTS sync_state (table_id VARCHAR PRIMARY KEY)",
@@ -650,7 +687,9 @@ class TestSchemaV4:
 
         conn2 = get_system_db()
         try:
-            assert get_schema_version(conn2) == SCHEMA_VERSION, f"Expected version {SCHEMA_VERSION}, got {get_schema_version(conn2)}"
+            assert get_schema_version(conn2) == SCHEMA_VERSION, (
+                f"Expected version {SCHEMA_VERSION}, got {get_schema_version(conn2)}"
+            )
             tables = {
                 row[0]
                 for row in conn2.execute(
@@ -671,6 +710,7 @@ class TestExtensionReattach:
         analytics_dir = tmp_path / "analytics"
         analytics_dir.mkdir(parents=True, exist_ok=True)
         import duckdb as _duckdb
+
         conn = _duckdb.connect(str(analytics_dir / "server.duckdb"))
         conn.close()
 
@@ -679,6 +719,7 @@ class TestExtensionReattach:
         ext_dir = tmp_path / "extracts" / source_name
         ext_dir.mkdir(parents=True, exist_ok=True)
         import duckdb as _duckdb
+
         conn = _duckdb.connect(str(ext_dir / "extract.duckdb"))
         try:
             conn.execute(
@@ -690,9 +731,7 @@ class TestExtensionReattach:
                     "CREATE TABLE _remote_attach (alias VARCHAR, extension VARCHAR, url VARCHAR, token_env VARCHAR)"
                 )
                 # Use 'bigquery' which won't be installed in CI — tests resilience
-                conn.execute(
-                    "INSERT INTO _remote_attach VALUES ('bq', 'bigquery', 'project/dataset', '')"
-                )
+                conn.execute("INSERT INTO _remote_attach VALUES ('bq', 'bigquery', 'project/dataset', '')")
         finally:
             conn.close()
 
@@ -701,6 +740,7 @@ class TestExtensionReattach:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import importlib
         import src.db as db_module
+
         importlib.reload(db_module)
 
         self._make_analytics_db(tmp_path)
@@ -720,6 +760,7 @@ class TestExtensionReattach:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import importlib
         import src.db as db_module
+
         importlib.reload(db_module)
 
         self._make_analytics_db(tmp_path)
@@ -734,15 +775,12 @@ class TestExtensionReattach:
 
             # Verify _remote_attach table is accessible via table_catalog
             has = conn.execute(
-                "SELECT 1 FROM information_schema.tables "
-                "WHERE table_catalog='bqsource' AND table_name='_remote_attach'"
+                "SELECT 1 FROM information_schema.tables WHERE table_catalog='bqsource' AND table_name='_remote_attach'"
             ).fetchone()
             assert has is not None, "_remote_attach table should be visible via table_catalog"
 
             # Read the rows to verify they're correct
-            rows = conn.execute(
-                "SELECT alias, extension, url FROM bqsource._remote_attach"
-            ).fetchall()
+            rows = conn.execute("SELECT alias, extension, url FROM bqsource._remote_attach").fetchall()
             assert len(rows) == 1
             assert rows[0][0] == "bq"
             assert rows[0][1] == "bigquery"
@@ -754,6 +792,7 @@ class TestExtensionReattach:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import importlib
         import src.db as db_module
+
         importlib.reload(db_module)
 
         self._make_analytics_db(tmp_path)
@@ -789,20 +828,13 @@ class TestReattachRemoteExtensionsBQ:
                 "query_mode VARCHAR DEFAULT 'remote')"
             )
             conn.execute(
-                "CREATE TABLE _remote_attach "
-                "(alias VARCHAR, extension VARCHAR, url VARCHAR, token_env VARCHAR)"
+                "CREATE TABLE _remote_attach (alias VARCHAR, extension VARCHAR, url VARCHAR, token_env VARCHAR)"
             )
-            conn.execute(
-                "INSERT INTO _remote_attach VALUES "
-                "('bq', 'bigquery', 'project=test-proj', '')"
-            )
+            conn.execute("INSERT INTO _remote_attach VALUES ('bq', 'bigquery', 'project=test-proj', '')")
             # Co-located local stub table so the readonly conn has something usable.
             conn.execute('CREATE TABLE "stub" (x INT)')
             conn.execute("INSERT INTO stub VALUES (1)")
-            conn.execute(
-                "INSERT INTO _meta VALUES "
-                "('stub', '', 1, 0, current_timestamp, 'local')"
-            )
+            conn.execute("INSERT INTO _meta VALUES ('stub', '', 1, 0, current_timestamp, 'local')")
         finally:
             conn.close()
 
@@ -814,6 +846,7 @@ class TestReattachRemoteExtensionsBQ:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import importlib
         import src.db as db_module
+
         importlib.reload(db_module)
 
         self._make_analytics_db(tmp_path)
@@ -859,19 +892,15 @@ class TestReattachRemoteExtensionsBQ:
 
         conn = db_module.get_analytics_db_readonly()
         try:
-            assert called["count"] >= 1, \
-                "get_metadata_token() must be called for BQ source"
-            assert any(
-                "CREATE OR REPLACE SECRET" in s.upper() and "TYPE BIGQUERY" in s.upper()
-                for s in captured
-            ), "must create DuckDB secret with metadata token"
-            attach_for_bq = [
-                s for s in captured
-                if s.upper().startswith("ATTACH ") and "TYPE BIGQUERY" in s.upper()
-            ]
+            assert called["count"] >= 1, "get_metadata_token() must be called for BQ source"
+            assert any("CREATE OR REPLACE SECRET" in s.upper() and "TYPE BIGQUERY" in s.upper() for s in captured), (
+                "must create DuckDB secret with metadata token"
+            )
+            attach_for_bq = [s for s in captured if s.upper().startswith("ATTACH ") and "TYPE BIGQUERY" in s.upper()]
             assert attach_for_bq, "expected ATTACH for the bq alias"
-            assert all("TOKEN '" not in s for s in attach_for_bq), \
+            assert all("TOKEN '" not in s for s in attach_for_bq), (
                 f"BQ ATTACH must not pass TOKEN= directly; got: {attach_for_bq}"
+            )
         finally:
             conn.close()
 
@@ -901,6 +930,7 @@ class TestReattachRemoteExtensionsBQ:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import importlib
         import src.db as db_module
+
         importlib.reload(db_module)
 
         self._make_analytics_db(tmp_path)
@@ -911,6 +941,7 @@ class TestReattachRemoteExtensionsBQ:
         # fresh name in src.db's namespace; the call site looks it up there.
         def boom():
             raise BQMetadataAuthError("metadata server unreachable: simulated")
+
         monkeypatch.setattr("src.db.get_metadata_token", boom)
 
         # Stub BigQuery-extension-specific SQL on the readonly connection so the
@@ -964,8 +995,7 @@ class TestReattachRemoteExtensionsBQ:
             row = conn.execute("SELECT 7 AS n").fetchone()
             assert row[0] == 7
             assert any("metadata" in m.lower() for m in captured_errors), (
-                f"expected ERROR log mentioning metadata; "
-                f"got {len(captured_errors)} errors: {captured_errors}"
+                f"expected ERROR log mentioning metadata; got {len(captured_errors)} errors: {captured_errors}"
             )
         finally:
             conn.close()
@@ -977,12 +1007,14 @@ class TestGetAnalyticsDbReadonly:
         _setup_data_dir(tmp_path, monkeypatch)
         import importlib
         import src.db as db_module
+
         importlib.reload(db_module)
 
         # Create the analytics DB first so get_analytics_db_readonly takes the read_only path
         analytics_dir = tmp_path / "analytics"
         analytics_dir.mkdir(parents=True, exist_ok=True)
         import duckdb as _duckdb
+
         seed_conn = _duckdb.connect(str(analytics_dir / "server.duckdb"))
         seed_conn.close()
 
@@ -998,12 +1030,7 @@ class TestGetAnalyticsDbReadonly:
         conn = db_module.get_analytics_db_readonly()
         try:
             # Verify no attachment was made for the malicious source name
-            attached = {
-                row[0]
-                for row in conn.execute(
-                    "SELECT database_name FROM duckdb_databases()"
-                ).fetchall()
-            }
+            attached = {row[0] for row in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()}
             assert malicious_name not in attached
         finally:
             conn.close()
@@ -1021,8 +1048,7 @@ class TestSchemaV12:
             cols = {
                 r[0]
                 for r in conn.execute(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_name='user_group_members'"
+                    "SELECT column_name FROM information_schema.columns WHERE table_name='user_group_members'"
                 ).fetchall()
             }
             assert {"user_id", "group_id", "source"} <= cols
@@ -1038,8 +1064,7 @@ class TestSchemaV12:
             cols = {
                 r[0]
                 for r in conn.execute(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_name='resource_grants'"
+                    "SELECT column_name FROM information_schema.columns WHERE table_name='resource_grants'"
                 ).fetchall()
             }
             assert {"id", "group_id", "resource_type", "resource_id"} <= cols
@@ -1052,11 +1077,7 @@ class TestSchemaV12:
 
         conn = get_system_db()
         try:
-            rows = {
-                r[0]: r[1] for r in conn.execute(
-                    "SELECT name, is_system FROM user_groups"
-                ).fetchall()
-            }
+            rows = {r[0]: r[1] for r in conn.execute("SELECT name, is_system FROM user_groups").fetchall()}
             assert rows.get("Admin") is True
             assert rows.get("Everyone") is True
         finally:
@@ -1068,11 +1089,7 @@ class TestSchemaV12:
 
         conn = get_system_db()
         try:
-            existing = {
-                r[0] for r in conn.execute(
-                    "SELECT table_name FROM information_schema.tables"
-                ).fetchall()
-            }
+            existing = {r[0] for r in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()}
             for legacy in ("internal_roles", "group_mappings", "user_role_grants", "plugin_access"):
                 assert legacy not in existing, f"{legacy} should have been dropped in v13"
         finally:
@@ -1119,19 +1136,25 @@ class TestSchemaV12:
         """)
         admin_uid = str(uuid.uuid4())
         bob_uid = str(uuid.uuid4())
-        conn.execute("INSERT INTO users (id, email, name, groups) VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
-            [admin_uid, 'admin@x', 'A', json.dumps(['Engineering']),
-             bob_uid, 'bob@x', 'B', None])
+        conn.execute(
+            "INSERT INTO users (id, email, name, groups) VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
+            [admin_uid, "admin@x", "A", json.dumps(["Engineering"]), bob_uid, "bob@x", "B", None],
+        )
         eng_id = str(uuid.uuid4())
-        conn.execute("INSERT INTO user_groups (id, name) VALUES (?, ?)", [eng_id, 'Engineering'])
+        conn.execute("INSERT INTO user_groups (id, name) VALUES (?, ?)", [eng_id, "Engineering"])
         # core.admin grant on admin
         core_admin = str(uuid.uuid4())
-        conn.execute("INSERT INTO internal_roles (id, key, display_name) VALUES (?, 'core.admin', 'Admin')",
-            [core_admin])
-        conn.execute("INSERT INTO user_role_grants (id, user_id, internal_role_id) VALUES (?, ?, ?)",
-            [str(uuid.uuid4()), admin_uid, core_admin])
-        conn.execute("INSERT INTO plugin_access (group_id, marketplace_id, plugin_name) VALUES (?, ?, ?)",
-            [eng_id, 'foundry-ai', 'metrics'])
+        conn.execute(
+            "INSERT INTO internal_roles (id, key, display_name) VALUES (?, 'core.admin', 'Admin')", [core_admin]
+        )
+        conn.execute(
+            "INSERT INTO user_role_grants (id, user_id, internal_role_id) VALUES (?, ?, ?)",
+            [str(uuid.uuid4()), admin_uid, core_admin],
+        )
+        conn.execute(
+            "INSERT INTO plugin_access (group_id, marketplace_id, plugin_name) VALUES (?, ?, ?)",
+            [eng_id, "foundry-ai", "metrics"],
+        )
         conn.close()
 
         # Trigger upgrade.
@@ -1141,20 +1164,24 @@ class TestSchemaV12:
 
             # admin → Admin + Engineering + Everyone
             admin_groups = {
-                r[0] for r in conn.execute(
+                r[0]
+                for r in conn.execute(
                     """SELECT g.name FROM user_group_members m
                        JOIN user_groups g ON g.id = m.group_id
-                       WHERE m.user_id = ?""", [admin_uid]
+                       WHERE m.user_id = ?""",
+                    [admin_uid],
                 ).fetchall()
             }
             assert {"Admin", "Engineering", "Everyone"} <= admin_groups
 
             # bob → only Everyone
             bob_groups = {
-                r[0] for r in conn.execute(
+                r[0]
+                for r in conn.execute(
                     """SELECT g.name FROM user_group_members m
                        JOIN user_groups g ON g.id = m.group_id
-                       WHERE m.user_id = ?""", [bob_uid]
+                       WHERE m.user_id = ?""",
+                    [bob_uid],
                 ).fetchall()
             }
             assert bob_groups == {"Everyone"}
@@ -1162,7 +1189,8 @@ class TestSchemaV12:
             # plugin_access → resource_grants
             grants = conn.execute(
                 """SELECT resource_type, resource_id FROM resource_grants
-                   WHERE group_id = ?""", [eng_id]
+                   WHERE group_id = ?""",
+                [eng_id],
             ).fetchall()
             assert grants == [("marketplace_plugin", "foundry-ai/metrics")]
         finally:
@@ -1223,10 +1251,10 @@ class TestSchemaV12:
         admin_uid = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO users (id, email, name, groups) VALUES (?, ?, ?, ?)",
-            [admin_uid, 'admin@x', 'A', json.dumps(['Engineering'])],
+            [admin_uid, "admin@x", "A", json.dumps(["Engineering"])],
         )
         eng_id = str(uuid.uuid4())
-        conn.execute("INSERT INTO user_groups (id, name) VALUES (?, ?)", [eng_id, 'Engineering'])
+        conn.execute("INSERT INTO user_groups (id, name) VALUES (?, ?)", [eng_id, "Engineering"])
         core_admin = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO internal_roles (id, key, display_name) VALUES (?, 'core.admin', 'Admin')",
@@ -1238,14 +1266,16 @@ class TestSchemaV12:
         )
         conn.execute(
             "INSERT INTO plugin_access (group_id, marketplace_id, plugin_name) VALUES (?, ?, ?)",
-            [eng_id, 'foundry-ai', 'metrics'],
+            [eng_id, "foundry-ai", "metrics"],
         )
         conn.close()
 
         # Inject a failure inside the v12→v13 finalize transaction.
         original_seed = _db._seed_system_groups
+
         def _boom(_conn):
             raise RuntimeError("synthetic mid-flight failure")
+
         monkeypatch.setattr(_db, "_seed_system_groups", _boom)
 
         with pytest.raises(RuntimeError, match="synthetic mid-flight failure"):
@@ -1257,28 +1287,15 @@ class TestSchemaV12:
         # Open the DB raw and verify rollback.
         conn = _duckdb.connect(str(db_path))
         try:
-            assert get_schema_version(conn) == 12, (
-                "schema_version must stay at 12 after rollback"
-            )
-            tables = {
-                r[0] for r in conn.execute(
-                    "SELECT table_name FROM information_schema.tables"
-                ).fetchall()
-            }
-            for legacy in ("internal_roles", "group_mappings",
-                           "user_role_grants", "plugin_access"):
-                assert legacy in tables, (
-                    f"{legacy} must NOT be dropped on rollback"
-                )
+            assert get_schema_version(conn) == 12, "schema_version must stay at 12 after rollback"
+            tables = {r[0] for r in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+            for legacy in ("internal_roles", "group_mappings", "user_role_grants", "plugin_access"):
+                assert legacy in tables, f"{legacy} must NOT be dropped on rollback"
             # New tables exist (created by _V12_TO_V13_MIGRATIONS before the
             # finalize ran) but contain no rows.
             assert tables.issuperset({"user_group_members", "resource_grants"})
-            count_members = conn.execute(
-                "SELECT COUNT(*) FROM user_group_members"
-            ).fetchone()[0]
-            count_grants = conn.execute(
-                "SELECT COUNT(*) FROM resource_grants"
-            ).fetchone()[0]
+            count_members = conn.execute("SELECT COUNT(*) FROM user_group_members").fetchone()[0]
+            count_grants = conn.execute("SELECT COUNT(*) FROM resource_grants").fetchone()[0]
             assert count_members == 0, "backfill rows leaked past ROLLBACK"
             assert count_grants == 0, "backfill rows leaked past ROLLBACK"
         finally:
@@ -1289,9 +1306,7 @@ class TestSchemaV12:
         conn = get_system_db()
         try:
             assert get_schema_version(conn) == SCHEMA_VERSION
-            count_members = conn.execute(
-                "SELECT COUNT(*) FROM user_group_members"
-            ).fetchone()[0]
+            count_members = conn.execute("SELECT COUNT(*) FROM user_group_members").fetchone()[0]
             assert count_members > 0, "retry should backfill members"
         finally:
             conn.close()
@@ -1302,7 +1317,6 @@ class TestV13ToV14Migration:
 
     def _create_v13_db(self, tmp_path, monkeypatch):
         """Create a v13 database with some data including orphan records."""
-        import json
         import uuid
         import duckdb as _duckdb
 
@@ -1386,7 +1400,7 @@ class TestV13ToV14Migration:
         orphan_gid = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO resource_grants (id, group_id, resource_type, resource_id, assigned_at, assigned_by) VALUES (?, ?, 'plugin', 'test-plugin', current_timestamp, 'admin')",
-            [orphan_gid, 'nonexistent-group'],
+            [orphan_gid, "nonexistent-group"],
         )
 
         # Valid grant
@@ -1420,9 +1434,9 @@ class TestV13ToV14Migration:
             assert orphan_grants == 0, "orphan resource_grants should be cleaned up"
 
             # Valid records should still exist
-            valid_members = conn.execute(
-                "SELECT COUNT(*) FROM user_group_members WHERE user_id = ?", [uid]
-            ).fetchone()[0]
+            valid_members = conn.execute("SELECT COUNT(*) FROM user_group_members WHERE user_id = ?", [uid]).fetchone()[
+                0
+            ]
             assert valid_members > 0, "valid memberships should be preserved"
 
             valid_grants = conn.execute(
@@ -1435,7 +1449,6 @@ class TestV13ToV14Migration:
     def test_v13_to_v14_fk_constraints_added(self, tmp_path, monkeypatch):
         """v13→v14 finalize must add FK constraints on user_group_members and resource_grants."""
         db_path, *_ = self._create_v13_db(tmp_path, monkeypatch)
-        import duckdb as _duckdb
         from src.db import get_system_db
 
         conn = get_system_db()
@@ -1446,7 +1459,7 @@ class TestV13ToV14Migration:
                 "WHERE table_name = 'user_group_members' AND constraint_type = 'FOREIGN KEY'"
             ).fetchall()
             fk_texts = [fk[0] for fk in fks_members]
-            assert any('user_groups' in t for t in fk_texts), "FK to user_groups should exist on user_group_members"
+            assert any("user_groups" in t for t in fk_texts), "FK to user_groups should exist on user_group_members"
 
             # Check FK constraints exist on resource_grants
             fks_grants = conn.execute(
@@ -1454,7 +1467,7 @@ class TestV13ToV14Migration:
                 "WHERE table_name = 'resource_grants' AND constraint_type = 'FOREIGN KEY'"
             ).fetchall()
             fk_texts_g = [fk[0] for fk in fks_grants]
-            assert any('user_groups' in t for t in fk_texts_g), "FK to user_groups should exist on resource_grants"
+            assert any("user_groups" in t for t in fk_texts_g), "FK to user_groups should exist on resource_grants"
         finally:
             conn.close()
 
@@ -1466,8 +1479,10 @@ class TestV13ToV14Migration:
 
         # Inject a failure inside the v13→v14 finalize
         original_finalize = _db._v13_to_v14_finalize
+
         def _boom(_conn):
             raise RuntimeError("synthetic v14 finalize failure")
+
         monkeypatch.setattr(_db, "_v13_to_v14_finalize", _boom)
 
         with pytest.raises(RuntimeError, match="synthetic v14 finalize failure"):
@@ -1476,6 +1491,7 @@ class TestV13ToV14Migration:
 
         # Verify rollback: schema_version still 13
         import duckdb as _duckdb
+
         conn = _duckdb.connect(str(db_path))
         try:
             assert get_schema_version(conn) == 13, "schema_version must stay at 13 after rollback"
@@ -1487,6 +1503,7 @@ class TestV13ToV14Migration:
         conn = get_system_db()
         try:
             from src.db import SCHEMA_VERSION
+
             assert get_schema_version(conn) == SCHEMA_VERSION
         finally:
             conn.close()
@@ -1506,7 +1523,9 @@ class TestV17ToV18Migration:
     """
 
     def test_v17_to_v18_drops_stranded_and_preserves_bootstrap(
-        self, tmp_path, monkeypatch,
+        self,
+        tmp_path,
+        monkeypatch,
     ):
         import uuid
         from src.db import close_system_db, get_schema_version, get_system_db
@@ -1514,7 +1533,8 @@ class TestV17ToV18Migration:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv("TESTING", "1")
         monkeypatch.setenv(
-            "JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!",
+            "JWT_SECRET_KEY",
+            "test-jwt-secret-key-minimum-32-chars!!",
         )
         # Env mapping must be active for the Admin/Everyone branches to fire.
         monkeypatch.setenv("AGNES_GROUP_ADMIN_EMAIL", "admins@workspace.test")
@@ -1535,8 +1555,7 @@ class TestV17ToV18Migration:
 
             gsync_gid = str(uuid.uuid4())
             conn.execute(
-                "INSERT INTO user_groups (id, name, is_system, created_by) "
-                "VALUES (?, ?, FALSE, 'system:google-sync')",
+                "INSERT INTO user_groups (id, name, is_system, created_by) VALUES (?, ?, FALSE, 'system:google-sync')",
                 [gsync_gid, "legal@workspace.test"],
             )
 
@@ -1597,6 +1616,7 @@ class TestV17ToV18Migration:
         conn = get_system_db()
         try:
             from src.db import SCHEMA_VERSION
+
             assert get_schema_version(conn) == SCHEMA_VERSION
 
             def _has_membership(uid: str) -> bool:
@@ -1608,24 +1628,21 @@ class TestV17ToV18Migration:
                 )
 
             # Bootstrap admin survives.
-            assert _has_membership(bootstrap_uid), \
-                "bootstrap admin must survive cleanup"
+            assert _has_membership(bootstrap_uid), "bootstrap admin must survive cleanup"
             # Real google_sync member survives.
-            assert _has_membership(real_gsync_uid), \
-                "google_sync members must survive cleanup"
+            assert _has_membership(real_gsync_uid), "google_sync members must survive cleanup"
             # Stranded rows are gone.
-            assert not _has_membership(stranded_admin_uid), \
-                "stranded system_seed in Admin must be dropped"
-            assert not _has_membership(stranded_everyone_uid), \
-                "stranded system_seed in Everyone must be dropped"
-            assert not _has_membership(stranded_gsync_uid), \
-                "non-google source in google_sync group must be dropped"
+            assert not _has_membership(stranded_admin_uid), "stranded system_seed in Admin must be dropped"
+            assert not _has_membership(stranded_everyone_uid), "stranded system_seed in Everyone must be dropped"
+            assert not _has_membership(stranded_gsync_uid), "non-google source in google_sync group must be dropped"
         finally:
             conn.close()
             close_system_db()
 
     def test_v17_to_v18_skips_admin_everyone_when_env_unmapped(
-        self, tmp_path, monkeypatch,
+        self,
+        tmp_path,
+        monkeypatch,
     ):
         """Without env mapping, Admin/Everyone are LOCAL groups — v18 must
         leave their `system_seed` rows intact (those rows represent legitimate
@@ -1638,7 +1655,8 @@ class TestV17ToV18Migration:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv("TESTING", "1")
         monkeypatch.setenv(
-            "JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!",
+            "JWT_SECRET_KEY",
+            "test-jwt-secret-key-minimum-32-chars!!",
         )
         monkeypatch.delenv("AGNES_GROUP_ADMIN_EMAIL", raising=False)
         monkeypatch.delenv("AGNES_GROUP_EVERYONE_EMAIL", raising=False)
@@ -1654,8 +1672,7 @@ class TestV17ToV18Migration:
             ).fetchone()[0]
             gsync_gid = str(uuid.uuid4())
             conn.execute(
-                "INSERT INTO user_groups (id, name, is_system, created_by) "
-                "VALUES (?, ?, FALSE, 'system:google-sync')",
+                "INSERT INTO user_groups (id, name, is_system, created_by) VALUES (?, ?, FALSE, 'system:google-sync')",
                 [gsync_gid, "legal@workspace.test"],
             )
 
@@ -1699,6 +1716,7 @@ class TestV17ToV18Migration:
         conn = get_system_db()
         try:
             from src.db import SCHEMA_VERSION
+
             assert get_schema_version(conn) == SCHEMA_VERSION
 
             def _has_membership(uid: str) -> bool:
@@ -1709,12 +1727,24 @@ class TestV17ToV18Migration:
                     ).fetchone(),
                 )
 
-            assert _has_membership(local_admin_uid), \
-                "system_seed in unmapped Admin must survive"
-            assert _has_membership(local_everyone_uid), \
-                "system_seed in unmapped Everyone must survive"
-            assert not _has_membership(stranded_gsync_uid), \
+            def _has_membership_in(uid: str, group_id: str) -> bool:
+                return bool(
+                    conn.execute(
+                        "SELECT 1 FROM user_group_members WHERE user_id = ? AND group_id = ?",
+                        [uid, group_id],
+                    ).fetchone(),
+                )
+
+            assert _has_membership(local_admin_uid), "system_seed in unmapped Admin must survive"
+            assert _has_membership(local_everyone_uid), "system_seed in unmapped Everyone must survive"
+            # Checked in the specific gsync_gid group, not "any row at all"
+            # — v85->v86 (issue #748) runs later in this same upgrade pass
+            # and legitimately backfills stranded_gsync_uid into Everyone
+            # (it's a plain user with no prior Everyone row), which is
+            # unrelated to this assertion's concern.
+            assert not _has_membership_in(stranded_gsync_uid, gsync_gid), (
                 "non-google source in google_sync group must drop unconditionally"
+            )
         finally:
             conn.close()
             close_system_db()
@@ -1726,13 +1756,15 @@ class TestV17ToV18Migration:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv("TESTING", "1")
         monkeypatch.setenv(
-            "JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!",
+            "JWT_SECRET_KEY",
+            "test-jwt-secret-key-minimum-32-chars!!",
         )
         close_system_db()
 
         conn = get_system_db()
         try:
             from src.db import SCHEMA_VERSION
+
             assert get_schema_version(conn) == SCHEMA_VERSION
         finally:
             conn.close()
@@ -1742,6 +1774,166 @@ class TestV17ToV18Migration:
         conn = get_system_db()
         try:
             from src.db import SCHEMA_VERSION
+
+            assert get_schema_version(conn) == SCHEMA_VERSION
+        finally:
+            conn.close()
+            close_system_db()
+
+
+class TestV85ToV86Migration:
+    """Issue #748: backfill users missing an Everyone row.
+
+    Env unset — every user without a system_seed/google_sync/admin row in
+    the seeded Everyone group gets one (source='system_seed',
+    added_by='system:v86-backfill'), mirroring v13's Everyone backfill.
+    Env set (AGNES_GROUP_EVERYONE_EMAIL) — Everyone is Workspace-controlled;
+    the backfill no-ops (mirrors the v18 env-conditional precedent).
+    """
+
+    def test_v85_to_v86_backfills_users_missing_everyone_when_env_unset(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import uuid
+        from src.db import close_system_db, get_schema_version, get_system_db
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv(
+            "JWT_SECRET_KEY",
+            "test-jwt-secret-key-minimum-32-chars!!",
+        )
+        monkeypatch.delenv("AGNES_GROUP_EVERYONE_EMAIL", raising=False)
+        close_system_db()
+
+        # Open at full target version, plant a user with no Everyone row
+        # (and one that already has it, for idempotency), then rewind
+        # schema_version to 85 so the v85->v86 step runs on next open.
+        conn = get_system_db()
+        try:
+            everyone_gid = conn.execute(
+                "SELECT id FROM user_groups WHERE name = 'Everyone' AND is_system",
+            ).fetchone()[0]
+
+            missing_uid = str(uuid.uuid4())
+            already_uid = str(uuid.uuid4())
+            for uid, email in [
+                (missing_uid, "missing-everyone@x"),
+                (already_uid, "already-everyone@x"),
+            ]:
+                conn.execute(
+                    "INSERT INTO users (id, email, name) VALUES (?, ?, ?)",
+                    [uid, email, email],
+                )
+            conn.execute(
+                "INSERT INTO user_group_members (user_id, group_id, source, added_by) "
+                "VALUES (?, ?, 'admin', 'admin@x')",
+                [already_uid, everyone_gid],
+            )
+
+            conn.execute("UPDATE schema_version SET version = 85")
+        finally:
+            conn.close()
+            close_system_db()
+
+        conn = get_system_db()
+        try:
+            from src.db import SCHEMA_VERSION
+
+            assert get_schema_version(conn) == SCHEMA_VERSION
+
+            rows = conn.execute(
+                "SELECT source FROM user_group_members WHERE user_id = ? AND group_id = ?",
+                [missing_uid, everyone_gid],
+            ).fetchall()
+            assert len(rows) == 1, f"expected exactly one backfilled row, got {rows}"
+            assert rows[0][0] == "system_seed"
+
+            # The already-member row is untouched (still 'admin', not
+            # duplicated).
+            rows2 = conn.execute(
+                "SELECT source FROM user_group_members WHERE user_id = ? AND group_id = ?",
+                [already_uid, everyone_gid],
+            ).fetchall()
+            assert rows2 == [("admin",)]
+        finally:
+            conn.close()
+            close_system_db()
+
+    def test_v85_to_v86_noops_when_env_set(self, tmp_path, monkeypatch):
+        import uuid
+        from src.db import close_system_db, get_schema_version, get_system_db
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv(
+            "JWT_SECRET_KEY",
+            "test-jwt-secret-key-minimum-32-chars!!",
+        )
+        monkeypatch.setenv("AGNES_GROUP_EVERYONE_EMAIL", "everyone@workspace.test")
+        close_system_db()
+
+        conn = get_system_db()
+        try:
+            everyone_gid = conn.execute(
+                "SELECT id FROM user_groups WHERE name = 'Everyone' AND is_system",
+            ).fetchone()[0]
+
+            missing_uid = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO users (id, email, name) VALUES (?, ?, ?)",
+                [missing_uid, "no-backfill@x", "no-backfill@x"],
+            )
+
+            conn.execute("UPDATE schema_version SET version = 85")
+        finally:
+            conn.close()
+            close_system_db()
+
+        conn = get_system_db()
+        try:
+            from src.db import SCHEMA_VERSION
+
+            assert get_schema_version(conn) == SCHEMA_VERSION
+
+            rows = conn.execute(
+                "SELECT 1 FROM user_group_members WHERE user_id = ? AND group_id = ?",
+                [missing_uid, everyone_gid],
+            ).fetchall()
+            assert rows == [], (
+                "backfill must no-op when AGNES_GROUP_EVERYONE_EMAIL is set — Everyone is Workspace-controlled"
+            )
+        finally:
+            conn.close()
+            close_system_db()
+
+    def test_v85_to_v86_idempotent(self, tmp_path, monkeypatch):
+        """Running migrations on an already-v86 DB is a no-op."""
+        from src.db import close_system_db, get_schema_version, get_system_db
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv(
+            "JWT_SECRET_KEY",
+            "test-jwt-secret-key-minimum-32-chars!!",
+        )
+        close_system_db()
+
+        conn = get_system_db()
+        try:
+            from src.db import SCHEMA_VERSION
+
+            assert get_schema_version(conn) == SCHEMA_VERSION
+        finally:
+            conn.close()
+            close_system_db()
+
+        conn = get_system_db()
+        try:
+            from src.db import SCHEMA_VERSION
+
             assert get_schema_version(conn) == SCHEMA_VERSION
         finally:
             conn.close()
@@ -1779,6 +1971,7 @@ class TestCloseSingletonConnections:
         ``close_singleton_connections`` the lock is gone.
         """
         import multiprocessing
+
         _setup_data_dir(tmp_path, monkeypatch)
         from src.db import close_singleton_connections, get_system_db
 

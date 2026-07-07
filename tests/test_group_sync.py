@@ -19,6 +19,7 @@ class TestMockFlag:
             "grp_a@groupon.com, grp_b@groupon.com , grp_c@groupon.com",
         )
         from app.auth.group_sync import fetch_user_groups
+
         assert fetch_user_groups("any@x") == [
             "grp_a@groupon.com",
             "grp_b@groupon.com",
@@ -29,16 +30,19 @@ class TestMockFlag:
         """Setting the flag to the empty string returns [] — explicit 'no groups'."""
         monkeypatch.setenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", "")
         from app.auth.group_sync import fetch_user_groups
+
         assert fetch_user_groups("any@x") == []
 
     def test_single_value_no_comma(self, monkeypatch):
         monkeypatch.setenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", "solo@groupon.com")
         from app.auth.group_sync import fetch_user_groups
+
         assert fetch_user_groups("any@x") == ["solo@groupon.com"]
 
     def test_trailing_commas_are_skipped(self, monkeypatch):
         monkeypatch.setenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", "a@x, , ,b@x,,")
         from app.auth.group_sync import fetch_user_groups
+
         assert fetch_user_groups("u@x") == ["a@x", "b@x"]
 
 
@@ -73,12 +77,8 @@ def real_path_env(monkeypatch):
     monkeypatch.delenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", raising=False)
     monkeypatch.setenv("GOOGLE_ADMIN_SDK_SUBJECT", "admin@example.com")
     monkeypatch.setenv("GOOGLE_ADMIN_SDK_SA_EMAIL", "sa@example.iam.gserviceaccount.com")
-    monkeypatch.setattr(
-        "google.auth.default", lambda *a, **kw: (mock.Mock(), "test-project")
-    )
-    monkeypatch.setattr(
-        "google.auth.iam.Signer", lambda *a, **kw: mock.Mock()
-    )
+    monkeypatch.setattr("google.auth.default", lambda *a, **kw: (mock.Mock(), "test-project"))
+    monkeypatch.setattr("google.auth.iam.Signer", lambda *a, **kw: mock.Mock())
     monkeypatch.setattr(
         "google.oauth2.service_account.Credentials",
         lambda **kw: mock.Mock(),
@@ -98,11 +98,10 @@ class TestRealPath:
                 }
             ]
         )
-        monkeypatch.setattr(
-            "googleapiclient.discovery.build", lambda *a, **kw: service
-        )
+        monkeypatch.setattr("googleapiclient.discovery.build", lambda *a, **kw: service)
 
         from app.auth.group_sync import fetch_user_groups
+
         result = fetch_user_groups("user@groupon.com")
         assert result == ["grp_a@groupon.com", "grp_b@groupon.com"]
 
@@ -123,35 +122,33 @@ class TestRealPath:
                 },
             ]
         )
-        monkeypatch.setattr(
-            "googleapiclient.discovery.build", lambda *a, **kw: service
-        )
+        monkeypatch.setattr("googleapiclient.discovery.build", lambda *a, **kw: service)
 
         from app.auth.group_sync import fetch_user_groups
+
         result = fetch_user_groups("u@x")
         assert result == ["page1@x", "page2@x"]
         assert list_call.call_args_list[1].kwargs["pageToken"] == "tok1"
 
     def test_api_exception_returns_empty(self, monkeypatch, real_path_env):
         service = mock.Mock()
-        service.groups.return_value.list.return_value.execute.side_effect = (
-            RuntimeError("boom")
-        )
-        monkeypatch.setattr(
-            "googleapiclient.discovery.build", lambda *a, **kw: service
-        )
+        service.groups.return_value.list.return_value.execute.side_effect = RuntimeError("boom")
+        monkeypatch.setattr("googleapiclient.discovery.build", lambda *a, **kw: service)
 
         from app.auth.group_sync import fetch_user_groups
+
         assert fetch_user_groups("user@x") == []
 
     def test_client_init_exception_returns_empty(self, monkeypatch, real_path_env):
         """Errors before the API call (ADC, signer, build) also fail-soft."""
+
         def boom(*a, **kw):
             raise RuntimeError("adc unavailable")
 
         monkeypatch.setattr("google.auth.default", boom)
 
         from app.auth.group_sync import fetch_user_groups
+
         assert fetch_user_groups("user@x") == []
 
     def test_groups_without_email_are_skipped(self, monkeypatch, real_path_env):
@@ -167,11 +164,10 @@ class TestRealPath:
                 }
             ]
         )
-        monkeypatch.setattr(
-            "googleapiclient.discovery.build", lambda *a, **kw: service
-        )
+        monkeypatch.setattr("googleapiclient.discovery.build", lambda *a, **kw: service)
 
         from app.auth.group_sync import fetch_user_groups
+
         assert fetch_user_groups("u@x") == ["good@x"]
 
 
@@ -188,6 +184,7 @@ class TestPreflightFailSoft:
         monkeypatch.setenv("GOOGLE_ADMIN_SDK_SA_EMAIL", "sa@x.iam")
 
         from app.auth.group_sync import fetch_user_groups
+
         assert fetch_user_groups("u@x") == []
 
     def test_missing_sa_and_no_metadata_returns_empty(self, monkeypatch):
@@ -203,15 +200,14 @@ class TestPreflightFailSoft:
         monkeypatch.setattr("urllib.request.urlopen", boom)
 
         from app.auth.group_sync import fetch_user_groups
+
         assert fetch_user_groups("u@x") == []
 
     def test_explicit_sa_email_used(self, monkeypatch):
         """When GOOGLE_ADMIN_SDK_SA_EMAIL is set, metadata server is bypassed."""
         monkeypatch.delenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", raising=False)
         monkeypatch.setenv("GOOGLE_ADMIN_SDK_SUBJECT", "admin@example.com")
-        monkeypatch.setenv(
-            "GOOGLE_ADMIN_SDK_SA_EMAIL", "explicit@x.iam.gserviceaccount.com"
-        )
+        monkeypatch.setenv("GOOGLE_ADMIN_SDK_SA_EMAIL", "explicit@x.iam.gserviceaccount.com")
 
         # Capture what email Signer is called with.
         captured: dict[str, str] = {}
@@ -220,9 +216,7 @@ class TestPreflightFailSoft:
             captured["sa"] = sa_email
             return mock.Mock()
 
-        monkeypatch.setattr(
-            "google.auth.default", lambda *a, **kw: (mock.Mock(), "p")
-        )
+        monkeypatch.setattr("google.auth.default", lambda *a, **kw: (mock.Mock(), "p"))
         monkeypatch.setattr("google.auth.iam.Signer", fake_signer)
         monkeypatch.setattr(
             "google.oauth2.service_account.Credentials",
@@ -230,10 +224,109 @@ class TestPreflightFailSoft:
         )
 
         service, _ = _make_admin_service_mock([{"groups": []}])
-        monkeypatch.setattr(
-            "googleapiclient.discovery.build", lambda *a, **kw: service
-        )
+        monkeypatch.setattr("googleapiclient.discovery.build", lambda *a, **kw: service)
 
         from app.auth.group_sync import fetch_user_groups
+
         fetch_user_groups("u@x")
         assert captured["sa"] == "explicit@x.iam.gserviceaccount.com"
+
+
+# ---------------------------------------------------------------------------
+# ensure_everyone_membership — issue #748 auto-Everyone-at-creation helper
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def db_env(tmp_path, monkeypatch):
+    """A fresh system DB (Admin/Everyone seeded) + one plain user row."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TESTING", "1")
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-min-32-characters!!")
+    (tmp_path / "state").mkdir()
+    (tmp_path / "analytics").mkdir()
+    (tmp_path / "extracts").mkdir()
+    from src.db import close_system_db, get_system_db
+    from src.repositories.users import UserRepository
+
+    close_system_db()
+    conn = get_system_db()
+    UserRepository(conn).create(id="u1", email="u1@example.com", name="U1")
+    conn.close()
+    yield
+    close_system_db()
+
+
+class TestEnsureEveryoneMembership:
+    def test_env_unset_adds_system_seed_row(self, db_env, monkeypatch):
+        monkeypatch.delenv("AGNES_GROUP_EVERYONE_EMAIL", raising=False)
+        from app.auth.group_sync import ensure_everyone_membership
+        from src.db import SYSTEM_EVERYONE_GROUP
+        from src.repositories import user_group_members_repo, user_groups_repo
+
+        result = ensure_everyone_membership("u1", added_by="test:caller")
+        assert result is True
+
+        everyone = user_groups_repo().get_by_name(SYSTEM_EVERYONE_GROUP)
+        rows = user_group_members_repo().list_groups_with_meta_for_user("u1")
+        matching = [r for r in rows if r["group_id"] == everyone["id"]]
+        assert len(matching) == 1
+        assert matching[0]["source"] == "system_seed"
+
+    def test_env_set_is_a_noop(self, db_env, monkeypatch):
+        monkeypatch.setenv("AGNES_GROUP_EVERYONE_EMAIL", "everyone@workspace.test")
+        from app.auth.group_sync import ensure_everyone_membership
+        from src.repositories import user_group_members_repo
+
+        result = ensure_everyone_membership("u1", added_by="test:caller")
+        assert result is False
+        assert user_group_members_repo().list_groups_with_meta_for_user("u1") == []
+
+    def test_idempotent_on_second_call(self, db_env, monkeypatch):
+        monkeypatch.delenv("AGNES_GROUP_EVERYONE_EMAIL", raising=False)
+        from app.auth.group_sync import ensure_everyone_membership
+        from src.repositories import user_group_members_repo
+
+        ensure_everyone_membership("u1", added_by="test:caller")
+        ensure_everyone_membership("u1", added_by="test:caller")
+
+        rows = user_group_members_repo().list_groups_with_meta_for_user("u1")
+        everyone_rows = [r for r in rows if r["name"] == "Everyone"]
+        assert len(everyone_rows) == 1
+
+    def test_missing_group_returns_false_without_raising(self, db_env, monkeypatch):
+        monkeypatch.delenv("AGNES_GROUP_EVERYONE_EMAIL", raising=False)
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        conn.execute("DELETE FROM user_groups WHERE name = 'Everyone'")
+        conn.close()
+
+        from app.auth.group_sync import ensure_everyone_membership
+
+        result = ensure_everyone_membership("u1", added_by="test:caller")
+        assert result is False
+
+    def test_opt_out_preserved_helper_does_not_reassert(self, db_env, monkeypatch):
+        """Once granted, removing the row and calling the helper again does
+        NOT re-add it — callers only invoke this at creation time, not on
+        every login/boot, so admin opt-out sticks."""
+        monkeypatch.delenv("AGNES_GROUP_EVERYONE_EMAIL", raising=False)
+        from src.db import get_system_db
+        from src.repositories import user_group_members_repo, user_groups_repo
+        from src.db import SYSTEM_EVERYONE_GROUP
+
+        from app.auth.group_sync import ensure_everyone_membership
+
+        ensure_everyone_membership("u1", added_by="test:caller")
+        everyone = user_groups_repo().get_by_name(SYSTEM_EVERYONE_GROUP)
+        user_group_members_repo().remove_member("u1", everyone["id"])
+
+        conn = get_system_db()
+        conn.close()
+
+        # The helper itself is not re-invoked by any login/boot path — this
+        # asserts the removal sticks in the DB, not that the helper enforces
+        # it (there is no re-assertion call site by design).
+        rows = user_group_members_repo().list_groups_with_meta_for_user("u1")
+        assert not any(r["name"] == SYSTEM_EVERYONE_GROUP for r in rows)

@@ -26,6 +26,7 @@ def fresh_db(monkeypatch):
         monkeypatch.setenv("TESTING", "1")
         monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
         from src.db import close_system_db
+
         close_system_db()
         yield tmp
         close_system_db()
@@ -42,9 +43,7 @@ def _seed_admin():
     try:
         uid = str(uuid.uuid4())
         UserRepository(conn).create(id=uid, email="admin@test", name="Admin")
-        admin_gid = conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
-        ).fetchone()[0]
+        admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()[0]
         UserGroupMembersRepository(conn).add_member(uid, admin_gid, source="system_seed")
         return uid, create_access_token(user_id=uid, email="admin@test")
     finally:
@@ -91,9 +90,7 @@ def _system_group_id(name: str) -> str:
 
     conn = get_system_db()
     try:
-        return conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [name]
-        ).fetchone()[0]
+        return conn.execute("SELECT id FROM user_groups WHERE name = ?", [name]).fetchone()[0]
     finally:
         conn.close()
 
@@ -101,7 +98,8 @@ def _system_group_id(name: str) -> str:
 def _user_payload(client: TestClient, token: str, user_id: str) -> dict:
     """Fetch the list, return the row for the given user_id."""
     resp = client.get(
-        "/api/users", headers={"Authorization": f"Bearer {token}"},
+        "/api/users",
+        headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 200, resp.text
     matches = [u for u in resp.json() if u["id"] == user_id]
@@ -235,6 +233,31 @@ def test_system_seed_membership_in_env_mapped_everyone_is_not_sso(fresh_db, monk
         "system_seed membership in an env-mapped Everyone group must not "
         "flip is_sso_user — the IdP doesn't own this membership"
     )
+
+
+def test_new_user_via_api_stays_local_when_everyone_env_mapped(fresh_db, monkeypatch):
+    """Issue #748 regression: ``ensure_everyone_membership`` is a no-op when
+    AGNES_GROUP_EVERYONE_EMAIL is set, so a user freshly created through
+    POST /api/users must NOT gain a system_seed Everyone row and must NOT
+    be flagged is_sso_user — the auto-grant-at-creation helper must never
+    fight the Workspace-authoritative membership set."""
+    from app.main import app
+
+    monkeypatch.setenv("AGNES_GROUP_EVERYONE_EMAIL", "everyone@workspace.test")
+
+    client = TestClient(app)
+    _, token = _seed_admin()
+
+    resp = client.post(
+        "/api/users",
+        json={"email": "fresh-mapped@test", "name": "Fresh"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 201
+    uid = resp.json()["id"]
+
+    payload = _user_payload(client, token, uid)
+    assert payload["is_sso_user"] is False
 
 
 def test_admin_source_membership_in_env_mapped_admin_is_not_sso(fresh_db, monkeypatch):
@@ -402,9 +425,7 @@ def test_delete_user_allows_local_user(fresh_db):
     assert resp.status_code == 204, resp.text
 
 
-def test_delete_user_rejects_sso_user_in_admin_group_when_env_mapped(
-    fresh_db, monkeypatch
-):
+def test_delete_user_rejects_sso_user_in_admin_group_when_env_mapped(fresh_db, monkeypatch):
     """Pin the env-mapping branch end-to-end: a user in `Admin` *because*
     AGNES_GROUP_ADMIN_EMAIL maps it from Google must also be locked from
     deletion via the server-side guard."""

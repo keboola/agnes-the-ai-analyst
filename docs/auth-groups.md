@@ -99,12 +99,30 @@ same rule: PATCH / DELETE / add-member / remove-member return
 an operator changes Workspace membership at admin.google.com and the user
 signs in again to Agnes.
 
-**No more implicit Everyone.** The auto-`system_seed` insert into
-`Everyone` for every new user was removed when prefix-mapping landed.
-Every membership now traces to a real source row (`admin`, `google_sync`,
-or an explicit `system_seed`). If you want plugins visible to "everyone
-in the company", grant them on a Workspace group every employee belongs
-to, mapped to `Everyone` via `AGNES_GROUP_EVERYONE_EMAIL`.
+**Everyone membership: dual-mode (issue #748).** Two mutually exclusive
+modes, selected by whether `AGNES_GROUP_EVERYONE_EMAIL` is set:
+
+- **Env unset (default)** — every new user is auto-granted `Everyone`
+  at creation time (`source='system_seed'`), across all creation paths
+  (Google OAuth first sign-in, `POST /auth/bootstrap`, admin
+  `POST /api/users`, marketplace import stubs). The grant happens once,
+  at creation — it is **not** re-asserted at login or on boot, so an
+  admin who manually removes a user from `Everyone` later stays removed.
+  Schema v86 backfills users created before this behavior existed.
+- **Env set** — `Everyone` is mirrored from the mapped Workspace group
+  exclusively via `google_sync` (as described above); the auto-grant
+  helper (`app.auth.group_sync.ensure_everyone_membership`) becomes a
+  no-op so it never fights the Workspace-authoritative membership set
+  with a stray local row.
+
+**Late enablement edge case.** Setting `AGNES_GROUP_EVERYONE_EMAIL` on an
+instance that already has v86 `system_seed` Everyone rows does not retroactively
+clean them up — the migration ran once, at the schema-version step, not on
+every env-var change. Those local rows sit alongside the new `google_sync`
+rows going forward; `_is_sso_user` already treats them as locally-owned (not
+IdP-managed), so this is cosmetic rather than a security issue, but an
+operator who wants a clean cutover should prune the stale `system_seed`
+rows via the admin group-members UI/CLI.
 
 The `user_group_members` table is the single source of truth for group
 memberships, used by:

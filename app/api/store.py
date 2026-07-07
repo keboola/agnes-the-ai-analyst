@@ -3112,6 +3112,21 @@ def _import_one_entry(
                     password_hash=None,
                 )
                 user_repo.update(stub_id, active=False)
+                # Issue #748: grant Everyone here — this stub never goes
+                # through the normal creation call sites (Google sign-in,
+                # POST /api/users, bootstrap), so an owner later found via
+                # get_by_email at Google sign-in wouldn't hit the
+                # new-user branch there either. This import path is the
+                # only chance to seed the default membership.
+                try:
+                    from app.auth.group_sync import ensure_everyone_membership
+
+                    ensure_everyone_membership(stub_id, added_by="api.store:import-stub")
+                except Exception:
+                    logger.exception(
+                        "ensure_everyone_membership failed for import stub %s",
+                        owner_email,
+                    )
                 stub_created = 1
             owner_user_id = stub_id
     if owner_user_id is None:

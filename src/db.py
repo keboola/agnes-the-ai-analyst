@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 85
+SCHEMA_VERSION = 86
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -5414,6 +5414,49 @@ def _v84_to_v85(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 85")
 
 
+def _v85_to_v86(conn: duckdb.DuckDBPyConnection) -> None:
+    """v86: backfill users missing an Everyone membership (issue #748).
+
+    PR #131 removed the implicit Everyone grant at user creation; every
+    creation call site now re-adds it going forward (see
+    ``app.auth.group_sync.ensure_everyone_membership``), but this migration
+    covers users created in the interim on already-deployed instances.
+
+    Follows the v13 precedent (``_v12_to_v13_finalize`` step 4): seed the
+    system groups first so the target row exists, then backfill via a
+    single INSERT..SELECT of every user id lacking an Everyone row.
+
+    Env-conditional like v18's stranded-membership cleanup: when
+    ``AGNES_GROUP_EVERYONE_EMAIL`` is set, Everyone is Workspace-controlled
+    (memberships come exclusively from google_sync via ``apply_user_groups``)
+    and this backfill would inject stray local rows that ``_is_sso_user``
+    would then have to distinguish from IdP-owned ones — so it no-ops,
+    mirroring the same env-conditional branch in ``_v17_to_v18_finalize``.
+    """
+    _seed_system_groups(conn)
+
+    if os.environ.get("AGNES_GROUP_EVERYONE_EMAIL", "").strip():
+        conn.execute("UPDATE schema_version SET version = 86")
+        return
+
+    everyone_group_id = conn.execute(
+        "SELECT id FROM user_groups WHERE name = ? AND is_system",
+        [SYSTEM_EVERYONE_GROUP],
+    ).fetchone()[0]
+
+    conn.execute(
+        """INSERT INTO user_group_members (user_id, group_id, source, added_by)
+           SELECT u.id, ?, 'system_seed', 'system:v86-backfill'
+             FROM users u
+            WHERE NOT EXISTS (
+                SELECT 1 FROM user_group_members m
+                 WHERE m.user_id = u.id AND m.group_id = ?
+            )""",
+        [everyone_group_id, everyone_group_id],
+    )
+    conn.execute("UPDATE schema_version SET version = 86")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -5755,6 +5798,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v84→v85: pre-seed vscode-mcp public OAuth client so VS Code
             # native MCP users can enter 'vscode-mcp' in the manual dialog.
             _v84_to_v85(conn)
+            # v85→v86: backfill Everyone membership for users missing it
+            # (issue #748). Fresh installs have zero users at this point,
+            # so the INSERT..SELECT is a no-op; kept for ladder readability
+            # and so a fresh-install-then-manual-user-insert-before-boot
+            # scenario in tests still lands correctly.
+            _v85_to_v86(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5978,6 +6027,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v83_to_v84(conn)
             if current < 85:
                 _v84_to_v85(conn)
+            if current < 86:
+                _v85_to_v86(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

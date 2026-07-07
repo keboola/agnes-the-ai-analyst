@@ -1,6 +1,5 @@
 """Tests for FastAPI endpoints."""
 
-import os
 import pytest
 from fastapi.testclient import TestClient
 
@@ -14,6 +13,7 @@ def app_client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret")
     from app.main import create_app
+
     app = create_app()
     return TestClient(app)
 
@@ -29,16 +29,15 @@ def seeded_client(tmp_path, monkeypatch):
     from app.auth.jwt import create_access_token
 
     from argon2 import PasswordHasher
+
     ph = PasswordHasher()
 
     from tests.helpers.auth import grant_admin
 
     conn = get_system_db()
     repo = UserRepository(conn)
-    repo.create(id="admin1", email="admin@acme.com", name="Admin",
-                password_hash=ph.hash("adminpass"))
-    repo.create(id="analyst1", email="analyst@acme.com", name="Analyst",
-                password_hash=ph.hash("analystpass"))
+    repo.create(id="admin1", email="admin@acme.com", name="Admin", password_hash=ph.hash("adminpass"))
+    repo.create(id="analyst1", email="analyst@acme.com", name="Analyst", password_hash=ph.hash("analystpass"))
     grant_admin(conn, "admin1")
     conn.close()
 
@@ -52,6 +51,7 @@ def seeded_client(tmp_path, monkeypatch):
 
 
 # ---- Health ----
+
 
 class TestHealth:
     def test_health_no_auth(self, app_client):
@@ -76,6 +76,7 @@ class TestHealth:
 
 
 # ---- Auth ----
+
 
 class TestAuth:
     def test_token_for_existing_user(self, seeded_client):
@@ -104,6 +105,7 @@ class TestAuth:
 
 # ---- RBAC ----
 
+
 class TestRBAC:
     def test_admin_can_list_users(self, seeded_client):
         client, admin_token, _ = seeded_client
@@ -124,12 +126,14 @@ class TestRBAC:
 
 # ---- Sync Manifest ----
 
+
 class TestSyncManifest:
     def test_manifest_returns_tables(self, seeded_client):
         client, admin_token, _ = seeded_client
         # Seed some sync state
         from src.db import get_system_db
         from src.repositories.sync_state import SyncStateRepository
+
         conn = get_system_db()
         repo = SyncStateRepository(conn)
         repo.update_sync(table_id="orders", rows=1000, file_size_bytes=5000, hash="abc")
@@ -145,6 +149,7 @@ class TestSyncManifest:
 
 # ---- Users CRUD ----
 
+
 class TestUsersCRUD:
     def test_create_user(self, seeded_client):
         client, admin_token, _ = seeded_client
@@ -155,6 +160,30 @@ class TestUsersCRUD:
         )
         assert resp.status_code == 201
         assert resp.json()["email"] == "new@acme.com"
+
+    def test_create_user_joins_everyone(self, seeded_client):
+        """Issue #748: POST /api/users grants the new user Everyone
+        (source='system_seed') by default (AGNES_GROUP_EVERYONE_EMAIL unset)."""
+        client, admin_token, _ = seeded_client
+        resp = client.post(
+            "/api/users",
+            json={"email": "everyone-check@acme.com", "name": "New User"},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 201
+        new_id = resp.json()["id"]
+
+        from src.db import get_system_db
+        from src.repositories.user_group_members import UserGroupMembersRepository
+
+        conn = get_system_db()
+        try:
+            rows = UserGroupMembersRepository(conn).list_groups_with_meta_for_user(new_id)
+            everyone_rows = [r for r in rows if r["name"] == "Everyone"]
+            assert len(everyone_rows) == 1
+            assert everyone_rows[0]["source"] == "system_seed"
+        finally:
+            conn.close()
 
     def test_create_duplicate_user(self, seeded_client):
         client, admin_token, _ = seeded_client
@@ -176,19 +205,23 @@ class TestUsersCRUD:
 
 # ---- Knowledge / Memory ----
 
+
 class TestMemory:
     def test_create_and_list(self, seeded_client):
         client, _, analyst_token = seeded_client
         headers = {"Authorization": f"Bearer {analyst_token}"}
 
         # Create
-        resp = client.post("/api/memory", json={
-            "title": "MRR Definition",
-            "content": "Monthly recurring revenue",
-            "category": "metrics",
-        }, headers=headers)
+        resp = client.post(
+            "/api/memory",
+            json={
+                "title": "MRR Definition",
+                "content": "Monthly recurring revenue",
+                "category": "metrics",
+            },
+            headers=headers,
+        )
         assert resp.status_code == 201
-        item_id = resp.json()["id"]
 
         # List
         resp = client.get("/api/memory", headers=headers)
@@ -199,9 +232,15 @@ class TestMemory:
         client, _, analyst_token = seeded_client
         headers = {"Authorization": f"Bearer {analyst_token}"}
 
-        resp = client.post("/api/memory", json={
-            "title": "Test", "content": "test", "category": "test",
-        }, headers=headers)
+        resp = client.post(
+            "/api/memory",
+            json={
+                "title": "Test",
+                "content": "test",
+                "category": "test",
+            },
+            headers=headers,
+        )
         item_id = resp.json()["id"]
 
         resp = client.post(f"/api/memory/{item_id}/vote", json={"vote": 1}, headers=headers)
@@ -212,18 +251,31 @@ class TestMemory:
         client, _, analyst_token = seeded_client
         headers = {"Authorization": f"Bearer {analyst_token}"}
 
-        client.post("/api/memory", json={
-            "title": "Revenue report", "content": "MRR trends", "category": "finance",
-        }, headers=headers)
-        client.post("/api/memory", json={
-            "title": "Support SLA", "content": "Response times", "category": "support",
-        }, headers=headers)
+        client.post(
+            "/api/memory",
+            json={
+                "title": "Revenue report",
+                "content": "MRR trends",
+                "category": "finance",
+            },
+            headers=headers,
+        )
+        client.post(
+            "/api/memory",
+            json={
+                "title": "Support SLA",
+                "content": "Response times",
+                "category": "support",
+            },
+            headers=headers,
+        )
 
         resp = client.get("/api/memory?search=revenue", headers=headers)
         assert resp.json()["count"] == 1
 
 
 # ---- Upload ----
+
 
 class TestUpload:
     def test_upload_session(self, seeded_client):
@@ -366,10 +418,12 @@ class TestMetadataAPI:
         client, admin_token, _ = seeded_client
         resp = client.post(
             "/api/admin/metadata/orders",
-            json={"columns": [
-                {"column_name": "id", "basetype": "STRING", "description": "Order ID"},
-                {"column_name": "total", "basetype": "NUMERIC", "description": "Total"},
-            ]},
+            json={
+                "columns": [
+                    {"column_name": "id", "basetype": "STRING", "description": "Order ID"},
+                    {"column_name": "total", "basetype": "NUMERIC", "description": "Total"},
+                ]
+            },
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         assert resp.status_code == 200
@@ -417,9 +471,11 @@ class TestMetadataAPI:
         # 2. Save column metadata
         client.post(
             "/api/admin/metadata/kbc_orders",
-            json={"columns": [
-                {"column_name": "id", "basetype": "STRING", "description": "Order ID"},
-            ]},
+            json={
+                "columns": [
+                    {"column_name": "id", "basetype": "STRING", "description": "Order ID"},
+                ]
+            },
             headers={"Authorization": f"Bearer {admin_token}"},
         )
 
@@ -467,6 +523,7 @@ class TestMetadataAPI:
 
 
 # ---- Hybrid Query ----
+
 
 class TestHybridQueryAPI:
     def test_hybrid_query_requires_admin(self, seeded_client):
