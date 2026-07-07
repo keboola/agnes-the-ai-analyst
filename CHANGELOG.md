@@ -21,6 +21,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.74.11] - 2026-07-07
+
+### Added
+
+### Changed
+
+### Fixed
+- Customer-instance Terraform module: the startup script now generates `AGNES_VAULT_KEY` (Fernet key for the admin secrets vault — datasource / Slack / MCP secrets) on first boot and persists it at `/data/state/agnes-vault.key` on the persistent data disk, alongside the ciphertext it protects. Previously the key was never provisioned, so every freshly provisioned VM booted with the vault disabled (secret writes → 409 `vault_key_not_configured`), and a key an operator hand-added to `/opt/agnes/.env` was silently lost on VM recreate (boot-disk wipe), permanently orphaning all vault-encrypted rows. A hand-added `.env` key is adopted into the keyfile on the next boot. `docs/DEPLOYMENT.md` (manual VM `.env`) and `docs/ONBOARDING.md` (secrets-across-recreate note) updated.
+
+### Removed
+
+### Internal
+
 ## [0.74.10] - 2026-07-07
 
 ### Added
