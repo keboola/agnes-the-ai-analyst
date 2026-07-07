@@ -7,8 +7,11 @@ from typer.testing import CliRunner
 
 # CI-safety: Typer/rich emits ANSI escapes in --help output. Strip before asserts.
 _ANSI_RE = __import__("re").compile(r"\x1b\[[0-9;]*m")
+
+
 def _clean(s: str) -> str:
     return _ANSI_RE.sub("", s)
+
 
 from cli.commands.pull import pull_app
 
@@ -18,6 +21,7 @@ runner = CliRunner()
 class _FakePullResult:
     """Minimal duck-typed PullResult so the legacy-hook nudge tests don't
     depend on a live server / real manifest."""
+
     tables_updated = 0
     parquets_total = 0
     rules_count = 0
@@ -32,14 +36,18 @@ class _FakePullResult:
 def _write_legacy_settings(workspace):
     sp = workspace / ".claude" / "settings.json"
     sp.parent.mkdir(parents=True, exist_ok=True)
-    sp.write_text(json.dumps({
-        "hooks": {
-            "SessionEnd": [
-                {"hooks": [{"type": "command",
-                            "command": "python server/scripts/collect_session.py"}]},
-            ],
-        }
-    }), encoding="utf-8")
+    sp.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionEnd": [
+                        {"hooks": [{"type": "command", "command": "python server/scripts/collect_session.py"}]},
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 _NUDGE = "outdated hook layout"
@@ -69,6 +77,7 @@ def test_pull_nudges_on_legacy_hooks(tmp_path, monkeypatch):
 def test_pull_no_nudge_on_modern_workspace(tmp_path, monkeypatch):
     """A modern `agnes init` workspace gets no nudge (no double-nudge)."""
     from cli.lib.hooks import install_claude_hooks
+
     install_claude_hooks(tmp_path)
     result = _run_pull_in(tmp_path, monkeypatch, [])
     assert result.exit_code == 0
@@ -95,6 +104,7 @@ class _FailingPullResult:
     """Duck-typed PullResult with one per-table failure recorded — mirrors a
     real `run_pull` outcome where a table failed hash verification on every
     attempt (#596). Drives the exit-code assertions below."""
+
     tables_updated = 0
     tables_removed = 0
     parquets_total = 1
@@ -116,6 +126,7 @@ def test_pull_exits_nonzero_on_table_failure_normal_path(tmp_path, monkeypatch):
     """#596: a forced per-table failure must exit 1 (was 0) on the normal
     human-readable path, with the warning still rendered to stderr."""
     from cli.lib.hooks import install_claude_hooks
+
     install_claude_hooks(tmp_path)  # modern workspace, no legacy nudge
     result = _run_failing_pull_in(tmp_path, monkeypatch, [])
     assert result.exit_code == 1, "partial pull must exit non-zero"
@@ -146,6 +157,7 @@ def test_pull_exits_zero_when_no_errors(tmp_path, monkeypatch):
     """Counterpart: a clean pull (no errors) still exits 0 on every path —
     the non-zero exit must be gated strictly on `result.errors`."""
     from cli.lib.hooks import install_claude_hooks
+
     install_claude_hooks(tmp_path)
     assert _run_pull_in(tmp_path, monkeypatch, []).exit_code == 0
     assert _run_pull_in(tmp_path, monkeypatch, ["--quiet"]).exit_code == 0
@@ -160,4 +172,4 @@ def test_pull_no_server_friendly_exit(tmp_path, monkeypatch):
     result = runner.invoke(pull_app, [])
     # Either exit 1 with hint, or exit 0 if a default server URL applies.
     # Either way, there must be no Python traceback in stderr/stdout.
-    assert "Traceback" not in (_clean(result.output) + _clean(result.stderr or ''))
+    assert "Traceback" not in (_clean(result.output) + _clean(result.stderr or ""))
