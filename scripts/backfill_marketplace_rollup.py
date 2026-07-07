@@ -15,6 +15,7 @@ Usage::
 
     python scripts/backfill_marketplace_rollup.py
 """
+
 from __future__ import annotations
 
 import logging
@@ -33,23 +34,18 @@ def main() -> int:
 
     # Find the oldest usage_event so the daily-fact rebuild covers all
     # historical data, not just the default 7-day incremental window.
-    row = conn.execute(
-        "SELECT MIN(CAST(occurred_at AS DATE)) FROM usage_events"
-    ).fetchone()
+    row = conn.execute("SELECT MIN(CAST(occurred_at AS DATE)) FROM usage_events").fetchone()
     since_day = row[0] if row and row[0] else datetime.now(timezone.utc).date()
 
     log.info("backfill_marketplace_rollup: since_day=%s, force_30d=True", since_day)
     rebuild_rollups(conn, since_day=since_day, force_30d=True)
 
-    daily_rows = conn.execute(
-        "SELECT COUNT(*) FROM usage_marketplace_item_daily"
-    ).fetchone()[0]
-    window_rows = conn.execute(
-        "SELECT period_label, COUNT(*) FROM usage_marketplace_item_window GROUP BY 1"
-    ).fetchall()
+    daily_rows = conn.execute("SELECT COUNT(*) FROM usage_marketplace_item_daily").fetchone()[0]
+    window_rows = conn.execute("SELECT period_label, COUNT(*) FROM usage_marketplace_item_window GROUP BY 1").fetchall()
     log.info(
         "backfill complete: daily=%d window=%s",
-        daily_rows, dict(window_rows),
+        daily_rows,
+        dict(window_rows),
     )
     return 0
 

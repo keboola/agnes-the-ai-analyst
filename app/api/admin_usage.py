@@ -292,10 +292,7 @@ def ask_usage(
             truncated = True
         else:
             truncated = False
-        row_dicts = [
-            {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in zip(cols, r)}
-            for r in rows
-        ]
+        row_dicts = [{k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in zip(cols, r)} for r in rows]
     except Exception as e:
         logger.exception("usage.ask SQL execution failed")
         try:
@@ -369,9 +366,7 @@ def reprocess_usage(
         # Single atomic reset: the usage rollups AND the matching processor
         # checkpoints are cleared in one transaction so a failure can't leave
         # the scheduler half-reset (processor state gone, usage data retained).
-        reset = usage_repo().reset_all(
-            clear_processors=["usage", "marketplace_rollup_30d"]
-        )
+        reset = usage_repo().reset_all(clear_processors=["usage", "marketplace_rollup_30d"])
         counts["state_rows"] = reset["state_rows"]
         counts["events"] = reset["events"]
         counts["summaries"] = reset["session_summary"]
