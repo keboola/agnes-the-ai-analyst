@@ -24,15 +24,11 @@ class SyncStateRepository:
         return [dict(zip(columns, row)) for row in rows]
 
     def get_table_state(self, table_id: str) -> Optional[Dict[str, Any]]:
-        result = self.conn.execute(
-            "SELECT * FROM sync_state WHERE table_id = ?", [table_id]
-        ).fetchone()
+        result = self.conn.execute("SELECT * FROM sync_state WHERE table_id = ?", [table_id]).fetchone()
         return self._row_to_dict(result)
 
     def get_last_sync(self, table_id: str) -> Optional[datetime]:
-        result = self.conn.execute(
-            "SELECT last_sync FROM sync_state WHERE table_id = ?", [table_id]
-        ).fetchone()
+        result = self.conn.execute("SELECT last_sync FROM sync_state WHERE table_id = ?", [table_id]).fetchone()
         return result[0] if result else None
 
     def get_all_states(self) -> List[Dict[str, Any]]:
@@ -65,8 +61,7 @@ class SyncStateRepository:
                 hash = excluded.hash,
                 status = excluded.status,
                 error = excluded.error""",
-            [table_id, now, rows, file_size_bytes, uncompressed_size_bytes,
-             columns, hash, status, error],
+            [table_id, now, rows, file_size_bytes, uncompressed_size_bytes, columns, hash, status, error],
         )
         self.conn.execute(
             """INSERT INTO sync_history (id, table_id, synced_at, rows, duration_ms, status, error)
@@ -151,9 +146,7 @@ class SyncStateRepository:
         purged alongside the registry row. This repo owns both tables, so both
         deletes live here (formerly inline in the admin unregister handler).
         """
-        self.conn.execute(
-            "DELETE FROM sync_history WHERE table_id = ?", [table_id]
-        )
+        self.conn.execute("DELETE FROM sync_history WHERE table_id = ?", [table_id])
         removed = self.conn.execute(
             "DELETE FROM sync_state WHERE table_id = ? RETURNING table_id",
             [table_id],

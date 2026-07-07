@@ -86,9 +86,7 @@ class TestAdminConfigure:
         )
         assert resp.status_code == 422
 
-    def test_configure_overlay_does_not_resolve_env_var_placeholders(
-        self, seeded_app, tmp_path, monkeypatch
-    ):
+    def test_configure_overlay_does_not_resolve_env_var_placeholders(self, seeded_app, tmp_path, monkeypatch):
         """Regression: pre-fix `/api/admin/configure` seeded `existing` from
         the static config when no overlay existed, then wrote the whole
         thing back. Static `${SMTP_PASSWORD}` placeholders got resolved
@@ -99,25 +97,32 @@ class TestAdminConfigure:
         three sections — same contract as `/api/admin/server-config`.
         """
         import yaml as _yaml
+
         static_dir = tmp_path / "static"
         static_dir.mkdir()
-        (static_dir / "instance.yaml").write_text(_yaml.dump({
-            "instance": {"name": "Old"},
-            "auth": {"allowed_domain": "example.com", "webapp_secret_key": "x"},
-            "server": {"host": "1.2.3.4", "hostname": "example.com"},
-            "email": {
-                "smtp_host": "smtp.example.com",
-                "smtp_password": "${SMTP_PASSWORD}",
-            },
-        }))
+        (static_dir / "instance.yaml").write_text(
+            _yaml.dump(
+                {
+                    "instance": {"name": "Old"},
+                    "auth": {"allowed_domain": "example.com", "webapp_secret_key": "x"},
+                    "server": {"host": "1.2.3.4", "hostname": "example.com"},
+                    "email": {
+                        "smtp_host": "smtp.example.com",
+                        "smtp_password": "${SMTP_PASSWORD}",
+                    },
+                }
+            )
+        )
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv("CONFIG_DIR", str(static_dir))
         monkeypatch.setenv("SMTP_PASSWORD", "hunter2-cleartext-secret")
         (tmp_path / "state").mkdir(parents=True, exist_ok=True)
         from pathlib import Path as _Path
         import config.loader as _loader_mod
+
         monkeypatch.setattr(_loader_mod, "CONFIG_DIR", _Path(static_dir))
         from app.instance_config import reset_cache
+
         reset_cache()
 
         c = seeded_app["client"]
@@ -130,8 +135,9 @@ class TestAdminConfigure:
         assert resp.status_code == 200, resp.text
 
         overlay_text = (tmp_path / "state" / "instance.yaml").read_text()
-        assert "hunter2-cleartext-secret" not in overlay_text, \
+        assert "hunter2-cleartext-secret" not in overlay_text, (
             f"env-resolved secret leaked into overlay:\n{overlay_text}"
+        )
         overlay = _yaml.safe_load(overlay_text)
         # email/server/auth.webapp_secret_key are static-only here — wizard
         # never touches them, so they must not appear in the overlay.
@@ -141,9 +147,7 @@ class TestAdminConfigure:
         assert overlay["instance"]["name"] == "New"
         assert overlay["data_source"]["type"] == "local"
 
-    def test_corrupt_overlay_refused_with_500_not_silently_overwritten(
-        self, seeded_app, tmp_path, monkeypatch
-    ):
+    def test_corrupt_overlay_refused_with_500_not_silently_overwritten(self, seeded_app, tmp_path, monkeypatch):
         """Symmetric to the server-config editor: /configure must refuse to
         overwrite a corrupt overlay so the operator can investigate, instead
         of silently dropping every previously-saved section."""
@@ -330,8 +334,13 @@ class TestRegisterTable:
         token = seeded_app["admin_token"]
         resp = c.post(
             "/api/admin/register-table",
-            json={"name": "orders", "source_type": "keboola", "bucket": "in.c-crm",
-                  "source_table": "orders", "query_mode": "local"},
+            json={
+                "name": "orders",
+                "source_type": "keboola",
+                "bucket": "in.c-crm",
+                "source_table": "orders",
+                "query_mode": "local",
+            },
             headers=_auth(token),
         )
         assert resp.status_code == 201
