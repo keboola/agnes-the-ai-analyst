@@ -73,40 +73,29 @@ def test_request_id_header_always_present(app_no_toolbar):
 
 @pytest.mark.integration
 def test_toolbar_html_present_when_debug(app_with_toolbar):
+    # Assert injection on a dedicated probe route instead of scanning app
+    # routes: real pages vary with auth/instance state (redirects, empty
+    # bodies under pytest-split sharding, per-route template quirks), which
+    # is what made the pre-#660 assertion flaky and what the post-#660
+    # skip-when-absent version stopped guarding entirely. A test-local HTML
+    # route exercises the identical middleware chain deterministically —
+    # if DebugToolbarMiddleware stops injecting, this fails, everywhere.
+    # insert(0): the web router's /{full_path:path} catch-all is already
+    # registered and would otherwise shadow the probe.
+    from fastapi.responses import HTMLResponse
+    from fastapi.routing import APIRoute
+
+    async def _probe() -> HTMLResponse:
+        return HTMLResponse("<html><head></head><body><p>toolbar probe</p></body></html>")
+
+    app_with_toolbar.router.routes.insert(0, APIRoute("/_toolbar-probe", _probe, methods=["GET"]))
     client = TestClient(app_with_toolbar)
-    # The contract (per this test's docstring) is "the debug toolbar is wired
-    # up" — it appears on AT LEAST ONE reachable HTML 200 route. The original
-    # code instead asserted on the FIRST 200 route, which made it brittle: in CI
-    # under pytest-split shard 4, `/first-time-setup` came back 200 text/html
-    # with an empty body (no markup) even though the toolbar injects fine on
-    # `/login` — and on the same route in isolation locally. Scan all candidates
-    # and pass on the first that carries the markup. A non-empty HTML 200
-    # on a *post-auth* route without markup is a real regression → fail; pre-auth
-    # pages (/login, /first-time-setup) legitimately have no toolbar because they
-    # render before any DuckDB session is established. Skip only when no post-auth
-    # route rendered a non-empty body at all (LOCAL_DEV_MODE seeding may not work
-    # in all TestClient configurations).
-    _pre_auth = {"/first-time-setup", "/login"}
-    rendered_auth_routes = []
-    for path in ("/dashboard", "/first-time-setup", "/login", "/admin/access"):
-        resp = client.get(path, follow_redirects=False)
-        if resp.status_code == 200 and "text/html" in resp.headers.get("content-type", ""):
-            body = resp.text.lower()
-            if not body.strip():
-                # Empty 200 bodies happen under pytest-split sharding (see
-                # comment above) — not a rendering opportunity, don't count it.
-                continue
-            if "djdt" in body or "fastdebug" in body:
-                return  # toolbar is wired up on at least one route — contract met
-            if path not in _pre_auth:
-                rendered_auth_routes.append(path)
-    if rendered_auth_routes:
-        pytest.fail(
-            f"DEBUG=1 but no toolbar markup on post-auth routes ({rendered_auth_routes}); toolbar injection is broken"
-        )
-    pytest.skip(
-        "no post-auth HTML 200 route rendered a non-empty body in TestClient; "
-        "toolbar injection cannot be verified here (LOCAL_DEV_MODE user seeding may not have run)",
+    resp = client.get("/_toolbar-probe")
+    assert resp.status_code == 200, f"probe route returned {resp.status_code}"
+    body = resp.text.lower()
+    assert "fastdebug" in body or "djdt" in body, (
+        "DEBUG=1 but DebugToolbarMiddleware injected no toolbar markup into an "
+        "HTML 200 response; toolbar wiring is broken"
     )
 
 
