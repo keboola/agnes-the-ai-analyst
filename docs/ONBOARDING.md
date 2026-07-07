@@ -202,6 +202,8 @@ The workflow routes dev targets to `apply-dev` and prod targets to `apply-prod`,
 
 Downtime: ~2 min per VM, sequential. Data loss: none (persistent disk keeps `/data`; static IP keeps URL stable).
 
+**Secrets across recreate:** the fresh boot disk gets a re-minted `SCHEDULER_API_TOKEN` (harmless — it is only a shared secret between the app and scheduler containers on the same VM). `AGNES_VAULT_KEY` (module ≥ `infra-v1.10.0`) is generated on first boot and persisted at `/data/state/agnes-vault.key` on the data disk, so admin-stored secrets (datasource, Slack, MCP) stay decryptable across recreates. Never delete or rotate that file casually — losing the key permanently orphans every vault-encrypted secret.
+
 ### Option B — Local terraform (emergency)
 
 ```bash

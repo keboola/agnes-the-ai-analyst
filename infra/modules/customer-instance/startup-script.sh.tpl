@@ -203,6 +203,40 @@ if [ -z "$SCHEDULER_API_TOKEN" ]; then
     SCHEDULER_API_TOKEN=$(openssl rand -hex 32)
 fi
 
+# AGNES_VAULT_KEY — Fernet key for the admin secrets vault (app/secrets_vault.py:
+# datasource / Slack / MCP secrets stored encrypted in the state DB). Without it
+# the vault refuses writes (PUT → 409 vault_key_not_configured); losing it makes
+# every previously-stored vault row undecryptable.
+#
+# Durability: /opt/agnes/.env lives on the BOOT disk, which a VM recreate wipes,
+# so the SCHEDULER_API_TOKEN read-back-from-.env pattern alone is not enough here
+# (that token can be re-minted freely; this key cannot). The durable home is a
+# keyfile on the persistent DATA disk — the same disk that holds the encrypted
+# rows, so key and ciphertext survive (or die) together. Precedence:
+#   existing keyfile > key hand-added to .env (adopted into the keyfile so it
+#   survives the NEXT recreate) > mint fresh.
+# Accepted trade-off: key and ciphertext share a disk, so a stolen data-disk
+# snapshot exposes vault rows; the vault's threat model is DB dumps / backups
+# leaving the machine, not disk theft.
+# --- vault-key begin (extracted + executed by tests/test_startup_vault_key.py) ---
+VAULT_KEY_FILE="$DATA_MNT/state/agnes-vault.key"
+AGNES_VAULT_KEY=""
+if [ -f "$VAULT_KEY_FILE" ]; then
+    AGNES_VAULT_KEY=$(tr -d '[:space:]' < "$VAULT_KEY_FILE" || true)
+fi
+if [ -z "$AGNES_VAULT_KEY" ] && [ -f "$APP_DIR/.env" ]; then
+    AGNES_VAULT_KEY=$(grep -E '^AGNES_VAULT_KEY=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
+fi
+if [ -z "$AGNES_VAULT_KEY" ]; then
+    # Fernet key = 32 /dev/urandom bytes, URL-safe base64 (44 chars incl. '='
+    # padding) — same format cryptography.fernet.Fernet.generate_key() emits.
+    AGNES_VAULT_KEY=$(openssl rand -base64 32 | tr '+/' '-_')
+fi
+mkdir -p "$DATA_MNT/state"
+(umask 077; printf '%s\n' "$AGNES_VAULT_KEY" > "$VAULT_KEY_FILE")
+chmod 600 "$VAULT_KEY_FILE"
+# --- vault-key end ---
+
 # Optional Google OAuth credentials. The per-VM secret names are derived by
 # the module from `var.oauth_secret_name_template` (substituting {kind}/{role}/
 # {name} placeholders) and substituted into this script as
@@ -313,6 +347,7 @@ KEBOOLA_STACK_URL=$KEBOOLA_STACK_URL
 SEED_ADMIN_EMAIL=$SEED_ADMIN_EMAIL
 SEED_ADMIN_PASSWORD=$SEED_ADMIN_PASSWORD
 SCHEDULER_API_TOKEN=$SCHEDULER_API_TOKEN
+AGNES_VAULT_KEY=$AGNES_VAULT_KEY
 LOG_LEVEL=info
 DOMAIN=$DOMAIN
 AGNES_TAG=$EFFECTIVE_AGNES_TAG

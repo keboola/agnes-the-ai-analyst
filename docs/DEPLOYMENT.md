@@ -49,8 +49,9 @@ For running Agnes on your own VM / bare metal without Terraform. You're responsi
 2. Create `.env`:
 
    ```bash
-   cat > .env <<'EOF'
+   cat > .env <<EOF
    JWT_SECRET_KEY=$(openssl rand -hex 32)
+   AGNES_VAULT_KEY=$(openssl rand -base64 32 | tr '+/' '-_')
    DATA_DIR=/data
    DATA_SOURCE=keboola
    KEBOOLA_STORAGE_TOKEN=<your-token>
@@ -61,6 +62,14 @@ For running Agnes on your own VM / bare metal without Terraform. You're responsi
    EOF
    chmod 600 .env
    ```
+
+   `AGNES_VAULT_KEY` (a Fernet key: 32 random bytes, URL-safe base64) encrypts
+   admin-stored secrets — datasource credentials, Slack tokens, MCP secrets —
+   at rest. Without it those admin endpoints refuse writes
+   (`409 vault_key_not_configured`). Keep the key stable and include it in your
+   backups: losing it makes every previously stored secret undecryptable.
+   (The Terraform module generates and persists this key automatically; this
+   manual step matters only on self-provisioned hosts.)
 
 3. Mount a persistent disk at `/data` (optional but recommended — survives host rebuild). If you do, use the overlay:
 
