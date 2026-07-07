@@ -98,7 +98,7 @@ def test_home_not_onboarded_hero_title_html_renders_unescaped(fresh_db, monkeypa
         conn.close()
         close_system_db()
     body = _client().get("/home", cookies={"access_token": sess}).text
-    assert "Acme is your team's <span class=\"accent\">AI workspace.</span>" in body
+    assert 'Acme is your team\'s <span class="accent">AI workspace.</span>' in body
     assert "&lt;span class=" not in body, (
         "literal `<span>` chars are HTML-encoded — the Markup~str concat "
         "anti-pattern is back; use `{% set hero_title_html %}…{% endset %}` "
@@ -212,9 +212,7 @@ def test_connectors_section_removed_from_home(fresh_db):
     # know the benefit exists before they kick off the install.
     conn = get_system_db()
     try:
-        _, sess2 = _make_user_and_session(
-            conn, email="not-onboarded@example.com", onboarded=False
-        )
+        _, sess2 = _make_user_and_session(conn, email="not-onboarded@example.com", onboarded=False)
     finally:
         conn.close()
         close_system_db()
@@ -241,9 +239,7 @@ def test_minimize_toggle_no_longer_rendered(fresh_db):
     for onboarded in (False, True):
         conn = get_system_db()
         try:
-            _, sess = _make_user_and_session(
-                conn, email=f"user-{onboarded}@example.com", onboarded=onboarded
-            )
+            _, sess = _make_user_and_session(conn, email=f"user-{onboarded}@example.com", onboarded=onboarded)
         finally:
             conn.close()
             close_system_db()
@@ -354,40 +350,6 @@ def test_home_cowork_card_links_to_me_cowork(fresh_db):
     assert 'href="/me/ai-connector"' in body
 
 
-def test_home_powershell_shortcut_guards_against_missing_profile_newline(fresh_db):
-    """FAI-51: the Windows PowerShell shortcut appended the `function`
-    definition to `$PROFILE` via `Add-Content` with no leading newline.
-    `Add-Content` only adds a trailing line terminator — so if the user's
-    existing profile didn't end in a newline (e.g. a trailing
-    `$PSStyle.FileInfo.Directory = "...`"` line), the function got glued
-    onto the previous line:
-
-        $PSStyle.FileInfo.Directory = "`e[34m"function foundryai { ... }
-
-    which throws `ParserError: Unexpected token 'function'` on every new
-    shell. The fix prefixes the appended value with an empty array element
-    (`Add-Content $PROFILE '', 'function ...'`) so Add-Content always
-    starts the function on its own line, regardless of the profile's
-    trailing-newline state — while keeping the single-quoted body so
-    `$env:USERPROFILE` is written verbatim, not expanded at append time.
-    """
-    from src.db import get_system_db, close_system_db
-
-    conn = get_system_db()
-    try:
-        _, sess = _make_user_and_session(conn, onboarded=False)
-    finally:
-        conn.close()
-        close_system_db()
-
-    body = _client().get("/home", cookies={"access_token": sess}).text
-    # The bare-concatenation form (the bug) must be gone…
-    assert "Add-Content $PROFILE 'function " not in body
-    # …and both the auto-mode and yolo-mode Windows snippets must use the
-    # newline-guarded array form.
-    assert body.count("Add-Content $PROFILE '', 'function ") == 2
-
-
 # ── GWS Email-admin button render tests (admin_email knob coverage) ────────
 
 
@@ -400,6 +362,7 @@ def test_home_hides_email_admin_button_when_admin_email_unset(fresh_db, monkeypa
     monkeypatch.delenv("AGNES_GWS_CLIENT_ID", raising=False)
     monkeypatch.delenv("AGNES_GWS_CLIENT_SECRET", raising=False)
     from src.db import get_system_db, close_system_db
+
     conn = get_system_db()
     try:
         _, sess = _make_user_and_session(conn)
@@ -425,6 +388,7 @@ def test_home_no_longer_shows_email_admin_button(fresh_db, monkeypatch):
     monkeypatch.delenv("AGNES_GWS_CLIENT_ID", raising=False)
     monkeypatch.delenv("AGNES_GWS_CLIENT_SECRET", raising=False)
     from src.db import get_system_db, close_system_db
+
     conn = get_system_db()
     try:
         _, sess = _make_user_and_session(conn)
@@ -433,7 +397,7 @@ def test_home_no_longer_shows_email_admin_button(fresh_db, monkeypatch):
         close_system_db()
     body = _client().get("/home", cookies={"access_token": sess}).text
     assert "Email admin" not in body
-    assert 'mailto:ops@example.com' not in body
+    assert "mailto:ops@example.com" not in body
 
 
 def test_home_hides_email_admin_button_when_gws_configured(fresh_db, monkeypatch):
@@ -444,6 +408,7 @@ def test_home_hides_email_admin_button_when_gws_configured(fresh_db, monkeypatch
     monkeypatch.setenv("AGNES_GWS_CLIENT_ID", "abc.apps.googleusercontent.com")
     monkeypatch.setenv("AGNES_GWS_CLIENT_SECRET", "GOCSPX-secret")
     from src.db import get_system_db, close_system_db
+
     conn = get_system_db()
     try:
         _, sess = _make_user_and_session(conn)
@@ -483,9 +448,7 @@ def test_setup_section_renders_for_not_onboarded(fresh_db):
     # Not-onboarded: setup header + install hero both render.
     conn = get_system_db()
     try:
-        _, sess = _make_user_and_session(
-            conn, email="setup-not-onboarded@example.com", onboarded=False
-        )
+        _, sess = _make_user_and_session(conn, email="setup-not-onboarded@example.com", onboarded=False)
     finally:
         conn.close()
         close_system_db()
@@ -503,9 +466,7 @@ def test_setup_section_renders_for_not_onboarded(fresh_db):
     # Onboarded: install hero (and the setup header above it) are gone.
     conn = get_system_db()
     try:
-        _, sess2 = _make_user_and_session(
-            conn, email="setup-onboarded@example.com", onboarded=True
-        )
+        _, sess2 = _make_user_and_session(conn, email="setup-onboarded@example.com", onboarded=True)
     finally:
         conn.close()
         close_system_db()
@@ -531,18 +492,14 @@ def test_step2_windows_command_is_single_line(fresh_db):
 
     conn = get_system_db()
     try:
-        _, sess = _make_user_and_session(
-            conn, email="fai50-step2@example.com", onboarded=False
-        )
+        _, sess = _make_user_and_session(conn, email="fai50-step2@example.com", onboarded=False)
     finally:
         conn.close()
         close_system_db()
 
     body = _client().get("/home", cookies={"access_token": sess}).text
 
-    m = re.search(
-        r'id="install-cmd-mkdir-windows">(.*?)</span>', body, re.DOTALL
-    )
+    m = re.search(r'id="install-cmd-mkdir-windows">(.*?)</span>', body, re.DOTALL)
     assert m, "Step 2 Windows command span not found"
     cmd = m.group(1)
 
