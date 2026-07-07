@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.14] - 2026-07-07
+
+### Added
 - `GET /api/store/entities/{id}/status` — owner-facing review-pipeline status (latest submission status, error cause, actionable hint), with `agnes store status <id> [--wait]` and a `store_status` MCP tool; `agnes store upload` now points at it when the entity is held for review. Previously the only post-upload signal was a 409 `prior_version_pending` on the next update
 
 ### Changed
