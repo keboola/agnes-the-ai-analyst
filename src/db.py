@@ -6123,6 +6123,36 @@ def close_system_db() -> None:
         _system_db_path = None
 
 
+def checkpoint_system_db() -> bool:
+    """Best-effort CHECKPOINT of the open system DB singleton (#710).
+
+    The app holds this connection for its whole lifetime, which makes
+    DuckDB defer its automatic 16 MB-threshold checkpoint indefinitely —
+    in steady state the WAL grows unbounded and days of state writes
+    (users, PATs, grants) live only in the WAL. A non-graceful exit then
+    leaves a dirty WAL, and replaying it under a different DuckDB version
+    (image-upgrade window) can render system.duckdb unrecoverable. The
+    periodic lifespan task in ``app.main`` calls this every few minutes
+    so the WAL never sits unflushed for days.
+
+    Returns True when a CHECKPOINT ran, False when skipped (no open
+    singleton — never opens one implicitly) or when DuckDB refused (e.g.
+    "there are other transactions active"); refusal is expected under
+    load and simply means the next tick retries.
+    """
+    if _system_db_conn is None:
+        return False
+    try:
+        _system_db_conn.execute("CHECKPOINT")
+        logger.debug("checkpoint_system_db: CHECKPOINT ok")
+        return True
+    except Exception as exc:
+        # Concurrent transactions make DuckDB refuse a plain CHECKPOINT;
+        # deliberately NOT `FORCE CHECKPOINT`, which would abort them.
+        logger.warning("checkpoint_system_db: CHECKPOINT failed (%s); will retry next tick", exc)
+        return False
+
+
 def close_analytics_db() -> None:
     """Close the shared analytics DB connection. Called on app shutdown.
 
