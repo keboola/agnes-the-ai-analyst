@@ -13,6 +13,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
+- Bundled seed re-synced to the seed repo's `main` (`0b6bebf`): the Google Workspace connector skill's manual branch now offers the operator-provisioned OAuth path first and pauses, instead of walking non-admin analysts straight into the Google Cloud console walkthrough
 
 ### Fixed
 
