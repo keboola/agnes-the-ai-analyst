@@ -15,6 +15,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.9] - 2026-07-07
+
+### Added
+
+### Changed
+
+### Fixed
 - Periodic `CHECKPOINT` of `system.duckdb` (every 5 min by default; `AGNES_STATE_CHECKPOINT_INTERVAL_S` overrides, `0` disables) — the app's long-lived connection made DuckDB defer its automatic checkpoint indefinitely, so the state-DB WAL grew unbounded between graceful restarts and a non-graceful exit put days of user/PAT/grant writes at the mercy of a cross-version WAL replay (#710)
 
 ### Removed
