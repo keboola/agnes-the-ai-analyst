@@ -1116,6 +1116,7 @@ interactive OAuth browser flow. The token is returned once and must be saved by 
 - /api/store/entities/{entity_id}/install
 - /api/store/entities/{entity_id}/photo
 - /api/store/entities/{entity_id}/rate
+- /api/store/entities/{entity_id}/status
 - /api/store/entities/{entity_id}/versions/{version_no}/restore
 - /api/store/import-bundle
 - /api/store/owners

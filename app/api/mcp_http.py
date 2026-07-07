@@ -14,7 +14,8 @@ Cowork bundle settings.json points to:
 with header  Authorization: Bearer <PAT>  set by Claude Code.
 
 Tools available: server_info, catalog, schema, describe, query, skills,
-stack_browse, stack_subscribe, stack_unsubscribe, store_rate, documentation_api.
+stack_browse, stack_subscribe, stack_unsubscribe, store_rate, store_status,
+documentation_api.
 (query_local and pull require a local analyst filesystem — not available
  in the server context.)
 """
@@ -370,6 +371,33 @@ async def store_rate(entity_id: str, vote: int) -> dict:
         r = await c.post(
             f"{_BASE}/api/store/entities/{entity_id}/rate",
             json={"vote": vote},
+            headers=_headers(),
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
+async def store_status(entity_id: str) -> dict:
+    """Check the review-pipeline status of a flea-market entity you own.
+
+    After ``store upload`` the guardrail review runs asynchronously; the
+    entity stays hidden until it passes. This returns the latest submission's
+    status (``pending_llm`` / ``approved`` / ``blocked_llm`` /
+    ``review_error`` / ``overridden``) plus an actionable hint. Owner or
+    admin only. Mirrors ``agnes store status <id>``.
+
+    Args:
+        entity_id: The store entity id (from the upload response).
+
+    Returns the ``GET /api/store/entities/{id}/status`` payload:
+    ``{entity_id, name, type, visibility_status, version_no, submission,
+    hint}``.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{_BASE}/api/store/entities/{entity_id}/status",
             headers=_headers(),
             timeout=30,
         )

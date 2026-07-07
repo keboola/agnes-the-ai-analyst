@@ -1642,3 +1642,144 @@ class TestMyStackOptout:
             )
         finally:
             conn.close()
+
+
+class TestCategoryValidation:
+    """`--category` UX (#: flea-market upload friction): case-insensitive
+    matching + an error payload that lists the valid taxonomy."""
+
+    def test_normalize_category_unit(self):
+        from src.store_categories import normalize_category
+
+        assert normalize_category("Documentation") == "Documentation"
+        assert normalize_category("documentation") == "Documentation"
+        assert normalize_category("DOCUMENTATION") == "Documentation"
+        assert normalize_category(" data & analytics ") == "Data & Analytics"
+        assert normalize_category("bogus") is None
+
+    def test_lowercase_category_accepted_and_canonicalized(self, web_client):
+        _, cookies = _create_user(web_client, "cat1@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("cat-skill"), "application/zip")},
+            data={"type": "skill", "description": _OK_DESC, "category": "documentation"},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["category"] == "Documentation"
+
+    def test_invalid_category_lists_taxonomy(self, web_client):
+        from src.store_categories import STORE_CATEGORIES
+
+        _, cookies = _create_user(web_client, "cat2@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("cat-skill2"), "application/zip")},
+            data={"type": "skill", "description": _OK_DESC, "category": "nonsense"},
+            cookies=cookies,
+        )
+        assert r.status_code == 400
+        detail = r.json()["detail"]
+        assert detail["code"] == "invalid_category"
+        assert detail["valid"] == list(STORE_CATEGORIES)
+        assert "hint" in detail
+
+    def test_update_normalizes_category(self, web_client):
+        _, cookies = _create_user(web_client, "cat3@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("cat-skill3"), "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        entity_id = r.json()["id"]
+        r2 = web_client.put(
+            f"/api/store/entities/{entity_id}",
+            data={"category": "security"},
+            cookies=cookies,
+        )
+        assert r2.status_code == 200, r2.text
+        r3 = web_client.get(f"/api/store/entities/{entity_id}", cookies=cookies)
+        assert r3.json()["category"] == "Security"
+
+
+class TestSubmissionStatus:
+    """GET /api/store/entities/{id}/status — owner-facing review-pipeline
+    visibility (#: after upload there was no way to check whether the async
+    LLM review finished, errored, or blocked; `store update` just 409'd)."""
+
+    def _upload(self, web_client, cookies, name="status-skill"):
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip(name), "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        return r.json()["id"]
+
+    def test_owner_sees_status(self, web_client):
+        _, cookies = _create_user(web_client, "stat-owner@x.com")
+        eid = self._upload(web_client, cookies)
+        r = web_client.get(f"/api/store/entities/{eid}/status", cookies=cookies)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["entity_id"] == eid
+        assert body["visibility_status"] == "approved"
+        assert body["submission"]["status"] == "approved"
+        assert "hint" in body
+
+    def test_non_owner_forbidden(self, web_client):
+        _, owner_cookies = _create_user(web_client, "stat-o2@x.com")
+        _, other_cookies = _create_user(web_client, "stat-other@x.com")
+        eid = self._upload(web_client, owner_cookies, name="status-skill2")
+        r = web_client.get(f"/api/store/entities/{eid}/status", cookies=other_cookies)
+        assert r.status_code == 403
+
+    def test_admin_sees_status(self, web_client):
+        from argon2 import PasswordHasher
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from tests.helpers.auth import grant_admin
+
+        _, owner_cookies = _create_user(web_client, "stat-o3@x.com")
+        eid = self._upload(web_client, owner_cookies, name="status-skill3")
+        ph = PasswordHasher()
+        conn = get_system_db()
+        UserRepository(conn).create(
+            id="stat-adm", email="stat-adm@x.com", name="adm",
+            password_hash=ph.hash("AdminPass1!"),
+        )
+        grant_admin(conn, "stat-adm")
+        tok = web_client.post(
+            "/auth/token", json={"email": "stat-adm@x.com", "password": "AdminPass1!"}
+        ).json()["access_token"]
+        r = web_client.get(
+            f"/api/store/entities/{eid}/status", cookies={"access_token": tok}
+        )
+        assert r.status_code == 200
+
+    def test_unknown_entity_404(self, web_client):
+        _, cookies = _create_user(web_client, "stat-404@x.com")
+        r = web_client.get("/api/store/entities/deadbeef/status", cookies=cookies)
+        assert r.status_code == 404
+
+    def test_review_error_surfaces_error_and_hint(self, web_client):
+        _, cookies = _create_user(web_client, "stat-err@x.com")
+        eid = self._upload(web_client, cookies, name="status-skill4")
+        # Simulate the reaper flipping a timed-out review.
+        from src.repositories import store_submissions_repo
+
+        sub = store_submissions_repo().latest_for_entity(eid)
+        store_submissions_repo().update_status(
+            sub["id"], status="review_error",
+            llm_findings={"error": "timeout_or_crash", "findings": []},
+            allow_terminal_overwrite=True,
+        )
+        r = web_client.get(f"/api/store/entities/{eid}/status", cookies=cookies)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["submission"]["status"] == "review_error"
+        assert body["submission"]["error"] == "timeout_or_crash"
+        assert "admin" in body["hint"].lower()

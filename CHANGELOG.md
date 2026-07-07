@@ -11,10 +11,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `GET /api/store/entities/{id}/status` — owner-facing review-pipeline status (latest submission status, error cause, actionable hint), with `agnes store status <id> [--wait]` and a `store_status` MCP tool; `agnes store upload` now points at it when the entity is held for review. Previously the only post-upload signal was a 409 `prior_version_pending` on the next update
 
 ### Changed
+- Flea-market `--category` matching is now case-insensitive (persisted in canonical casing); the `invalid_category` error lists the valid taxonomy, and `agnes store upload/update --help` documents it
+- `agnes store upload`/`update` render the full 422 `validation_failed` payload — one actionable line per guardrail issue (file, field, code, hint) instead of a flattened dict truncated after the first issue
 
 ### Fixed
+- Skill/agent/command frontmatter is parsed with a real YAML loader: folded (`description: >`) and literal (`|`) block scalars and quoted multi-line values resolve to their actual content instead of the first-line fragment, which made valid ~500-char descriptions fail the guardrail floor with a misleading `too_short`. Non-YAML "YAML-ish" documents keep the legacy line-parser behavior
+- Skill/agent upload rejections for a too-short tile description now point at the `--description` flag / SKILL.md frontmatter instead of blaming a synthetic `.claude-plugin/plugin.json` the submitter never wrote (and must not include)
 
 ### Removed
 

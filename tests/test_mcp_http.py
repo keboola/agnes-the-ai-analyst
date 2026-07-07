@@ -137,6 +137,9 @@ class TestToolRegistration:
             # can rate a store entity without leaving the chat. See
             # tests/test_documentation_api_triple_surface.py for the policy.
             "store_rate",
+            # Owner-facing review-pipeline status — pairs with
+            # `agnes store status` and GET /api/store/entities/{id}/status.
+            "store_status",
             # Collections read surfaces (Slice 2) — list collections and read
             # one collection's files. Upload/delete are CLI-only (multipart /
             # mutation). See tests/test_documentation_api_triple_surface.py.
