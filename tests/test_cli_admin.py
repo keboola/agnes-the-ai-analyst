@@ -83,12 +83,20 @@ class TestRemoveUser:
 class TestRegisterTable:
     def test_register_table_success(self):
         with patch("cli.commands.admin.api_post", return_value=_resp(201, {"id": "t1", "name": "orders"})):
-            result = runner.invoke(app, [
-                "admin", "register-table", "orders",
-                "--source-type", "keboola",
-                "--bucket", "in.c-crm",
-                "--query-mode", "local",
-            ])
+            result = runner.invoke(
+                app,
+                [
+                    "admin",
+                    "register-table",
+                    "orders",
+                    "--source-type",
+                    "keboola",
+                    "--bucket",
+                    "in.c-crm",
+                    "--query-mode",
+                    "local",
+                ],
+            )
         assert result.exit_code == 0
         assert "Registered: orders" in result.output
 
@@ -163,9 +171,7 @@ class TestUnregisterTable:
 
     def test_unregister_success(self):
         with patch("cli.commands.admin.api_delete", return_value=_resp(204)):
-            result = runner.invoke(
-                app, ["admin", "unregister-table", "orders", "--yes"]
-            )
+            result = runner.invoke(app, ["admin", "unregister-table", "orders", "--yes"])
         assert result.exit_code == 0, result.output
         assert "Unregistered: orders" in result.output
 
@@ -174,18 +180,14 @@ class TestUnregisterTable:
             "cli.commands.admin.api_delete",
             return_value=_resp(404, {"detail": "Table not found"}),
         ):
-            result = runner.invoke(
-                app, ["admin", "unregister-table", "nope", "--yes"]
-            )
+            result = runner.invoke(app, ["admin", "unregister-table", "nope", "--yes"])
         assert result.exit_code == 1
 
     def test_unregister_prompts_without_yes(self):
         """Without --yes, the CLI confirms before destructive action."""
         with patch("cli.commands.admin.api_delete", return_value=_resp(204)) as d:
             # Simulate operator typing "n" at the prompt.
-            result = runner.invoke(
-                app, ["admin", "unregister-table", "orders"], input="n\n"
-            )
+            result = runner.invoke(app, ["admin", "unregister-table", "orders"], input="n\n")
         # Either Aborted (exit 0) or refuses entirely; either way the
         # server must not have been called.
         d.assert_not_called()
@@ -206,9 +208,7 @@ class TestUpdateTable:
             return _resp(200, {"id": "orders", "updated": ["bucket"]})
 
         with patch("cli.commands.admin.api_put", side_effect=fake_put):
-            result = runner.invoke(
-                app, ["admin", "update-table", "orders", "--bucket", "out.c-prod"]
-            )
+            result = runner.invoke(app, ["admin", "update-table", "orders", "--bucket", "out.c-prod"])
         assert result.exit_code == 0, result.output
         assert captured["path"] == "/api/admin/registry/orders"
         # description must NOT be in the body — operator didn't pass it.
@@ -223,11 +223,18 @@ class TestUpdateTable:
             return _resp(200, {"id": "rev", "updated": ["query_mode", "source_query"]})
 
         with patch("cli.commands.admin.api_put", side_effect=fake_put):
-            result = runner.invoke(app, [
-                "admin", "update-table", "rev",
-                "--query-mode", "materialized",
-                "--query", "SELECT 1",
-            ])
+            result = runner.invoke(
+                app,
+                [
+                    "admin",
+                    "update-table",
+                    "rev",
+                    "--query-mode",
+                    "materialized",
+                    "--query",
+                    "SELECT 1",
+                ],
+            )
         assert result.exit_code == 0, result.output
         assert captured["json"]["query_mode"] == "materialized"
         assert captured["json"]["source_query"] == "SELECT 1"
@@ -242,9 +249,7 @@ class TestUpdateTable:
             return _resp(200, {"id": "rev", "updated": ["source_query"]})
 
         with patch("cli.commands.admin.api_put", side_effect=fake_put):
-            result = runner.invoke(
-                app, ["admin", "update-table", "rev", "--query", f"@{sql_file}"]
-            )
+            result = runner.invoke(app, ["admin", "update-table", "rev", "--query", f"@{sql_file}"])
         assert result.exit_code == 0, result.output
         assert captured["json"]["source_query"] == "SELECT * FROM orders"
 
@@ -258,9 +263,7 @@ class TestUpdateTable:
             "cli.commands.admin.api_put",
             return_value=_resp(404, {"detail": "Table not found"}),
         ):
-            result = runner.invoke(
-                app, ["admin", "update-table", "nope", "--bucket", "x"]
-            )
+            result = runner.invoke(app, ["admin", "update-table", "nope", "--bucket", "x"])
         assert result.exit_code == 1
 
 
@@ -271,26 +274,44 @@ class TestRegisterTableHints:
 
     def test_remote_register_emits_iam_verify_hint(self):
         with patch("cli.commands.admin.api_post", return_value=_resp(201, {"id": "t"})):
-            result = runner.invoke(app, [
-                "admin", "register-table", "orders",
-                "--source-type", "bigquery",
-                "--bucket", "dwh_base",
-                "--source-table", "orders",
-                "--query-mode", "remote",
-            ])
+            result = runner.invoke(
+                app,
+                [
+                    "admin",
+                    "register-table",
+                    "orders",
+                    "--source-type",
+                    "bigquery",
+                    "--bucket",
+                    "dwh_base",
+                    "--source-table",
+                    "orders",
+                    "--query-mode",
+                    "remote",
+                ],
+            )
         assert result.exit_code == 0
         assert "agnes query --remote" in result.output
         assert "query-modes.md" in result.output
 
     def test_local_register_does_not_emit_remote_hint(self):
         with patch("cli.commands.admin.api_post", return_value=_resp(201, {"id": "t"})):
-            result = runner.invoke(app, [
-                "admin", "register-table", "users",
-                "--source-type", "keboola",
-                "--bucket", "in.c-crm",
-                "--source-table", "users",
-                "--query-mode", "local",
-            ])
+            result = runner.invoke(
+                app,
+                [
+                    "admin",
+                    "register-table",
+                    "users",
+                    "--source-type",
+                    "keboola",
+                    "--bucket",
+                    "in.c-crm",
+                    "--source-table",
+                    "users",
+                    "--query-mode",
+                    "local",
+                ],
+            )
         assert result.exit_code == 0
         assert "agnes query --remote" not in result.output
 
@@ -344,10 +365,13 @@ class TestResolveGrantId:
 
     def test_grant_delete_accepts_full_uuid(self):
         grants = [{"id": "aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee"}]
-        with patch("cli.commands.admin.api_get", return_value=_resp(200, grants)), \
-             patch("cli.commands.admin.api_delete", return_value=_resp(204)) as mock_del:
+        with (
+            patch("cli.commands.admin.api_get", return_value=_resp(200, grants)),
+            patch("cli.commands.admin.api_delete", return_value=_resp(204)) as mock_del,
+        ):
             result = runner.invoke(
-                app, ["admin", "grant", "delete", "aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee"],
+                app,
+                ["admin", "grant", "delete", "aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee"],
             )
         assert result.exit_code == 0, result.output
         mock_del.assert_called_once_with("/api/admin/grants/aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee")
@@ -355,8 +379,10 @@ class TestResolveGrantId:
     def test_grant_delete_accepts_8char_prefix(self):
         """Bug repro: pre-fix this would 404."""
         grants = [{"id": "aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee"}]
-        with patch("cli.commands.admin.api_get", return_value=_resp(200, grants)), \
-             patch("cli.commands.admin.api_delete", return_value=_resp(204)) as mock_del:
+        with (
+            patch("cli.commands.admin.api_get", return_value=_resp(200, grants)),
+            patch("cli.commands.admin.api_delete", return_value=_resp(204)) as mock_del,
+        ):
             result = runner.invoke(app, ["admin", "grant", "delete", "aaaa1111"])
         assert result.exit_code == 0, result.output
         # API received the FULL uuid, not the prefix
@@ -367,8 +393,10 @@ class TestResolveGrantId:
             {"id": "aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee"},
             {"id": "aaaa1111-zzzz-yyyy-xxxx-wwwwwwwwwwww"},  # same 8-char prefix
         ]
-        with patch("cli.commands.admin.api_get", return_value=_resp(200, grants)), \
-             patch("cli.commands.admin.api_delete") as mock_del:
+        with (
+            patch("cli.commands.admin.api_get", return_value=_resp(200, grants)),
+            patch("cli.commands.admin.api_delete") as mock_del,
+        ):
             result = runner.invoke(app, ["admin", "grant", "delete", "aaaa1111"])
         assert result.exit_code == 1, result.output
         assert "Ambiguous" in result.output or "ambiguous" in result.output
@@ -376,8 +404,10 @@ class TestResolveGrantId:
 
     def test_grant_delete_unknown_ref_aborts(self):
         grants = [{"id": "aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee"}]
-        with patch("cli.commands.admin.api_get", return_value=_resp(200, grants)), \
-             patch("cli.commands.admin.api_delete") as mock_del:
+        with (
+            patch("cli.commands.admin.api_get", return_value=_resp(200, grants)),
+            patch("cli.commands.admin.api_delete") as mock_del,
+        ):
             result = runner.invoke(app, ["admin", "grant", "delete", "deadbeef"])
         assert result.exit_code == 1, result.output
         assert "not found" in result.output.lower()
