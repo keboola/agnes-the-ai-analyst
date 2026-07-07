@@ -78,6 +78,8 @@ def test_checkpoint_failure_is_nonfatal(system_db, monkeypatch, caplog):
         ("0", 0.0),  # disabled
         ("-5", 0.0),  # negative → disabled
         ("garbage", 300.0),  # unparsable → default
+        ("nan", 300.0),  # non-finite would silently disable → default
+        ("inf", 300.0),  # would sleep forever → default
     ],
 )
 def test_checkpoint_interval_parsing(monkeypatch, raw, expected):

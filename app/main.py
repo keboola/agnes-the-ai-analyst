@@ -30,6 +30,7 @@ except ImportError:
 
 import asyncio
 import logging
+import math
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -388,6 +389,12 @@ def _state_checkpoint_interval_s() -> float:
         interval = float(raw)
     except ValueError:
         logger.warning("AGNES_STATE_CHECKPOINT_INTERVAL_S=%r is not a number; using default 300s", raw)
+        return 300.0
+    if not math.isfinite(interval):
+        # nan would silently disable the task (max(nan, 0) is nan, nan > 0 is
+        # False) and inf would sleep forever — both defeat a durability
+        # safeguard, so treat them like unparsable input.
+        logger.warning("AGNES_STATE_CHECKPOINT_INTERVAL_S=%r is not finite; using default 300s", raw)
         return 300.0
     return max(interval, 0.0)
 
@@ -968,8 +975,10 @@ async def lifespan(app):
     # Periodic system.duckdb CHECKPOINT (#710) — see _state_checkpoint_loop.
     # Started here (worker-only), not create_app(): the uvicorn --reload
     # master must not touch system.duckdb (same reasoning as the seeding
-    # above). Postgres-state instances are covered by the no-open-singleton
-    # guard inside checkpoint_system_db().
+    # above). Runs on Postgres-state instances too: boot still opens the
+    # DuckDB singleton unconditionally (ensure_internal_tables_registered /
+    # ensure_knowledge_fts_index above), so the file exists and takes writes
+    # there as well — checkpointing it is cheap and keeps its WAL folded.
     _checkpoint_interval = _state_checkpoint_interval_s()
     _checkpoint_task = None
     if _checkpoint_interval > 0:
