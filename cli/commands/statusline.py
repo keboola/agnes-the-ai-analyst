@@ -52,9 +52,7 @@ def _deferred_update_in_progress() -> bool:
         return False
     base = os.environ.get("AGNES_CONFIG_DIR") or os.path.expanduser("~/.config/agnes")
     try:
-        age = time.time() - os.stat(
-            os.path.join(base, _DEFERRED_UPDATE_SENTINEL)
-        ).st_mtime
+        age = time.time() - os.stat(os.path.join(base, _DEFERRED_UPDATE_SENTINEL)).st_mtime
     except OSError:
         return False
     return age < _DEFERRED_UPDATE_TTL_S
