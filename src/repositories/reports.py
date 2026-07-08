@@ -33,16 +33,17 @@ class ReportsRepository:
                WHERE occurred_at >= ? AND occurred_at < ?""",
             [start, end],
         ).fetchone()
-        return {"invocations": int(r[0] or 0),
-                "active_users": int(r[1] or 0),
-                "errors": int(r[2] or 0)}
+        return {"invocations": int(r[0] or 0), "active_users": int(r[1] or 0), "errors": int(r[2] or 0)}
 
     def session_count(self, start: datetime, end: datetime) -> int:
-        return int(self.conn.execute(
-            """SELECT COUNT(DISTINCT session_id) FROM usage_session_summary
+        return int(
+            self.conn.execute(
+                """SELECT COUNT(DISTINCT session_id) FROM usage_session_summary
                WHERE started_at >= ? AND started_at < ?""",
-            [start, end],
-        ).fetchone()[0] or 0)
+                [start, end],
+            ).fetchone()[0]
+            or 0
+        )
 
     def events_daily(self, start: datetime, end: datetime) -> Dict[date, dict]:
         rows = self.conn.execute(
@@ -56,9 +57,7 @@ class ReportsRepository:
             [start, end],
         ).fetchall()
         return {
-            r[0]: {"invocations": int(r[1] or 0),
-                   "active_users": int(r[2] or 0),
-                   "errors": int(r[3] or 0)}
+            r[0]: {"invocations": int(r[1] or 0), "active_users": int(r[2] or 0), "errors": int(r[3] or 0)}
             for r in rows
         }
 
@@ -72,8 +71,12 @@ class ReportsRepository:
             [start, end],
         ).fetchall()
         return [
-            {"source": r[0], "invocations": int(r[1] or 0),
-             "distinct_users": int(r[2] or 0), "error_count": int(r[3] or 0)}
+            {
+                "source": r[0],
+                "invocations": int(r[1] or 0),
+                "distinct_users": int(r[2] or 0),
+                "error_count": int(r[3] or 0),
+            }
             for r in rows
         ]
 
@@ -98,16 +101,20 @@ class ReportsRepository:
 
     # ---- installs / adoption ---------------------------------------------
     def install_counts(self, start: datetime, end: datetime) -> dict:
-        curated = int(self.conn.execute(
-            "SELECT COUNT(*) FROM user_plugin_optouts "
-            "WHERE opted_out_at >= ? AND opted_out_at < ?",
-            [start, end],
-        ).fetchone()[0] or 0)
-        flea = int(self.conn.execute(
-            "SELECT COUNT(*) FROM user_store_installs "
-            "WHERE installed_at >= ? AND installed_at < ?",
-            [start, end],
-        ).fetchone()[0] or 0)
+        curated = int(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM user_plugin_optouts WHERE opted_out_at >= ? AND opted_out_at < ?",
+                [start, end],
+            ).fetchone()[0]
+            or 0
+        )
+        flea = int(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM user_store_installs WHERE installed_at >= ? AND installed_at < ?",
+                [start, end],
+            ).fetchone()[0]
+            or 0
+        )
         return {"curated": curated, "flea": flea}
 
     def installs_daily(self, start: datetime, end: datetime) -> Dict[date, int]:
@@ -130,10 +137,7 @@ class ReportsRepository:
                GROUP BY marketplace_id, plugin_name ORDER BY n DESC LIMIT ?""",
             [start, end, limit],
         ).fetchall()
-        return [
-            {"ref_id": f"{r[0]}/{r[1]}", "name": r[1], "installs": int(r[2] or 0)}
-            for r in rows
-        ]
+        return [{"ref_id": f"{r[0]}/{r[1]}", "name": r[1], "installs": int(r[2] or 0)} for r in rows]
 
     def installs_flea_detail(self, start: datetime, end: datetime, limit: int = 10) -> List[dict]:
         rows = self.conn.execute(
@@ -144,7 +148,4 @@ class ReportsRepository:
                GROUP BY usi.entity_id, s.name ORDER BY n DESC LIMIT ?""",
             [start, end, limit],
         ).fetchall()
-        return [
-            {"entity_id": r[0], "name": r[1], "installs": int(r[2] or 0)}
-            for r in rows
-        ]
+        return [{"entity_id": r[0], "name": r[1], "installs": int(r[2] or 0)} for r in rows]
