@@ -808,17 +808,13 @@ sys.exit(compute_exit_code(result, len(configs)))
                 extractor_stats = _parse_extractor_stats(result.stdout)
                 extractor_table_errors = (extractor_stats or {}).get("errors") or []
                 if extractor_table_errors:
-                    _stats_conn = get_system_db()
-                    try:
-                        err_state = sync_state_repo()
-                        for entry in extractor_table_errors:
-                            tname = entry.get("table")
-                            terror = entry.get("error")
-                            if tname and terror:
-                                err_state.set_error(tname, terror)
-                                collected_errors.append({"table": tname, "error": terror})
-                    finally:
-                        _stats_conn.close()
+                    err_state = sync_state_repo()
+                    for entry in extractor_table_errors:
+                        tname = entry.get("table")
+                        terror = entry.get("error")
+                        if tname and terror:
+                            err_state.set_error(tname, terror)
+                            collected_errors.append({"table": tname, "error": terror})
 
                 # Issue #81 Group B: three exit codes. 0 = full success,
                 # 1 = full failure, 2 = partial. Partial is a data-quality
