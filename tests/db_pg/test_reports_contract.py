@@ -599,6 +599,16 @@ def test_plugin_daily_series_curated(invocation_stats_repo):
     assert by_day[prior_day] == 8
 
 
+def test_plugin_daily_series_flea_standalone_entity(invocation_stats_repo):
+    """A standalone flea entity (type='agent', parent_plugin='') must get a
+    non-zero daily series — the filter mirrors invocation_stats, not a
+    hard-coded type='plugin' (Devin finding on #777)."""
+    repo, _ = invocation_stats_repo
+    series = repo.plugin_daily_series("flea", "helper-bot")
+    assert len(series) == 30
+    assert sum(e["invocations"] for e in series) == 10  # 4 recent + 6 prior
+
+
 def test_inner_item_stats_curated_skill(invocation_stats_repo):
     repo, _ = invocation_stats_repo
     stat = repo.inner_item_stats("curated", parent_plugin="widget", name="design", item_type="skill")

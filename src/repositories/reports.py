@@ -248,18 +248,20 @@ class ReportsRepository:
         """Return a 30-entry ``[{day, invocations}]`` list (missing days
         zero-filled) for one plugin-level card (#728).
 
-        Reads ``usage_marketplace_item_daily`` filtered to
-        ``type='plugin' AND name=<plugin_name>`` so the series matches the
-        plugin-level 30d total shown on the card / detail page. Moved off
-        the inline SQL in
+        Row selection mirrors ``invocation_stats``: curated cards are
+        plugin-level rows (``type='plugin'``), flea cards are standalone
+        entities (``parent_plugin=''``, any type) — so the series always
+        matches the 30d total shown on the same card / detail page. Moved
+        off the inline SQL in
         ``app/api/marketplace.py::_load_plugin_daily_series``.
         """
+        type_filter = "AND type = 'plugin'" if source == "curated" else "AND parent_plugin = ''"
         rows = self.conn.execute(
-            """
+            f"""
             SELECT day, count
             FROM usage_marketplace_item_daily
             WHERE source = ?
-              AND type = 'plugin'
+              {type_filter}
               AND name = ?
               AND day >= CURRENT_DATE - INTERVAL 30 DAY
             ORDER BY day

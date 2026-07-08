@@ -248,16 +248,19 @@ class ReportsPgRepository:
 
     def plugin_daily_series(self, source: str, plugin_name: str) -> List[Dict]:
         """PG mirror of ``ReportsRepository.plugin_daily_series`` (#728) —
-        same shape, PG-dialect day arithmetic.
+        same shape, PG-dialect day arithmetic. Row selection mirrors
+        ``invocation_stats`` (curated → plugin rows; flea → standalone
+        entities) so the series matches the card's 30d total.
         """
+        type_filter = "AND type = 'plugin'" if source == "curated" else "AND parent_plugin = ''"
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
-                    """
+                    f"""
                     SELECT day, count
                     FROM usage_marketplace_item_daily
                     WHERE source = :source
-                      AND type = 'plugin'
+                      {type_filter}
                       AND name = :name
                       AND day >= CURRENT_DATE - INTERVAL '30 days'
                     ORDER BY day
