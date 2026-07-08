@@ -5,7 +5,7 @@ import socket
 import httpx
 import typer
 
-from cli.client import api_post, api_get
+from cli.client import api_post
 from cli.config import (
     save_token,
     clear_token,
@@ -34,6 +34,7 @@ def _login_with_password(server: str | None) -> None:
     """Terminal-only email+password login (no browser)."""
     if server:
         import os
+
         os.environ["AGNES_SERVER"] = server
     email = typer.prompt("Email")
     password = typer.prompt("Password", hide_input=True)
@@ -63,11 +64,13 @@ def _login_with_password(server: str | None) -> None:
 def login(
     server: str = typer.Option(None, help="Server URL override"),
     password: bool = typer.Option(
-        False, "--password",
+        False,
+        "--password",
         help="Sign in with email + password in the terminal instead of the browser.",
     ),
     no_browser: bool = typer.Option(
-        False, "--no-browser",
+        False,
+        "--no-browser",
         help="Print the sign-in URL instead of auto-opening a browser (headless hosts).",
     ),
 ):
@@ -94,6 +97,7 @@ def login(
 
     if server:
         import os
+
         os.environ["AGNES_SERVER"] = server
 
     from cli.lib.loopback import capture_code_via_browser
@@ -124,8 +128,7 @@ def login(
 
     if resp.status_code == 404:
         typer.echo(
-            "This server doesn't support browser login yet (needs a newer "
-            "Agnes server).",
+            "This server doesn't support browser login yet (needs a newer Agnes server).",
             err=True,
         )
         _manual_token_hint()
@@ -160,10 +163,14 @@ def whoami():
         raise typer.Exit(1)
 
     import jwt
+
     try:
         payload = jwt.decode(token, options={"verify_signature": False})
         typer.echo(f"Email: {payload.get('email', 'unknown')}")
         typer.echo(f"Server: {get_server_url()}")
+        from cli.token_status import format_status_line
+
+        typer.echo(f"Token: {format_status_line(token)}")
     except Exception:
         typer.echo("Invalid token. Run: agnes login")
         raise typer.Exit(1)
@@ -262,8 +269,7 @@ def import_token(
     # 5) Refuse to write a partial record if the email claim is missing.
     if not resolved_email:
         typer.echo(
-            "Token is missing the 'email' claim. Re-issue the token "
-            "or pass --email explicitly.",
+            "Token is missing the 'email' claim. Re-issue the token or pass --email explicitly.",
             err=True,
         )
         raise typer.Exit(1)
@@ -315,7 +321,8 @@ def refresh_groups(
         except Exception:
             pass
         typer.echo(
-            f"Refresh failed (HTTP {resp.status_code}): {detail}", err=True,
+            f"Refresh failed (HTTP {resp.status_code}): {detail}",
+            err=True,
         )
         raise typer.Exit(1)
 
@@ -323,6 +330,7 @@ def refresh_groups(
 
     if json_out:
         import json
+
         typer.echo(json.dumps(data, indent=2))
         return
 
@@ -348,10 +356,7 @@ def refresh_groups(
     current = data.get("current") or []
 
     if not added and not removed:
-        typer.echo(
-            f"Groups already up to date — currently in {len(current)} "
-            f"group(s):"
-        )
+        typer.echo(f"Groups already up to date — currently in {len(current)} group(s):")
     else:
         if added:
             typer.echo(f"Added {len(added)} group(s):")
@@ -367,4 +372,5 @@ def refresh_groups(
 
 
 from cli.commands.tokens import token_app
+
 auth_app.add_typer(token_app, name="token")

@@ -105,12 +105,20 @@ def _root(
     `AGNES_NO_UPDATE_CHECK=1`.
     """
     _maybe_warn_outdated()
+    _maybe_warn_token_expiry()
 
 
-_MAINTENANCE_COMMANDS = frozenset({
-    "update", "self-upgrade", "self-update", "pull", "push",
-    "refresh-marketplace", "init",
-})
+_MAINTENANCE_COMMANDS = frozenset(
+    {
+        "update",
+        "self-upgrade",
+        "self-update",
+        "pull",
+        "push",
+        "refresh-marketplace",
+        "init",
+    }
+)
 
 
 def _is_maintenance_command() -> bool:
@@ -154,8 +162,11 @@ def _spawn_background_update(latest: str) -> None:
         env = {**os.environ, "AGNES_NO_UPDATE_CHECK": "1"}
         argv = [sys.executable, "-m", "cli.main", "update", "--quiet"]
         popen_kwargs: dict = dict(
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, env=env, close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            close_fds=True,
         )
         if os.name == "nt":
             # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — outlive the parent.
@@ -236,6 +247,32 @@ def _maybe_warn_upgrade_failures() -> None:
             mark_warned()  # warn once per failure level — don't spam
     except Exception:
         pass  # best-effort: never fail a command on the status probe
+
+
+def _maybe_warn_token_expiry() -> None:
+    """Surface a proactive PAT-renewal nudge (#477).
+
+    Reads the stored token's `exp` claim locally — no network call, no
+    server round-trip — and prints a one-line stderr warning when it's
+    inside the renewal window (`AGNES_TOKEN_RENEW_DAYS`, default 7 days;
+    `0` disables). At most once per UTC calendar day via a marker file
+    (see `cli/token_status.py`).
+
+    Skipped under `--quiet` (the SessionStart `agnes update --quiet` hook
+    path) — the same info is instead carried as a report line by
+    `agnes update` itself (`cli/commands/update.py`'s "token" stage), so
+    nothing is lost; it just never becomes an interactive stderr print
+    inside a detached, output-suppressed hook.
+
+    Best-effort: never raises."""
+    try:
+        if _command_is_quiet():
+            return
+        from cli.token_status import maybe_print_nudge
+
+        maybe_print_nudge()
+    except Exception:
+        pass  # best-effort: never fail a command on the expiry probe
 
 
 # Register subcommands

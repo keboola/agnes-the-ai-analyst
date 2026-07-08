@@ -45,3 +45,24 @@ agnes auth token revoke <id|prefix|name>
 ```
 
 Or from `/me/profile` → Revoke.
+
+## Renewal (interactive analysts)
+
+`agnes auth login` (the browser loopback flow, not this doc's headless
+`--ttl` path) mints a 90-day PAT. Rather than a refresh-token grant, the CLI
+proactively reminds analysts to re-mint before that PAT expires: any
+non-quiet command prints a one-line stderr nudge once the stored token is
+within `AGNES_TOKEN_RENEW_DAYS` (default 7; `0` disables) of `exp`, at most
+once per day. `agnes auth whoami` always shows the current status
+(`Token: valid until <date> (<N> days)`). Renew by simply re-running:
+
+```bash
+agnes auth login
+```
+
+which overwrites the stored token in place. See [`docs/RBAC.md`](./RBAC.md#pat-lifetime--renewal)
+for the rationale behind this model over a refresh-token grant.
+
+For unattended/headless clients using `--ttl`-minted PATs (this doc's main
+path), there is no nudge — rotate on your own schedule (CI secret rotation,
+cron) since there's no interactive terminal to print a warning to.
