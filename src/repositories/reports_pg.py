@@ -12,6 +12,7 @@ comments guard the same invariant.
 
 from __future__ import annotations
 
+import datetime as _dt
 from datetime import date, datetime
 from typing import Dict, List, Tuple
 
@@ -19,6 +20,88 @@ import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
 ItemKey = Tuple[str, str, str, str]  # (source, type, parent_plugin, name)
+
+
+def _zero_fill_daily_series(rows) -> List[Dict]:
+    """PG mirror of ``reports._zero_fill_daily_series`` — pure Python,
+    dialect-independent.
+    """
+    by_day = {str(r[0]): int(r[1] or 0) for r in rows}
+    today = _dt.date.today()
+    series = []
+    for offset in range(29, -1, -1):
+        day_str = (today - _dt.timedelta(days=offset)).isoformat()
+        series.append({"day": day_str, "invocations": by_day.get(day_str, 0)})
+    return series
+
+
+def _assemble_inner_items_by_parent(win_rows, trend_rows) -> Dict[Tuple[str, str], Dict[str, object]]:
+    """PG mirror of ``reports._assemble_inner_items_by_parent`` — pure
+    Python, dialect-independent.
+    """
+    out: Dict[Tuple[str, str], Dict[str, object]] = {}
+    for name, item_type, inv, du in win_rows:
+        out[(name, item_type)] = {
+            "invocations_30d": int(inv or 0),
+            "distinct_users_30d": int(du or 0),
+            "trend_pct": None,
+        }
+    for name, item_type, recent, prior in trend_rows:
+        key = (name, item_type)
+        stat = out.setdefault(
+            key,
+            {
+                "invocations_30d": 0,
+                "distinct_users_30d": 0,
+                "trend_pct": None,
+            },
+        )
+        recent_i = int(recent or 0)
+        prior_i = int(prior or 0)
+        if prior_i >= 3:
+            stat["trend_pct"] = (recent_i - prior_i) / prior_i * 100.0
+    return out
+
+
+def _assemble_invocation_stats(win_rows, trend_rows) -> Dict[str, dict]:
+    """PG mirror of ``reports._assemble_invocation_stats`` — pure Python,
+    dialect-independent, kept identical so the two ``invocation_stats``
+    implementations only differ in their SQL.
+    """
+    trend_by_name = {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in trend_rows}
+
+    out: Dict[str, dict] = {}
+    for period_label, name, inv, du in win_rows:
+        stat = out.setdefault(
+            name,
+            {
+                "invocations_30d": 0,
+                "distinct_users_30d": 0,
+                "invocations_7d": 0,
+                "distinct_users_7d": 0,
+                "trend_pct": None,
+            },
+        )
+        if period_label == "last_30d":
+            stat["invocations_30d"] = int(inv or 0)
+            stat["distinct_users_30d"] = int(du or 0)
+        elif period_label == "last_7d":
+            stat["invocations_7d"] = int(inv or 0)
+            stat["distinct_users_7d"] = int(du or 0)
+    for name, (recent, prior) in trend_by_name.items():
+        stat = out.setdefault(
+            name,
+            {
+                "invocations_30d": 0,
+                "distinct_users_30d": 0,
+                "invocations_7d": 0,
+                "distinct_users_7d": 0,
+                "trend_pct": None,
+            },
+        )
+        if prior >= 3:
+            stat["trend_pct"] = (recent - prior) / prior * 100.0
+    return out
 
 
 class ReportsPgRepository:
@@ -118,6 +201,185 @@ class ReportsPgRepository:
             }
             for r in rows
         }
+
+    def invocation_stats(self, source: str) -> Dict[str, dict]:
+        """PG mirror of ``ReportsRepository.invocation_stats`` (#728) — same
+        shape and threshold semantics, PG-dialect day arithmetic
+        (``CURRENT_DATE - INTERVAL '7 days'``). ``day`` is a plain ``Date``
+        column on both engines (no timezone bucketing concern here, unlike
+        ``events_daily``/``installs_daily`` above).
+        """
+        type_filter = "AND type = 'plugin'" if source == "curated" else "AND parent_plugin = ''"
+
+        with self._engine.connect() as conn:
+            win_rows = conn.execute(
+                sa.text(
+                    f"""
+                    SELECT period_label, name, invocations, distinct_users
+                    FROM usage_marketplace_item_window
+                    WHERE period_label IN ('last_30d', 'last_7d')
+                      AND source = :source
+                      {type_filter}
+                    """
+                ),
+                {"source": source},
+            ).fetchall()
+
+            trend_rows = conn.execute(
+                sa.text(
+                    f"""
+                    SELECT
+                        name,
+                        SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '7 days' THEN count ELSE 0 END) AS inv_recent,
+                        SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '14 days'
+                                  AND day <  CURRENT_DATE - INTERVAL '7 days'
+                                 THEN count ELSE 0 END) AS inv_prior
+                    FROM usage_marketplace_item_daily
+                    WHERE source = :source
+                      {type_filter}
+                      AND day >= CURRENT_DATE - INTERVAL '14 days'
+                    GROUP BY name
+                    """
+                ),
+                {"source": source},
+            ).fetchall()
+
+        return _assemble_invocation_stats(win_rows, trend_rows)
+
+    def plugin_daily_series(self, source: str, plugin_name: str) -> List[Dict]:
+        """PG mirror of ``ReportsRepository.plugin_daily_series`` (#728) —
+        same shape, PG-dialect day arithmetic.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """
+                    SELECT day, count
+                    FROM usage_marketplace_item_daily
+                    WHERE source = :source
+                      AND type = 'plugin'
+                      AND name = :name
+                      AND day >= CURRENT_DATE - INTERVAL '30 days'
+                    ORDER BY day
+                    """
+                ),
+                {"source": source, "name": plugin_name},
+            ).fetchall()
+        return _zero_fill_daily_series(rows)
+
+    def inner_item_stats(
+        self,
+        source: str,
+        parent_plugin: str,
+        name: str,
+        item_type: str,
+    ) -> Dict[str, object]:
+        """PG mirror of ``ReportsRepository.inner_item_stats`` (#728) — same
+        shape and threshold semantics, PG-dialect day arithmetic.
+        """
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    """
+                    SELECT invocations, distinct_users
+                    FROM usage_marketplace_item_window
+                    WHERE period_label = 'last_30d'
+                      AND source = :source
+                      AND type = :item_type
+                      AND parent_plugin = :parent_plugin
+                      AND name = :name
+                    """
+                ),
+                {"source": source, "item_type": item_type, "parent_plugin": parent_plugin, "name": name},
+            ).fetchone()
+            inv30 = int(row[0]) if row and row[0] else 0
+            du30 = int(row[1]) if row and row[1] else 0
+
+            trend_row = conn.execute(
+                sa.text(
+                    """
+                    SELECT
+                        SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '7 days' THEN count ELSE 0 END) AS inv_recent,
+                        SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '14 days'
+                                  AND day <  CURRENT_DATE - INTERVAL '7 days'
+                                 THEN count ELSE 0 END) AS inv_prior
+                    FROM usage_marketplace_item_daily
+                    WHERE source = :source
+                      AND type = :item_type
+                      AND parent_plugin = :parent_plugin
+                      AND name = :name
+                      AND day >= CURRENT_DATE - INTERVAL '14 days'
+                    """
+                ),
+                {"source": source, "item_type": item_type, "parent_plugin": parent_plugin, "name": name},
+            ).fetchone()
+            recent = int(trend_row[0]) if trend_row and trend_row[0] else 0
+            prior = int(trend_row[1]) if trend_row and trend_row[1] else 0
+            trend_pct = (recent - prior) / prior * 100.0 if prior >= 3 else None
+
+            daily_rows = conn.execute(
+                sa.text(
+                    """
+                    SELECT day, count
+                    FROM usage_marketplace_item_daily
+                    WHERE source = :source
+                      AND type = :item_type
+                      AND parent_plugin = :parent_plugin
+                      AND name = :name
+                      AND day >= CURRENT_DATE - INTERVAL '30 days'
+                    ORDER BY day
+                    """
+                ),
+                {"source": source, "item_type": item_type, "parent_plugin": parent_plugin, "name": name},
+            ).fetchall()
+
+        return {
+            "invocations_30d": inv30,
+            "distinct_users_30d": du30,
+            "trend_pct": trend_pct,
+            "daily_series": _zero_fill_daily_series(daily_rows),
+        }
+
+    def inner_items_stats_by_parent(
+        self,
+        source: str,
+        parent_plugin: str,
+    ) -> Dict[Tuple[str, str], Dict[str, object]]:
+        """PG mirror of ``ReportsRepository.inner_items_stats_by_parent``
+        (#728) — same shape, PG-dialect day arithmetic.
+        """
+        with self._engine.connect() as conn:
+            win_rows = conn.execute(
+                sa.text(
+                    """
+                    SELECT name, type, invocations, distinct_users
+                    FROM usage_marketplace_item_window
+                    WHERE period_label = 'last_30d'
+                      AND source = :source
+                      AND parent_plugin = :parent_plugin
+                    """
+                ),
+                {"source": source, "parent_plugin": parent_plugin},
+            ).fetchall()
+            trend_rows = conn.execute(
+                sa.text(
+                    """
+                    SELECT
+                        name, type,
+                        SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '7 days' THEN count ELSE 0 END) AS inv_recent,
+                        SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '14 days'
+                                  AND day <  CURRENT_DATE - INTERVAL '7 days'
+                                 THEN count ELSE 0 END) AS inv_prior
+                    FROM usage_marketplace_item_daily
+                    WHERE source = :source
+                      AND parent_plugin = :parent_plugin
+                      AND day >= CURRENT_DATE - INTERVAL '14 days'
+                    GROUP BY name, type
+                    """
+                ),
+                {"source": source, "parent_plugin": parent_plugin},
+            ).fetchall()
+        return _assemble_inner_items_by_parent(win_rows, trend_rows)
 
     # ---- installs / adoption ---------------------------------------------
     def install_counts(self, start: datetime, end: datetime) -> dict:
