@@ -11,12 +11,103 @@ windows take aware ``datetime`` bounds.
 
 from __future__ import annotations
 
+import datetime as _dt
 from datetime import date, datetime
 from typing import Dict, List, Tuple
 
 import duckdb
 
 ItemKey = Tuple[str, str, str, str]  # (source, type, parent_plugin, name)
+
+
+def _zero_fill_daily_series(rows) -> List[Dict]:
+    """Fold ``(day, count)`` rows into a 30-entry ``[{day, invocations}]``
+    list, zero-padded for days without activity. Pure Python — duplicated
+    verbatim in ``reports_pg.py`` (only the query feeding it differs).
+    """
+    by_day = {str(r[0]): int(r[1] or 0) for r in rows}
+    today = _dt.date.today()
+    series = []
+    for offset in range(29, -1, -1):
+        day_str = (today - _dt.timedelta(days=offset)).isoformat()
+        series.append({"day": day_str, "invocations": by_day.get(day_str, 0)})
+    return series
+
+
+def _assemble_invocation_stats(win_rows, trend_rows) -> Dict[str, dict]:
+    """Fold ``invocation_stats``'s two raw row sets into the per-name stats
+    dict. Pure Python, dialect-independent — duplicated verbatim in
+    ``ReportsPgRepository.invocation_stats`` (only the two queries feeding it
+    differ per backend).
+    """
+    trend_by_name = {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in trend_rows}
+
+    out: Dict[str, dict] = {}
+    for period_label, name, inv, du in win_rows:
+        stat = out.setdefault(
+            name,
+            {
+                "invocations_30d": 0,
+                "distinct_users_30d": 0,
+                "invocations_7d": 0,
+                "distinct_users_7d": 0,
+                "trend_pct": None,
+            },
+        )
+        if period_label == "last_30d":
+            stat["invocations_30d"] = int(inv or 0)
+            stat["distinct_users_30d"] = int(du or 0)
+        elif period_label == "last_7d":
+            stat["invocations_7d"] = int(inv or 0)
+            stat["distinct_users_7d"] = int(du or 0)
+    # Trend = recent_7 vs prior_7 from the daily fact (independent of the
+    # window snapshot's freshness). Threshold preserved from v42 — trend is
+    # noisy below 3 prior-week invocations so suppress to None.
+    for name, (recent, prior) in trend_by_name.items():
+        stat = out.setdefault(
+            name,
+            {
+                "invocations_30d": 0,
+                "distinct_users_30d": 0,
+                "invocations_7d": 0,
+                "distinct_users_7d": 0,
+                "trend_pct": None,
+            },
+        )
+        if prior >= 3:
+            stat["trend_pct"] = (recent - prior) / prior * 100.0
+    return out
+
+
+def _assemble_inner_items_by_parent(win_rows, trend_rows) -> Dict[Tuple[str, str], Dict[str, object]]:
+    """Fold ``inner_items_stats_by_parent``'s two raw row sets into the
+    ``(name, type)``-keyed stats dict. Pure Python, dialect-independent —
+    duplicated verbatim in ``ReportsPgRepository.inner_items_stats_by_parent``.
+    """
+    out: Dict[Tuple[str, str], Dict[str, object]] = {}
+    for name, item_type, inv, du in win_rows:
+        out[(name, item_type)] = {
+            "invocations_30d": int(inv or 0),
+            "distinct_users_30d": int(du or 0),
+            "trend_pct": None,
+        }
+    # Trend threshold mirrors the listing card / hero chip — suppress to
+    # None below 3 prior-week invocations (noise floor from v42).
+    for name, item_type, recent, prior in trend_rows:
+        key = (name, item_type)
+        stat = out.setdefault(
+            key,
+            {
+                "invocations_30d": 0,
+                "distinct_users_30d": 0,
+                "trend_pct": None,
+            },
+        )
+        recent_i = int(recent or 0)
+        prior_i = int(prior or 0)
+        if prior_i >= 3:
+            stat["trend_pct"] = (recent_i - prior_i) / prior_i * 100.0
+    return out
 
 
 class ReportsRepository:
@@ -33,16 +124,17 @@ class ReportsRepository:
                WHERE occurred_at >= ? AND occurred_at < ?""",
             [start, end],
         ).fetchone()
-        return {"invocations": int(r[0] or 0),
-                "active_users": int(r[1] or 0),
-                "errors": int(r[2] or 0)}
+        return {"invocations": int(r[0] or 0), "active_users": int(r[1] or 0), "errors": int(r[2] or 0)}
 
     def session_count(self, start: datetime, end: datetime) -> int:
-        return int(self.conn.execute(
-            """SELECT COUNT(DISTINCT session_id) FROM usage_session_summary
+        return int(
+            self.conn.execute(
+                """SELECT COUNT(DISTINCT session_id) FROM usage_session_summary
                WHERE started_at >= ? AND started_at < ?""",
-            [start, end],
-        ).fetchone()[0] or 0)
+                [start, end],
+            ).fetchone()[0]
+            or 0
+        )
 
     def events_daily(self, start: datetime, end: datetime) -> Dict[date, dict]:
         rows = self.conn.execute(
@@ -56,9 +148,7 @@ class ReportsRepository:
             [start, end],
         ).fetchall()
         return {
-            r[0]: {"invocations": int(r[1] or 0),
-                   "active_users": int(r[2] or 0),
-                   "errors": int(r[3] or 0)}
+            r[0]: {"invocations": int(r[1] or 0), "active_users": int(r[2] or 0), "errors": int(r[3] or 0)}
             for r in rows
         }
 
@@ -72,8 +162,12 @@ class ReportsRepository:
             [start, end],
         ).fetchall()
         return [
-            {"source": r[0], "invocations": int(r[1] or 0),
-             "distinct_users": int(r[2] or 0), "error_count": int(r[3] or 0)}
+            {
+                "source": r[0],
+                "invocations": int(r[1] or 0),
+                "distinct_users": int(r[2] or 0),
+                "error_count": int(r[3] or 0),
+            }
             for r in rows
         ]
 
@@ -96,18 +190,227 @@ class ReportsRepository:
             for r in rows
         }
 
+    def invocation_stats(self, source: str) -> Dict[str, dict]:
+        """Return the browse-panel telemetry map for one source (#728).
+
+        Key: plugin name (curated) or flea entity/synthetic name. Value:
+        ``{invocations_30d, distinct_users_30d, invocations_7d,
+        distinct_users_7d, trend_pct}``.
+
+        Reads ``usage_marketplace_item_window`` for the 30d/7d snapshot
+        aggregates (true sliding distinct, sub-ms lookup) and
+        ``usage_marketplace_item_daily`` for the recent-7-vs-prior-7 trend
+        calc. Moved off the inline SQL that used to run directly on the
+        always-DuckDB ``_get_db`` connection in
+        ``app/api/marketplace.py::_load_invocation_stats`` — that bypassed
+        the backend switch, so the browse panels stayed empty on a
+        Postgres instance even after the rollup producer went dual-backend
+        (#773).
+
+        Card-level rows differ per source: curated cards are plugin-level
+        rows (``type='plugin'``, aggregate of skill/agent invocations
+        attributed to that plugin); flea cards are standalone entities
+        (``parent_plugin=''``), any type.
+        """
+        type_filter = "AND type = 'plugin'" if source == "curated" else "AND parent_plugin = ''"
+
+        win_rows = self.conn.execute(
+            f"""
+            SELECT period_label, name, invocations, distinct_users
+            FROM usage_marketplace_item_window
+            WHERE period_label IN ('last_30d', 'last_7d')
+              AND source = ?
+              {type_filter}
+            """,
+            [source],
+        ).fetchall()
+
+        trend_rows = self.conn.execute(
+            f"""
+            SELECT
+                name,
+                SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 7 DAY THEN count ELSE 0 END) AS inv_recent,
+                SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 14 DAY
+                          AND day <  CURRENT_DATE - INTERVAL 7  DAY
+                         THEN count ELSE 0 END) AS inv_prior
+            FROM usage_marketplace_item_daily
+            WHERE source = ?
+              {type_filter}
+              AND day >= CURRENT_DATE - INTERVAL 14 DAY
+            GROUP BY name
+            """,
+            [source],
+        ).fetchall()
+
+        return _assemble_invocation_stats(win_rows, trend_rows)
+
+    def plugin_daily_series(self, source: str, plugin_name: str) -> List[Dict]:
+        """Return a 30-entry ``[{day, invocations}]`` list (missing days
+        zero-filled) for one plugin-level card (#728).
+
+        Row selection mirrors ``invocation_stats``: curated cards are
+        plugin-level rows (``type='plugin'``), flea cards are standalone
+        entities (``parent_plugin=''``, any type) — so the series always
+        matches the 30d total shown on the same card / detail page. Moved
+        off the inline SQL in
+        ``app/api/marketplace.py::_load_plugin_daily_series``.
+        """
+        type_filter = "AND type = 'plugin'" if source == "curated" else "AND parent_plugin = ''"
+        rows = self.conn.execute(
+            f"""
+            SELECT day, count
+            FROM usage_marketplace_item_daily
+            WHERE source = ?
+              {type_filter}
+              AND name = ?
+              AND day >= CURRENT_DATE - INTERVAL 30 DAY
+            ORDER BY day
+            """,
+            [source, plugin_name],
+        ).fetchall()
+        return _zero_fill_daily_series(rows)
+
+    def inner_item_stats(
+        self,
+        source: str,
+        parent_plugin: str,
+        name: str,
+        item_type: str,
+    ) -> Dict[str, object]:
+        """Return a per-item telemetry dict for one curated inner skill/agent
+        or one standalone flea entity (#728).
+
+        For flea entities ``parent_plugin`` is ``''`` (matches the stored
+        empty-string sentinel). For curated inner items it's the plugin
+        name. Always returns a dict (never None) so the caller can render
+        the hero chip from the same field shape regardless of activity
+        level. Includes:
+
+          * invocations_30d, distinct_users_30d — window snapshot lookup
+          * trend_pct — recent-7 vs prior-7 calc, sourced from the daily
+            fact for this item (same threshold as ``invocation_stats``)
+          * daily_series — 30-entry zero-padded list of {day, invocations}
+
+        Moved off the inline SQL in
+        ``app/api/marketplace.py::_load_inner_item_stats``.
+        """
+        row = self.conn.execute(
+            """
+            SELECT invocations, distinct_users
+            FROM usage_marketplace_item_window
+            WHERE period_label = 'last_30d'
+              AND source = ?
+              AND type = ?
+              AND parent_plugin = ?
+              AND name = ?
+            """,
+            [source, item_type, parent_plugin, name],
+        ).fetchone()
+        inv30 = int(row[0]) if row and row[0] else 0
+        du30 = int(row[1]) if row and row[1] else 0
+
+        trend_row = self.conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 7 DAY THEN count ELSE 0 END) AS inv_recent,
+                SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 14 DAY
+                          AND day <  CURRENT_DATE - INTERVAL 7  DAY
+                         THEN count ELSE 0 END) AS inv_prior
+            FROM usage_marketplace_item_daily
+            WHERE source = ?
+              AND type = ?
+              AND parent_plugin = ?
+              AND name = ?
+              AND day >= CURRENT_DATE - INTERVAL 14 DAY
+            """,
+            [source, item_type, parent_plugin, name],
+        ).fetchone()
+        recent = int(trend_row[0]) if trend_row and trend_row[0] else 0
+        prior = int(trend_row[1]) if trend_row and trend_row[1] else 0
+        trend_pct = (recent - prior) / prior * 100.0 if prior >= 3 else None
+
+        daily_rows = self.conn.execute(
+            """
+            SELECT day, count
+            FROM usage_marketplace_item_daily
+            WHERE source = ?
+              AND type = ?
+              AND parent_plugin = ?
+              AND name = ?
+              AND day >= CURRENT_DATE - INTERVAL 30 DAY
+            ORDER BY day
+            """,
+            [source, item_type, parent_plugin, name],
+        ).fetchall()
+
+        return {
+            "invocations_30d": inv30,
+            "distinct_users_30d": du30,
+            "trend_pct": trend_pct,
+            "daily_series": _zero_fill_daily_series(daily_rows),
+        }
+
+    def inner_items_stats_by_parent(
+        self,
+        source: str,
+        parent_plugin: str,
+    ) -> Dict[Tuple[str, str], Dict[str, object]]:
+        """Bulk per-inner-item stats for one parent plugin (#728).
+
+        Returns ``{(name, type): {invocations_30d, distinct_users_30d,
+        trend_pct}}``. One query against ``usage_marketplace_item_window``
+        + one against ``_daily`` per parent plugin (vs N+1 if each card
+        were looked up individually). Type-keyed because skills and agents
+        are allowed to share a name in the same bundle.
+
+        Used by ``curated_detail`` and ``flea_detail`` to enrich the
+        ``skills`` / ``agents`` lists they return. Moved off the inline SQL
+        in ``app/api/marketplace.py::_load_inner_items_stats_by_parent``.
+        """
+        win_rows = self.conn.execute(
+            """
+            SELECT name, type, invocations, distinct_users
+            FROM usage_marketplace_item_window
+            WHERE period_label = 'last_30d'
+              AND source = ?
+              AND parent_plugin = ?
+            """,
+            [source, parent_plugin],
+        ).fetchall()
+        trend_rows = self.conn.execute(
+            """
+            SELECT
+                name, type,
+                SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 7 DAY THEN count ELSE 0 END) AS inv_recent,
+                SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 14 DAY
+                          AND day <  CURRENT_DATE - INTERVAL 7 DAY
+                         THEN count ELSE 0 END) AS inv_prior
+            FROM usage_marketplace_item_daily
+            WHERE source = ?
+              AND parent_plugin = ?
+              AND day >= CURRENT_DATE - INTERVAL 14 DAY
+            GROUP BY name, type
+            """,
+            [source, parent_plugin],
+        ).fetchall()
+        return _assemble_inner_items_by_parent(win_rows, trend_rows)
+
     # ---- installs / adoption ---------------------------------------------
     def install_counts(self, start: datetime, end: datetime) -> dict:
-        curated = int(self.conn.execute(
-            "SELECT COUNT(*) FROM user_plugin_optouts "
-            "WHERE opted_out_at >= ? AND opted_out_at < ?",
-            [start, end],
-        ).fetchone()[0] or 0)
-        flea = int(self.conn.execute(
-            "SELECT COUNT(*) FROM user_store_installs "
-            "WHERE installed_at >= ? AND installed_at < ?",
-            [start, end],
-        ).fetchone()[0] or 0)
+        curated = int(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM user_plugin_optouts WHERE opted_out_at >= ? AND opted_out_at < ?",
+                [start, end],
+            ).fetchone()[0]
+            or 0
+        )
+        flea = int(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM user_store_installs WHERE installed_at >= ? AND installed_at < ?",
+                [start, end],
+            ).fetchone()[0]
+            or 0
+        )
         return {"curated": curated, "flea": flea}
 
     def installs_daily(self, start: datetime, end: datetime) -> Dict[date, int]:
@@ -130,10 +433,7 @@ class ReportsRepository:
                GROUP BY marketplace_id, plugin_name ORDER BY n DESC LIMIT ?""",
             [start, end, limit],
         ).fetchall()
-        return [
-            {"ref_id": f"{r[0]}/{r[1]}", "name": r[1], "installs": int(r[2] or 0)}
-            for r in rows
-        ]
+        return [{"ref_id": f"{r[0]}/{r[1]}", "name": r[1], "installs": int(r[2] or 0)} for r in rows]
 
     def installs_flea_detail(self, start: datetime, end: datetime, limit: int = 10) -> List[dict]:
         rows = self.conn.execute(
@@ -144,7 +444,4 @@ class ReportsRepository:
                GROUP BY usi.entity_id, s.name ORDER BY n DESC LIMIT ?""",
             [start, end, limit],
         ).fetchall()
-        return [
-            {"entity_id": r[0], "name": r[1], "installs": int(r[2] or 0)}
-            for r in rows
-        ]
+        return [{"entity_id": r[0], "name": r[1], "installs": int(r[2] or 0)} for r in rows]

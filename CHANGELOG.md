@@ -20,6 +20,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.74.23] - 2026-07-08
+
+### Added
+
+### Changed
+
+### Fixed
+- Marketplace browse panels (`/marketplace` items grid + plugin/skill/agent detail hero chips, daily-invocation chart, and inner skill/agent card grid) read invocation/adoption stats through the always-DuckDB `_get_db` connection, so a Postgres-backed instance showed empty telemetry everywhere even after the rollup producer went dual-backend (#773). Moved all of it onto new dual-backend `ReportsRepository`/`ReportsPgRepository` methods (`invocation_stats`, `plugin_daily_series`, `inner_item_stats`, `inner_items_stats_by_parent`) (#728)
+
+### Removed
+
+### Internal
+
 ## [0.74.22] - 2026-07-08
 
 ### Added
