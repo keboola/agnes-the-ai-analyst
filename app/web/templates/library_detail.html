@@ -35,6 +35,7 @@
     border: 1px solid var(--border); border-left: 3px solid var(--ds-primary);
     border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
   }
+  .result--low-confidence { border-left-color: var(--ds-warn-line); }
   .result__cite {
     display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
     font-size: 0.78rem; color: var(--ds-text-secondary); margin-bottom: 6px;
@@ -45,8 +46,15 @@
     color: var(--ds-primary); background: color-mix(in srgb, var(--ds-primary) 10%, var(--surface));
     padding: 1px 8px; border-radius: var(--radius-full);
   }
+  .result__confidence {
+    font-size: 0.72rem; font-weight: var(--font-medium);
+    padding: 1px 8px; border-radius: var(--radius-full);
+    color: var(--ds-text-secondary); background: color-mix(in srgb, var(--ds-text-secondary) 10%, var(--surface));
+  }
+  .result__confidence--low { color: var(--ds-warn-ink); background: var(--ds-warn-bg); }
   .result__text { font-size: 0.92rem; color: var(--ds-text-primary); line-height: 1.55; margin: 0; }
   .results__empty { color: var(--ds-text-secondary); font-size: 0.9rem; }
+  .ask__note { font-size: 0.78rem; color: var(--ds-text-secondary); margin: var(--space-2) 0 0; }
 
   /* Drop zone */
   .drop {
@@ -107,6 +115,13 @@
       <input id="lib-q" type="search" placeholder="Search across files in this collection…" aria-label="Search">
       {{ ds.button("Search", variant="primary", attrs='id="lib-search-btn" type="button"') }}
     </div>
+    <p class="ask__note">
+      Search combines lexical term matching with semantic embeddings (when
+      available) over the indexed file chunks. Confidence reflects how
+      clearly the top match stands out — on a small collection or a close
+      call, treat "low confidence" results as a starting point, not a
+      definitive answer.
+    </p>
     <div class="results" id="lib-results"></div>
   </div>
 
@@ -208,12 +223,17 @@
         box.innerHTML = "";
         results.forEach(function (res) {
           var el = document.createElement("div"); el.className = "result";
+          var confidence = res.confidence || "low";
+          if (confidence === "low") el.classList.add("result--low-confidence");
           var cite = document.createElement("div"); cite.className = "result__cite";
           var fn = document.createElement("span"); fn.className = "result__file";
           fn.textContent = res.filename || res.file_id || "chunk";
           var loc = document.createElement("span"); loc.textContent = "#" + res.ordinal;
+          var conf = document.createElement("span");
+          conf.className = "result__confidence" + (confidence === "low" ? " result__confidence--low" : "");
+          conf.textContent = confidence + " confidence";
           var score = document.createElement("span"); score.className = "result__score"; score.textContent = "score " + res.score;
-          cite.appendChild(fn); cite.appendChild(loc); cite.appendChild(score);
+          cite.appendChild(fn); cite.appendChild(loc); cite.appendChild(conf); cite.appendChild(score);
           var txt = document.createElement("p"); txt.className = "result__text"; txt.textContent = (res.text || "").slice(0, 500);
           el.appendChild(cite); el.appendChild(txt); box.appendChild(el);
         });

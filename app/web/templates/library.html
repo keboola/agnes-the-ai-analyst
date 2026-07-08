@@ -7,6 +7,8 @@
 {% block head_extra %}
 <style>
   .lib-toolbar-row { display: flex; justify-content: flex-end; margin-bottom: var(--space-4); }
+  .lib-explainer { margin-bottom: var(--space-5); }
+  .lib-explainer p { margin: 0; }
 
   .nc-form {
     display: none; gap: var(--space-2); align-items: center; flex-wrap: wrap;
@@ -88,6 +90,16 @@
 {% endblock %}
 
 {% block page %}
+  {% call ds.info_panel_accent(title="What to bring here", accent="info", klass="lib-explainer") %}
+    <p>
+      Collections are best for reference documents and notes — PDFs, Office
+      files, CSVs, images. Each file is parsed and split into chunks, then
+      indexed for hybrid search (lexical term matching plus semantic
+      embeddings, when available). For large structured or tabular data, use
+      a connected data source instead.
+    </p>
+  {% endcall %}
+
   {% if is_admin %}
   <div class="nc-form" id="new-collection-form">
     <input id="nc-name" type="text" placeholder="Collection name" aria-label="Collection name">
