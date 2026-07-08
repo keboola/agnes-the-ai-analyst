@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.21] - 2026-07-08
+
+### Added
 - CLI proactively nudges analysts to re-mint their 90-day PAT before it expires: a one-line stderr warning (at most once per day, `AGNES_TOKEN_RENEW_DAYS` env override, default 7 days, `0` disables) when the stored token's `exp` claim is close to expiring, plus token status in `agnes auth whoami` and the `agnes update` convergence report. No refresh-token grant, no PAT TTL change — `agnes auth login` remains the renewal path (#477)
 
 ### Changed
