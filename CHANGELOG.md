@@ -13,13 +13,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
-- Library: the collection-creation form on `/library` is now a proper panel — labeled Name/Description fields with a live `/library/<slug>` URL preview, inline validation and 409 duplicate-slug errors (replacing `alert()`), Enter/Escape keyboard handling, and creating a collection now lands on the new collection's detail page ready for file upload instead of reloading the list.
 
 ### Fixed
 
 ### Removed
 
 ### Internal
+
+## [0.74.23] - 2026-07-08
+
+### Changed
+- Library: the collection-creation form on `/library` is now a proper panel — labeled Name/Description fields with a live `/library/<slug>` URL preview, inline validation and 409 duplicate-slug errors (replacing `alert()`), Enter/Escape keyboard handling, and creating a collection now lands on the new collection's detail page ready for file upload instead of reloading the list.
 
 ## [0.74.22] - 2026-07-08
 
