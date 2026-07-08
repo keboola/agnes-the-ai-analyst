@@ -541,42 +541,38 @@ def _run_sync(
             )
 
         # Read table configs in main process (has shared DuckDB connection)
-        sys_conn = get_system_db()
         # Track whether the REGISTRY (not the post-filter list) was empty.
         # Auto-discovery must only fire on a truly empty registry; if the
         # filter returned [] because nothing was due, re-discovering would
         # bypass the schedule entirely on Keboola instances. (Devin BUG_0001
         # on ebb8cc9.)
         registry_has_tables = False
-        try:
-            repo = table_registry_repo()
-            if tables:
-                # Manual operator override — bypass schedule filter entirely
-                # so an admin saying "sync these specific tables now" wins.
-                all_configs = [repo.get(t) for t in tables]
-                table_configs = [c for c in all_configs if c is not None]
-                registry_has_tables = bool(table_configs)
-            else:
-                table_configs = repo.list_local(effective_source_type) if effective_source_type else repo.list_local()
-                # Auto-discover gate must consider the WHOLE registry, not
-                # just `local` rows. After the Keboola migration to
-                # materialized (v25→v26), an instance can have 30
-                # materialized Keboola rows and zero local rows — but
-                # `bool(table_configs)` here would be False, and
-                # `not registry_has_tables` would re-trigger
-                # `_discover_and_register_tables` on every scheduler tick,
-                # creating duplicate "auto-discovered" rows with the wrong
-                # bucket prefix every time.
-                # Use list_all (any source, any mode) for the gate.
-                registry_has_tables = bool(repo.list_all())
-                # Without this filter, every scheduler tick would re-sync
-                # every table regardless of its sync_schedule cadence,
-                # making the field a no-op at trigger time. Tables with
-                # no schedule pass through unchanged (opt-in feature).
-                state_repo = sync_state_repo()
-                table_configs = filter_due_tables(table_configs, state_repo)
-        finally:
-            sys_conn.close()
+        repo = table_registry_repo()
+        if tables:
+            # Manual operator override — bypass schedule filter entirely
+            # so an admin saying "sync these specific tables now" wins.
+            all_configs = [repo.get(t) for t in tables]
+            table_configs = [c for c in all_configs if c is not None]
+            registry_has_tables = bool(table_configs)
+        else:
+            table_configs = repo.list_local(effective_source_type) if effective_source_type else repo.list_local()
+            # Auto-discover gate must consider the WHOLE registry, not
+            # just `local` rows. After the Keboola migration to
+            # materialized (v25→v26), an instance can have 30
+            # materialized Keboola rows and zero local rows — but
+            # `bool(table_configs)` here would be False, and
+            # `not registry_has_tables` would re-trigger
+            # `_discover_and_register_tables` on every scheduler tick,
+            # creating duplicate "auto-discovered" rows with the wrong
+            # bucket prefix every time.
+            # Use list_all (any source, any mode) for the gate.
+            registry_has_tables = bool(repo.list_all())
+            # Without this filter, every scheduler tick would re-sync
+            # every table regardless of its sync_schedule cadence,
+            # making the field a no-op at trigger time. Tables with
+            # no schedule pass through unchanged (opt-in feature).
+            state_repo = sync_state_repo()
+            table_configs = filter_due_tables(table_configs, state_repo)
 
         if not table_configs:
             # Auto-discover tables on first sync when registry is empty.
@@ -605,11 +601,7 @@ def _run_sync(
                     finally:
                         auto_conn.close()
                     # Re-read table configs after auto-registration
-                    sys_conn2 = get_system_db()
-                    try:
-                        table_configs = table_registry_repo().list_local(effective_source_type)
-                    finally:
-                        sys_conn2.close()
+                    table_configs = table_registry_repo().list_local(effective_source_type)
                 except Exception as e:
                     logger.warning("Auto-discovery failed: %s", e)
 
@@ -655,18 +647,14 @@ def _run_sync(
             # here and injects them into each table_config under the key
             # `__last_sync__`. extractor.run() picks them up via
             # _read_last_sync's first-check-config-then-fall-back pattern.
-            ws_conn = get_system_db()
-            try:
-                ws_repo = sync_state_repo()
-                for tc in table_configs:
-                    if tc.get("sync_strategy") in ("incremental", "partitioned"):
-                        state = ws_repo.get_table_state(tc.get("id") or tc.get("name"))
-                        if state and state.get("status") != "error":
-                            ls = state.get("last_sync")
-                            if ls is not None:
-                                tc["__last_sync__"] = ls
-            finally:
-                ws_conn.close()
+            ws_repo = sync_state_repo()
+            for tc in table_configs:
+                if tc.get("sync_strategy") in ("incremental", "partitioned"):
+                    state = ws_repo.get_table_state(tc.get("id") or tc.get("name"))
+                    if state and state.get("status") != "error":
+                        ls = state.get("last_sync")
+                        if ls is not None:
+                            tc["__last_sync__"] = ls
 
             # Serialize configs — strip non-serializable fields
             serializable = []
@@ -1582,9 +1570,6 @@ async def trigger_sync(
 
     if _sync_lock.locked():
         try:
-            from src.db import get_system_db
-
-            _audit_conn = get_system_db()
             audit_repo().log(
                 user_id=user.get("id"),
                 action="sync.trigger",
@@ -1595,7 +1580,6 @@ async def trigger_sync(
                 result="error.in_progress",
                 client_kind=client_kind_from_user(user),
             )
-            _audit_conn.close()
         except Exception:
             logger.exception("audit_log write failed for sync.trigger (in_progress); continuing")
         raise HTTPException(
@@ -1611,9 +1595,6 @@ async def trigger_sync(
     _recent_trigger_at = _t0
     background_tasks.add_task(_run_sync, tables, source)
     try:
-        from src.db import get_system_db
-
-        _audit_conn = get_system_db()
         audit_repo().log(
             user_id=user.get("id"),
             action="sync.trigger",
@@ -1623,7 +1604,6 @@ async def trigger_sync(
             duration_ms=int((time.monotonic() - _t0) * 1000),
             client_kind=client_kind_from_user(user),
         )
-        _audit_conn.close()
     except Exception:
         logger.exception("audit_log write failed for sync.trigger; continuing")
     return {
