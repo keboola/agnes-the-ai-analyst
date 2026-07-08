@@ -30,11 +30,14 @@ def _make_response(status_code=200, json_data=None, text=""):
 class TestAuthLogin:
     def test_login_browser_success(self):
         """Default browser flow: capture a code, exchange it, save the token."""
-        exch = _make_response(200, {
-            "token": "tok123",
-            "email": "alice@example.com",
-            "expires_at": "2026-09-01 00:00:00+00:00",
-        })
+        exch = _make_response(
+            200,
+            {
+                "token": "tok123",
+                "email": "alice@example.com",
+                "expires_at": "2026-09-01 00:00:00+00:00",
+            },
+        )
         with patch("cli.lib.loopback.capture_code_via_browser", return_value="code-xyz"):
             with patch("cli.commands.auth.api_post", return_value=exch) as mock_post:
                 with patch("cli.commands.auth.save_token") as mock_save:
@@ -72,7 +75,8 @@ class TestAuthLogin:
         with patch("cli.commands.auth.api_post", return_value=resp) as mock_post:
             with patch("cli.commands.auth.save_token") as mock_save:
                 result = runner.invoke(
-                    app, ["auth", "login", "--password"],
+                    app,
+                    ["auth", "login", "--password"],
                     input="bob@example.com\nhunter2\n",
                 )
         assert result.exit_code == 0, result.output
@@ -85,7 +89,8 @@ class TestAuthLogin:
         mock_resp = _make_response(401, {"detail": "Invalid credentials"})
         with patch("cli.commands.auth.api_post", return_value=mock_resp):
             result = runner.invoke(
-                app, ["auth", "login", "--password"],
+                app,
+                ["auth", "login", "--password"],
                 input="bad@example.com\nnope\n",
             )
         assert result.exit_code == 1
@@ -105,6 +110,7 @@ class TestAuthLogout:
 class TestAuthImportToken:
     def _make_jwt(self, email="alice@example.com", typ="pat"):
         import jwt as pyjwt
+
         return pyjwt.encode(
             {"email": email, "typ": typ, "sub": "u-1"},
             "unused",
@@ -155,9 +161,7 @@ class TestAuthImportToken:
         # Existing file must be intact.
         assert json.loads(token_file.read_text()) == existing
 
-    def test_import_token_with_server_flag_persists_server_to_config_yaml(
-        self, tmp_path, monkeypatch
-    ):
+    def test_import_token_with_server_flag_persists_server_to_config_yaml(self, tmp_path, monkeypatch):
         """Passing --server should write `server: URL` to ~/.config/agnes/config.yaml
         so the user never has to configure the server in a separate step."""
         # No AGNES_SERVER env var — rely entirely on the --server flag for persistence.
@@ -168,9 +172,12 @@ class TestAuthImportToken:
             result = runner.invoke(
                 app,
                 [
-                    "auth", "import-token",
-                    "--token", token,
-                    "--server", "https://agnes.example.com",
+                    "auth",
+                    "import-token",
+                    "--token",
+                    token,
+                    "--server",
+                    "https://agnes.example.com",
                 ],
             )
         assert result.exit_code == 0, result.output
@@ -178,6 +185,7 @@ class TestAuthImportToken:
         config_file = tmp_path / "config" / "config.yaml"
         assert config_file.exists(), "config.yaml must be written when --server is passed"
         import yaml
+
         cfg = yaml.safe_load(config_file.read_text())
         assert cfg.get("server") == "https://agnes.example.com"
 
@@ -185,6 +193,7 @@ class TestAuthImportToken:
         """Missing email claim -> refuse without --email, accept with it.
         v19 dropped the --role flag (token.json no longer carries role)."""
         import jwt as pyjwt
+
         monkeypatch.setenv("AGNES_SERVER", "http://example.test")
         # JWT without email claim — simulates a malformed or minimal token.
         token = pyjwt.encode({"sub": "u-1", "typ": "pat"}, "unused", algorithm="HS256")
@@ -198,9 +207,12 @@ class TestAuthImportToken:
             ok_result = runner.invoke(
                 app,
                 [
-                    "auth", "import-token",
-                    "--token", token,
-                    "--email", "carol@example.com",
+                    "auth",
+                    "import-token",
+                    "--token",
+                    token,
+                    "--email",
+                    "carol@example.com",
                 ],
             )
         assert ok_result.exit_code == 0, ok_result.output
@@ -220,6 +232,7 @@ class TestAuthWhoami:
     def test_whoami_valid_token(self):
         """Whoami decodes JWT and shows user info. v19: no role claim."""
         import jwt as pyjwt
+
         token = pyjwt.encode(
             {"email": "alice@example.com"},
             "secret",
@@ -249,10 +262,16 @@ def test_da_login_sends_password(monkeypatch):
     def fake_post(path, json=None, **kwargs):
         captured["path"] = path
         captured["json"] = json
-        return httpx.Response(200, json={
-            "access_token": "tok", "email": "u@t", "role": "analyst",
-            "user_id": "u1", "token_type": "bearer",
-        })
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "tok",
+                "email": "u@t",
+                "role": "analyst",
+                "user_id": "u1",
+                "token_type": "bearer",
+            },
+        )
 
     monkeypatch.setattr(auth_mod, "api_post", fake_post, raising=False)
 
@@ -276,11 +295,17 @@ def test_da_auth_token_create_calls_api(monkeypatch):
     def fake_post(path, json=None, **kwargs):
         captured["path"] = path
         captured["json"] = json
-        return httpx.Response(201, json={
-            "id": "abc", "name": json["name"], "prefix": "XXXXXXXX",
-            "token": "raw-token-once",
-            "expires_at": None, "created_at": "2026-04-21T00:00:00+00:00",
-        })
+        return httpx.Response(
+            201,
+            json={
+                "id": "abc",
+                "name": json["name"],
+                "prefix": "XXXXXXXX",
+                "token": "raw-token-once",
+                "expires_at": None,
+                "created_at": "2026-04-21T00:00:00+00:00",
+            },
+        )
 
     monkeypatch.setattr(tok_mod, "api_post", fake_post, raising=False)
 
