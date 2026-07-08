@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import sqlalchemy as sa
 
 
 # ---------------------------------------------------------------------------
@@ -72,10 +73,22 @@ def usage_repo(request, tmp_path, pg_engine, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _seed_summary(repo, *, session_file, username, user_id=None, started_at,
-                  primary_model="claude-x", input_tokens=0, output_tokens=0,
-                  cache_read_tokens=0, cache_creation_tokens=0,
-                  tool_calls=0, tool_errors=0, user_messages=0):
+def _seed_summary(
+    repo,
+    *,
+    session_file,
+    username,
+    user_id=None,
+    started_at,
+    primary_model="claude-x",
+    input_tokens=0,
+    output_tokens=0,
+    cache_read_tokens=0,
+    cache_creation_tokens=0,
+    tool_calls=0,
+    tool_errors=0,
+    user_messages=0,
+):
     repo.upsert_summary(
         {
             "session_file": session_file,
@@ -99,8 +112,7 @@ def _seed_summary(repo, *, session_file, username, user_id=None, started_at,
     )
 
 
-def _seed_event(repo, *, event_id, username, session_file, occurred_at,
-                tool_name="Read", user_id=None):
+def _seed_event(repo, *, event_id, username, session_file, occurred_at, tool_name="Read", user_id=None):
     repo.upsert_events(
         [
             {
@@ -170,8 +182,11 @@ def test_reset_all_zeroes_tables_and_returns_counts(usage_repo):
     counts = repo.reset_all()
     # All five usage tables are reported.
     assert set(counts.keys()) == {
-        "events", "session_summary", "tool_daily",
-        "marketplace_item_daily", "marketplace_item_window",
+        "events",
+        "session_summary",
+        "tool_daily",
+        "marketplace_item_daily",
+        "marketplace_item_window",
     }
     assert counts["events"] == 1
     assert counts["session_summary"] == 2
@@ -224,8 +239,14 @@ def test_list_sessions_for_user_admin_filters_on_user_id_or_username(usage_repo)
     assert files == {"u/s1.jsonl", "u/s2.jsonl"}
     # 9-column shape.
     assert set(rows[0].keys()) == {
-        "session_file", "session_id", "started_at", "ended_at",
-        "active_seconds", "wall_seconds", "tool_calls", "tool_errors",
+        "session_file",
+        "session_id",
+        "started_at",
+        "ended_at",
+        "active_seconds",
+        "wall_seconds",
+        "tool_calls",
+        "tool_errors",
         "primary_model",
     }
 
@@ -242,11 +263,19 @@ def test_list_sessions_for_user_self_filters_on_username_only(usage_repo):
     assert files == {"d/s1.jsonl"}
     # 14-column shape.
     assert set(rows[0].keys()) == {
-        "session_file", "session_id", "started_at", "ended_at",
-        "active_seconds", "wall_seconds",
-        "user_messages", "tool_calls", "tool_errors",
-        "input_tokens", "output_tokens",
-        "cache_read_tokens", "cache_creation_tokens",
+        "session_file",
+        "session_id",
+        "started_at",
+        "ended_at",
+        "active_seconds",
+        "wall_seconds",
+        "user_messages",
+        "tool_calls",
+        "tool_errors",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_creation_tokens",
         "primary_model",
     }
 
@@ -255,14 +284,26 @@ def test_tokens_totals_and_by_model(usage_repo):
     repo, _, _ = usage_repo
     now = datetime.now(timezone.utc)
     _seed_summary(
-        repo, session_file="t/s1.jsonl", username="erin", started_at=now,
+        repo,
+        session_file="t/s1.jsonl",
+        username="erin",
+        started_at=now,
         primary_model="claude-a",
-        input_tokens=10, output_tokens=20, cache_read_tokens=3, cache_creation_tokens=2,
+        input_tokens=10,
+        output_tokens=20,
+        cache_read_tokens=3,
+        cache_creation_tokens=2,
     )
     _seed_summary(
-        repo, session_file="t/s2.jsonl", username="erin", started_at=now,
+        repo,
+        session_file="t/s2.jsonl",
+        username="erin",
+        started_at=now,
         primary_model="claude-b",
-        input_tokens=100, output_tokens=200, cache_read_tokens=0, cache_creation_tokens=0,
+        input_tokens=100,
+        output_tokens=200,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
     )
 
     totals = repo.tokens_totals("erin")
@@ -283,10 +324,12 @@ def test_tokens_totals_and_by_model(usage_repo):
 def test_tokens_top_sessions_orders_by_total(usage_repo):
     repo, _, _ = usage_repo
     now = datetime.now(timezone.utc)
-    _seed_summary(repo, session_file="ts/small.jsonl", username="frank", started_at=now,
-                  input_tokens=1, output_tokens=1)
-    _seed_summary(repo, session_file="ts/big.jsonl", username="frank", started_at=now,
-                  input_tokens=1000, output_tokens=1000)
+    _seed_summary(
+        repo, session_file="ts/small.jsonl", username="frank", started_at=now, input_tokens=1, output_tokens=1
+    )
+    _seed_summary(
+        repo, session_file="ts/big.jsonl", username="frank", started_at=now, input_tokens=1000, output_tokens=1000
+    )
 
     top = repo.tokens_top_sessions("frank", limit=10)
     assert top[0]["session_file"] == "ts/big.jsonl"
@@ -299,8 +342,7 @@ def test_tokens_top_sessions_orders_by_total(usage_repo):
 def test_tokens_daily_series_window(usage_repo):
     repo, _, _ = usage_repo
     now = datetime.now(timezone.utc)
-    _seed_summary(repo, session_file="ds/s1.jsonl", username="grace", started_at=now,
-                  input_tokens=5, output_tokens=5)
+    _seed_summary(repo, session_file="ds/s1.jsonl", username="grace", started_at=now, input_tokens=5, output_tokens=5)
 
     series = repo.tokens_daily_series("grace", days=30)
     assert len(series) == 1
@@ -314,12 +356,30 @@ def test_tokens_daily_series_filters_username_and_days(usage_repo):
     reflects only the requested user's in-window totals."""
     repo, _, _ = usage_repo
     now = datetime.now(timezone.utc)
-    _seed_summary(repo, session_file="ds/current.jsonl", username="grace",
-                  started_at=now - timedelta(days=5), input_tokens=5, output_tokens=5)
-    _seed_summary(repo, session_file="ds/old.jsonl", username="grace",
-                  started_at=now - timedelta(days=45), input_tokens=500, output_tokens=500)
-    _seed_summary(repo, session_file="ds/other.jsonl", username="heidi",
-                  started_at=now - timedelta(days=5), input_tokens=50, output_tokens=50)
+    _seed_summary(
+        repo,
+        session_file="ds/current.jsonl",
+        username="grace",
+        started_at=now - timedelta(days=5),
+        input_tokens=5,
+        output_tokens=5,
+    )
+    _seed_summary(
+        repo,
+        session_file="ds/old.jsonl",
+        username="grace",
+        started_at=now - timedelta(days=45),
+        input_tokens=500,
+        output_tokens=500,
+    )
+    _seed_summary(
+        repo,
+        session_file="ds/other.jsonl",
+        username="heidi",
+        started_at=now - timedelta(days=5),
+        input_tokens=50,
+        output_tokens=50,
+    )
 
     series = repo.tokens_daily_series("grace", days=30)
     assert len(series) == 1
@@ -340,12 +400,291 @@ def test_delete_older_than_removes_only_events_before_cutoff(usage_repo):
     dialect-specific interval arithmetic)."""
     repo, _, _ = usage_repo
     now = datetime.now(timezone.utc)
-    _seed_event(repo, event_id="old", username="alice",
-                session_file="retention/old.jsonl", occurred_at=now - timedelta(days=40))
-    _seed_event(repo, event_id="recent", username="alice",
-                session_file="retention/recent.jsonl", occurred_at=now - timedelta(days=5))
+    _seed_event(
+        repo, event_id="old", username="alice", session_file="retention/old.jsonl", occurred_at=now - timedelta(days=40)
+    )
+    _seed_event(
+        repo,
+        event_id="recent",
+        username="alice",
+        session_file="retention/recent.jsonl",
+        occurred_at=now - timedelta(days=5),
+    )
 
     assert repo.delete_older_than(30) == 1
     assert repo.count_events() == 1
     # Idempotent: nothing left older than the cutoff.
     assert repo.delete_older_than(30) == 0
+
+
+# ---------------------------------------------------------------------------
+# rebuild_rollups (#728 — dual-backend marketplace usage rollup producer)
+# ---------------------------------------------------------------------------
+
+
+def _insert(repo, conn, backend, table, cols, rows):
+    """Backend-aware raw INSERT — mirrors test_reports_contract.py's ``_insert``.
+
+    Used to seed the marketplace_plugins / store_entities lookup tables and
+    full-shape usage_events rows (skill_name / subagent_type / command_name)
+    that the plain ``_seed_event`` helper above doesn't carry.
+    """
+    collist = ", ".join(cols)
+    if backend == "duckdb":
+        ph = ", ".join(["?"] * len(cols))
+        sql = f"INSERT INTO {table} ({collist}) VALUES ({ph})"
+        for r in rows:
+            conn.execute(sql, [r[c] for c in cols])
+    else:
+        ph = ", ".join(f":{c}" for c in cols)
+        sql = f"INSERT INTO {table} ({collist}) VALUES ({ph})"
+        with repo._engine.begin() as c:
+            for r in rows:
+                c.execute(sa.text(sql), {k: r[k] for k in cols})
+
+
+def _seed_curated_plugin(repo, conn, backend, plugin_name, marketplace_id="mp"):
+    _insert(
+        repo,
+        conn,
+        backend,
+        "marketplace_registry",
+        ["id", "name", "url"],
+        [{"id": marketplace_id, "name": marketplace_id.upper(), "url": "https://example.test/repo.git"}],
+    )
+    _insert(
+        repo,
+        conn,
+        backend,
+        "marketplace_plugins",
+        ["marketplace_id", "name"],
+        [{"marketplace_id": marketplace_id, "name": plugin_name}],
+    )
+
+
+def _seed_full_event(
+    repo,
+    conn,
+    backend,
+    *,
+    event_id,
+    occurred_at,
+    skill_name=None,
+    subagent_type=None,
+    command_name=None,
+    event_type="tool_use",
+    tool_name=None,
+    username="alice",
+    user_id="uid-alice",
+    session_id="s1",
+    session_file="s1.jsonl",
+):
+    cols = [
+        "id",
+        "session_id",
+        "session_file",
+        "username",
+        "user_id",
+        "event_type",
+        "tool_name",
+        "skill_name",
+        "subagent_type",
+        "command_name",
+        "is_error",
+        "source",
+        "occurred_at",
+        "processor_version",
+    ]
+    _insert(
+        repo,
+        conn,
+        backend,
+        "usage_events",
+        cols,
+        [
+            {
+                "id": event_id,
+                "session_id": session_id,
+                "session_file": session_file,
+                "username": username,
+                "user_id": user_id,
+                "event_type": event_type,
+                "tool_name": tool_name,
+                "skill_name": skill_name,
+                "subagent_type": subagent_type,
+                "command_name": command_name,
+                "is_error": False,
+                "source": "builtin",
+                "occurred_at": occurred_at,
+                "processor_version": 5,
+            }
+        ],
+    )
+
+
+def test_rebuild_rollups_daily_fact_identical_across_backends(usage_repo):
+    """Same seed -> identical usage_marketplace_item_daily row on both engines."""
+    repo, conn, backend = usage_repo
+    _seed_curated_plugin(repo, conn, backend, "myplug")
+    today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+    for i in range(3):
+        _seed_full_event(
+            repo,
+            conn,
+            backend,
+            event_id=f"ep-{i}",
+            occurred_at=today,
+            tool_name="Skill",
+            skill_name="myplug:design",
+        )
+
+    repo.rebuild_rollups(since_day=today.date())
+
+    if backend == "duckdb":
+        rows = conn.execute(
+            "SELECT source, type, parent_plugin, name, count FROM usage_marketplace_item_daily "
+            "WHERE type='skill' ORDER BY name"
+        ).fetchall()
+    else:
+        with repo._engine.connect() as c:
+            rows = c.execute(
+                sa.text(
+                    "SELECT source, type, parent_plugin, name, count FROM usage_marketplace_item_daily "
+                    "WHERE type='skill' ORDER BY name"
+                )
+            ).fetchall()
+    assert [tuple(r) for r in rows] == [("curated", "skill", "myplug", "design", 3)]
+
+
+def test_rebuild_rollups_since_day_none_is_full_rebuild(usage_repo):
+    """since_day=None must cover ALL history, not just the last 7 days — the
+    #728 semantics fix (docstring already promised this; code defaulted to
+    today-7). Seeds a 20-day-old event and asserts it lands in the daily
+    fact table when since_day is omitted."""
+    repo, conn, backend = usage_repo
+    _seed_curated_plugin(repo, conn, backend, "myplug")
+    old_day = datetime.now(timezone.utc) - timedelta(days=20)
+    _seed_full_event(
+        repo,
+        conn,
+        backend,
+        event_id="old-1",
+        occurred_at=old_day,
+        tool_name="Skill",
+        skill_name="myplug:design",
+    )
+
+    repo.rebuild_rollups()  # since_day=None -> full rebuild
+
+    if backend == "duckdb":
+        n = conn.execute(
+            "SELECT COUNT(*) FROM usage_marketplace_item_daily WHERE type='skill' AND name='design'"
+        ).fetchone()[0]
+    else:
+        with repo._engine.connect() as c:
+            n = c.execute(
+                sa.text("SELECT COUNT(*) FROM usage_marketplace_item_daily WHERE type='skill' AND name='design'")
+            ).scalar()
+    assert n == 1
+
+
+def test_rebuild_rollups_explicit_cutoff_is_incremental(usage_repo):
+    """An explicit since_day only rebuilds days >= cutoff — the steady-state
+    scheduler-tick behaviour. A 20-day-old event must NOT appear when the
+    cutoff is 'today'."""
+    repo, conn, backend = usage_repo
+    _seed_curated_plugin(repo, conn, backend, "myplug")
+    today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+    old_day = today - timedelta(days=20)
+    _seed_full_event(
+        repo,
+        conn,
+        backend,
+        event_id="old-2",
+        occurred_at=old_day,
+        tool_name="Skill",
+        skill_name="myplug:design",
+    )
+
+    repo.rebuild_rollups(since_day=today.date())
+
+    if backend == "duckdb":
+        n = conn.execute("SELECT COUNT(*) FROM usage_marketplace_item_daily").fetchone()[0]
+    else:
+        with repo._engine.connect() as c:
+            n = c.execute(sa.text("SELECT COUNT(*) FROM usage_marketplace_item_daily")).scalar()
+    assert n == 0
+
+
+def test_rebuild_rollups_force_30d_populates_window(usage_repo):
+    repo, conn, backend = usage_repo
+    _seed_curated_plugin(repo, conn, backend, "myplug")
+    today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+    _seed_full_event(
+        repo,
+        conn,
+        backend,
+        event_id="e1",
+        occurred_at=today,
+        tool_name="Skill",
+        skill_name="myplug:design",
+    )
+
+    repo.rebuild_rollups(since_day=today.date(), force_30d=True)
+
+    if backend == "duckdb":
+        n = conn.execute("SELECT COUNT(*) FROM usage_marketplace_item_window WHERE period_label='last_30d'").fetchone()[
+            0
+        ]
+    else:
+        with repo._engine.connect() as c:
+            n = c.execute(
+                sa.text("SELECT COUNT(*) FROM usage_marketplace_item_window WHERE period_label='last_30d'")
+            ).scalar()
+    assert n >= 1
+
+
+def _tracker_ts(repo, conn, backend):
+    sql = "SELECT processed_at FROM session_processor_state WHERE processor_name='marketplace_rollup_30d'"
+    if backend == "duckdb":
+        row = conn.execute(sql).fetchone()
+        return row[0] if row else None
+    with repo._engine.connect() as c:
+        return c.execute(sa.text(sql)).scalar()
+
+
+def test_rebuild_rollups_30d_throttled_until_force(usage_repo):
+    """The hourly 30d-window throttle behaves identically on both backends:
+    a second rebuild within the window leaves the tracker untouched;
+    force_30d=True advances it."""
+    repo, conn, backend = usage_repo
+    _seed_curated_plugin(repo, conn, backend, "myplug")
+    today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+    _seed_full_event(
+        repo,
+        conn,
+        backend,
+        event_id="thr-1",
+        occurred_at=today,
+        tool_name="Skill",
+        skill_name="myplug:design",
+    )
+
+    repo.rebuild_rollups(since_day=today.date())
+    t1 = _tracker_ts(repo, conn, backend)
+    assert t1 is not None
+
+    _seed_full_event(
+        repo,
+        conn,
+        backend,
+        event_id="thr-2",
+        occurred_at=today,
+        tool_name="Skill",
+        skill_name="myplug:design",
+    )
+    repo.rebuild_rollups(since_day=today.date())
+    assert _tracker_ts(repo, conn, backend) == t1, "tracker must not advance within the throttle window"
+
+    repo.rebuild_rollups(since_day=today.date(), force_30d=True)
+    assert _tracker_ts(repo, conn, backend) > t1

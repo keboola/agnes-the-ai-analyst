@@ -4,20 +4,26 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import duckdb
+
+from services.session_processors.usage_lib import (
+    _MARKETPLACE_30D_TRACKER,
+    WINDOW_30D_REFRESH_SECONDS,
+    _aggregate_events,
+)
 
 
 # Group-by buckets shared by the /telemetry/query endpoint. The first element
 # is the SQL expression, the second a stable alias the UI keys on.
 _GROUP_BY_COLUMNS = {
-    "day":       ("CAST(occurred_at AS DATE)", "day"),
-    "username":  ("username", "username"),
+    "day": ("CAST(occurred_at AS DATE)", "day"),
+    "username": ("username", "username"),
     "tool_name": ("tool_name", "tool_name"),
-    "source":    ("source", "source"),
-    "ref_id":    ("ref_id", "ref_id"),
+    "source": ("source", "source"),
+    "ref_id": ("ref_id", "ref_id"),
 }
 
 
@@ -40,20 +46,21 @@ class UsageRepository:
         where = ["occurred_at >= ?"]
         params: list = [filters["since"]]
         if filters.get("username"):
-            where.append("username = ?"); params.append(filters["username"])
+            where.append("username = ?")
+            params.append(filters["username"])
         if filters.get("tool_name"):
-            where.append("tool_name = ?"); params.append(filters["tool_name"])
+            where.append("tool_name = ?")
+            params.append(filters["tool_name"])
         if filters.get("source"):
-            where.append("source = ?"); params.append(filters["source"])
+            where.append("source = ?")
+            params.append(filters["source"])
         if filters.get("event_type"):
-            where.append("event_type = ?"); params.append(filters["event_type"])
+            where.append("event_type = ?")
+            params.append(filters["event_type"])
         if filters.get("only_errors"):
             where.append("is_error = TRUE")
         if filters.get("q"):
-            where.append(
-                "(tool_name LIKE ? OR skill_name LIKE ? OR subagent_type LIKE ? "
-                "OR command_name LIKE ?)"
-            )
+            where.append("(tool_name LIKE ? OR skill_name LIKE ? OR subagent_type LIKE ? OR command_name LIKE ?)")
             like = f"%{filters['q']}%"
             params.extend([like, like, like, like])
         return " AND ".join(where), params
@@ -66,10 +73,7 @@ class UsageRepository:
                GROUP BY tool_name, source ORDER BY n DESC LIMIT ?""",
             [cutoff, limit],
         ).fetchall()
-        return [
-            {"tool_name": r[0], "source": r[1], "invocations": int(r[2])}
-            for r in rows
-        ]
+        return [{"tool_name": r[0], "source": r[1], "invocations": int(r[2])} for r in rows]
 
     def summary_top_users(self, cutoff: datetime, limit: int = 10) -> List[dict]:
         rows = self.conn.execute(
@@ -89,8 +93,12 @@ class UsageRepository:
             [cutoff, limit],
         ).fetchall()
         return [
-            {"tool_name": r[0], "invocations": int(r[1]), "errors": int(r[2]),
-             "rate": float(r[2]) / float(r[1]) if r[1] else 0.0}
+            {
+                "tool_name": r[0],
+                "invocations": int(r[1]),
+                "errors": int(r[2]),
+                "rate": float(r[2]) / float(r[1]) if r[1] else 0.0,
+            }
             for r in rows
         ]
 
@@ -124,8 +132,14 @@ class UsageRepository:
                 [cutoff, limit],
             ).fetchall()
             return [
-                {"action": r[0], "p50": int(r[1] or 0), "p95": int(r[2] or 0),
-                 "p99": int(r[3] or 0), "max_ms": int(r[4] or 0), "n": int(r[5])}
+                {
+                    "action": r[0],
+                    "p50": int(r[1] or 0),
+                    "p95": int(r[2] or 0),
+                    "p99": int(r[3] or 0),
+                    "max_ms": int(r[4] or 0),
+                    "n": int(r[5]),
+                }
                 for r in rows
             ]
         except Exception:
@@ -153,9 +167,7 @@ class UsageRepository:
         """
         # ``table:<id>`` or ``table:<id>:as:<name>`` → <id>. split_part on the
         # 4-char-stripped tail (drop the leading "table:") then cut any ":as:".
-        table_id_expr = (
-            "split_part(substr(resource, 7), ':as:', 1)"
-        )
+        table_id_expr = "split_part(substr(resource, 7), ':as:', 1)"
         bytes_expr = "TRY_CAST(json_extract_string(params, '$.bytes_scanned') AS BIGINT)"
 
         # Per-table ranking (only rows that carry a table resource).
@@ -175,8 +187,13 @@ class UsageRepository:
             [cutoff, limit],
         ).fetchall()
         top_tables = [
-            {"table_id": r[0], "queries": int(r[1]), "scan_bytes": int(r[2] or 0),
-             "remote": int(r[3] or 0), "local": int(r[4] or 0)}
+            {
+                "table_id": r[0],
+                "queries": int(r[1]),
+                "scan_bytes": int(r[2] or 0),
+                "remote": int(r[3] or 0),
+                "local": int(r[4] or 0),
+            }
             for r in top_rows
         ]
 
@@ -195,8 +212,12 @@ class UsageRepository:
             [cutoff],
         ).fetchall()
         frequency = [
-            {"day": r[0].isoformat() if r[0] else None, "table_id": r[1],
-             "remote": int(r[2] or 0), "local": int(r[3] or 0)}
+            {
+                "day": r[0].isoformat() if r[0] else None,
+                "table_id": r[1],
+                "remote": int(r[2] or 0),
+                "local": int(r[3] or 0),
+            }
             for r in freq_rows
         ]
 
@@ -242,9 +263,9 @@ class UsageRepository:
             [since],
         ).fetchall()
         return {
-            "users":       [{"value": r[0], "count": r[1]} for r in users],
-            "tools":       [{"value": r[0], "count": r[1]} for r in tools],
-            "sources":     [{"value": r[0], "count": r[1]} for r in sources],
+            "users": [{"value": r[0], "count": r[1]} for r in users],
+            "tools": [{"value": r[0], "count": r[1]} for r in tools],
+            "sources": [{"value": r[0], "count": r[1]} for r in sources],
             "event_types": [{"value": r[0], "count": r[1]} for r in event_types],
         }
 
@@ -259,8 +280,7 @@ class UsageRepository:
             params,
         ).fetchone()
         total, users, tools, errors = (int(x or 0) for x in row)
-        return {"events_total": total, "distinct_users": users,
-                "distinct_tools": tools, "errors": errors}
+        return {"events_total": total, "distinct_users": users, "distinct_tools": tools, "errors": errors}
 
     def usage_query(
         self,
@@ -283,17 +303,20 @@ class UsageRepository:
         if group_by and group_by in _GROUP_BY_COLUMNS:
             expr, alias = _GROUP_BY_COLUMNS[group_by]
             valid_sort = {
-                "bucket":            expr,
-                "invocations":       "COUNT(*)",
-                "distinct_users":    "COUNT(DISTINCT username)",
+                "bucket": expr,
+                "invocations": "COUNT(*)",
+                "distinct_users": "COUNT(DISTINCT username)",
                 "distinct_sessions": "COUNT(DISTINCT session_id)",
-                "errors":            "SUM(CASE WHEN is_error THEN 1 ELSE 0 END)",
+                "errors": "SUM(CASE WHEN is_error THEN 1 ELSE 0 END)",
             }
             order_expr = valid_sort.get(sort_col, "COUNT(*)")
-            total_buckets = int(self.conn.execute(
-                f"SELECT COUNT(DISTINCT {expr}) FROM usage_events WHERE {where_sql}",
-                params,
-            ).fetchone()[0] or 0)
+            total_buckets = int(
+                self.conn.execute(
+                    f"SELECT COUNT(DISTINCT {expr}) FROM usage_events WHERE {where_sql}",
+                    params,
+                ).fetchone()[0]
+                or 0
+            )
             rows = self.conn.execute(
                 f"""SELECT {expr} AS bucket,
                            COUNT(*) AS invocations,
@@ -308,37 +331,51 @@ class UsageRepository:
             ).fetchall()
             out = [
                 {
-                    "bucket":            (str(r[0]) if r[0] is not None else None),
-                    "invocations":       int(r[1] or 0),
-                    "distinct_users":    int(r[2] or 0),
+                    "bucket": (str(r[0]) if r[0] is not None else None),
+                    "invocations": int(r[1] or 0),
+                    "distinct_users": int(r[2] or 0),
                     "distinct_sessions": int(r[3] or 0),
-                    "errors":            int(r[4] or 0),
+                    "errors": int(r[4] or 0),
                 }
                 for r in rows
             ]
             return {
-                "group_by":    group_by,
+                "group_by": group_by,
                 "group_alias": alias,
-                "rows":        out,
-                "total":       total_buckets,
-                "limit":       limit,
-                "offset":      offset,
+                "rows": out,
+                "total": total_buckets,
+                "limit": limit,
+                "offset": offset,
                 "next_offset": offset + limit if (offset + limit) < total_buckets else None,
             }
 
         # ungrouped — raw events
         _COLS = [
-            "id", "occurred_at", "username", "source", "ref_id", "event_type",
-            "tool_name", "skill_name", "subagent_type", "command_name", "is_error",
-            "session_id", "model",
+            "id",
+            "occurred_at",
+            "username",
+            "source",
+            "ref_id",
+            "event_type",
+            "tool_name",
+            "skill_name",
+            "subagent_type",
+            "command_name",
+            "is_error",
+            "session_id",
+            "model",
         ]
         valid_sort_raw = {"occurred_at": "occurred_at", "invocations": "occurred_at"}
         order_expr = valid_sort_raw.get(sort_col, "occurred_at")
-        total = int(self.conn.execute(
-            f"SELECT COUNT(*) FROM usage_events WHERE {where_sql}", params,
-        ).fetchone()[0] or 0)
+        total = int(
+            self.conn.execute(
+                f"SELECT COUNT(*) FROM usage_events WHERE {where_sql}",
+                params,
+            ).fetchone()[0]
+            or 0
+        )
         rows = self.conn.execute(
-            f"""SELECT {','.join(_COLS)}
+            f"""SELECT {",".join(_COLS)}
                FROM usage_events WHERE {where_sql}
                ORDER BY {order_expr} {sort_dir}
                LIMIT ? OFFSET ?""",
@@ -351,11 +388,11 @@ class UsageRepository:
                 d["occurred_at"] = d["occurred_at"].isoformat()
             out.append(d)
         return {
-            "group_by":    None,
-            "rows":        out,
-            "total":       total,
-            "limit":       limit,
-            "offset":      offset,
+            "group_by": None,
+            "rows": out,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
             "next_offset": offset + limit if (offset + limit) < total else None,
         }
 
@@ -368,9 +405,11 @@ class UsageRepository:
         where = ["started_at >= ?"]
         params: list = [filters["since"]]
         if filters.get("username"):
-            where.append("username = ?"); params.append(filters["username"])
+            where.append("username = ?")
+            params.append(filters["username"])
         if filters.get("model"):
-            where.append("primary_model = ?"); params.append(filters["model"])
+            where.append("primary_model = ?")
+            params.append(filters["model"])
         if filters.get("only_errors"):
             where.append("tool_errors > 0")
         if filters.get("q"):
@@ -380,36 +419,52 @@ class UsageRepository:
         return " AND ".join(where), params
 
     _SESSION_SORT_KEYS = {
-        "started_at": "started_at", "ended_at": "ended_at",
-        "tool_calls": "tool_calls", "tool_errors": "tool_errors",
-        "active_seconds": "active_seconds", "username": "username",
+        "started_at": "started_at",
+        "ended_at": "ended_at",
+        "tool_calls": "tool_calls",
+        "tool_errors": "tool_errors",
+        "active_seconds": "active_seconds",
+        "username": "username",
         "primary_model": "primary_model",
     }
 
     _SESSION_COLS = [
-        "session_file", "session_id", "username",
-        "started_at", "ended_at", "active_seconds", "wall_seconds",
-        "user_messages", "assistant_messages",
-        "tool_calls", "tool_errors",
-        "skill_invocations", "subagent_dispatches",
-        "mcp_calls", "slash_commands",
-        "distinct_tools", "distinct_skills", "primary_model",
+        "session_file",
+        "session_id",
+        "username",
+        "started_at",
+        "ended_at",
+        "active_seconds",
+        "wall_seconds",
+        "user_messages",
+        "assistant_messages",
+        "tool_calls",
+        "tool_errors",
+        "skill_invocations",
+        "subagent_dispatches",
+        "mcp_calls",
+        "slash_commands",
+        "distinct_tools",
+        "distinct_skills",
+        "primary_model",
     ]
 
     def sessions_count(self, filters: dict) -> int:
         where_sql, params = self._sessions_where(filters)
-        return int(self.conn.execute(
-            f"SELECT COUNT(*) FROM usage_session_summary WHERE {where_sql}",
-            params,
-        ).fetchone()[0] or 0)
+        return int(
+            self.conn.execute(
+                f"SELECT COUNT(*) FROM usage_session_summary WHERE {where_sql}",
+                params,
+            ).fetchone()[0]
+            or 0
+        )
 
-    def sessions_list(self, filters: dict, *, sort_col: str, direction: str,
-                      limit: int, offset: int) -> List[dict]:
+    def sessions_list(self, filters: dict, *, sort_col: str, direction: str, limit: int, offset: int) -> List[dict]:
         where_sql, params = self._sessions_where(filters)
         col = self._SESSION_SORT_KEYS.get(sort_col, "started_at")
         direction = "ASC" if direction.upper() == "ASC" else "DESC"
         rows = self.conn.execute(
-            f"""SELECT {','.join(self._SESSION_COLS)}
+            f"""SELECT {",".join(self._SESSION_COLS)}
                FROM usage_session_summary WHERE {where_sql}
                ORDER BY {col} {direction}
                LIMIT ? OFFSET ?""",
@@ -428,11 +483,10 @@ class UsageRepository:
                FROM usage_session_summary WHERE {where_sql}""",
             params,
         ).fetchone()
-        sessions_total, users, error_sessions, tool_calls_total, tool_errors_total = (
-            int(x or 0) for x in row
-        )
+        sessions_total, users, error_sessions, tool_calls_total, tool_errors_total = (int(x or 0) for x in row)
         return {
-            "sessions_total": sessions_total, "distinct_users": users,
+            "sessions_total": sessions_total,
+            "distinct_users": users,
             "error_sessions": error_sessions,
             "tool_calls_total": tool_calls_total,
             "tool_errors_total": tool_errors_total,
@@ -453,15 +507,22 @@ class UsageRepository:
             [since],
         ).fetchall()
         return {
-            "users":  [{"value": r[0], "count": r[1]} for r in users],
+            "users": [{"value": r[0], "count": r[1]} for r in users],
             "models": [{"value": r[0], "count": r[1]} for r in models],
         }
 
     def get_session_summary(self, session_file: str) -> dict | None:
         """Return a summary row dict for a single session_file, or None."""
         _KEYS = (
-            "session_id", "started_at", "ended_at", "active_seconds", "wall_seconds",
-            "user_messages", "assistant_messages", "tool_calls", "tool_errors",
+            "session_id",
+            "started_at",
+            "ended_at",
+            "active_seconds",
+            "wall_seconds",
+            "user_messages",
+            "assistant_messages",
+            "tool_calls",
+            "tool_errors",
             "primary_model",
         )
         row = self.conn.execute(
@@ -479,8 +540,14 @@ class UsageRepository:
         so both ingestion paths + pre-v45 rows surface. Source:
         app/api/admin_user_sessions.py list_user_sessions."""
         cols = [
-            "session_file", "session_id", "started_at", "ended_at",
-            "active_seconds", "wall_seconds", "tool_calls", "tool_errors",
+            "session_file",
+            "session_id",
+            "started_at",
+            "ended_at",
+            "active_seconds",
+            "wall_seconds",
+            "tool_calls",
+            "tool_errors",
             "primary_model",
         ]
         rows = self.conn.execute(
@@ -502,11 +569,19 @@ class UsageRepository:
         KEPT SEPARATE from the admin variant. Source: app/api/me_stats.py
         list_self_sessions."""
         cols = [
-            "session_file", "session_id", "started_at", "ended_at",
-            "active_seconds", "wall_seconds",
-            "user_messages", "tool_calls", "tool_errors",
-            "input_tokens", "output_tokens",
-            "cache_read_tokens", "cache_creation_tokens",
+            "session_file",
+            "session_id",
+            "started_at",
+            "ended_at",
+            "active_seconds",
+            "wall_seconds",
+            "user_messages",
+            "tool_calls",
+            "tool_errors",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
             "primary_model",
         ]
         rows = self.conn.execute(
@@ -532,7 +607,7 @@ class UsageRepository:
 
     def tokens_daily_series(self, username: str, days: int) -> list[dict]:
         rows = self.conn.execute(
-            f"""
+            """
             SELECT
                 CAST(started_at AS DATE) AS day,
                 COALESCE(SUM(input_tokens), 0)          AS input_tokens,
@@ -585,8 +660,11 @@ class UsageRepository:
         ).fetchall()
         return [
             {
-                "model": m, "input": int(i or 0), "output": int(o or 0),
-                "cache_read": int(cr or 0), "cache_creation": int(cc or 0),
+                "model": m,
+                "input": int(i or 0),
+                "output": int(o or 0),
+                "cache_read": int(cr or 0),
+                "cache_creation": int(cc or 0),
                 "sessions": int(s or 0),
                 "total": int((i or 0) + (o or 0) + (cr or 0) + (cc or 0)),
             }
@@ -616,8 +694,10 @@ class UsageRepository:
                 "session_id": sid,
                 "started_at": st.isoformat() if hasattr(st, "isoformat") else st,
                 "primary_model": pm,
-                "input": int(i or 0), "output": int(o or 0),
-                "cache_read": int(cr or 0), "cache_creation": int(cc or 0),
+                "input": int(i or 0),
+                "output": int(o or 0),
+                "cache_read": int(cr or 0),
+                "cache_creation": int(cc or 0),
                 "total": int(tt or 0),
             }
             for (sf, sid, st, pm, i, o, cr, cc, tt) in rows
@@ -658,8 +738,7 @@ class UsageRepository:
     # Seconds stay raw ints here; the API layer converts to hours.
     # ------------------------------------------------------------------
 
-    _TOKEN_SUM = ("input_tokens + output_tokens "
-                  "+ cache_read_tokens + cache_creation_tokens")
+    _TOKEN_SUM = "input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens"
 
     def adoption_kpis(self, since: datetime) -> dict:
         s = self.conn.execute(
@@ -676,16 +755,20 @@ class UsageRepository:
             [since],
         ).fetchone()
         dskills = self.conn.execute(
-            "SELECT COUNT(DISTINCT skill_name) FROM usage_events "
-            "WHERE occurred_at >= ? AND skill_name IS NOT NULL",
+            "SELECT COUNT(DISTINCT skill_name) FROM usage_events WHERE occurred_at >= ? AND skill_name IS NOT NULL",
             [since],
         ).fetchone()[0]
         return {
-            "active_seconds": int(s[0] or 0), "wall_seconds": int(s[1] or 0),
-            "sessions": int(s[2] or 0), "prompts": int(s[3] or 0),
-            "skill_invocations": int(s[4] or 0), "tokens": int(s[5] or 0),
-            "tool_calls": int(s[6] or 0), "tool_errors": int(s[7] or 0),
-            "active_users": int(s[8] or 0), "distinct_skills": int(dskills or 0),
+            "active_seconds": int(s[0] or 0),
+            "wall_seconds": int(s[1] or 0),
+            "sessions": int(s[2] or 0),
+            "prompts": int(s[3] or 0),
+            "skill_invocations": int(s[4] or 0),
+            "tokens": int(s[5] or 0),
+            "tool_calls": int(s[6] or 0),
+            "tool_errors": int(s[7] or 0),
+            "active_users": int(s[8] or 0),
+            "distinct_skills": int(dskills or 0),
         }
 
     def adoption_sessions_series(self, start_date: date) -> Dict[date, dict]:
@@ -702,10 +785,17 @@ class UsageRepository:
                   GROUP BY day ORDER BY day""",
             [start_date],
         ).fetchall()
-        return {r[0]: {"active_seconds": int(r[1] or 0), "wall_seconds": int(r[2] or 0),
-                       "sessions": int(r[3] or 0), "prompts": int(r[4] or 0),
-                       "tokens": int(r[5] or 0), "tool_calls": int(r[6] or 0)}
-                for r in rows}
+        return {
+            r[0]: {
+                "active_seconds": int(r[1] or 0),
+                "wall_seconds": int(r[2] or 0),
+                "sessions": int(r[3] or 0),
+                "prompts": int(r[4] or 0),
+                "tokens": int(r[5] or 0),
+                "tool_calls": int(r[6] or 0),
+            }
+            for r in rows
+        }
 
     def adoption_events_series(self, start_date: date) -> Dict[date, dict]:
         rows = self.conn.execute(
@@ -717,16 +807,15 @@ class UsageRepository:
                  GROUP BY day ORDER BY day""",
             [start_date],
         ).fetchall()
-        return {r[0]: {"active_users": int(r[1] or 0), "skill_events": int(r[2] or 0)}
-                for r in rows}
+        return {r[0]: {"active_users": int(r[1] or 0), "skill_events": int(r[2] or 0)} for r in rows}
 
-    def adoption_top_users(self, since: datetime, limit: int = 10,
-                           q: Optional[str] = None) -> List[dict]:
+    def adoption_top_users(self, since: datetime, limit: int = 10, q: Optional[str] = None) -> List[dict]:
         where = ["started_at >= ?"]
         params: list = [since]
         if q:
             where.append("(username LIKE ? OR user_id LIKE ?)")
-            like = f"%{q}%"; params.extend([like, like])
+            like = f"%{q}%"
+            params.extend([like, like])
         params.append(limit)
         rows = self.conn.execute(
             f"""SELECT MAX(user_id), MAX(username),
@@ -736,15 +825,23 @@ class UsageRepository:
                        COALESCE(SUM({self._TOKEN_SUM}), 0),
                        MAX(ended_at)
                   FROM usage_session_summary
-                  WHERE {' AND '.join(where)}
+                  WHERE {" AND ".join(where)}
                   GROUP BY COALESCE(user_id, username)
                   ORDER BY total_active DESC LIMIT ?""",
             params,
         ).fetchall()
-        return [{"user_id": r[0], "username": r[1], "active_seconds": int(r[2] or 0),
-                 "sessions": int(r[3] or 0), "prompts": int(r[4] or 0),
-                 "tokens": int(r[5] or 0),
-                 "last_active": r[6].isoformat() if r[6] else None} for r in rows]
+        return [
+            {
+                "user_id": r[0],
+                "username": r[1],
+                "active_seconds": int(r[2] or 0),
+                "sessions": int(r[3] or 0),
+                "prompts": int(r[4] or 0),
+                "tokens": int(r[5] or 0),
+                "last_active": r[6].isoformat() if r[6] else None,
+            }
+            for r in rows
+        ]
 
     def adoption_top_skills(self, since: datetime, limit: int = 10) -> List[dict]:
         rows = self.conn.execute(
@@ -755,8 +852,7 @@ class UsageRepository:
                  GROUP BY skill_name ORDER BY n DESC LIMIT ?""",
             [since, limit],
         ).fetchall()
-        return [{"skill_name": r[0], "invocations": int(r[1]), "distinct_users": int(r[2])}
-                for r in rows]
+        return [{"skill_name": r[0], "invocations": int(r[1]), "distinct_users": int(r[2])} for r in rows]
 
     # ── per-user variants (one user_id + legacy username) ──────────────
 
@@ -791,18 +887,21 @@ class UsageRepository:
             [since, user_id, username],
         ).fetchall()
         return {
-            "active_seconds": int(s[0] or 0), "wall_seconds": int(s[1] or 0),
-            "sessions": int(s[2] or 0), "prompts": int(s[3] or 0),
-            "tokens": int(s[4] or 0), "tool_calls": int(s[5] or 0),
+            "active_seconds": int(s[0] or 0),
+            "wall_seconds": int(s[1] or 0),
+            "sessions": int(s[2] or 0),
+            "prompts": int(s[3] or 0),
+            "tokens": int(s[4] or 0),
+            "tool_calls": int(s[5] or 0),
             "tool_errors": int(s[6] or 0),
             "last_active": s[7].isoformat() if s[7] else None,
-            "distinct_tools": int(e[0] or 0), "distinct_skills": int(e[1] or 0),
+            "distinct_tools": int(e[0] or 0),
+            "distinct_skills": int(e[1] or 0),
             "active_days": int(e[2] or 0),
             "models": [{"model": m[0], "count": int(m[1])} for m in models],
         }
 
-    def adoption_user_sessions_series(self, start_date: date, user_id: str,
-                                      username: str) -> Dict[date, dict]:
+    def adoption_user_sessions_series(self, start_date: date, user_id: str, username: str) -> Dict[date, dict]:
         rows = self.conn.execute(
             f"""SELECT CAST(started_at AS DATE) AS day,
                        COALESCE(SUM(active_seconds), 0),
@@ -817,13 +916,19 @@ class UsageRepository:
                   GROUP BY day ORDER BY day""",
             [start_date, user_id, username],
         ).fetchall()
-        return {r[0]: {"active_seconds": int(r[1] or 0), "wall_seconds": int(r[2] or 0),
-                       "sessions": int(r[3] or 0), "prompts": int(r[4] or 0),
-                       "tokens": int(r[5] or 0), "tool_calls": int(r[6] or 0)}
-                for r in rows}
+        return {
+            r[0]: {
+                "active_seconds": int(r[1] or 0),
+                "wall_seconds": int(r[2] or 0),
+                "sessions": int(r[3] or 0),
+                "prompts": int(r[4] or 0),
+                "tokens": int(r[5] or 0),
+                "tool_calls": int(r[6] or 0),
+            }
+            for r in rows
+        }
 
-    def adoption_user_events_series(self, start_date: date, user_id: str,
-                                    username: str) -> Dict[date, dict]:
+    def adoption_user_events_series(self, start_date: date, user_id: str, username: str) -> Dict[date, dict]:
         rows = self.conn.execute(
             """SELECT CAST(occurred_at AS DATE) AS day,
                       SUM(CASE WHEN skill_name IS NOT NULL THEN 1 ELSE 0 END)
@@ -835,8 +940,7 @@ class UsageRepository:
         ).fetchall()
         return {r[0]: {"skill_events": int(r[1] or 0)} for r in rows}
 
-    def adoption_user_top_skills(self, since: datetime, user_id: str, username: str,
-                                 limit: int = 10) -> List[dict]:
+    def adoption_user_top_skills(self, since: datetime, user_id: str, username: str, limit: int = 10) -> List[dict]:
         rows = self.conn.execute(
             """SELECT skill_name, COUNT(*) AS n
                  FROM usage_events
@@ -847,8 +951,7 @@ class UsageRepository:
         ).fetchall()
         return [{"skill_name": r[0], "invocations": int(r[1])} for r in rows]
 
-    def adoption_user_top_tools(self, since: datetime, user_id: str, username: str,
-                                limit: int = 10) -> List[dict]:
+    def adoption_user_top_tools(self, since: datetime, user_id: str, username: str, limit: int = 10) -> List[dict]:
         rows = self.conn.execute(
             """SELECT tool_name, COUNT(*) AS n
                  FROM usage_events
@@ -1029,8 +1132,7 @@ class UsageRepository:
             if clear_processors:
                 placeholders = ",".join("?" for _ in clear_processors)
                 state_deleted = self.conn.execute(
-                    f"DELETE FROM session_processor_state "
-                    f"WHERE processor_name IN ({placeholders}) RETURNING 1",
+                    f"DELETE FROM session_processor_state WHERE processor_name IN ({placeholders}) RETURNING 1",
                     list(clear_processors),
                 ).fetchall()
                 out["state_rows"] = len(state_deleted)
@@ -1041,15 +1143,205 @@ class UsageRepository:
                 ("marketplace_item_daily", "usage_marketplace_item_daily"),
                 ("marketplace_item_window", "usage_marketplace_item_window"),
             ):
-                deleted = self.conn.execute(
-                    f"DELETE FROM {table} RETURNING 1"
-                ).fetchall()
+                deleted = self.conn.execute(f"DELETE FROM {table} RETURNING 1").fetchall()
                 out[key] = len(deleted)
             self.conn.execute("COMMIT")
         except Exception:
             self.conn.execute("ROLLBACK")
             raise
         return out
+
+    # ------------------------------------------------------------------
+    # marketplace usage rollup producer (#728).  Mirrored in UsagePgRepository.
+    #
+    # Rebuilds usage_tool_daily (legacy) + usage_marketplace_item_daily +
+    # usage_marketplace_item_window from usage_events. ``since_day=None``
+    # means a FULL rebuild (covers every day with data, not just a rolling
+    # window) — callers wanting the cheap incremental refresh pass an
+    # explicit cutoff (e.g. today - 7 days, the scheduler-tick behaviour).
+    # Attribution (`_attribute_event`) and aggregation (`_aggregate_events`)
+    # are pure-Python and shared with the PG sibling via
+    # ``services.session_processors.usage_lib`` — only the SQL differs
+    # per backend.
+    # ------------------------------------------------------------------
+
+    def _curated_flea_lookup(self) -> tuple[set, dict, set]:
+        curated_plugins = {r[0] for r in self.conn.execute("SELECT DISTINCT name FROM marketplace_plugins").fetchall()}
+        flea_entities = {
+            r[0]: r[1]
+            for r in self.conn.execute(
+                "SELECT synthetic_name, type FROM store_entities WHERE visibility_status='approved'"
+            ).fetchall()
+        }
+        flea_plugins = {synthetic for synthetic, ent_type in flea_entities.items() if ent_type == "plugin"}
+        return curated_plugins, flea_entities, flea_plugins
+
+    def _last_30d_due(self) -> bool:
+        row = self.conn.execute(
+            "SELECT processed_at FROM session_processor_state WHERE processor_name = ? AND session_file = '__rollup__'",
+            [_MARKETPLACE_30D_TRACKER],
+        ).fetchone()
+        if row is None:
+            return True
+        last = row[0]
+        if last is None:
+            return True
+        now = datetime.now(timezone.utc)
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return (now - last).total_seconds() >= WINDOW_30D_REFRESH_SECONDS
+
+    def _mark_last_30d_refreshed(self) -> None:
+        # Pass the timestamp explicitly — DuckDB parses bare current_timestamp
+        # in an ON CONFLICT … DO UPDATE SET clause as a column name on the
+        # right-hand side, then can't bind it.
+        now = datetime.now(timezone.utc)
+        self.conn.execute(
+            """
+            INSERT INTO session_processor_state
+                (processor_name, session_file, username, processed_at, items_extracted)
+            VALUES (?, '__rollup__', 'system', ?, 0)
+            ON CONFLICT (processor_name, session_file) DO UPDATE SET
+                processed_at = EXCLUDED.processed_at
+            """,
+            [_MARKETPLACE_30D_TRACKER, now],
+        )
+
+    def _rebuild_window(
+        self, period_label: str, cutoff_day, curated_plugins: set, flea_entities: dict, flea_plugins: set
+    ) -> None:
+        events = self.conn.execute(
+            """
+            SELECT
+                CAST(occurred_at AS DATE) AS day,
+                user_id,
+                is_error,
+                skill_name,
+                subagent_type,
+                command_name,
+                event_type
+            FROM usage_events
+            WHERE CAST(occurred_at AS DATE) >= ?
+            """,
+            [cutoff_day],
+        ).fetchall()
+        buckets = _aggregate_events(events, curated_plugins, flea_entities, flea_plugins, group_by_day=False)
+        self.conn.execute(
+            "DELETE FROM usage_marketplace_item_window WHERE period_label = ?",
+            [period_label],
+        )
+        if buckets:
+            self.conn.executemany(
+                """
+                INSERT INTO usage_marketplace_item_window
+                    (period_label, source, type, parent_plugin, name, invocations, distinct_users)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (period_label, source, type_, parent, name, v["count"], len(v["users"]))
+                    for (source, type_, parent, name), v in buckets.items()
+                ],
+            )
+
+    def rebuild_rollups(self, *, since_day: "date | None" = None, force_30d: bool = False) -> None:
+        """Rebuild marketplace + legacy tool rollups from usage_events.
+
+        ``since_day=None`` triggers a FULL rebuild: the effective cutoff
+        becomes the earliest day present in ``usage_events`` (or today, if
+        the table is empty), so every historical day's fact row is
+        refreshed — not just the last 7 days. Callers driving the
+        steady-state scheduler tick pass an explicit ``since_day`` (today -
+        7 days) to keep the cheap incremental behaviour.
+
+        All updates run in a single transaction so a partial failure never
+        leaves the rollup set inconsistent.
+        """
+        try:
+            # The PG sibling wraps these same reads in its engine.begin()
+            # block; keep them inside the transaction here too so both
+            # backends compute the effective cutoff / lookup snapshot under
+            # the same isolation.
+            self.conn.execute("BEGIN")
+
+            if since_day is None:
+                row = self.conn.execute("SELECT MIN(CAST(occurred_at AS DATE)) FROM usage_events").fetchone()
+                since_day = row[0] if row and row[0] else datetime.now(timezone.utc).date()
+
+            curated_plugins, flea_entities, flea_plugins = self._curated_flea_lookup()
+            do_30d = force_30d or self._last_30d_due()
+
+            # ---- Legacy: usage_tool_daily (unchanged) ----
+            self.conn.execute("DELETE FROM usage_tool_daily WHERE day >= ?", [since_day])
+            self.conn.execute(
+                """
+                INSERT INTO usage_tool_daily
+                    (day, tool_name, source, invocations, error_count, distinct_users, distinct_sessions)
+                SELECT
+                    CAST(occurred_at AS DATE) AS day,
+                    tool_name,
+                    source,
+                    COUNT(*) AS invocations,
+                    SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS error_count,
+                    COUNT(DISTINCT username) AS distinct_users,
+                    COUNT(DISTINCT session_id) AS distinct_sessions
+                FROM usage_events
+                WHERE CAST(occurred_at AS DATE) >= ?
+                  AND tool_name IS NOT NULL
+                GROUP BY day, tool_name, source
+                """,
+                [since_day],
+            )
+
+            # ---- New: usage_marketplace_item_daily ----
+            daily_events = self.conn.execute(
+                """
+                SELECT
+                    CAST(occurred_at AS DATE) AS day,
+                    user_id,
+                    is_error,
+                    skill_name,
+                    subagent_type,
+                    command_name,
+                    event_type
+                FROM usage_events
+                WHERE CAST(occurred_at AS DATE) >= ?
+                """,
+                [since_day],
+            ).fetchall()
+            daily_buckets = _aggregate_events(
+                daily_events, curated_plugins, flea_entities, flea_plugins, group_by_day=True
+            )
+            self.conn.execute("DELETE FROM usage_marketplace_item_daily WHERE day >= ?", [since_day])
+            if daily_buckets:
+                self.conn.executemany(
+                    """
+                    INSERT INTO usage_marketplace_item_daily
+                        (day, source, type, parent_plugin, name, count, distinct_users, error_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (day, source, type_, parent, name, v["count"], len(v["users"]), v["errors"])
+                        for (day, source, type_, parent, name), v in daily_buckets.items()
+                    ],
+                )
+
+            # ---- usage_marketplace_item_window period_label='last_7d' (full) ----
+            cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).date()
+            self._rebuild_window("last_7d", cutoff_7d, curated_plugins, flea_entities, flea_plugins)
+
+            # ---- usage_marketplace_item_window period_label='last_30d' (hourly) ----
+            if do_30d:
+                cutoff_30d = (datetime.now(timezone.utc) - timedelta(days=30)).date()
+                self._rebuild_window("last_30d", cutoff_30d, curated_plugins, flea_entities, flea_plugins)
+                self._mark_last_30d_refreshed()
+
+            self.conn.execute("COMMIT")
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
 
 def _percentile(values: list[float], p: float) -> float:
@@ -1073,12 +1365,14 @@ def _slow_actions_from_raw(raw_rows: list, limit: int) -> list[dict]:
     for action, vals in action_durations.items():
         if len(vals) < 5:
             continue
-        out.append({
-            "action": action,
-            "p50": int(_percentile(vals, 0.5)),
-            "p95": int(_percentile(vals, 0.95)),
-            "p99": int(_percentile(vals, 0.99)),
-            "max_ms": int(max(vals)),
-            "n": len(vals),
-        })
+        out.append(
+            {
+                "action": action,
+                "p50": int(_percentile(vals, 0.5)),
+                "p95": int(_percentile(vals, 0.95)),
+                "p99": int(_percentile(vals, 0.99)),
+                "max_ms": int(max(vals)),
+                "n": len(vals),
+            }
+        )
     return sorted(out, key=lambda x: x["p95"], reverse=True)[:limit]

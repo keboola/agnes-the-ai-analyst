@@ -20,6 +20,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.74.19] - 2026-07-08
+
+### Added
+
+### Changed
+
+### Fixed
+- Marketplace usage rollup producer (`usage_marketplace_item_daily` / `_window`, backing the marketplace telemetry dashboards and the usage digest) was DuckDB-only, so on Postgres-backed instances the rollup tables — and anything reading them — stayed permanently empty even though `usage_events` filled correctly. `rebuild_rollups` moved from a free function onto `UsageRepository` / `UsagePgRepository` (dual-backend, same semantics) and the `since_day=None` case now does a genuine full rebuild instead of silently defaulting to the last 7 days, so re-running it after a reprocess backfills history instead of leaving days 8+ back empty forever (#728)
+
+### Removed
+
+### Internal
+
 ## [0.74.18] - 2026-07-08
 
 ### Added

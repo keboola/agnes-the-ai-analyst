@@ -15,7 +15,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -292,10 +292,7 @@ def ask_usage(
             truncated = True
         else:
             truncated = False
-        row_dicts = [
-            {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in zip(cols, r)}
-            for r in rows
-        ]
+        row_dicts = [{k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in zip(cols, r)} for r in rows]
     except Exception as e:
         logger.exception("usage.ask SQL execution failed")
         try:
@@ -369,9 +366,7 @@ def reprocess_usage(
         # Single atomic reset: the usage rollups AND the matching processor
         # checkpoints are cleared in one transaction so a failure can't leave
         # the scheduler half-reset (processor state gone, usage data retained).
-        reset = usage_repo().reset_all(
-            clear_processors=["usage", "marketplace_rollup_30d"]
-        )
+        reset = usage_repo().reset_all(clear_processors=["usage", "marketplace_rollup_30d"])
         counts["state_rows"] = reset["state_rows"]
         counts["events"] = reset["events"]
         counts["summaries"] = reset["session_summary"]
@@ -381,6 +376,19 @@ def reprocess_usage(
     except Exception as e:
         logger.exception("reprocess failed")
         raise HTTPException(status_code=500, detail=f"reprocess failed: {e}")
+
+    # Full rebuild (since_day=None) immediately re-establishes a consistent
+    # rollup state — #728. Right after reset_all, usage_events is empty (the
+    # next scheduler tick re-scans every session jsonl and repopulates it);
+    # the real payoff is that any FUTURE rollup rebuild that finds re-ingested
+    # history covers it in full, since the free-function's old "since_day=None
+    # -> today-7" default (the bug this PR fixes) used to leave days 8+ back
+    # empty forever after a reprocess. Best-effort: a failure here shouldn't
+    # fail the reprocess request itself (the reset already succeeded).
+    try:
+        usage_repo().rebuild_rollups(force_30d=True)
+    except Exception:
+        logger.exception("usage rollup rebuild after reprocess failed; continuing")
 
     try:
         audit_repo().log(

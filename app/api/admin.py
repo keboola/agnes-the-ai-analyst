@@ -30,6 +30,7 @@ from src.repositories import (
     store_submissions_repo,
     sync_state_repo,
     table_registry_repo,
+    usage_repo,
     user_store_installs_repo,
 )
 from src.sql_safe import is_safe_project_id as _is_safe_project_id
@@ -4081,15 +4082,17 @@ def run_session_processor(
     try:
         stats = _run_processor(job_conn, proc)
         # Rebuild daily rollups after a successful usage run so the
-        # marketplace / admin dashboards see fresh aggregates. Runs on the
-        # same connection while it's still open; incremental (last-7-days)
-        # so it's cheap. Kept here (not in runner.py) to stay
-        # processor-agnostic at the framework level.
+        # marketplace / admin dashboards see fresh aggregates. Backend-aware
+        # (#728 — the free-function DuckDB-only producer left rollups
+        # permanently empty on Postgres); incremental (last-7-days) so it's
+        # cheap. Kept here (not in runner.py) to stay processor-agnostic at
+        # the framework level.
         if processor == "usage" and stats.get("errors", 0) == 0:
-            from services.session_processors.usage_lib import rebuild_rollups
+            from datetime import datetime, timedelta, timezone
 
             try:
-                rebuild_rollups(job_conn)
+                since_day = (datetime.now(timezone.utc) - timedelta(days=7)).date()
+                usage_repo().rebuild_rollups(since_day=since_day)
             except Exception as rollup_exc:
                 logger.warning("usage rollup rebuild failed: %s", rollup_exc)
     except Exception as e:

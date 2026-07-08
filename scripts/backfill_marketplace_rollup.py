@@ -1,55 +1,62 @@
 """One-shot backfill of `usage_marketplace_item_daily` + `_window` from existing usage_events.
 
-After v45→v46 migrates the schema, the new rollup tables start empty. The
+After v45->v46 migrates the schema, the new rollup tables start empty. The
 UsageProcessor rebuilds them on its first tick (7-day incremental for daily
 fact + 7d window) and within an hour fills `last_30d`, so doing nothing is
 also a valid path — but the marketplace pages then show zero invocations
 for up to 30 days until events older than the 7-day incremental window
 flow back into the rollup.
 
-This script forces a full rebuild from `usage_events` immediately. Safe
-to re-run — uses the same `rebuild_rollups()` function the scheduler
-invokes, which is idempotent (DELETE+INSERT).
+This script forces a full rebuild from `usage_events` immediately via the
+backend-aware `usage_repo().rebuild_rollups()` (#728 — the free function
+this script used to call directly was DuckDB-only and left rollups
+permanently empty on Postgres). Safe to re-run — idempotent (DELETE+INSERT).
 
 Usage::
 
     python scripts/backfill_marketplace_rollup.py
 """
+
 from __future__ import annotations
 
 import logging
 import sys
-from datetime import datetime, timezone
 
-from services.session_processors.usage_lib import rebuild_rollups
-from src.db import get_system_db
+from src.repositories import usage_repo
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
 
 def main() -> int:
-    conn = get_system_db()
+    repo = usage_repo()
 
-    # Find the oldest usage_event so the daily-fact rebuild covers all
-    # historical data, not just the default 7-day incremental window.
-    row = conn.execute(
-        "SELECT MIN(CAST(occurred_at AS DATE)) FROM usage_events"
-    ).fetchone()
-    since_day = row[0] if row and row[0] else datetime.now(timezone.utc).date()
+    # since_day=None -> full rebuild: the repo computes the effective cutoff
+    # as the earliest day present in usage_events, so the daily-fact rebuild
+    # covers all historical data, not just the default 7-day incremental
+    # window. force_30d=True refreshes the 30d window snapshot immediately
+    # too, instead of waiting for the hourly throttle.
+    log.info("backfill_marketplace_rollup: full rebuild, force_30d=True")
+    repo.rebuild_rollups(force_30d=True)
 
-    log.info("backfill_marketplace_rollup: since_day=%s, force_30d=True", since_day)
-    rebuild_rollups(conn, since_day=since_day, force_30d=True)
+    if hasattr(repo, "conn"):  # DuckDB
+        daily_rows = repo.conn.execute("SELECT COUNT(*) FROM usage_marketplace_item_daily").fetchone()[0]
+        window_rows = repo.conn.execute(
+            "SELECT period_label, COUNT(*) FROM usage_marketplace_item_window GROUP BY 1"
+        ).fetchall()
+    else:  # Postgres
+        import sqlalchemy as sa
 
-    daily_rows = conn.execute(
-        "SELECT COUNT(*) FROM usage_marketplace_item_daily"
-    ).fetchone()[0]
-    window_rows = conn.execute(
-        "SELECT period_label, COUNT(*) FROM usage_marketplace_item_window GROUP BY 1"
-    ).fetchall()
+        with repo._engine.connect() as conn:
+            daily_rows = conn.execute(sa.text("SELECT COUNT(*) FROM usage_marketplace_item_daily")).scalar()
+            window_rows = conn.execute(
+                sa.text("SELECT period_label, COUNT(*) FROM usage_marketplace_item_window GROUP BY 1")
+            ).fetchall()
+
     log.info(
         "backfill complete: daily=%d window=%s",
-        daily_rows, dict(window_rows),
+        daily_rows,
+        dict(window_rows),
     )
     return 0
 
