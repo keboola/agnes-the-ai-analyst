@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.20] - 2026-07-08
+
+### Added
 - `agnes statusline` now surfaces a one-line "what changed" summary after a detached `agnes update` convergence actually changes something (e.g. `Agnes: CLI 0.72.9 -> 0.73.0 (active next session) · +2 plugins · workspace refreshed`), shown once per convergence report; an all-`ok`/`skipped` report renders nothing, and the CLI portion is phrased honestly ("active next session" vs already active) since a freshly-installed binary only takes effect on the next `agnes` invocation (#744)
 
 ### Changed
