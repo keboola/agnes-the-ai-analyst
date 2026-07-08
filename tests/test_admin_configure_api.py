@@ -4,8 +4,6 @@ import ipaddress
 import socket
 from unittest.mock import patch
 
-import pytest
-
 
 def _auth(token):
     return {"Authorization": f"Bearer {token}"}
@@ -86,9 +84,7 @@ class TestAdminConfigure:
         )
         assert resp.status_code == 422
 
-    def test_configure_overlay_does_not_resolve_env_var_placeholders(
-        self, seeded_app, tmp_path, monkeypatch
-    ):
+    def test_configure_overlay_does_not_resolve_env_var_placeholders(self, seeded_app, tmp_path, monkeypatch):
         """Regression: pre-fix `/api/admin/configure` seeded `existing` from
         the static config when no overlay existed, then wrote the whole
         thing back. Static `${SMTP_PASSWORD}` placeholders got resolved
@@ -99,25 +95,32 @@ class TestAdminConfigure:
         three sections — same contract as `/api/admin/server-config`.
         """
         import yaml as _yaml
+
         static_dir = tmp_path / "static"
         static_dir.mkdir()
-        (static_dir / "instance.yaml").write_text(_yaml.dump({
-            "instance": {"name": "Old"},
-            "auth": {"allowed_domain": "example.com", "webapp_secret_key": "x"},
-            "server": {"host": "1.2.3.4", "hostname": "example.com"},
-            "email": {
-                "smtp_host": "smtp.example.com",
-                "smtp_password": "${SMTP_PASSWORD}",
-            },
-        }))
+        (static_dir / "instance.yaml").write_text(
+            _yaml.dump(
+                {
+                    "instance": {"name": "Old"},
+                    "auth": {"allowed_domain": "example.com", "webapp_secret_key": "x"},
+                    "server": {"host": "1.2.3.4", "hostname": "example.com"},
+                    "email": {
+                        "smtp_host": "smtp.example.com",
+                        "smtp_password": "${SMTP_PASSWORD}",
+                    },
+                }
+            )
+        )
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv("CONFIG_DIR", str(static_dir))
         monkeypatch.setenv("SMTP_PASSWORD", "hunter2-cleartext-secret")
         (tmp_path / "state").mkdir(parents=True, exist_ok=True)
         from pathlib import Path as _Path
         import config.loader as _loader_mod
+
         monkeypatch.setattr(_loader_mod, "CONFIG_DIR", _Path(static_dir))
         from app.instance_config import reset_cache
+
         reset_cache()
 
         c = seeded_app["client"]
@@ -130,8 +133,9 @@ class TestAdminConfigure:
         assert resp.status_code == 200, resp.text
 
         overlay_text = (tmp_path / "state" / "instance.yaml").read_text()
-        assert "hunter2-cleartext-secret" not in overlay_text, \
+        assert "hunter2-cleartext-secret" not in overlay_text, (
             f"env-resolved secret leaked into overlay:\n{overlay_text}"
+        )
         overlay = _yaml.safe_load(overlay_text)
         # email/server/auth.webapp_secret_key are static-only here — wizard
         # never touches them, so they must not appear in the overlay.
@@ -141,9 +145,7 @@ class TestAdminConfigure:
         assert overlay["instance"]["name"] == "New"
         assert overlay["data_source"]["type"] == "local"
 
-    def test_corrupt_overlay_refused_with_500_not_silently_overwritten(
-        self, seeded_app, tmp_path, monkeypatch
-    ):
+    def test_corrupt_overlay_refused_with_500_not_silently_overwritten(self, seeded_app, tmp_path, monkeypatch):
         """Symmetric to the server-config editor: /configure must refuse to
         overwrite a corrupt overlay so the operator can investigate, instead
         of silently dropping every previously-saved section."""
@@ -323,6 +325,47 @@ class TestAdminRegistry:
         resp = c.get("/api/admin/registry")
         assert resp.status_code == 401
 
+    def test_list_registry_surfaces_sync_state_fields(self, seeded_app):
+        """#754: the admin_sync.html dashboard (and `agnes admin
+        list-tables`) render `last_sync` / `last_sync_status` / `rows` /
+        `file_size_bytes` straight off this response — pre-fix the
+        endpoint only ever returned `last_sync_error` / `last_sync_display`,
+        so those columns silently rendered as "never synced" / "0 synced"
+        even for tables that had synced fine. Three registry rows, one per
+        outcome: never-synced, synced ok, and errored."""
+        from src.repositories import sync_state_repo, table_registry_repo
+
+        registry = table_registry_repo()
+        registry.register(id="never", name="never", source_type="keboola", bucket="in.c-x")
+        registry.register(id="synced", name="synced", source_type="keboola", bucket="in.c-x")
+        registry.register(id="failed", name="failed", source_type="keboola", bucket="in.c-x")
+
+        state = sync_state_repo()
+        state.update_sync(table_id="synced", rows=100, file_size_bytes=2048, hash="abc")
+        state.set_error("failed", "connection refused")
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/registry", headers=_auth(token))
+        assert resp.status_code == 200
+        by_name = {t["name"]: t for t in resp.json()["tables"]}
+
+        never = by_name["never"]
+        assert never["last_sync"] is None
+        assert never["last_sync_status"] == "pending"
+        assert never["rows"] is None
+        assert never["file_size_bytes"] is None
+
+        synced = by_name["synced"]
+        assert synced["last_sync"] is not None
+        assert synced["last_sync_status"] == "ok"
+        assert synced["rows"] == 100
+        assert synced["file_size_bytes"] == 2048
+
+        failed = by_name["failed"]
+        assert failed["last_sync_status"] == "error"
+        assert failed["last_sync_error"] == "connection refused"
+
 
 class TestRegisterTable:
     def test_register_table_success(self, seeded_app):
@@ -330,8 +373,13 @@ class TestRegisterTable:
         token = seeded_app["admin_token"]
         resp = c.post(
             "/api/admin/register-table",
-            json={"name": "orders", "source_type": "keboola", "bucket": "in.c-crm",
-                  "source_table": "orders", "query_mode": "local"},
+            json={
+                "name": "orders",
+                "source_type": "keboola",
+                "bucket": "in.c-crm",
+                "source_table": "orders",
+                "query_mode": "local",
+            },
             headers=_auth(token),
         )
         assert resp.status_code == 201

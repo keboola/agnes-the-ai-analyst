@@ -2,6 +2,7 @@
 must record it as a 'skipped, in_flight' outcome and NOT call state.set_error
 (otherwise sync_state surfaces a false-positive 'failure' for a healthy
 in-progress run)."""
+
 from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
@@ -14,26 +15,41 @@ from connectors.bigquery.extractor import MaterializeInFlightError
 @pytest.fixture
 def fake_registry_with_one_materialized(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    rows = [{
-        "id": "in_flight_t",
-        "name": "in_flight_t",
-        "query_mode": "materialized",
-        "source_type": "bigquery",
-        "source_query": "SELECT * FROM `ds.t`",
-        "sync_schedule": None,
-    }]
+    rows = [
+        {
+            "id": "in_flight_t",
+            "name": "in_flight_t",
+            "query_mode": "materialized",
+            "source_type": "bigquery",
+            "source_query": "SELECT * FROM `ds.t`",
+            "sync_schedule": None,
+        }
+    ]
 
     class _Repo:
-        def __init__(self, conn): pass
-        def list_all(self): return rows
+        def __init__(self, conn):
+            pass
+
+        def list_all(self):
+            return rows
 
     class _State:
         def __init__(self, conn):
             self.set_error_calls = []
+            self.set_skipped_calls = []
             self.update_sync_calls = []
-        def get_last_sync(self, _id): return None
-        def set_error(self, table_id, msg): self.set_error_calls.append((table_id, msg))
-        def update_sync(self, **kw): self.update_sync_calls.append(kw)
+
+        def get_last_sync(self, _id):
+            return None
+
+        def set_error(self, table_id, msg):
+            self.set_error_calls.append((table_id, msg))
+
+        def set_skipped(self, table_id, reason):
+            self.set_skipped_calls.append((table_id, reason))
+
+        def update_sync(self, **kw):
+            self.update_sync_calls.append(kw)
 
     state = _State(None)
     # Factory swap: api module imports table_registry_repo / sync_state_repo
@@ -45,7 +61,8 @@ def fake_registry_with_one_materialized(monkeypatch, tmp_path):
 
 
 def test_default_schedule_falls_through_env_then_every_1h(
-    monkeypatch, fake_registry_with_one_materialized,
+    monkeypatch,
+    fake_registry_with_one_materialized,
 ):
     """Per-table ``sync_schedule=None`` → fall through to
     ``AGNES_DEFAULT_SYNC_SCHEDULE`` env (operator deployment override) →
@@ -80,18 +97,26 @@ def test_default_schedule_falls_through_env_then_every_1h(
     # Case 1: per-table schedule wins over env. (Mutate fixture's row.)
     fake_registry_with_one_materialized  # ensure fixture is loaded
     import app.api.sync as _sm
+
     # The fixture's _Repo.list_all returns a captured list; reach into
     # its closure isn't easy. Easier: monkeypatch list_all directly.
-    pinned_rows = [{
-        "id": "in_flight_t", "name": "in_flight_t",
-        "query_mode": "materialized", "source_type": "bigquery",
-        "source_query": "SELECT 1",
-        "sync_schedule": "every 30m",  # explicit per-table
-    }]
+    pinned_rows = [
+        {
+            "id": "in_flight_t",
+            "name": "in_flight_t",
+            "query_mode": "materialized",
+            "source_type": "bigquery",
+            "source_query": "SELECT 1",
+            "sync_schedule": "every 30m",  # explicit per-table
+        }
+    ]
 
     class _RepoWithSched:
-        def __init__(self, conn): pass
-        def list_all(self): return pinned_rows
+        def __init__(self, conn):
+            pass
+
+        def list_all(self):
+            return pinned_rows
 
     monkeypatch.setattr(_sm, "table_registry_repo", lambda: _RepoWithSched(None))
     _run_materialized_pass(MagicMock(), MagicMock())
@@ -113,6 +138,7 @@ def test_in_flight_recorded_as_skipped_not_error(fake_registry_with_one_material
     skipped = summary["skipped"][0]
     assert skipped == {"table": "in_flight_t", "reason": "in_flight"}
     assert state.set_error_calls == []
+    assert state.set_skipped_calls == [("in_flight_t", "in_flight")]
     assert state.update_sync_calls == []
 
 
@@ -125,29 +151,61 @@ def test_due_check_skipped_uses_due_check_reason(fake_registry_with_one_material
 
 # ---- targeted-trigger filter -----------------------------------------------
 
+
 @pytest.fixture
 def fake_registry_with_three_materialized(monkeypatch, tmp_path):
     """Three materialized rows so we can verify ``tables=['orders']`` only
     touches `orders` and skips the other two with ``reason='not_in_target'``."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     rows = [
-        {"id": "orders",     "name": "orders",     "query_mode": "materialized",
-         "source_type": "bigquery", "source_query": "SELECT 1", "sync_schedule": None},
-        {"id": "customers",  "name": "customers",  "query_mode": "materialized",
-         "source_type": "bigquery", "source_query": "SELECT 1", "sync_schedule": None},
-        {"id": "events",     "name": "events",     "query_mode": "materialized",
-         "source_type": "bigquery", "source_query": "SELECT 1", "sync_schedule": None},
+        {
+            "id": "orders",
+            "name": "orders",
+            "query_mode": "materialized",
+            "source_type": "bigquery",
+            "source_query": "SELECT 1",
+            "sync_schedule": None,
+        },
+        {
+            "id": "customers",
+            "name": "customers",
+            "query_mode": "materialized",
+            "source_type": "bigquery",
+            "source_query": "SELECT 1",
+            "sync_schedule": None,
+        },
+        {
+            "id": "events",
+            "name": "events",
+            "query_mode": "materialized",
+            "source_type": "bigquery",
+            "source_query": "SELECT 1",
+            "sync_schedule": None,
+        },
     ]
 
     class _Repo:
-        def __init__(self, conn): pass
-        def list_all(self): return rows
+        def __init__(self, conn):
+            pass
+
+        def list_all(self):
+            return rows
 
     class _State:
-        def __init__(self, conn): pass
-        def get_last_sync(self, _id): return None
-        def set_error(self, *a, **kw): pass
-        def update_sync(self, **kw): pass
+        def __init__(self, conn):
+            pass
+
+        def get_last_sync(self, _id):
+            return None
+
+        def set_error(self, *a, **kw):
+            pass
+
+        def set_skipped(self, *a, **kw):
+            pass
+
+        def update_sync(self, **kw):
+            pass
 
     monkeypatch.setattr("app.api.sync.table_registry_repo", lambda: _Repo(None))
     monkeypatch.setattr("app.api.sync.sync_state_repo", lambda: _State(None))
@@ -177,13 +235,10 @@ def test_targeted_trigger_only_processes_listed_tables(
     assert ("events", "not_in_target") in skipped_pairs
 
 
-def test_targeted_trigger_matches_id_or_name(
-    fake_registry_with_three_materialized, monkeypatch
-):
+def test_targeted_trigger_matches_id_or_name(fake_registry_with_three_materialized, monkeypatch):
     """Operators may pass either the registry id or the human-friendly
     name. Both forms should select the same row."""
-    monkeypatch.setattr("app.api.sync._materialize_table",
-                        lambda **kw: {"rows": 0, "size_bytes": 0, "hash": "x"})
+    monkeypatch.setattr("app.api.sync._materialize_table", lambda **kw: {"rows": 0, "size_bytes": 0, "hash": "x"})
 
     # By id
     s1 = _run_materialized_pass(MagicMock(), MagicMock(), tables=["orders"])
@@ -197,8 +252,7 @@ def test_targeted_trigger_matches_id_or_name(
 def test_no_target_processes_all_due_rows(fake_registry_with_three_materialized):
     """Backward compat: ``tables=None`` (no filter) keeps the original
     behavior — process every due materialized row."""
-    with patch("app.api.sync._materialize_table",
-               return_value={"rows": 0, "size_bytes": 0, "hash": "x"}):
+    with patch("app.api.sync._materialize_table", return_value={"rows": 0, "size_bytes": 0, "hash": "x"}):
         summary = _run_materialized_pass(MagicMock(), MagicMock(), tables=None)
 
     assert sorted(summary["materialized"]) == ["customers", "events", "orders"]

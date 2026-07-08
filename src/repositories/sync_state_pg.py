@@ -4,6 +4,7 @@ Mirrors ``src/repositories/sync_state.py``. The upsert in
 ``update_sync`` uses PG's ``ON CONFLICT (table_id) DO UPDATE`` so the
 DuckDB and PG impls converge on identical semantics.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -20,10 +21,14 @@ class SyncStatePgRepository:
 
     def get_table_state(self, table_id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT * FROM sync_state WHERE table_id = :t"),
-                {"t": table_id},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM sync_state WHERE table_id = :t"),
+                    {"t": table_id},
+                )
+                .mappings()
+                .first()
+            )
         return dict(row) if row else None
 
     def get_last_sync(self, table_id: str) -> Optional[datetime]:
@@ -36,9 +41,7 @@ class SyncStatePgRepository:
 
     def get_all_states(self) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text("SELECT * FROM sync_state ORDER BY table_id")
-            ).mappings().all()
+            rows = conn.execute(sa.text("SELECT * FROM sync_state ORDER BY table_id")).mappings().all()
         return [dict(r) for r in rows]
 
     def update_sync(
@@ -102,13 +105,17 @@ class SyncStatePgRepository:
 
     def get_sync_history(self, table_id: str, limit: int = 10) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    """SELECT * FROM sync_history WHERE table_id = :t
+            rows = (
+                conn.execute(
+                    sa.text(
+                        """SELECT * FROM sync_history WHERE table_id = :t
                        ORDER BY synced_at DESC LIMIT :limit"""
-                ),
-                {"t": table_id, "limit": limit},
-            ).mappings().all()
+                    ),
+                    {"t": table_id, "limit": limit},
+                )
+                .mappings()
+                .all()
+            )
         return [dict(r) for r in rows]
 
     def list_recent(
@@ -139,6 +146,21 @@ class SyncStatePgRepository:
                          error = EXCLUDED.error"""
                 ),
                 {"t": table_id, "err": error_message},
+            )
+
+    def set_skipped(self, table_id: str, reason: str) -> None:
+        """Mirrors ``SyncStateRepository.set_skipped`` — see its docstring
+        for the reasoning (#754) on which skip reasons are worth persisting."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    """INSERT INTO sync_state (table_id, status, error)
+                       VALUES (:t, 'skipped', :reason)
+                       ON CONFLICT (table_id) DO UPDATE SET
+                         status = 'skipped',
+                         error = EXCLUDED.error"""
+                ),
+                {"t": table_id, "reason": reason},
             )
 
     def clear_error(self, table_id: str) -> None:

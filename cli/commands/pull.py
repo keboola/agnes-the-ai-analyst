@@ -39,7 +39,8 @@ def pull(
     as_json: bool = typer.Option(False, "--json", help="Emit a single JSON object summarizing the pull"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Compute the delta without writing anything to disk"),
     skip_materialize: bool = typer.Option(
-        False, "--skip-materialize",
+        False,
+        "--skip-materialize",
         help=(
             "Skip materialized-mode tables (server-side scheduled BQ "
             "scan results, often multi-GB). Their data is still discoverable "
@@ -56,10 +57,15 @@ def pull(
         # returns an empty string we still want a friendly hint, not a crash
         # halfway through the manifest fetch.
         typer.echo(
-            render_error(0, {"detail": {
-                "kind": "server_unreachable",
-                "hint": "No server configured. Run: agnes init --server-url <URL> --token <PAT>",
-            }}),
+            render_error(
+                0,
+                {
+                    "detail": {
+                        "kind": "server_unreachable",
+                        "hint": "No server configured. Run: agnes init --server-url <URL> --token <PAT>",
+                    }
+                },
+            ),
             err=True,
         )
         raise typer.Exit(1)
@@ -67,10 +73,15 @@ def pull(
     token = get_token()
     if not token:
         typer.echo(
-            render_error(0, {"detail": {
-                "kind": "auth_failed",
-                "hint": "No token. Run: agnes auth import-token --token <PAT>",
-            }}),
+            render_error(
+                0,
+                {
+                    "detail": {
+                        "kind": "auth_failed",
+                        "hint": "No token. Run: agnes auth import-token --token <PAT>",
+                    }
+                },
+            ),
             err=True,
         )
         raise typer.Exit(1)
@@ -88,10 +99,10 @@ def pull(
     if not (quiet or as_json):
         try:
             from cli.lib.hooks import workspace_has_legacy_hooks
+
             if workspace_has_legacy_hooks(workspace):
                 typer.echo(
-                    "This workspace uses an outdated hook layout — "
-                    "run `agnes init` to enable auto-update.",
+                    "This workspace uses an outdated hook layout — run `agnes init` to enable auto-update.",
                     err=True,
                 )
         except Exception:
@@ -120,7 +131,9 @@ def pull(
     show_progress = not (quiet or as_json)
     try:
         result: PullResult = run_pull(
-            server_url, token, workspace,
+            server_url,
+            token,
+            workspace,
             dry_run=dry_run,
             skip_materialize=skip_materialize,
             show_progress=show_progress,
@@ -132,24 +145,33 @@ def pull(
         # error in a helper). Render it through the same typed-error pipe so
         # the operator gets a consistent shape, then exit non-zero.
         typer.echo(
-            render_error(0, {"detail": {
-                "kind": "manifest_unauthorized",
-                "hint": f"Pull failed: {exc}",
-                "message": str(exc),
-            }}),
+            render_error(
+                0,
+                {
+                    "detail": {
+                        "kind": "manifest_unauthorized",
+                        "hint": f"Pull failed: {exc}",
+                        "message": str(exc),
+                    }
+                },
+            ),
             err=True,
         )
         raise typer.Exit(1)
 
     if as_json:
-        typer.echo(json.dumps({
-            "tables_updated": result.tables_updated,
-            "tables_removed": result.tables_removed,
-            "parquets_total": result.parquets_total,
-            "rules_count": result.rules_count,
-            "duration_s": round(result.duration_s, 3),
-            "errors": result.errors,
-        }))
+        typer.echo(
+            json.dumps(
+                {
+                    "tables_updated": result.tables_updated,
+                    "tables_removed": result.tables_removed,
+                    "parquets_total": result.parquets_total,
+                    "rules_count": result.rules_count,
+                    "duration_s": round(result.duration_s, 3),
+                    "errors": result.errors,
+                }
+            )
+        )
         # #596 — a per-table / per-stage failure must surface as a non-zero
         # exit even on the machine-readable path. Emit the JSON dict first
         # (the consumer parses `errors`), THEN exit 1 so a wrapping script's
@@ -181,14 +203,26 @@ def pull(
     # silent removals were the Devin Review finding on #594.
     if result.tables_removed:
         typer.echo(
-            f"Updated {result.tables_updated} tables, removed "
-            f"{result.tables_removed} ({result.parquets_total} total)."
+            f"Updated {result.tables_updated} tables, removed {result.tables_removed} ({result.parquets_total} total)."
         )
     else:
-        typer.echo(
-            f"Updated {result.tables_updated} tables ({result.parquets_total} total)."
-        )
+        typer.echo(f"Updated {result.tables_updated} tables ({result.parquets_total} total).")
     typer.echo(f"Rules: {result.rules_count}.")
+
+    # #754 — an empty manifest with zero errors is ambiguous: it means
+    # either "nothing is registered on the server yet" or "your account
+    # has no group grants for any table" — NOT a transport/server failure
+    # (those already land in `result.errors` via the `except` in
+    # `run_pull`'s manifest-fetch step and are reported below). Pre-fix
+    # this printed only the bare "Updated 0 tables (0 total)." line above
+    # with no hint which of the two it was.
+    if result.parquets_total == 0 and not result.errors:
+        typer.echo(
+            "No tables available to pull — either nothing is registered on "
+            "the server yet, or your account has no group grants for any "
+            "table. Ask your admin to register a table and/or grant your "
+            "group access (`agnes admin grant`)."
+        )
 
     # v49 (Task 8.12): per-type status block surfaced from `SyncReport`.
     # The new per-type sync loop in ``cli/lib/pull_sync.py`` reports
@@ -229,6 +263,7 @@ def _emit_stack_sync_block(stack) -> None:
     Invariant violations (if any) surface as a trailing warning so a
     drifted disk state isn't silently swept under the rug.
     """
+
     # Tolerate either dataclass shape (real ``SyncReport``) or test
     # doubles supplying a duck-typed object with .direct_tables etc.
     def _line(label: str, rep) -> str:
@@ -263,7 +298,6 @@ def _emit_stack_sync_block(stack) -> None:
     violations = getattr(stack, "invariant_violations", []) or []
     if violations:
         typer.echo(
-            f"warn: {len(violations)} stack invariant violation"
-            f"{'s' if len(violations) != 1 else ''} — see logs.",
+            f"warn: {len(violations)} stack invariant violation{'s' if len(violations) != 1 else ''} — see logs.",
             err=True,
         )

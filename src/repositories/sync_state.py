@@ -24,15 +24,11 @@ class SyncStateRepository:
         return [dict(zip(columns, row)) for row in rows]
 
     def get_table_state(self, table_id: str) -> Optional[Dict[str, Any]]:
-        result = self.conn.execute(
-            "SELECT * FROM sync_state WHERE table_id = ?", [table_id]
-        ).fetchone()
+        result = self.conn.execute("SELECT * FROM sync_state WHERE table_id = ?", [table_id]).fetchone()
         return self._row_to_dict(result)
 
     def get_last_sync(self, table_id: str) -> Optional[datetime]:
-        result = self.conn.execute(
-            "SELECT last_sync FROM sync_state WHERE table_id = ?", [table_id]
-        ).fetchone()
+        result = self.conn.execute("SELECT last_sync FROM sync_state WHERE table_id = ?", [table_id]).fetchone()
         return result[0] if result else None
 
     def get_all_states(self) -> List[Dict[str, Any]]:
@@ -65,8 +61,7 @@ class SyncStateRepository:
                 hash = excluded.hash,
                 status = excluded.status,
                 error = excluded.error""",
-            [table_id, now, rows, file_size_bytes, uncompressed_size_bytes,
-             columns, hash, status, error],
+            [table_id, now, rows, file_size_bytes, uncompressed_size_bytes, columns, hash, status, error],
         )
         self.conn.execute(
             """INSERT INTO sync_history (id, table_id, synced_at, rows, duration_ms, status, error)
@@ -127,6 +122,36 @@ class SyncStateRepository:
             [table_id, error_message],
         )
 
+    def set_skipped(self, table_id: str, reason: str) -> None:
+        """Record a per-table sync SKIP on the existing `error`/`status`
+        columns (#754) — same shape as `set_error`, distinct status value
+        so `GET /api/admin/registry` and `agnes admin list-tables` can tell
+        "we tried and it failed" from "we deliberately didn't try this run
+        (reason)" instead of leaving the row looking merely stale.
+
+        Reserved for skip reasons meaningful enough to persist across a
+        process restart (e.g. `source_filter`, `not_in_target`, `in_flight`)
+        — NOT the routine per-tick `due_check`/"not yet due" skip, which
+        fires on nearly every scheduler tick for every table with a
+        schedule and would otherwise turn this into an UPDATE storm for no
+        new information (the row's own `last_sync` already tells that
+        story). Callers own that distinction; this method just persists
+        whatever reason they pass.
+
+        Same upsert-in-place semantics as `set_error`: preserves the row's
+        `last_sync` / `rows` / `hash` from a prior successful sync so a
+        table that was previously synced keeps serving its last-good
+        parquet while this run's skip reason is surfaced alongside it.
+        """
+        self.conn.execute(
+            """INSERT INTO sync_state (table_id, status, error)
+            VALUES (?, 'skipped', ?)
+            ON CONFLICT (table_id) DO UPDATE SET
+                status = 'skipped',
+                error = excluded.error""",
+            [table_id, reason],
+        )
+
     def clear_error(self, table_id: str) -> None:
         """Clear an `error` / `status='error'` flag without disturbing the
         rest of the sync_state row. Called after a successful materialize so
@@ -151,9 +176,7 @@ class SyncStateRepository:
         purged alongside the registry row. This repo owns both tables, so both
         deletes live here (formerly inline in the admin unregister handler).
         """
-        self.conn.execute(
-            "DELETE FROM sync_history WHERE table_id = ?", [table_id]
-        )
+        self.conn.execute("DELETE FROM sync_history WHERE table_id = ?", [table_id])
         removed = self.conn.execute(
             "DELETE FROM sync_state WHERE table_id = ? RETURNING table_id",
             [table_id],

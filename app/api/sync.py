@@ -1,6 +1,7 @@
 """Sync endpoints — manifest, trigger, sync-settings, table-subscriptions."""
 
 import hashlib
+import json
 import logging
 import os
 import subprocess
@@ -81,6 +82,41 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
+def _parse_extractor_stats(stdout: Optional[str]) -> Optional[dict]:
+    """Parse the Keboola extractor subprocess's stats dict back out of its
+    stdout (#754).
+
+    The subprocess (the inline ``-c`` script built in ``_run_sync``) prints
+    exactly one line — ``print(json.dumps(result))`` — as the LAST thing it
+    writes to stdout, right before exiting with a code computed by
+    ``compute_exit_code``. It cannot write per-table failures to
+    ``system.duckdb`` itself: the parent process holds that connection's
+    lock for the duration of the sync (see the module docstring on
+    ``_sync_lock``), so a second writer would fight it. This stdout line is
+    therefore the only channel for ``{tables_extracted, tables_failed,
+    errors: [{table, error}]}`` to reach the parent, which is what
+    previously discarded per-table extractor errors, leaving `agnes admin`
+    / the admin UI with no explanation for "N total, 0 synced" beyond a
+    generic exit-code message.
+
+    Defensive: a truncated/garbled/empty stdout (e.g. the subprocess was
+    SIGKILLed mid-flush) returns ``None`` rather than raising — the caller
+    already has an exit-code-derived fallback message.
+    """
+    if not stdout:
+        return None
+    for line in reversed(stdout.strip().splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except (ValueError, TypeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
 def _materialize_table(
     *,
     table_id: str,
@@ -138,6 +174,16 @@ def _run_materialized_pass(
     healthy sibling. ``MaterializeBudgetError`` is caught and rendered with
     its structured fields so operator alerting can pick out the cap-vs-actual
     bytes from the log line.
+
+    #754: skip reasons bounded enough to be worth persisting across a
+    process restart (``source_filter``, ``not_in_target``, ``in_flight``)
+    are ALSO written to ``sync_state`` via ``state.set_skipped(...)`` so
+    ``GET /api/admin/registry`` / ``agnes admin list-tables`` can explain
+    a "0 synced" run. The routine per-tick ``due_check`` skip is
+    deliberately NOT persisted — it fires on nearly every scheduler tick
+    for every scheduled table and would otherwise turn every tick into an
+    UPDATE storm for information the row's own ``last_sync`` already
+    conveys.
     """
     from app.instance_config import get_value
     from connectors.bigquery.extractor import MaterializeBudgetError, MaterializeInFlightError
@@ -205,10 +251,16 @@ def _run_materialized_pass(
         row_source_type = row.get("source_type") or "bigquery"  # legacy default
         if source_type is not None and row_source_type != source_type:
             summary["skipped"].append({"table": ref_name, "reason": "source_filter"})
+            # Persisted (#754) — a partial `?source=` rebuild is an explicit,
+            # bounded-frequency request (not a routine per-tick skip), so an
+            # operator later looking at `GET /api/admin/registry` for "why
+            # didn't this sync" sees the real reason instead of a stale row.
+            state.set_skipped(ref_name, "source_filter")
             continue
 
         if target_set is not None and not (ref_name in target_set or row.get("id") in target_set):
             summary["skipped"].append({"table": ref_name, "reason": "not_in_target"})
+            state.set_skipped(ref_name, "not_in_target")
             continue
 
         last = state.get_last_sync(ref_name)
@@ -353,7 +405,11 @@ def _run_materialized_pass(
             # 'skipped, in-flight'. Do NOT call state.set_error: that
             # would flip status='error' on a healthy concurrent run and
             # the registry UI would surface a false-positive failure.
+            # set_skipped (#754) persists the same non-error distinction so
+            # `GET /api/admin/registry` explains the miss instead of leaving
+            # the row's prior state unexplained.
             summary["skipped"].append({"table": ref_name, "reason": "in_flight"})
+            state.set_skipped(ref_name, "in_flight")
             continue
         except MaterializeBudgetError as e:
             logger.warning(
@@ -741,6 +797,25 @@ sys.exit(compute_exit_code(result, len(configs)))
                     print(f"[SYNC] Extractor stdout: {result.stdout.strip()[-500:]}", file=_sys.stderr, flush=True)
                 if result.stderr:
                     print(f"[SYNC] Extractor stderr: {result.stderr[-500:]}", file=_sys.stderr, flush=True)
+
+                # #754 — recover the subprocess's per-table stats (it can't
+                # write system.duckdb itself; the parent holds that lock for
+                # the duration of the sync) and persist real failures via
+                # sync_state.set_error so `GET /api/admin/registry` /
+                # `agnes admin list-tables` can explain a "N total, 0 synced"
+                # run instead of an operator having to trawl container logs
+                # for the 500-char stdout tail above.
+                extractor_stats = _parse_extractor_stats(result.stdout)
+                extractor_table_errors = (extractor_stats or {}).get("errors") or []
+                if extractor_table_errors:
+                    err_state = sync_state_repo()
+                    for entry in extractor_table_errors:
+                        tname = entry.get("table")
+                        terror = entry.get("error")
+                        if tname and terror:
+                            err_state.set_error(tname, terror)
+                            collected_errors.append({"table": tname, "error": terror})
+
                 # Issue #81 Group B: three exit codes. 0 = full success,
                 # 1 = full failure, 2 = partial. Partial is a data-quality
                 # alert, not a crash — the orchestrator's per-table _meta
@@ -756,20 +831,25 @@ sys.exit(compute_exit_code(result, len(configs)))
                         file=_sys.stderr,
                         flush=True,
                     )
-                    collected_errors.append(
-                        {
-                            "table": "(keboola extractor)",
-                            "error": "partial failure (exit 2) — see server logs for per-table errors",
-                        }
-                    )
+                    # Real per-table entries (just persisted above) are more
+                    # actionable than this placeholder — only fall back to it
+                    # when the stats line couldn't be recovered at all.
+                    if not extractor_table_errors:
+                        collected_errors.append(
+                            {
+                                "table": "(keboola extractor)",
+                                "error": "partial failure (exit 2) — see server logs for per-table errors",
+                            }
+                        )
                 else:
                     print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
-                    collected_errors.append(
-                        {
-                            "table": "(keboola extractor)",
-                            "error": f"extractor failed (exit {result.returncode}) — see server logs",
-                        }
-                    )
+                    if not extractor_table_errors:
+                        collected_errors.append(
+                            {
+                                "table": "(keboola extractor)",
+                                "error": f"extractor failed (exit {result.returncode}) — see server logs",
+                            }
+                        )
 
             # Run custom connectors (Tier A: local mount) — only when there
             # were local-mode tables to drive the extractor. Custom connectors
