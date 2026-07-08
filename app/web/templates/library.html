@@ -10,14 +10,61 @@
   .lib-explainer { margin-bottom: var(--space-5); }
   .lib-explainer p { margin: 0; }
 
-  .nc-form {
-    display: none; gap: var(--space-2); align-items: center; flex-wrap: wrap;
-    margin-bottom: var(--space-5); padding: var(--space-4);
+  .nc-panel {
+    display: none;
+    margin-bottom: var(--space-5); padding: var(--space-5);
     background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
+    border-radius: var(--radius-xl); box-shadow: var(--shadow-card);
   }
-  .nc-form.is-open { display: flex; }
-  .nc-form input { flex: 1 1 200px; min-width: 180px; }
+  .nc-panel.is-open { display: block; animation: lib-rise .28s ease; }
+  @media (prefers-reduced-motion: reduce) { .nc-panel.is-open { animation: none; } }
+
+  .nc-panel__head { display: flex; align-items: flex-start; gap: var(--space-3); margin-bottom: var(--space-4); }
+  .nc-panel__icon {
+    flex: none; width: 42px; height: 42px; border-radius: var(--radius-lg);
+    display: grid; place-items: center;
+    background: color-mix(in srgb, var(--ds-primary) 12%, var(--surface));
+    color: var(--ds-primary);
+  }
+  .nc-panel__icon svg { width: 22px; height: 22px; }
+  .nc-panel__title { margin: 0; font-size: 1.05rem; font-weight: var(--font-semibold); color: var(--ds-text-primary); }
+  .nc-panel__hint { margin: 2px 0 0; font-size: 0.88rem; color: var(--ds-text-secondary); }
+
+  .nc-fields { display: grid; grid-template-columns: 1fr 1.4fr; gap: var(--space-4); }
+  @media (max-width: 720px) { .nc-fields { grid-template-columns: 1fr; } }
+
+  .nc-field label {
+    display: block; font-size: 0.82rem; font-weight: var(--font-medium);
+    color: var(--ds-text-primary); margin-bottom: 6px;
+  }
+  .nc-field label .nc-optional { color: var(--ds-text-muted); font-weight: 400; }
+  .nc-field input {
+    width: 100%; padding: 10px 12px; box-sizing: border-box;
+    font-size: 0.92rem; font-family: inherit;
+    color: var(--ds-text-primary); background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius-md);
+    transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  .nc-field input:focus {
+    outline: none; border-color: var(--ds-primary);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ds-primary) 12%, transparent);
+  }
+  .nc-field input[aria-invalid="true"] { border-color: var(--ds-accent-danger-line); }
+  .nc-field-hint {
+    margin: 6px 0 0; font-size: 0.78rem; color: var(--ds-text-muted);
+    min-height: 1.2em; overflow-wrap: anywhere;
+  }
+  .nc-field-hint code { font-size: 0.78rem; color: var(--ds-text-secondary); }
+
+  .nc-footer {
+    display: flex; align-items: center; gap: var(--space-3);
+    margin-top: var(--space-4);
+  }
+  .nc-error {
+    display: none; margin: 0; font-size: 0.85rem;
+    color: var(--ds-accent-danger-ink);
+  }
+  .nc-error.is-visible { display: block; }
 
   .col-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -101,11 +148,35 @@
   {% endcall %}
 
   {% if is_admin %}
-  <div class="nc-form" id="new-collection-form">
-    <input id="nc-name" type="text" placeholder="Collection name" aria-label="Collection name">
-    <input id="nc-desc" type="text" placeholder="Description (optional)" aria-label="Description">
-    {{ ds.button("Create", variant="primary", attrs='id="nc-create" type="button"') }}
-  </div>
+  <section class="nc-panel" id="new-collection-form" aria-labelledby="nc-title">
+    <div class="nc-panel__head">
+      <span class="nc-panel__icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5M9.5 13.5h5"/></svg>
+      </span>
+      <div>
+        <h2 class="nc-panel__title" id="nc-title">New collection</h2>
+        <p class="nc-panel__hint">Name it after the topic it covers — you'll upload files right after.</p>
+      </div>
+    </div>
+    <div class="nc-fields">
+      <div class="nc-field">
+        <label for="nc-name">Name</label>
+        <input id="nc-name" type="text" maxlength="255" placeholder="e.g. Finance policies"
+               autocomplete="off" spellcheck="false">
+        <p class="nc-field-hint" id="nc-slug-hint" aria-live="polite"></p>
+      </div>
+      <div class="nc-field">
+        <label for="nc-desc">Description <span class="nc-optional">(optional)</span></label>
+        <input id="nc-desc" type="text" placeholder="What's inside and who it's for" autocomplete="off">
+        <p class="nc-field-hint">Shown on the collection card and helps agents pick the right collection.</p>
+      </div>
+    </div>
+    <div class="nc-footer">
+      {{ ds.button("Create collection", variant="primary", attrs='id="nc-create" type="button"') }}
+      {{ ds.button("Cancel", variant="secondary", attrs='id="nc-cancel" type="button"') }}
+      <p class="nc-error" id="nc-error" role="alert"></p>
+    </div>
+  </section>
   {% endif %}
 
   {% if not collections %}
@@ -139,21 +210,96 @@
     (function () {
       var btn = document.getElementById("new-collection-btn");
       var form = document.getElementById("new-collection-form");
-      if (btn && form) btn.addEventListener("click", function () { form.classList.toggle("is-open"); });
+      if (!form) return;
+      var nameInput = document.getElementById("nc-name");
+      var descInput = document.getElementById("nc-desc");
+      var slugHint = document.getElementById("nc-slug-hint");
+      var errorEl = document.getElementById("nc-error");
       var create = document.getElementById("nc-create");
-      if (create) create.addEventListener("click", async function () {
-        var name = (document.getElementById("nc-name").value || "").trim();
-        if (!name) return;
-        var desc = document.getElementById("nc-desc").value || "";
-        var r = await fetch("/api/collections", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          body: JSON.stringify({ name: name, description: desc }),
-        });
-        if (r.ok) { window.location.reload(); }
-        else { alert("Create failed: " + r.status); }
+      var cancel = document.getElementById("nc-cancel");
+
+      function setOpen(open) {
+        form.classList.toggle("is-open", open);
+        if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+        if (open) nameInput.focus();
+      }
+      function setError(msg) {
+        errorEl.textContent = msg || "";
+        errorEl.classList.toggle("is-visible", !!msg);
+        nameInput.setAttribute("aria-invalid", msg ? "true" : "false");
+      }
+
+      // Mirrors the server's _auto_slug (app/api/collections.py) for the
+      // live URL preview only — the server-generated slug is authoritative.
+      function previewSlug(name) {
+        var s = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+        s = s.slice(0, 100).replace(/-+$/g, "");
+        return s || "collection";
+      }
+      nameInput.addEventListener("input", function () {
+        var name = nameInput.value.trim();
+        slugHint.innerHTML = "";
+        if (name) {
+          var code = document.createElement("code");
+          code.textContent = "/library/" + previewSlug(name);
+          slugHint.append("Will live at ", code);
+        }
+        if (errorEl.classList.contains("is-visible")) setError("");
       });
+
+      if (btn) {
+        btn.setAttribute("aria-controls", "new-collection-form");
+        btn.setAttribute("aria-expanded", "false");
+        btn.addEventListener("click", function () {
+          setOpen(!form.classList.contains("is-open"));
+        });
+      }
+      cancel.addEventListener("click", function () { setOpen(false); });
+      form.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") setOpen(false);
+        if (e.key === "Enter" && (e.target === nameInput || e.target === descInput)) {
+          e.preventDefault();
+          submit();
+        }
+      });
+
+      async function submit() {
+        var name = nameInput.value.trim();
+        if (!name) {
+          setError("Give the collection a name first.");
+          nameInput.focus();
+          return;
+        }
+        setError("");
+        create.disabled = true;
+        var label = create.textContent;
+        create.textContent = "Creating…";
+        try {
+          var r = await fetch("/api/collections", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify({ name: name, description: descInput.value || "" }),
+          });
+          if (r.ok) {
+            var col = await r.json();
+            // Land on the new collection so files can be uploaded immediately.
+            window.location.href = "/library/" + encodeURIComponent(col.slug);
+            return;
+          }
+          if (r.status === 409) {
+            setError("A collection with this URL already exists — pick a different name.");
+          } else {
+            setError("Create failed (" + r.status + "). Try again.");
+          }
+        } catch (err) {
+          setError("Create failed — network error. Try again.");
+        } finally {
+          create.disabled = false;
+          create.textContent = label;
+        }
+      }
+      create.addEventListener("click", submit);
     })();
   </script>
 {% endblock %}
