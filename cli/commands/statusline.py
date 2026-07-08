@@ -160,6 +160,10 @@ def _cli_phrase(step: dict) -> Optional[str]:
     if not match:
         return None
     from_version, to_version = match.group(1), match.group(2)
+    if status == "deferred":
+        # The update was intentionally not applied this run (e.g. no safe
+        # rollback artifact yet) — "active next session" would overpromise.
+        return f"CLI {from_version} -> {to_version} (deferred, retrying next session)"
     if status == "staged":
         # Windows: the real outcome lands later, written by the detached
         # helper to upgrade_status.json — `update.log`'s "staged" line alone

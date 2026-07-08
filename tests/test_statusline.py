@@ -206,6 +206,29 @@ def test_statusline_cli_phrase_active_next_session(tmp_path, monkeypatch):
     assert "CLI 0.72.9 -> 0.73.0 (active next session)" in result.output
 
 
+def test_statusline_cli_phrase_deferred_not_active_next_session(tmp_path, monkeypatch):
+    import cli.commands.statusline as sl
+
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    monkeypatch.setattr(sl, "_running_version", lambda: "0.72.9")
+    _write_update_log(
+        tmp_path,
+        _entry(
+            steps=[
+                {
+                    "stage": "cli",
+                    "status": "deferred",
+                    "detail": "0.72.9 -> 0.73.0 (deferred: no rollback artifact yet)",
+                },
+            ]
+        ),
+    )
+    result = runner.invoke(statusline_app, [], input=json.dumps({"session_id": "abc-123"}))
+    assert result.exit_code == 0
+    assert "CLI 0.72.9 -> 0.73.0 (deferred, retrying next session)" in result.output
+    assert "active next session" not in result.output
+
+
 def test_statusline_cli_phrase_windows_staged_failure(tmp_path, monkeypatch):
     import cli.commands.statusline as sl
 
