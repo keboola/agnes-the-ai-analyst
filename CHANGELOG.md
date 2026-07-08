@@ -19,6 +19,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+## [0.74.22] - 2026-07-08
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
 - Removed dead `get_system_db()` connection acquisitions in `app/api/sync.py` — the connections were opened and closed without ever being used, since the actual data access already went through `table_registry_repo()` / `sync_state_repo()` / `audit_repo()`, which open their own connections internally.
 
 ## [0.74.21] - 2026-07-08
