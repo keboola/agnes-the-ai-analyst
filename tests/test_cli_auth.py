@@ -251,6 +251,35 @@ class TestAuthWhoami:
         # May succeed or fail depending on jwt decode — either way no traceback
         assert result.exit_code in (0, 1)
 
+    def test_whoami_shows_token_expiry(self):
+        """Whoami surfaces the token's `exp` claim (#477)."""
+        import jwt as pyjwt
+        from datetime import datetime, timedelta, timezone
+
+        exp = datetime.now(timezone.utc) + timedelta(days=10)
+        token = pyjwt.encode(
+            {"email": "alice@example.com", "exp": int(exp.timestamp())},
+            "secret",
+            algorithm="HS256",
+        )
+        with patch("cli.commands.auth.get_token", return_value=token):
+            with patch("cli.commands.auth.get_server_url", return_value="http://localhost:8000"):
+                result = runner.invoke(app, ["auth", "whoami"])
+        assert result.exit_code == 0
+        assert "Token:" in result.output
+        assert "valid until" in result.output
+
+    def test_whoami_shows_unknown_expiry_when_no_exp_claim(self):
+        """Whoami degrades gracefully when the token has no `exp` claim."""
+        import jwt as pyjwt
+
+        token = pyjwt.encode({"email": "alice@example.com"}, "secret", algorithm="HS256")
+        with patch("cli.commands.auth.get_token", return_value=token):
+            with patch("cli.commands.auth.get_server_url", return_value="http://localhost:8000"):
+                result = runner.invoke(app, ["auth", "whoami"])
+        assert result.exit_code == 0
+        assert "expiry unknown" in result.output
+
 
 def test_da_login_sends_password(monkeypatch):
     import httpx

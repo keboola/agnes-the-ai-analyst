@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from pathlib import Path
 
 import typer
 from typer.testing import CliRunner
@@ -587,6 +586,47 @@ def _update_info():
     from cli.update_check import UpdateInfo
 
     return UpdateInfo(installed="2.0.0", latest="2.1.0", download_url="http://s/cli/wheel/x.whl")
+
+
+# --- _step_token (#477) --------------------------------------------------------
+
+
+def _make_token(days_left):
+    import jwt as pyjwt
+    from datetime import datetime, timedelta, timezone
+
+    exp = datetime.now(timezone.utc) + timedelta(days=days_left)
+    return pyjwt.encode({"email": "a@b.c", "exp": int(exp.timestamp())}, "s", algorithm="HS256")
+
+
+def test_step_token_skipped_when_no_token():
+    report: list[dict] = []
+    upd._step_token(None, report)
+    assert report == [{"stage": "token", "status": "skipped", "detail": "no token configured"}]
+
+
+def test_step_token_ok_when_far_from_expiry(monkeypatch):
+    monkeypatch.delenv("AGNES_TOKEN_RENEW_DAYS", raising=False)
+    report: list[dict] = []
+    upd._step_token(_make_token(60), report)
+    assert report[0]["stage"] == "token"
+    assert report[0]["status"] == "ok"
+    assert "valid until" in report[0]["detail"]
+
+
+def test_step_token_renew_soon_inside_window(monkeypatch):
+    monkeypatch.delenv("AGNES_TOKEN_RENEW_DAYS", raising=False)
+    report: list[dict] = []
+    upd._step_token(_make_token(3), report)
+    assert report == [{"stage": "token", "status": "renew-soon", "detail": report[0]["detail"]}]
+    assert "valid until" in report[0]["detail"]
+
+
+def test_step_token_ok_when_renew_disabled(monkeypatch):
+    monkeypatch.setenv("AGNES_TOKEN_RENEW_DAYS", "0")
+    report: list[dict] = []
+    upd._step_token(_make_token(3), report)
+    assert report[0]["status"] == "ok"  # nudge window disabled → never "renew-soon"
 
 
 def test_step_cli_reports_updated(monkeypatch):

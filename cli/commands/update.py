@@ -167,6 +167,35 @@ def _step_cli(*, quiet: bool, report: list[dict]) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Step 1b — token expiry (#477; workspace-independent, report-only — never
+# interactive, mirrors the CLI step's placement).
+# --------------------------------------------------------------------------- #
+def _step_token(token: Optional[str], report: list[dict]) -> None:
+    """Surface the stored PAT's expiry as a convergence report line.
+
+    Proactive re-mint (issue #477, Option 3): no refresh-token grant, no PAT
+    TTL change. `agnes update` runs unattended via the SessionStart hook, so
+    this step is report-only — never a prompt, never a browser launch. The
+    interactive stderr nudge (same underlying data) lives in
+    `cli/token_status.py::maybe_print_nudge`, wired into the root callback,
+    and is separately skipped under `--quiet` so it doesn't fire twice for
+    the same hook invocation.
+    """
+    if not token:
+        report.append({"stage": "token", "status": "skipped", "detail": "no token configured"})
+        return
+    from cli.token_status import days_remaining, format_status_line, get_renew_days
+
+    line = format_status_line(token)
+    left = days_remaining(token)
+    renew_days = get_renew_days()
+    if left is not None and renew_days > 0 and left <= renew_days:
+        report.append({"stage": "token", "status": "renew-soon", "detail": line})
+    else:
+        report.append({"stage": "token", "status": "ok", "detail": line})
+
+
+# --------------------------------------------------------------------------- #
 # Step 2 — workspace template (OVERRIDE merge / DEFAULT CLAUDE.md)
 # --------------------------------------------------------------------------- #
 def _step_workspace(workspace: Path, *, server_url: str, token: str, report: list[dict]) -> None:
@@ -500,6 +529,9 @@ def update(
 
         # Step 1 — CLI binary (workspace-independent; always runs).
         _run_step("cli", lambda: _step_cli(quiet=step_quiet, report=report), report)
+
+        # Step 1b — token expiry (#477; workspace-independent, report-only).
+        _run_step("token", lambda: _step_token(token, report), report)
 
         if workspace is None:
             report.append(
