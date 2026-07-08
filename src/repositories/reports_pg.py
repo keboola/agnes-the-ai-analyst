@@ -38,9 +38,7 @@ class ReportsPgRepository:
                 ),
                 {"start": start, "end": end},
             ).fetchone()
-        return {"invocations": int(r[0] or 0),
-                "active_users": int(r[1] or 0),
-                "errors": int(r[2] or 0)}
+        return {"invocations": int(r[0] or 0), "active_users": int(r[1] or 0), "errors": int(r[2] or 0)}
 
     def session_count(self, start: datetime, end: datetime) -> int:
         with self._engine.connect() as conn:
@@ -72,9 +70,7 @@ class ReportsPgRepository:
                 {"start": start, "end": end},
             ).fetchall()
         return {
-            r[0]: {"invocations": int(r[1] or 0),
-                   "active_users": int(r[2] or 0),
-                   "errors": int(r[3] or 0)}
+            r[0]: {"invocations": int(r[1] or 0), "active_users": int(r[2] or 0), "errors": int(r[3] or 0)}
             for r in rows
         }
 
@@ -92,8 +88,12 @@ class ReportsPgRepository:
                 {"start": start, "end": end},
             ).fetchall()
         return [
-            {"source": r[0], "invocations": int(r[1] or 0),
-             "distinct_users": int(r[2] or 0), "error_count": int(r[3] or 0)}
+            {
+                "source": r[0],
+                "invocations": int(r[1] or 0),
+                "distinct_users": int(r[2] or 0),
+                "error_count": int(r[3] or 0),
+            }
             for r in rows
         ]
 
@@ -124,15 +124,13 @@ class ReportsPgRepository:
         with self._engine.connect() as conn:
             curated = conn.execute(
                 sa.text(
-                    "SELECT COUNT(*) FROM user_plugin_optouts "
-                    "WHERE opted_out_at >= :start AND opted_out_at < :end"
+                    "SELECT COUNT(*) FROM user_plugin_optouts WHERE opted_out_at >= :start AND opted_out_at < :end"
                 ),
                 {"start": start, "end": end},
             ).fetchone()[0]
             flea = conn.execute(
                 sa.text(
-                    "SELECT COUNT(*) FROM user_store_installs "
-                    "WHERE installed_at >= :start AND installed_at < :end"
+                    "SELECT COUNT(*) FROM user_store_installs WHERE installed_at >= :start AND installed_at < :end"
                 ),
                 {"start": start, "end": end},
             ).fetchone()[0]
@@ -167,10 +165,7 @@ class ReportsPgRepository:
                 ),
                 {"start": start, "end": end, "lim": limit},
             ).fetchall()
-        return [
-            {"ref_id": f"{r[0]}/{r[1]}", "name": r[1], "installs": int(r[2] or 0)}
-            for r in rows
-        ]
+        return [{"ref_id": f"{r[0]}/{r[1]}", "name": r[1], "installs": int(r[2] or 0)} for r in rows]
 
     def installs_flea_detail(self, start: datetime, end: datetime, limit: int = 10) -> List[dict]:
         with self._engine.connect() as conn:
@@ -184,7 +179,4 @@ class ReportsPgRepository:
                 ),
                 {"start": start, "end": end, "lim": limit},
             ).fetchall()
-        return [
-            {"entity_id": r[0], "name": r[1], "installs": int(r[2] or 0)}
-            for r in rows
-        ]
+        return [{"entity_id": r[0], "name": r[1], "installs": int(r[2] or 0)} for r in rows]

@@ -185,6 +185,7 @@ class McpEntry(BaseModel):
 class FileEntry(BaseModel):
     """One file in a plugin / skill / agent bundle. Path is relative to the
     bundle root; size is bytes (rendered with ``humanbytes`` on the client)."""
+
     path: str
     size: int
 
@@ -192,6 +193,7 @@ class FileEntry(BaseModel):
 class DocEntry(BaseModel):
     """One doc file shipped alongside a Store entity. URL points at the
     serving endpoint (``/api/store/entities/<id>/docs/<filename>``)."""
+
     name: str
     url: str
 
@@ -200,6 +202,7 @@ class UseCase(BaseModel):
     """One "When to use it" example from marketplace-metadata.json.
     Curator-authored: friendly title + 1-2-sentence description + the
     literal prompt the user would paste into Claude Code."""
+
     title: str
     description: str
     prompt: str
@@ -213,6 +216,7 @@ class SampleInteraction(BaseModel):
     markdown lib. ``assistant`` stays as the source for copy-paste / future
     re-rendering needs.
     """
+
     user: str
     assistant: str
     assistant_html: str
@@ -224,25 +228,26 @@ class PluginDetailResponse(BaseModel):
     Frontend-side switching is purely cosmetic — `source` controls the
     Curated/Flea pill, photo URL fallback path, and owner label.
     """
+
     source: Literal["curated", "flea"]
     # IDs / breadcrumbs
-    marketplace_id: Optional[str] = None        # curated only
-    marketplace_name: Optional[str] = None      # curated only
-    entity_id: Optional[str] = None             # flea only
+    marketplace_id: Optional[str] = None  # curated only
+    marketplace_name: Optional[str] = None  # curated only
+    entity_id: Optional[str] = None  # flea only
     plugin_name: str
     manifest_name: str
     # Display
     description: Optional[str] = None
     version: Optional[str] = None
     category: Optional[str] = None
-    author_name: Optional[str] = None           # curated curator / flea owner
-    curator_email: Optional[str] = None         # curated only — surfaced for "contact curator"
-    owner_display: Optional[str] = None         # flea: users.name → email → owner_username
+    author_name: Optional[str] = None  # curated curator / flea owner
+    curator_email: Optional[str] = None  # curated only — surfaced for "contact curator"
+    owner_display: Optional[str] = None  # flea: users.name → email → owner_username
     homepage: Optional[str] = None
-    cover_photo_url: Optional[str] = None       # /api/store/.../photo for flea, marketplace-metadata for curated
-    video_url: Optional[str] = None             # v32: external (YouTube/Vimeo/Loom) embed URL
-    bundle_size: Optional[int] = None           # bytes; None when unknown
-    install_count: int = 0                      # flea only; curated leaves at 0
+    cover_photo_url: Optional[str] = None  # /api/store/.../photo for flea, marketplace-metadata for curated
+    video_url: Optional[str] = None  # v32: external (YouTube/Vimeo/Loom) embed URL
+    bundle_size: Optional[int] = None  # bytes; None when unknown
+    install_count: int = 0  # flea only; curated leaves at 0
     # stack_count: how many users currently have this plugin in their
     # stack — curated reads user_plugin_optouts (post-v28 PRESENCE =
     # subscribed; system plugins included via fanout), flea reads
@@ -250,8 +255,8 @@ class PluginDetailResponse(BaseModel):
     # renders as "N installed" — surfaced here so the detail hero
     # can show the matching figure.
     stack_count: int = 0
-    released_at: Optional[str] = None           # ISO timestamp
-    updated_at: Optional[str] = None            # ISO timestamp
+    released_at: Optional[str] = None  # ISO timestamp
+    updated_at: Optional[str] = None  # ISO timestamp
     installed: bool = False
     # Internal structure
     skills: List[InnerItemSummary] = []
@@ -441,13 +446,16 @@ def _load_invocation_stats(
 
     out: Dict[str, Dict] = {}
     for period_label, name, inv, du in win_rows:
-        stat = out.setdefault(name, {
-            "invocations_30d": 0,
-            "distinct_users_30d": 0,
-            "invocations_7d": 0,
-            "distinct_users_7d": 0,
-            "trend_pct": None,
-        })
+        stat = out.setdefault(
+            name,
+            {
+                "invocations_30d": 0,
+                "distinct_users_30d": 0,
+                "invocations_7d": 0,
+                "distinct_users_7d": 0,
+                "trend_pct": None,
+            },
+        )
         if period_label == "last_30d":
             stat["invocations_30d"] = int(inv or 0)
             stat["distinct_users_30d"] = int(du or 0)
@@ -458,13 +466,16 @@ def _load_invocation_stats(
     # window snapshot's freshness). Threshold preserved from v42 — trend is
     # noisy below 3 prior-week invocations so suppress to None.
     for name, (recent, prior) in trend_by_name.items():
-        stat = out.setdefault(name, {
-            "invocations_30d": 0,
-            "distinct_users_30d": 0,
-            "invocations_7d": 0,
-            "distinct_users_7d": 0,
-            "trend_pct": None,
-        })
+        stat = out.setdefault(
+            name,
+            {
+                "invocations_30d": 0,
+                "distinct_users_30d": 0,
+                "invocations_7d": 0,
+                "distinct_users_7d": 0,
+                "trend_pct": None,
+            },
+        )
         if prior >= 3:
             stat["trend_pct"] = (recent - prior) / prior * 100.0
     return out
@@ -496,6 +507,7 @@ def _load_plugin_daily_series(
     by_day = {str(r[0]): int(r[1] or 0) for r in rows}
 
     import datetime as _dt
+
     today = _dt.date.today()
     series = []
     for offset in range(29, -1, -1):
@@ -581,6 +593,7 @@ def _load_inner_item_stats(
     ).fetchall()
     by_day = {str(r[0]): int(r[1] or 0) for r in daily_rows}
     import datetime as _dt
+
     today = _dt.date.today()
     daily_series = []
     for offset in range(29, -1, -1):
@@ -648,11 +661,14 @@ def _load_inner_items_stats_by_parent(
     # None below 3 prior-week invocations (noise floor from v42).
     for name, item_type, recent, prior in trend_rows:
         key = (name, item_type)
-        stat = out.setdefault(key, {
-            "invocations_30d": 0,
-            "distinct_users_30d": 0,
-            "trend_pct": None,
-        })
+        stat = out.setdefault(
+            key,
+            {
+                "invocations_30d": 0,
+                "distinct_users_30d": 0,
+                "trend_pct": None,
+            },
+        )
         recent_i = int(recent or 0)
         prior_i = int(prior or 0)
         if prior_i >= 3:
@@ -668,9 +684,7 @@ def _audit(
 ) -> None:
     # Backend-aware: routes through audit_repo(); no connection needed.
     try:
-        audit_repo().log(
-            user_id=actor_id, action=action, resource=target, params=params
-        )
+        audit_repo().log(user_id=actor_id, action=action, resource=target, params=params)
     except Exception:
         pass
 
@@ -678,11 +692,13 @@ def _audit(
 def _invalidate_etag() -> None:
     try:
         from app.marketplace_server import packager
+
         packager.invalidate_etag_cache()
     except Exception:
         logger.exception("failed to invalidate marketplace etag cache")
     try:
         from app.marketplace_server import cowork_packager
+
         cowork_packager.invalidate_cache()
     except Exception:
         logger.exception("failed to invalidate cowork zip cache")
@@ -690,7 +706,7 @@ def _invalidate_etag() -> None:
 
 def _frontmatter_body(text: str) -> str:
     m = _FRONTMATTER_RE.match(text)
-    return text[m.end():].lstrip("\n") if m else text
+    return text[m.end() :].lstrip("\n") if m else text
 
 
 def _to_iso(value: Any) -> Optional[str]:
@@ -716,9 +732,7 @@ def _flea_detail_url(entity_id: str) -> str:
     return f"/marketplace/flea/{entity_id}"
 
 
-def _resolve_marketplace_meta(
-    conn: duckdb.DuckDBPyConnection, marketplace_id: str
-) -> Dict[str, Optional[str]]:
+def _resolve_marketplace_meta(conn: duckdb.DuckDBPyConnection, marketplace_id: str) -> Dict[str, Optional[str]]:
     """Look up display name + curator metadata in one DB hit.
 
     Returns a dict with keys ``name``, ``curator_name``, ``curator_email``.
@@ -814,7 +828,8 @@ def _flea_to_item(
         # ``version_no`` (schema v37) bumped on every re-upload, so the URL
         # changes exactly when the underlying bytes change.
         f"/api/store/entities/{entity['id']}/photo?v={entity.get('version_no', 1)}"
-        if entity.get("photo_path") else None
+        if entity.get("photo_path")
+        else None
     )
     # The archive flow renames the row's `name` to free the slot; strip
     # the suffix when rendering listings so owners don't see the ugly
@@ -822,6 +837,7 @@ def _flea_to_item(
     # (Claude Code's `/plugin` resolution) uses the renamed slug — we
     # don't strip there.
     from src.store_naming import strip_archive_suffix
+
     display_name_raw = strip_archive_suffix(entity["name"])
     # v49 phase-3: invocation is the stored synthetic_name. The column is
     # NOT NULL (phase 1 migration + repo create/update/archive write
@@ -972,13 +988,9 @@ def _apply_sort(
                           missing trend = noisy data, not zero growth).
     """
     if sort == "most_used":
-        items.sort(
-            key=lambda it: (-it.invocations_30d, it.name.lower())
-        )
+        items.sort(key=lambda it: (-it.invocations_30d, it.name.lower()))
     elif sort == "most_adopted":
-        items.sort(
-            key=lambda it: (-it.distinct_users_30d, it.name.lower())
-        )
+        items.sort(key=lambda it: (-it.distinct_users_30d, it.name.lower()))
     elif sort == "trending":
         items = [it for it in items if it.trend_pct is not None]
         items.sort(key=lambda it: -(it.trend_pct or 0.0))
@@ -1052,7 +1064,9 @@ async def list_items(
         curated_stack_counts = _load_curated_stack_counts(conn)
         items = [
             _curated_to_item(
-                conn, r, subs=subs,
+                conn,
+                r,
+                subs=subs,
                 marketplace_meta=marketplace_meta,
                 stats=curated_stats,
                 stack_counts=curated_stack_counts,
@@ -1062,21 +1076,22 @@ async def list_items(
         if needs_sort:
             items = _apply_sort(items, sort)
             total = len(items)
-            items = items[skip: skip + page_size]
+            items = items[skip : skip + page_size]
         return ItemListResponse(
-            items=items, total=total, page=page, page_size=page_size,
+            items=items,
+            total=total,
+            page=page,
+            page_size=page_size,
             available_sorts=_available_sorts([curated_stats]),
         )
 
     if tab == "flea":
-        installed_set = {
-            row["id"]
-            for row in user_store_installs_repo().list_for_user(user["id"])
-        }
+        installed_set = {row["id"] for row in user_store_installs_repo().list_for_user(user["id"])}
         # Visibility filter: non-admin sees approved + their own
         # non-approved (so submitters spot what's still under review
         # in their own grid). Admin sees everything.
         from app.auth.access import is_user_admin
+
         if is_user_admin(user["id"], conn):
             visibility_filter = None
             include_owner = None
@@ -1085,25 +1100,33 @@ async def list_items(
             include_owner = user["id"]
         if needs_sort:
             all_flea_rows, total = store_entities_repo().list(
-                skip=0, limit=10000,
-                type=type, category=category, search=q or None,
+                skip=0,
+                limit=10000,
+                type=type,
+                category=category,
+                search=q or None,
                 visibility_status=visibility_filter,
                 include_owner_id=include_owner,
             )
         else:
             all_flea_rows, total = store_entities_repo().list(
-                skip=skip, limit=page_size,
-                type=type, category=category, search=q or None,
+                skip=skip,
+                limit=page_size,
+                type=type,
+                category=category,
+                search=q or None,
                 visibility_status=visibility_filter,
                 include_owner_id=include_owner,
             )
         flea_stats = _load_invocation_stats(conn, "flea")
         flea_users_display = _load_users_display(
-            conn, (r["owner_user_id"] for r in all_flea_rows),
+            conn,
+            (r["owner_user_id"] for r in all_flea_rows),
         )
         items = [
             _flea_to_item(
-                r, installed_set=installed_set,
+                r,
+                installed_set=installed_set,
                 users_display=flea_users_display,
                 viewer_id=user["id"],
                 stats=flea_stats,
@@ -1113,9 +1136,12 @@ async def list_items(
         if needs_sort:
             items = _apply_sort(items, sort)
             total = len(items)
-            items = items[skip: skip + page_size]
+            items = items[skip : skip + page_size]
         return ItemListResponse(
-            items=items, total=total, page=page, page_size=page_size,
+            items=items,
+            total=total,
+            page=page,
+            page_size=page_size,
             available_sorts=_available_sorts([flea_stats]),
         )
 
@@ -1171,27 +1197,39 @@ async def list_items(
                 "cover_photo_url": None,
                 "created_at": None,
             }
-        items.append(_curated_to_item(
-            conn, plugin_row, subs=subs, marketplace_meta=marketplace_meta,
-            stats=curated_stats, stack_counts=curated_stack_counts,
-        ))
+        items.append(
+            _curated_to_item(
+                conn,
+                plugin_row,
+                subs=subs,
+                marketplace_meta=marketplace_meta,
+                stats=curated_stats,
+                stack_counts=curated_stack_counts,
+            )
+        )
 
     flea_installs = user_store_installs_repo().list_for_user(user["id"])
     flea_installed_set = {row["id"] for row in flea_installs}
     flea_users_display = _load_users_display(
-        conn, (row["owner_user_id"] for row in flea_installs),
+        conn,
+        (row["owner_user_id"] for row in flea_installs),
     )
     for entity in flea_installs:
-        items.append(_flea_to_item(
-            entity, installed_set=flea_installed_set,
-            users_display=flea_users_display, stats=flea_stats,
-        ))
+        items.append(
+            _flea_to_item(
+                entity,
+                installed_set=flea_installed_set,
+                users_display=flea_users_display,
+                stats=flea_stats,
+            )
+        )
 
     # Apply optional filters client-server-style for `my` tab (small N):
     if q:
         needle = q.lower()
         items = [
-            it for it in items
+            it
+            for it in items
             if needle in it.name.lower()
             or needle in (it.description or "").lower()
             or needle in (it.owner or "").lower()
@@ -1205,7 +1243,10 @@ async def list_items(
     total = len(items)
     items = items[skip : skip + page_size]
     return ItemListResponse(
-        items=items, total=total, page=page, page_size=page_size,
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
         available_sorts=_available_sorts([curated_stats, flea_stats]),
     )
 
@@ -1234,11 +1275,7 @@ async def list_categories(
     if tab in ("curated", "my"):
         group_ids = _user_group_ids(user["id"], conn) or set()
         if tab == "curated":
-            counts.update(
-                marketplace_plugins_repo().category_counts(
-                    group_ids=group_ids
-                )
-            )
+            counts.update(marketplace_plugins_repo().category_counts(group_ids=group_ids))
         else:  # my — direct read mirroring the items endpoint's `my` branch.
             granted = resolve_allowed_plugins(conn, user)
             subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
@@ -1265,6 +1302,7 @@ async def list_categories(
         # category counts match what the user actually sees in the
         # grid). Admin counts everything.
         from app.auth.access import is_user_admin
+
         if is_user_admin(user["id"], conn):
             # Admin counts everything — no visibility / owner filter.
             cat_counts = store_entities_repo().category_counts(type=type)
@@ -1314,11 +1352,13 @@ def _list_inner_skills(plugin_root: Path) -> List[InnerItemSummary]:
         except OSError:
             continue
         fm = _parse_frontmatter(text)
-        out.append(InnerItemSummary(
-            name=fm.get("name") or skill_dir.name,
-            description=fm.get("description"),
-            detail_url=None,  # populated by caller (needs marketplace_id + plugin_name)
-        ))
+        out.append(
+            InnerItemSummary(
+                name=fm.get("name") or skill_dir.name,
+                description=fm.get("description"),
+                detail_url=None,  # populated by caller (needs marketplace_id + plugin_name)
+            )
+        )
     return out
 
 
@@ -1336,11 +1376,13 @@ def _list_inner_agents(plugin_root: Path) -> List[InnerItemSummary]:
         except OSError:
             continue
         fm = _parse_frontmatter(text)
-        out.append(InnerItemSummary(
-            name=fm.get("name") or agent_path.stem,
-            description=fm.get("description"),
-            detail_url=None,
-        ))
+        out.append(
+            InnerItemSummary(
+                name=fm.get("name") or agent_path.stem,
+                description=fm.get("description"),
+                detail_url=None,
+            )
+        )
     return out
 
 
@@ -1366,10 +1408,12 @@ def _list_commands(plugin_root: Path) -> List[CommandEntry]:
         if not raw:
             continue
         name = raw if raw.startswith("/") else f"/{raw}"
-        out.append(CommandEntry(
-            name=name,
-            description=fm.get("description"),
-        ))
+        out.append(
+            CommandEntry(
+                name=name,
+                description=fm.get("description"),
+            )
+        )
     return out
 
 
@@ -1380,6 +1424,7 @@ def _read_plugin_json(plugin_root: Path) -> dict:
         return {}
     try:
         import json
+
         data = json.loads(pj.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
@@ -1416,11 +1461,13 @@ def _list_hooks(plugin_root: Path) -> List[HookEntry]:
                     name = h.get("command") or h.get("name") or h.get("type") or "(hook)"
                     name = str(name).strip() or "(hook)"
                     description = entry.get("matcher") or h.get("description")
-                    out.append(HookEntry(
-                        name=name,
-                        event=str(event),
-                        description=str(description) if description else None,
-                    ))
+                    out.append(
+                        HookEntry(
+                            name=name,
+                            event=str(event),
+                            description=str(description) if description else None,
+                        )
+                    )
                     seen_names.add(name)
 
     # Path 2: bare scripts in hooks/ directory not already covered.
@@ -1454,6 +1501,7 @@ def _list_mcps(plugin_root: Path) -> List[McpEntry]:
             continue
         try:
             import json
+
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
@@ -1475,11 +1523,13 @@ def _list_mcps(plugin_root: Path) -> List[McpEntry]:
             elif "url" in cfg:
                 kind = "sse"
                 description = str(cfg.get("url"))
-            out.append(McpEntry(
-                name=str(name),
-                type=kind,
-                description=description,
-            ))
+            out.append(
+                McpEntry(
+                    name=str(name),
+                    type=kind,
+                    description=description,
+                )
+            )
         break  # first found candidate wins
     return out
 
@@ -1533,9 +1583,7 @@ def _resolve_owner_display(
     Single-row variant for detail endpoints. List endpoints must use
     ``_load_users_display`` to avoid an N+1 against ``users``.
     """
-    row = conn.execute(
-        "SELECT name, email FROM users WHERE id = ?", [owner_user_id]
-    ).fetchone()
+    row = conn.execute("SELECT name, email FROM users WHERE id = ?", [owner_user_id]).fetchone()
     if not row:
         return fallback
     return row[0] or row[1] or fallback
@@ -1600,9 +1648,12 @@ def _get_plugin_row(
 async def curated_detail(
     marketplace_id: str,
     plugin_name: str,
-    _user: dict = Depends(require_resource_access(
-        ResourceType.MARKETPLACE_PLUGIN, "{marketplace_id}/{plugin_name}",
-    )),
+    _user: dict = Depends(
+        require_resource_access(
+            ResourceType.MARKETPLACE_PLUGIN,
+            "{marketplace_id}/{plugin_name}",
+        )
+    ),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -1616,9 +1667,7 @@ async def curated_detail(
     if plugin_row is None:
         raise HTTPException(status_code=404, detail="plugin_not_found")
 
-    plugin_root = (
-        Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
-    )
+    plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     skills = _list_inner_skills(plugin_root)
     agents = _list_inner_agents(plugin_root)
 
@@ -1632,21 +1681,25 @@ async def curated_detail(
     asset_version = _marketplace_asset_version(marketplace_id, conn)
 
     for s in skills:
-        s.detail_url = (
-            f"/marketplace/curated/{marketplace_id}/{plugin_name}/skill/{s.name}"
-        )
+        s.detail_url = f"/marketplace/curated/{marketplace_id}/{plugin_name}/skill/{s.name}"
         s.cover_photo_url = _curated_inner_cover(
-            marketplace_id, plugin_name, "skill", s.name,
-            manifest=inner_manifest, metadata=inner_metadata,
+            marketplace_id,
+            plugin_name,
+            "skill",
+            s.name,
+            manifest=inner_manifest,
+            metadata=inner_metadata,
             version=asset_version,
         )
     for a in agents:
-        a.detail_url = (
-            f"/marketplace/curated/{marketplace_id}/{plugin_name}/agent/{a.name}"
-        )
+        a.detail_url = f"/marketplace/curated/{marketplace_id}/{plugin_name}/agent/{a.name}"
         a.cover_photo_url = _curated_inner_cover(
-            marketplace_id, plugin_name, "agent", a.name,
-            manifest=inner_manifest, metadata=inner_metadata,
+            marketplace_id,
+            plugin_name,
+            "agent",
+            a.name,
+            manifest=inner_manifest,
+            metadata=inner_metadata,
             version=asset_version,
         )
 
@@ -1656,7 +1709,8 @@ async def curated_detail(
     # count because inner items can't be installed standalone.
     inner_stats = _load_inner_items_stats_by_parent(conn, "curated", plugin_name)
     parent_stack = _load_curated_stack_counts(conn).get(
-        (marketplace_id, plugin_name), 0,
+        (marketplace_id, plugin_name),
+        0,
     )
     for s in skills:
         row = inner_stats.get((s.name, "skill")) or {}
@@ -1680,6 +1734,7 @@ async def curated_detail(
     if isinstance(raw, str):
         try:
             import json
+
             raw = json.loads(raw)
         except (ValueError, TypeError):
             raw = {}
@@ -1697,9 +1752,7 @@ async def curated_detail(
     if isinstance(raw_links, list):
         for link in raw_links:
             if isinstance(link, dict) and link.get("name") and link.get("url"):
-                doc_link_entries.append(
-                    DocEntry(name=str(link["name"]), url=str(link["url"]))
-                )
+                doc_link_entries.append(DocEntry(name=str(link["name"]), url=str(link["url"])))
 
     # Plugin-level rich content (display_name, tagline, description_long_html,
     # use_cases, sample_interaction) — on-demand read from the working tree's
@@ -1739,7 +1792,8 @@ async def curated_detail(
         # stack_count mirrors what the listing card shows ("N installed")
         # so the hero chip on this detail page renders the same figure.
         stack_count=_load_curated_stack_counts(conn).get(
-            (marketplace_id, plugin_name), 0,
+            (marketplace_id, plugin_name),
+            0,
         ),
     )
 
@@ -1760,6 +1814,7 @@ async def flea_detail(
     """
     from app.api.store import _enforce_visibility
     from app.utils import get_store_dir
+
     entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
@@ -1785,7 +1840,9 @@ async def flea_detail(
         # `parent_plugin` for flea-plugin children carries the parent's
         # synthetic_name (= what Claude Code writes in the JSONL prefix).
         inner_stats = _load_inner_items_stats_by_parent(
-            conn, "flea", entity["synthetic_name"],
+            conn,
+            "flea",
+            entity["synthetic_name"],
         )
         flea_parent_stack = int(entity.get("install_count") or 0)
         for s in skills:
@@ -1814,7 +1871,8 @@ async def flea_detail(
         mcps = []
 
     is_installed = user_store_installs_repo().is_installed(
-        user["id"], entity_id,
+        user["id"],
+        entity_id,
     )
 
     cover_url: Optional[str] = None
@@ -1822,14 +1880,12 @@ async def flea_detail(
         # ``?v=`` cache-busting fingerprint via ``version_no`` — see
         # ``app/api/store.py:get_entity_photo`` for the matching
         # ``Cache-Control: immutable`` header.
-        cover_url = (
-            f"/api/store/entities/{entity_id}/photo"
-            f"?v={entity.get('version_no', 1)}"
-        )
+        cover_url = f"/api/store/entities/{entity_id}/photo?v={entity.get('version_no', 1)}"
 
     # Strip archive-rename suffix for human display; manifest_name keeps
     # the renamed-on-archive slug since that's what Claude Code resolves.
     from src.store_naming import strip_archive_suffix
+
     _flea_display_name = strip_archive_suffix(entity["name"])
     # v49 phase-3: read the stored synthetic_name (NOT NULL invariant).
     invocation = entity["synthetic_name"]
@@ -1837,16 +1893,18 @@ async def flea_detail(
     # doc_paths is a JSON array of relative paths the uploader picked at upload
     # time; `app/api/store.py` serves them by basename via /api/store/.../docs/{filename}.
     docs: List[DocEntry] = []
-    for raw_path in (entity.get("doc_paths") or []):
+    for raw_path in entity.get("doc_paths") or []:
         if not isinstance(raw_path, str) or not raw_path.strip():
             continue
         fname = Path(raw_path).name
         if not fname:
             continue
-        docs.append(DocEntry(
-            name=fname,
-            url=f"/api/store/entities/{entity_id}/docs/{fname}",
-        ))
+        docs.append(
+            DocEntry(
+                name=fname,
+                url=f"/api/store/entities/{entity_id}/docs/{fname}",
+            )
+        )
 
     owner_display = _resolve_owner_display(
         conn,
@@ -1918,9 +1976,12 @@ async def flea_detail(
 async def curated_install(
     marketplace_id: str,
     plugin_name: str,
-    _user: dict = Depends(require_resource_access(
-        ResourceType.MARKETPLACE_PLUGIN, "{marketplace_id}/{plugin_name}",
-    )),
+    _user: dict = Depends(
+        require_resource_access(
+            ResourceType.MARKETPLACE_PLUGIN,
+            "{marketplace_id}/{plugin_name}",
+        )
+    ),
     user: dict = Depends(get_current_user),
 ):
     """Subscribe the caller to a curated plugin (Model B opt-in).
@@ -1935,11 +1996,14 @@ async def curated_install(
     if not exists:
         raise HTTPException(status_code=404, detail="plugin_not_found")
     inserted = user_curated_subscriptions_repo().subscribe(
-        user["id"], marketplace_id, plugin_name,
+        user["id"],
+        marketplace_id,
+        plugin_name,
     )
     if inserted:
         _audit(
-            user["id"], "marketplace.curated.install",
+            user["id"],
+            "marketplace.curated.install",
             f"plugin:{marketplace_id}/{plugin_name}",
         )
         _invalidate_etag()
@@ -1953,9 +2017,12 @@ async def curated_install(
 async def curated_uninstall(
     marketplace_id: str,
     plugin_name: str,
-    _user: dict = Depends(require_resource_access(
-        ResourceType.MARKETPLACE_PLUGIN, "{marketplace_id}/{plugin_name}",
-    )),
+    _user: dict = Depends(
+        require_resource_access(
+            ResourceType.MARKETPLACE_PLUGIN,
+            "{marketplace_id}/{plugin_name}",
+        )
+    ),
     user: dict = Depends(get_current_user),
 ):
     # v39: system plugins are mandatory for every user — refuse uninstall.
@@ -1969,11 +2036,14 @@ async def curated_uninstall(
         )
 
     deleted = user_curated_subscriptions_repo().unsubscribe(
-        user["id"], marketplace_id, plugin_name,
+        user["id"],
+        marketplace_id,
+        plugin_name,
     )
     if deleted:
         _audit(
-            user["id"], "marketplace.curated.uninstall",
+            user["id"],
+            "marketplace.curated.uninstall",
             f"plugin:{marketplace_id}/{plugin_name}",
         )
         _invalidate_etag()
@@ -2033,7 +2103,9 @@ def _read_inner(
 
 
 def _curated_inner_parent_fields(
-    conn: duckdb.DuckDBPyConnection, marketplace_id: str, plugin_name: str,
+    conn: duckdb.DuckDBPyConnection,
+    marketplace_id: str,
+    plugin_name: str,
 ) -> Dict[str, Any]:
     """Pull the parent-plugin metadata that the redesigned skill/agent detail
     page renders in the hero badges, meta-row, and sidebar.
@@ -2044,9 +2116,7 @@ def _curated_inner_parent_fields(
     a sync-skew bug, but shouldn't 500 the page).
     """
     plugin_row = _get_plugin_row(conn, marketplace_id, plugin_name) or {}
-    plugin_root = (
-        Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
-    )
+    plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     meta = _resolve_marketplace_meta(conn, marketplace_id)
     # Pull the parent plugin's curator-friendly display name from the same
     # source the plugin detail hero uses (`_curated_plugin_enrichment`).
@@ -2063,7 +2133,8 @@ def _curated_inner_parent_fields(
 
 
 def _flea_inner_parent_fields(
-    conn: duckdb.DuckDBPyConnection, entity: dict,
+    conn: duckdb.DuckDBPyConnection,
+    entity: dict,
 ) -> Dict[str, Any]:
     """Flea sibling of ``_curated_inner_parent_fields``: build the parent-plugin
     metadata block for an inner skill/agent that lives inside a flea plugin
@@ -2079,8 +2150,11 @@ def _flea_inner_parent_fields(
     swap drives every surface to the friendly form.
     """
     from src.store_naming import strip_archive_suffix
+
     owner_display = _resolve_owner_display(
-        conn, entity["owner_user_id"], entity.get("owner_username") or "",
+        conn,
+        entity["owner_user_id"],
+        entity.get("owner_username") or "",
     )
     return {
         "marketplace_name": "Flea Market",
@@ -2135,7 +2209,8 @@ def _resolve_external_via_mirror(
 
 
 def _marketplace_asset_version(
-    marketplace_id: str, conn: duckdb.DuckDBPyConnection,
+    marketplace_id: str,
+    conn: duckdb.DuckDBPyConnection,
 ) -> Optional[str]:
     """8-char prefix of the cloned marketplace's git HEAD, or ``None``.
 
@@ -2243,11 +2318,17 @@ def _curated_inner_enrichment(
             local_path = repo_root / target
             if local_path.is_file():
                 cover_url = internal_asset_url(
-                    marketplace_id, plugin_name, target, version=version,
+                    marketplace_id,
+                    plugin_name,
+                    target,
+                    version=version,
                 )
         elif ref_kind == "external":
             cover_url = _resolve_external_via_mirror(
-                marketplace_id, plugin_name, target, manifest,
+                marketplace_id,
+                plugin_name,
+                target,
+                manifest,
                 version=version,
             )
 
@@ -2259,16 +2340,18 @@ def _curated_inner_enrichment(
             local_path = repo_root / link.path
             if not local_path.is_file():
                 continue
-            docs.append(DocEntry(
-                name=link.name,
-                url=(
-                    f"/api/marketplace/curated/{marketplace_id}/{plugin_name}"
-                    f"/doc/{link.path}"
-                ),
-            ))
+            docs.append(
+                DocEntry(
+                    name=link.name,
+                    url=(f"/api/marketplace/curated/{marketplace_id}/{plugin_name}/doc/{link.path}"),
+                )
+            )
         else:
             served = _resolve_external_via_mirror(
-                marketplace_id, plugin_name, link.url, manifest,
+                marketplace_id,
+                plugin_name,
+                link.url,
+                manifest,
             )
             if served is None:
                 continue
@@ -2346,6 +2429,7 @@ def _read_metadata_cached(marketplace_id: str) -> Dict[str, Any]:
         MARKETPLACE_METADATA_REL,
         read_marketplace_metadata,
     )
+
     repo_root = Path(get_marketplaces_dir()) / marketplace_id
     metadata_path = repo_root / MARKETPLACE_METADATA_REL
     try:
@@ -2456,14 +2540,21 @@ def _curated_inner_cover(
         return None
     ref_kind, target = cover_ref
     if ref_kind == "internal":
-        local_path = (Path(get_marketplaces_dir()) / marketplace_id / target)
+        local_path = Path(get_marketplaces_dir()) / marketplace_id / target
         if local_path.is_file():
             return internal_asset_url(
-                marketplace_id, plugin_name, target, version=version,
+                marketplace_id,
+                plugin_name,
+                target,
+                version=version,
             )
         return None
     return _resolve_external_via_mirror(
-        marketplace_id, plugin_name, target, manifest, version=version,
+        marketplace_id,
+        plugin_name,
+        target,
+        manifest,
+        version=version,
     )
 
 
@@ -2475,14 +2566,15 @@ async def curated_skill_detail(
     marketplace_id: str,
     plugin_name: str,
     skill_name: str,
-    _user: dict = Depends(require_resource_access(
-        ResourceType.MARKETPLACE_PLUGIN, "{marketplace_id}/{plugin_name}",
-    )),
+    _user: dict = Depends(
+        require_resource_access(
+            ResourceType.MARKETPLACE_PLUGIN,
+            "{marketplace_id}/{plugin_name}",
+        )
+    ),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    plugin_root = (
-        Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
-    )
+    plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     res = _read_inner(plugin_root, "skills", skill_name, is_dir_layout=True)
     skill_dir = _safe_join(plugin_root, "skills", skill_name)
     if res is None or skill_dir is None:
@@ -2491,7 +2583,10 @@ async def curated_skill_detail(
     fm = _parse_frontmatter(text)
     parent = _curated_inner_parent_fields(conn, marketplace_id, plugin_name)
     enrichment = _curated_inner_enrichment(
-        marketplace_id, plugin_name, "skill", skill_name,
+        marketplace_id,
+        plugin_name,
+        "skill",
+        skill_name,
         version=_marketplace_asset_version(marketplace_id, conn),
     )
     # Merge parent fallback fields with curator overrides BEFORE unpacking
@@ -2502,10 +2597,15 @@ async def curated_skill_detail(
     # added to both layers.
     merged = {**parent, **enrichment}
     telemetry = _load_inner_item_stats(
-        conn, "curated", parent_plugin=plugin_name, name=skill_name, item_type="skill",
+        conn,
+        "curated",
+        parent_plugin=plugin_name,
+        name=skill_name,
+        item_type="skill",
     )
     parent_stack_count = _load_curated_stack_counts(conn).get(
-        (marketplace_id, plugin_name), 0,
+        (marketplace_id, plugin_name),
+        0,
     )
     return InnerDetailResponse(
         marketplace_id=marketplace_id,
@@ -2531,14 +2631,15 @@ async def curated_agent_detail(
     marketplace_id: str,
     plugin_name: str,
     agent_name: str,
-    _user: dict = Depends(require_resource_access(
-        ResourceType.MARKETPLACE_PLUGIN, "{marketplace_id}/{plugin_name}",
-    )),
+    _user: dict = Depends(
+        require_resource_access(
+            ResourceType.MARKETPLACE_PLUGIN,
+            "{marketplace_id}/{plugin_name}",
+        )
+    ),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    plugin_root = (
-        Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
-    )
+    plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     res = _read_inner(plugin_root, "agents", agent_name, is_dir_layout=False)
     agent_path = _safe_join(plugin_root, "agents", f"{agent_name}.md")
     if res is None or agent_path is None:
@@ -2552,7 +2653,10 @@ async def curated_agent_detail(
         agent_size = 0
     parent = _curated_inner_parent_fields(conn, marketplace_id, plugin_name)
     enrichment = _curated_inner_enrichment(
-        marketplace_id, plugin_name, "agent", agent_name,
+        marketplace_id,
+        plugin_name,
+        "agent",
+        agent_name,
         version=_marketplace_asset_version(marketplace_id, conn),
     )
     # See curated_skill_detail above — explicit merge avoids the
@@ -2560,10 +2664,15 @@ async def curated_agent_detail(
     # an overlapping key (e.g. `category`).
     merged = {**parent, **enrichment}
     telemetry = _load_inner_item_stats(
-        conn, "curated", parent_plugin=plugin_name, name=agent_name, item_type="agent",
+        conn,
+        "curated",
+        parent_plugin=plugin_name,
+        name=agent_name,
+        item_type="agent",
     )
     parent_stack_count = _load_curated_stack_counts(conn).get(
-        (marketplace_id, plugin_name), 0,
+        (marketplace_id, plugin_name),
+        0,
     )
     return InnerDetailResponse(
         marketplace_id=marketplace_id,
@@ -2600,6 +2709,7 @@ async def flea_skill_detail(
     """
     from app.api.store import _enforce_visibility
     from app.utils import get_store_dir
+
     entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
@@ -2614,7 +2724,11 @@ async def flea_skill_detail(
     parent = _flea_inner_parent_fields(conn, entity)
     # v49 phase-5: rollup `parent_plugin` carries the parent's synthetic_name.
     telemetry = _load_inner_item_stats(
-        conn, "flea", parent_plugin=entity["synthetic_name"], name=skill_name, item_type="skill",
+        conn,
+        "flea",
+        parent_plugin=entity["synthetic_name"],
+        name=skill_name,
+        item_type="skill",
     )
     return InnerDetailResponse(
         marketplace_id="",
@@ -2649,6 +2763,7 @@ async def flea_agent_detail(
     """
     from app.api.store import _enforce_visibility
     from app.utils import get_store_dir
+
     entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
@@ -2667,7 +2782,11 @@ async def flea_agent_detail(
     parent = _flea_inner_parent_fields(conn, entity)
     # v49 phase-5: rollup `parent_plugin` carries the parent's synthetic_name.
     telemetry = _load_inner_item_stats(
-        conn, "flea", parent_plugin=entity["synthetic_name"], name=agent_name, item_type="agent",
+        conn,
+        "flea",
+        parent_plugin=entity["synthetic_name"],
+        name=agent_name,
+        item_type="agent",
     )
     return InnerDetailResponse(
         marketplace_id="",
@@ -2823,9 +2942,12 @@ async def curated_doc(
     marketplace_id: str,
     plugin_name: str,
     path: str,
-    _user: dict = Depends(require_resource_access(
-        ResourceType.MARKETPLACE_PLUGIN, "{marketplace_id}/{plugin_name}",
-    )),
+    _user: dict = Depends(
+        require_resource_access(
+            ResourceType.MARKETPLACE_PLUGIN,
+            "{marketplace_id}/{plugin_name}",
+        )
+    ),
 ):
     """Serve an internal doc path from the cloned marketplace working tree.
 
@@ -2896,5 +3018,6 @@ async def curated_mirrored(
     # src/marketplace.py sync enrich keeps cache coherent across upstream
     # commits.
     return FileResponse(
-        safe, headers={"Cache-Control": "public, max-age=2592000, immutable"},
+        safe,
+        headers={"Cache-Control": "public, max-age=2592000, immutable"},
     )
