@@ -98,14 +98,9 @@ def test_extractor_per_table_error_persisted_to_sync_state(tmp_path, monkeypatch
 
     sync_mod._run_sync()
 
-    from src.db import get_system_db
-    from src.repositories.sync_state import SyncStateRepository
+    from src.repositories import sync_state_repo
 
-    conn = get_system_db()
-    try:
-        state = SyncStateRepository(conn).get_table_state("bad_table")
-    finally:
-        conn.close()
+    state = sync_state_repo().get_table_state("bad_table")
 
     assert state is not None
     assert state["status"] == "error"
