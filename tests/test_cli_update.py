@@ -97,11 +97,11 @@ def test_update_exits_zero_when_lock_already_held(monkeypatch, tmp_path):
 
 def test_marketplace_bootstraps_when_clone_missing(monkeypatch, tmp_path):
     import cli.commands.refresh_marketplace as rm
+
     monkeypatch.setattr("cli.lib.marketplace.CLONE_DIR", tmp_path / "nope")
 
     calls = []
-    monkeypatch.setattr(rm, "refresh_marketplace",
-                        lambda *, check, bootstrap: calls.append((check, bootstrap)))
+    monkeypatch.setattr(rm, "refresh_marketplace", lambda *, check, bootstrap: calls.append((check, bootstrap)))
     report: list[dict] = []
     upd._step_marketplace(report=report)
     assert calls == [(False, True)]
@@ -113,6 +113,7 @@ def test_step_marketplace_quiet_swallows_refresh_stdout(monkeypatch, tmp_path, c
     progress output must NOT reach stdout — otherwise it corrupts the --json
     single-object contract."""
     import cli.commands.refresh_marketplace as rm
+
     monkeypatch.setattr("cli.lib.marketplace.CLONE_DIR", tmp_path / "no-clone")
 
     def noisy(*, check, bootstrap):
@@ -129,6 +130,7 @@ def test_step_marketplace_quiet_swallows_refresh_stdout(monkeypatch, tmp_path, c
 def test_step_marketplace_prints_refresh_stdout_when_not_quiet(monkeypatch, tmp_path, capsys):
     """Interactive (non-quiet) runs still show refresh progress."""
     import cli.commands.refresh_marketplace as rm
+
     monkeypatch.setattr("cli.lib.marketplace.CLONE_DIR", tmp_path / "no-clone")
 
     def noisy(*, check, bootstrap):
@@ -142,6 +144,7 @@ def test_step_marketplace_prints_refresh_stdout_when_not_quiet(monkeypatch, tmp_
 
 def test_marketplace_reconciles_only_on_drift(monkeypatch, tmp_path):
     import cli.commands.refresh_marketplace as rm
+
     clone = tmp_path / "clone" / ".git"
     clone.mkdir(parents=True)
     monkeypatch.setattr("cli.lib.marketplace.CLONE_DIR", tmp_path / "clone")
@@ -163,6 +166,7 @@ def test_marketplace_reconciles_only_on_drift(monkeypatch, tmp_path):
 
 def test_marketplace_skips_full_when_no_drift(monkeypatch, tmp_path):
     import cli.commands.refresh_marketplace as rm
+
     clone = tmp_path / "clone" / ".git"
     clone.mkdir(parents=True)
     monkeypatch.setattr("cli.lib.marketplace.CLONE_DIR", tmp_path / "clone")
@@ -199,15 +203,14 @@ def test_marketplace_reenables_plugins_when_settings_reset_no_drift(monkeypatch,
         raise typer.Exit(0)  # no drift
 
     monkeypatch.setattr(rm, "refresh_marketplace", fake_refresh)
-    monkeypatch.setattr(rm, "_read_marketplace_plugin_versions",
-                        lambda: {"flea": "1.0", "finance-common": "2.0"})
+    monkeypatch.setattr(rm, "_read_marketplace_plugin_versions", lambda: {"flea": "1.0", "finance-common": "2.0"})
 
     ws = tmp_path / "ws"
     (ws / ".claude").mkdir(parents=True)
     # settings.json as left by the template merge: hooks/statusline, NO enabledPlugins.
     (ws / ".claude" / "settings.json").write_text(
-        '{"hooks": {}, "statusLine": {"type": "command", "command": "agnes statusline"}}',
-        encoding="utf-8")
+        '{"hooks": {}, "statusLine": {"type": "command", "command": "agnes statusline"}}', encoding="utf-8"
+    )
     monkeypatch.chdir(ws)  # _enable_plugins_in_workspace_settings writes to cwd/.claude/settings.json
 
     report: list[dict] = []
@@ -254,26 +257,31 @@ def test_default_mode_converges_and_writes_report(monkeypatch, tmp_path):
 
     # Step 1: CLI already current.
     import cli.commands.self_upgrade as su
+
     monkeypatch.setattr(su, "_resolve_info", lambda force=False: None)
 
     # Step 2: DEFAULT (probe returns None = no IWT). welcome returns new content.
     import cli.lib.initial_workspace as iw
+
     monkeypatch.setattr(iw, "probe_status", lambda *a, **k: None)
     monkeypatch.setattr("cli.client.api_get", lambda *a, **k: _FakeResp("NEW server content\n"))
 
     # Step 3: Agnes-owned (no-op the writers).
     import cli.lib.hooks as hooks
     import cli.lib.commands as cmds
+
     monkeypatch.setattr(hooks, "install_claude_hooks", lambda ws: None)
     monkeypatch.setattr(cmds, "install_claude_commands", lambda ws: None)
 
     # Step 4: marketplace clone missing → bootstrap stub.
     import cli.commands.refresh_marketplace as rm
+
     monkeypatch.setattr("cli.lib.marketplace.CLONE_DIR", tmp_path / "no-clone")
     monkeypatch.setattr(rm, "refresh_marketplace", lambda *, check, bootstrap: None)
 
     # Step 5: pull stub.
     import cli.lib.pull as pull
+
     monkeypatch.setattr(pull, "run_pull", lambda *a, **k: _FakePull())
 
     result = runner.invoke(update_app, ["--json"])
@@ -309,11 +317,13 @@ def test_update_backfills_workspace_root_for_legacy_workspace(monkeypatch, tmp_p
     # CLI already current; no token → workspace steps skip. The backfill runs
     # before step 1 regardless of token.
     import cli.commands.self_upgrade as su
+
     monkeypatch.setattr(su, "_resolve_info", lambda force=False: None)
     monkeypatch.setattr(upd, "get_server_url", lambda: "http://server")
     monkeypatch.setattr(upd, "get_token", lambda: None)
 
     from cli.config import get_workspace_root
+
     assert get_workspace_root() is None  # precondition: anchor missing
 
     result = runner.invoke(update_app, ["--quiet"])
@@ -335,20 +345,26 @@ def test_json_output_is_single_object_despite_step_noise(monkeypatch, tmp_path):
     monkeypatch.setattr(upd, "get_token", lambda: "tok")
 
     import cli.commands.self_upgrade as su
+
     monkeypatch.setattr(su, "_resolve_info", lambda force=False: None)
     import cli.lib.initial_workspace as iw
+
     monkeypatch.setattr(iw, "probe_status", lambda *a, **k: None)
     monkeypatch.setattr("cli.client.api_get", lambda *a, **k: _FakeResp("NEW\n"))
     import cli.lib.hooks as hooks
     import cli.lib.commands as cmds
+
     monkeypatch.setattr(hooks, "install_claude_hooks", lambda ws: None)
     monkeypatch.setattr(cmds, "install_claude_commands", lambda ws: None)
 
     import cli.commands.refresh_marketplace as rm
+
     monkeypatch.setattr("cli.lib.marketplace.CLONE_DIR", tmp_path / "no-clone")
-    monkeypatch.setattr(rm, "refresh_marketplace",
-                        lambda *, check, bootstrap: _typer.echo("NOISE that would break json.loads"))
+    monkeypatch.setattr(
+        rm, "refresh_marketplace", lambda *, check, bootstrap: _typer.echo("NOISE that would break json.loads")
+    )
     import cli.lib.pull as pull
+
     monkeypatch.setattr(pull, "run_pull", lambda *a, **k: _FakePull())
 
     result = runner.invoke(update_app, ["--json"])
@@ -363,6 +379,7 @@ def test_update_exits_zero_when_config_dir_unwritable(monkeypatch):
     """A config dir that can't be created/accessed (read-only FS, permissions)
     fails BEFORE the lock guard. It must degrade to a config-error report and a
     clean exit, not a raw traceback out of the repair command."""
+
     def boom():
         raise OSError("read-only file system")
 
@@ -415,8 +432,9 @@ def test_step_workspace_override_merges_on_sha_change(monkeypatch, tmp_path):
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    status = StatusInfo(configured=True, synced=True, template_source="repo",
-                        template_sha="newsha1234567890", synced_at="t", files=[])
+    status = StatusInfo(
+        configured=True, synced=True, template_source="repo", template_sha="newsha1234567890", synced_at="t", files=[]
+    )
     applied = {}
     env_calls = []
 
@@ -449,8 +467,9 @@ def test_step_workspace_override_skips_when_sha_matches(monkeypatch, tmp_path):
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    status = StatusInfo(configured=True, synced=True, template_source="repo",
-                        template_sha="samesha", synced_at="t", files=[])
+    status = StatusInfo(
+        configured=True, synced=True, template_source="repo", template_sha="samesha", synced_at="t", files=[]
+    )
     dl: list = []
 
     def must_not_apply(*a, **k):
@@ -475,8 +494,10 @@ def _override_status_samesha(monkeypatch):
     """Wire OVERRIDE mode, SHA-match (no download/merge), so tests can focus on
     the .env refresh outcome."""
     from cli.lib.initial_workspace import StatusInfo
-    status = StatusInfo(configured=True, synced=True, template_source="repo",
-                        template_sha="samesha", synced_at="t", files=[])
+
+    status = StatusInfo(
+        configured=True, synced=True, template_source="repo", template_sha="samesha", synced_at="t", files=[]
+    )
     monkeypatch.setattr("cli.lib.initial_workspace.probe_status", lambda *a, **k: status)
     monkeypatch.setattr("src.initial_workspace.is_override_workspace", lambda ws: True)
     monkeypatch.setattr("cli.lib.override.read_override_metadata", lambda ws: {"template_sha": "samesha"})
@@ -553,8 +574,10 @@ def test_update_skips_workspace_steps_when_chdir_fails(monkeypatch, tmp_path):
     assert cli_ran == [True], "CLI step must still run"
     assert ran == [], "workspace-relative steps must be skipped on chdir failure"
     entry = json.loads(result.output)
-    assert any(s["stage"] == "workspace" and s["status"] == "error"
-               and "cannot enter workspace" in s["detail"] for s in entry["steps"]), entry
+    assert any(
+        s["stage"] == "workspace" and s["status"] == "error" and "cannot enter workspace" in s["detail"]
+        for s in entry["steps"]
+    ), entry
 
 
 # --- _step_cli updated / error branches -----------------------------------------
@@ -562,8 +585,8 @@ def test_update_skips_workspace_steps_when_chdir_fails(monkeypatch, tmp_path):
 
 def _update_info():
     from cli.update_check import UpdateInfo
-    return UpdateInfo(installed="2.0.0", latest="2.1.0",
-                      download_url="http://s/cli/wheel/x.whl")
+
+    return UpdateInfo(installed="2.0.0", latest="2.1.0", download_url="http://s/cli/wheel/x.whl")
 
 
 def test_step_cli_reports_updated(monkeypatch):
@@ -573,14 +596,12 @@ def test_step_cli_reports_updated(monkeypatch):
     import cli.commands.self_upgrade as su
 
     monkeypatch.setattr(su, "_resolve_info", lambda force=False: _update_info())
-    monkeypatch.setattr(su, "_do_install_with_smoke_and_rollback",
-                        lambda info, quiet=False: 0)
+    monkeypatch.setattr(su, "_do_install_with_smoke_and_rollback", lambda info, quiet=False: 0)
 
     report: list[dict] = []
     upd._step_cli(quiet=True, report=report)
 
-    assert report == [{"stage": "cli", "status": "updated",
-                       "detail": "2.0.0 -> 2.1.0 (active next run)"}]
+    assert report == [{"stage": "cli", "status": "updated", "detail": "2.0.0 -> 2.1.0 (active next run)"}]
 
 
 def test_step_cli_reports_error(monkeypatch):
@@ -588,8 +609,7 @@ def test_step_cli_reports_error(monkeypatch):
     import cli.commands.self_upgrade as su
 
     monkeypatch.setattr(su, "_resolve_info", lambda force=False: _update_info())
-    monkeypatch.setattr(su, "_do_install_with_smoke_and_rollback",
-                        lambda info, quiet=False: 1)
+    monkeypatch.setattr(su, "_do_install_with_smoke_and_rollback", lambda info, quiet=False: 1)
 
     report: list[dict] = []
     upd._step_cli(quiet=True, report=report)  # must NOT raise
@@ -603,8 +623,7 @@ def test_step_cli_defers_on_preflight(monkeypatch):
     import cli.commands.self_upgrade as su
 
     monkeypatch.setattr(su, "_resolve_info", lambda force=False: _update_info())
-    monkeypatch.setattr(su, "_do_install_with_smoke_and_rollback",
-                        lambda info, quiet=False: su._INSTALL_DEFERRED)
+    monkeypatch.setattr(su, "_do_install_with_smoke_and_rollback", lambda info, quiet=False: su._INSTALL_DEFERRED)
 
     report: list[dict] = []
     upd._step_cli(quiet=True, report=report)
@@ -620,8 +639,7 @@ def test_step_cli_reports_staged_with_version(monkeypatch):
     import cli.commands.self_upgrade as su
 
     monkeypatch.setattr(su, "_resolve_info", lambda force=False: _update_info())
-    monkeypatch.setattr(su, "_do_install_with_smoke_and_rollback",
-                        lambda info, quiet=False: su._INSTALL_STAGED)
+    monkeypatch.setattr(su, "_do_install_with_smoke_and_rollback", lambda info, quiet=False: su._INSTALL_STAGED)
 
     report: list[dict] = []
     upd._step_cli(quiet=True, report=report)
@@ -641,8 +659,7 @@ def test_write_report_rotates_when_oversized(monkeypatch, tmp_path):
     workspace = tmp_path / "ws"
     log = workspace / ".claude" / "agnes" / "update.log"
     log.parent.mkdir(parents=True)
-    log.write_text("\n".join(f'{{"old": {i}}}' for i in range(500)) + "\n",
-                   encoding="utf-8")
+    log.write_text("\n".join(f'{{"old": {i}}}' for i in range(500)) + "\n", encoding="utf-8")
 
     out = upd._write_report(workspace, {"ts": "newest"})
 
@@ -673,8 +690,9 @@ def test_step_workspace_override_merges_without_baseline(monkeypatch, tmp_path):
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    status = StatusInfo(configured=True, synced=True, template_source="repo",
-                        template_sha="newsha", synced_at="t", files=[])
+    status = StatusInfo(
+        configured=True, synced=True, template_source="repo", template_sha="newsha", synced_at="t", files=[]
+    )
     applied = {}
 
     def fake_apply(*a, **k):

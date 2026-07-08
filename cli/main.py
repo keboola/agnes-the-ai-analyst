@@ -107,10 +107,17 @@ def _root(
     _maybe_warn_outdated()
 
 
-_MAINTENANCE_COMMANDS = frozenset({
-    "update", "self-upgrade", "self-update", "pull", "push",
-    "refresh-marketplace", "init",
-})
+_MAINTENANCE_COMMANDS = frozenset(
+    {
+        "update",
+        "self-upgrade",
+        "self-update",
+        "pull",
+        "push",
+        "refresh-marketplace",
+        "init",
+    }
+)
 
 
 def _is_maintenance_command() -> bool:
@@ -154,8 +161,11 @@ def _spawn_background_update(latest: str) -> None:
         env = {**os.environ, "AGNES_NO_UPDATE_CHECK": "1"}
         argv = [sys.executable, "-m", "cli.main", "update", "--quiet"]
         popen_kwargs: dict = dict(
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, env=env, close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            close_fds=True,
         )
         if os.name == "nt":
             # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — outlive the parent.
