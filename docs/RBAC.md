@@ -153,6 +153,40 @@ Every mutation writes an audit log entry (`user_group.created`, `resource_grant.
 
 ---
 
+## PAT lifetime & renewal
+
+`agnes auth login` (browser loopback flow) mints a 90-day personal access
+token (PAT). Two options were on the table for keeping analysts signed in
+without re-authenticating constantly:
+
+1. A refresh-token grant (new server primitive: a long-lived refresh
+   secret that mints short-lived access tokens).
+2. **Proactive re-mint** (chosen) — keep the 90-day, individually revocable
+   PAT as the only credential; have the CLI remind the analyst to re-run
+   `agnes auth login` before it expires.
+
+Option 2 ships: it needs no new server-side grant type, no new secret class
+to protect, and no new revocation surface — the existing PAT list/revoke
+API (`agnes auth token list` / `revoke`, `/me/profile`) already covers it.
+The tradeoff is a small UX cost (an occasional re-login) in exchange for
+not introducing a longer-lived secret than the 90-day PAT already is.
+
+Mechanically: Agnes PATs are HS256 JWTs, so the `exp` claim is
+client-decodable without the signing secret (which never leaves the
+server). `cli/token_status.py` decodes it locally and prints a one-line
+stderr nudge on non-quiet commands once the token is within
+`AGNES_TOKEN_RENEW_DAYS` (default 7 days; `0` disables) of expiring, at
+most once per UTC day. `agnes auth whoami` shows the same expiry
+year-round; `agnes update`'s convergence report carries a `token` stage
+(status `ok` / `renew-soon` / `skipped`) for the same info without ever
+prompting from the unattended SessionStart hook. Renewal is just
+`agnes auth login` again — it overwrites the stored token in place.
+
+No server change was needed for this: no new grant type, no PAT default
+TTL change. See [`docs/HEADLESS_USAGE.md`](./HEADLESS_USAGE.md#renewal-interactive-analysts).
+
+---
+
 ## Bootstrapping the first admin
 
 `SEED_ADMIN_EMAIL` (env var, set by the infra Terraform module) points at the operator's email. The app startup hook in `app/main.py`:

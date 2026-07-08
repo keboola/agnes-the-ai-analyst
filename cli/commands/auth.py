@@ -5,7 +5,7 @@ import socket
 import httpx
 import typer
 
-from cli.client import api_post, api_get
+from cli.client import api_post
 from cli.config import (
     save_token,
     clear_token,
@@ -168,6 +168,9 @@ def whoami():
         payload = jwt.decode(token, options={"verify_signature": False})
         typer.echo(f"Email: {payload.get('email', 'unknown')}")
         typer.echo(f"Server: {get_server_url()}")
+        from cli.token_status import format_status_line
+
+        typer.echo(f"Token: {format_status_line(token)}")
     except Exception:
         typer.echo("Invalid token. Run: agnes login")
         raise typer.Exit(1)
