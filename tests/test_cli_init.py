@@ -256,6 +256,64 @@ def test_init_succeeds_when_bootstrap_token_absent(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
 
 
+def test_init_auto_marks_bootstrap_session_private_when_env_set(tmp_path, monkeypatch):
+    """#753: when init runs inside a Claude Code session (CLAUDE_CODE_SESSION_ID
+    set), the bootstrap session is auto-marked private so its transcript
+    (which may still contain the raw PAT from the setup-prompt heredoc) is
+    never uploaded by `agnes push`, even if the user never runs
+    `/agnes-private` themselves."""
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "bootstrap-sid-123")
+    api_get = _make_api_get()
+    monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
+
+    workspace = tmp_path / "ws"
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://test.example.com",
+            "--token",
+            "test-pat",
+            "--workspace",
+            str(workspace),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "marked private" in result.output
+
+    from cli.lib.private_list import is_private
+
+    assert is_private(workspace, "bootstrap-sid-123")
+
+
+def test_init_does_not_mark_private_when_no_session_id(tmp_path, monkeypatch):
+    """Outside a Claude Code session (no CLAUDE_CODE_SESSION_ID), there is no
+    session to mark — init must not create a private-list entry or fail."""
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    api_get = _make_api_get()
+    monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
+
+    workspace = tmp_path / "ws"
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://test.example.com",
+            "--token",
+            "test-pat",
+            "--workspace",
+            str(workspace),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "marked private" not in result.output
+    assert not (workspace / ".claude" / "agnes-sessions-private.txt").exists()
+
+
 def test_init_partial_state_friendly_exit(tmp_path, monkeypatch):
     """CLAUDE.md exists with marker but no settings.json -> friendly hint, exit 1."""
     monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))

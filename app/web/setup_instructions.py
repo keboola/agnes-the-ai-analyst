@@ -169,20 +169,20 @@ def _tls_trust_block(ca_pem: str) -> list[str]:
         "   (a) Detect platform + pick the shell rc file your login shell actually reads.",
         "       Driven by $SHELL + uname (NOT by which rc files happen to exist on disk).",
         "",
-        "       case \"$(uname -s)\" in",
+        '       case "$(uname -s)" in',
         "         Darwin)               PLATFORM=macos ;;",
         "         Linux)                PLATFORM=linux ;;",
         "         MINGW*|MSYS*|CYGWIN*) PLATFORM=windows ;;",
-        "         *) echo \"Unsupported OS: $(uname -s)\" >&2; exit 1 ;;",
+        '         *) echo "Unsupported OS: $(uname -s)" >&2; exit 1 ;;',
         "       esac",
-        "       SHELL_NAME=\"$(basename \"${SHELL:-bash}\")\"",
-        "       case \"${SHELL_NAME}:${PLATFORM}\" in",
-        "         zsh:*)                   RC=\"$HOME/.zshrc\" ;;",
-        "         bash:macos)              RC=\"$HOME/.bash_profile\" ;;",
-        "         bash:windows|bash:linux) RC=\"$HOME/.bashrc\" ;;",
-        "         *)                       RC=\"$HOME/.profile\" ;;",
+        '       SHELL_NAME="$(basename "${SHELL:-bash}")"',
+        '       case "${SHELL_NAME}:${PLATFORM}" in',
+        '         zsh:*)                   RC="$HOME/.zshrc" ;;',
+        '         bash:macos)              RC="$HOME/.bash_profile" ;;',
+        '         bash:windows|bash:linux) RC="$HOME/.bashrc" ;;',
+        '         *)                       RC="$HOME/.profile" ;;',
         "       esac",
-        "       echo \"Platform: $PLATFORM, shell: $SHELL_NAME, rc: $RC\"",
+        '       echo "Platform: $PLATFORM, shell: $SHELL_NAME, rc: $RC"',
         "",
         "   (b) Write the cert (single-quoted heredoc so $/backticks in the body don't expand):",
         "",
@@ -192,98 +192,100 @@ def _tls_trust_block(ca_pem: str) -> list[str]:
     # PEM body is flush-left: `<<'DELIM'` heredocs preserve leading whitespace,
     # and any indent inside the cert breaks `openssl x509` / Python ssl parsers.
     lines.extend(pem.splitlines())
-    lines.extend([
-        "AGNES_CA_PEM",
-        "",
-        "   (c) Register the cert in the OS trust store. Native binaries (claude.exe,",
-        "       system git's Schannel/Security.framework backends) read the OS store",
-        "       and ignore our env vars — without this, the later marketplace `git",
-        "       clone` (when plugins are configured) and any user-side git/native",
-        "       tooling against the Agnes host will fail.",
-        "       No admin rights needed (user-store only). Idempotent.",
-        "",
-        "       case \"$PLATFORM\" in",
-        "         windows)",
-        "           WIN_CA=\"$(cygpath -w ~/.agnes/ca.pem)\"",
-        "           certutil.exe -user -addstore \"Root\" \"$WIN_CA\"",
-        "           ;;",
-        "         macos)",
-        "           # Will prompt once for the keychain password.",
-        "           security add-trusted-cert -r trustRoot \\",
-        "             -k \"$HOME/Library/Keychains/login.keychain-db\" \\",
-        "             ~/.agnes/ca.pem",
-        "           ;;",
-        "         linux)",
-        "           if command -v update-ca-certificates >/dev/null 2>&1; then",
-        "             sudo cp ~/.agnes/ca.pem /usr/local/share/ca-certificates/agnes.crt",
-        "             sudo update-ca-certificates",
-        "           elif command -v update-ca-trust >/dev/null 2>&1; then",
-        "             sudo cp ~/.agnes/ca.pem /etc/pki/ca-trust/source/anchors/agnes.crt",
-        "             sudo update-ca-trust",
-        "           else",
-        "             echo \"WARN: install ~/.agnes/ca.pem into your distro's trust store manually\" >&2",
-        "           fi",
-        "           ;;",
-        "       esac",
-        "",
-        "   (d) Build a COMBINED CA bundle (system roots + Agnes CA) for Python tools",
-        "       and curl. SSL_CERT_FILE *replaces* the trust store, so pointing it at",
-        "       the Agnes CA alone would break public hosts (PyPI etc.). Source the",
-        "       system roots from a fallback chain — the first source that produces",
-        "       a non-empty, existing path wins. Don't abort on the first miss; that's",
-        "       what the chain is for.",
-        "",
-        "       CERTIFI_PATH=\"$(python3 -c 'import certifi; print(certifi.where())' 2>/dev/null || true)\"",
-        "       [ -z \"$CERTIFI_PATH\" ] && CERTIFI_PATH=\"$(python -c 'import certifi; print(certifi.where())' 2>/dev/null || true)\"",
-        "       if [ -z \"$CERTIFI_PATH\" ]; then",
-        "         for p in /mingw64/ssl/certs/ca-bundle.crt /usr/ssl/certs/ca-bundle.crt \\",
-        "                  /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \\",
-        "                  /etc/ssl/cert.pem; do",
-        "           [ -f \"$p\" ] && CERTIFI_PATH=\"$p\" && break",
-        "         done",
-        "       fi",
-        "       if [ -z \"$CERTIFI_PATH\" ]; then",
-        "         CERTIFI_PATH=\"$(uv run --native-tls --with certifi --no-project python -c 'import certifi; print(certifi.where())' 2>/dev/null || true)\"",
-        "       fi",
-        "       if [ -z \"$CERTIFI_PATH\" ] || [ ! -f \"$CERTIFI_PATH\" ]; then",
-        "         echo \"ERROR: locate a system CA bundle. Install Python 3 + certifi and re-run.\" >&2",
-        "         exit 1",
-        "       fi",
-        "       echo \"Base CA bundle: $CERTIFI_PATH\"",
-        "       cat \"$CERTIFI_PATH\" ~/.agnes/ca.pem > ~/.agnes/ca-bundle.pem",
-        "",
-        "   (e) Persist env vars in the rc file picked in (a). Idempotent — won't",
-        "       duplicate on re-run thanks to the AGNES_CA_PEM_TRUST grep guard.",
-        "       Note the asymmetry: SSL_CERT_FILE (and REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO)",
-        "       point at the COMBINED bundle because those tools REPLACE trust.",
-        "       NODE_EXTRA_CA_CERTS points at just ca.pem because Node APPENDS to its",
-        "       bundled roots.",
-        "",
-        "       if ! grep -q 'AGNES_CA_PEM_TRUST' \"$RC\" 2>/dev/null; then",
-        "         cat >> \"$RC\" <<'AGNES_RC_BLOCK'",
-        "# AGNES_CA_PEM_TRUST — added by Agnes setup",
-        "# Combined bundle (system roots + Agnes CA) for tools that REPLACE trust:",
-        "export SSL_CERT_FILE=\"$HOME/.agnes/ca-bundle.pem\"",
-        "export REQUESTS_CA_BUNDLE=\"$HOME/.agnes/ca-bundle.pem\"",
-        "export GIT_SSL_CAINFO=\"$HOME/.agnes/ca-bundle.pem\"",
-        "# Single-cert file for Node (APPENDS to bundled roots):",
-        "export NODE_EXTRA_CA_CERTS=\"$HOME/.agnes/ca.pem\"",
-        "export PATH=\"$HOME/.local/bin:$PATH\"",
-        "AGNES_RC_BLOCK",
-        "       fi",
-        "       # Apply for THIS shell too:",
-        "       export SSL_CERT_FILE=\"$HOME/.agnes/ca-bundle.pem\"",
-        "       export REQUESTS_CA_BUNDLE=\"$HOME/.agnes/ca-bundle.pem\"",
-        "       export GIT_SSL_CAINFO=\"$HOME/.agnes/ca-bundle.pem\"",
-        "       export NODE_EXTRA_CA_CERTS=\"$HOME/.agnes/ca.pem\"",
-        "       export PATH=\"$HOME/.local/bin:$PATH\"",
-        "",
-        "   IMPORTANT for the Bash tool: env vars do NOT persist between separate",
-        "   Bash invocations. Re-export the four lines above (SSL_CERT_FILE,",
-        "   REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO, NODE_EXTRA_CA_CERTS) plus PATH at",
-        "   the top of every later step's bash block that talks to Agnes.",
-        "",
-    ])
+    lines.extend(
+        [
+            "AGNES_CA_PEM",
+            "",
+            "   (c) Register the cert in the OS trust store. Native binaries (claude.exe,",
+            "       system git's Schannel/Security.framework backends) read the OS store",
+            "       and ignore our env vars — without this, the later marketplace `git",
+            "       clone` (when plugins are configured) and any user-side git/native",
+            "       tooling against the Agnes host will fail.",
+            "       No admin rights needed (user-store only). Idempotent.",
+            "",
+            '       case "$PLATFORM" in',
+            "         windows)",
+            '           WIN_CA="$(cygpath -w ~/.agnes/ca.pem)"',
+            '           certutil.exe -user -addstore "Root" "$WIN_CA"',
+            "           ;;",
+            "         macos)",
+            "           # Will prompt once for the keychain password.",
+            "           security add-trusted-cert -r trustRoot \\",
+            '             -k "$HOME/Library/Keychains/login.keychain-db" \\',
+            "             ~/.agnes/ca.pem",
+            "           ;;",
+            "         linux)",
+            "           if command -v update-ca-certificates >/dev/null 2>&1; then",
+            "             sudo cp ~/.agnes/ca.pem /usr/local/share/ca-certificates/agnes.crt",
+            "             sudo update-ca-certificates",
+            "           elif command -v update-ca-trust >/dev/null 2>&1; then",
+            "             sudo cp ~/.agnes/ca.pem /etc/pki/ca-trust/source/anchors/agnes.crt",
+            "             sudo update-ca-trust",
+            "           else",
+            '             echo "WARN: install ~/.agnes/ca.pem into your distro\'s trust store manually" >&2',
+            "           fi",
+            "           ;;",
+            "       esac",
+            "",
+            "   (d) Build a COMBINED CA bundle (system roots + Agnes CA) for Python tools",
+            "       and curl. SSL_CERT_FILE *replaces* the trust store, so pointing it at",
+            "       the Agnes CA alone would break public hosts (PyPI etc.). Source the",
+            "       system roots from a fallback chain — the first source that produces",
+            "       a non-empty, existing path wins. Don't abort on the first miss; that's",
+            "       what the chain is for.",
+            "",
+            "       CERTIFI_PATH=\"$(python3 -c 'import certifi; print(certifi.where())' 2>/dev/null || true)\"",
+            '       [ -z "$CERTIFI_PATH" ] && CERTIFI_PATH="$(python -c \'import certifi; print(certifi.where())\' 2>/dev/null || true)"',
+            '       if [ -z "$CERTIFI_PATH" ]; then',
+            "         for p in /mingw64/ssl/certs/ca-bundle.crt /usr/ssl/certs/ca-bundle.crt \\",
+            "                  /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \\",
+            "                  /etc/ssl/cert.pem; do",
+            '           [ -f "$p" ] && CERTIFI_PATH="$p" && break',
+            "         done",
+            "       fi",
+            '       if [ -z "$CERTIFI_PATH" ]; then',
+            "         CERTIFI_PATH=\"$(uv run --native-tls --with certifi --no-project python -c 'import certifi; print(certifi.where())' 2>/dev/null || true)\"",
+            "       fi",
+            '       if [ -z "$CERTIFI_PATH" ] || [ ! -f "$CERTIFI_PATH" ]; then',
+            '         echo "ERROR: locate a system CA bundle. Install Python 3 + certifi and re-run." >&2',
+            "         exit 1",
+            "       fi",
+            '       echo "Base CA bundle: $CERTIFI_PATH"',
+            '       cat "$CERTIFI_PATH" ~/.agnes/ca.pem > ~/.agnes/ca-bundle.pem',
+            "",
+            "   (e) Persist env vars in the rc file picked in (a). Idempotent — won't",
+            "       duplicate on re-run thanks to the AGNES_CA_PEM_TRUST grep guard.",
+            "       Note the asymmetry: SSL_CERT_FILE (and REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO)",
+            "       point at the COMBINED bundle because those tools REPLACE trust.",
+            "       NODE_EXTRA_CA_CERTS points at just ca.pem because Node APPENDS to its",
+            "       bundled roots.",
+            "",
+            "       if ! grep -q 'AGNES_CA_PEM_TRUST' \"$RC\" 2>/dev/null; then",
+            "         cat >> \"$RC\" <<'AGNES_RC_BLOCK'",
+            "# AGNES_CA_PEM_TRUST — added by Agnes setup",
+            "# Combined bundle (system roots + Agnes CA) for tools that REPLACE trust:",
+            'export SSL_CERT_FILE="$HOME/.agnes/ca-bundle.pem"',
+            'export REQUESTS_CA_BUNDLE="$HOME/.agnes/ca-bundle.pem"',
+            'export GIT_SSL_CAINFO="$HOME/.agnes/ca-bundle.pem"',
+            "# Single-cert file for Node (APPENDS to bundled roots):",
+            'export NODE_EXTRA_CA_CERTS="$HOME/.agnes/ca.pem"',
+            'export PATH="$HOME/.local/bin:$PATH"',
+            "AGNES_RC_BLOCK",
+            "       fi",
+            "       # Apply for THIS shell too:",
+            '       export SSL_CERT_FILE="$HOME/.agnes/ca-bundle.pem"',
+            '       export REQUESTS_CA_BUNDLE="$HOME/.agnes/ca-bundle.pem"',
+            '       export GIT_SSL_CAINFO="$HOME/.agnes/ca-bundle.pem"',
+            '       export NODE_EXTRA_CA_CERTS="$HOME/.agnes/ca.pem"',
+            '       export PATH="$HOME/.local/bin:$PATH"',
+            "",
+            "   IMPORTANT for the Bash tool: env vars do NOT persist between separate",
+            "   Bash invocations. Re-export the four lines above (SSL_CERT_FILE,",
+            "   REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO, NODE_EXTRA_CA_CERTS) plus PATH at",
+            "   the top of every later step's bash block that talks to Agnes.",
+            "",
+        ]
+    )
     return lines
 
 
@@ -312,20 +314,20 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
             "",
             "   If uv is missing first:",
             "     curl -LsSf https://astral.sh/uv/install.sh | sh",
-            "     export PATH=\"$HOME/.local/bin:$PATH\"",
+            '     export PATH="$HOME/.local/bin:$PATH"',
             "",
             "   WHEEL=/tmp/{wheel_filename}",
-            f"   curl -fsSL --cacert ~/.agnes/ca.pem -o \"$WHEEL\" {server_url_placeholder}/cli/wheel/{{wheel_filename}}",
-            "   uv tool install --native-tls --force \"$WHEEL\"",
+            f'   curl -fsSL --cacert ~/.agnes/ca.pem -o "$WHEEL" {server_url_placeholder}/cli/wheel/{{wheel_filename}}',
+            '   uv tool install --native-tls --force "$WHEEL"',
             "",
             "   If `agnes --version` fails after install because ~/.local/bin is not on PATH:",
-            "     export PATH=\"$HOME/.local/bin:$PATH\"",
+            '     export PATH="$HOME/.local/bin:$PATH"',
             "     # Persist for future shells. Use `grep -qF` (fixed-string,",
             "     # not regex) + `||` short-circuit so a re-run doesn't append",
             "     # a duplicate. Pick the rc file your login shell reads:",
-            "     RC=\"$HOME/.zshrc\"  # or ~/.bashrc / ~/.bash_profile",
+            '     RC="$HOME/.zshrc"  # or ~/.bashrc / ~/.bash_profile',
             "     grep -qF '$HOME/.local/bin' \"$RC\" 2>/dev/null \\",
-            "       || echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> \"$RC\"",
+            '       || echo \'export PATH="$HOME/.local/bin:$PATH"\' >> "$RC"',
             "     # (The trust block in step 0 already does this for you on first run.)",
         ]
     return [
@@ -336,13 +338,13 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
         "     curl -LsSf https://astral.sh/uv/install.sh | sh",
         "",
         "   If `agnes --version` fails after install because ~/.local/bin is not on PATH:",
-        "     export PATH=\"$HOME/.local/bin:$PATH\"",
+        '     export PATH="$HOME/.local/bin:$PATH"',
         "     # Persist for future shells. Use `grep -qF` (fixed-string, not",
         "     # regex) + `||` short-circuit so a re-run doesn't append a",
         "     # duplicate. Pick the rc file your login shell reads:",
-        "     RC=\"$HOME/.zshrc\"  # or ~/.bashrc / ~/.bash_profile",
+        '     RC="$HOME/.zshrc"  # or ~/.bashrc / ~/.bash_profile',
         "     grep -qF '$HOME/.local/bin' \"$RC\" 2>/dev/null \\",
-        "       || echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> \"$RC\"",
+        '       || echo \'export PATH="$HOME/.local/bin:$PATH"\' >> "$RC"',
     ]
 
 
@@ -406,7 +408,7 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
     return [
         "",
         "2) Confirm the install location.",
-        "   The /home page's \"Step 2 — pick a folder\" recommended",
+        '   The /home page\'s "Step 2 — pick a folder" recommended',
         "       mkdir -p ~/Desktop/{workspace_dir} && cd ~/Desktop/{workspace_dir}",
         "   but the install works in any workspace folder the user prepared.",
         "   Decide where to install using the three branches below — do NOT",
@@ -424,7 +426,7 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "           .agnes/, AGNES_WORKSPACE.md and marketplace clones across",
         "           it. Please pick a workspace folder (e.g. ~/Desktop/{workspace_dir}",
         "           or ~/work/{workspace_dir}), cd into it, and re-paste this",
-        "           script from there.\"",
+        '           script from there."',
         "",
         "       Then stop — no `mkdir`, no `cd`, no further steps. The refuse",
         "       list is exact match on:",
@@ -451,7 +453,7 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "           continue here, 'default' to install in ~/Desktop/{workspace_dir}",
         "           instead, or 'abort' to stop. (For a different custom path:",
         "           type /exit, `cd` to where you want it, then run `claude`",
-        "           again and re-paste this script.)\"",
+        '           again and re-paste this script.)"',
         "",
         "       Wait for the user's reply.",
         "         - 'ok' / 'yes' / 'install here' / Enter → continue to step 3",
@@ -466,24 +468,23 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "",
         "3) Bootstrap your {instance_brand} workspace in this directory.",
         "   Write the PAT to a file FIRST, then run `agnes init` with",
-        "   `--token-file`. Passing the JWT inline via `--token \"eyJ...\"`",
+        '   `--token-file`. Passing the JWT inline via `--token "eyJ..."`',
         "   sometimes trips Claude Code's auto-classifier (long bearer",
         "   token in a command line looks like a credential-exfil pattern);",
         "   piping the token through a file keeps it out of the command-",
         "   line argv entirely.",
         "",
         "   NOTE: the heredoc below contains the literal PAT, so it lands in",
-        "   this Claude Code session's transcript — which `agnes push` uploads",
-        "   to the server. Treat the token as exposed once this prompt is in a",
-        "   stored transcript. To keep this bootstrap session out of the upload,",
-        "   run `/agnes-private` BEFORE pasting these commands; `agnes init`",
-        "   deletes `~/.agnes/token` once it has consumed it, but the transcript",
-        "   copy persists unless the session is marked private.",
+        "   this Claude Code session's transcript. `agnes init` auto-marks THIS",
+        "   bootstrap session private, so `agnes push` skips its transcript —",
+        "   no action needed from you for this step. `agnes init` also deletes",
+        "   `~/.agnes/token` once it has consumed it. Use `/agnes-private` to mark",
+        "   any OTHER sensitive session private later.",
         "",
         "   mkdir -p ~/.agnes && umask 077 && cat > ~/.agnes/token <<'AGNES_PAT'",
         "{token}",
         "AGNES_PAT",
-        f"   agnes init --server-url \"{server_url_placeholder}\" --token-file ~/.agnes/token --workspace .",
+        f'   agnes init --server-url "{server_url_placeholder}" --token-file ~/.agnes/token --workspace .',
         "",
         "   ALREADY INSTALLED? If `.claude/init-complete` already exists in this",
         "   directory, the workspace is initialised and `agnes init` will refuse.",
@@ -493,7 +494,7 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "   are backed up to `<name>.bak.<ts>` before being updated; Agnes-owned",
         "   hooks/statusLine/commands are re-applied on top. Then skip to step 4.",
         "   (If `agnes update` fails on auth because your saved token expired, run",
-        f"   `agnes init --force --server-url \"{server_url_placeholder}\" --token-file ~/.agnes/token`",
+        f'   `agnes init --force --server-url "{server_url_placeholder}" --token-file ~/.agnes/token`',
         "   — `agnes init` always needs an explicit --server-url; this refreshes",
         "   the token and now backs up your edited template files before updating.)",
         "",
@@ -515,10 +516,11 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "   This should list the tables your account has grants for. Empty list",
         "   means your admin hasn't granted you access yet — contact them.",
         "",
-        "   Tip: type `/agnes-private` inside any Claude Code session to mark it",
-        "   private — its transcript is skipped by `agnes push` (audit-logged to",
-        "   `.claude/agnes-sessions-private-skipped.txt`). The statusbar shows",
-        "   `🔒 agnes-private` while you're in a private session.",
+        "   Tip: `agnes init` already auto-marked the bootstrap session (step 3)",
+        "   private. For any OTHER sensitive session, type `/agnes-private` to",
+        "   mark it private — its transcript is skipped by `agnes push`",
+        "   (audit-logged to `.claude/agnes-sessions-private-skipped.txt`). The",
+        "   statusbar shows `🔒 agnes-private` while you're in a private session.",
     ]
 
 
@@ -545,7 +547,7 @@ def _diagnose_lines(*, diagnose_num: str) -> list[str]:
         f"{diagnose_num}) Run diagnostics:",
         "   agnes diagnose",
         "",
-        "   This should print \"Overall: healthy\". `db_schema: unknown` and",
+        '   This should print "Overall: healthy". `db_schema: unknown` and',
         "   `data: 0 tables` are NORMAL in two cases:",
         "     - fresh install (no tables registered yet), and",
         "     - non-admin roles (e.g. `analyst`) that don't have grants to read",
@@ -581,7 +583,7 @@ def _load_connector_body(slug: str) -> Optional[str]:
         # silently emitting an empty body. The manifest validator already
         # logged the issue; double-failure here would lose context.
         return content
-    return body[end_match.end():].lstrip("\n")
+    return body[end_match.end() :].lstrip("\n")
 
 
 def _connectors_block(
@@ -615,9 +617,9 @@ def _connectors_block(
         "",
         f"{step_num}) Connect the user's tools (last interactive ask before Confirm):",
         "",
-        "   For each tool below, ask the user verbatim: \"Set up <NAME> now? (Y/n)\".",
+        '   For each tool below, ask the user verbatim: "Set up <NAME> now? (Y/n)".',
         "   Treat empty/Enter as YES — the default is install. Only skip when the",
-        "   user types an explicit \"no\" / \"n\" / \"skip\". Wait for each answer",
+        '   user types an explicit "no" / "n" / "skip". Wait for each answer',
         "   before moving to the next. The prompts below are idempotent and",
         "   safe to re-run if anything goes sideways.",
         "",
@@ -641,16 +643,18 @@ def _connectors_block(
         # reference {instance_brand} in their token-label hints.
         body = body.replace("{instance_brand}", instance_brand)
         lines.append(f"   {sub_letters[letter_idx]}) {entry.display_name} — {entry.short_summary}")
-        lines.append(f"      Ask: \"Set up {entry.display_name} now? (Y/n)\"")
+        lines.append(f'      Ask: "Set up {entry.display_name} now? (Y/n)"')
         lines.append("      If yes (default) — follow this inline prompt verbatim:")
         lines.append("")
         for body_line in body.split("\n"):
             lines.append(f"      {body_line}" if body_line else "")
         lines.append("")
         letter_idx += 1
-    lines.extend([
-        f"   After all asks (regardless of answers) continue to step {confirm_step_num}.",
-    ])
+    lines.extend(
+        [
+            f"   After all asks (regardless of answers) continue to step {confirm_step_num}.",
+        ]
+    )
     return lines
 
 
@@ -716,7 +720,7 @@ def _finale_lines(
         )
     return [
         f"{confirm_step_num}) Confirm:",
-        "   Tell me \"{instance_brand} workspace is ready\" and summarize:",
+        '   Tell me "{instance_brand} workspace is ready" and summarize:',
         *bullets,
     ]
 
@@ -753,7 +757,7 @@ def _preflight_block(step_num: str) -> list[str]:
         "     git --version",
         "     claude --version",
         "",
-        "   If `git --version` fails (\"command not found\" or similar), install git:",
+        '   If `git --version` fails ("command not found" or similar), install git:',
         "     - macOS:   brew install git",
         "     - Windows: winget install --id Git.Git -e --source winget --silent",
         "     - Linux:   sudo apt-get install git    OR    sudo dnf install git",
@@ -872,14 +876,12 @@ def _marketplace_block(
         "   # Idempotent — re-runs over an existing clone do fetch+reset+reconcile",
         "   # via the same path the SessionStart hook uses.",
         "   agnes refresh-marketplace --bootstrap || {",
-        "     echo \"ERROR: agnes refresh-marketplace --bootstrap failed\" >&2",
+        '     echo "ERROR: agnes refresh-marketplace --bootstrap failed" >&2',
         "     exit 1",
         "   }",
         "",
         *trailer,
     ]
-
-
 
 
 def _preamble_lines(*, has_ca: bool) -> list[str]:
@@ -905,8 +907,7 @@ def _preamble_lines(*, has_ca: bool) -> list[str]:
     ]
     if has_ca:
         lines.append(
-            "The fallback chain inside step 0(d) is documented and OK to "
-            "use; that's what fallback chains are for."
+            "The fallback chain inside step 0(d) is documented and OK to use; that's what fallback chains are for."
         )
     lines.append("")
     return lines
@@ -949,13 +950,17 @@ def _step_numbers(*, has_connectors: bool = True) -> dict[str, str]:
     helper.
     """
     n = 5
-    preflight = str(n); n += 1
-    marketplace = str(n); n += 1
-    diagnose = str(n); n += 1
+    preflight = str(n)
+    n += 1
+    marketplace = str(n)
+    n += 1
+    diagnose = str(n)
+    n += 1
     connectors = str(n) if has_connectors else ""
     if has_connectors:
         n += 1
-    restart_claude = str(n); n += 1
+    restart_claude = str(n)
+    n += 1
     confirm = str(n)
     return {
         "preflight": preflight,
@@ -1008,6 +1013,7 @@ def resolve_lines(
     # Codex C-1 fix: don't silently rehydrate when caller wanted empty.
     if connector_manifest is None:
         from src.connectors_manifest import load_manifest
+
         connector_manifest = load_manifest()
 
     has_connectors = bool(connector_manifest)
@@ -1023,35 +1029,38 @@ def resolve_lines(
     if has_ca:
         lines.extend(_tls_trust_block(ca_pem))  # type: ignore[arg-type]
     lines.extend(_preamble_lines(has_ca=has_ca))
-    lines.extend(_install_cli_lines(has_ca=has_ca))   # 1
-    lines.extend(_init_lines())                        # 2, 3
-    lines.extend(_preflight_block(steps["preflight"]))                       # 4
-    lines.extend(_marketplace_block(names, step_num=steps["marketplace"]))    # 5
-    lines.extend(_diagnose_lines(diagnose_num=steps["diagnose"]))             # 6
+    lines.extend(_install_cli_lines(has_ca=has_ca))  # 1
+    lines.extend(_init_lines())  # 2, 3
+    lines.extend(_preflight_block(steps["preflight"]))  # 4
+    lines.extend(_marketplace_block(names, step_num=steps["marketplace"]))  # 5
+    lines.extend(_diagnose_lines(diagnose_num=steps["diagnose"]))  # 6
     # Connectors are the LAST interactive ask before the restart-claude
     # cue. Per-connector default-yes — empty/Enter is install, explicit
     # "no" skips. Empty manifest renders no block (step 8 is dropped).
-    lines.extend(_connectors_block(
-        steps["connectors"],
-        connector_manifest,
-        confirm_step_num=steps["confirm"],
-        instance_brand=instance_brand,
-    ))
+    lines.extend(
+        _connectors_block(
+            steps["connectors"],
+            connector_manifest,
+            confirm_step_num=steps["confirm"],
+            instance_brand=instance_brand,
+        )
+    )
     # Restart-claude lands between connectors and confirm so the user
     # picks up freshly-registered plugins / MCP servers / hooks on the
     # next session — without this every path silently expected the user
     # to know they had to re-launch.
     lines.extend(_restart_claude_lines(steps["restart_claude"]))
     lines.append("")
-    lines.extend(_finale_lines(
-        confirm_step_num=steps["confirm"],
-        has_ca=has_ca,
-        manifest=connector_manifest,
-    ))
+    lines.extend(
+        _finale_lines(
+            confirm_step_num=steps["confirm"],
+            has_ca=has_ca,
+            manifest=connector_manifest,
+        )
+    )
 
     return [
-        line
-        .replace("{wheel_filename}", wheel_filename)
+        line.replace("{wheel_filename}", wheel_filename)
         .replace("{server_host}", server_host)
         .replace("{workspace_dir}", workspace_dir)
         .replace("{instance_brand}", instance_brand)

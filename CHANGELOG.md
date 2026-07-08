@@ -20,6 +20,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.74.17] - 2026-07-08
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Security
+- `agnes init` now auto-marks the bootstrap Claude Code session private (same mechanism as `/agnes-private`), and `agnes push` redacts JWT-shaped tokens from session transcripts and `CLAUDE.local.md` before upload — a user following the setup prompt end-to-end without reading the fine print no longer ends up with their PAT in a server-uploaded transcript (#753)
+
+### Internal
+
 ## [0.74.16] - 2026-07-08
 
 ### Added
