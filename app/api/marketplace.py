@@ -19,7 +19,6 @@ so a user without the RBAC grant gets a 403 even on direct URL hit.
 from __future__ import annotations
 
 import logging
-import re
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
@@ -39,6 +38,7 @@ from src.repositories import (
     audit_repo,
     marketplace_plugins_repo,
     marketplace_registry_repo,
+    reports_repo,
     store_entities_repo,
     store_submissions_repo,
     user_curated_subscriptions_repo,
@@ -53,7 +53,6 @@ from src.marketplace_filter import (
 )
 from src.marketplace_listing import _FRONTMATTER_RE, _parse_frontmatter
 from src.marketplace_urls import internal_asset_url, mirrored_url
-from src.store_categories import STORE_CATEGORIES
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
@@ -152,7 +151,8 @@ class InnerItemSummary(BaseModel):
     # Per-item engagement signal so the plugin detail page's inner card grid
     # can render the same funnel chip the marketplace listing cards show.
     # Sourced from usage_marketplace_item_window + usage_marketplace_item_daily
-    # via the bulk loader `_load_inner_items_stats_by_parent`. Zero/None when
+    # via the bulk loader `ReportsRepository.inner_items_stats_by_parent`.
+    # Zero/None when
     # the rollup has no row for this item (brand-new bundle, zero invocations) —
     # the frontend hides the chip on (parent_stack_count == 0 && calls == 0),
     # same gate as listing cards.
@@ -384,296 +384,22 @@ class InstallActionResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _load_invocation_stats(
-    conn: duckdb.DuckDBPyConnection,
-    source: str,
-) -> Dict[str, Dict]:
-    """Return a per-plugin-card stats dict for one source.
-
-    Key shape:
-    - curated cards: ``"<marketplace_id>/<plugin_name>"`` — preserved for
-      backwards compat with callers that already key by the ref_id idiom.
-    - flea cards: entity_id (caller looks up entity rows separately).
-
-    Value: ``{invocations_30d, distinct_users_30d, trend_pct}``.
-
-    Uses ``usage_marketplace_item_window`` for the 30d aggregates (true
-    sliding distinct, sub-ms lookup) and ``usage_marketplace_item_daily``
-    for the 7d / prior-7d trend calculation. One query per source per
-    page render — avoids N+1.
-    """
-    # Card-level rows differ per source:
-    # - curated cards = plugin level rows (type='plugin', aggregate of
-    #   skill/agent invocations attributed to that plugin)
-    # - flea cards = standalone entities (no parent_plugin), any type
-    #   (entity.type — skill, agent, or plugin)
-    if source == "curated":
-        type_filter = "AND type = 'plugin'"
-    else:
-        type_filter = "AND parent_plugin = ''"
-
-    # 30d + 7d invocations + true distinct users from the window snapshot.
-    # Both labels live in the same table; one query pulls both.
-    win_rows = conn.execute(
-        f"""
-        SELECT period_label, name, invocations, distinct_users
-        FROM usage_marketplace_item_window
-        WHERE period_label IN ('last_30d', 'last_7d')
-          AND source = ?
-          {type_filter}
-        """,
-        [source],
-    ).fetchall()
-
-    # 7d / prior-7d for trend calc — derived from the daily fact table.
-    trend_rows = conn.execute(
-        f"""
-        SELECT
-            name,
-            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 7 DAY THEN count ELSE 0 END) AS inv_recent,
-            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 14 DAY
-                      AND day <  CURRENT_DATE - INTERVAL 7  DAY
-                     THEN count ELSE 0 END) AS inv_prior
-        FROM usage_marketplace_item_daily
-        WHERE source = ?
-          {type_filter}
-          AND day >= CURRENT_DATE - INTERVAL 14 DAY
-        GROUP BY name
-        """,
-        [source],
-    ).fetchall()
-    trend_by_name = {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in trend_rows}
-
-    out: Dict[str, Dict] = {}
-    for period_label, name, inv, du in win_rows:
-        stat = out.setdefault(
-            name,
-            {
-                "invocations_30d": 0,
-                "distinct_users_30d": 0,
-                "invocations_7d": 0,
-                "distinct_users_7d": 0,
-                "trend_pct": None,
-            },
-        )
-        if period_label == "last_30d":
-            stat["invocations_30d"] = int(inv or 0)
-            stat["distinct_users_30d"] = int(du or 0)
-        elif period_label == "last_7d":
-            stat["invocations_7d"] = int(inv or 0)
-            stat["distinct_users_7d"] = int(du or 0)
-    # Trend = recent_7 vs prior_7 from the daily fact (independent of the
-    # window snapshot's freshness). Threshold preserved from v42 — trend is
-    # noisy below 3 prior-week invocations so suppress to None.
-    for name, (recent, prior) in trend_by_name.items():
-        stat = out.setdefault(
-            name,
-            {
-                "invocations_30d": 0,
-                "distinct_users_30d": 0,
-                "invocations_7d": 0,
-                "distinct_users_7d": 0,
-                "trend_pct": None,
-            },
-        )
-        if prior >= 3:
-            stat["trend_pct"] = (recent - prior) / prior * 100.0
-    return out
+# _load_invocation_stats (the per-source browse-panel telemetry map) moved
+# to ``reports_repo().invocation_stats(source)`` — see
+# ``src/repositories/reports.py`` / ``reports_pg.py`` (#728). It used to run
+# raw SQL directly on the always-DuckDB ``_get_db`` connection, so the
+# browse-panel stats stayed empty on a Postgres instance even after the
+# rollup producer went dual-backend (#773). Call sites below now go through
+# the factory so the read follows the active backend.
 
 
-def _load_plugin_daily_series(
-    conn: duckdb.DuckDBPyConnection,
-    source: str,
-    plugin_name: str,
-) -> List[Dict]:
-    """Return a 30-entry list [{day, invocations}] with missing days filled to 0.
-
-    Reads from ``usage_marketplace_item_daily`` filtered to
-    ``type='plugin' AND name=<plugin_name>`` so the series matches the
-    plugin-level 30d total shown on the card / detail page.
-    """
-    rows = conn.execute(
-        """
-        SELECT day, count
-        FROM usage_marketplace_item_daily
-        WHERE source = ?
-          AND type = 'plugin'
-          AND name = ?
-          AND day >= CURRENT_DATE - INTERVAL 30 DAY
-        ORDER BY day
-        """,
-        [source, plugin_name],
-    ).fetchall()
-    by_day = {str(r[0]): int(r[1] or 0) for r in rows}
-
-    import datetime as _dt
-
-    today = _dt.date.today()
-    series = []
-    for offset in range(29, -1, -1):
-        day = today - _dt.timedelta(days=offset)
-        day_str = day.isoformat()
-        series.append({"day": day_str, "invocations": by_day.get(day_str, 0)})
-    return series
-
-
-def _load_inner_item_stats(
-    conn: duckdb.DuckDBPyConnection,
-    source: str,
-    parent_plugin: str,
-    name: str,
-    item_type: str,
-) -> Dict[str, object]:
-    """Return a per-item telemetry dict for one curated inner skill/agent
-    or one standalone flea entity.
-
-    For flea entities ``parent_plugin`` is ``''`` (matches the stored
-    empty-string sentinel). For curated inner items it's the plugin name.
-
-    Always returns a dict (never None) so the frontend can render the
-    hero chip from the same field shape regardless of activity level —
-    visibility is decided client-side from (parent_stack_count > 0 OR
-    invocations_30d > 0), matching the plugin detail behaviour. The dict
-    includes:
-
-      * invocations_30d, distinct_users_30d — window snapshot lookup
-      * trend_pct — same recent-7 vs prior-7 calc as plugin level,
-        sourced from the daily fact for this item
-      * daily_series — 30-entry zero-padded list of {day, invocations}
-        the sidebar uses to derive Active days + Last used
-    """
-    row = conn.execute(
-        """
-        SELECT invocations, distinct_users
-        FROM usage_marketplace_item_window
-        WHERE period_label = 'last_30d'
-          AND source = ?
-          AND type = ?
-          AND parent_plugin = ?
-          AND name = ?
-        """,
-        [source, item_type, parent_plugin, name],
-    ).fetchone()
-    inv30 = int(row[0]) if row and row[0] else 0
-    du30 = int(row[1]) if row and row[1] else 0
-    # Trend — recent_7 vs prior_7 from the daily fact for this specific
-    # skill/agent (mirrors the plugin-level _load_invocation_stats math).
-    trend_row = conn.execute(
-        """
-        SELECT
-            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 7 DAY THEN count ELSE 0 END) AS inv_recent,
-            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 14 DAY
-                      AND day <  CURRENT_DATE - INTERVAL 7  DAY
-                     THEN count ELSE 0 END) AS inv_prior
-        FROM usage_marketplace_item_daily
-        WHERE source = ?
-          AND type = ?
-          AND parent_plugin = ?
-          AND name = ?
-          AND day >= CURRENT_DATE - INTERVAL 14 DAY
-        """,
-        [source, item_type, parent_plugin, name],
-    ).fetchone()
-    recent = int(trend_row[0]) if trend_row and trend_row[0] else 0
-    prior = int(trend_row[1]) if trend_row and trend_row[1] else 0
-    trend_pct = (recent - prior) / prior * 100.0 if prior >= 3 else None
-    # Daily series — 30 entries, zero-padded for days without activity.
-    daily_rows = conn.execute(
-        """
-        SELECT day, count
-        FROM usage_marketplace_item_daily
-        WHERE source = ?
-          AND type = ?
-          AND parent_plugin = ?
-          AND name = ?
-          AND day >= CURRENT_DATE - INTERVAL 30 DAY
-        ORDER BY day
-        """,
-        [source, item_type, parent_plugin, name],
-    ).fetchall()
-    by_day = {str(r[0]): int(r[1] or 0) for r in daily_rows}
-    import datetime as _dt
-
-    today = _dt.date.today()
-    daily_series = []
-    for offset in range(29, -1, -1):
-        d = (today - _dt.timedelta(days=offset)).isoformat()
-        daily_series.append({"day": d, "invocations": by_day.get(d, 0)})
-    return {
-        "invocations_30d": inv30,
-        "distinct_users_30d": du30,
-        "trend_pct": trend_pct,
-        "daily_series": daily_series,
-    }
-
-
-def _load_inner_items_stats_by_parent(
-    conn: duckdb.DuckDBPyConnection,
-    source: str,
-    parent_plugin: str,
-) -> Dict[Tuple[str, str], Dict[str, object]]:
-    """Bulk per-inner-item stats for one parent plugin.
-
-    Returns ``{(name, type): {invocations_30d, distinct_users_30d, trend_pct}}``.
-    One query against ``usage_marketplace_item_window`` + one against
-    ``_daily`` per parent plugin (vs N+1 if each card lookup-ed individually).
-    Type-keyed because skills and agents are allowed to share a name in
-    the same bundle.
-
-    Used by ``curated_detail`` and ``flea_detail`` to enrich the
-    ``skills`` / ``agents`` lists they return, so the plugin detail page
-    can render the listing-card-style funnel chip on every inner card.
-    """
-    win_rows = conn.execute(
-        """
-        SELECT name, type, invocations, distinct_users
-        FROM usage_marketplace_item_window
-        WHERE period_label = 'last_30d'
-          AND source = ?
-          AND parent_plugin = ?
-        """,
-        [source, parent_plugin],
-    ).fetchall()
-    trend_rows = conn.execute(
-        """
-        SELECT
-            name, type,
-            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 7 DAY THEN count ELSE 0 END) AS inv_recent,
-            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 14 DAY
-                      AND day <  CURRENT_DATE - INTERVAL 7 DAY
-                     THEN count ELSE 0 END) AS inv_prior
-        FROM usage_marketplace_item_daily
-        WHERE source = ?
-          AND parent_plugin = ?
-          AND day >= CURRENT_DATE - INTERVAL 14 DAY
-        GROUP BY name, type
-        """,
-        [source, parent_plugin],
-    ).fetchall()
-    out: Dict[Tuple[str, str], Dict[str, object]] = {}
-    for name, item_type, inv, du in win_rows:
-        out[(name, item_type)] = {
-            "invocations_30d": int(inv or 0),
-            "distinct_users_30d": int(du or 0),
-            "trend_pct": None,
-        }
-    # Trend threshold mirrors the listing card / hero chip — suppress to
-    # None below 3 prior-week invocations (noise floor from v42).
-    for name, item_type, recent, prior in trend_rows:
-        key = (name, item_type)
-        stat = out.setdefault(
-            key,
-            {
-                "invocations_30d": 0,
-                "distinct_users_30d": 0,
-                "trend_pct": None,
-            },
-        )
-        recent_i = int(recent or 0)
-        prior_i = int(prior or 0)
-        if prior_i >= 3:
-            stat["trend_pct"] = (recent_i - prior_i) / prior_i * 100.0
-    return out
+# _load_plugin_daily_series, _load_inner_item_stats, and
+# _load_inner_items_stats_by_parent moved to
+# ``reports_repo().plugin_daily_series(...)`` /
+# ``.inner_item_stats(...)`` / ``.inner_items_stats_by_parent(...)`` — see
+# ``src/repositories/reports.py`` / ``reports_pg.py`` (#728). Same reason as
+# the invocation_stats move above: raw SQL on the always-DuckDB ``_get_db``
+# connection meant detail-page telemetry stayed empty on Postgres.
 
 
 def _audit(
@@ -831,14 +557,6 @@ def _flea_to_item(
         if entity.get("photo_path")
         else None
     )
-    # The archive flow renames the row's `name` to free the slot; strip
-    # the suffix when rendering listings so owners don't see the ugly
-    # `__archived__<epoch>` in their own cards. The served catalog
-    # (Claude Code's `/plugin` resolution) uses the renamed slug — we
-    # don't strip there.
-    from src.store_naming import strip_archive_suffix
-
-    display_name_raw = strip_archive_suffix(entity["name"])
     # v49 phase-3: invocation is the stored synthetic_name. The column is
     # NOT NULL (phase 1 migration + repo create/update/archive write
     # paths keep it in sync), so reading it directly is safe and a
@@ -848,8 +566,8 @@ def _flea_to_item(
     is_viewer_owner = bool(viewer_id and entity.get("owner_user_id") == viewer_id)
     # v49 phase-5: rollup `name` column carries the synthetic_name (the
     # post-rename keyspace used by `MarketplaceItemLookup`). Stats dict
-    # built by `_load_invocation_stats` is keyed by that same value, so
-    # the lookup uses `entity["synthetic_name"]`.
+    # built by `ReportsRepository.invocation_stats` is keyed by that same
+    # value, so the lookup uses `entity["synthetic_name"]`.
     stat = (stats or {}).get(entity["synthetic_name"], {})
     # v49 phase-2: front the card with the user-friendly `title` (humanized,
     # acronym-aware) via the existing `display_name` field — JS already
@@ -903,7 +621,6 @@ def _flea_to_item(
 
 
 def _build_telemetry(
-    conn: duckdb.DuckDBPyConnection,
     source: str,
     name: str,
 ) -> Optional[Dict[str, Any]]:
@@ -917,7 +634,8 @@ def _build_telemetry(
     30-entry zero-padded list so the "Active days" / "Last used"
     derivations on the sidebar are trivial.
     """
-    stats = _load_invocation_stats(conn, source)
+    reports = reports_repo()
+    stats = reports.invocation_stats(source)
     stat = stats.get(name)
     inv30 = int(stat["invocations_30d"]) if stat else 0
     if inv30 == 0:
@@ -926,7 +644,7 @@ def _build_telemetry(
         "invocations_30d": inv30,
         "distinct_users_30d": int(stat["distinct_users_30d"]) if stat else 0,
         "trend_pct": stat.get("trend_pct") if stat else None,
-        "daily_series": _load_plugin_daily_series(conn, source, name),
+        "daily_series": reports.plugin_daily_series(source, name),
     }
 
 
@@ -959,8 +677,9 @@ def _available_sorts(stats_dicts: List[Dict[str, Dict]]) -> List[str]:
     `prior_7d >= 3` threshold cleared somewhere in this tab's data set.
 
     `stats_dicts` is the per-source stats map returned by
-    `_load_invocation_stats`; the my-tab passes both curated + flea
-    stats so the option is available when *either* source has trend data.
+    `ReportsRepository.invocation_stats`; the my-tab passes both curated +
+    flea stats so the option is available when *either* source has trend
+    data.
     """
     base = ["recent", "most_used", "most_adopted"]
     for stats in stats_dicts:
@@ -1060,7 +779,7 @@ async def list_items(
             distinct_ids = {r["marketplace_id"] for r in all_rows}
             for mp_id in distinct_ids:
                 marketplace_meta[mp_id] = _resolve_marketplace_meta(conn, mp_id)
-        curated_stats = _load_invocation_stats(conn, "curated")
+        curated_stats = reports_repo().invocation_stats("curated")
         curated_stack_counts = _load_curated_stack_counts(conn)
         items = [
             _curated_to_item(
@@ -1118,7 +837,7 @@ async def list_items(
                 visibility_status=visibility_filter,
                 include_owner_id=include_owner,
             )
-        flea_stats = _load_invocation_stats(conn, "flea")
+        flea_stats = reports_repo().invocation_stats("flea")
         flea_users_display = _load_users_display(
             conn,
             (r["owner_user_id"] for r in all_flea_rows),
@@ -1166,8 +885,8 @@ async def list_items(
         for row in plugin_repo.list_for_marketplace(mp_id):
             enriched_lookup[(mp_id, row["name"])] = row
 
-    curated_stats = _load_invocation_stats(conn, "curated")
-    flea_stats = _load_invocation_stats(conn, "flea")
+    curated_stats = reports_repo().invocation_stats("curated")
+    flea_stats = reports_repo().invocation_stats("flea")
     curated_stack_counts = _load_curated_stack_counts(conn)
 
     for p in granted:
@@ -1707,7 +1426,7 @@ async def curated_detail(
     # loader. Same rollup tables the listing card / inner detail hero chip
     # read from. Adoption is inherited from the parent plugin's stack
     # count because inner items can't be installed standalone.
-    inner_stats = _load_inner_items_stats_by_parent(conn, "curated", plugin_name)
+    inner_stats = reports_repo().inner_items_stats_by_parent("curated", plugin_name)
     parent_stack = _load_curated_stack_counts(conn).get(
         (marketplace_id, plugin_name),
         0,
@@ -1788,7 +1507,7 @@ async def curated_detail(
         docs=doc_link_entries,
         is_system=bool(plugin_row.get("is_system")),
         **enrichment,
-        telemetry=_build_telemetry(conn, "curated", plugin_name),
+        telemetry=_build_telemetry("curated", plugin_name),
         # stack_count mirrors what the listing card shows ("N installed")
         # so the hero chip on this detail page renders the same figure.
         stack_count=_load_curated_stack_counts(conn).get(
@@ -1839,8 +1558,7 @@ async def flea_detail(
         # standalone install on inner items). v49 phase-5: rollup
         # `parent_plugin` for flea-plugin children carries the parent's
         # synthetic_name (= what Claude Code writes in the JSONL prefix).
-        inner_stats = _load_inner_items_stats_by_parent(
-            conn,
+        inner_stats = reports_repo().inner_items_stats_by_parent(
             "flea",
             entity["synthetic_name"],
         )
@@ -1965,7 +1683,7 @@ async def flea_detail(
         # v49 phase-5: flea telemetry keyed by entity.synthetic_name
         # (rollup `name` column carries the post-rename keyspace, which
         # is the same string Claude Code writes in the JSONL local-part).
-        telemetry=_build_telemetry(conn, "flea", entity["synthetic_name"]),
+        telemetry=_build_telemetry("flea", entity["synthetic_name"]),
     )
 
 
@@ -2596,8 +2314,7 @@ async def curated_skill_detail(
     # explicit merge keeps the unpack future-proof against any new field
     # added to both layers.
     merged = {**parent, **enrichment}
-    telemetry = _load_inner_item_stats(
-        conn,
+    telemetry = reports_repo().inner_item_stats(
         "curated",
         parent_plugin=plugin_name,
         name=skill_name,
@@ -2663,8 +2380,7 @@ async def curated_agent_detail(
     # TypeError that `**parent, **enrichment` raises when both supply
     # an overlapping key (e.g. `category`).
     merged = {**parent, **enrichment}
-    telemetry = _load_inner_item_stats(
-        conn,
+    telemetry = reports_repo().inner_item_stats(
         "curated",
         parent_plugin=plugin_name,
         name=agent_name,
@@ -2723,8 +2439,7 @@ async def flea_skill_detail(
     fm = _parse_frontmatter(text)
     parent = _flea_inner_parent_fields(conn, entity)
     # v49 phase-5: rollup `parent_plugin` carries the parent's synthetic_name.
-    telemetry = _load_inner_item_stats(
-        conn,
+    telemetry = reports_repo().inner_item_stats(
         "flea",
         parent_plugin=entity["synthetic_name"],
         name=skill_name,
@@ -2781,8 +2496,7 @@ async def flea_agent_detail(
         agent_size = 0
     parent = _flea_inner_parent_fields(conn, entity)
     # v49 phase-5: rollup `parent_plugin` carries the parent's synthetic_name.
-    telemetry = _load_inner_item_stats(
-        conn,
+    telemetry = reports_repo().inner_item_stats(
         "flea",
         parent_plugin=entity["synthetic_name"],
         name=agent_name,
