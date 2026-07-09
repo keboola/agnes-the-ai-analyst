@@ -245,6 +245,11 @@ _EXEMPT: dict[str, str] = {
     "/api/admin/source-connections/{connection_id}": _SOURCE_CONNECTIONS_CRUD_REASON,
     "/api/admin/source-connections/{connection_id}/secret": _SOURCE_CONNECTIONS_CRUD_REASON,
     "/api/admin/source-connections/{connection_id}/test": _SOURCE_CONNECTIONS_CRUD_REASON,
+    "/api/admin/source-connections/{connection_id}/tables": (
+        "admin-only bucket/table discovery for the 'Add data source' wizard (#755) — "
+        "keboola-only browse-and-register primitive with no analyst CLI/MCP analogue; "
+        "`agnes admin register-table` already covers the actual registration step"
+    ),
 }
 
 

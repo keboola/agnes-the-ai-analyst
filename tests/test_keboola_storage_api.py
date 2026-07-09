@@ -195,6 +195,71 @@ class TestStorageClient:
         assert "<redacted-storage-token>" in str(e.value)
 
 
+# ---- discovery: list_buckets / list_tables ---------------------------------
+
+
+class TestListBucketsAndTables:
+    def test_list_buckets_returns_raw_list(self):
+        sess = MagicMock()
+        sess.get.return_value = _mock_response(
+            200,
+            [
+                {"id": "in.c-main", "name": "main", "stage": "in"},
+                {"id": "out.c-reports", "name": "reports", "stage": "out"},
+            ],
+        )
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+
+        buckets = c.list_buckets()
+
+        assert [b["id"] for b in buckets] == ["in.c-main", "out.c-reports"]
+        url = sess.get.call_args.args[0]
+        assert url == "https://kbc/v2/storage/buckets"
+        assert sess.get.call_args.kwargs["headers"]["X-StorageApi-Token"] == "t"
+
+    def test_list_tables_all_returns_raw_list(self):
+        sess = MagicMock()
+        sess.get.return_value = _mock_response(
+            200,
+            [
+                {"id": "in.c-main.orders", "name": "orders", "bucket": {"id": "in.c-main"}, "rowsCount": 10},
+            ],
+        )
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+
+        tables = c.list_tables()
+
+        assert tables[0]["name"] == "orders"
+        url = sess.get.call_args.args[0]
+        assert url == "https://kbc/v2/storage/tables"
+
+    def test_list_tables_scoped_to_bucket(self):
+        sess = MagicMock()
+        sess.get.return_value = _mock_response(200, [])
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+
+        c.list_tables(bucket_id="in.c-main")
+
+        url = sess.get.call_args.args[0]
+        assert url == "https://kbc/v2/storage/buckets/in.c-main/tables"
+
+    def test_list_buckets_4xx_raises_storage_api_error(self):
+        sess = MagicMock()
+        sess.get.return_value = _mock_response(403, {"error": "invalid token"})
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+
+        with pytest.raises(StorageApiError, match="HTTP 403"):
+            c.list_buckets()
+
+    def test_list_tables_non_list_response_raises_typed_error(self):
+        sess = MagicMock()
+        sess.get.return_value = _mock_response(200, {"unexpected": "object"})
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+
+        with pytest.raises(StorageApiError, match="non-list"):
+            c.list_tables()
+
+
 # ---- wait_for_job ----------------------------------------------------------
 
 
