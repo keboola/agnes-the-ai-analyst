@@ -239,6 +239,28 @@ function esc(s) {
 function typeIcon(t) {
   return t === 'skill' ? 'SK' : t === 'agent' ? 'AG' : t === 'plugin' ? 'PL' : '?';
 }
+// Placeholder initials for the cover-photo fallback. Derived from the entity
+// name so each card looks distinct ("keboola-cli" → "KC", "agnes-analyst" →
+// "AA") instead of every plugin showing the same generic "PL". Splits on any
+// non-alphanumeric separator (kebab/snake/space/dot); single-word names take
+// the first two letters. Falls back to the type abbreviation when the name
+// yields nothing (e.g. empty or all-symbol names).
+function initialsFor(name, type) {
+  const words = String(name || '').split(/[^A-Za-z0-9]+/).filter(Boolean);
+  let initials = '';
+  if (words.length >= 2) initials = words[0][0] + words[1][0];
+  else if (words.length === 1) initials = words[0].slice(0, 2);
+  initials = initials.toUpperCase();
+  return initials || typeIcon(type);
+}
+// Per-type CSS class for the placeholder tint (see marketplace.css). Only
+// known types get a colour; unknown types fall through to the default
+// gradient. Returns a leading-space string so it slots straight into the
+// class attribute.
+function photoTypeClass(type) {
+  return type === 'plugin' || type === 'skill' || type === 'agent'
+    ? ` photo--${type}` : '';
+}
 function categorySVG(category) {
   const path = ICON_PATHS[category || 'Other'] || ICON_PATHS['Other'] || '';
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">${path}</svg>`;
@@ -302,13 +324,14 @@ function buildCard(it) {
   // render when no cover_photo_url is set at all. The `onerror` swaps the
   // parent's content for the same fallback initials (PL/SK/AG) so the card
   // looks identical to the no-photo case.
-  const fallbackInitials = esc(typeIcon(it.type));
+  const fallbackInitials = esc(initialsFor(it.display_name || it.name, it.type));
+  const photoCls = 'photo' + photoTypeClass(it.type);
   const photoMarkup = it.photo_url
-    ? `<div class="photo"><img src="${esc(it.photo_url)}" alt=""
+    ? `<div class="${photoCls}"><img src="${esc(it.photo_url)}" alt=""
           onerror="this.parentElement.classList.add('photo-failed');
                    this.parentElement.textContent=this.dataset.fallback;"
           data-fallback="${fallbackInitials}"></div>`
-    : `<div class="photo">${fallbackInitials}</div>`;
+    : `<div class="${photoCls}">${fallbackInitials}</div>`;
   // v39: when a plugin is system, the amber "Required" badge replaces
   // the green "In stack" badge — system plugins are always installed
   // (force-installed via mark_system materialization), so "in stack"

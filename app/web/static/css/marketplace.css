@@ -278,6 +278,15 @@
   .mp-card .photo img {
     width: 100%; height: 100%; object-fit: cover;
   }
+  /* Per-type tint for the initials placeholder so a wall of cover-less
+     cards reads as a legend at a glance — plugin (blue) / skill (green) /
+     agent (amber). Reuses the --ds-accent-* family (light bg + ink text,
+     both theme-aware) instead of the default pink gradient. Overridden by
+     the <img> when a real cover photo is present. Unknown types keep the
+     default gradient above. */
+  .mp-card .photo--plugin { background: var(--ds-accent-info-bg);    color: var(--ds-accent-info-ink); }
+  .mp-card .photo--skill  { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .mp-card .photo--agent  { background: var(--ds-accent-warn-bg);    color: var(--ds-accent-warn-ink); }
   .mp-card.is-installed { border-color: rgba(245, 159, 10, 0.55); }
   /* Solid filled pill in amber — signals "selected / in your stack"
      while staying readable on both the white card photo placeholder
