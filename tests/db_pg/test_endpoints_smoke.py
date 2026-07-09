@@ -1362,7 +1362,7 @@ class TestReportsSmoke:
 
 KNOWN_UNTESTED = {
     # Collections (bring-your-files) — behaviorally covered in the dedicated
-    # suites tests/test_api_collections.py (CRUD/upload/search, RBAC fail-closed,
+    # suites tests/test_api_collections.py (CRUD/upload/search/reingest, RBAC fail-closed,
     # SessionPrincipal) and tests/test_web_library.py (/library pages), plus the
     # ingestion/retrieval unit suites; not duplicated in this PG smoke harness.
     "POST /api/collections",
@@ -1373,6 +1373,7 @@ KNOWN_UNTESTED = {
     "POST /api/collections/{collection_id}/files",
     "GET /api/collections/{collection_id}/files",
     "DELETE /api/collections/{collection_id}/files/{file_id}",
+    "POST /api/collections/{collection_id}/files/{file_id}/reingest",
     "GET /library",
     "GET /library/{slug}",
     # Authoring studio + suggestion queue + memory-mining consent — covered by
