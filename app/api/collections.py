@@ -570,6 +570,14 @@ async def reingest_file(
     if not row or row.get("corpus_id") != collection_id:
         raise HTTPException(status_code=404, detail="file_not_found")
 
+    # Reject while a run is already in flight so two near-simultaneous
+    # requests (second admin tab, direct API caller) don't schedule racing
+    # ingest_file executions interleaving chunk deletes/writes. Narrow-window
+    # guard, not a lock — a true simultaneous pair can still slip through
+    # (accepted; ingest sets 'processing' as its first step).
+    if row.get("processing_status") == "processing":
+        raise HTTPException(status_code=409, detail="reingest_in_progress")
+
     _purge_derived_tabular_row_for_file(collection_id, file_id)
     cf_repo.set_status(file_id, status="pending", detail={"reason": "reingest requested"})
 

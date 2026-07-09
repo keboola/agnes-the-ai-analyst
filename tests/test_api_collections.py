@@ -761,3 +761,33 @@ def test_reingest_404_when_file_belongs_to_other_collection(seeded_app):
         headers=_auth(seeded_app["admin_token"]),
     )
     assert r.status_code == 404
+
+
+def test_reingest_409_while_run_in_flight(seeded_app):
+    """A file already in 'processing' must reject reingest with 409 and keep
+    its status untouched (no purge/reset) — guards against duplicate racing
+    ingest runs from a second admin tab or a direct API caller."""
+    from src.repositories import corpus_files_repo, file_corpora_repo
+
+    col_id = file_corpora_repo().create(name="ric", slug="ric", description=None, created_by="u1")
+    fid = corpus_files_repo().add(
+        corpus_id=col_id,
+        filename="busy.csv",
+        sha256="s",
+        file_type="csv",
+        size_bytes=1,
+        storage_path=None,
+    )
+    corpus_files_repo().set_status(fid, status="processing", detail={"reason": "ingest running"})
+
+    c = seeded_app["client"]
+    r = c.post(
+        f"/api/collections/{col_id}/files/{fid}/reingest",
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == "reingest_in_progress"
+
+    row = corpus_files_repo().get(fid)
+    assert row["processing_status"] == "processing"  # no reset happened
+    assert row["processing_detail"] == {"reason": "ingest running"}  # detail untouched
