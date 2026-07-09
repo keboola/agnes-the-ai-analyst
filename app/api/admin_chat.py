@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from src.repositories import audit_repo
 from app.chat.readiness import (
     ENV_ANTHROPIC,
     ENV_E2B,
@@ -127,7 +128,6 @@ async def set_chat_secrets(
     restart is required to actually turn chat on. Audited without the value.
     """
     from app.secrets import persist_overlay_token
-    from src.repositories.audit import AuditRepository
 
     changed: list[str] = []
     if body.e2b_api_key and body.e2b_api_key.strip():
@@ -140,7 +140,7 @@ async def set_chat_secrets(
         raise HTTPException(422, detail="no secret provided")
 
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=admin.get("id"),
             action="chat.secrets.update",
             resource="chat",

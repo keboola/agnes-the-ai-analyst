@@ -126,19 +126,16 @@ def _get_system_db_caller_files() -> set[str]:
 # ---------------------------------------------------------------------------
 
 _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
-    "app/api/admin_chat.py": {"AuditRepository"},
-    "app/api/admin_mcp.py": {"AuditRepository"},
-    "app/api/cli_auth.py": {"AccessTokenRepository", "AuditRepository"},
+    "app/api/cli_auth.py": {"AccessTokenRepository"},
     # cowork_bundle.py — fully migrated to the factory (setup_tokens_repo /
     # users_repo / access_token_repo / audit_repo); entry removed.
-    "app/api/data_packages.py": {"AuditRepository"},
+    # admin_chat.py, admin_mcp.py, data_packages.py, memory_domain_suggestions.py,
+    # recipes.py — AuditRepository call sites migrated to audit_repo(); entries removed.
     "app/api/mcp/tools_generator.py": {"MCPSourceRepository", "ToolRegistryRepository"},
     "app/api/mcp_per_table.py": {"TableRegistryRepository"},
     # mcp_user_secrets.py — migrated to mcp_sources_repo()/per_user_secrets_repo(); entry removed.
-    "app/api/memory.py": {"AuditRepository", "KnowledgeRepository"},
-    "app/api/memory_domain_suggestions.py": {"AuditRepository"},
-    "app/api/memory_domains.py": {"AuditRepository", "KnowledgeRepository"},
-    "app/api/recipes.py": {"AuditRepository"},
+    "app/api/memory.py": {"KnowledgeRepository"},
+    "app/api/memory_domains.py": {"KnowledgeRepository"},
     # stack.py — _emit_event migrated to usage_repo(); entry removed.
     "app/api/stack_views.py": {"KnowledgeRepository", "UsageRepository"},
     "app/auth/access.py": {
@@ -271,15 +268,38 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
 # they are pinned in the allow-list as "DuckDB-only by design", same policy as
 # the get_system_db residual.)
 _DEPENDS_GET_DB_STATE_TABLES = (
-    "users", "user_groups", "user_group_members", "resource_grants",
-    "user_stack_subscriptions", "marketplace_registry", "marketplace_plugins",
-    "store_entities", "store_submissions", "store_entity_votes", "data_packages",
-    "data_package_tables", "memory_domains", "memory_domain_suggestions",
-    "knowledge_items", "recipes", "file_corpora", "corpus_files", "corpus_chunks",
-    "usage_events", "usage_session_summary", "usage_tool_daily",
-    "usage_marketplace_item_daily", "usage_marketplace_item_window",
-    "sync_state", "sync_history", "table_registry", "audit_log",
-    "personal_access_tokens", "oauth_clients", "mcp_sources", "tool_registry",
+    "users",
+    "user_groups",
+    "user_group_members",
+    "resource_grants",
+    "user_stack_subscriptions",
+    "marketplace_registry",
+    "marketplace_plugins",
+    "store_entities",
+    "store_submissions",
+    "store_entity_votes",
+    "data_packages",
+    "data_package_tables",
+    "memory_domains",
+    "memory_domain_suggestions",
+    "knowledge_items",
+    "recipes",
+    "file_corpora",
+    "corpus_files",
+    "corpus_chunks",
+    "usage_events",
+    "usage_session_summary",
+    "usage_tool_daily",
+    "usage_marketplace_item_daily",
+    "usage_marketplace_item_window",
+    "sync_state",
+    "sync_history",
+    "table_registry",
+    "audit_log",
+    "personal_access_tokens",
+    "oauth_clients",
+    "mcp_sources",
+    "tool_registry",
 )
 
 
@@ -297,7 +317,7 @@ def _conn_param_names(fn) -> set[str]:
     names: set[str] = set()
     a = fn.args
     posargs = a.posonlyargs + a.args
-    for arg, default in zip(posargs[len(posargs) - len(a.defaults):], a.defaults):
+    for arg, default in zip(posargs[len(posargs) - len(a.defaults) :], a.defaults):
         if _is_depends_get_db(default):
             names.add(arg.arg)
     for arg, default in zip(a.kwonlyargs, a.kw_defaults):
@@ -310,19 +330,13 @@ def _extract_sql_literal(node) -> str:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.JoinedStr):  # f-string — keep the literal parts
-        return "".join(
-            v.value for v in node.values
-            if isinstance(v, ast.Constant) and isinstance(v.value, str)
-        )
+        return "".join(v.value for v in node.values if isinstance(v, ast.Constant) and isinstance(v.value, str))
     return ""
 
 
 def _sql_hits_state(sql: str) -> bool:
     low = sql.lower()
-    return any(
-        f" {t}" in low or f"\n{t}" in low or f"\t{t}" in low
-        for t in _DEPENDS_GET_DB_STATE_TABLES
-    )
+    return any(f" {t}" in low or f"\n{t}" in low or f"\t{t}" in low for t in _DEPENDS_GET_DB_STATE_TABLES)
 
 
 def scan_depends_get_db_raw_sql(files) -> dict[str, set[str]]:

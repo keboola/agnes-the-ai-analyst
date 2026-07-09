@@ -18,7 +18,7 @@ so the admin Activity Center surfaces them.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,10 +27,10 @@ from pydantic import BaseModel
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db, get_current_user
 from src.repositories import (
+    audit_repo,
     memory_domain_suggestions_repo,
     memory_domains_repo,
 )
-from src.repositories.audit import AuditRepository
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,7 @@ class ResolveRequest(BaseModel):
 
 def _slugify(name: str) -> str:
     import re
+
     s = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
     return s or "domain"
 
@@ -103,7 +104,7 @@ async def suggest_domain(
         rationale=(payload.rationale or "").strip() or None,
         created_by=user.get("id"),
     )
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id") or "anonymous",
         action="memory_domain_suggestion.create",
         resource=f"memory_domain_suggestion:{sid}",
@@ -194,7 +195,7 @@ async def approve_suggestion(
         resolution_note=payload.note,
         created_domain_id=new_id,
     )
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id") or "system",
         action="memory_domain_suggestion.approve",
         resource=f"memory_domain_suggestion:{sid}",
@@ -227,7 +228,7 @@ async def reject_suggestion(
         resolved_by=user.get("id"),
         resolution_note=payload.note,
     )
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id") or "system",
         action="memory_domain_suggestion.reject",
         resource=f"memory_domain_suggestion:{sid}",

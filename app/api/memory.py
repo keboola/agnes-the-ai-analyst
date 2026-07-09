@@ -14,7 +14,6 @@ from app.auth.dependencies import get_current_user, _get_db
 from app.auth.access import require_admin, is_user_admin, can_access, can_access_session
 from app.auth.session_principal import SessionPrincipal
 from src.repositories.knowledge import KnowledgeRepository
-from src.repositories.audit import AuditRepository
 
 from src.repositories import (
     audit_repo,
@@ -22,6 +21,7 @@ from src.repositories import (
     memory_domains_repo,
     usage_repo,
 )
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
@@ -50,6 +50,7 @@ def _validate_domain_slug(slug: Optional[str], conn: duckdb.DuckDBPyConnection) 
             detail=f"Unknown memory domain slug: {slug!r}",
         )
 
+
 # API-layer allowlist for ``POST /api/memory/admin/bulk-update``. The repo's
 # ``_UPDATABLE_FIELDS`` is intentionally broader (``status``, ``sensitivity``,
 # ``is_personal``, ``confidence``, valid_from/until, supersedes, etc.) so the
@@ -58,10 +59,18 @@ def _validate_domain_slug(slug: Optional[str], conn: duckdb.DuckDBPyConnection) 
 # proper governance flow (``/admin/mandate``, ``/admin/revoke``,
 # ``/{id}/personal``) and its dedicated audit rows. Callers that need those
 # fields in bulk should use the per-item endpoints. See PR #126 review.
-_BULK_UPDATE_ALLOWED = frozenset({
-    "category", "domain", "tags", "tags_add", "tags_remove",
-    "audience", "title", "content",
-})
+_BULK_UPDATE_ALLOWED = frozenset(
+    {
+        "category",
+        "domain",
+        "tags",
+        "tags_add",
+        "tags_remove",
+        "audience",
+        "title",
+        "content",
+    }
+)
 
 
 def _is_privileged_viewer(user, conn: duckdb.DuckDBPyConnection) -> bool:
@@ -84,9 +93,7 @@ def _is_privileged_viewer(user, conn: duckdb.DuckDBPyConnection) -> bool:
     return is_user_admin(user_id, conn)
 
 
-def _effective_groups(
-    user, conn: duckdb.DuckDBPyConnection
-) -> Optional[List[str]]:
+def _effective_groups(user, conn: duckdb.DuckDBPyConnection) -> Optional[List[str]]:
     """Audience-filter group list for the caller, or ``None`` for admins
     (no filter — see all items regardless of audience).
 
@@ -139,6 +146,7 @@ def _caller_granted_memory_domains(
     """
     if isinstance(user, SessionPrincipal):
         from app.resource_types import ResourceType
+
         return list(user.intersection.get(ResourceType.MEMORY_DOMAIN.value, frozenset()))
     if _is_privileged_viewer(user, conn):
         return None
@@ -237,6 +245,7 @@ class PatchItemRequest(BaseModel):
     (the legacy single ``domain`` write happens first, the junction
     replace overrides it).
     """
+
     title: Optional[str] = None
     content: Optional[str] = None
     category: Optional[str] = None
@@ -248,6 +257,7 @@ class PatchItemRequest(BaseModel):
 
 class BulkUpdateRequest(BaseModel):
     """Apply ``updates`` to every id in ``item_ids``. Issue #62."""
+
     item_ids: List[str]
     updates: dict
 
@@ -259,6 +269,7 @@ class ResolveDuplicateRequest(BaseModel):
     (decision 2 in issue #62 — no auto-merge action; merging is a separate
     larger feature).
     """
+
     resolution: str
 
 
@@ -295,6 +306,7 @@ async def list_memory_domains(
 
 
 # ---- User endpoints ----
+
 
 @router.get("")
 async def list_knowledge(
@@ -354,7 +366,8 @@ async def list_knowledge(
             # plumb the upvote filter into its SQL). Search + "My Upvotes"
             # is rare enough that a post-filter is fine.
             upvoted_ids = {
-                r[0] for r in conn.execute(
+                r[0]
+                for r in conn.execute(
                     "SELECT item_id FROM knowledge_votes WHERE user_id = ? AND vote > 0",
                     [upvoted_by_user_id],
                 ).fetchall()
@@ -389,6 +402,7 @@ async def list_knowledge(
         item["dismissed_by_me"] = item["id"] in dismissed_set
 
     import math
+
     total_count = repo.count_items(
         search=search,
         statuses=statuses,
@@ -503,6 +517,7 @@ async def create_knowledge(
         from config.loader import load_instance_config
         from connectors.llm import create_extractor
         from services.corporate_memory.tagger import auto_tag_items
+
         cfg = load_instance_config()
         ai_cfg = cfg.get("ai")
         if ai_cfg:
@@ -564,9 +579,7 @@ async def get_my_votes(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get current user's votes on all items."""
-    results = conn.execute(
-        "SELECT item_id, vote FROM knowledge_votes WHERE user_id = ?", [user["id"]]
-    ).fetchall()
+    results = conn.execute("SELECT item_id, vote FROM knowledge_votes WHERE user_id = ?", [user["id"]]).fetchall()
     return {row[0]: row[1] for row in results}
 
 
@@ -629,9 +642,7 @@ async def dismiss_item(
     # membership so /admin/telemetry can correlate dismissals with the
     # domain they came from.
     try:
-        domain_ids = [
-            d["id"] for d in memory_domains_repo().list_domains_of_item(item_id)
-        ]
+        domain_ids = [d["id"] for d in memory_domains_repo().list_domains_of_item(item_id)]
         usage_repo().emit_server_event(
             event_type="memory.dismiss",
             user_id=user["id"],
@@ -703,6 +714,7 @@ async def get_provenance(
 
 # ---- Admin governance endpoints ----
 
+
 def _get_item_or_404(repo, item_id: str) -> dict:
     item = repo.get_by_id(item_id)
     if not item:
@@ -771,14 +783,21 @@ async def admin_mandate(
     repo.set_is_required(item_id, True)
     if request.audience is not None:
         repo.update(item_id, audience=request.audience)
-    _audit_action(conn, user["email"], "mandate", item_id, {
-        "reason": request.reason, "audience": request.audience,
-    })
+    _audit_action(
+        conn,
+        user["email"],
+        "mandate",
+        item_id,
+        {
+            "reason": request.reason,
+            "audience": request.audience,
+        },
+    )
     # v49 Section 9.1 — spec table maps both mark-mandatory and the legacy
     # mandate endpoint to the canonical ``memory_item.set_required`` action
     # with a boolean payload so audit consumers can stop splitting on path.
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user["email"],
             action="memory_item.set_required",
             resource=f"knowledge_item:{item_id}",
@@ -804,7 +823,7 @@ async def mark_mandatory(
     repo = KnowledgeRepository(conn)
     _get_item_or_404(repo, item_id)
     repo.set_is_required(item_id, True)
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["email"],
         action="memory_item.set_required",
         resource=f"knowledge_item:{item_id}",
@@ -829,7 +848,7 @@ async def mark_unmandatory(
     repo = KnowledgeRepository(conn)
     _get_item_or_404(repo, item_id)
     repo.set_is_required(item_id, False)
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["email"],
         action="memory_item.set_required",
         resource=f"knowledge_item:{item_id}",
@@ -906,9 +925,17 @@ async def admin_batch(
                 repo.update(item_id, audience=request.audience)
         else:
             repo.update_status(item_id, status_actions[request.action])
-        _audit_action(conn, user["email"], request.action, item_id, {
-            "reason": request.reason, "audience": request.audience, "batch": True,
-        })
+        _audit_action(
+            conn,
+            user["email"],
+            request.action,
+            item_id,
+            {
+                "reason": request.reason,
+                "audience": request.audience,
+                "batch": True,
+            },
+        )
         results["success"].append(item_id)
 
     return results
@@ -950,13 +977,12 @@ async def admin_audit(
     # UI's per-page navigation actually returns subsequent rows. Pre-fix, both
     # SQL paths had LIMIT only and silently returned page 1 for every page.
     offset = (max(page, 1) - 1) * per_page
-    entries = audit_repo().query_governance(
-        action=action, limit=per_page, offset=offset
-    )
+    entries = audit_repo().query_governance(action=action, limit=per_page, offset=offset)
     return {"entries": entries, "count": len(entries)}
 
 
 # ---- Admin contradiction endpoints ----
+
 
 @router.get("/admin/contradictions")
 async def admin_contradictions(
@@ -975,11 +1001,7 @@ async def admin_contradictions(
     repo = knowledge_repo()
     contradictions = repo.list_contradictions(resolved=resolved)
     # Collect all distinct item IDs and fetch in one query (M5 batch optimisation).
-    all_item_ids = list({
-        id_
-        for c in contradictions
-        for id_ in (c["item_a_id"], c["item_b_id"])
-    })
+    all_item_ids = list({id_ for c in contradictions for id_ in (c["item_a_id"], c["item_b_id"])})
     items_by_id = repo.get_by_ids(all_item_ids)
     for c in contradictions:
         item_a = items_by_id.get(c["item_a_id"])
@@ -1039,11 +1061,17 @@ async def admin_resolve_contradiction(
         )
 
     repo.resolve_contradiction(contradiction_id, user["email"], request.resolution)
-    _audit_action(conn, user["email"], "resolve_contradiction", contradiction_id, {
-        "resolution": request.resolution,
-        "item_a_id": contradiction["item_a_id"],
-        "item_b_id": contradiction["item_b_id"],
-    })
+    _audit_action(
+        conn,
+        user["email"],
+        "resolve_contradiction",
+        contradiction_id,
+        {
+            "resolution": request.resolution,
+            "item_a_id": contradiction["item_a_id"],
+            "item_b_id": contradiction["item_b_id"],
+        },
+    )
     return {"id": contradiction_id, "resolved": True, "resolution": request.resolution}
 
 
@@ -1087,11 +1115,7 @@ async def admin_duplicate_candidates(
         resolved=resolved,
         limit=limit,
     )
-    item_ids = list({
-        id_
-        for r in relations
-        for id_ in (r["item_a_id"], r["item_b_id"])
-    })
+    item_ids = list({id_ for r in relations for id_ in (r["item_a_id"], r["item_b_id"])})
     items_by_id = repo.get_by_ids(item_ids) if item_ids else {}
     for r in relations:
         r["item_a"] = _strip_personal(items_by_id.get(r["item_a_id"]), exclude_personal)
@@ -1220,9 +1244,7 @@ async def admin_patch_item(
     # tags is a list — JSON-encode to match the column type, mirroring create().
     repo_kwargs = dict(updates)
     if "tags" in repo_kwargs:
-        repo_kwargs["tags"] = (
-            json.dumps(repo_kwargs["tags"]) if repo_kwargs["tags"] else None
-        )
+        repo_kwargs["tags"] = json.dumps(repo_kwargs["tags"]) if repo_kwargs["tags"] else None
     if repo_kwargs:
         repo.update(item_id, **repo_kwargs)
 
@@ -1244,9 +1266,7 @@ async def admin_patch_item(
             slugs = [id_to_slug[i] for i in domain_ids]
         else:
             slugs = []
-        dom_repo.replace_domains_for_item(
-            item_id, slugs, added_by=user["email"]
-        )
+        dom_repo.replace_domains_for_item(item_id, slugs, added_by=user["email"])
 
     audit_keys = sorted(updates.keys())
     if domain_ids is not None:
@@ -1282,10 +1302,7 @@ async def admin_bulk_update(
     if disallowed:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"updates contains disallowed field(s): {disallowed}. "
-                f"Allowed: {sorted(_BULK_UPDATE_ALLOWED)}"
-            ),
+            detail=(f"updates contains disallowed field(s): {disallowed}. Allowed: {sorted(_BULK_UPDATE_ALLOWED)}"),
         )
     if "domain" in updates and updates["domain"]:
         _validate_domain_slug(updates["domain"], conn)
@@ -1338,7 +1355,7 @@ def _label_for_axis(axis: str, key: Optional[str]) -> str:
     if axis == "audience" and key == "all":
         return "All users"
     if axis == "audience" and key.startswith("group:"):
-        return f"Group: {key[len('group:'):]}"
+        return f"Group: {key[len('group:') :]}"
     return key
 
 
@@ -1424,11 +1441,11 @@ async def get_tree(
     has_duplicate_ids: Optional[set] = None
     if has_duplicate:
         rels = repo.list_relations(
-            relation_type=DUPLICATE_RELATION_TYPE, resolved=False, limit=10000,
+            relation_type=DUPLICATE_RELATION_TYPE,
+            resolved=False,
+            limit=10000,
         )
-        has_duplicate_ids = {
-            id_ for r in rels for id_ in (r["item_a_id"], r["item_b_id"])
-        }
+        has_duplicate_ids = {id_ for r in rels for id_ in (r["item_a_id"], r["item_b_id"])}
 
     # Audience-axis privacy (decision 13): non-admins only see their own
     # group buckets + null/all. Use the audience pre-filter on the SQL side
@@ -1454,7 +1471,7 @@ async def get_tree(
         if not _matches_chip_filters(
             item,
             status_filter=None,  # already in SQL
-            source_type=None,    # already in SQL
+            source_type=None,  # already in SQL
             audience=audience,
             has_duplicate_ids=has_duplicate_ids,
             q=q,
@@ -1486,11 +1503,14 @@ async def get_tree(
 
     for item in visible:
         for key in _bucket_key(item, axis):
-            bucket = groups.setdefault(key, {
-                "key": key,
-                "label": _label_for_axis(axis, key),
-                "items": [],
-            })
+            bucket = groups.setdefault(
+                key,
+                {
+                    "key": key,
+                    "label": _label_for_axis(axis, key),
+                    "items": [],
+                },
+            )
             bucket["items"].append(item)
 
     # Stable ordering: alphabetic on key with the empty bucket sinking to
@@ -1506,7 +1526,7 @@ async def get_tree(
     # tags want bucket-level pagination. The UI expands a bucket to see all
     # its items.
     start = (page - 1) * per_page
-    paged = ordered[start:start + per_page]
+    paged = ordered[start : start + per_page]
     return {
         "axis": axis,
         "groups": paged,
@@ -1520,9 +1540,7 @@ async def get_tree(
 # ---- Bundle endpoint ----
 
 
-def _build_per_domain_markdown(
-    slug: str, user: dict, conn: duckdb.DuckDBPyConnection
-) -> Response:
+def _build_per_domain_markdown(slug: str, user: dict, conn: duckdb.DuckDBPyConnection) -> Response:
     """Render a deterministic markdown bundle for a single memory domain.
 
     Used by ``agnes pull`` to write ``~/.claude/memory/<slug>/bundle.md``.
@@ -1571,11 +1589,7 @@ def _build_per_domain_markdown(
         lines.append("")
 
     required = [it for it in full_items if it.get("is_required")]
-    approved = [
-        it
-        for it in full_items
-        if not it.get("is_required") and it.get("status") == "approved"
-    ]
+    approved = [it for it in full_items if not it.get("is_required") and it.get("status") == "approved"]
 
     if required:
         lines.append("## Required")
@@ -1677,11 +1691,13 @@ async def get_bundle(
             try:
                 if isinstance(updated_raw, str):
                     from datetime import datetime as dt
+
                     updated = dt.fromisoformat(updated_raw.replace("Z", "+00:00"))
                 else:
                     updated = updated_raw
                 if updated.tzinfo is None:
                     from datetime import timezone as tz
+
                     updated = updated.replace(tzinfo=tz.utc)
                 age_days = max((now - updated).days, 0)
             except Exception:

@@ -49,12 +49,12 @@ from app.secrets_vault import (
 from connectors.mcp import classifier as mcp_classifier
 from connectors.mcp import extractor as mcp_extractor
 from src.repositories import (
+    audit_repo,
     mcp_sources_repo,
     per_user_secrets_repo,
     shared_secrets_repo,
     tool_registry_repo,
 )
-from src.repositories.audit import AuditRepository
 from src.repositories.mcp_sources import MCPSourceRepository  # noqa: F401  # kept for type-only imports + tests that monkeypatch the symbol
 from src.repositories.tool_registry import (
     MATERIALIZE,
@@ -234,7 +234,7 @@ def _audit(
 ) -> None:
     """Best-effort audit row. Mirrors ``app/api/data_packages._audit``."""
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id,
             action=action,
             resource=resource,
@@ -245,9 +245,7 @@ def _audit(
         logger.warning("audit log failed for %s/%s", action, resource)
 
 
-def _serialize_source(
-    row: Dict[str, Any], *, has_vault_secret: bool = False
-) -> Dict[str, Any]:
+def _serialize_source(row: Dict[str, Any], *, has_vault_secret: bool = False) -> Dict[str, Any]:
     """Project a ``mcp_sources`` row to the API shape (timestamps as ISO).
 
     ``has_vault_secret`` is a write-only-secret status flag — True iff a
@@ -293,9 +291,7 @@ def _serialize_tool(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _merge_source_patch(
-    existing: Dict[str, Any], patch: UpdateMCPSourceRequest
-) -> Dict[str, Any]:
+def _merge_source_patch(existing: Dict[str, Any], patch: UpdateMCPSourceRequest) -> Dict[str, Any]:
     """Merge a partial source patch onto the existing row.
 
     Returns the kwargs dict to pass to ``MCPSourceRepository.upsert``.
@@ -310,9 +306,7 @@ def _merge_source_patch(
         "env": data.get("env", existing.get("env")),
         "url": data.get("url", existing.get("url")),
         "auth_method": data.get("auth_method", existing.get("auth_method")),
-        "auth_secret_env": data.get(
-            "auth_secret_env", existing.get("auth_secret_env")
-        ),
+        "auth_secret_env": data.get("auth_secret_env", existing.get("auth_secret_env")),
         "enabled": data.get(
             "enabled",
             bool(existing.get("enabled")) if existing.get("enabled") is not None else True,
@@ -321,9 +315,7 @@ def _merge_source_patch(
     }
 
 
-def _merge_tool_patch(
-    existing: Dict[str, Any], patch: UpdateToolRequest
-) -> Dict[str, Any]:
+def _merge_tool_patch(existing: Dict[str, Any], patch: UpdateToolRequest) -> Dict[str, Any]:
     """Merge a partial tool patch onto the existing row → upsert kwargs."""
     data = patch.model_dump(exclude_unset=True)
     return {
@@ -432,9 +424,7 @@ async def list_mcp_sources(
     repo = mcp_sources_repo()
     rows = repo.list_all(enabled_only=enabled_only)
     secrets = shared_secrets_repo()
-    return [
-        _serialize_source(r, has_vault_secret=secrets.has(r["id"])) for r in rows
-    ]
+    return [_serialize_source(r, has_vault_secret=secrets.has(r["id"])) for r in rows]
 
 
 @router.get("/mcp-sources/{source_id}")
@@ -450,9 +440,7 @@ async def get_mcp_source(
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     tools_repo = tool_registry_repo()
     tools = tools_repo.list_for_source(source_id)
-    out = _serialize_source(
-        src, has_vault_secret=shared_secrets_repo().has(source_id)
-    )
+    out = _serialize_source(src, has_vault_secret=shared_secrets_repo().has(source_id))
     out["tools"] = [_serialize_tool(t) for t in tools]
     return out
 
@@ -506,11 +494,7 @@ async def update_mcp_source(
         params_before={"before": before},
     )
     return (
-        _serialize_source(
-            fresh, has_vault_secret=shared_secrets_repo().has(source_id)
-        )
-        if fresh
-        else {"id": source_id}
+        _serialize_source(fresh, has_vault_secret=shared_secrets_repo().has(source_id)) if fresh else {"id": source_id}
     )
 
 
@@ -586,8 +570,11 @@ async def set_mcp_source_secret(
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
         ) from exc
     _audit(
-        conn, user["id"], "mcp_source.secret.set",
-        f"mcp_source:{source_id}", {},
+        conn,
+        user["id"],
+        "mcp_source.secret.set",
+        f"mcp_source:{source_id}",
+        {},
     )
 
 
@@ -604,8 +591,11 @@ async def delete_mcp_source_secret(
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     shared_secrets_repo().delete(source_id)
     _audit(
-        conn, user["id"], "mcp_source.secret.delete",
-        f"mcp_source:{source_id}", {},
+        conn,
+        user["id"],
+        "mcp_source.secret.delete",
+        f"mcp_source:{source_id}",
+        {},
     )
 
 
@@ -631,9 +621,7 @@ async def introspect_mcp_source(
         tools = await mcp_extractor.introspect_source_async(src)
     except Exception as exc:
         logger.exception("introspect failed for source %s", source_id)
-        raise HTTPException(
-            status_code=502, detail=f"introspect_failed: {exc}"
-        )
+        raise HTTPException(status_code=502, detail=f"introspect_failed: {exc}")
     _audit(
         conn,
         user["id"],
@@ -657,12 +645,11 @@ async def classify_mcp_source(
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     try:
         from connectors.mcp.client import list_tools_async as _list_tools_async
+
         tool_infos = await _list_tools_async(src)
     except Exception as exc:
         logger.exception("classify (list_tools) failed for source %s", source_id)
-        raise HTTPException(
-            status_code=502, detail=f"introspect_failed: {exc}"
-        )
+        raise HTTPException(status_code=502, detail=f"introspect_failed: {exc}")
     proposals = mcp_classifier.classify_all(tool_infos)
     _audit(
         conn,
@@ -745,9 +732,7 @@ async def materialize_mcp_source(
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         logger.exception("materialize failed for source %s", source_id)
-        raise HTTPException(
-            status_code=500, detail=f"materialize_failed: {exc}"
-        )
+        raise HTTPException(status_code=500, detail=f"materialize_failed: {exc}")
     _audit(
         conn,
         user["id"],
@@ -866,10 +851,7 @@ async def update_mcp_tool(
             raise HTTPException(status_code=404, detail="mcp_source_not_found")
 
     merged = _merge_tool_patch(existing, payload)
-    before = {
-        k: existing.get(k)
-        for k in ("source_id", "exposed_name", "mode", "schedule", "enabled")
-    }
+    before = {k: existing.get(k) for k in ("source_id", "exposed_name", "mode", "schedule", "enabled")}
     try:
         repo.upsert(**merged)
     except ValueError as exc:
@@ -877,10 +859,7 @@ async def update_mcp_tool(
     except duckdb.ConstraintException as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     fresh = repo.get(tool_id)
-    after = {
-        k: (fresh or {}).get(k)
-        for k in ("source_id", "exposed_name", "mode", "schedule", "enabled")
-    }
+    after = {k: (fresh or {}).get(k) for k in ("source_id", "exposed_name", "mode", "schedule", "enabled")}
     _audit(
         conn,
         user["id"],
@@ -940,6 +919,7 @@ async def add_mcp_tool_grant(
     # Validate the group exists so we don't dangle FK-less rows. Backend-aware:
     # user_groups lives in the active backend (Postgres on a PG instance).
     from src.repositories import user_groups_repo
+
     if not user_groups_repo().get(group_id):
         raise HTTPException(status_code=404, detail="user_group_not_found")
     try:

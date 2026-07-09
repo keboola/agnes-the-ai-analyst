@@ -27,8 +27,7 @@ from pydantic import BaseModel, field_validator
 from app.api.data_packages import _validate_color
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.repositories import memory_domains_repo
-from src.repositories.audit import AuditRepository
+from src.repositories import audit_repo, memory_domains_repo
 from src.repositories.knowledge import KnowledgeRepository
 
 logger = logging.getLogger(__name__)
@@ -59,6 +58,7 @@ class CreateMemoryDomainRequest(BaseModel):
     @classmethod
     def _check_status(cls, v: Optional[str]) -> Optional[str]:
         from app.api.data_packages import _validate_status
+
         return _validate_status(v)
 
 
@@ -81,6 +81,7 @@ class UpdateMemoryDomainRequest(BaseModel):
     @classmethod
     def _check_status(cls, v: Optional[str]) -> Optional[str]:
         from app.api.data_packages import _validate_status
+
         return _validate_status(v)
 
 
@@ -102,7 +103,7 @@ def _audit(
     params_before: Optional[Dict[str, Any]] = None,
 ) -> None:
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id,
             action=action,
             resource=resource,
@@ -307,9 +308,7 @@ async def add_item_to_domain(
     item = KnowledgeRepository(conn).get_by_id(payload.item_id)
     if not item:
         raise HTTPException(status_code=404, detail="item_not_found")
-    added = repo.add_item(
-        domain_id, payload.item_id, added_by=user.get("email") or user["id"]
-    )
+    added = repo.add_item(domain_id, payload.item_id, added_by=user.get("email") or user["id"])
     if added:
         _audit(
             conn,

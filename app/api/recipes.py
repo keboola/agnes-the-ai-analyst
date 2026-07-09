@@ -29,8 +29,7 @@ from app.api.data_packages import _validate_color, _validate_status
 from app.auth.access import can_access, is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
-from src.repositories import recipes_repo
-from src.repositories.audit import AuditRepository
+from src.repositories import audit_repo, recipes_repo
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +49,7 @@ _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 def _validate_slug(slug: str) -> str:
     if not _SLUG_RE.match(slug or ""):
-        raise ValueError(
-            "slug must be lowercase alphanumeric + dashes, 1-63 chars"
-        )
+        raise ValueError("slug must be lowercase alphanumeric + dashes, 1-63 chars")
     return slug
 
 
@@ -104,9 +101,12 @@ class UpdateRecipeRequest(BaseModel):
 
 def _audit(conn, actor_id, action, resource, params=None, before=None):
     try:
-        AuditRepository(conn).log(
-            user_id=actor_id, action=action, resource=resource,
-            params=params, params_before=before,
+        audit_repo().log(
+            user_id=actor_id,
+            action=action,
+            resource=resource,
+            params=params,
+            params_before=before,
         )
     except Exception:
         logger.warning("audit log failed for %s/%s", action, resource)
@@ -148,7 +148,8 @@ async def list_recipes(
     is_admin = is_user_admin(user["id"], conn)
     if not is_admin:
         rows = [
-            r for r in rows
+            r
+            for r in rows
             if (r.get("status") or "prod") == "prod"
             and can_access(user["id"], ResourceType.RECIPE.value, r["id"], conn)
         ]
@@ -205,8 +206,7 @@ async def create_recipe(
         )
     except duckdb.ConstraintException:
         raise HTTPException(status_code=409, detail="slug_exists")
-    _audit(conn, user["id"], "recipe.create", f"recipe:{recipe_id}",
-           {"slug": payload.slug, "title": payload.title})
+    _audit(conn, user["id"], "recipe.create", f"recipe:{recipe_id}", {"slug": payload.slug, "title": payload.title})
     return {"id": recipe_id}
 
 
@@ -251,15 +251,16 @@ async def update_recipe(
         icon=payload.icon,
         color=payload.color,
         sql_template=payload.sql_template,
-        related_table_ids=(
-            None if clear_related else payload.related_table_ids
-        ),
+        related_table_ids=(None if clear_related else payload.related_table_ids),
         clear_related_tables=clear_related,
         status=payload.status,
     )
     fresh = repo.get(recipe_id)
     _audit(
-        conn, user["id"], "recipe.update", f"recipe:{recipe_id}",
+        conn,
+        user["id"],
+        "recipe.update",
+        f"recipe:{recipe_id}",
         {"after": {k: fresh.get(k) for k in ("title", "status")}},
         before={k: existing.get(k) for k in ("title", "status")},
     )
@@ -278,8 +279,7 @@ async def delete_recipe(
     if not existing:
         raise HTTPException(status_code=404, detail="recipe_not_found")
     repo.delete(recipe_id)
-    _audit(conn, user["id"], "recipe.delete", f"recipe:{recipe_id}",
-           {"slug": existing.get("slug")})
+    _audit(conn, user["id"], "recipe.delete", f"recipe:{recipe_id}", {"slug": existing.get("slug")})
 
 
 @admin_router.post("/{recipe_id}/restore", status_code=200)
@@ -294,6 +294,5 @@ async def restore_recipe(
     if not existing:
         raise HTTPException(status_code=404, detail="recipe_not_found")
     repo.restore(recipe_id)
-    _audit(conn, user["id"], "recipe.restore", f"recipe:{recipe_id}",
-           {"slug": existing.get("slug")})
+    _audit(conn, user["id"], "recipe.restore", f"recipe:{recipe_id}", {"slug": existing.get("slug")})
     return {"id": recipe_id, "restored": True}
