@@ -14,6 +14,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.28] - 2026-07-09
+
+### Changed
+
 - Install prompt: replaced the render-time "your account has zero grants" claim with live-manifest wording plus an `agnes my-stack show` verification step (explaining the `[✓]`/`[✗]` legend), and added an up-front reconcile-vs-fresh-install note keyed on the `.claude/init-complete` sentinel — the prompt no longer contradicts grants added after it was generated or breaks on partially-set-up machines.
 
 ### Fixed
@@ -21,10 +31,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `agnes refresh-marketplace`: network git calls (`clone`, `fetch`, `ls-remote`) now run with `GIT_TERMINAL_PROMPT=0` and bounded timeouts, so an auth failure or unreachable marketplace host fails fast instead of hanging forever on an interactive credential prompt (observed as a multi-minute install hang in hook/agent contexts).
 - `agnes refresh-marketplace`: a leftover `~/.agnes/marketplace` clone whose origin points at a different host than the configured server is now detected — `--bootstrap` re-clones from the current server automatically; refresh/`--check` fail fast with the repair command instead of syncing against the stale (possibly dead) remote.
 - connector-gws seed skill: the operator params file is documented at its real location `<workspace>/.claude/agnes/.env` (was wrongly `~/.claude/agnes/.env`, sending installs into the manual GCP walkthrough even when the operator had provisioned OAuth), and the skill now checks for the secret value directly in that file (instance.yaml `connectors:` overlay ships values verbatim) before falling back to the `*_ENV` shell-env pointer.
-
-### Removed
-
-### Internal
 
 ## [0.74.27] - 2026-07-09
 

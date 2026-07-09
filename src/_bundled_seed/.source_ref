@@ -4,5 +4,5 @@
 # .github/workflows/check-bundled-seed.yml verifies the SHA below is a real
 # commit at source_url.
 source_url=https://github.com/keboola/agnes-infra-template
-source_sha=0b6bebf333af8b10709c5d5f039fe02f081f099d
+source_sha=db70516afa710ca3a32ffef99bbd06b36823d2af
 source_branch=main
