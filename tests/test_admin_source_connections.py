@@ -176,6 +176,55 @@ class TestSourceConnectionsUpdate:
         )
         assert resp.status_code == 404
 
+    def test_update_renames_connection(self, seeded_app):
+        # Backs the "Add data source" wizard's rename-after-test step (#755).
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            BASE,
+            json={
+                "name": "draft-rename-me",
+                "source_type": "keboola",
+                "config": {"stack_url": "https://a.example.com"},
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        conn_id = resp.json()["id"]
+
+        resp2 = c.put(f"{BASE}/{conn_id}", json={"name": "Production"}, headers=_auth(token))
+        assert resp2.status_code == 200
+        assert resp2.json()["name"] == "Production"
+
+        resp3 = c.get(f"{BASE}/{conn_id}", headers=_auth(token))
+        assert resp3.json()["name"] == "Production"
+
+    def test_update_rename_to_existing_name_returns_409(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        c.post(
+            BASE,
+            json={
+                "name": "rename-conflict-a",
+                "source_type": "keboola",
+                "config": {"stack_url": "https://a.example.com"},
+            },
+            headers=_auth(token),
+        )
+        resp_b = c.post(
+            BASE,
+            json={
+                "name": "rename-conflict-b",
+                "source_type": "keboola",
+                "config": {"stack_url": "https://b.example.com"},
+            },
+            headers=_auth(token),
+        )
+        conn_b_id = resp_b.json()["id"]
+
+        resp = c.put(f"{BASE}/{conn_b_id}", json={"name": "rename-conflict-a"}, headers=_auth(token))
+        assert resp.status_code == 409
+
 
 class TestSourceConnectionsDelete:
     def test_delete_returns_204(self, seeded_app):
@@ -335,3 +384,110 @@ class TestSourceConnectionsTest:
         token = seeded_app["admin_token"]
         resp = c.post(f"{BASE}/nonexistent-id/test", headers=_auth(token))
         assert resp.status_code == 404
+
+
+class TestSourceConnectionsTables:
+    """GET /{id}/tables — the "Add data source" wizard's table-picker primitive (#755)."""
+
+    def _create(self, c, token, *, name="test-kbc-tables", token_env="KEBOOLA_STORAGE_TOKEN"):
+        resp = c.post(
+            BASE,
+            json={
+                "name": name,
+                "source_type": "keboola",
+                "config": {"stack_url": "https://connection.example.com"},
+                "token_env": token_env,
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        return resp.json()["id"]
+
+    def test_tables_endpoint_groups_by_bucket(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token)
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                return_value=[
+                    {"id": "in.c-main", "name": "main", "stage": "in", "description": ""},
+                ],
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_tables",
+                return_value=[
+                    {
+                        "id": "in.c-main.orders",
+                        "name": "orders",
+                        "bucket": {"id": "in.c-main"},
+                        "rowsCount": 42,
+                        "dataSizeBytes": 1024,
+                    },
+                ],
+            ),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+        ):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["buckets"]) == 1
+        bucket = data["buckets"][0]
+        assert bucket["id"] == "in.c-main"
+        assert bucket["tables"] == [{"id": "in.c-main.orders", "name": "orders", "rows": 42, "size_bytes": 1024}]
+
+    def test_tables_endpoint_missing_connection_returns_404(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get(f"{BASE}/nonexistent-id/tables", headers=_auth(token))
+        assert resp.status_code == 404
+
+    def test_tables_endpoint_no_token_returns_400(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-tables-notoken", token_env="")
+        resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+        assert resp.status_code == 400
+
+    def test_tables_endpoint_non_keboola_returns_400(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            BASE,
+            json={
+                "name": "test-bq-tables",
+                "source_type": "bigquery",
+                "config": {"project_id": "p"},
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        conn_id = resp.json()["id"]
+        resp2 = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+        assert resp2.status_code == 400
+
+    def test_tables_endpoint_upstream_error_returns_502(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-tables-upstream-error")
+
+        from connectors.keboola.storage_api import StorageApiError
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                side_effect=StorageApiError("boom"),
+            ),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+        ):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+        assert resp.status_code == 502
+
+    def test_tables_endpoint_requires_admin(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+        resp = c.get(f"{BASE}/some-id/tables", headers=_auth(token))
+        assert resp.status_code == 403

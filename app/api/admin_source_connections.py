@@ -10,21 +10,27 @@ Surface (all gated by ``Depends(require_admin)``):
   PUT    /api/admin/source-connections/{id}/secret  — store vault secret; 409 if AGNES_VAULT_KEY missing
   DELETE /api/admin/source-connections/{id}/secret  — clear vault secret
   POST   /api/admin/source-connections/{id}/test    — verify connectivity; timeout 10s
+  GET    /api/admin/source-connections/{id}/tables  — list buckets/tables for the "add data
+                                                       source" wizard; keboola only, REST-only
+                                                       admin-UI helper (see _EXEMPT classification
+                                                       in tests/test_documentation_api_triple_surface.py)
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.secrets_vault import VaultKeyNotConfiguredError
+from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
 from src.repositories import (
     connection_secrets_repo,
     source_connections_repo,
@@ -50,6 +56,10 @@ class CreateConnectionBody(BaseModel):
 
 
 class UpdateConnectionBody(BaseModel):
+    # `name` supports the "Add data source" wizard's rename-after-test step
+    # (#755): the project name is only known once `POST .../test` succeeds,
+    # which requires the row to already exist.
+    name: Optional[str] = None
     config: Optional[Dict[str, Any]] = None
     token_env: Optional[str] = None
     is_default: Optional[bool] = None
@@ -78,6 +88,26 @@ def _with_secret_status(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
     except Exception:
         row["has_secret"] = False
     return row
+
+
+def _resolve_token(connection_id: str, row: Dict[str, Any]) -> Optional[str]:
+    """Resolve the storage token for a connection: vault secret first, then
+    the ``token_env`` environment-variable fallback. Shared by ``/test`` and
+    ``/tables`` so both endpoints treat "how do I get the token" identically.
+    """
+    token: Optional[str] = None
+    try:
+        secrets = connection_secrets_repo()
+        if secrets.has(connection_id):
+            token = secrets.get(connection_id)
+    except Exception as exc:
+        logger.debug("vault lookup failed for %s: %s", connection_id, exc)
+
+    if not token:
+        token_env = row.get("token_env") or ""
+        if token_env:
+            token = os.environ.get(token_env, "")
+    return token or None
 
 
 # ---------------------------------------------------------------------------
@@ -134,12 +164,21 @@ async def update_connection(
     body: UpdateConnectionBody,
     _user: dict = Depends(require_admin),
 ):
-    """Update config and/or token_env of an existing connection. 404 if missing."""
+    """Update name/config/token_env/is_default of an existing connection.
+
+    404 if missing; 409 if renaming to a name already taken by a different
+    connection.
+    """
     repo = source_connections_repo()
     if repo.get(connection_id) is None:
         raise HTTPException(status_code=404, detail="connection_not_found")
+    if body.name is not None:
+        existing = repo.get_by_name(body.name)
+        if existing is not None and existing["id"] != connection_id:
+            raise HTTPException(status_code=409, detail="connection_name_exists")
     repo.update(
         connection_id,
+        name=body.name,
         config=body.config,
         token_env=body.token_env,
         is_default=body.is_default,
@@ -234,20 +273,7 @@ async def test_connection(
     if not stack_url:
         return {"ok": False, "error": "no stack_url in connection config"}
 
-    # Resolve token: vault secret first, then token_env env-var fallback.
-    token: Optional[str] = None
-    try:
-        secrets = connection_secrets_repo()
-        if secrets.has(connection_id):
-            token = secrets.get(connection_id)
-    except Exception as exc:
-        logger.debug("vault lookup failed for %s: %s", connection_id, exc)
-
-    if not token:
-        token_env = row.get("token_env") or ""
-        if token_env:
-            token = os.environ.get(token_env, "")
-
+    token = _resolve_token(connection_id, row)
     if not token:
         return {"ok": False, "error": "no token available (vault empty, token_env unset)"}
 
@@ -262,3 +288,83 @@ async def test_connection(
         return {"ok": False, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
     except Exception as exc:
         return {"ok": False, "error": str(exc)[:300]}
+
+
+@router.get("/{connection_id}/tables")
+async def list_connection_tables(
+    connection_id: str,
+    _user: dict = Depends(require_admin),
+):
+    """List Keboola buckets + tables reachable via this connection's token.
+
+    Powers the admin "Add data source" wizard's table picker (#755): after a
+    connection tests OK, the UI calls this to render a bucket-grouped
+    checkbox list, then registers the selected tables one-by-one via
+    ``POST /api/admin/register-table`` with this connection's ``id``.
+
+    REST-only — admin-UI helper with no analyst-facing CLI/MCP analogue (see
+    ``_EXEMPT`` in ``tests/test_documentation_api_triple_surface.py``).
+
+    404 if the connection doesn't exist. 400 if the connection isn't
+    ``source_type='keboola'`` (the only source type supported today), if no
+    ``stack_url`` is configured, or if no token is resolvable (vault empty,
+    ``token_env`` unset). 502 if the upstream Storage API call fails.
+
+    Returns ``{"buckets": [{"id", "name", "stage", "description", "tables": [
+    {"id", "name", "rows", "size_bytes"}, ...]}, ...]}``.
+    """
+    row = source_connections_repo().get(connection_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="connection_not_found")
+    if row.get("source_type") != "keboola":
+        raise HTTPException(status_code=400, detail="tables_listing_only_supported_for_keboola")
+
+    config = row.get("config") or {}
+    stack_url = (config.get("stack_url") or "").rstrip("/")
+    if not stack_url:
+        raise HTTPException(status_code=400, detail="no stack_url in connection config")
+
+    token = _resolve_token(connection_id, row)
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail="no token available (vault empty, token_env unset)",
+        )
+
+    client = KeboolaStorageClient(url=stack_url, token=token)
+    try:
+        buckets = await run_in_threadpool(client.list_buckets)
+        tables = await run_in_threadpool(client.list_tables)
+    except StorageApiError as exc:
+        raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {exc}") from exc
+
+    tables_by_bucket: Dict[str, List[Dict[str, Any]]] = {}
+    for t in tables:
+        bucket_id = (t.get("bucket") or {}).get("id", "")
+        tables_by_bucket.setdefault(bucket_id, []).append(
+            {
+                "id": t.get("id"),
+                "name": t.get("name"),
+                "rows": t.get("rowsCount"),
+                "size_bytes": t.get("dataSizeBytes"),
+            }
+        )
+
+    result = []
+    for b in buckets:
+        bucket_id = b.get("id")
+        result.append(
+            {
+                "id": bucket_id,
+                "name": b.get("name"),
+                "stage": b.get("stage"),
+                "description": b.get("description"),
+                "tables": tables_by_bucket.pop(bucket_id, []),
+            }
+        )
+    # Defensive: a table whose bucket wasn't in the buckets listing (stale
+    # permissions edge case) still surfaces, grouped under its bucket id.
+    for bucket_id, tbls in tables_by_bucket.items():
+        result.append({"id": bucket_id, "name": bucket_id, "stage": None, "description": None, "tables": tbls})
+
+    return {"buckets": result}

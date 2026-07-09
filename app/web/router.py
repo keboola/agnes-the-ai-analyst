@@ -2764,6 +2764,30 @@ async def admin_datasource_credentials_page(
     return templates.TemplateResponse(request, "admin_datasource_credentials.html", ctx)
 
 
+@router.get("/admin/data-sources", response_class=HTMLResponse)
+async def admin_data_sources_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """ "Add data source" wizard (#755): paste a Keboola project's connection
+    URL + storage token, validate, then browse buckets/tables and register
+    the ones you want — no SSH, no config-file edits.
+
+    Distinct from /admin/mcp-sources (MCP tool servers Agnes calls at
+    runtime) and from /admin/datasource-credentials (raw secret-vault CRUD
+    for GWS/BQ/Keboola tokens, still reachable directly for credential
+    rotation) — this page is the connect-and-browse onboarding flow. Passes
+    ``vault_key_configured`` so the template can render the same blocking
+    banner as /admin/datasource-credentials when ``AGNES_VAULT_KEY`` is
+    absent (the wizard can't store a secret without it).
+    """
+    from app.secrets_vault import vault_key_configured
+
+    ctx = _build_context(request, user=user)
+    ctx["vault_key_configured"] = vault_key_configured()
+    return templates.TemplateResponse(request, "admin_data_sources.html", ctx)
+
+
 @router.get("/admin/database", response_class=HTMLResponse)
 async def admin_database_page(
     request: Request,

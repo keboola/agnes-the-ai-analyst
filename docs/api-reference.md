@@ -854,11 +854,14 @@ synced IWT clone for the bind-git file picker.
 Admin-only CRUD for named data-source connections. Enables multiple Keboola projects
 per Agnes instance. Each connection stores a `stack_url` and a vault-backed token.
 Tables in `table_registry` can be pinned to a specific connection via `connection_id`.
+`GET …/{connection_id}/tables` lists the project's buckets with nested tables (admin-UI
+discovery helper for the /admin/data-sources add-project wizard, #755).
 
 - /api/admin/source-connections
 - /api/admin/source-connections/{connection_id}
 - /api/admin/source-connections/{connection_id}/secret
 - /api/admin/source-connections/{connection_id}/test
+- /api/admin/source-connections/{connection_id}/tables
 
 ### `/api/admin/contributed-skills` — Contributed skill management
 

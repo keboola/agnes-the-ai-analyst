@@ -35,7 +35,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, List, Optional
+from typing import Any, List, Optional
 
 import requests
 
@@ -374,6 +374,54 @@ class KeboolaStorageClient:
         on 4xx/5xx — caller decides whether to soften to `None`.
         """
         return self._get(f"/tables/{table_id}")
+
+    # ---- discovery: buckets + tables ---------------------------------------
+    #
+    # Unlike the job/file/export endpoints above (always a JSON object),
+    # `/buckets` and `/tables` return a bare JSON array — routed through
+    # `_get_list`/`_parse_list` instead of the dict-only `_get`/`_parse`.
+
+    def list_buckets(self) -> List[dict]:
+        """GET /v2/storage/buckets — all buckets visible to the token.
+
+        Returns the raw list of bucket dicts (``id``, ``name``, ``stage``,
+        ``description``, ...). Used by the admin "browse & register tables"
+        UI to group tables for display.
+        """
+        return self._get_list("/buckets")
+
+    def list_tables(self, bucket_id: Optional[str] = None) -> List[dict]:
+        """GET /v2/storage/tables (or `/v2/storage/buckets/{bucket_id}/tables`
+        when `bucket_id` is given) — table metadata including nested
+        `bucket` info, `rowsCount`, `dataSizeBytes`.
+        """
+        path = f"/buckets/{bucket_id}/tables" if bucket_id else "/tables"
+        return self._get_list(path)
+
+    def _get_list(self, path: str) -> List[dict]:
+        url = f"{self.base}{path}"
+        resp = self.session.get(url, headers=self._headers(), timeout=30)
+        return self._parse_list(resp, "GET", url)
+
+    def _parse_list(self, resp: requests.Response, method: str, url: str) -> List[dict]:
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text
+        if resp.status_code >= 400:
+            redacted = self._redact(body)
+            raise StorageApiError(
+                f"{method} {url} -> HTTP {resp.status_code}: {redacted}",
+                status=resp.status_code,
+                body=body,
+            )
+        if not isinstance(body, list):
+            raise StorageApiError(
+                f"{method} {url} -> unexpected non-list response: {str(body)[:200]}",
+                status=resp.status_code,
+                body=body,
+            )
+        return body
 
     def wait_for_job(
         self,

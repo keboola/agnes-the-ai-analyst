@@ -48,7 +48,7 @@
            visibility tidy-up — non-admins who deep-link still get a 403
            from the route handler. #}
         {% if session.user.is_admin %}
-        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/datasource-credentials') or _path.startswith('/admin/prompts') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/initial-workspace') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/mcp-sources') or _path.startswith('/admin/mcp-tools') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/admin/adoption') or _path.startswith('/admin/activity') or _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') or _path.startswith('/admin/sessions') or _path.startswith('/admin/chat') or _path.startswith('/admin/corporate-memory') or _path.startswith('/admin/sync') or _path.startswith('/admin/news') or _path.startswith('/documentation') %}
+        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/datasource-credentials') or _path.startswith('/admin/data-sources') or _path.startswith('/admin/prompts') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/initial-workspace') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/mcp-sources') or _path.startswith('/admin/mcp-tools') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/admin/adoption') or _path.startswith('/admin/activity') or _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') or _path.startswith('/admin/sessions') or _path.startswith('/admin/chat') or _path.startswith('/admin/corporate-memory') or _path.startswith('/admin/sync') or _path.startswith('/admin/news') or _path.startswith('/documentation') %}
         <div class="app-nav-menu" id="adminNavMenu">
             <button type="button"
                     class="app-nav-link app-nav-menu-trigger {% if _admin_active %}is-active{% endif %}"
@@ -101,7 +101,24 @@
                     <summary class="app-nav-menu-section">Data Packages</summary>
                     <a class="app-nav-menu-item {% if _path.startswith('/admin/tables') %}is-active{% endif %}" role="menuitem" href="/admin/tables">Tables</a>
                     <a class="app-nav-menu-item {% if _path.startswith('/admin/sync') %}is-active{% endif %}" role="menuitem" href="/admin/sync">Sync</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/mcp-sources') or _path.startswith('/admin/mcp-tools') %}is-active{% endif %}" role="menuitem" href="/admin/mcp-sources">MCP sources</a>
+                </details>
+
+                {# "Sources" separates the two kinds of admin-registered
+                   connection an instance can have — a first-time admin
+                   otherwise reads "MCP sources" and assumes that's also
+                   where you add data (#755). Each link carries a one-line
+                   explainer so the distinction is legible without reading
+                   the docs. #}
+                <details class="app-nav-menu-group" data-section="sources" open>
+                    <summary class="app-nav-menu-section">Sources</summary>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/data-sources') %}is-active{% endif %}" role="menuitem" href="/admin/data-sources">
+                        Data sources
+                        <span class="app-nav-menu-item-desc">Keboola/BigQuery projects Agnes pulls tables from</span>
+                    </a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/mcp-sources') or _path.startswith('/admin/mcp-tools') %}is-active{% endif %}" role="menuitem" href="/admin/mcp-sources">
+                        MCP sources
+                        <span class="app-nav-menu-item-desc">MCP servers whose tools Agnes calls at runtime</span>
+                    </a>
                 </details>
 
                 {# "Agent Experience" groups everything the admin curates
