@@ -39,6 +39,15 @@ class UnsupportedTabular(Exception):
     """Raised when a file's extension has no tabular reader."""
 
 
+class EmptyExtraction(Exception):
+    """Parsing succeeded but produced an empty table (0 rows).
+
+    Distinct from UnsupportedTabular (→ rejected): the format was readable,
+    the content just didn't survive — the file needs a human or a smarter
+    extractor (→ needs_review), not a permanent reject.
+    """
+
+
 def _extracts_dir() -> Path:
     # Use the canonical data-root helper so tabular extracts land under the same
     # root as uploaded blobs (src/file_storage.py) and the orchestrator's
@@ -111,6 +120,10 @@ def ingest_tabular(
         rows = con.execute(f"SELECT COUNT(*) FROM read_parquet('{safe_pq}')").fetchone()[0]
     finally:
         con.close()
+
+    if rows == 0:
+        parquet_path.unlink(missing_ok=True)  # don't leave an orphan parquet
+        raise EmptyExtraction(f"extraction produced empty table (0 rows) from {filename!r}")
 
     size_bytes = parquet_path.stat().st_size
 
