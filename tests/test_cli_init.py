@@ -969,6 +969,29 @@ def test_shortcut_healing_is_idempotent(tmp_path, monkeypatch):
     assert content.count("# >>> agnes launcher: agnesai <<<") == 1
 
 
+def test_shortcut_healing_idempotent_no_false_warning(tmp_path, monkeypatch, capsys):
+    """Re-running install for a collision-renamed workspace must not emit a
+    spurious shadowing warning. 'function agnesai' must not match the
+    word-boundary check for 'function agnes'."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.delenv("SHELL", raising=False)
+    workspace = tmp_path / "Agnes"
+    workspace.mkdir()
+
+    from cli.lib.shortcut import install_launcher_shortcut
+
+    install_launcher_shortcut(workspace)
+    capsys.readouterr()  # discard first-run output
+
+    install_launcher_shortcut(workspace)
+    captured = capsys.readouterr()
+    assert "Warning" not in captured.err
+    assert "shadows" not in captured.err
+
+
 def test_shortcut_heals_stale_block_even_when_new_block_present(tmp_path, monkeypatch):
     """If the renamed block already exists but the stale shadowing block is
     still around, install removes the stale one without duplicating the new."""

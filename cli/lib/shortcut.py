@@ -323,7 +323,7 @@ def _heal_stale_shadowing_block(content: str, word: str, raw_word: str, target_n
             f"The shortcut is now `{word}`.",
             err=True,
         )
-    if f"function {raw_word}" in healed:
+    if re.search(rf"\bfunction {re.escape(raw_word)}\b", healed):
         typer.echo(
             f"  Warning  : your shell config still defines a `{raw_word}` function "
             f"that shadows the `{raw_word}` command. Delete that `function {raw_word}` "
