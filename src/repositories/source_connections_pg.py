@@ -94,11 +94,19 @@ class SourceConnectionsPgRepository:
         self,
         connection_id: str,
         *,
+        name: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         token_env: Optional[str] = None,
         is_default: Optional[bool] = None,
     ) -> None:
+        # `name` backs the "Add data source" wizard's post-test rename
+        # (#755) — see the DuckDB sibling's docstring for the rationale.
         with self._engine.begin() as cx:
+            if name is not None:
+                cx.execute(
+                    sa.text("UPDATE source_connections SET name = :n WHERE id = :id"),
+                    {"n": name, "id": connection_id},
+                )
             if config is not None:
                 cx.execute(
                     sa.text("UPDATE source_connections SET config = :c WHERE id = :id"),

@@ -93,6 +93,19 @@ def test_update_and_delete(repo):
     assert repo.get("c1") is None
 
 
+def test_update_renames_connection(repo):
+    # Backs the "Add data source" wizard's rename-after-test-connection step
+    # (#755) — the project name returned by test-connection is only known
+    # once the row already exists.
+    repo.create(id="c1", name="draft", source_type="keboola", config={"stack_url": "https://a"})
+    repo.update("c1", name="Production")
+    row = repo.get("c1")
+    assert row["name"] == "Production"
+    assert row["config"]["stack_url"] == "https://a"  # untouched
+    assert repo.get_by_name("Production")["id"] == "c1"
+    assert repo.get_by_name("draft") is None
+
+
 def test_update_promotes_default_and_demotes_siblings(repo):
     repo.create(id="c1", name="a", source_type="keboola", config={"stack_url": "https://a"}, is_default=True)
     repo.create(id="c2", name="b", source_type="keboola", config={"stack_url": "https://b"})

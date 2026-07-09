@@ -3647,6 +3647,17 @@ a.app-header-logo:focus-visible {
 }
 .app-nav-menu-item:hover { background: var(--border-light, #f3f4f6); }
 .app-nav-menu-item.is-active { background: var(--primary-light); color: var(--primary-dark); font-weight: 500; }
+/* One-line explainer under a nav item (#755 "Sources" group — Data sources
+   vs. MCP sources were visually indistinguishable, which is exactly the
+   confusion the issue reported). Muted, wraps under the link label. */
+.app-nav-menu-item-desc {
+    display: block;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text-secondary, #6b7280);
+    margin-top: 1px;
+    white-space: normal;
+}
 .admin-menu-separator { margin: 4px 8px; border: 0; border-top: 1px solid var(--border, #e5e7eb); }
 /* Section header inside the admin dropdown — non-clickable, small-caps,
    sitting in a light gray band so each named group (Activity Center /
