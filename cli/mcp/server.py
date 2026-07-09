@@ -149,7 +149,7 @@ def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict
 
 @mcp.tool()
 def collections_reingest(collection_id: str, file_id: str) -> dict:
-    """Re-run ingestion for one file in a Collection (admin-gated).
+    """Re-run ingestion for one file in a Collection (requires access to the collection).
 
     Use after the file or extraction config was fixed — e.g. a file stuck
     in ``needs_review`` (empty extraction) or ``rejected``. Returns the file

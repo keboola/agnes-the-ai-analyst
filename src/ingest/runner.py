@@ -150,7 +150,11 @@ def ingest_file(file_id: str) -> str:
         cf_repo.set_status(file_id, status="rejected", detail={"reason": str(exc)})
         return "rejected"
     except EmptyExtraction as exc:
-        cf_repo.set_status(file_id, status="needs_review", detail={"reason": str(exc)})
+        cf_repo.set_status(
+            file_id,
+            status="needs_review",
+            detail={"tier": 1, "kind": "tabular", "reason": str(exc)},
+        )
         return "needs_review"
     except Exception as exc:  # pragma: no cover - defensive
         logger.exception("ingest_file failed file_id=%s", file_id)

@@ -267,7 +267,10 @@
           btn.disabled = true;
           fetch("/api/collections/" + cid + "/files/" + btn.getAttribute("data-reingest") + "/reingest",
                 { method: "POST", credentials: "same-origin" })
-            .then(function (r) { if (r.ok) window.location.reload(); else btn.disabled = false; });
+            .then(function (r) {
+              if (r.ok) { window.location.reload(); }
+              else { alert("Re-ingest failed (HTTP " + r.status + ")"); btn.disabled = false; }
+            });
         });
       });
     })();

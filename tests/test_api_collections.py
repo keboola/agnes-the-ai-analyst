@@ -791,3 +791,48 @@ def test_reingest_409_while_run_in_flight(seeded_app):
     row = corpus_files_repo().get(fid)
     assert row["processing_status"] == "processing"  # no reset happened
     assert row["processing_detail"] == {"reason": "ingest running"}  # detail untouched
+
+
+def test_reingest_stale_processing_is_recoverable(seeded_app, tmp_path):
+    """A 'processing' row whose updated_at predates the staleness threshold
+    must be treated as crash-abandoned, not in-flight, so reingest proceeds
+    (202) instead of 409 — otherwise a crash mid-ingest would permanently
+    block the only recovery path for the stuck row."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.api.collections import REINGEST_STALE_PROCESSING_MINUTES
+    from src.repositories import corpus_files_repo, file_corpora_repo
+
+    col_id = file_corpora_repo().create(name="ris", slug="ris", description=None, created_by="u1")
+    csv = tmp_path / "s.csv"
+    csv.write_text("a,b\n1,2\n", encoding="utf-8")
+    fid = corpus_files_repo().add(
+        corpus_id=col_id,
+        filename="s.csv",
+        sha256="s",
+        file_type="csv",
+        size_bytes=csv.stat().st_size,
+        storage_path=str(csv),
+    )
+    corpus_files_repo().set_status(fid, status="processing", detail={"reason": "ingest running"})
+
+    # Backdate updated_at past the threshold — simulates a crash mid-ingest,
+    # where the row never got a chance to move past 'processing'.
+    stale_at = datetime.now(timezone.utc) - timedelta(minutes=REINGEST_STALE_PROCESSING_MINUTES + 5)
+    conn = get_system_db()
+    conn.execute(
+        "UPDATE corpus_files SET updated_at = ? WHERE id = ?",
+        [stale_at.replace(tzinfo=None), fid],
+    )
+    conn.close()
+
+    c = seeded_app["client"]
+    r = c.post(
+        f"/api/collections/{col_id}/files/{fid}/reingest",
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert r.status_code == 202, r.text
+    assert r.json()["processing_status"] == "pending"
+
+    # TestClient runs BackgroundTasks synchronously after the response — by now ingest re-ran.
+    assert corpus_files_repo().get(fid)["processing_status"] == "indexed"
