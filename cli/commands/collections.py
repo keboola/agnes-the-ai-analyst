@@ -239,7 +239,7 @@ def reingest_file(
     collection_id: str = typer.Argument(..., help="Collection id (col_...)"),
     file_id: str = typer.Argument(..., help="File id (cf_...) from `collections show`"),
 ):
-    """Re-run ingestion for one file (admin; after fixing the file or config)."""
+    """Re-run ingestion for one file (requires access to the collection; after fixing the file or config)."""
     try:
         out = api_post_json(f"/api/collections/{collection_id}/files/{file_id}/reingest", {})
     except V2ClientError as exc:
