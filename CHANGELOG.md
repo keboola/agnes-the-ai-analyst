@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.26] - 2026-07-09
+
+### Added
 - Admin "Add Keboola project" wizard at `/admin/data-sources`: paste a connection URL + storage token, validate, then browse buckets/tables and register the ones you want — no SSH, no config-file edits. Backed by a new `GET /api/admin/source-connections/{id}/tables` discovery endpoint (buckets grouped with nested tables) and `list_buckets()`/`list_tables()` on `KeboolaStorageClient`. Source connections can now also be renamed via `PUT /api/admin/source-connections/{id}` (`name` field), used by the wizard to adopt the project name `test-connection` reports. The admin nav gained a "Sources" grouping distinguishing "Data sources" (Keboola/BigQuery projects Agnes pulls tables from) from "MCP sources" (MCP servers whose tools Agnes calls at runtime) (#755)
 
 ### Changed
@@ -19,9 +31,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 - Audit rows for chat-secret updates, CLI auth code/token minting, data-package/recipe/memory-domain admin mutations, and memory-item required-flag toggles now go through the backend-aware `audit_repo()` factory instead of instantiating `AuditRepository` directly against the request's DuckDB connection. On Postgres instances the direct form wrote to the always-DuckDB connection while admin reads went to Postgres, so those audit entries silently never appeared in the Activity Center.
 
-### Removed
-
-### Internal
 
 ## [0.74.25] - 2026-07-09
 
