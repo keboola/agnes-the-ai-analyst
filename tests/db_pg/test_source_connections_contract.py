@@ -93,6 +93,36 @@ def test_update_and_delete(repo):
     assert repo.get("c1") is None
 
 
+def test_update_renames_connection(repo):
+    # Backs the "Add data source" wizard's rename-after-test-connection step
+    # (#755) — the project name returned by test-connection is only known
+    # once the row already exists.
+    repo.create(id="c1", name="draft", source_type="keboola", config={"stack_url": "https://a"})
+    repo.update("c1", name="Production")
+    row = repo.get("c1")
+    assert row["name"] == "Production"
+    assert row["config"]["stack_url"] == "https://a"  # untouched
+    assert repo.get_by_name("Production")["id"] == "c1"
+    assert repo.get_by_name("draft") is None
+
+
+def test_update_rename_collision_visible_to_get_by_name(repo):
+    # The API layer's 409 pre-check relies on get_by_name seeing the taken
+    # name identically on both engines — pin that contract here so the
+    # rename flow can't diverge (e.g. transaction visibility) per backend.
+    repo.create(id="c1", name="alpha", source_type="keboola", config={"stack_url": "https://a"})
+    repo.create(id="c2", name="beta", source_type="keboola", config={"stack_url": "https://b"})
+    taken = repo.get_by_name("alpha")
+    assert taken is not None and taken["id"] == "c1"
+    # rename c2 onto a free name, then confirm the old name frees up and the
+    # taken one still resolves to its owner — the exact reads the 409
+    # pre-check performs.
+    repo.update("c2", name="gamma")
+    assert repo.get_by_name("beta") is None
+    assert repo.get_by_name("alpha")["id"] == "c1"
+    assert repo.get_by_name("gamma")["id"] == "c2"
+
+
 def test_update_promotes_default_and_demotes_siblings(repo):
     repo.create(id="c1", name="a", source_type="keboola", config={"stack_url": "https://a"}, is_default=True)
     repo.create(id="c2", name="b", source_type="keboola", config={"stack_url": "https://b"})

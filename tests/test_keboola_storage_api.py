@@ -5,6 +5,7 @@ broken on linked-bucket projects, see keboola/duckdb-extension#17). Tests
 mock the requests.Session at the adapter level so we exercise the real
 HTTP shapes (status codes, JSON bodies) without touching the network.
 """
+
 from __future__ import annotations
 
 import gzip
@@ -31,6 +32,7 @@ from connectors.keboola.storage_api import (
 
 # ---- ExportFilter ----------------------------------------------------------
 
+
 class TestExportFilter:
     def test_empty_dict_means_full_table(self):
         f = ExportFilter.from_dict({})
@@ -41,13 +43,15 @@ class TestExportFilter:
         assert f.to_export_params() == {}
 
     def test_where_filters_columns_changed_since(self):
-        f = ExportFilter.from_dict({
-            "where_filters": [
-                {"column": "status", "operator": "eq", "values": ["open"]},
-            ],
-            "columns": ["id", "status"],
-            "changed_since": "2026-04-01",
-        })
+        f = ExportFilter.from_dict(
+            {
+                "where_filters": [
+                    {"column": "status", "operator": "eq", "values": ["open"]},
+                ],
+                "columns": ["id", "status"],
+                "changed_since": "2026-04-01",
+            }
+        )
         params = f.to_export_params()
         # whereFilters must be emitted as Keboola's indexed form fields, not
         # a nested list — `requests` form-encodes the latter into a single
@@ -64,12 +68,14 @@ class TestExportFilter:
     def test_where_filters_multiple_filters_and_values_indexed(self):
         # Multi-filter, multi-value spec must index each filter and each value
         # so Keboola's PHP-array form parser reconstructs the full structure.
-        f = ExportFilter.from_dict({
-            "where_filters": [
-                {"column": "job_created_at", "operator": "ge", "values": ["2025-12-18"]},
-                {"column": "status", "operator": "in", "values": ["open", "done"]},
-            ],
-        })
+        f = ExportFilter.from_dict(
+            {
+                "where_filters": [
+                    {"column": "job_created_at", "operator": "ge", "values": ["2025-12-18"]},
+                    {"column": "status", "operator": "in", "values": ["open", "done"]},
+                ],
+            }
+        )
         params = f.to_export_params()
         assert params["whereFilters[0][column]"] == "job_created_at"
         assert params["whereFilters[0][operator]"] == "ge"
@@ -83,14 +89,14 @@ class TestExportFilter:
         # The actual wire body must carry the indexed keys, not a stringified
         # Python dict — this is the regression that made job_created_at
         # filtering silently return 0 rows / 400 on the materialized path.
-        f = ExportFilter.from_dict({
-            "where_filters": [
-                {"column": "job_created_at", "operator": "ge", "values": ["2025-12-18"]},
-            ],
-        })
-        body = requests.models.RequestEncodingMixin._encode_params(
-            f.to_export_params()
+        f = ExportFilter.from_dict(
+            {
+                "where_filters": [
+                    {"column": "job_created_at", "operator": "ge", "values": ["2025-12-18"]},
+                ],
+            }
         )
+        body = requests.models.RequestEncodingMixin._encode_params(f.to_export_params())
         assert "whereFilters%5B0%5D%5Bcolumn%5D=job_created_at" in body
         assert "whereFilters%5B0%5D%5Boperator%5D=ge" in body
         assert "whereFilters%5B0%5D%5Bvalues%5D%5B0%5D=2025-12-18" in body
@@ -98,16 +104,20 @@ class TestExportFilter:
         assert "%27column%27" not in body  # no url-encoded "'column'"
 
     def test_where_filter_missing_keys_raises_with_context(self):
-        f = ExportFilter.from_dict({
-            "where_filters": [{"column": "x", "operator": "eq"}],  # no values
-        })
+        f = ExportFilter.from_dict(
+            {
+                "where_filters": [{"column": "x", "operator": "eq"}],  # no values
+            }
+        )
         with pytest.raises(ValueError, match=r"missing fields.*\['values'\]"):
             f.to_export_params()
 
     def test_where_filter_values_must_be_list(self):
-        f = ExportFilter.from_dict({
-            "where_filters": [{"column": "x", "operator": "eq", "values": "open"}],
-        })
+        f = ExportFilter.from_dict(
+            {
+                "where_filters": [{"column": "x", "operator": "eq", "values": "open"}],
+            }
+        )
         with pytest.raises(ValueError, match="values must be a list"):
             f.to_export_params()
 
@@ -137,6 +147,7 @@ class TestExportFilter:
 
 
 # ---- HTTP client low-level -------------------------------------------------
+
 
 def _mock_response(status, body):
     """Build a fake `requests.Response`-like object."""
@@ -174,9 +185,7 @@ class TestStorageClient:
         # If the API echoes the token (or a proxy injects it), we must not
         # leak it into raised exceptions.
         sess = MagicMock()
-        sess.post.return_value = _mock_response(
-            403, {"detail": "rejected token=secrettoken123"}
-        )
+        sess.post.return_value = _mock_response(403, {"detail": "rejected token=secrettoken123"})
         c = KeboolaStorageClient(url="https://kbc", token="secrettoken123", session=sess)
 
         with pytest.raises(StorageApiError) as e:
@@ -186,14 +195,85 @@ class TestStorageClient:
         assert "<redacted-storage-token>" in str(e.value)
 
 
+# ---- discovery: list_buckets / list_tables ---------------------------------
+
+
+class TestListBucketsAndTables:
+    def test_list_buckets_returns_raw_list(self):
+        sess = MagicMock()
+        sess.get.return_value = _mock_response(
+            200,
+            [
+                {"id": "in.c-main", "name": "main", "stage": "in"},
+                {"id": "out.c-reports", "name": "reports", "stage": "out"},
+            ],
+        )
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+
+        buckets = c.list_buckets()
+
+        assert [b["id"] for b in buckets] == ["in.c-main", "out.c-reports"]
+        url = sess.get.call_args.args[0]
+        assert url == "https://kbc/v2/storage/buckets"
+        assert sess.get.call_args.kwargs["headers"]["X-StorageApi-Token"] == "t"
+
+    def test_list_tables_all_returns_raw_list(self):
+        sess = MagicMock()
+        sess.get.return_value = _mock_response(
+            200,
+            [
+                {"id": "in.c-main.orders", "name": "orders", "bucket": {"id": "in.c-main"}, "rowsCount": 10},
+            ],
+        )
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+
+        tables = c.list_tables()
+
+        assert tables[0]["name"] == "orders"
+        url = sess.get.call_args.args[0]
+        assert url == "https://kbc/v2/storage/tables"
+
+    def test_list_tables_scoped_to_bucket(self):
+        sess = MagicMock()
+        sess.get.return_value = _mock_response(200, [])
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+
+        c.list_tables(bucket_id="in.c-main")
+
+        url = sess.get.call_args.args[0]
+        assert url == "https://kbc/v2/storage/buckets/in.c-main/tables"
+
+    def test_list_buckets_4xx_raises_storage_api_error(self):
+        sess = MagicMock()
+        sess.get.return_value = _mock_response(403, {"error": "invalid token"})
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+
+        with pytest.raises(StorageApiError, match="HTTP 403"):
+            c.list_buckets()
+
+    def test_list_tables_non_list_response_raises_typed_error(self):
+        sess = MagicMock()
+        sess.get.return_value = _mock_response(200, {"unexpected": "object"})
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+
+        with pytest.raises(StorageApiError, match="non-list"):
+            c.list_tables()
+
+
 # ---- wait_for_job ----------------------------------------------------------
+
 
 class TestWaitForJob:
     def test_returns_on_success(self):
         sess = MagicMock()
-        sess.get.return_value = _mock_response(200, {
-            "id": 1, "status": "success", "results": {"file": {"id": 99}},
-        })
+        sess.get.return_value = _mock_response(
+            200,
+            {
+                "id": 1,
+                "status": "success",
+                "results": {"file": {"id": 99}},
+            },
+        )
         c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
 
         job = c.wait_for_job(1, timeout=5, poll_interval=0.01)
@@ -201,9 +281,14 @@ class TestWaitForJob:
 
     def test_raises_on_error_status(self):
         sess = MagicMock()
-        sess.get.return_value = _mock_response(200, {
-            "id": 1, "status": "error", "error": {"message": "bad table"},
-        })
+        sess.get.return_value = _mock_response(
+            200,
+            {
+                "id": 1,
+                "status": "error",
+                "error": {"message": "bad table"},
+            },
+        )
         c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
 
         with pytest.raises(StorageApiError, match="reported error"):
@@ -235,6 +320,7 @@ class TestWaitForJob:
 
 # ---- download_file ---------------------------------------------------------
 
+
 class TestDownloadFile:
     def test_single_file_csv_passthrough(self, tmp_path):
         sess = MagicMock()
@@ -249,11 +335,14 @@ class TestDownloadFile:
 
         c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
         dest = tmp_path / "out.csv"
-        c.download_file({
-            "url": "https://signed/single.csv",
-            "name": "single.csv",
-            "isSliced": False,
-        }, dest)
+        c.download_file(
+            {
+                "url": "https://signed/single.csv",
+                "name": "single.csv",
+                "isSliced": False,
+            },
+            dest,
+        )
 
         assert dest.exists()
         assert dest.read_bytes() == b"col1,col2\na,1\nb,2\n"
@@ -274,11 +363,14 @@ class TestDownloadFile:
 
         c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
         dest = tmp_path / "out.csv"
-        c.download_file({
-            "url": "https://signed/single.csv.gz",
-            "name": "single.csv.gz",
-            "isSliced": False,
-        }, dest)
+        c.download_file(
+            {
+                "url": "https://signed/single.csv.gz",
+                "name": "single.csv.gz",
+                "isSliced": False,
+            },
+            dest,
+        )
 
         assert dest.read_bytes() == b"col1,col2\nx,42\n"
 
@@ -314,16 +406,20 @@ class TestDownloadFile:
 
         c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
         dest = tmp_path / "out.csv"
-        c.download_file({
-            "url": "https://signed/manifest.json",
-            "name": "sliced",
-            "isSliced": True,
-        }, dest)
+        c.download_file(
+            {
+                "url": "https://signed/manifest.json",
+                "name": "sliced",
+                "isSliced": True,
+            },
+            dest,
+        )
 
         assert dest.read_bytes() == b"col\na\nb\n"
 
 
 # ---- end-to-end export_table_to_csv ---------------------------------------
+
 
 class TestExportTableToCsv:
     def test_full_pipeline_calls_post_poll_detail_download(self, tmp_path):
@@ -337,18 +433,24 @@ class TestExportTableToCsv:
         export_resp = _mock_response(200, {"id": 100})
 
         # 2) GET /jobs/100 → success with file id 200
-        job_resp = _mock_response(200, {
-            "id": 100,
-            "status": "success",
-            "results": {"file": {"id": 200}, "totalRowsCount": 5},
-        })
+        job_resp = _mock_response(
+            200,
+            {
+                "id": 100,
+                "status": "success",
+                "results": {"file": {"id": 200}, "totalRowsCount": 5},
+            },
+        )
 
         # 3) GET /files/200?federationToken=1 → single non-sliced URL
-        file_resp = _mock_response(200, {
-            "url": "https://signed/file.csv",
-            "name": "file.csv",
-            "isSliced": False,
-        })
+        file_resp = _mock_response(
+            200,
+            {
+                "url": "https://signed/file.csv",
+                "name": "file.csv",
+                "isSliced": False,
+            },
+        )
 
         # 4) GET https://signed/file.csv (download)
         download_resp = MagicMock()
@@ -365,7 +467,8 @@ class TestExportTableToCsv:
         c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
         dest = tmp_path / "out.csv"
         stats = c.export_table_to_csv(
-            "in.c-x.t", dest,
+            "in.c-x.t",
+            dest,
             export_filter=ExportFilter(columns=["col"]),
         )
 
@@ -392,9 +495,14 @@ class TestExportTableToCsv:
     def test_missing_file_in_job_results_is_typed_error(self, tmp_path):
         sess = MagicMock()
         sess.post.return_value = _mock_response(200, {"id": 1})
-        sess.get.return_value = _mock_response(200, {
-            "id": 1, "status": "success", "results": {},  # no `file`
-        })
+        sess.get.return_value = _mock_response(
+            200,
+            {
+                "id": 1,
+                "status": "success",
+                "results": {},  # no `file`
+            },
+        )
         c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
 
         with pytest.raises(StorageApiError, match="no result file"):
@@ -403,19 +511,29 @@ class TestExportTableToCsv:
 
 # ---- prepare_export + download_file_slices (parquet path) ------------------
 
+
 class TestParquetPath:
     def test_parquet_request_emits_fileType_in_post_body(self, tmp_path):
         sess = MagicMock()
         sess.post.return_value = _mock_response(200, {"id": 100})
         sess.get.side_effect = [
-            _mock_response(200, {
-                "id": 100, "status": "success",
-                "results": {"file": {"id": 200}, "totalRowsCount": 3},
-            }),
-            _mock_response(200, {
-                "id": 200, "url": "https://signed/x.parquet",
-                "name": "x.parquet", "isSliced": False,
-            }),
+            _mock_response(
+                200,
+                {
+                    "id": 100,
+                    "status": "success",
+                    "results": {"file": {"id": 200}, "totalRowsCount": 3},
+                },
+            ),
+            _mock_response(
+                200,
+                {
+                    "id": 200,
+                    "url": "https://signed/x.parquet",
+                    "name": "x.parquet",
+                    "isSliced": False,
+                },
+            ),
         ]
         c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
 
@@ -435,20 +553,30 @@ class TestParquetPath:
         sess = MagicMock()
         sess.post.return_value = _mock_response(200, {"id": 1})
         sess.get.side_effect = [
-            _mock_response(200, {
-                "id": 1, "status": "success",
-                "results": {"file": {"id": 2}},
-            }),
-            _mock_response(200, {
-                "id": 2, "url": "https://signed/manifest.json",
-                "name": "x.parquet", "isSliced": True,
-            }),
+            _mock_response(
+                200,
+                {
+                    "id": 1,
+                    "status": "success",
+                    "results": {"file": {"id": 2}},
+                },
+            ),
+            _mock_response(
+                200,
+                {
+                    "id": 2,
+                    "url": "https://signed/manifest.json",
+                    "name": "x.parquet",
+                    "isSliced": True,
+                },
+            ),
         ]
         c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
 
         with pytest.raises(StorageApiError, match="sliced parquet"):
             c.export_table(
-                "in.c-x.t", tmp_path / "x.parquet",
+                "in.c-x.t",
+                tmp_path / "x.parquet",
                 export_filter=ExportFilter(file_type=FILE_TYPE_PARQUET),
             )
 
@@ -478,8 +606,7 @@ class TestParquetPath:
 
         c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
         paths = c.download_file_slices(
-            {"url": "https://signed/manifest.json", "isSliced": True,
-             "name": "x.parquet"},
+            {"url": "https://signed/manifest.json", "isSliced": True, "name": "x.parquet"},
             tmp_path / "slices",
         )
 
@@ -491,11 +618,11 @@ class TestParquetPath:
         assert paths[0].name < paths[1].name
 
     def test_download_file_slices_refuses_non_sliced(self):
-        c = KeboolaStorageClient(url="https://kbc", token="t",
-                                  session=MagicMock())
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=MagicMock())
         with pytest.raises(StorageApiError, match="non-sliced"):
             c.download_file_slices(
-                {"url": "https://x", "isSliced": False}, Path("/tmp/x"),
+                {"url": "https://x", "isSliced": False},
+                Path("/tmp/x"),
             )
 
     def test_get_temp_root_unset_returns_none(self, monkeypatch):
@@ -553,17 +680,21 @@ class TestParquetPath:
 
         c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
         dest = tmp_path / "out.parquet"
-        c.download_file({
-            "url": "https://signed/x.parquet",
-            "name": "x.parquet",
-            "isSliced": False,
-            "isEncrypted": False,
-        }, dest)
+        c.download_file(
+            {
+                "url": "https://signed/x.parquet",
+                "name": "x.parquet",
+                "isSliced": False,
+                "isEncrypted": False,
+            },
+            dest,
+        )
 
         assert dest.read_bytes() == b"PAR1\x00\x00\x00binary"
 
 
 # ---- sweep_orphaned_scratch ------------------------------------------------
+
 
 class TestSweepOrphanedScratch:
     """Orphaned ``kbc-export-*`` staging dirs are left behind only when a
@@ -578,6 +709,7 @@ class TestSweepOrphanedScratch:
         (d / "slice0.parquet").write_bytes(b"PAR1junk")
         old = time.time() - age_seconds
         import os as _os
+
         _os.utime(d, (old, old))
         return d
 
@@ -612,6 +744,7 @@ class TestSweepOrphanedScratch:
         keep_file.write_text("x")
         old_file = time.time() - 7200
         import os as _os
+
         _os.utime(keep_file, (old_file, old_file))
 
         removed = sweep_orphaned_scratch(root=str(tmp_path), max_age_seconds=3600)
@@ -624,9 +757,7 @@ class TestSweepOrphanedScratch:
         assert sweep_orphaned_scratch(root=None, max_age_seconds=3600) == 0
 
     def test_missing_root_is_noop(self, tmp_path):
-        assert sweep_orphaned_scratch(
-            root=str(tmp_path / "does-not-exist"), max_age_seconds=3600
-        ) == 0
+        assert sweep_orphaned_scratch(root=str(tmp_path / "does-not-exist"), max_age_seconds=3600) == 0
 
     def test_max_age_from_env_default(self, tmp_path, monkeypatch):
         """Threshold falls back to AGNES_SCRATCH_MAX_AGE_SEC when not passed."""
@@ -640,6 +771,7 @@ class TestSweepOrphanedScratch:
 
 
 # ---- get_table_info --------------------------------------------------------
+
 
 class TestGetTableInfo:
     """`get_table_info` is a thin wrapper around the existing _get path
@@ -657,9 +789,7 @@ class TestGetTableInfo:
 
         monkeypatch.setattr(KeboolaStorageClient, "_get", fake_get)
 
-        client = KeboolaStorageClient(
-            url="https://connection.keboola.com", token="tok"
-        )
+        client = KeboolaStorageClient(url="https://connection.keboola.com", token="tok")
         info = client.get_table_info("in.c-orders.events")
         assert captured["path"] == "/tables/in.c-orders.events"
         assert info["rowsCount"] == 100
@@ -667,7 +797,8 @@ class TestGetTableInfo:
 
     def test_propagates_storage_api_error(self, monkeypatch):
         from connectors.keboola.storage_api import (
-            KeboolaStorageClient, StorageApiError,
+            KeboolaStorageClient,
+            StorageApiError,
         )
 
         def fake_get(self, path, **kwargs):
@@ -677,11 +808,13 @@ class TestGetTableInfo:
 
         client = KeboolaStorageClient(url="https://x", token="tok")
         import pytest
+
         with pytest.raises(StorageApiError):
             client.get_table_info("missing.table")
 
 
 # ---- _download_single disk-space pre-flight (#431 / #432) ------------------
+
 
 def _streaming_resp(*, headers, chunks):
     """Build a MagicMock that behaves like a streaming ``requests`` response
@@ -726,16 +859,12 @@ class TestDownloadDiskPreflight:
         with patch.object(sapi.shutil, "disk_usage", fake_usage):
             if should_raise:
                 with pytest.raises(StorageApiError, match="insufficient disk space"):
-                    c._download_single(
-                        "https://signed/x", dest, gunzip_on_read=gunzip_on_read
-                    )
+                    c._download_single("https://signed/x", dest, gunzip_on_read=gunzip_on_read)
                 # The raise must fire BEFORE the write loop.
                 resp.iter_content.assert_not_called()
                 assert not dest.exists()
             else:
-                c._download_single(
-                    "https://signed/x", dest, gunzip_on_read=gunzip_on_read
-                )
+                c._download_single("https://signed/x", dest, gunzip_on_read=gunzip_on_read)
                 resp.iter_content.assert_called()
                 assert dest.exists()
 
@@ -751,13 +880,9 @@ class TestDownloadDiskPreflight:
         c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
         dest = tmp_path / "out.parquet"
 
-        with patch.object(
-            sapi.shutil, "disk_usage", return_value=MagicMock(free=100)
-        ):
+        with patch.object(sapi.shutil, "disk_usage", return_value=MagicMock(free=100)):
             with pytest.raises(StorageApiError, match="insufficient disk space"):
-                c._download_single(
-                    "https://signed/x", dest, gunzip_on_read=False
-                )
+                c._download_single("https://signed/x", dest, gunzip_on_read=False)
         resp.iter_content.assert_not_called()
         assert not dest.exists()
 
