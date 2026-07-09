@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- `agnes init` no longer writes a shell launcher function that shadows the `agnes` CLI binary itself (workspace folder named `Agnes` produced `function agnes`, hijacking every subsequent CLI call into a Claude chat session). The collision guard that already renamed shell built-ins now also covers the toolchain's own commands (`agnes`, `claude`) — the function becomes e.g. `agnesai` — and re-running `agnes init` removes the stale shadowing block a pre-fix install left in `~/.zshrc` / `~/.bashrc` / PowerShell profiles. IWT launchers seeded as `bin/<sanitized-name>` keep routing correctly under the renamed function (#783)
 
 ### Removed
 
