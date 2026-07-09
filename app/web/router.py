@@ -566,9 +566,9 @@ def _build_context(
 
         # Connector manifest sourced from the seed (operator IWT clone first,
         # bundled snapshot in the wheel as fallback). Operator GWS OAuth /
-        # Atlassian base URL etc. now live in `~/.claude/agnes/.env` written
-        # by `agnes init`; the seed-resident SKILL.md bodies read those at
-        # install time. Renderer just needs the metadata to build tiles.
+        # Atlassian base URL etc. now live in `<workspace>/.claude/agnes/.env`
+        # written by `agnes init`; the seed-resident SKILL.md bodies read those
+        # at install time. Renderer just needs the metadata to build tiles.
         _connector_manifest = load_manifest()
 
         setup_instructions_lines = resolve_lines(

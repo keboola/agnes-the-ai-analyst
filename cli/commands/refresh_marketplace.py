@@ -65,6 +65,90 @@ _EXIT_MARKETPLACE_DRIFT = 20
 _CREDENTIAL_HELPER = '!f() { printf "username=x\\npassword=%s\\n" "$AGNES_TOKEN"; }; f'
 
 
+# Hang-guards for network git calls. Without GIT_TERMINAL_PROMPT=0, an auth
+# failure (e.g. the clone's origin points at a previous instance whose host
+# rejects this workspace's PAT) makes git fall back to an interactive
+# credential prompt and wait forever — fatal inside SessionStart hooks and
+# the agent-driven install flow, where no TTY ever answers. The timeouts
+# bound network stalls (unreachable host, half-open connection) the prompt
+# guard can't catch. The marketplace repo is a single small orphan commit,
+# so these are generous.
+_GIT_NETWORK_TIMEOUT_S = 120
+_GIT_LS_REMOTE_TIMEOUT_S = 30
+
+
+def _git_env(token: Optional[str] = None) -> dict[str, str]:
+    """Environment for git subprocesses: never prompt, optional PAT."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    if token is not None:
+        env["AGNES_TOKEN"] = token
+    return env
+
+
+def _configured_marketplace_host() -> Optional[str]:
+    """host[:port] the marketplace SHOULD be served from, or None.
+
+    Mirrors `_bootstrap_clone`'s URL resolution order (AGNES_MARKETPLACE_URL
+    env override, then the configured server URL) but deliberately does NOT
+    fall back to `get_server_url()`'s localhost default — the stale-origin
+    guard below must only fire when the expected host is explicitly known,
+    never against an implicit default on an unconfigured machine.
+    """
+    base = os.environ.get("AGNES_MARKETPLACE_URL", "").strip()
+    if not base:
+        from cli.config import load_config
+
+        base = os.environ.get("AGNES_SERVER") or load_config().get("server") or ""
+    parsed = urlparse(base)
+    if not parsed.scheme or not parsed.hostname:
+        return None
+    return parsed.netloc.split("@", 1)[-1]
+
+
+def _origin_url() -> Optional[str]:
+    """The clone's `origin` remote URL, or None when it can't be read."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(CLONE_DIR), "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _origin_host_mismatch() -> Optional[tuple[str, str]]:
+    """Detect a clone whose origin tracks a different host than configured.
+
+    Returns ``(origin_host, expected_host)`` on a confident mismatch, else
+    None. The clone dir is per-machine (`~/.agnes/marketplace`), not
+    per-instance — a machine re-inited against a new server keeps the old
+    clone, and every fetch would go to the previous instance's (possibly
+    dead or PAT-rejecting) host. Skips the check when either side can't be
+    determined: no configured host, unreadable origin, or a filesystem-path
+    origin (no scheme/host — local test setups).
+    """
+    expected = _configured_marketplace_host()
+    if not expected:
+        return None
+    origin = _origin_url()
+    if not origin:
+        return None
+    parsed = urlparse(origin)
+    if not parsed.scheme or not parsed.hostname:
+        return None
+    origin_host = parsed.netloc.split("@", 1)[-1]
+    if origin_host.lower() == expected.lower():
+        return None
+    return origin_host, expected
+
+
 def _claude_base_cmd() -> Optional[list[str]]:
     """Resolve how to launch the `claude` CLI, or None when it's not on PATH.
 
@@ -164,17 +248,43 @@ def refresh_marketplace(
     if not clone_exists:
         if not _bootstrap_clone(token):
             raise typer.Exit(1)
-    elif bootstrap:
-        # Clone survived but Claude Code's registry may not list `agnes`
-        # — fresh Claude Code install on the same box, manual
-        # `claude plugin marketplace remove`, or an earlier interrupted
-        # bootstrap that warn-and-continued past the add step. The
-        # `--bootstrap` contract is "after this returns, plugins work";
-        # ensure the registration is current before we fall through to
-        # `claude plugin marketplace update agnes`, which would otherwise
-        # fail with "Marketplace 'agnes' not found".
-        if not _ensure_marketplace_registered():
-            raise typer.Exit(1)
+    else:
+        mismatch = _origin_host_mismatch()
+        if mismatch is not None:
+            origin_host, expected_host = mismatch
+            if bootstrap:
+                # Install flow is authoritative about which server this
+                # workspace belongs to — replace the stale clone outright.
+                typer.echo(
+                    f"Marketplace clone at {CLONE_DIR} tracks {origin_host}, "
+                    f"but this workspace's server is {expected_host} — re-cloning."
+                )
+                if not _bootstrap_clone(token):
+                    raise typer.Exit(1)
+            else:
+                # Refresh/check paths are not allowed to guess: fetching from
+                # the stale host would at best sync the wrong marketplace and
+                # at worst hang on a dead endpoint. Fail fast with the repair
+                # command instead.
+                typer.echo(
+                    f"error: marketplace clone at {CLONE_DIR} tracks {origin_host}, "
+                    f"but the configured server is {expected_host}. Run "
+                    "`agnes refresh-marketplace --bootstrap` to re-clone from "
+                    "the current server.",
+                    err=True,
+                )
+                raise typer.Exit(1)
+        elif bootstrap:
+            # Clone survived but Claude Code's registry may not list `agnes`
+            # — fresh Claude Code install on the same box, manual
+            # `claude plugin marketplace remove`, or an earlier interrupted
+            # bootstrap that warn-and-continued past the add step. The
+            # `--bootstrap` contract is "after this returns, plugins work";
+            # ensure the registration is current before we fall through to
+            # `claude plugin marketplace update agnes`, which would otherwise
+            # fail with "Marketplace 'agnes' not found".
+            if not _ensure_marketplace_registered():
+                raise typer.Exit(1)
 
     # --check: lightweight detector. Don't fetch+reset, don't reconcile
     # plugins — that's the slash command's job. Just check whether the
@@ -289,6 +399,8 @@ def _bootstrap_clone(token: str) -> bool:
     try:
         result = subprocess.run(
             ["git", "clone", auth_url, str(CLONE_DIR)],
+            env=_git_env(),
+            timeout=_GIT_NETWORK_TIMEOUT_S,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -297,6 +409,12 @@ def _bootstrap_clone(token: str) -> bool:
         )
     except FileNotFoundError:
         typer.echo("error: `git` not found in PATH; cannot clone marketplace.", err=True)
+        return False
+    except subprocess.TimeoutExpired:
+        typer.echo(
+            f"error: `git clone` timed out after {_GIT_NETWORK_TIMEOUT_S}s — is {clean_url} reachable?",
+            err=True,
+        )
         return False
     if result.returncode != 0:
         if result.stderr:
@@ -445,7 +563,7 @@ def _git_fetch_only(token: str) -> bool:
     full new tree — comparing local HEAD to FETCH_HEAD is sufficient to
     detect remote-side changes.
     """
-    env = {**os.environ, "AGNES_TOKEN": token}
+    env = _git_env(token)
     fetch_cmd = [
         "git",
         "-c",
@@ -459,6 +577,7 @@ def _git_fetch_only(token: str) -> bool:
         fetch = subprocess.run(
             fetch_cmd,
             env=env,
+            timeout=_GIT_NETWORK_TIMEOUT_S,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -467,6 +586,12 @@ def _git_fetch_only(token: str) -> bool:
         )
     except FileNotFoundError:
         typer.echo("error: `git` not found in PATH; cannot check marketplace.", err=True)
+        return False
+    except subprocess.TimeoutExpired:
+        typer.echo(
+            f"error: `git fetch` timed out after {_GIT_NETWORK_TIMEOUT_S}s — marketplace host unreachable?",
+            err=True,
+        )
         return False
     if fetch.returncode != 0:
         if fetch.stdout:
@@ -487,7 +612,7 @@ def _remote_head_sha(token: str) -> Optional[str]:
     on failure so auth/network errors aren't swallowed silently — the
     `--check` caller turns failure into exit 1.
     """
-    env = {**os.environ, "AGNES_TOKEN": token}
+    env = _git_env(token)
     cmd = [
         "git",
         "-c",
@@ -502,6 +627,7 @@ def _remote_head_sha(token: str) -> Optional[str]:
         result = subprocess.run(
             cmd,
             env=env,
+            timeout=_GIT_LS_REMOTE_TIMEOUT_S,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -510,6 +636,12 @@ def _remote_head_sha(token: str) -> Optional[str]:
         )
     except FileNotFoundError:
         typer.echo("error: `git` not found in PATH; cannot check marketplace.", err=True)
+        return None
+    except subprocess.TimeoutExpired:
+        typer.echo(
+            f"error: `git ls-remote` timed out after {_GIT_LS_REMOTE_TIMEOUT_S}s — marketplace host unreachable?",
+            err=True,
+        )
         return None
     if result.returncode != 0:
         if result.stdout:

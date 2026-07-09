@@ -148,9 +148,18 @@ async def get_params(
             AGNES_GWS_CLIENT_SECRET_ENV: AGNES_GWS_CLIENT_SECRET
 
     All values are strings (YAML scalars coerced via ``str()``).
-    **Secret VALUES never go through this endpoint** — only the *name* of
-    the env var that holds the secret on the server. The seed skill
-    resolves the actual secret from its own shell env at runtime.
+
+    Secrets contract — two different guarantees, don't conflate them:
+
+    - The **server-resolved GWS fallback** (below) never emits a secret
+      VALUE — only the ``*_ENV`` pointer naming the env var that holds it.
+    - The **overlay passes through verbatim**: whatever keys the operator
+      puts under ``connectors:`` in instance.yaml reach the analyst's
+      ``.env`` as-is — including ``AGNES_GWS_CLIENT_SECRET: <value>`` if
+      the operator chooses to ship the value that way. The endpoint does
+      not police overlay content; seed skills must therefore check the
+      ``.env`` file for the secret value first and fall back to the
+      ``*_ENV`` shell-env pointer.
 
     Server-resolved GWS fallback: operators can provision the shared
     Google Workspace OAuth client outside the overlay — server env vars
@@ -163,13 +172,14 @@ async def get_params(
     fast operator-provisioned branch. Overlay keys win — the overlay
     stays the per-connector source of truth; the merge only backfills.
 
-    The client_secret VALUE deliberately does NOT ride along, keeping
-    this endpoint's no-secrets contract intact even though a GWS
-    Desktop-app client secret is closer to an app identifier than a
+    In the fallback the client_secret VALUE deliberately does NOT ride
+    along, keeping the fallback's no-secrets guarantee intact even though
+    a GWS Desktop-app client secret is closer to an app identifier than a
     credential (the analyst-side skill ultimately writes it into
-    client_secret.json). Analysts get the ``*_ENV`` pointer; when their
-    shell env lacks the value, the skill asks the operator for it — one
-    string, instead of the full manual GCP-project walkthrough.
+    client_secret.json). Analysts get the ``*_ENV`` pointer; when neither
+    the ``.env`` file (overlay-shipped value) nor their shell env yields
+    the value, the skill asks the operator for it — one string, instead
+    of the full manual GCP-project walkthrough.
     """
     from app.api.admin import _load_current_instance_yaml
 

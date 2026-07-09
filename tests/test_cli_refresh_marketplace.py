@@ -31,9 +31,10 @@ runner = CliRunner()
 class _RecordedCall:
     """Captures a single subprocess.run invocation for assertion."""
 
-    def __init__(self, cmd: list[str], env: Optional[dict] = None) -> None:
+    def __init__(self, cmd: list[str], env: Optional[dict] = None, kwargs: Optional[dict] = None) -> None:
         self.cmd = cmd
         self.env = env or {}
+        self.kwargs = kwargs or {}
 
 
 class _SubprocessRecorder:
@@ -57,7 +58,7 @@ class _SubprocessRecorder:
         )
 
     def run(self, cmd, *args, env=None, capture_output=False, text=False, check=False, **kwargs):
-        self.calls.append(_RecordedCall(cmd=list(cmd), env=dict(env) if env else {}))
+        self.calls.append(_RecordedCall(cmd=list(cmd), env=dict(env) if env else {}, kwargs=dict(kwargs)))
         # Match longest prefix first so more specific scripts beat generic ones.
         sorted_scripts = sorted(self.scripts, key=lambda s: -len(s[0]))
         for prefix, scripted in sorted_scripts:
@@ -1587,3 +1588,137 @@ def test_claude_base_cmd_windows_cmd_shim_routes_through_cmd(monkeypatch):
         lambda name: "C:\\path\\claude.cmd" if name == "claude" else None,
     )
     assert rm_module._claude_base_cmd() == ["cmd", "/c", "C:\\path\\claude.cmd"]
+
+
+# --- git hang-guards + stale-origin detection ------------------------------------
+
+
+def _script_origin(recorder, clone: Path, url: str) -> None:
+    recorder.script(
+        ("git", "-C", str(clone), "remote", "get-url", "origin"),
+        stdout=url + "\n",
+    )
+
+
+def test_git_network_calls_disable_prompt_and_bound_time(
+    with_clone,
+    with_token,
+    claude_in_path,
+    recorder,
+    monkeypatch,
+):
+    """Network git calls must run with GIT_TERMINAL_PROMPT=0 and a bounded
+    timeout. Without them, a 401 from a stale remote leaves git waiting
+    forever on an interactive credential prompt — observed as a multi-minute
+    install hang on a machine whose clone pointed at a previous instance.
+    """
+    monkeypatch.setenv("AGNES_SERVER", "https://srv.example.com")
+    _script_origin(recorder, with_clone, "https://srv.example.com/marketplace.git/")
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+
+    net = [
+        c for c in recorder.calls if c.cmd[0] == "git" and any(op in c.cmd for op in ("clone", "fetch", "ls-remote"))
+    ]
+    assert net, "expected at least one network git call"
+    for call in net:
+        assert call.env.get("GIT_TERMINAL_PROMPT") == "0", call.cmd
+        assert call.kwargs.get("timeout"), f"no timeout on {call.cmd}"
+
+
+def test_check_ls_remote_disables_prompt_and_bounds_time(
+    with_clone,
+    with_token,
+    claude_in_path,
+    recorder,
+    monkeypatch,
+):
+    monkeypatch.setenv("AGNES_SERVER", "https://srv.example.com")
+    _script_origin(recorder, with_clone, "https://srv.example.com/marketplace.git/")
+    recorder.script(
+        ("git", "-c"),
+        stdout="abc123\tHEAD\n",
+    )
+    runner.invoke(refresh_marketplace_app, ["--check"])
+    ls_remote = [c for c in recorder.calls if "ls-remote" in c.cmd]
+    assert ls_remote
+    for call in ls_remote:
+        assert call.env.get("GIT_TERMINAL_PROMPT") == "0", call.cmd
+        assert call.kwargs.get("timeout"), f"no timeout on {call.cmd}"
+
+
+def test_bootstrap_reclones_when_origin_points_at_another_host(
+    tmp_path,
+    with_clone,
+    with_token,
+    claude_in_path,
+    recorder,
+    monkeypatch,
+):
+    """`--bootstrap` over a clone whose origin tracks a DIFFERENT host than
+    the configured server must re-clone from the current server instead of
+    fetching from the stale remote. The clone dir is per-machine
+    (~/.agnes/marketplace), so a machine that re-inits against a new
+    instance otherwise keeps fetching the previous instance's marketplace.
+    """
+    monkeypatch.setenv("AGNES_SERVER", "https://new.example.com")
+    _script_origin(recorder, with_clone, "https://old.example.com/marketplace.git/")
+
+    # Re-create the clone dir as a side effect of the scripted `git clone`
+    # (bootstrap rmtree's the stale dir first).
+    real_run = recorder.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:2] == ["git", "clone"]:
+            (with_clone / ".git").mkdir(parents=True, exist_ok=True)
+            (with_clone / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+            (with_clone / ".claude-plugin" / "marketplace.json").write_text(
+                json.dumps({"name": "agnes", "plugins": []}),
+                encoding="utf-8",
+            )
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(rm_module.subprocess, "run", fake_run)
+
+    result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
+    assert result.exit_code == 0, result.output
+
+    clone_calls = [c for c in recorder.calls if c.cmd[:2] == ["git", "clone"]]
+    assert len(clone_calls) == 1, "stale-origin bootstrap must re-clone"
+    assert any("new.example.com" in arg for arg in clone_calls[0].cmd), clone_calls[0].cmd
+    assert "old.example.com" in result.output
+
+
+def test_refresh_fails_fast_when_origin_points_at_another_host(
+    with_clone,
+    with_token,
+    claude_in_path,
+    recorder,
+    monkeypatch,
+):
+    """Without --bootstrap, a stale origin is an error with a --bootstrap
+    hint — NOT a fetch against the wrong (possibly dead) host."""
+    monkeypatch.setenv("AGNES_SERVER", "https://new.example.com")
+    _script_origin(recorder, with_clone, "https://old.example.com/marketplace.git/")
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 1
+    assert "--bootstrap" in result.output
+    assert not [c for c in recorder.calls if "fetch" in c.cmd]
+
+
+def test_origin_mismatch_guard_skips_local_path_origins(
+    with_clone,
+    with_token,
+    claude_in_path,
+    recorder,
+    monkeypatch,
+):
+    """A filesystem-path origin (no scheme/host) is out of the guard's
+    scope — proceed with the normal refresh flow."""
+    monkeypatch.setenv("AGNES_SERVER", "https://srv.example.com")
+    _script_origin(recorder, with_clone, "/some/local/bare-repo")
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+    assert [c for c in recorder.calls if "fetch" in c.cmd]

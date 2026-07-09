@@ -47,11 +47,13 @@ YOU run every command via your Bash tool. Do NOT print install commands and ask 
 
 5. Configure the OAuth client. This step branches on whether the {instance_brand} operator has provisioned a shared OAuth app:
 
-   **Branch A — operator OAuth app provisioned** (`AGNES_GWS_CLIENT_ID` is set in `~/.claude/agnes/.env` from `agnes init`):
+   The operator params file is `<workspace>/.claude/agnes/.env` — `agnes init` writes it into the analyst WORKSPACE, not the home directory. From inside a Claude Code session the workspace is the current working directory, so read `./.claude/agnes/.env`; if it's not there, resolve the workspace via the `workspace_root` key in `~/.config/agnes/config.yaml` (or `$AGNES_CONFIG_DIR/config.yaml`), and only then fall back to checking `~/.claude/agnes/.env` (older installs).
+
+   **Branch A — operator OAuth app provisioned** (`AGNES_GWS_CLIENT_ID` is set in the params file above):
 
    Skip `gws auth setup` entirely. Do NOT use environment variables (Claude Code's security layer redacts vars containing the substring "SECRET" from non-interactive subshells, so the env-var approach is unreliable). Instead, write the credentials directly to the file `gws auth status` reads as `credential_source`:
 
-   Read `AGNES_GWS_CLIENT_ID`, `AGNES_GWS_PROJECT_ID`, and `AGNES_GWS_CLIENT_SECRET_ENV` from `~/.claude/agnes/.env`. The actual secret value lives in the shell env at the name specified by `AGNES_GWS_CLIENT_SECRET_ENV` (typically `AGNES_GWS_CLIENT_SECRET`). If the env var is unset, ask the user / operator for the secret value (do NOT echo it back).
+   Read `AGNES_GWS_CLIENT_ID`, `AGNES_GWS_PROJECT_ID`, and the secret from the params file. The secret may appear in either of two shapes: `AGNES_GWS_CLIENT_SECRET=<value>` directly in the file (operator put the value in the server's `connectors:` overlay), or `AGNES_GWS_CLIENT_SECRET_ENV=<name>` — a pointer to a shell env var holding the value. Check the file first, then the env var it names. If neither yields a value, ask the user / operator for it (do NOT echo it back).
 
    Use the Write tool to create `~/.config/gws/client_secret.json` (or `%APPDATA%\gws\client_secret.json` on native Windows) with EXACTLY the schema Google Cloud Console exports — the gws CLI's Rust struct rejects partial files with "Invalid client_secret.json format: missing field 'project_id'". Both `installed.project_id` (numeric project number) and the URI fields are mandatory:
    {
@@ -61,14 +63,14 @@ YOU run every command via your Bash tool. Do NOT print install commands and ask 
        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
        "token_uri": "https://oauth2.googleapis.com/token",
        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-       "client_secret": "<value of $AGNES_GWS_CLIENT_SECRET (or whatever AGNES_GWS_CLIENT_SECRET_ENV names)>",
+       "client_secret": "<AGNES_GWS_CLIENT_SECRET from the params file, or from the env var AGNES_GWS_CLIENT_SECRET_ENV names>",
        "redirect_uris": ["http://localhost"]
      }
    }
 
    Then `mkdir -p ~/.config/gws && chmod 700 ~/.config/gws && chmod 600 ~/.config/gws/client_secret.json`. Verify by running `gws auth status` — it should report this file as `credential_source` without complaining about missing fields. The values identify the OAuth app, not me; treat the secret like a publishable bundle key, not a per-user credential.
 
-   **Branch B — no operator OAuth app provisioned** (`AGNES_GWS_CLIENT_ID` absent in `~/.claude/agnes/.env`):
+   **Branch B — no operator OAuth app provisioned** (`AGNES_GWS_CLIENT_ID` absent in the params file — after checking BOTH the workspace and home locations above):
 
    FIRST, offer the operator path — do NOT jump straight into the Google Cloud console walkthrough. Most analysts are not GCP admins and cannot finish it. Tell me: the {instance_brand} operator hasn't provisioned a shared Google OAuth app yet; the fastest fix is to ask them to provision it ONCE for the whole instance (server env vars `AGNES_GWS_CLIENT_ID` + `AGNES_GWS_CLIENT_SECRET`, the admin vault, or the `connectors:` / `instance.gws` section of `instance.yaml` — documented in the Agnes server's `config/instance.yaml.example`). After the operator confirms, I re-run `agnes init` and this skill — it will then take the ~2-minute Branch A. Ask me explicitly: "Message your operator and pause here (recommended), or continue with the manual Google Cloud walkthrough yourself (~20 min, needs permission to create a GCP project + OAuth client)?" Pause and STOP here unless I explicitly choose the manual walkthrough.
 
