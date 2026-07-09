@@ -105,6 +105,12 @@
   .plugin-detail .hero-window-body img {
     width: 100%; height: 100%; object-fit: cover; display: block;
   }
+  /* Per-type tint for the initials placeholder — matches the card grid
+     (marketplace.css): plugin (blue) / skill (green) / agent (amber).
+     Overridden by the cover <img> when present. */
+  .plugin-detail .hero-window-body--plugin { background: var(--ds-accent-info-bg);    color: var(--ds-accent-info-ink); }
+  .plugin-detail .hero-window-body--skill  { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .plugin-detail .hero-window-body--agent  { background: var(--ds-accent-warn-bg);    color: var(--ds-accent-warn-ink); }
 
   .plugin-detail .meta { min-width: 0; }
   .plugin-detail h1 {
@@ -867,7 +873,7 @@
           <span class="hwdot green"></span>
           <span class="hero-window-label" id="hero-window-label">{{ (entity.title if entity else None) or plugin_name }}</span>
         </div>
-        <div class="hero-window-body" id="hero-window-body">PL</div>
+        <div class="hero-window-body" id="hero-window-body"></div>
       </div>
       <div class="meta">
         <h1 id="hero-name">{{ (entity.title if entity else None) or plugin_name }}</h1>
@@ -992,6 +998,19 @@
   function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, ch => (
       {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  }
+  // Placeholder initials derived from the entity name. Mirrors initialsFor()
+  // in marketplace.html: split on any non-alphanumeric separator, take the
+  // first letter of the first two words (or first two letters of a single
+  // word), uppercased. Falls back to the type abbreviation when empty.
+  function deriveInitials(name, type) {
+    const words = String(name || '').split(/[^A-Za-z0-9]+/).filter(Boolean);
+    let initials = '';
+    if (words.length >= 2) initials = words[0][0] + words[1][0];
+    else if (words.length === 1) initials = words[0].slice(0, 2);
+    initials = initials.toUpperCase();
+    if (initials) return initials;
+    return type === 'skill' ? 'SK' : type === 'agent' ? 'AG' : type === 'plugin' ? 'PL' : '?';
   }
   function fmtBytes(n) {
     if (n == null) return '—';
@@ -1140,19 +1159,27 @@
   if (labelEl) labelEl.textContent = d.manifest_name || d.plugin_name;
 
   const bodyEl = document.getElementById('hero-window-body');
+  // Placeholder initials derived from the plugin name so the hero looks
+  // distinct per entity ("keboola-cli" → "KC") instead of a generic "PL".
+  // Mirrors initialsFor() in marketplace.html (the card grid).
+  const initials = deriveInitials(d.display_name || d.manifest_name || d.plugin_name, d.type);
+  // Per-type tint matching the card grid (see marketplace.css). Known types
+  // only; unknown types keep the default hero gradient.
+  if (d.type === 'plugin' || d.type === 'skill' || d.type === 'agent') {
+    bodyEl.classList.add(`hero-window-body--${d.type}`);
+  }
   if (d.cover_photo_url) {
     // Same fallback pattern as the marketplace card grid — when the cover
     // 404s (missing internal file, or external mirror failed and the
     // pass-through URL is dead), restore the initials placeholder so the
     // hero looks identical to the no-cover case rather than showing the
     // browser's broken-image icon.
-    const initials = bodyEl.textContent || 'PL';
     bodyEl.innerHTML = `<img src="${esc(d.cover_photo_url)}" alt=""
         onerror="this.parentElement.classList.add('photo-failed');
                  this.parentElement.textContent=this.dataset.fallback;"
         data-fallback="${esc(initials)}">`;
   } else {
-    bodyEl.textContent = 'PL';
+    bodyEl.textContent = initials;
   }
 
   // Three-element install state: install button (off-state CTA), status
