@@ -185,6 +185,10 @@
             {% endif %}
           </div>
           <span class="status-pill {{ pill }}">{{ f.processing_status }}</span>
+          {% if is_admin and f.processing_status in ("rejected", "needs_review", "indexed") %}
+            {{ ds.button("Re-ingest", variant="ghost", size="sm",
+                         attrs='type="button" data-reingest="' ~ f.id ~ '"') }}
+          {% endif %}
         </div>
       {% endfor %}
     </div>
@@ -257,6 +261,15 @@
       if (sb) sb.addEventListener("click", runSearch);
       var qi = document.getElementById("lib-q");
       if (qi) qi.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); runSearch(); } });
+
+      document.querySelectorAll("[data-reingest]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          btn.disabled = true;
+          fetch("/api/collections/" + cid + "/files/" + btn.getAttribute("data-reingest") + "/reingest",
+                { method: "POST", credentials: "same-origin" })
+            .then(function (r) { if (r.ok) window.location.reload(); else btn.disabled = false; });
+        });
+      });
     })();
   </script>
 {% endblock %}

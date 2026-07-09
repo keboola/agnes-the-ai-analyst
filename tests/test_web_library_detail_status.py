@@ -71,6 +71,26 @@ def test_library_detail_shows_rejected_reason(seeded_app, tmp_path):
     assert "unsupported or corrupt file" in r.text
 
 
+def test_library_detail_admin_sees_reingest_button(seeded_app, tmp_path):
+    """Admin viewing a needs_review file must see a re-ingest button."""
+    from src.repositories import corpus_files_repo
+
+    doc = tmp_path / "review.csv"
+    doc.write_text("col_a,col_b\n")
+
+    corpus_id = _new_corpus("reingest-ui")
+    file_id = _add_file(corpus_id, "review.csv", "csv", str(doc))
+    corpus_files_repo().set_status(
+        file_id,
+        status="needs_review",
+        detail={"reason": "extraction produced empty table"},
+    )
+
+    r = seeded_app["client"].get("/library/reingest-ui", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    assert "data-reingest" in r.text
+
+
 def test_library_detail_indexed_file_has_no_reason(seeded_app, tmp_path):
     """A clean, indexed file must not render a reason block."""
     from src.repositories import corpus_files_repo
