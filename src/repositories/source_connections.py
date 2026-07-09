@@ -92,14 +92,25 @@ class SourceConnectionsRepository:
         self,
         connection_id: str,
         *,
+        name: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         token_env: Optional[str] = None,
         is_default: Optional[bool] = None,
     ) -> None:
         # Atomic multi-column update — same transaction guarantee as the PG
         # sibling, so a failure between the UPDATEs can't half-apply.
+        # `name` backs the "Add data source" wizard's post-test rename
+        # (#755): the project name is only known after a successful
+        # test-connection call, which requires the row to already exist, so
+        # rename-after-create is the only way to honour the UX contract
+        # without introducing a create-without-persisting endpoint.
         self.conn.execute("BEGIN")
         try:
+            if name is not None:
+                self.conn.execute(
+                    "UPDATE source_connections SET name = ? WHERE id = ?",
+                    [name, connection_id],
+                )
             if config is not None:
                 self.conn.execute(
                     "UPDATE source_connections SET config = ? WHERE id = ?",

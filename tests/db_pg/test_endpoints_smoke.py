@@ -1485,9 +1485,12 @@ KNOWN_UNTESTED = {
     "PUT /api/admin/source-connections/{connection_id}/secret",
     "DELETE /api/admin/source-connections/{connection_id}/secret",
     "POST /api/admin/source-connections/{connection_id}/test",
+    "GET /api/admin/source-connections/{connection_id}/tables",
     # Admin datasource credentials — vault-backed Keboola/BQ secrets (web UI only)
     "GET /api/admin/datasource-secrets",
     "GET /admin/datasource-credentials",
+    # Admin data-sources page (#755) — tested in test_admin_data_sources_page.py
+    "GET /admin/data-sources",
     # Admin bigquery / keboola test endpoints
     "POST /api/admin/bigquery/test",
     "POST /api/admin/keboola/test",

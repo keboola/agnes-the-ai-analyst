@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- Admin "Add Keboola project" wizard at `/admin/data-sources`: paste a connection URL + storage token, validate, then browse buckets/tables and register the ones you want — no SSH, no config-file edits. Backed by a new `GET /api/admin/source-connections/{id}/tables` discovery endpoint (buckets grouped with nested tables) and `list_buckets()`/`list_tables()` on `KeboolaStorageClient`. Source connections can now also be renamed via `PUT /api/admin/source-connections/{id}` (`name` field), used by the wizard to adopt the project name `test-connection` reports. The admin nav gained a "Sources" grouping distinguishing "Data sources" (Keboola/BigQuery projects Agnes pulls tables from) from "MCP sources" (MCP servers whose tools Agnes calls at runtime) (#755)
 
 ### Changed
 - `POST /api/v2/scan`'s billable BigQuery execution now runs through `google-cloud-bigquery`'s `client.query(labels=...)` instead of the unlabeled DuckDB `bigquery_query()` extension, so scan jobs carry the same cost-attribution labels (`workload_type`/`agent_name`/`user_id`) as the dry-run estimate and the hybrid-query path (#751). The `snapshot.create` audit row now also carries `bq_job_id`/`bytes_scanned`/`bytes_billed` for BigQuery-source scans, replacing the previously-deferred `None` placeholders. The remote-select streaming path (`agnes query --remote`) is unaffected — it stays on the DuckDB extension for Storage Read API pushdown (#752)

@@ -1,0 +1,722 @@
+{% extends "base_ds.html" %}
+{% block title %}Data sources — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block head_extra %}
+<style>
+  .ds-page {
+    font-family: var(--font-primary, 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif);
+  }
+
+  /* Blocking vault-key banner — same treatment as /admin/datasource-credentials */
+  .ds-vault-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    background: var(--ds-accent-warn-bg);
+    border: 1px solid var(--ds-accent-warn-line);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 20px;
+    font-size: 13px;
+    color: var(--ds-accent-warn-ink);
+  }
+  .ds-vault-banner .vault-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+  .ds-vault-banner strong { display: block; margin-bottom: 2px; font-weight: 600; }
+
+  .ds-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .ds-section-title {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 15px; font-weight: 600; color: var(--text-primary, var(--ds-text-primary));
+  }
+  .ds-section-icon {
+    width: 32px; height: 32px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink);
+  }
+  .ds-section-desc { font-size: 12px; color: var(--text-secondary, var(--ds-text-secondary)); margin-top: 2px; }
+
+  .ds-empty, .ds-loading {
+    text-align: center; padding: 28px 20px;
+    font-size: 13px; color: var(--text-secondary, var(--ds-text-secondary));
+    background: var(--surface, var(--ds-surface));
+    border: 1px solid var(--border, var(--ds-border));
+    border-radius: 10px;
+  }
+
+  /* Per-connection card */
+  .ds-conn-card {
+    background: var(--surface, var(--ds-surface));
+    border: 1px solid var(--border, var(--ds-border));
+    border-radius: 10px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .ds-conn-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border, var(--ds-border));
+    gap: 8px;
+  }
+  .ds-conn-header-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .ds-conn-name { font-size: 13px; font-weight: 600; color: var(--text-primary, var(--ds-text-primary)); }
+  .ds-conn-stack {
+    font-size: 11px; color: var(--text-secondary, var(--ds-text-secondary));
+    font-family: var(--font-mono, ui-monospace, monospace);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 260px;
+  }
+  .ds-conn-badges { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+  .ds-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.03em;
+    text-transform: uppercase; padding: 3px 8px; border-radius: 6px;
+  }
+  .ds-badge::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; }
+  .ds-badge.badge-env   { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .ds-badge.badge-env::before   { background: var(--ds-accent-success-ink); }
+  .ds-badge.badge-vault { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ds-badge.badge-vault::before { background: var(--ds-accent-info-line); }
+  .ds-badge.badge-unset { background: var(--border-light, var(--ds-surface-dim)); color: var(--text-secondary, var(--ds-text-secondary)); }
+  .ds-badge.badge-unset::before { background: var(--ds-text-muted); }
+  .ds-badge.badge-default { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ds-badge.badge-default::before { background: var(--ds-accent-info-line); }
+
+  .ds-conn-actions {
+    display: flex; align-items: center; gap: 6px;
+    padding: 10px 16px;
+    background: var(--background, var(--ds-surface-dim));
+    flex-wrap: wrap;
+  }
+  .ds-conn-test-result {
+    font-size: 12px; display: none; align-items: center; gap: 4px; margin-left: 4px;
+  }
+  .ds-conn-test-result.show { display: flex; }
+  .ds-conn-test-result.ok   { color: var(--ds-accent-success-ink); }
+  .ds-conn-test-result.fail { color: var(--ds-accent-danger-ink); }
+
+  /* Table-browse panel (inline, per connection card) */
+  .ds-browse-panel {
+    display: none;
+    border-top: 1px solid var(--border, var(--ds-border));
+    padding: 14px 16px;
+  }
+  .ds-browse-panel.show { display: block; }
+  .ds-bucket-group { margin-bottom: 14px; }
+  .ds-bucket-group:last-child { margin-bottom: 0; }
+  .ds-bucket-title {
+    font-size: 12px; font-weight: 600; color: var(--text-primary, var(--ds-text-primary));
+    margin-bottom: 6px; display: flex; align-items: center; gap: 6px;
+  }
+  .ds-bucket-stage {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em;
+    color: var(--text-secondary, var(--ds-text-secondary));
+    background: var(--border-light, var(--ds-surface-dim)); border-radius: 4px; padding: 1px 6px;
+  }
+  .ds-table-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 4px; font-size: 12px;
+    border-radius: 6px;
+  }
+  .ds-table-row:hover { background: var(--border-light, var(--ds-surface-dim)); }
+  .ds-table-row label { flex: 1; cursor: pointer; display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .ds-table-name { color: var(--text-primary, var(--ds-text-primary)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ds-table-rows { color: var(--text-secondary, var(--ds-text-secondary)); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .ds-table-status { font-size: 11px; flex-shrink: 0; min-width: 90px; text-align: right; }
+  .ds-table-status.ok { color: var(--ds-accent-success-ink); }
+  .ds-table-status.fail { color: var(--ds-accent-danger-ink); }
+  .ds-browse-actions {
+    display: flex; align-items: center; gap: 8px; margin-top: 10px;
+    padding-top: 10px; border-top: 1px solid var(--border, var(--ds-border));
+  }
+  .ds-browse-error { font-size: 12px; color: var(--ds-accent-danger-ink); }
+
+  /* Modal (wizard) — mirrors /admin/datasource-credentials */
+  .ds-modal-overlay {
+    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35);
+    z-index: 10000; display: none; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .ds-modal-overlay.show { display: flex; }
+  .ds-modal {
+    background: var(--surface, var(--ds-surface));
+    border-radius: 14px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+    width: 100%; max-width: 480px;
+    max-height: 85vh;
+    overflow-y: auto;
+  }
+  .ds-modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px 14px;
+    border-bottom: 1px solid var(--border, var(--ds-border));
+    position: sticky; top: 0; background: var(--surface, var(--ds-surface));
+  }
+  .ds-modal-title { font-size: 15px; font-weight: 600; color: var(--text-primary, var(--ds-text-primary)); }
+  .ds-modal-close {
+    background: none; border: none; cursor: pointer; padding: 4px;
+    color: var(--text-secondary, var(--ds-text-secondary)); font-size: 18px; line-height: 1;
+  }
+  .ds-modal-close:hover { color: var(--text-primary, var(--ds-text-primary)); }
+  .ds-modal-body { padding: 20px; }
+  .ds-modal-actions {
+    display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+    padding: 14px 20px;
+    border-top: 1px solid var(--border, var(--ds-border));
+    background: var(--background, var(--ds-surface-dim));
+    position: sticky; bottom: 0;
+  }
+  .ds-field { display: block; margin-bottom: 14px; }
+  .ds-field:last-child { margin-bottom: 0; }
+  .ds-field label {
+    display: block; font-size: 13px; font-weight: 500;
+    color: var(--text-primary, var(--ds-text-primary)); margin-bottom: 4px;
+  }
+  .ds-field .field-hint { font-size: 11px; color: var(--text-secondary, var(--ds-text-secondary)); margin-top: 3px; }
+  .ds-field input {
+    width: 100%; box-sizing: border-box; padding: 8px 10px;
+    border-radius: 8px; border: 1px solid var(--border, var(--ds-border));
+    background: var(--surface, var(--ds-surface)); color: var(--text-primary, var(--ds-text-primary));
+    font-size: 13px; font-family: inherit;
+  }
+  .ds-field input:focus { outline: 2px solid var(--ds-primary, var(--ds-primary)); outline-offset: -1px; }
+  .ds-field input[type="password"] { font-family: var(--font-mono, ui-monospace, monospace); }
+
+  .ds-wizard-step { display: none; }
+  .ds-wizard-step.active { display: block; }
+  .ds-wizard-connected-banner {
+    background: var(--ds-accent-success-bg); border: 1px solid var(--ds-accent-success-line); color: var(--ds-accent-success-ink);
+    border-radius: 8px; padding: 10px 12px; font-size: 12px; margin-bottom: 14px;
+  }
+  .ds-wizard-connected-banner .rename-hint {
+    display: block; margin-top: 4px; color: var(--text-secondary, var(--ds-text-secondary));
+  }
+  .ds-wizard-connected-banner .rename-hint button {
+    background: none; border: none; padding: 0; color: var(--ds-primary, var(--ds-primary));
+    cursor: pointer; font-size: 12px; text-decoration: underline;
+  }
+  .ds-wizard-error {
+    display: none; font-size: 12px; color: var(--ds-accent-danger-ink); margin-top: 8px;
+  }
+
+  /* Toast */
+  .ds-toast {
+    position: fixed; bottom: 24px; right: 24px;
+    padding: 10px 16px; border-radius: 8px;
+    font-size: 13px; font-weight: 500;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+    z-index: 9999; display: none; align-items: center; gap: 8px; max-width: 360px;
+  }
+  .ds-toast.show { display: flex; }
+  .ds-toast.toast-ok   { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); border: 1px solid var(--ds-accent-success-line); }
+  .ds-toast.toast-fail { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); border: 1px solid var(--ds-accent-danger-line); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="ds-page">
+  {% set page_hero_eyebrow = "Sources" %}
+  {% set page_hero_title = "Data sources" %}
+  {% set page_hero_subtitle = "Keboola and BigQuery projects Agnes pulls tables from. Looking to connect an MCP server instead? See <a href=\"/admin/mcp-sources\">MCP sources</a> — the tools an agent calls at runtime." %}
+  {% include "_page_hero.html" %}
+
+  {% if not vault_key_configured %}
+  <div class="ds-vault-banner" role="alert">
+    <span class="vault-icon">&#9888;&#65039;</span>
+    <div>
+      <strong>Vault key not configured</strong>
+      Set <code>AGNES_VAULT_KEY</code> on the server to add data sources here — storage tokens
+      are stored in the encrypted server vault. Generate one with:
+      <code>python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"</code>
+      then add <code>AGNES_VAULT_KEY=&lt;value&gt;</code> to your <code>.env</code>.
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="ds-section-header">
+    <div>
+      <div class="ds-section-title">
+        <div class="ds-section-icon">&#128297;</div>
+        Keboola projects
+      </div>
+      <div class="ds-section-desc">Paste a project's connection URL + storage token, validate, then pick tables to register.</div>
+    </div>
+    <button type="button" class="btn btn-primary" id="ds-add-btn" {% if not vault_key_configured %}disabled{% endif %}>+ Add Keboola project</button>
+  </div>
+
+  <div id="ds-conn-list">
+    <div class="ds-loading">Loading…</div>
+  </div>
+</div>
+
+{# ── Add Keboola project wizard ──────────────────────────────────────── #}
+<div id="ds-wizard-overlay" class="ds-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="ds-wizard-title">
+  <div class="ds-modal">
+    <div class="ds-modal-header">
+      <div class="ds-modal-title" id="ds-wizard-title">Add Keboola project</div>
+      <button type="button" class="ds-modal-close" id="ds-wizard-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="ds-modal-body">
+
+      {# Step 1: connect #}
+      <div class="ds-wizard-step active" id="ds-wizard-step-connect">
+        <div class="ds-field">
+          <label for="ds-new-name">Connection name</label>
+          <input type="text" id="ds-new-name" placeholder="e.g. Production (auto-detected if left blank)" autocomplete="off">
+          <div class="field-hint">Leave blank to use the project name Keboola returns once connected.</div>
+        </div>
+        <div class="ds-field">
+          <label for="ds-new-stack">Connection URL <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+          <input type="text" id="ds-new-stack" placeholder="https://connection.keboola.com" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="ds-field">
+          <label for="ds-new-token">Storage API token <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+          <input type="password" id="ds-new-token" placeholder="paste token here" autocomplete="off">
+          <div class="field-hint">Stored in the server vault, never echoed back.</div>
+        </div>
+        <div id="ds-wizard-error" class="ds-wizard-error"></div>
+      </div>
+
+      {# Step 2: browse + register #}
+      <div class="ds-wizard-step" id="ds-wizard-step-tables">
+        <div class="ds-wizard-connected-banner" id="ds-wizard-connected-banner"></div>
+        <div id="ds-wizard-tables-body">
+          <div class="ds-loading">Loading buckets and tables…</div>
+        </div>
+      </div>
+
+    </div>
+    <div class="ds-modal-actions">
+      <button type="button" class="btn btn-secondary" id="ds-wizard-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="ds-wizard-connect-btn">Connect &amp; validate</button>
+      <button type="button" class="btn btn-primary" id="ds-wizard-register-btn" style="display:none;">Register selected</button>
+      <button type="button" class="btn btn-secondary" id="ds-wizard-done-btn" style="display:none;">Done</button>
+    </div>
+  </div>
+</div>
+
+<div id="ds-toast" class="ds-toast" role="status" aria-live="polite"></div>
+
+<script>
+const API_CONNECTIONS = "/api/admin/source-connections";
+const API_REGISTER_TABLE = "/api/admin/register-table";
+
+function _esc(s) {
+  return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function showToast(msg, ok) {
+  const el = document.getElementById("ds-toast");
+  el.textContent = msg;
+  el.className = "ds-toast show " + (ok ? "toast-ok" : "toast-fail");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.className = "ds-toast"; }, 3500);
+}
+
+/* ── Connections list ─────────────────────────────────────────────────── */
+
+let _connections = [];
+
+function _secretBadgeHtml(row) {
+  const tokenEnv = row.token_env || "";
+  let src = "unset";
+  if (row.has_secret === true) src = "vault";
+  else if (tokenEnv) src = "env";
+  const labels = { vault: "vault", env: "env", unset: "unset" };
+  const classes = { vault: "badge-vault", env: "badge-env", unset: "badge-unset" };
+  return `<span class="ds-badge ${classes[src] || "badge-unset"}">${labels[src] || "unset"}</span>`;
+}
+
+function _connectionCardHtml(row) {
+  const id = row.id;
+  const name = _esc(row.name || "");
+  const config = row.config || {};
+  const stackUrl = _esc((config.stack_url || "").replace(/\/$/, ""));
+  const isDefault = row.is_default === true || row.is_default === 1;
+  const defaultBadge = isDefault ? `<span class="ds-badge badge-default">default</span>` : "";
+
+  return `
+<div class="ds-conn-card" id="ds-conn-${id}" data-id="${id}">
+  <div class="ds-conn-header">
+    <div class="ds-conn-header-left">
+      <div>
+        <div class="ds-conn-name">${name}</div>
+        <div class="ds-conn-stack">${stackUrl || "(no stack URL)"}</div>
+      </div>
+    </div>
+    <div class="ds-conn-badges">
+      ${defaultBadge}
+      ${_secretBadgeHtml(row)}
+    </div>
+  </div>
+  <div class="ds-conn-actions">
+    <button type="button" class="btn btn-secondary" onclick="testConn('${id}')">Test</button>
+    <button type="button" class="btn btn-secondary" onclick="toggleBrowse('${id}')">Browse &amp; register tables</button>
+    <button type="button" class="btn btn-secondary" style="color:var(--ds-accent-danger-ink); border-color:var(--ds-accent-danger-line);" onclick="deleteConn('${id}')">Delete</button>
+    <span class="ds-conn-test-result" id="ds-test-${id}"></span>
+  </div>
+  <div class="ds-browse-panel" id="ds-browse-${id}"></div>
+</div>`;
+}
+
+async function loadConnections() {
+  const list = document.getElementById("ds-conn-list");
+  try {
+    const r = await fetch(`${API_CONNECTIONS}?source_type=keboola`, { credentials: "include" });
+    if (!r.ok) {
+      list.innerHTML = `<div class="ds-empty">Failed to load data sources (HTTP ${r.status}).</div>`;
+      return;
+    }
+    _connections = await r.json();
+    renderConnList();
+  } catch (e) {
+    list.innerHTML = `<div class="ds-empty">Failed to load data sources.</div>`;
+  }
+}
+
+function renderConnList() {
+  const list = document.getElementById("ds-conn-list");
+  if (!_connections.length) {
+    list.innerHTML = `<div class="ds-empty">No Keboola projects connected yet. Click "+ Add Keboola project" to get started.</div>`;
+    return;
+  }
+  list.innerHTML = _connections.map(_connectionCardHtml).join("");
+}
+
+async function testConn(id) {
+  const resultEl = document.getElementById(`ds-test-${id}`);
+  const card = document.getElementById(`ds-conn-${id}`);
+  const btn = card.querySelector("button");
+  btn.disabled = true;
+  resultEl.className = "ds-conn-test-result";
+  try {
+    const r = await fetch(`${API_CONNECTIONS}/${id}/test`, { method: "POST", credentials: "include" });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok && data.ok) {
+      resultEl.className = "ds-conn-test-result show ok";
+      resultEl.textContent = "✓ " + (data.project_name ? `Connected — ${data.project_name}` : "Connected");
+    } else {
+      resultEl.className = "ds-conn-test-result show fail";
+      resultEl.textContent = "✗ " + (data.error || data.detail || "connection failed");
+    }
+  } catch (e) {
+    resultEl.className = "ds-conn-test-result show fail";
+    resultEl.textContent = "✗ Request failed";
+  } finally { btn.disabled = false; }
+}
+
+async function deleteConn(id) {
+  const conn = _connections.find(c => c.id === id);
+  const name = conn ? (conn.name || "") : "";
+  if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
+  try {
+    const r = await fetch(`${API_CONNECTIONS}/${id}`, { method: "DELETE", credentials: "include" });
+    if (r.ok || r.status === 204) {
+      showToast(`"${name}" deleted.`, true);
+      _connections = _connections.filter(c => c.id !== id);
+      renderConnList();
+    } else {
+      const body = await r.json().catch(() => ({}));
+      const detail = body.detail;
+      let msg = "unknown error";
+      if (detail && typeof detail === "object") {
+        msg = detail.message || detail.error || msg;
+        if (Array.isArray(detail.tables) && detail.tables.length) msg += " (" + detail.tables.join(", ") + ")";
+      } else if (detail) {
+        msg = detail;
+      }
+      showToast("Delete failed: " + msg, false);
+    }
+  } catch (_) {
+    showToast("Request failed.", false);
+  }
+}
+
+/* ── Browse & register (inline, per existing connection) ─────────────────── */
+
+async function toggleBrowse(id) {
+  const panel = document.getElementById(`ds-browse-${id}`);
+  if (panel.classList.contains("show")) {
+    panel.classList.remove("show");
+    panel.innerHTML = "";
+    return;
+  }
+  panel.classList.add("show");
+  panel.innerHTML = `<div class="ds-loading">Loading buckets and tables…</div>`;
+  try {
+    const r = await fetch(`${API_CONNECTIONS}/${id}/tables`, { credentials: "include" });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      panel.innerHTML = `<div class="ds-browse-error">Failed to list tables: ${_esc(data.detail || String(r.status))}</div>`;
+      return;
+    }
+    panel.innerHTML = _renderBucketPicker(id, data.buckets || []);
+  } catch (e) {
+    panel.innerHTML = `<div class="ds-browse-error">Request failed.</div>`;
+  }
+}
+
+function _renderBucketPicker(connId, buckets) {
+  if (!buckets.length) {
+    return `<div class="ds-empty">No buckets/tables visible to this token.</div>`;
+  }
+  const groups = buckets.map((b, bi) => {
+    const rows = (b.tables || []).map((t, ti) => `
+      <div class="ds-table-row">
+        <label>
+          <input type="checkbox" class="ds-table-checkbox" data-conn="${connId}"
+                 data-bucket="${_esc(b.id)}" data-table-id="${_esc(t.id)}" data-table-name="${_esc(t.name)}">
+          <span class="ds-table-name">${_esc(t.name)}</span>
+        </label>
+        <span class="ds-table-rows">${(t.rows ?? 0).toLocaleString()} rows</span>
+        <span class="ds-table-status" id="ds-tstatus-${connId}-${bi}-${ti}"></span>
+      </div>`).join("");
+    return `
+      <div class="ds-bucket-group">
+        <div class="ds-bucket-title">${_esc(b.name || b.id)} <span class="ds-bucket-stage">${_esc(b.stage || "")}</span></div>
+        ${rows || '<div class="ds-empty">No tables in this bucket.</div>'}
+      </div>`;
+  }).join("");
+  return `
+    ${groups}
+    <div class="ds-browse-actions">
+      <button type="button" class="btn btn-primary" onclick="registerSelected('${connId}')">Register selected</button>
+      <span class="ds-browse-error" id="ds-browse-error-${connId}"></span>
+    </div>`;
+}
+
+async function registerSelected(connId) {
+  const checked = document.querySelectorAll(
+    `.ds-table-checkbox[data-conn="${connId}"]:checked`
+  );
+  const errEl = document.getElementById(`ds-browse-error-${connId}`);
+  if (errEl) errEl.textContent = "";
+  if (!checked.length) {
+    if (errEl) errEl.textContent = "Select at least one table.";
+    return;
+  }
+  let okCount = 0, failCount = 0;
+  for (const cb of checked) {
+    const statusId = cb.closest(".ds-table-row").querySelector(".ds-table-status").id;
+    const statusEl = document.getElementById(statusId);
+    statusEl.textContent = "registering…";
+    statusEl.className = "ds-table-status";
+    try {
+      const r = await fetch(API_REGISTER_TABLE, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: cb.dataset.tableName,
+          source_type: "keboola",
+          bucket: cb.dataset.bucket,
+          source_table: cb.dataset.tableId,
+          query_mode: "materialized",
+          connection_id: connId,
+          description: `Added via the Data sources wizard (#755)`,
+        }),
+      });
+      if (r.ok || r.status === 201) {
+        statusEl.textContent = "✓ registered";
+        statusEl.className = "ds-table-status ok";
+        cb.disabled = true;
+        okCount++;
+      } else if (r.status === 409) {
+        statusEl.textContent = "already registered";
+        statusEl.className = "ds-table-status ok";
+      } else {
+        const body = await r.json().catch(() => ({}));
+        statusEl.textContent = "✗ " + (body.detail || "failed");
+        statusEl.className = "ds-table-status fail";
+        failCount++;
+      }
+    } catch (e) {
+      statusEl.textContent = "✗ request failed";
+      statusEl.className = "ds-table-status fail";
+      failCount++;
+    }
+  }
+  if (failCount === 0) {
+    showToast(`${okCount} table(s) registered.`, true);
+  } else {
+    showToast(`${okCount} registered, ${failCount} failed. See per-row status.`, false);
+  }
+}
+
+/* ── Wizard: Add Keboola project ─────────────────────────────────────────── */
+
+let _wizardConnId = null;
+
+function openWizard() {
+  _wizardConnId = null;
+  document.getElementById("ds-new-name").value = "";
+  document.getElementById("ds-new-stack").value = "";
+  document.getElementById("ds-new-token").value = "";
+  document.getElementById("ds-wizard-error").style.display = "none";
+  document.getElementById("ds-wizard-step-connect").classList.add("active");
+  document.getElementById("ds-wizard-step-tables").classList.remove("active");
+  document.getElementById("ds-wizard-connect-btn").style.display = "";
+  document.getElementById("ds-wizard-register-btn").style.display = "none";
+  document.getElementById("ds-wizard-done-btn").style.display = "none";
+  document.getElementById("ds-wizard-overlay").classList.add("show");
+  document.getElementById("ds-new-name").focus();
+}
+
+function closeWizard() {
+  document.getElementById("ds-wizard-overlay").classList.remove("show");
+}
+
+async function connectAndValidate() {
+  const nameInput = document.getElementById("ds-new-name");
+  const name = nameInput.value.trim();
+  const stack = document.getElementById("ds-new-stack").value.trim().replace(/\/$/, "");
+  const token = document.getElementById("ds-new-token").value.trim();
+  const errEl = document.getElementById("ds-wizard-error");
+  const btn = document.getElementById("ds-wizard-connect-btn");
+  errEl.style.display = "none";
+
+  if (!stack || !stack.startsWith("http")) {
+    errEl.textContent = "Enter a valid connection URL (starts with https://).";
+    errEl.style.display = "block";
+    return;
+  }
+  if (!token) {
+    errEl.textContent = "Paste a storage API token to validate the connection.";
+    errEl.style.display = "block";
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    // 1. Create the connection (blank name gets a provisional placeholder;
+    //    renamed to the detected project name below on success).
+    const provisionalName = name || `Untitled project ${Date.now()}`;
+    const createResp = await fetch(API_CONNECTIONS, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: provisionalName, source_type: "keboola", config: { stack_url: stack } }),
+    });
+    const createBody = await createResp.json().catch(() => ({}));
+    if (!createResp.ok) {
+      errEl.textContent = createResp.status === 409
+        ? "A connection with this name already exists — pick a different name."
+        : "Failed to create connection: " + (createBody.detail || "unknown error");
+      errEl.style.display = "block";
+      return;
+    }
+    const connId = createBody.id;
+    _wizardConnId = connId;
+
+    // 2. Store the token.
+    const secretResp = await fetch(`${API_CONNECTIONS}/${connId}/secret`, {
+      method: "PUT", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value: token }),
+    });
+    if (!secretResp.ok && secretResp.status !== 204) {
+      const sb = await secretResp.json().catch(() => ({}));
+      errEl.textContent = "Connection saved but storing the token failed: " + (sb.detail || "unknown error");
+      errEl.style.display = "block";
+      return;
+    }
+
+    // 3. Validate connectivity.
+    const testResp = await fetch(`${API_CONNECTIONS}/${connId}/test`, { method: "POST", credentials: "include" });
+    const testData = await testResp.json().catch(() => ({}));
+    if (!testResp.ok || !testData.ok) {
+      errEl.innerHTML = "Connection test failed: " + _esc(testData.error || testData.detail || "unknown error") +
+        `. The connection was saved — fix the URL/token and retry, or <a href="#" onclick="deleteConn('${connId}'); closeWizard(); return false;">discard it</a>.`;
+      errEl.style.display = "block";
+      return;
+    }
+
+    // 4. Adopt the detected project name — automatically if the admin left
+    //    the name field blank, or as a one-click suggestion otherwise.
+    const projectName = testData.project_name || "";
+    const banner = document.getElementById("ds-wizard-connected-banner");
+    if (projectName && !name) {
+      await fetch(`${API_CONNECTIONS}/${connId}`, {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: projectName }),
+      });
+      banner.innerHTML = `✓ Connected — named "${_esc(projectName)}".`;
+    } else if (projectName && projectName !== name) {
+      banner.innerHTML = `✓ Connected as "${_esc(name)}".` +
+        `<span class="rename-hint">Keboola reports this project as "${_esc(projectName)}". ` +
+        `<button type="button" onclick="_adoptDetectedName('${connId}', '${_esc(projectName).replace(/'/g, "&#39;")}')">Use this name instead</button></span>`;
+    } else {
+      banner.innerHTML = `✓ Connected — ${_esc(name || projectName)}.`;
+    }
+
+    // 5. Move to step 2 and load buckets/tables.
+    document.getElementById("ds-wizard-step-connect").classList.remove("active");
+    document.getElementById("ds-wizard-step-tables").classList.add("active");
+    document.getElementById("ds-wizard-connect-btn").style.display = "none";
+    document.getElementById("ds-wizard-register-btn").style.display = "";
+    document.getElementById("ds-wizard-done-btn").style.display = "";
+    await _loadWizardTables(connId);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function _adoptDetectedName(connId, projectName) {
+  await fetch(`${API_CONNECTIONS}/${connId}`, {
+    method: "PUT", credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: projectName }),
+  });
+  document.getElementById("ds-wizard-connected-banner").innerHTML = `✓ Connected — renamed to "${_esc(projectName)}".`;
+}
+
+async function _loadWizardTables(connId) {
+  const body = document.getElementById("ds-wizard-tables-body");
+  body.innerHTML = `<div class="ds-loading">Loading buckets and tables…</div>`;
+  try {
+    const r = await fetch(`${API_CONNECTIONS}/${connId}/tables`, { credentials: "include" });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      body.innerHTML = `<div class="ds-browse-error">Failed to list tables: ${_esc(data.detail || String(r.status))}</div>`;
+      return;
+    }
+    body.innerHTML = _renderBucketPicker(connId, data.buckets || []);
+    // The picker's own "Register selected" button is redundant with the
+    // modal's footer button — hide it here to avoid two triggers.
+    const inlineBtn = body.querySelector(".ds-browse-actions .btn-primary");
+    if (inlineBtn) inlineBtn.style.display = "none";
+  } catch (e) {
+    body.innerHTML = `<div class="ds-browse-error">Request failed.</div>`;
+  }
+}
+
+function finishWizard() {
+  closeWizard();
+  loadConnections();
+}
+
+/* ── Event wiring ────────────────────────────────────────────────────────── */
+
+document.getElementById("ds-add-btn").addEventListener("click", openWizard);
+document.getElementById("ds-wizard-close").addEventListener("click", closeWizard);
+document.getElementById("ds-wizard-cancel").addEventListener("click", closeWizard);
+document.getElementById("ds-wizard-connect-btn").addEventListener("click", connectAndValidate);
+document.getElementById("ds-wizard-register-btn").addEventListener("click", () => {
+  if (_wizardConnId) registerSelected(_wizardConnId);
+});
+document.getElementById("ds-wizard-done-btn").addEventListener("click", finishWizard);
+
+document.getElementById("ds-wizard-overlay").addEventListener("click", function (e) {
+  if (e.target === this) closeWizard();
+});
+document.getElementById("ds-wizard-overlay").addEventListener("keydown", function (e) {
+  if (e.key === "Escape") closeWizard();
+});
+
+loadConnections();
+</script>
+{% endblock %}
