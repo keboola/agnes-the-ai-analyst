@@ -126,19 +126,16 @@ def _get_system_db_caller_files() -> set[str]:
 # ---------------------------------------------------------------------------
 
 _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
-    "app/api/admin_chat.py": {"AuditRepository"},
-    "app/api/admin_mcp.py": {"AuditRepository"},
-    "app/api/cli_auth.py": {"AccessTokenRepository", "AuditRepository"},
+    "app/api/cli_auth.py": {"AccessTokenRepository"},
     # cowork_bundle.py — fully migrated to the factory (setup_tokens_repo /
     # users_repo / access_token_repo / audit_repo); entry removed.
-    "app/api/data_packages.py": {"AuditRepository"},
+    # admin_chat.py, admin_mcp.py, data_packages.py, memory_domain_suggestions.py,
+    # recipes.py — AuditRepository call sites migrated to audit_repo(); entries removed.
     "app/api/mcp/tools_generator.py": {"MCPSourceRepository", "ToolRegistryRepository"},
     "app/api/mcp_per_table.py": {"TableRegistryRepository"},
     # mcp_user_secrets.py — migrated to mcp_sources_repo()/per_user_secrets_repo(); entry removed.
-    "app/api/memory.py": {"AuditRepository", "KnowledgeRepository"},
-    "app/api/memory_domain_suggestions.py": {"AuditRepository"},
-    "app/api/memory_domains.py": {"AuditRepository", "KnowledgeRepository"},
-    "app/api/recipes.py": {"AuditRepository"},
+    "app/api/memory.py": {"KnowledgeRepository"},
+    "app/api/memory_domains.py": {"KnowledgeRepository"},
     # stack.py — _emit_event migrated to usage_repo(); entry removed.
     "app/api/stack_views.py": {"KnowledgeRepository", "UsageRepository"},
     "app/auth/access.py": {

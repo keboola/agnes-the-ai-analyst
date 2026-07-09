@@ -16,6 +16,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `POST /api/v2/scan`'s billable BigQuery execution now runs through `google-cloud-bigquery`'s `client.query(labels=...)` instead of the unlabeled DuckDB `bigquery_query()` extension, so scan jobs carry the same cost-attribution labels (`workload_type`/`agent_name`/`user_id`) as the dry-run estimate and the hybrid-query path (#751). The `snapshot.create` audit row now also carries `bq_job_id`/`bytes_scanned`/`bytes_billed` for BigQuery-source scans, replacing the previously-deferred `None` placeholders. The remote-select streaming path (`agnes query --remote`) is unaffected — it stays on the DuckDB extension for Storage Read API pushdown (#752)
 
 ### Fixed
+- Audit rows for chat-secret updates, CLI auth code/token minting, data-package/recipe/memory-domain admin mutations, and memory-item required-flag toggles now go through the backend-aware `audit_repo()` factory instead of instantiating `AuditRepository` directly against the request's DuckDB connection. On Postgres instances the direct form wrote to the always-DuckDB connection while admin reads went to Postgres, so those audit entries silently never appeared in the Activity Center.
 
 ### Removed
 

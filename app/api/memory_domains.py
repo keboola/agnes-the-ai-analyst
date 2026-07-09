@@ -27,8 +27,7 @@ from pydantic import BaseModel, field_validator
 from app.api.data_packages import _validate_color
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.repositories import memory_domains_repo
-from src.repositories.audit import AuditRepository
+from src.repositories import audit_repo, memory_domains_repo
 from src.repositories.knowledge import KnowledgeRepository
 
 logger = logging.getLogger(__name__)
@@ -104,7 +103,7 @@ def _audit(
     params_before: Optional[Dict[str, Any]] = None,
 ) -> None:
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id,
             action=action,
             resource=resource,

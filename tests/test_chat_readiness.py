@@ -10,8 +10,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import duckdb
-import pytest
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.db import _ensure_schema
@@ -232,12 +231,21 @@ def test_set_secrets_rejects_empty_payload():
     assert r.status_code == 422
 
 
-def test_set_secrets_audits_without_value(monkeypatch):
+def test_set_secrets_audits_without_value(monkeypatch, e2e_env):
+    # The endpoint writes its audit row through the backend-aware
+    # ``audit_repo()`` factory, which resolves to ``get_system_db()`` on
+    # DuckDB — not the isolated ``conn`` this fixture wires up for the
+    # request's own ``_get_db`` override. Read the row back from the same
+    # system DB (``e2e_env`` gives it a fresh, test-scoped DATA_DIR).
+    from src.db import get_system_db
+
     monkeypatch.setattr("app.secrets.persist_overlay_token", lambda name, value: None)
-    client, conn = _make_app()
+    client, _conn = _make_app()
     r = client.post("/admin/chat/secrets", json={"anthropic_api_key": "sk-secret-value"})
     assert r.status_code == 200
-    row = conn.execute("SELECT action, params FROM audit_log WHERE action = 'chat.secrets.update'").fetchone()
+    sys_conn = get_system_db()
+    row = sys_conn.execute("SELECT action, params FROM audit_log WHERE action = 'chat.secrets.update'").fetchone()
+    sys_conn.close()
     assert row is not None
     # The secret value must never land in the audit row.
     assert "sk-secret-value" not in (row[1] or "")

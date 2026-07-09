@@ -29,8 +29,7 @@ from app.api.data_packages import _validate_color, _validate_status
 from app.auth.access import can_access, is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
-from src.repositories import recipes_repo
-from src.repositories.audit import AuditRepository
+from src.repositories import audit_repo, recipes_repo
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +101,7 @@ class UpdateRecipeRequest(BaseModel):
 
 def _audit(conn, actor_id, action, resource, params=None, before=None):
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id,
             action=action,
             resource=resource,

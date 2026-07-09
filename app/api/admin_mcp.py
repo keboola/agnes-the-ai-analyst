@@ -49,12 +49,12 @@ from app.secrets_vault import (
 from connectors.mcp import classifier as mcp_classifier
 from connectors.mcp import extractor as mcp_extractor
 from src.repositories import (
+    audit_repo,
     mcp_sources_repo,
     per_user_secrets_repo,
     shared_secrets_repo,
     tool_registry_repo,
 )
-from src.repositories.audit import AuditRepository
 from src.repositories.mcp_sources import MCPSourceRepository  # noqa: F401  # kept for type-only imports + tests that monkeypatch the symbol
 from src.repositories.tool_registry import (
     MATERIALIZE,
@@ -234,7 +234,7 @@ def _audit(
 ) -> None:
     """Best-effort audit row. Mirrors ``app/api/data_packages._audit``."""
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id,
             action=action,
             resource=resource,

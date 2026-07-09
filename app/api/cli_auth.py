@@ -36,8 +36,8 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import _get_db, get_optional_user, require_session_token
 from app.auth.jwt import create_access_token
+from src.repositories import audit_repo
 from src.repositories.access_tokens import AccessTokenRepository
-from src.repositories.audit import AuditRepository
 from src.repositories.cli_auth_codes import CliAuthCodeRepository
 
 router = APIRouter(prefix="/cli/auth", tags=["cli-auth"])
@@ -110,7 +110,7 @@ async def confirm(
         expires_at=datetime.now(timezone.utc) + _CODE_TTL,
     )
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user["id"],
             action="cli_auth.code_issued",
             resource="cli_auth",
@@ -183,7 +183,7 @@ async def exchange(
         expires_at=expires_at,
     )
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user_id,
             action="cli_auth.token_minted",
             resource=f"token:{token_id}",

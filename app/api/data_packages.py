@@ -46,11 +46,11 @@ def _validate_color(value: Optional[str]) -> Optional[str]:
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from src.repositories import (
+    audit_repo,
     data_packages_repo,
     table_registry_repo,
     tool_registry_repo,
 )
-from src.repositories.audit import AuditRepository
 
 logger = logging.getLogger(__name__)
 
@@ -276,7 +276,7 @@ def _audit(
 ) -> None:
     """Best-effort audit row. Mirrors the helper in ``app/api/access.py``."""
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id,
             action=action,
             resource=resource,

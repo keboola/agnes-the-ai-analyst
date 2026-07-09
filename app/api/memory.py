@@ -14,7 +14,6 @@ from app.auth.dependencies import get_current_user, _get_db
 from app.auth.access import require_admin, is_user_admin, can_access, can_access_session
 from app.auth.session_principal import SessionPrincipal
 from src.repositories.knowledge import KnowledgeRepository
-from src.repositories.audit import AuditRepository
 
 from src.repositories import (
     audit_repo,
@@ -798,7 +797,7 @@ async def admin_mandate(
     # mandate endpoint to the canonical ``memory_item.set_required`` action
     # with a boolean payload so audit consumers can stop splitting on path.
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user["email"],
             action="memory_item.set_required",
             resource=f"knowledge_item:{item_id}",
@@ -824,7 +823,7 @@ async def mark_mandatory(
     repo = KnowledgeRepository(conn)
     _get_item_or_404(repo, item_id)
     repo.set_is_required(item_id, True)
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["email"],
         action="memory_item.set_required",
         resource=f"knowledge_item:{item_id}",
@@ -849,7 +848,7 @@ async def mark_unmandatory(
     repo = KnowledgeRepository(conn)
     _get_item_or_404(repo, item_id)
     repo.set_is_required(item_id, False)
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["email"],
         action="memory_item.set_required",
         resource=f"knowledge_item:{item_id}",
