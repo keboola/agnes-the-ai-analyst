@@ -14,8 +14,10 @@ Two endpoints, two responsibilities:
   runtime params (Atlassian base URL, GWS OAuth client_id, etc.) sourced
   from the ``connectors:`` overlay in ``instance.yaml``. Written by
   ``agnes init`` into ``<workspace>/.claude/agnes/.env`` for seed skills
-  to read at runtime. **Never contains secrets** — secret values stay in
-  the shell env via an ``*_ENV`` indirection pointer.
+  to read at runtime. Secrets: the server-resolved GWS fallback only ever
+  emits an ``*_ENV`` indirection pointer, but the overlay passes operator
+  keys through verbatim — including secret values if the operator ships
+  them that way (full nuance in the endpoint docstring below).
 
 Cache invalidation for ``/manifest``: the underlying
 ``src.connectors_manifest.load_manifest()`` is cached by
