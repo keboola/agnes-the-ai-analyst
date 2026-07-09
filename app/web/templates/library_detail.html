@@ -91,6 +91,16 @@
   .file__body { flex: 1; min-width: 0; }
   .file__name { color: var(--ds-text-primary); font-weight: var(--font-medium); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file__meta { font-size: 0.76rem; color: var(--ds-text-muted); }
+  .file__reason { font-size: 0.76rem; color: var(--ds-warn-ink); margin-top: 2px; }
+  .status-pill {
+    flex: none; font-size: 0.72rem; font-weight: var(--font-medium);
+    padding: 2px 10px; border-radius: var(--radius-full);
+    color: var(--ds-text-secondary);
+    background: color-mix(in srgb, var(--ds-text-secondary) 10%, var(--surface));
+  }
+  .status-pill.ok      { color: var(--ds-accent-success-ink); background: var(--ds-accent-success-bg); }
+  .status-pill.warn    { color: var(--ds-warn-ink); background: var(--ds-warn-bg); }
+  .status-pill.blocked { color: var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg); }
   .file:nth-child(1){animation-delay:.02s}.file:nth-child(2){animation-delay:.05s}.file:nth-child(3){animation-delay:.08s}
   .file:nth-child(4){animation-delay:.11s}.file:nth-child(5){animation-delay:.14s}.file:nth-child(n+6){animation-delay:.17s}
   @keyframes file-rise { from { opacity:0; transform: translateY(6px);} to {opacity:1; transform:none;} }
@@ -154,7 +164,9 @@
       {% for f in files %}
         {% set ft = (f.file_type or "") %}
         {% set kind = "table" if ft in ["csv","tsv","xlsx","xls","parquet","json","jsonl"] else ("image" if ft in ["png","jpg","jpeg","gif","webp","tif","tiff"] else "doc") %}
-        {% set pill = {"indexed": "ok", "processing": "pending", "pending": "pending", "rejected": "blocked"}.get(f.processing_status, "pending") %}
+        {% set pill = {"indexed": "ok", "processing": "pending", "pending": "pending",
+                       "rejected": "blocked", "needs_review": "warn"}.get(f.processing_status, "pending") %}
+        {% set reason = (f.processing_detail or {}).get("reason") %}
         <div class="file">
           <span class="file__icon">
             {% if kind == "table" %}
@@ -168,6 +180,9 @@
           <div class="file__body">
             <div class="file__name">{{ f.filename }}</div>
             <div class="file__meta">{{ ft or "file" }}</div>
+            {% if reason and f.processing_status in ("rejected", "needs_review") %}
+              <div class="file__reason">{{ reason }}</div>
+            {% endif %}
           </div>
           <span class="status-pill {{ pill }}">{{ f.processing_status }}</span>
         </div>
