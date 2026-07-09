@@ -24,6 +24,7 @@ Storage API reference:
 - https://keboola.docs.apiary.io/#reference/jobs
 - https://keboola.docs.apiary.io/#reference/files/manage-files/file-detail
 """
+
 from __future__ import annotations
 
 import gzip
@@ -52,9 +53,7 @@ _DEFAULT_POLL_INTERVAL_SEC = float(os.environ.get("AGNES_KEBOOLA_POLL_INTERVAL_S
 # Sliced exports return a manifest of signed URLs; an individual slice is
 # bounded in size by Storage API's slicer (typically ~100 MiB), so a few
 # minutes is plenty for one HTTP GET.
-_DEFAULT_SLICE_DOWNLOAD_TIMEOUT_SEC = int(
-    os.environ.get("AGNES_KEBOOLA_SLICE_TIMEOUT_SEC", "300")
-)
+_DEFAULT_SLICE_DOWNLOAD_TIMEOUT_SEC = int(os.environ.get("AGNES_KEBOOLA_SLICE_TIMEOUT_SEC", "300"))
 
 
 def get_temp_root() -> Optional[str]:
@@ -88,7 +87,9 @@ def get_temp_root() -> Optional[str]:
         logger.warning(
             "AGNES_TEMP_DIR=%r not creatable (%s); tempfiles fall back "
             "to system default. Set the env to a writable path or unset "
-            "to silence this warning.", root, e,
+            "to silence this warning.",
+            root,
+            e,
         )
         return None
     return root
@@ -135,9 +136,7 @@ def sweep_orphaned_scratch(
     if not root:
         return 0
     if max_age_seconds is None:
-        max_age_seconds = float(
-            os.environ.get("AGNES_SCRATCH_MAX_AGE_SEC", "3600")
-        )
+        max_age_seconds = float(os.environ.get("AGNES_SCRATCH_MAX_AGE_SEC", "3600"))
     try:
         entries = list(os.scandir(root))
     except OSError:
@@ -160,16 +159,14 @@ def sweep_orphaned_scratch(
             removed += 1
             logger.info(
                 "Swept orphaned scratch dir %s (age %.0fs >= %.0fs threshold)",
-                entry.name, age, max_age_seconds,
+                entry.name,
+                age,
+                max_age_seconds,
             )
         except OSError as e:
-            logger.warning(
-                "Failed to sweep orphaned scratch %s: %s", entry.path, e
-            )
+            logger.warning("Failed to sweep orphaned scratch %s: %s", entry.path, e)
     if removed:
-        logger.info(
-            "Orphaned-scratch sweep removed %d dir(s) from %s", removed, root
-        )
+        logger.info("Orphaned-scratch sweep removed %d dir(s) from %s", removed, root)
     return removed
 
 
@@ -198,6 +195,7 @@ class ExportFilter:
     `{"file_type":"csv"}` in source_query (e.g. for projects whose
     backend can't UNLOAD parquet, or legacy debugging).
     """
+
     where_filters: List[dict] = field(default_factory=list)
     columns: List[str] = field(default_factory=list)
     changed_since: Optional[str] = None
@@ -207,10 +205,7 @@ class ExportFilter:
 
     def __post_init__(self):
         if self.file_type not in _VALID_FILE_TYPES:
-            raise ValueError(
-                f"file_type must be one of {sorted(_VALID_FILE_TYPES)}, "
-                f"got {self.file_type!r}"
-            )
+            raise ValueError(f"file_type must be one of {sorted(_VALID_FILE_TYPES)}, got {self.file_type!r}")
 
     @classmethod
     def from_dict(cls, data: Optional[dict]) -> "ExportFilter":
@@ -219,9 +214,7 @@ class ExportFilter:
         if not data:
             return cls()
         if not isinstance(data, dict):
-            raise ValueError(
-                f"ExportFilter.from_dict expects a dict, got {type(data).__name__}"
-            )
+            raise ValueError(f"ExportFilter.from_dict expects a dict, got {type(data).__name__}")
         # Accept both `file_type` (preferred, matches the rest of the
         # snake_case API) and `fileType` (matches Storage API wire name)
         # so an admin who copies an example from Apiary docs doesn't trip.
@@ -252,9 +245,7 @@ class ExportFilter:
                     raise ValueError(f"where_filters[{i}] must be a dict")
                 missing = {"column", "operator", "values"} - set(f.keys())
                 if missing:
-                    raise ValueError(
-                        f"where_filters[{i}] missing fields: {sorted(missing)}"
-                    )
+                    raise ValueError(f"where_filters[{i}] missing fields: {sorted(missing)}")
                 if not isinstance(f["values"], list):
                     raise ValueError(f"where_filters[{i}].values must be a list")
             # Flatten into Keboola's indexed form-field convention. The
@@ -317,9 +308,7 @@ class KeboolaStorageClient:
         self.token = token
         if session is None:
             session = requests.Session()
-            adapter = requests.adapters.HTTPAdapter(
-                pool_connections=20, pool_maxsize=20
-            )
+            adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
             session.mount("http://", adapter)
             session.mount("https://", adapter)
         self.session = session
@@ -336,9 +325,7 @@ class KeboolaStorageClient:
 
     def _post(self, path: str, *, data: Optional[dict] = None) -> dict:
         url = f"{self.base}{path}"
-        resp = self.session.post(
-            url, headers=self._headers(), data=data, timeout=30
-        )
+        resp = self.session.post(url, headers=self._headers(), data=data, timeout=30)
         return self._parse(resp, "POST", url)
 
     def _parse(self, resp: requests.Response, method: str, url: str) -> dict:
@@ -411,8 +398,7 @@ class KeboolaStorageClient:
                 return job
             if status == "error":
                 raise StorageApiError(
-                    f"Storage API job {job_id} reported error: "
-                    f"{job.get('error') or job}",
+                    f"Storage API job {job_id} reported error: {job.get('error') or job}",
                     body=job,
                 )
             time.sleep(interval)
@@ -420,9 +406,7 @@ class KeboolaStorageClient:
             # scan does not benefit from sub-second polls. 1.5 multiplier
             # reaches 10 s after ~9 polls (~30 s wall-clock) and stays there.
             interval = min(interval * 1.5, 10.0)
-        raise StorageApiError(
-            f"Storage API job {job_id} did not finish within {timeout}s"
-        )
+        raise StorageApiError(f"Storage API job {job_id} did not finish within {timeout}s")
 
     # ---- file detail + signed-URL download --------------------------------
 
@@ -484,7 +468,8 @@ class KeboolaStorageClient:
             gcs_token = (file_info.get("gcsCredentials") or {}).get("access_token")
             abs_credentials = file_info.get("absCredentials") or {}
             self._download_sliced(
-                url, dest_path,
+                url,
+                dest_path,
                 gcs_token=gcs_token,
                 abs_credentials=abs_credentials,
             )
@@ -574,16 +559,14 @@ class KeboolaStorageClient:
         in the google-cloud-storage SDK.
         """
         from urllib.parse import quote
+
         if not gs_url.startswith("gs://"):
             raise ValueError(f"_gs_to_https expects gs://; got {gs_url!r}")
         path = gs_url[5:]  # strip "gs://"
         bucket, _, key = path.partition("/")
         if not bucket or not key:
             raise ValueError(f"malformed gs:// URL: {gs_url!r}")
-        return (
-            f"https://storage.googleapis.com/storage/v1/b/{bucket}"
-            f"/o/{quote(key, safe='')}?alt=media"
-        )
+        return f"https://storage.googleapis.com/storage/v1/b/{bucket}/o/{quote(key, safe='')}?alt=media"
 
     @staticmethod
     def _azure_to_https(azure_url: str, abs_credentials: dict) -> str:
@@ -603,7 +586,7 @@ class KeboolaStorageClient:
         """
         if not azure_url.startswith("azure://"):
             raise ValueError(f"_azure_to_https expects azure://; got {azure_url!r}")
-        https_url = "https://" + azure_url[len("azure://"):]
+        https_url = "https://" + azure_url[len("azure://") :]
 
         # Extract SAS token from SASConnectionString.
         # Format: "BlobEndpoint=https://...;SharedAccessSignature=sv=2020-..."
@@ -611,7 +594,7 @@ class KeboolaStorageClient:
         sas_token = ""
         for part in sas_connection.split(";"):
             if part.startswith("SharedAccessSignature="):
-                sas_token = part[len("SharedAccessSignature="):]
+                sas_token = part[len("SharedAccessSignature=") :]
                 break
 
         if sas_token:
@@ -639,9 +622,7 @@ class KeboolaStorageClient:
           shipped in the file_detail's `gcsCredentials.access_token`).
           Mapped to `https://storage.googleapis.com/storage/v1/b/<bucket>/o/<encoded_key>?alt=media`.
         """
-        m = self.session.get(
-            manifest_url, timeout=_DEFAULT_SLICE_DOWNLOAD_TIMEOUT_SEC
-        )
+        m = self.session.get(manifest_url, timeout=_DEFAULT_SLICE_DOWNLOAD_TIMEOUT_SEC)
         m.raise_for_status()
         manifest = m.json()
         entries = manifest.get("entries") or []
@@ -652,7 +633,9 @@ class KeboolaStorageClient:
             )
 
         with tempfile.TemporaryDirectory(
-            prefix="kbc-slice-", dir=get_temp_root(), ignore_cleanup_errors=True,
+            prefix="kbc-slice-",
+            dir=get_temp_root(),
+            ignore_cleanup_errors=True,
         ) as tmpdir:
             slice_paths: List[Path] = []
             for i, entry in enumerate(entries):
@@ -670,8 +653,7 @@ class KeboolaStorageClient:
                 if surl.startswith("gs://"):
                     if not gcs_token:
                         raise StorageApiError(
-                            f"slice {i} URL is gs:// but no gcs_token "
-                            f"provided in file_detail.gcsCredentials"
+                            f"slice {i} URL is gs:// but no gcs_token provided in file_detail.gcsCredentials"
                         )
                     surl = self._gs_to_https(surl)
                     extra_headers = {"Authorization": f"Bearer {gcs_token}"}
@@ -685,7 +667,10 @@ class KeboolaStorageClient:
                 # after download.
                 gz = ".gz" in surl.split("?")[0].rsplit("/", 1)[-1]
                 self._download_single(
-                    surl, sp, gunzip_on_read=gz, extra_headers=extra_headers,
+                    surl,
+                    sp,
+                    gunzip_on_read=gz,
+                    extra_headers=extra_headers,
                 )
                 slice_paths.append(sp)
 
@@ -734,24 +719,19 @@ class KeboolaStorageClient:
         file_id = (results.get("file") or {}).get("id") or results.get("fileId")
         if not file_id:
             raise StorageApiError(
-                f"job {job_id} succeeded but had no result file: "
-                f"{self._redact(job)}",
+                f"job {job_id} succeeded but had no result file: {self._redact(job)}",
                 body=job,
             )
         file_info = self.file_detail(file_id)
         return {
             "job_id": int(job_id),
             "file_id": int(file_id),
-            "rows": (results.get("totalRowsCount")
-                     or results.get("rowsCount")
-                     or job.get("totalRowsCount")),
+            "rows": (results.get("totalRowsCount") or results.get("rowsCount") or job.get("totalRowsCount")),
             "file_info": file_info,
             "file_type": f.file_type,
         }
 
-    def download_file_slices(
-        self, file_info: dict, dest_dir: Path
-    ) -> List[Path]:
+    def download_file_slices(self, file_info: dict, dest_dir: Path) -> List[Path]:
         """Download a sliced Storage API export as separate per-slice
         files into ``dest_dir``. Returns the slice paths in manifest
         order. Use when the slices must be processed individually
@@ -768,8 +748,7 @@ class KeboolaStorageClient:
             )
         if not file_info.get("isSliced"):
             raise StorageApiError(
-                "download_file_slices called on a non-sliced file_info; "
-                "use download_file for the single-file case"
+                "download_file_slices called on a non-sliced file_info; use download_file for the single-file case"
             )
         gcs_token = (file_info.get("gcsCredentials") or {}).get("access_token")
         abs_credentials = file_info.get("absCredentials") or {}
@@ -798,8 +777,7 @@ class KeboolaStorageClient:
             if surl.startswith("gs://"):
                 if not gcs_token:
                     raise StorageApiError(
-                        f"slice {i} URL is gs:// but no gcs_token "
-                        f"provided in file_detail.gcsCredentials"
+                        f"slice {i} URL is gs:// but no gcs_token provided in file_detail.gcsCredentials"
                     )
                 surl = self._gs_to_https(surl)
                 extra_headers = {"Authorization": f"Bearer {gcs_token}"}
@@ -811,7 +789,10 @@ class KeboolaStorageClient:
             gz = ".gz" in surl.split("?")[0].rsplit("/", 1)[-1]
             sp = dest_dir / f"slice-{i:05d}"
             self._download_single(
-                surl, sp, gunzip_on_read=gz, extra_headers=extra_headers,
+                surl,
+                sp,
+                gunzip_on_read=gz,
+                extra_headers=extra_headers,
             )
             slice_paths.append(sp)
         return slice_paths
@@ -846,13 +827,12 @@ class KeboolaStorageClient:
              "file_type": str}
         """
         prep = self.prepare_export(
-            table_id, export_filter=export_filter, export_timeout=export_timeout,
+            table_id,
+            export_filter=export_filter,
+            export_timeout=export_timeout,
         )
         file_info = prep["file_info"]
-        if (
-            prep["file_type"] == FILE_TYPE_PARQUET
-            and file_info.get("isSliced")
-        ):
+        if prep["file_type"] == FILE_TYPE_PARQUET and file_info.get("isSliced"):
             raise StorageApiError(
                 f"sliced parquet export for {table_id}: use "
                 f"prepare_export + download_file_slices and merge with "
