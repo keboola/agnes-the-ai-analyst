@@ -39,10 +39,9 @@ def _validate_color(value: Optional[str]) -> Optional[str]:
     if not value:
         return None
     if not _HEX_COLOR_RE.match(value):
-        raise ValueError(
-            "color must be a 6-digit hex like '#e0f2fe'"
-        )
+        raise ValueError("color must be a 6-digit hex like '#e0f2fe'")
     return value.lower()
+
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
@@ -76,9 +75,7 @@ def _validate_status(value: Optional[str]) -> Optional[str]:
     if not v:
         return None
     if v not in _PACKAGE_STATUSES:
-        raise ValueError(
-            f"status must be one of {sorted(_PACKAGE_STATUSES)}"
-        )
+        raise ValueError(f"status must be one of {sorted(_PACKAGE_STATUSES)}")
     return v
 
 
@@ -133,17 +130,12 @@ def _validate_example_questions(v: Optional[List[str]]) -> Optional[List[str]]:
     if v is None:
         return None
     if len(v) > _EXAMPLE_QUESTIONS_MAX_COUNT:
-        raise ValueError(
-            f"example_questions: max {_EXAMPLE_QUESTIONS_MAX_COUNT} entries"
-        )
+        raise ValueError(f"example_questions: max {_EXAMPLE_QUESTIONS_MAX_COUNT} entries")
     for q in v:
         if not isinstance(q, str):
             raise ValueError("example_questions: each entry must be a string")
         if len(q) > _EXAMPLE_QUESTION_MAX_CHARS:
-            raise ValueError(
-                f"example_questions: each entry max "
-                f"{_EXAMPLE_QUESTION_MAX_CHARS} chars"
-            )
+            raise ValueError(f"example_questions: each entry max {_EXAMPLE_QUESTION_MAX_CHARS} chars")
     return v
 
 
@@ -178,11 +170,13 @@ class CreateDataPackageRequest(BaseModel):
 
     @field_validator("tags")
     @classmethod
-    def _check_tags(cls, v): return _validate_tags(v)
+    def _check_tags(cls, v):
+        return _validate_tags(v)
 
     @field_validator("long_description")
     @classmethod
-    def _check_long_desc(cls, v): return _validate_long_description(v)
+    def _check_long_desc(cls, v):
+        return _validate_long_description(v)
 
     @field_validator("when_to_use")
     @classmethod
@@ -196,7 +190,8 @@ class CreateDataPackageRequest(BaseModel):
 
     @field_validator("example_questions")
     @classmethod
-    def _check_example_questions(cls, v): return _validate_example_questions(v)
+    def _check_example_questions(cls, v):
+        return _validate_example_questions(v)
 
 
 class UpdateDataPackageRequest(BaseModel):
@@ -234,11 +229,13 @@ class UpdateDataPackageRequest(BaseModel):
 
     @field_validator("tags")
     @classmethod
-    def _check_tags(cls, v): return _validate_tags(v)
+    def _check_tags(cls, v):
+        return _validate_tags(v)
 
     @field_validator("long_description")
     @classmethod
-    def _check_long_desc(cls, v): return _validate_long_description(v)
+    def _check_long_desc(cls, v):
+        return _validate_long_description(v)
 
     @field_validator("when_to_use")
     @classmethod
@@ -252,7 +249,8 @@ class UpdateDataPackageRequest(BaseModel):
 
     @field_validator("example_questions")
     @classmethod
-    def _check_example_questions(cls, v): return _validate_example_questions(v)
+    def _check_example_questions(cls, v):
+        return _validate_example_questions(v)
 
 
 class AddTableRequest(BaseModel):
@@ -315,6 +313,7 @@ def _badges_for(pkg: Dict[str, Any], conn: duckdb.DuckDBPyConnection) -> List[st
             # user_id or an email.
             from app.auth.access import is_user_admin
             from src.repositories import users_repo
+
             u = users_repo().get_by_id(created_by) or users_repo().get_by_email(created_by)
             if u and is_user_admin(u["id"]):
                 badges.append("curated")
@@ -336,8 +335,7 @@ def _badges_for(pkg: Dict[str, Any], conn: duckdb.DuckDBPyConnection) -> List[st
     return badges
 
 
-def _serialize(pkg: Dict[str, Any],
-               conn: Optional[duckdb.DuckDBPyConnection] = None) -> Dict[str, Any]:
+def _serialize(pkg: Dict[str, Any], conn: Optional[duckdb.DuckDBPyConnection] = None) -> Dict[str, Any]:
     """Project a repo row onto the API response shape.
 
     ``conn`` is optional only so legacy callers that don't need the
@@ -611,9 +609,7 @@ async def add_table_to_package(
     table = table_repo.get(payload.table_id)
     if not table:
         raise HTTPException(status_code=404, detail="table_not_found")
-    added = repo.add_table(
-        pkg_id, payload.table_id, added_by=user.get("email") or user["id"]
-    )
+    added = repo.add_table(pkg_id, payload.table_id, added_by=user.get("email") or user["id"])
     if added:
         _audit(
             conn,

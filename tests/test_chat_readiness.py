@@ -4,6 +4,7 @@ admin endpoints that surface/set them.
 The readiness module never returns secret *values* — only presence — and the
 live probes classify auth failures distinctly from connectivity errors.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -31,6 +32,7 @@ def _cfg(**kw):
 # ---------------------------------------------------------------------------
 # secret_status — presence only, required vs set
 # ---------------------------------------------------------------------------
+
 
 def test_secret_status_disabled_config_is_never_ready():
     s = readiness.secret_status(None)
@@ -83,9 +85,11 @@ def test_secret_status_e2b_not_required_for_other_provider(monkeypatch):
 # Live probes — E2B
 # ---------------------------------------------------------------------------
 
+
 def test_test_e2b_key_missing(monkeypatch):
     monkeypatch.delenv("E2B_API_KEY", raising=False)
     import asyncio
+
     r = asyncio.run(readiness.test_e2b_key())
     assert r["ok"] is False
     assert "not set" in r["detail"]
@@ -123,9 +127,11 @@ def test_test_e2b_key_auth_failure_classified(monkeypatch):
 # Live probes — Anthropic
 # ---------------------------------------------------------------------------
 
+
 def test_test_anthropic_key_missing(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     import asyncio
+
     r = asyncio.run(readiness.test_anthropic_key())
     assert r["ok"] is False
     assert "not set" in r["detail"]
@@ -173,13 +179,16 @@ def test_test_anthropic_key_auth_failure_classified(monkeypatch):
 # Admin endpoints
 # ---------------------------------------------------------------------------
 
+
 def _make_app(*, chat_enabled: bool = True) -> tuple[TestClient, duckdb.DuckDBPyConnection]:
     from app.api.admin_chat import router as admin_chat_router
 
     app = FastAPI()
     app.include_router(admin_chat_router)
     app.state.chat_config = SimpleNamespace(
-        enabled=chat_enabled, provider="e2b", e2b_template_id="agnes-chat",
+        enabled=chat_enabled,
+        provider="e2b",
+        e2b_template_id="agnes-chat",
     )
     conn = duckdb.connect(":memory:")
     _ensure_schema(conn)
@@ -228,9 +237,7 @@ def test_set_secrets_audits_without_value(monkeypatch):
     client, conn = _make_app()
     r = client.post("/admin/chat/secrets", json={"anthropic_api_key": "sk-secret-value"})
     assert r.status_code == 200
-    row = conn.execute(
-        "SELECT action, params FROM audit_log WHERE action = 'chat.secrets.update'"
-    ).fetchone()
+    row = conn.execute("SELECT action, params FROM audit_log WHERE action = 'chat.secrets.update'").fetchone()
     assert row is not None
     # The secret value must never land in the audit row.
     assert "sk-secret-value" not in (row[1] or "")

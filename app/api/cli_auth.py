@@ -111,15 +111,15 @@ async def confirm(
     )
     try:
         AuditRepository(conn).log(
-            user_id=user["id"], action="cli_auth.code_issued",
-            resource="cli_auth", params={"port": port},
+            user_id=user["id"],
+            action="cli_auth.code_issued",
+            resource="cli_auth",
+            params={"port": port},
         )
     except Exception:
         pass
 
-    target = f"http://127.0.0.1:{port}/callback?" + urlencode(
-        {"code": raw_code, "state": state}
-    )
+    target = f"http://127.0.0.1:{port}/callback?" + urlencode({"code": raw_code, "state": state})
     # 303 so the browser issues a GET to the loopback regardless of this being
     # a POST handler.
     return RedirectResponse(url=target, status_code=303)
@@ -164,8 +164,10 @@ async def exchange(
     token_id = str(uuid.uuid4())
     expires_delta = timedelta(days=_PAT_TTL_DAYS)
     jwt_token = create_access_token(
-        user_id=user_id, email=email,
-        token_id=token_id, typ="pat",
+        user_id=user_id,
+        email=email,
+        token_id=token_id,
+        typ="pat",
         expires_delta=expires_delta,
         extra_claims={"scope": "cli-login"},
     )
@@ -173,17 +175,25 @@ async def exchange(
     prefix = token_id.replace("-", "")[:8]
     token_hash = hashlib.sha256(jwt_token.encode()).hexdigest()
     AccessTokenRepository(conn).create(
-        id=token_id, user_id=user_id, name=name,
-        token_hash=token_hash, prefix=prefix, expires_at=expires_at,
+        id=token_id,
+        user_id=user_id,
+        name=name,
+        token_hash=token_hash,
+        prefix=prefix,
+        expires_at=expires_at,
     )
     try:
         AuditRepository(conn).log(
-            user_id=user_id, action="cli_auth.token_minted",
-            resource=f"token:{token_id}", params={"name": name},
+            user_id=user_id,
+            action="cli_auth.token_minted",
+            resource=f"token:{token_id}",
+            params={"name": name},
         )
     except Exception:
         pass
 
     return ExchangeResponse(
-        token=jwt_token, email=email, expires_at=str(expires_at),
+        token=jwt_token,
+        email=email,
+        expires_at=str(expires_at),
     )

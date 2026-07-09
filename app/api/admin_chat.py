@@ -1,4 +1,5 @@
 """Admin observability for chat sessions."""
+
 from __future__ import annotations
 
 import asyncio
@@ -69,6 +70,7 @@ async def list_active(request: Request, admin: dict = Depends(require_admin)):
     accept = request.headers.get("accept", "")
     if "text/html" in accept and "application/json" not in accept:
         from app.web.router import templates as _templates, _build_context as _build_ctx
+
         ctx = _build_ctx(request, user=admin)
         return _templates.TemplateResponse(request, "admin_chat.html", ctx)
     mgr = getattr(request.app.state, "chat_manager", None)
@@ -76,15 +78,17 @@ async def list_active(request: Request, admin: dict = Depends(require_admin)):
         return {"sessions": [], "warning": "chat_disabled"}
     sessions = []
     for live in mgr.list_live():
-        sessions.append({
-            "id": live.chat_id,
-            "user_email": live.user_email,
-            "state": live.state.value,
-            "pid": live.handle.pid if live.handle else None,
-            "started_at": live.started_at.isoformat(),
-            "last_activity": live.last_activity.isoformat(),
-            "crash_count": live.crash_count,
-        })
+        sessions.append(
+            {
+                "id": live.chat_id,
+                "user_email": live.user_email,
+                "state": live.state.value,
+                "pid": live.handle.pid if live.handle else None,
+                "started_at": live.started_at.isoformat(),
+                "last_activity": live.last_activity.isoformat(),
+                "crash_count": live.crash_count,
+            }
+        )
     return {"sessions": sessions}
 
 
@@ -193,6 +197,7 @@ async def admin_debug(
     # bq_bytes — process-local accumulator inside app/api/query.py.
     try:
         from app.api.query import _per_session_bq_bytes
+
         bq_bytes = int(_per_session_bq_bytes.get(chat_id, 0))
     except Exception:
         bq_bytes = 0
@@ -268,10 +273,7 @@ async def admin_tail(ws: WebSocket, chat_id: str, ticket: str = ""):
         await ws.send_json({"type": "no_log", "reason": "chat_data_dir_not_configured"})
         await ws.close()
         return
-    log_path = (
-        Path(chat_data_dir) / "users" / s.user_email /
-        "sessions" / chat_id / "run.log"
-    )
+    log_path = Path(chat_data_dir) / "users" / s.user_email / "sessions" / chat_id / "run.log"
     if not log_path.exists():
         await ws.send_json({"type": "no_log"})
         await ws.close()

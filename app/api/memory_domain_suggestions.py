@@ -68,6 +68,7 @@ class ResolveRequest(BaseModel):
 
 def _slugify(name: str) -> str:
     import re
+
     s = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
     return s or "domain"
 

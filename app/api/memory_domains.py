@@ -59,6 +59,7 @@ class CreateMemoryDomainRequest(BaseModel):
     @classmethod
     def _check_status(cls, v: Optional[str]) -> Optional[str]:
         from app.api.data_packages import _validate_status
+
         return _validate_status(v)
 
 
@@ -81,6 +82,7 @@ class UpdateMemoryDomainRequest(BaseModel):
     @classmethod
     def _check_status(cls, v: Optional[str]) -> Optional[str]:
         from app.api.data_packages import _validate_status
+
         return _validate_status(v)
 
 
@@ -307,9 +309,7 @@ async def add_item_to_domain(
     item = KnowledgeRepository(conn).get_by_id(payload.item_id)
     if not item:
         raise HTTPException(status_code=404, detail="item_not_found")
-    added = repo.add_item(
-        domain_id, payload.item_id, added_by=user.get("email") or user["id"]
-    )
+    added = repo.add_item(domain_id, payload.item_id, added_by=user.get("email") or user["id"])
     if added:
         _audit(
             conn,
