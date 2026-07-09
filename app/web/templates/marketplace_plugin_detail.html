@@ -873,7 +873,10 @@
           <span class="hwdot green"></span>
           <span class="hero-window-label" id="hero-window-label">{{ (entity.title if entity else None) or plugin_name }}</span>
         </div>
-        <div class="hero-window-body" id="hero-window-body"></div>
+        {%- set _pn_parts = (plugin_name or 'plugin').replace('_', '-').split('-') | select | list %}
+        <div class="hero-window-body" id="hero-window-body">
+          {{- ((_pn_parts[0][0] ~ _pn_parts[1][0]) | upper) if _pn_parts | length >= 2 else (_pn_parts[0][:2] | upper if _pn_parts else 'PL') -}}
+        </div>
       </div>
       <div class="meta">
         <h1 id="hero-name">{{ (entity.title if entity else None) or plugin_name }}</h1>
@@ -1535,17 +1538,15 @@
   function buildCardSection(title, items, type) {
     if (!items || !items.length) return '';
     // Inner cards render the marketplace-metadata cover photo when present
-    // (mirrored OK for external, file exists for internal); otherwise the
-    // initials fall through ("SK" / "AG") on the colored gradient. Same
-    // onerror fallback as the top-level cards so a missing file doesn't
-    // produce the browser's broken-image icon.
-    const initials = type === 'skill' ? 'SK' : 'AG';
+    // (mirrored OK for external, file exists for internal); otherwise derive
+    // initials from the entity name — same logic as the top-level card grid.
     const cards = items.map(it => {
+      const itInitials = deriveInitials(it.name, type);
       const photoMarkup = it.cover_photo_url
         ? `<div class="photo"><img src="${esc(it.cover_photo_url)}" alt=""
               onerror="this.parentElement.classList.add('photo-failed');
-                       this.parentElement.textContent='${initials}';"></div>`
-        : `<div class="photo">${initials}</div>`;
+                       this.parentElement.textContent='${itInitials.replace(/'/g, "\\'")}';"></div>`
+        : `<div class="photo">${itInitials}</div>`;
       return `
       <a class="inner-card" data-type="${type}" href="${esc(it.detail_url || '#')}">
         ${photoMarkup}

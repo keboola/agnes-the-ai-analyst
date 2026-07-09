@@ -13,13 +13,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
-- Marketplace cover-photo placeholders now derive their initials from the entity name (`keboola-cli` → `KC`) instead of a generic per-type `PL`/`SK`/`AG`, and tint by type — plugin (blue) / skill (green) / agent (amber) — so a wall of cover-less cards is scannable at a glance. Applies to both the card grid and the plugin detail hero; unknown/empty names fall back to the type abbreviation and default gradient.
 
 ### Fixed
 
 ### Removed
 
 ### Internal
+
+## [0.74.29] - 2026-07-09
+
+### Changed
+- Marketplace cover-photo placeholders now derive their initials from the entity name (`keboola-cli` → `KC`) instead of a generic per-type `PL`/`SK`/`AG`, and tint by type — plugin (blue) / skill (green) / agent (amber) — so a wall of cover-less cards is scannable at a glance. Applies to the card grid, the plugin detail hero, and inner skill/agent cards within a plugin's Internal Structure section; unknown/empty names fall back to the type abbreviation and default gradient. The plugin detail hero now pre-renders server-side initials as a progressive-enhancement fallback so no empty gradient flash occurs before the JS fetch completes.
 
 ## [0.74.28] - 2026-07-09
 
