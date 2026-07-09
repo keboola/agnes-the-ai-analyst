@@ -13,6 +13,7 @@ from app.api.v2_arrow import parse_ipc_bytes
 def reload_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     import src.db as db_module
+
     importlib.reload(db_module)
     yield db_module
 
@@ -20,9 +21,14 @@ def reload_db(tmp_path, monkeypatch):
 def _seed(conn):
     _ensure_admin1(conn)
     from src.repositories.table_registry import TableRegistryRepository
+
     TableRegistryRepository(conn).register(
-        id="bq_view", name="bq_view", source_type="bigquery",
-        bucket="ds", source_table="bq_view", query_mode="remote",
+        id="bq_view",
+        name="bq_view",
+        source_type="bigquery",
+        bucket="ds",
+        source_table="bq_view",
+        query_mode="remote",
     )
 
 
@@ -32,14 +38,15 @@ def _ensure_admin1(conn):
     from src.db import SYSTEM_ADMIN_GROUP
     from src.repositories.users import UserRepository
     from src.repositories.user_group_members import UserGroupMembersRepository
-    if UserRepository(conn).get_by_id('admin1') is None:
-        UserRepository(conn).create(id='admin1', email='admin1@test.com', name='Admin')
-    admin_gid = conn.execute(
-        'SELECT id FROM user_groups WHERE name = ?', [SYSTEM_ADMIN_GROUP]
-    ).fetchone()
+
+    if UserRepository(conn).get_by_id("admin1") is None:
+        UserRepository(conn).create(id="admin1", email="admin1@test.com", name="Admin")
+    admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()
     if admin_gid:
         UserGroupMembersRepository(conn).add_member(
-            'admin1', admin_gid[0], source='system_seed',
+            "admin1",
+            admin_gid[0],
+            source="system_seed",
         )
 
 
@@ -47,21 +54,23 @@ def _bq(billing="billing-proj", data="data-proj"):
     """Build a BqAccess wired to default factories. For tests that monkeypatch
     `_run_bq_scan` whole, the inner factories are never called."""
     from connectors.bigquery.access import BqAccess, BqProjects
+
     return BqAccess(BqProjects(billing=billing, data=data))
 
 
 class TestScan:
     def test_returns_arrow_ipc_for_simple_request(self, reload_db, monkeypatch):
         from app.api import v2_scan
+
         monkeypatch.setattr(
-            v2_scan, "_resolve_schema",
+            v2_scan,
+            "_resolve_schema",
             lambda *a, **kw: {"event_date": "DATE", "country_code": "STRING"},
         )
-        fake_table = pa.table(
-            {"event_date": ["2026-04-27"], "country_code": ["CZ"]}
-        )
+        fake_table = pa.table({"event_date": ["2026-04-27"], "country_code": ["CZ"]})
         monkeypatch.setattr(
-            v2_scan, "_run_bq_scan",
+            v2_scan,
+            "_run_bq_scan",
             lambda bq, sql: fake_table,
         )
         conn = reload_db.get_system_db()
@@ -85,8 +94,10 @@ class TestScan:
     def test_quota_concurrent_exceeded_raises_429(self, reload_db, monkeypatch):
         from app.api import v2_scan
         from app.api.v2_quota import QuotaTracker, QuotaExceededError, KIND_CONCURRENT
+
         monkeypatch.setattr(
-            v2_scan, "_resolve_schema",
+            v2_scan,
+            "_resolve_schema",
             lambda *a, **kw: {"event_date": "DATE"},
         )
         fake_table = pa.table({"event_date": ["2026-04-27"]})
@@ -110,8 +121,10 @@ class TestScan:
     def test_validator_rejection_propagates(self, reload_db, monkeypatch):
         from app.api import v2_scan
         from app.api.where_validator import WhereValidationError, REJECT_UNKNOWN_FUNCTION
+
         monkeypatch.setattr(
-            v2_scan, "_resolve_schema",
+            v2_scan,
+            "_resolve_schema",
             lambda *a, **kw: {"event_date": "DATE"},
         )
 
@@ -136,8 +149,10 @@ class TestOrderByValidation:
 
     def test_unknown_column_rejected(self, reload_db, monkeypatch):
         from app.api import v2_scan
+
         monkeypatch.setattr(
-            v2_scan, "_resolve_schema",
+            v2_scan,
+            "_resolve_schema",
             lambda *a, **kw: {"event_date": "DATE"},
         )
         tracker = v2_scan._build_quota_tracker()
@@ -153,8 +168,10 @@ class TestOrderByValidation:
 
     def test_subquery_injection_rejected(self, reload_db, monkeypatch):
         from app.api import v2_scan
+
         monkeypatch.setattr(
-            v2_scan, "_resolve_schema",
+            v2_scan,
+            "_resolve_schema",
             lambda *a, **kw: {"event_date": "DATE"},
         )
         tracker = v2_scan._build_quota_tracker()
@@ -179,8 +196,10 @@ class TestOrderByValidation:
         one must be rejected at the validator. Otherwise it would break out
         of the `…` quoted identifier in _build_bq_sql."""
         from app.api import v2_scan
+
         monkeypatch.setattr(
-            v2_scan, "_resolve_schema",
+            v2_scan,
+            "_resolve_schema",
             lambda *a, **kw: {"event_date": "DATE"},
         )
         tracker = v2_scan._build_quota_tracker()
@@ -201,8 +220,10 @@ class TestOrderByValidation:
     def test_double_quote_in_column_name_rejected(self, reload_db, monkeypatch):
         """Same defense for the local DuckDB path which uses `\"…\"` quoting."""
         from app.api import v2_scan
+
         monkeypatch.setattr(
-            v2_scan, "_resolve_schema",
+            v2_scan,
+            "_resolve_schema",
             lambda *a, **kw: {"id": "INTEGER"},
         )
         tracker = v2_scan._build_quota_tracker()
@@ -210,9 +231,14 @@ class TestOrderByValidation:
         try:
             _ensure_admin1(conn)
             from src.repositories.table_registry import TableRegistryRepository
+
             TableRegistryRepository(conn).register(
-                id="local_t", name="local_t", source_type="keboola",
-                bucket="b", source_table="local_t", query_mode="local",
+                id="local_t",
+                name="local_t",
+                source_type="keboola",
+                bucket="b",
+                source_table="local_t",
+                query_mode="local",
             )
             user = {"id": "admin1", "email": "a@x.com"}
             req = {
@@ -230,6 +256,7 @@ class TestOrderByValidation:
         must be backtick-quoted in BQ SQL, otherwise the generated query
         would be `SELECT order FROM ...` which doesn't parse."""
         from app.api.v2_scan import _build_bq_sql, ScanRequest
+
         sql = _build_bq_sql(
             {"bucket": "ds", "source_table": "t"},
             "p",
@@ -241,8 +268,10 @@ class TestOrderByValidation:
 
     def test_known_column_with_direction_accepted(self, reload_db, monkeypatch):
         from app.api import v2_scan
+
         monkeypatch.setattr(
-            v2_scan, "_resolve_schema",
+            v2_scan,
+            "_resolve_schema",
             lambda *a, **kw: {"event_date": "DATE"},
         )
         fake_table = pa.table({"event_date": ["2026-04-27"]})
@@ -278,9 +307,7 @@ class TestBqAccessErrors:
         # Mock duckdb conn whose execute() raises Forbidden — exercises the
         # translation path in _run_bq_scan.
         mock_conn = MagicMock()
-        mock_conn.execute.side_effect = Forbidden(
-            "Permission denied: serviceusage.services.use on project foo"
-        )
+        mock_conn.execute.side_effect = Forbidden("Permission denied: serviceusage.services.use on project foo")
         bq = bq_access(duckdb_conn=mock_conn, billing="billing-proj", data="data-proj")
 
         conn = reload_db.get_system_db()
@@ -294,13 +321,12 @@ class TestBqAccessErrors:
                 "limit": 1000,
             }
             with patch.object(
-                v2_scan, "_resolve_schema",
+                v2_scan,
+                "_resolve_schema",
                 lambda *a, **kw: {"event_date": "DATE", "country_code": "STRING"},
             ):
                 with pytest.raises(HTTPException) as exc_info:
-                    (
-                        v2_scan.scan_endpoint(raw=req, user=user, conn=conn, bq=bq)
-                    )
+                    (v2_scan.scan_endpoint(raw=req, user=user, conn=conn, bq=bq))
         finally:
             conn.close()
 
@@ -318,9 +344,7 @@ class TestBqAccessErrors:
         from google.api_core.exceptions import Forbidden
 
         mock_conn = MagicMock()
-        mock_conn.execute.side_effect = Forbidden(
-            "Access Denied: Table foo.bar.baz: User does not have permission"
-        )
+        mock_conn.execute.side_effect = Forbidden("Access Denied: Table foo.bar.baz: User does not have permission")
         bq = bq_access(duckdb_conn=mock_conn, billing="billing-proj", data="data-proj")
 
         conn = reload_db.get_system_db()
@@ -333,13 +357,12 @@ class TestBqAccessErrors:
                 "limit": 1,
             }
             with patch.object(
-                v2_scan, "_resolve_schema",
+                v2_scan,
+                "_resolve_schema",
                 lambda *a, **kw: {"event_date": "DATE", "country_code": "STRING"},
             ):
                 with pytest.raises(HTTPException) as exc_info:
-                    (
-                        v2_scan.scan_endpoint(raw=req, user=user, conn=conn, bq=bq)
-                    )
+                    (v2_scan.scan_endpoint(raw=req, user=user, conn=conn, bq=bq))
         finally:
             conn.close()
 
@@ -353,9 +376,7 @@ class TestBqAccessErrors:
         from google.api_core.exceptions import BadRequest
 
         mock_conn = MagicMock()
-        mock_conn.execute.side_effect = BadRequest(
-            "Syntax error: unexpected token at line 1, column 5"
-        )
+        mock_conn.execute.side_effect = BadRequest("Syntax error: unexpected token at line 1, column 5")
         bq = bq_access(duckdb_conn=mock_conn, billing="billing-proj", data="data-proj")
 
         conn = reload_db.get_system_db()
@@ -368,13 +389,12 @@ class TestBqAccessErrors:
                 "limit": 1,
             }
             with patch.object(
-                v2_scan, "_resolve_schema",
+                v2_scan,
+                "_resolve_schema",
                 lambda *a, **kw: {"event_date": "DATE", "country_code": "STRING"},
             ):
                 with pytest.raises(HTTPException) as exc_info:
-                    (
-                        v2_scan.scan_endpoint(raw=req, user=user, conn=conn, bq=bq)
-                    )
+                    (v2_scan.scan_endpoint(raw=req, user=user, conn=conn, bq=bq))
         finally:
             conn.close()
 
@@ -409,9 +429,7 @@ def test_resolve_schema_passes_bq_kwarg_to_build_schema(monkeypatch, bq_access):
 
     v2_scan._resolve_schema(conn=None, user=None, table_id="t", bq=bq)
 
-    assert "bq" in captured_kwargs, (
-        "build_schema must be called with bq= kwarg, not project_id="
-    )
+    assert "bq" in captured_kwargs, "build_schema must be called with bq= kwarg, not project_id="
     assert "project_id" not in captured_kwargs, (
         "build_schema no longer accepts project_id= — that's the bug this guards"
     )
@@ -422,9 +440,7 @@ def _reader_of(rows: int) -> pa.RecordBatchReader:
     """A streaming reader over `rows` int64 rows, in 512-row batches — the
     shape duckdb>=1.5 `.arrow()` returns instead of a materialized Table."""
     table = pa.table({"v": list(range(rows))})
-    return pa.RecordBatchReader.from_batches(
-        table.schema, table.to_batches(max_chunksize=512)
-    )
+    return pa.RecordBatchReader.from_batches(table.schema, table.to_batches(max_chunksize=512))
 
 
 class TestMaxResultBytesTruncation:
@@ -435,13 +451,18 @@ class TestMaxResultBytesTruncation:
 
     def _run(self, reload_db, monkeypatch, result, raw_request, cap=4096):
         from app.api import v2_scan
+
         monkeypatch.setattr(
-            v2_scan, "_resolve_schema", lambda *a, **kw: {"v": "INT64"},
+            v2_scan,
+            "_resolve_schema",
+            lambda *a, **kw: {"v": "INT64"},
         )
         monkeypatch.setattr(v2_scan, "_run_bq_scan", lambda bq, sql: result)
         import app.api.query as query_mod
+
         monkeypatch.setattr(
-            query_mod, "run_remote_select_to_arrow",
+            query_mod,
+            "run_remote_select_to_arrow",
             lambda conn, user, sql, *, bq, quota: result,
         )
         monkeypatch.setattr(v2_scan, "_max_result_bytes", lambda: cap)
@@ -451,26 +472,38 @@ class TestMaxResultBytesTruncation:
             user = {"id": "admin1", "email": "a@x.com"}
             tracker = v2_scan._build_quota_tracker()
             return v2_scan.run_scan(
-                conn, user, raw_request, bq=_bq(data="proj"), quota=tracker,
+                conn,
+                user,
+                raw_request,
+                bq=_bq(data="proj"),
+                quota=tracker,
             )
         finally:
             conn.close()
 
     def test_bq_reader_over_cap_truncates_instead_of_crashing(
-        self, reload_db, monkeypatch,
+        self,
+        reload_db,
+        monkeypatch,
     ):
         ipc = self._run(
-            reload_db, monkeypatch, _reader_of(10_000),
+            reload_db,
+            monkeypatch,
+            _reader_of(10_000),
             {"table_id": "bq_view", "select": ["v"]},
         )
         got = parse_ipc_bytes(ipc)
         assert 0 < got.num_rows < 2_000  # truncated near the 4 KiB cap
 
     def test_from_query_reader_over_cap_truncates_instead_of_crashing(
-        self, reload_db, monkeypatch,
+        self,
+        reload_db,
+        monkeypatch,
     ):
         ipc = self._run(
-            reload_db, monkeypatch, _reader_of(10_000),
+            reload_db,
+            monkeypatch,
+            _reader_of(10_000),
             {"from_query": "SELECT v FROM t"},
         )
         got = parse_ipc_bytes(ipc)
@@ -480,7 +513,9 @@ class TestMaxResultBytesTruncation:
         """Characterization: the pre-1.5 pyarrow.Table shape keeps truncating."""
         table = pa.table({"v": list(range(10_000))})
         ipc = self._run(
-            reload_db, monkeypatch, table,
+            reload_db,
+            monkeypatch,
+            table,
             {"table_id": "bq_view", "select": ["v"]},
         )
         got = parse_ipc_bytes(ipc)
@@ -488,7 +523,9 @@ class TestMaxResultBytesTruncation:
 
     def test_reader_under_cap_returns_all_rows(self, reload_db, monkeypatch):
         ipc = self._run(
-            reload_db, monkeypatch, _reader_of(100),
+            reload_db,
+            monkeypatch,
+            _reader_of(100),
             {"table_id": "bq_view", "select": ["v"]},
             cap=10_000_000,
         )

@@ -50,9 +50,7 @@ def _resolve_schema(conn, user, table_id: str, bq: BqAccess) -> dict:
     return {c["name"]: c["type"] for c in s.get("columns", [])}
 
 
-def _bq_dry_run_bytes(
-    bq: BqAccess, sql: str, *, user: dict | None = None, agent_name: str = "scan"
-) -> int:
+def _bq_dry_run_bytes(bq: BqAccess, sql: str, *, user: dict | None = None, agent_name: str = "scan") -> int:
     """Run a BQ dry-run via the google-cloud-bigquery client and return totalBytesProcessed.
 
     SQL here is user-derived (built from req.select/where/order_by), so BadRequest → 400
