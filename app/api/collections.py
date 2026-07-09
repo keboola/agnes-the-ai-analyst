@@ -548,3 +548,32 @@ async def delete_file(
         collection_id,
         user.get("id") if isinstance(user, dict) else "?",
     )
+
+
+@router.post("/{collection_id}/files/{file_id}/reingest", status_code=202)
+async def reingest_file(
+    collection_id: str,
+    file_id: str,
+    background_tasks: BackgroundTasks,
+    user=Depends(require_resource_access(ResourceType.COLLECTION, "{collection_id}")),
+):
+    """Re-run ingestion for one file (after a fix, a new extractor, or a
+    pre-status-honesty backfill).
+
+    Purges the file's derived artifacts first — the derived table_registry
+    row/parquet for tabular files (chunks are cleared by the ingest itself,
+    which is idempotent) — then resets the row to ``pending`` and re-runs
+    ``ingest_file`` in the background. Returns 202 with the pending row.
+    """
+    cf_repo = corpus_files_repo()
+    row = cf_repo.get(file_id)
+    if not row or row.get("corpus_id") != collection_id:
+        raise HTTPException(status_code=404, detail="file_not_found")
+
+    _purge_derived_tabular_row_for_file(collection_id, file_id)
+    cf_repo.set_status(file_id, status="pending", detail={"reason": "reingest requested"})
+
+    from src.ingest.runner import ingest_file
+
+    background_tasks.add_task(ingest_file, file_id)
+    return {**_file_out(cf_repo.get(file_id))}
