@@ -112,9 +112,12 @@ def test_resolve_lines_no_plugins_unified_layout():
     assert "9) Restart Claude Code" in joined
     # Skills step is intentionally absent.
     assert "Skills (ask the user" not in joined
-    # The marketplace step header adapts to "no plugins granted yet" copy
-    # rather than the plugin-installing variant.
-    assert "no plugins granted yet" in joined
+    # The marketplace step header adapts to the no-grants-visible copy
+    # rather than the plugin-installing variant — phrased as a render-time
+    # snapshot (grants may change after the prompt is generated), with the
+    # live-truth verification step alongside.
+    assert "no plugin grants visible when this prompt was generated" in joined
+    assert "agnes my-stack show" in joined
     assert "agnes refresh-marketplace --bootstrap" in joined
     # MCP step uses SSE transport for Atlassian's hosted Remote MCP.
     assert "claude mcp add --transport sse atlassian https://mcp.atlassian.com/v1/sse" in joined

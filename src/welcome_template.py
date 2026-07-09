@@ -22,7 +22,6 @@ from __future__ import annotations
 import logging
 import re
 from datetime import date, datetime, timezone
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -190,8 +189,9 @@ def compute_default_agent_prompt(
         # Connector manifest sourced from the seed (operator Initial Workspace
         # Template clone wins, bundled snapshot in the wheel is the fallback).
         # Operator-side config (GWS OAuth, Atlassian base URL) now flows into
-        # `~/.claude/agnes/.env` via `agnes init`; the seed-resident SKILL.md
-        # bodies read those at install time. Renderer just needs the metadata.
+        # `<workspace>/.claude/agnes/.env` via `agnes init`; the seed-resident
+        # SKILL.md bodies read those at install time. Renderer just needs the
+        # metadata.
         connector_manifest = None
         try:
             from src.connectors_manifest import load_manifest
