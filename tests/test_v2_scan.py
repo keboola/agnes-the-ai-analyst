@@ -1,5 +1,4 @@
 # tests/test_v2_scan.py
-import asyncio
 import importlib
 from unittest.mock import MagicMock, patch
 import pyarrow as pa
@@ -71,7 +70,7 @@ class TestScan:
         monkeypatch.setattr(
             v2_scan,
             "_run_bq_scan",
-            lambda bq, sql: fake_table,
+            lambda bq, sql, **kw: (fake_table, {}),
         )
         conn = reload_db.get_system_db()
         try:
@@ -101,7 +100,7 @@ class TestScan:
             lambda *a, **kw: {"event_date": "DATE"},
         )
         fake_table = pa.table({"event_date": ["2026-04-27"]})
-        monkeypatch.setattr(v2_scan, "_run_bq_scan", lambda bq, sql: fake_table)
+        monkeypatch.setattr(v2_scan, "_run_bq_scan", lambda bq, sql, **kw: (fake_table, {}))
 
         tracker = QuotaTracker(max_concurrent_per_user=1, max_daily_bytes_per_user=10**12)
         conn = reload_db.get_system_db()
@@ -275,7 +274,7 @@ class TestOrderByValidation:
             lambda *a, **kw: {"event_date": "DATE"},
         )
         fake_table = pa.table({"event_date": ["2026-04-27"]})
-        monkeypatch.setattr(v2_scan, "_run_bq_scan", lambda bq, sql: fake_table)
+        monkeypatch.setattr(v2_scan, "_run_bq_scan", lambda bq, sql, **kw: (fake_table, {}))
         tracker = v2_scan._build_quota_tracker()
         conn = reload_db.get_system_db()
         try:
@@ -292,10 +291,12 @@ class TestBqAccessErrors:
     """Issue #134: structured 502/400 translation on BQ errors in scan path.
 
     These tests exercise the REAL translation path through `BqAccess` +
-    `translate_bq_error` by injecting a duckdb_session whose execute() raises
-    the Google API exception. That's the production path — Phase 1
-    monkeypatches of `_run_bq_scan` whole would skip the translation logic
-    and only test the outer wrap (which has been removed in Phase 2)."""
+    `translate_bq_error` by injecting a BQ client whose query() raises the
+    Google API exception. That's the production path since #752 moved the
+    billable scan job onto `client.query(...)` (was the DuckDB
+    `bigquery_query()` extension) — Phase 1 monkeypatches of `_run_bq_scan`
+    whole would skip the translation logic and only test the outer wrap
+    (which has been removed in Phase 2)."""
 
     def test_scan_returns_502_on_bq_forbidden_serviceusage(self, reload_db, bq_access):
         """When _run_bq_scan raises Forbidden mentioning serviceusage, the
@@ -304,11 +305,11 @@ class TestBqAccessErrors:
         from app.api import v2_scan
         from google.api_core.exceptions import Forbidden
 
-        # Mock duckdb conn whose execute() raises Forbidden — exercises the
+        # Mock BQ client whose query() raises Forbidden — exercises the
         # translation path in _run_bq_scan.
-        mock_conn = MagicMock()
-        mock_conn.execute.side_effect = Forbidden("Permission denied: serviceusage.services.use on project foo")
-        bq = bq_access(duckdb_conn=mock_conn, billing="billing-proj", data="data-proj")
+        mock_client = MagicMock()
+        mock_client.query.side_effect = Forbidden("Permission denied: serviceusage.services.use on project foo")
+        bq = bq_access(client=mock_client, billing="billing-proj", data="data-proj")
 
         conn = reload_db.get_system_db()
         try:
@@ -343,9 +344,9 @@ class TestBqAccessErrors:
         from app.api import v2_scan
         from google.api_core.exceptions import Forbidden
 
-        mock_conn = MagicMock()
-        mock_conn.execute.side_effect = Forbidden("Access Denied: Table foo.bar.baz: User does not have permission")
-        bq = bq_access(duckdb_conn=mock_conn, billing="billing-proj", data="data-proj")
+        mock_client = MagicMock()
+        mock_client.query.side_effect = Forbidden("Access Denied: Table foo.bar.baz: User does not have permission")
+        bq = bq_access(client=mock_client, billing="billing-proj", data="data-proj")
 
         conn = reload_db.get_system_db()
         try:
@@ -375,9 +376,9 @@ class TestBqAccessErrors:
         from app.api import v2_scan
         from google.api_core.exceptions import BadRequest
 
-        mock_conn = MagicMock()
-        mock_conn.execute.side_effect = BadRequest("Syntax error: unexpected token at line 1, column 5")
-        bq = bq_access(duckdb_conn=mock_conn, billing="billing-proj", data="data-proj")
+        mock_client = MagicMock()
+        mock_client.query.side_effect = BadRequest("Syntax error: unexpected token at line 1, column 5")
+        bq = bq_access(client=mock_client, billing="billing-proj", data="data-proj")
 
         conn = reload_db.get_system_db()
         try:
@@ -457,7 +458,7 @@ class TestMaxResultBytesTruncation:
             "_resolve_schema",
             lambda *a, **kw: {"v": "INT64"},
         )
-        monkeypatch.setattr(v2_scan, "_run_bq_scan", lambda bq, sql: result)
+        monkeypatch.setattr(v2_scan, "_run_bq_scan", lambda bq, sql, **kw: (result, {}))
         import app.api.query as query_mod
 
         monkeypatch.setattr(

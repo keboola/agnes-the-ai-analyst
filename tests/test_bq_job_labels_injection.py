@@ -53,6 +53,50 @@ def test_dry_run_bytes_applies_scan_labels(monkeypatch):
     assert jc.labels.get("user_id") == "pcernik"
 
 
+def test_run_bq_scan_applies_labels_and_returns_job_info(monkeypatch):
+    """Issue #752: the billable /api/v2/scan execution must run through
+    google-cloud-bigquery `client.query(labels=...)` (not the unlabeled
+    DuckDB `bigquery_query()` extension), and must surface job metadata
+    (job_id / bytes_processed / bytes_billed) for the scan audit log.
+    """
+
+    def fake_get_value(*keys, default=None):
+        return {"environment": "dev", "workload_type": "agnes"}.get(keys[-1], default)
+
+    monkeypatch.setattr("app.instance_config.get_value", fake_get_value)
+    captured = {}
+
+    class _Job:
+        job_id = "job-abc-123"
+        total_bytes_processed = 999
+        total_bytes_billed = 1000
+
+        def to_arrow(self, **kwargs):
+            return pa.table({"c": [1, 2]})
+
+    class _Client:
+        def query(self, sql, job_config=None):
+            captured["job_config"] = job_config
+            return _Job()
+
+    bq = MagicMock()
+    bq.client.return_value = _Client()
+
+    table, job_info = v2_scan._run_bq_scan(bq, "SELECT 1", user={"email": "pcernik@example.com"})
+
+    assert table.num_rows == 2
+    assert job_info == {
+        "bq_job_id": "job-abc-123",
+        "bytes_scanned": 999,
+        "bytes_billed": 1000,
+    }
+
+    jc = captured["job_config"]
+    assert jc.labels["workload_type"] == "agnes"
+    assert jc.labels["agent_name"] == "scan"
+    assert jc.labels["user_id"] == "pcernik"
+
+
 def test_bq_quota_and_cap_guard_applies_query_labels(monkeypatch):
     """The real /api/query dry-run callsite (`_bq_quota_and_cap_guard`) must
     label its BQ job ``agent_name="query"`` — not `_bq_dry_run_bytes`'s
