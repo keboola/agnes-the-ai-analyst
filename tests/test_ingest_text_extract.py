@@ -60,3 +60,54 @@ def test_pdf_without_reader_raises_unsupported(tmp_path, monkeypatch):
     path = _write(tmp_path, "doc.pdf", "%PDF-1.4 ...")
     with pytest.raises(UnsupportedDocument):
         extract_text(path, "pdf")
+
+
+def test_pypdf_is_a_core_dependency(tmp_path):
+    """Default installs must extract PDF text without the docling extra.
+
+    Guards the dependency, not pypdf itself: a minimal one-page PDF with a
+    text content stream must round-trip through extract_text.
+    """
+    import pypdf  # noqa: F401  — core dep, not an extra
+
+    # Minimal valid PDF with proper structure for pypdf extraction.
+    pdf = (
+        b"%PDF-1.4\n"
+        b"1 0 obj\n"
+        b"<< /Type /Catalog /Pages 2 0 R >>\n"
+        b"endobj\n"
+        b"2 0 obj\n"
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>\n"
+        b"endobj\n"
+        b"3 0 obj\n"
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\n"
+        b"endobj\n"
+        b"4 0 obj\n"
+        b"<< /Length 44 >>\n"
+        b"stream\n"
+        b"BT /F1 12 Tf 100 700 Td (Hello Agnes) Tj ET\n"
+        b"endstream\n"
+        b"endobj\n"
+        b"5 0 obj\n"
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\n"
+        b"endobj\n"
+        b"xref\n"
+        b"0 6\n"
+        b"0000000000 65535 f \n"
+        b"0000000009 00000 n \n"
+        b"0000000058 00000 n \n"
+        b"0000000115 00000 n \n"
+        b"0000000262 00000 n \n"
+        b"0000000354 00000 n \n"
+        b"trailer\n"
+        b"<< /Size 6 /Root 1 0 R >>\n"
+        b"startxref\n"
+        b"451\n"
+        b"%%EOF\n"
+    )
+    path = tmp_path / "hello.pdf"
+    path.write_bytes(pdf)
+
+    result = extract_text(str(path), "pdf")
+    assert isinstance(result, ExtractResult)
+    assert "Hello Agnes" in result.full_text
