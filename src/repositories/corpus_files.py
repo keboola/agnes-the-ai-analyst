@@ -1,7 +1,7 @@
 """DuckDB-backed repository for ``corpus_files`` (v82).
 
 One row per uploaded file associated with a ``file_corpora`` corpus.
-Tracks the processing lifecycle: pending → processing → indexed | rejected.
+Tracks the processing lifecycle: pending → processing → indexed | needs_review | rejected.
 ``processing_detail`` is a JSON dict stored as VARCHAR text.
 
 Template: src/repositories/data_packages.py.
