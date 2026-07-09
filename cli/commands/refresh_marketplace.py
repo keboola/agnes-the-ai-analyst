@@ -45,9 +45,7 @@ from cli.error_render import render_error
 from cli.lib.marketplace import CLONE_DIR, MARKETPLACE_NAME
 
 
-refresh_marketplace_app = typer.Typer(
-    help="Reconcile the workspace plugins with the user's current Agnes stack."
-)
+refresh_marketplace_app = typer.Typer(help="Reconcile the workspace plugins with the user's current Agnes stack.")
 
 
 # Exit code emitted by `--check` when the remote marketplace has new content
@@ -97,7 +95,8 @@ def _claude_base_cmd() -> Optional[list[str]]:
 @refresh_marketplace_app.callback(invoke_without_command=True)
 def refresh_marketplace(
     check: bool = typer.Option(
-        False, "--check",
+        False,
+        "--check",
         help=(
             "Detect-only mode used by `agnes update` to decide whether to "
             "reconcile. Runs `git ls-remote origin HEAD` and compares the "
@@ -110,7 +109,8 @@ def refresh_marketplace(
         ),
     ),
     bootstrap: bool = typer.Option(
-        False, "--bootstrap",
+        False,
+        "--bootstrap",
         help=(
             "If no marketplace clone exists yet, clone it and register the "
             "local path with Claude Code. Used by the install flow as a "
@@ -148,10 +148,15 @@ def refresh_marketplace(
     token = get_token()
     if not token:
         typer.echo(
-            render_error(0, {"detail": {
-                "kind": "auth_failed",
-                "hint": "No token. Run: agnes auth import-token --token <PAT>",
-            }}),
+            render_error(
+                0,
+                {
+                    "detail": {
+                        "kind": "auth_failed",
+                        "hint": "No token. Run: agnes auth import-token --token <PAT>",
+                    }
+                },
+            ),
             err=True,
         )
         raise typer.Exit(1)
@@ -284,7 +289,11 @@ def _bootstrap_clone(token: str) -> bool:
     try:
         result = subprocess.run(
             ["git", "clone", auth_url, str(CLONE_DIR)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
         )
     except FileNotFoundError:
         typer.echo("error: `git` not found in PATH; cannot clone marketplace.", err=True)
@@ -296,7 +305,11 @@ def _bootstrap_clone(token: str) -> bool:
 
     set_url = subprocess.run(
         ["git", "-C", str(CLONE_DIR), "remote", "set-url", "origin", clean_url],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     if set_url.returncode != 0:
         typer.echo(
@@ -343,7 +356,11 @@ def _register_clone_with_claude(clone_dir: Path) -> bool:
         return True
     add = subprocess.run(
         [*base, "plugin", "marketplace", "add", str(clone_dir)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     if add.returncode != 0:
         typer.echo(
@@ -374,7 +391,11 @@ def _claude_marketplace_is_registered() -> bool:
     try:
         result = subprocess.run(
             [*base, "plugin", "marketplace", "list"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
         )
     except FileNotFoundError:
         return False
@@ -385,10 +406,7 @@ def _claude_marketplace_is_registered() -> bool:
     # so a naive `\bagnes\b` over the full stdout false-positives whenever
     # ANY registered marketplace happens to live under a path containing
     # the marketplace name. We only care about the registry headers.
-    relevant = "\n".join(
-        line for line in (result.stdout or "").splitlines()
-        if not line.lstrip().startswith("Source:")
-    )
+    relevant = "\n".join(line for line in (result.stdout or "").splitlines() if not line.lstrip().startswith("Source:"))
     pattern = re.compile(rf"\b{re.escape(MARKETPLACE_NAME)}\b")
     return bool(pattern.search(relevant))
 
@@ -430,14 +448,22 @@ def _git_fetch_only(token: str) -> bool:
     env = {**os.environ, "AGNES_TOKEN": token}
     fetch_cmd = [
         "git",
-        "-c", f"credential.helper={_CREDENTIAL_HELPER}",
-        "-C", str(CLONE_DIR),
-        "fetch", "origin",
+        "-c",
+        f"credential.helper={_CREDENTIAL_HELPER}",
+        "-C",
+        str(CLONE_DIR),
+        "fetch",
+        "origin",
     ]
     try:
         fetch = subprocess.run(
-            fetch_cmd, env=env, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", check=False,
+            fetch_cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
         )
     except FileNotFoundError:
         typer.echo("error: `git` not found in PATH; cannot check marketplace.", err=True)
@@ -464,14 +490,23 @@ def _remote_head_sha(token: str) -> Optional[str]:
     env = {**os.environ, "AGNES_TOKEN": token}
     cmd = [
         "git",
-        "-c", f"credential.helper={_CREDENTIAL_HELPER}",
-        "-C", str(CLONE_DIR),
-        "ls-remote", "origin", "HEAD",
+        "-c",
+        f"credential.helper={_CREDENTIAL_HELPER}",
+        "-C",
+        str(CLONE_DIR),
+        "ls-remote",
+        "origin",
+        "HEAD",
     ]
     try:
         result = subprocess.run(
-            cmd, env=env, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", check=False,
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
         )
     except FileNotFoundError:
         typer.echo("error: `git` not found in PATH; cannot check marketplace.", err=True)
@@ -499,7 +534,11 @@ def _local_head_sha() -> Optional[str]:
     try:
         result = subprocess.run(
             ["git", "-C", str(CLONE_DIR), "rev-parse", "HEAD"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
         )
     except FileNotFoundError:
         return None
@@ -550,7 +589,11 @@ def _git_fetch_and_reset(token: str) -> bool:
 
     reset = subprocess.run(
         ["git", "-C", str(CLONE_DIR), "reset", "--hard", "FETCH_HEAD"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     if reset.returncode != 0:
         if reset.stdout:
@@ -578,7 +621,11 @@ def _claude_marketplace_update() -> None:
         return
     result = subprocess.run(
         [*base, "plugin", "marketplace", "update", MARKETPLACE_NAME],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     if result.returncode != 0:
         typer.echo(
@@ -645,7 +692,11 @@ def _reconcile_with_manifest(
         target = f"{name}@{MARKETPLACE_NAME}"
         result = subprocess.run(
             [*base, "plugin", "install", target, "--scope", "project"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
         )
         if result.returncode != 0:
             typer.echo(
@@ -663,7 +714,11 @@ def _reconcile_with_manifest(
         target = f"{name}@{MARKETPLACE_NAME}"
         result = subprocess.run(
             [*base, "plugin", "update", target, "--scope", "project"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
         )
         if result.returncode != 0:
             typer.echo(
@@ -697,10 +752,7 @@ def _emit_check_hook_message() -> None:
     plugin-related. The hook itself does NOT install anything — running
     the slash command is the user's choice.
     """
-    summary = (
-        "Agnes marketplace has updates available. "
-        "Run /update-agnes-plugins to install them."
-    )
+    summary = "Agnes marketplace has updates available. Run /update-agnes-plugins to install them."
     payload = {
         "systemMessage": summary,
         "hookSpecificOutput": {
@@ -753,7 +805,11 @@ def _list_installed_agnes_plugins_in_cwd() -> Optional[dict[str, str]]:
     try:
         result = subprocess.run(
             [*base, "plugin", "list", "--json"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
         )
     except FileNotFoundError:
         return None
@@ -867,7 +923,4 @@ def _enable_plugins_in_workspace_settings(
 
     settings_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
     events["enabled"].extend(sorted(changed))
-    typer.echo(
-        f"Enabled {len(changed)} plugin(s) in workspace settings: "
-        + ", ".join(sorted(changed))
-    )
+    typer.echo(f"Enabled {len(changed)} plugin(s) in workspace settings: " + ", ".join(sorted(changed)))
