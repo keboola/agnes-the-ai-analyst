@@ -841,15 +841,35 @@ def _marketplace_block(
     header = (
         "Register the Agnes Claude Code marketplace and install plugins:"
         if has_plugins
-        else "Register the Agnes Claude Code marketplace (no plugins granted yet):"
+        else "Register the Agnes Claude Code marketplace (no plugin grants visible when this prompt was generated):"
     )
+    # Both branches phrase grants as a render-time snapshot, not a timeless
+    # fact: grants change after the prompt is generated, and the prompt is
+    # also served grant-blind on unauthenticated pages. The CLI reads the
+    # LIVE manifest, so the instruction is always "install what is granted
+    # now, then verify with `agnes my-stack show`" rather than a baked-in
+    # claim the agent could contradict mid-install.
     bullet_5 = (
-        "   #   5. install every plugin listed in the served manifest"
+        "   #   5. install every plugin the live manifest grants this account"
         if has_plugins
-        else "   #   5. (no plugins to install — your account has zero grants)"
+        else (
+            "   #   5. install every plugin the live manifest grants this account"
+            " (none were visible when this prompt was generated; anything granted"
+            " since still installs here)"
+        )
     )
+    verify_lines = [
+        "   Then verify what landed:",
+        "   agnes my-stack show",
+        "   # [✓] = in your stack; [✗] = available to you but NOT added — an",
+        "   # opt-in marker, not an error. Add one with",
+        "   # `agnes marketplace add <marketplace-id>/<plugin-name>`, then run",
+        "   # `agnes update` and `/reload-plugins` in Claude Code.",
+    ]
     if has_plugins:
         trailer = [
+            *verify_lines,
+            "",
             "   These run non-interactively. After they finish, tell the user to /exit",
             "   and run `claude` again so the new plugins load. From then on, the",
             "   SessionStart hook keeps the marketplace clone in sync via a detached",
@@ -857,11 +877,16 @@ def _marketplace_block(
         ]
     else:
         trailer = [
-            "   Your account has no plugin grants right now, but registering the",
-            "   marketplace anyway pre-wires the SessionStart hook. When an admin",
-            "   grants you a plugin later, the detached `agnes update` (run by the",
-            "   hook on every Claude Code session) will reconcile and install it",
-            "   automatically — no need to re-run this setup script.",
+            *verify_lines,
+            "",
+            "   No plugin grants were visible for this account when this prompt was",
+            "   generated (grants added since — or a prompt copied while logged",
+            "   out — won't show here; `agnes my-stack show` above is the live",
+            "   truth). Registering the marketplace regardless pre-wires the",
+            "   SessionStart hook: when an admin grants you a plugin later, the",
+            "   detached `agnes update` (run by the hook on every Claude Code",
+            "   session) will reconcile and install it automatically — no need to",
+            "   re-run this setup script.",
         ]
     return [
         "",
@@ -874,7 +899,9 @@ def _marketplace_block(
         "   #   4. `claude plugin marketplace add ~/.agnes/marketplace`",
         bullet_5,
         "   # Idempotent — re-runs over an existing clone do fetch+reset+reconcile",
-        "   # via the same path the SessionStart hook uses.",
+        "   # via the same path the SessionStart hook uses. A leftover clone from",
+        "   # a PREVIOUS instance (origin pointing at another host) is detected",
+        "   # and re-cloned from the current server automatically.",
         "   agnes refresh-marketplace --bootstrap || {",
         '     echo "ERROR: agnes refresh-marketplace --bootstrap failed" >&2',
         "     exit 1",
@@ -899,7 +926,17 @@ def _preamble_lines(*, has_ca: bool) -> list[str]:
         "(Just generated; treat it as a secret.)",
         "",
         "Run these, in order. The script is idempotent — safe to re-run if a step",
-        "fails partway through. If a step fails with an unfamiliar error, paste the",
+        "fails partway through.",
+        "",
+        "FIRST, check whether this machine already ran this setup: if the target",
+        "workspace contains `.claude/init-complete` (or `agnes --version` already",
+        "works), you are RECONCILING an existing install, not starting fresh —",
+        "still run every step in order (each converges to the desired state",
+        "rather than reinstalling), but expect 'already configured' outcomes and",
+        "do NOT treat them as errors. Leftover state from a previous instance",
+        "(e.g. an old marketplace clone) is handled by the steps themselves.",
+        "",
+        "If a step fails with an unfamiliar error, paste the",
         "exact error back and stop. Do NOT improvise around TLS errors by disabling",
         "verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`,",
         "`git -c http.sslVerify=false`, etc.) — those are dead ends that hide the",
