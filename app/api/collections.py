@@ -10,6 +10,8 @@ Endpoints:
   GET    /api/collections/{collection_id}/files   require_resource_access(COLLECTION, "{collection_id}")
   DELETE /api/collections/{collection_id}/files/{file_id}
                                                   require_resource_access(COLLECTION, "{collection_id}")
+  POST   /api/collections/{collection_id}/files/{file_id}/reingest
+                                                  require_resource_access(COLLECTION, "{collection_id}")
 
 RBAC model: collection **create/delete** = admin-only; file **upload/list/delete**
 and collection **read** = any user whose groups hold an explicit
