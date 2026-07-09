@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.30] - 2026-07-09
+
+### Added
 - Collections: `POST /api/collections/{id}/files/{file_id}/reingest` (+ `agnes collections reingest`, MCP `collections_reingest`) — re-run ingestion for one file after a fix. Files ingested before this release may still be sitting at `indexed` over what was actually empty content — re-ingest them to get an honest status.
 
 ### Changed
@@ -18,10 +30,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 - PDF ingestion works on default installs: `pypdf` is now a core dependency (previously every PDF was rejected unless the heavy `docling` extra was installed).
-
-### Removed
-
-### Internal
 
 ## [0.74.29] - 2026-07-09
 
