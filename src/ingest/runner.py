@@ -3,7 +3,7 @@
 Routes by file type: tabular → a registered DuckDB table; prose → ``corpus_chunks``
 (text only; embeddings are Slice 4); images (tier-2) → left ``pending`` for the
 vision slice (Slice 5). Moves ``processing_status`` pending → processing →
-indexed | rejected. Idempotent: re-ingesting a document replaces its chunks.
+indexed | needs_review | rejected. Idempotent: re-ingesting a document replaces its chunks.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import logging
 from typing import Optional
 
 from src.ingest.chunking import chunk_text
-from src.ingest.tabular import UnsupportedTabular, ingest_tabular
+from src.ingest.tabular import EmptyExtraction, UnsupportedTabular, ingest_tabular
 from src.ingest.text_extract import UnsupportedDocument, extract_text
 from src.repositories import corpus_chunks_repo, corpus_files_repo
 
@@ -115,6 +115,13 @@ def ingest_file(file_id: str) -> str:
                 )
                 return "pending"
             n, embedded = _chunk_embed_store(corpus_id, file_id, text)
+            if n == 0:
+                cf_repo.set_status(
+                    file_id,
+                    status="needs_review",
+                    detail={"tier": 2, "kind": "image", "reason": "extraction produced no text chunks"},
+                )
+                return "needs_review"
             cf_repo.set_status(
                 file_id,
                 status="indexed",
@@ -125,6 +132,13 @@ def ingest_file(file_id: str) -> str:
         # Prose document → extract + chunk → corpus_chunks.
         result = extract_text(storage_path, file_type)
         n, embedded = _chunk_embed_store(corpus_id, file_id, result)
+        if n == 0:
+            cf_repo.set_status(
+                file_id,
+                status="needs_review",
+                detail={"tier": 1, "kind": "document", "reason": "extraction produced no text chunks"},
+            )
+            return "needs_review"
         cf_repo.set_status(
             file_id,
             status="indexed",
@@ -135,6 +149,13 @@ def ingest_file(file_id: str) -> str:
     except (UnsupportedTabular, UnsupportedDocument) as exc:
         cf_repo.set_status(file_id, status="rejected", detail={"reason": str(exc)})
         return "rejected"
+    except EmptyExtraction as exc:
+        cf_repo.set_status(
+            file_id,
+            status="needs_review",
+            detail={"tier": 1, "kind": "tabular", "reason": str(exc)},
+        )
+        return "needs_review"
     except Exception as exc:  # pragma: no cover - defensive
         logger.exception("ingest_file failed file_id=%s", file_id)
         cf_repo.set_status(file_id, status="rejected", detail={"reason": f"ingest_error: {exc}"})

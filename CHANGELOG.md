@@ -20,6 +20,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.74.30] - 2026-07-09
+
+### Added
+- Collections: `POST /api/collections/{id}/files/{file_id}/reingest` (+ `agnes collections reingest`, MCP `collections_reingest`) — re-run ingestion for one file after a fix. Files ingested before this release may still be sitting at `indexed` over what was actually empty content — re-ingest them to get an honest status.
+
+### Changed
+- Collections ingestion honesty: extractions that produce an empty table or zero text chunks now land in a new `needs_review` status (with the reason shown on the Library file card) instead of being marked `indexed`; empty derived tables are no longer registered.
+
+### Fixed
+- PDF ingestion works on default installs: `pypdf` is now a core dependency (previously every PDF was rejected unless the heavy `docling` extra was installed).
+
 ## [0.74.29] - 2026-07-09
 
 ### Changed

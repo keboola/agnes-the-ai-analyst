@@ -4,6 +4,8 @@ Mirrors ``src/repositories/corpus_files.py`` (the DuckDB impl) on the
 ``CorpusFilesRepository`` public surface. Cross-engine parity is covered
 by ``tests/db_pg/test_corpus_files_contract.py``.
 
+Tracks the processing lifecycle: pending → processing → indexed | needs_review | rejected.
+
 Implementation notes vs DuckDB:
 - ``processing_detail`` is stored as VARCHAR text on both sides (not JSONB)
   so that the DuckDB↔PG behaviour is symmetric: writes go through

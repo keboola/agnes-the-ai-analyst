@@ -4,8 +4,9 @@ Creates three new tables that form the Collections (bring-your-files) feature:
 
 - ``file_corpora``: a Collection container (slug, name, description,
   created_by, soft-delete via deleted_at).
-- ``corpus_files``: per-uploaded-file row with a four-state processing
-  lifecycle (pending | processing | indexed | rejected).
+- ``corpus_files``: per-uploaded-file row with a processing lifecycle
+  (pending | processing | indexed | needs_review | rejected — needs_review
+  arrived later; the column is unconstrained VARCHAR on both ladders).
 - ``corpus_chunks``: prose chunks + 384-dim embedding column for future
   vector retrieval (repo deferred to Retrieval slice; table created now
   so the single-migration-per-build-run constraint is met).

@@ -165,3 +165,40 @@ def test_tabular_reingest_is_idempotent(e2e_env, tmp_path):
     t2 = corpus_files_repo().get(fid)["processing_detail"]["derived_table_id"]
     assert t1 == t2
     assert table_registry_repo().get(t1) is not None
+
+
+def test_empty_tabular_is_needs_review_not_indexed(e2e_env, tmp_path):
+    """Header-only CSV → 0 rows: must NOT register a table nor claim indexed."""
+    from src.ingest.runner import ingest_file
+    from src.repositories import corpus_files_repo, table_registry_repo
+
+    corpus_id = _new_corpus("ing-empty-csv")
+    csv = tmp_path / "empty.csv"
+    csv.write_text("a,b\n", encoding="utf-8")
+    file_id = _add_file(corpus_id, "empty.csv", "csv", str(csv))
+
+    assert ingest_file(file_id) == "needs_review"
+    row = corpus_files_repo().get(file_id)
+    assert row["processing_status"] == "needs_review"
+    assert "empty" in row["processing_detail"]["reason"]
+    # No derived table may leak into the registry.
+    fid_suffix = file_id.replace("cf_", "")[:8]
+    leaked = [r for r in table_registry_repo().list_by_source("collection") if r.get("id", "").endswith(fid_suffix)]
+    assert leaked == []
+
+
+def test_zero_chunk_document_is_needs_review(e2e_env, tmp_path, monkeypatch):
+    """Extractor succeeds but yields no text → needs_review, not indexed."""
+    import src.ingest.runner as runner_mod
+    from src.repositories import corpus_files_repo
+
+    corpus_id = _new_corpus("ing-zero-chunks")
+    doc = tmp_path / "blank.txt"
+    doc.write_text("", encoding="utf-8")
+    file_id = _add_file(corpus_id, "blank.txt", "txt", str(doc))
+
+    monkeypatch.setattr(runner_mod, "extract_text", lambda p, t: "")
+    assert runner_mod.ingest_file(file_id) == "needs_review"
+    row = corpus_files_repo().get(file_id)
+    assert row["processing_status"] == "needs_review"
+    assert row["processing_detail"]["reason"] == "extraction produced no text chunks"

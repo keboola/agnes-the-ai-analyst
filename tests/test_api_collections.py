@@ -694,3 +694,145 @@ def test_delete_collection_purges_all_derived_table_registry_rows(seeded_app):
 
     rows_after = [r for r in table_registry_repo().list_by_source("collection") if r.get("bucket") == corpus_id]
     assert rows_after == [], "All derived table_registry rows must be purged on collection delete"
+
+
+def test_reingest_resets_status_and_reruns(seeded_app, tmp_path):
+    """needs_review file + fixed content -> reingest -> indexed."""
+    from src.repositories import corpus_files_repo, file_corpora_repo
+
+    col_id = file_corpora_repo().create(name="ri", slug="ri", description=None, created_by="u1")
+    csv = tmp_path / "d.csv"
+    csv.write_text("a,b\n", encoding="utf-8")  # header-only -> needs_review
+    fid = corpus_files_repo().add(
+        corpus_id=col_id,
+        filename="d.csv",
+        sha256="s",
+        file_type="csv",
+        size_bytes=csv.stat().st_size,
+        storage_path=str(csv),
+    )
+    from src.ingest.runner import ingest_file
+
+    assert ingest_file(fid) == "needs_review"
+
+    csv.write_text("a,b\n1,2\n", encoding="utf-8")  # operator fixes the file
+    c = seeded_app["client"]
+    r = c.post(
+        f"/api/collections/{col_id}/files/{fid}/reingest",
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert r.status_code == 202, r.text
+    assert r.json()["processing_status"] == "pending"
+
+    # TestClient runs BackgroundTasks synchronously after the response — by now ingest re-ran.
+    assert corpus_files_repo().get(fid)["processing_status"] == "indexed"
+
+
+def test_reingest_404_on_missing_file(seeded_app):
+    from src.repositories import file_corpora_repo
+
+    col_a = file_corpora_repo().create(name="ria", slug="ria", description=None, created_by="u1")
+    c = seeded_app["client"]
+    r = c.post(
+        f"/api/collections/{col_a}/files/cf_nonexistent/reingest",
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert r.status_code == 404
+
+
+def test_reingest_404_when_file_belongs_to_other_collection(seeded_app):
+    """A file that exists but belongs to a different collection must 404,
+    not be re-ingested through the wrong collection's endpoint."""
+    from src.repositories import corpus_files_repo, file_corpora_repo
+
+    col_a = file_corpora_repo().create(name="ria2", slug="ria2", description=None, created_by="u1")
+    col_b = file_corpora_repo().create(name="rib2", slug="rib2", description=None, created_by="u1")
+    fid = corpus_files_repo().add(
+        corpus_id=col_a,
+        filename="x.csv",
+        sha256="s",
+        file_type="csv",
+        size_bytes=1,
+        storage_path=None,
+    )
+    c = seeded_app["client"]
+    r = c.post(
+        f"/api/collections/{col_b}/files/{fid}/reingest",
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert r.status_code == 404
+
+
+def test_reingest_409_while_run_in_flight(seeded_app):
+    """A file already in 'processing' must reject reingest with 409 and keep
+    its status untouched (no purge/reset) — guards against duplicate racing
+    ingest runs from a second admin tab or a direct API caller."""
+    from src.repositories import corpus_files_repo, file_corpora_repo
+
+    col_id = file_corpora_repo().create(name="ric", slug="ric", description=None, created_by="u1")
+    fid = corpus_files_repo().add(
+        corpus_id=col_id,
+        filename="busy.csv",
+        sha256="s",
+        file_type="csv",
+        size_bytes=1,
+        storage_path=None,
+    )
+    corpus_files_repo().set_status(fid, status="processing", detail={"reason": "ingest running"})
+
+    c = seeded_app["client"]
+    r = c.post(
+        f"/api/collections/{col_id}/files/{fid}/reingest",
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == "reingest_in_progress"
+
+    row = corpus_files_repo().get(fid)
+    assert row["processing_status"] == "processing"  # no reset happened
+    assert row["processing_detail"] == {"reason": "ingest running"}  # detail untouched
+
+
+def test_reingest_stale_processing_is_recoverable(seeded_app, tmp_path):
+    """A 'processing' row whose updated_at predates the staleness threshold
+    must be treated as crash-abandoned, not in-flight, so reingest proceeds
+    (202) instead of 409 — otherwise a crash mid-ingest would permanently
+    block the only recovery path for the stuck row."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.api.collections import REINGEST_STALE_PROCESSING_MINUTES
+    from src.repositories import corpus_files_repo, file_corpora_repo
+
+    col_id = file_corpora_repo().create(name="ris", slug="ris", description=None, created_by="u1")
+    csv = tmp_path / "s.csv"
+    csv.write_text("a,b\n1,2\n", encoding="utf-8")
+    fid = corpus_files_repo().add(
+        corpus_id=col_id,
+        filename="s.csv",
+        sha256="s",
+        file_type="csv",
+        size_bytes=csv.stat().st_size,
+        storage_path=str(csv),
+    )
+    corpus_files_repo().set_status(fid, status="processing", detail={"reason": "ingest running"})
+
+    # Backdate updated_at past the threshold — simulates a crash mid-ingest,
+    # where the row never got a chance to move past 'processing'.
+    stale_at = datetime.now(timezone.utc) - timedelta(minutes=REINGEST_STALE_PROCESSING_MINUTES + 5)
+    conn = get_system_db()
+    conn.execute(
+        "UPDATE corpus_files SET updated_at = ? WHERE id = ?",
+        [stale_at.replace(tzinfo=None), fid],
+    )
+    conn.close()
+
+    c = seeded_app["client"]
+    r = c.post(
+        f"/api/collections/{col_id}/files/{fid}/reingest",
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert r.status_code == 202, r.text
+    assert r.json()["processing_status"] == "pending"
+
+    # TestClient runs BackgroundTasks synchronously after the response — by now ingest re-ran.
+    assert corpus_files_repo().get(fid)["processing_status"] == "indexed"

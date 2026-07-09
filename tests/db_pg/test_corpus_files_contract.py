@@ -238,3 +238,19 @@ def test_delete_removes_file(repo):
     assert repo.get(file_id) is not None
     repo.delete(file_id)
     assert repo.get(file_id) is None
+
+
+def test_set_status_needs_review_roundtrip(repo):
+    """`needs_review` (status-honesty, spec 2026-07-08) persists with its reason."""
+    fid = repo.add(
+        corpus_id=CORPUS_ID,
+        filename="empty.xlsx",
+        sha256="s1",
+        file_type="xlsx",
+        size_bytes=1,
+        storage_path="/tmp/empty.xlsx",
+    )
+    repo.set_status(fid, status="needs_review", detail={"reason": "extraction produced empty table"})
+    row = repo.get(fid)
+    assert row["processing_status"] == "needs_review"
+    assert row["processing_detail"]["reason"] == "extraction produced empty table"

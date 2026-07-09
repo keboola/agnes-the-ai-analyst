@@ -950,6 +950,7 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/collections/{collection_id}
 - /api/collections/{collection_id}/files
 - /api/collections/{collection_id}/files/{file_id}
+- /api/collections/{collection_id}/files/{file_id}/reingest
 
 ### `/api/connectors` — Connector manifest
 

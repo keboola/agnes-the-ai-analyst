@@ -10,6 +10,8 @@ Endpoints:
   GET    /api/collections/{collection_id}/files   require_resource_access(COLLECTION, "{collection_id}")
   DELETE /api/collections/{collection_id}/files/{file_id}
                                                   require_resource_access(COLLECTION, "{collection_id}")
+  POST   /api/collections/{collection_id}/files/{file_id}/reingest
+                                                  require_resource_access(COLLECTION, "{collection_id}")
 
 RBAC model: collection **create/delete** = admin-only; file **upload/list/delete**
 and collection **read** = any user whose groups hold an explicit
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
@@ -51,6 +54,15 @@ from src.repositories import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/collections", tags=["collections"])
+
+# Crash-stuck 'processing' rows must stay recoverable: BackgroundTasks aren't
+# durable, so a server crash mid-ingest leaves a corpus_files row parked at
+# 'processing' forever. A naive 409 guard on that status would then
+# permanently block reingest — the very tool meant to recover it. Past this
+# many minutes since the row's last update, 'processing' is treated as stale
+# (crash-abandoned) rather than a live in-flight run. Tune upward if Part B's
+# long-running ingests routinely exceed this window.
+REINGEST_STALE_PROCESSING_MINUTES = 15
 
 
 # ---------------------------------------------------------------------------
@@ -548,3 +560,63 @@ async def delete_file(
         collection_id,
         user.get("id") if isinstance(user, dict) else "?",
     )
+
+
+def _is_stale_processing(row: dict) -> bool:
+    """True if a ``processing`` row's ``updated_at`` predates the staleness
+    threshold — i.e. likely crash-abandoned rather than a live in-flight run.
+
+    ``updated_at`` may come back as a datetime (naive from DuckDB, tz-aware
+    from Postgres) or, defensively, as a string — normalise to an aware UTC
+    datetime before comparing (mirrors the idiom in
+    ``app/api/bq_metadata_refresh.py`` / ``app/auth/pat_resolver.py``).
+    """
+    updated_at = row.get("updated_at")
+    if updated_at is None:
+        return True  # no timestamp to trust — don't block recovery on it
+    if isinstance(updated_at, str):
+        updated_at = datetime.fromisoformat(updated_at)
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=REINGEST_STALE_PROCESSING_MINUTES)
+    return updated_at < cutoff
+
+
+@router.post("/{collection_id}/files/{file_id}/reingest", status_code=202)
+async def reingest_file(
+    collection_id: str,
+    file_id: str,
+    background_tasks: BackgroundTasks,
+    user=Depends(require_resource_access(ResourceType.COLLECTION, "{collection_id}")),
+):
+    """Re-run ingestion for one file (after a fix, a new extractor, or a
+    pre-status-honesty backfill).
+
+    Purges the file's derived artifacts first — the derived table_registry
+    row/parquet for tabular files (chunks are cleared by the ingest itself,
+    which is idempotent) — then resets the row to ``pending`` and re-runs
+    ``ingest_file`` in the background. Returns 202 with the pending row.
+    """
+    cf_repo = corpus_files_repo()
+    row = cf_repo.get(file_id)
+    if not row or row.get("corpus_id") != collection_id:
+        raise HTTPException(status_code=404, detail="file_not_found")
+
+    # Reject while a run is already in flight so two near-simultaneous
+    # requests (second admin tab, direct API caller) don't schedule racing
+    # ingest_file executions interleaving chunk deletes/writes. Narrow-window
+    # guard, not a lock — a true simultaneous pair can still slip through
+    # (accepted; ingest sets 'processing' as its first step). Excludes rows
+    # that have been 'processing' for longer than the staleness threshold —
+    # BackgroundTasks aren't durable, so a crash mid-ingest would otherwise
+    # leave the row permanently stuck and permanently un-reingestable.
+    if row.get("processing_status") == "processing" and not _is_stale_processing(row):
+        raise HTTPException(status_code=409, detail="reingest_in_progress")
+
+    _purge_derived_tabular_row_for_file(collection_id, file_id)
+    cf_repo.set_status(file_id, status="pending", detail={"reason": "reingest requested"})
+
+    from src.ingest.runner import ingest_file
+
+    background_tasks.add_task(ingest_file, file_id)
+    return {**_file_out(cf_repo.get(file_id))}

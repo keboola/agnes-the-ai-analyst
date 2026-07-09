@@ -1336,7 +1336,7 @@ CREATE TABLE IF NOT EXISTS file_corpora (
 );
 
 -- corpus_files: one row per uploaded file + its processing lifecycle.
--- processing_status: pending | processing | indexed | rejected
+-- processing_status: pending | processing | indexed | needs_review | rejected
 CREATE TABLE IF NOT EXISTS corpus_files (
     id VARCHAR PRIMARY KEY,
     corpus_id VARCHAR NOT NULL,
