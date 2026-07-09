@@ -951,7 +951,9 @@ def test_shortcut_heals_stale_shadowing_block(tmp_path, monkeypatch, capsys):
 
 
 def test_shortcut_healing_is_idempotent(tmp_path, monkeypatch):
-    """Healing + install twice leaves exactly one renamed block."""
+    """Healing + install twice leaves exactly one renamed block. (The re-run
+    staying silent is covered by
+    test_shortcut_healing_idempotent_no_false_warning.)"""
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -967,6 +969,23 @@ def test_shortcut_healing_is_idempotent(tmp_path, monkeypatch):
 
     content = (home / ".bashrc").read_text(encoding="utf-8")
     assert content.count("# >>> agnes launcher: agnesai <<<") == 1
+
+
+def test_shortcut_foreign_function_note_requires_word_boundary(tmp_path, monkeypatch, capsys):
+    """A user function whose name merely starts with the launcher word (e.g.
+    `myworkspacealpha` vs word `myworkspace`) is not a conflict — no
+    'without our marker' note may fire."""
+    home, workspace = _make_shortcut_env(tmp_path, monkeypatch, "linux")
+    monkeypatch.delenv("SHELL", raising=False)
+    bashrc = home / ".bashrc"
+    bashrc.write_text("function myworkspacealpha { cd ~/elsewhere && claude; }\n", encoding="utf-8")
+
+    from cli.lib.shortcut import install_launcher_shortcut
+
+    install_launcher_shortcut(workspace)
+
+    captured = capsys.readouterr()
+    assert "without our marker" not in captured.err
 
 
 def test_shortcut_healing_idempotent_no_false_warning(tmp_path, monkeypatch, capsys):

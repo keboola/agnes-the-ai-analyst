@@ -263,6 +263,15 @@ def install_launcher_shortcut(workspace: Path, *, no_shortcut: bool = False) -> 
 # ---------------------------------------------------------------------------
 
 
+def _defines_function(content: str, word: str) -> bool:
+    """True when ``content`` defines a shell function named exactly ``word``.
+
+    Word-boundary match: ``function agnes`` must not fire on
+    ``function agnesai`` (or any other name that merely starts with ``word``).
+    """
+    return re.search(rf"\bfunction {re.escape(word)}\b", content) is not None
+
+
 def _warn_if_foreign_function(word: str, existing: str) -> None:
     """Warn when a same-named shell function without our marker already exists.
 
@@ -272,7 +281,7 @@ def _warn_if_foreign_function(word: str, existing: str) -> None:
     when the shell loads the file, and we tell the user the old line is now a
     harmless leftover they can delete.
     """
-    if f"function {word}" in existing:
+    if _defines_function(existing, word):
         typer.echo(
             f"  Note     : found an existing `{word}` shell function without our marker. "
             "The new one takes precedence — you may delete the old line.",
@@ -323,7 +332,7 @@ def _heal_stale_shadowing_block(content: str, word: str, raw_word: str, target_n
             f"The shortcut is now `{word}`.",
             err=True,
         )
-    if re.search(rf"\bfunction {re.escape(raw_word)}\b", healed):
+    if _defines_function(healed, raw_word):
         typer.echo(
             f"  Warning  : your shell config still defines a `{raw_word}` function "
             f"that shadows the `{raw_word}` command. Delete that `function {raw_word}` "
