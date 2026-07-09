@@ -40,18 +40,10 @@ logger = logging.getLogger(__name__)
 # HTML sanitization
 # ---------------------------------------------------------------------------
 
-_RE_SCRIPT = re.compile(
-    r"<script[\s\S]*?</script>", re.IGNORECASE
-)
-_RE_IFRAME = re.compile(
-    r"<iframe[\s\S]*?(?:</iframe>|/>)", re.IGNORECASE
-)
-_RE_ON_EVENT = re.compile(
-    r"\s+on\w+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)", re.IGNORECASE
-)
-_RE_JS_URI = re.compile(
-    r"""(?:href|src|action)\s*=\s*(?:"|')(javascript:|data:)""", re.IGNORECASE
-)
+_RE_SCRIPT = re.compile(r"<script[\s\S]*?</script>", re.IGNORECASE)
+_RE_IFRAME = re.compile(r"<iframe[\s\S]*?(?:</iframe>|/>)", re.IGNORECASE)
+_RE_ON_EVENT = re.compile(r"\s+on\w+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)", re.IGNORECASE)
+_RE_JS_URI = re.compile(r"""(?:href|src|action)\s*=\s*(?:"|')(javascript:|data:)""", re.IGNORECASE)
 
 
 def _sanitize_banner_html(html: str) -> str:
@@ -69,15 +61,14 @@ def _sanitize_banner_html(html: str) -> str:
     html = _RE_SCRIPT.sub("", html)
     html = _RE_IFRAME.sub("", html)
     html = _RE_ON_EVENT.sub("", html)
-    html = _RE_JS_URI.sub(
-        lambda m: m.group(0).replace(m.group(1), "#"), html
-    )
+    html = _RE_JS_URI.sub(lambda m: m.group(0).replace(m.group(1), "#"), html)
     return html
 
 
 # ---------------------------------------------------------------------------
 # Render context
 # ---------------------------------------------------------------------------
+
 
 def build_context(
     *,
@@ -122,6 +113,7 @@ def build_context(
 # ---------------------------------------------------------------------------
 # Default content — live setup script
 # ---------------------------------------------------------------------------
+
 
 def compute_default_agent_prompt(
     conn: duckdb.DuckDBPyConnection,
@@ -171,6 +163,7 @@ def compute_default_agent_prompt(
         if user and conn is not None:
             try:
                 from src import marketplace_filter
+
                 seen: set[str] = set()
                 for p in marketplace_filter.resolve_user_marketplace(conn, user):
                     name = p["manifest_name"]
@@ -182,12 +175,14 @@ def compute_default_agent_prompt(
                 logger.exception("compute_default_agent_prompt: marketplace plugin resolution failed")
 
         from urllib.parse import urlparse as _urlparse
+
         parsed = _urlparse(server_url)
         server_host = parsed.netloc or parsed.hostname or ""
 
         ca_pem: str | None = None
         try:
             from app.web.router import _read_agnes_ca_pem
+
             ca_pem = _read_agnes_ca_pem()
         except Exception:
             pass
@@ -200,6 +195,7 @@ def compute_default_agent_prompt(
         connector_manifest = None
         try:
             from src.connectors_manifest import load_manifest
+
             connector_manifest = load_manifest()
         except Exception:
             logger.exception(
@@ -209,6 +205,7 @@ def compute_default_agent_prompt(
             connector_manifest = []  # explicit empty — skip the connector block
 
         from app.instance_config import get_instance_brand, get_workspace_dir_name
+
         lines = resolve_lines(
             _wheel_filename,
             plugin_install_names=plugin_install_names,
@@ -227,6 +224,7 @@ def compute_default_agent_prompt(
 # ---------------------------------------------------------------------------
 # Prompt renderer (override or default)
 # ---------------------------------------------------------------------------
+
 
 def render_agent_prompt_banner(
     conn: duckdb.DuckDBPyConnection,
@@ -269,9 +267,7 @@ def render_agent_prompt_banner(
             rendered = template.render(**ctx)
             return _sanitize_banner_html(rendered)
         except TemplateError as exc:
-            logger.warning(
-                "Agent-prompt banner render failed (template error): %s", exc
-            )
+            logger.warning("Agent-prompt banner render failed (template error): %s", exc)
             # Fall through to default
         except Exception:
             logger.exception("Agent-prompt banner render failed (unexpected)")
@@ -283,5 +279,7 @@ def render_agent_prompt_banner(
     # plugin grants in `resource_grants`, which `compute_default_agent_prompt`
     # resolves unconditionally.
     return compute_default_agent_prompt(
-        conn, user=user, server_url=server_url,
+        conn,
+        user=user,
+        server_url=server_url,
     )
