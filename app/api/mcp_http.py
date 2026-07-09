@@ -177,6 +177,29 @@ async def collections_search(query: str, k: int = 10, collection_id: str = "") -
 
 
 @mcp.tool()
+async def collections_reingest(collection_id: str, file_id: str) -> dict:
+    """Re-run ingestion for one file in a Collection (admin-gated).
+
+    Use after the file or extraction config was fixed — e.g. a file stuck
+    in ``needs_review`` (empty extraction) or ``rejected``. Returns the file
+    row reset to ``pending``; ingestion runs server-side in the background.
+
+    Args:
+        collection_id: Collection id from ``collections_list`` (``col_...``).
+        file_id: File id from ``collection_get`` (``cf_...``).
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.post(
+            f"{_BASE}/api/collections/{collection_id}/files/{file_id}/reingest",
+            json={},
+            headers=_headers(),
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
 async def schema(table_id: str) -> dict:
     """Show column names, types, and SQL dialect hints for a table.
 

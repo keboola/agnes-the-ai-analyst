@@ -4,8 +4,9 @@ Commands:
   create  --name ... [--description ...] [--json]
   list    [--json]
   show    <id>       [--json]
-  upload  <id> <path...>   (multipart POST per file)
-  rm      <id>       [--yes]
+  upload    <id> <path...>   (multipart POST per file)
+  reingest  <id> <file_id>   (re-run ingestion for one file)
+  rm        <id>       [--yes]
 """
 
 from __future__ import annotations
@@ -226,6 +227,25 @@ def upload_files(
 
     if any_error:
         raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
+# reingest
+# ---------------------------------------------------------------------------
+
+
+@collections_app.command("reingest")
+def reingest_file(
+    collection_id: str = typer.Argument(..., help="Collection id (col_...)"),
+    file_id: str = typer.Argument(..., help="File id (cf_...) from `collections show`"),
+):
+    """Re-run ingestion for one file (admin; after fixing the file or config)."""
+    try:
+        out = api_post_json(f"/api/collections/{collection_id}/files/{file_id}/reingest", {})
+    except V2ClientError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    typer.echo(f"reingest queued: {out.get('file_id', file_id)} status={out.get('processing_status', '?')}")
 
 
 # ---------------------------------------------------------------------------

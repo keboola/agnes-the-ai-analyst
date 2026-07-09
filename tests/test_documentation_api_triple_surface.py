@@ -41,6 +41,8 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/collections": ("collections list", "collections_list"),
     "/api/collections/{collection_id}": ("collections show", "collection_get"),
     "/api/collections/search": ("collections search", "collections_search"),
+    # Collections re-ingest (status-honesty, spec 2026-07-08).
+    "/api/collections/{collection_id}/files/{file_id}/reingest": ("collections reingest", "collections_reingest"),
     # Config-surface introspection (built-in marketplace spec Phase 1).
     "/api/admin/config-surface": ("admin config-surface", "admin_config_surface"),
     # Multi-project Keboola: named source-connections (#731).

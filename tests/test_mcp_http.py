@@ -146,6 +146,11 @@ class TestToolRegistration:
             "collections_list",
             "collection_get",
             "collections_search",
+            # Re-run ingestion for one stuck file (needs_review/rejected) —
+            # status-honesty follow-up (spec 2026-07-08). Triple-surface with
+            # POST /api/collections/{cid}/files/{fid}/reingest +
+            # `agnes collections reingest`.
+            "collections_reingest",
             # Config-surface introspection — an operator's Claude reads this
             # instance's live configurable surface (knobs + sources, registered
             # IWT, marketplaces, infra_repo_url). Triple-surface with

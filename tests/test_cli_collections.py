@@ -272,6 +272,36 @@ def test_rm_server_error_exits_nonzero(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# reingest
+# ---------------------------------------------------------------------------
+
+
+def test_collections_reingest_posts_to_endpoint(monkeypatch):
+    calls = {}
+
+    def fake_post(path, payload):
+        calls["path"] = path
+        return {"file_id": "cf_1", "processing_status": "pending"}
+
+    with patch("cli.commands.collections.api_post_json", fake_post):
+        r = runner.invoke(collections_app, ["reingest", "col_1", "cf_1"])
+    assert r.exit_code == 0, r.output
+    assert calls["path"] == "/api/collections/col_1/files/cf_1/reingest"
+    assert "pending" in r.output
+
+
+def test_collections_reingest_server_error_exits_nonzero(monkeypatch):
+    from cli.v2_client import V2ClientError
+
+    with patch(
+        "cli.commands.collections.api_post_json",
+        side_effect=V2ClientError(status_code=409, body={"detail": "reingest_in_progress"}),
+    ):
+        r = runner.invoke(collections_app, ["reingest", "col_1", "cf_1"])
+    assert r.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
 # Registration check — `agnes collections` must exist in the top-level app
 # ---------------------------------------------------------------------------
 
