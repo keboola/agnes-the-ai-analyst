@@ -210,6 +210,14 @@ platform variants `.cmd` / `.ps1`).  A mismatch causes the shortcut to
 fall back to the plain `claude --permission-mode auto` path, which still
 works but skips the welcome skill.
 
+**Collision guard:** when the sanitized word would shadow a POSIX shell
+built-in (`test`, `cd`, ...) or a command the toolchain itself depends on
+(`agnes`, `claude`), the shell *function* gets an `ai` suffix (workspace
+`Agnes` → function `agnesai`) so sourcing the rc file never breaks the
+CLI.  The `bin/<word>` script keeps the sanitized name from the contract
+above — the shortcut checks both the suffixed and the raw name, so a
+launcher seeded as `workspace/bin/agnes` still routes correctly.
+
 When there is no `workspace/bin/<word>` launcher (e.g. the default OSS
 seed), the shortcut falls back to `cd <workspace> && claude
 --permission-mode auto` — fully functional, just without the welcome skill.

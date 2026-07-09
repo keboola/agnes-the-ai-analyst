@@ -869,4 +869,259 @@ def test_launcher_word_avoids_shell_builtin_collision():
     assert sc._launcher_word("CD") == "cdai"
     # Non-built-in names are unaffected.
     assert sc._launcher_word("MyWorkspace") == "myworkspace"
-    assert sc._launcher_word("Agnes") == "agnes"
+
+
+def test_launcher_word_avoids_toolchain_command_collision():
+    """A workspace named 'Agnes' would produce 'agnes' — a shell function of
+    that name shadows the agnes CLI binary itself, breaking every subsequent
+    CLI command (#783). Same for 'claude', where the function would even call
+    itself recursively. The guard appends 'ai' exactly as it does for shell
+    built-ins."""
+    from cli.lib import shortcut as sc
+
+    assert sc._launcher_word("Agnes") == "agnesai"
+    assert sc._launcher_word("agnes") == "agnesai"
+    assert sc._launcher_word("Claude") == "claudeai"
+    # Sanitization happens before the guard: dots strip down to 'agnes'.
+    assert sc._launcher_word("A.g.n.e.s") == "agnesai"
+
+
+def test_shortcut_never_shadows_agnes_cli(tmp_path, monkeypatch):
+    """Installing into a workspace named 'Agnes' (the default brand) must not
+    write a `function agnes` block — that would hijack every `agnes` CLI call
+    into a Claude chat session (#783)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.delenv("SHELL", raising=False)
+    workspace = tmp_path / "Agnes"
+    workspace.mkdir()
+
+    from cli.lib.shortcut import install_launcher_shortcut
+
+    install_launcher_shortcut(workspace)
+
+    content = (home / ".bashrc").read_text(encoding="utf-8")
+    assert "# >>> agnes launcher: agnesai <<<" in content
+    assert "function agnesai {" in content
+    assert "function agnes {" not in content
+
+
+def test_shortcut_heals_stale_shadowing_block(tmp_path, monkeypatch, capsys):
+    """A pre-fix install left a marked `function agnes` block that shadows the
+    CLI. Re-running install for the same workspace must remove that stale
+    block (it carries our own marker, so removal is safe), write the renamed
+    block, and preserve unrelated rc content."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.delenv("SHELL", raising=False)
+    workspace = tmp_path / "Agnes"
+    workspace.mkdir()
+
+    stale_block = (
+        "\n# >>> agnes launcher: agnes <<<\n"
+        "function agnes {\n"
+        f'  cd "{workspace}" && claude --permission-mode auto "$@"\n'
+        "}\n"
+        "# <<< agnes launcher: agnes >>>\n"
+    )
+    bashrc = home / ".bashrc"
+    bashrc.write_text(
+        f"# user aliases\nalias ll='ls -la'\n{stale_block}export FOO=bar\n",
+        encoding="utf-8",
+    )
+
+    from cli.lib.shortcut import install_launcher_shortcut
+
+    install_launcher_shortcut(workspace)
+
+    content = bashrc.read_text(encoding="utf-8")
+    assert "# >>> agnes launcher: agnes <<<" not in content
+    assert "function agnes {" not in content
+    assert "# >>> agnes launcher: agnesai <<<" in content
+    assert "function agnesai {" in content
+    # Unrelated content survives on both sides of the removed block.
+    assert "alias ll='ls -la'" in content
+    assert "export FOO=bar" in content
+    captured = capsys.readouterr()
+    assert "agnes" in captured.err  # user is told about the rename
+
+
+def test_shortcut_healing_is_idempotent(tmp_path, monkeypatch):
+    """Healing + install twice leaves exactly one renamed block. (The re-run
+    staying silent is covered by
+    test_shortcut_healing_idempotent_no_false_warning.)"""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.delenv("SHELL", raising=False)
+    workspace = tmp_path / "Agnes"
+    workspace.mkdir()
+
+    from cli.lib.shortcut import install_launcher_shortcut
+
+    install_launcher_shortcut(workspace)
+    install_launcher_shortcut(workspace)
+
+    content = (home / ".bashrc").read_text(encoding="utf-8")
+    assert content.count("# >>> agnes launcher: agnesai <<<") == 1
+
+
+def test_shortcut_foreign_function_note_requires_word_boundary(tmp_path, monkeypatch, capsys):
+    """A user function whose name merely starts with the launcher word (e.g.
+    `myworkspacealpha` vs word `myworkspace`) is not a conflict — no
+    'without our marker' note may fire."""
+    home, workspace = _make_shortcut_env(tmp_path, monkeypatch, "linux")
+    monkeypatch.delenv("SHELL", raising=False)
+    bashrc = home / ".bashrc"
+    bashrc.write_text("function myworkspacealpha { cd ~/elsewhere && claude; }\n", encoding="utf-8")
+
+    from cli.lib.shortcut import install_launcher_shortcut
+
+    install_launcher_shortcut(workspace)
+
+    captured = capsys.readouterr()
+    assert "without our marker" not in captured.err
+
+
+def test_shortcut_healing_idempotent_no_false_warning(tmp_path, monkeypatch, capsys):
+    """Re-running install for a collision-renamed workspace must not emit a
+    spurious shadowing warning. 'function agnesai' must not match the
+    word-boundary check for 'function agnes'."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.delenv("SHELL", raising=False)
+    workspace = tmp_path / "Agnes"
+    workspace.mkdir()
+
+    from cli.lib.shortcut import install_launcher_shortcut
+
+    install_launcher_shortcut(workspace)
+    capsys.readouterr()  # discard first-run output
+
+    install_launcher_shortcut(workspace)
+    captured = capsys.readouterr()
+    assert "Warning" not in captured.err
+    assert "shadows" not in captured.err
+
+
+def test_shortcut_heals_stale_block_even_when_new_block_present(tmp_path, monkeypatch):
+    """If the renamed block already exists but the stale shadowing block is
+    still around, install removes the stale one without duplicating the new."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.delenv("SHELL", raising=False)
+    workspace = tmp_path / "Agnes"
+    workspace.mkdir()
+
+    from cli.lib.shortcut import install_launcher_shortcut
+
+    install_launcher_shortcut(workspace)  # writes the agnesai block
+    bashrc = home / ".bashrc"
+    stale_block = (
+        "\n# >>> agnes launcher: agnes <<<\n"
+        "function agnes {\n"
+        f'  cd "{workspace}" && claude --permission-mode auto "$@"\n'
+        "}\n"
+        "# <<< agnes launcher: agnes >>>\n"
+    )
+    bashrc.write_text(bashrc.read_text(encoding="utf-8") + stale_block, encoding="utf-8")
+
+    install_launcher_shortcut(workspace)
+
+    content = bashrc.read_text(encoding="utf-8")
+    assert "# >>> agnes launcher: agnes <<<" not in content
+    assert content.count("# >>> agnes launcher: agnesai <<<") == 1
+
+
+def test_shortcut_warns_on_foreign_shadowing_function(tmp_path, monkeypatch, capsys):
+    """An unmarked user-written `function agnes` cannot be removed safely, but
+    the user must be told it shadows the CLI binary."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.delenv("SHELL", raising=False)
+    workspace = tmp_path / "Agnes"
+    workspace.mkdir()
+    bashrc = home / ".bashrc"
+    bashrc.write_text("function agnes { cd ~/Agnes && claude; }\n", encoding="utf-8")
+
+    from cli.lib.shortcut import install_launcher_shortcut
+
+    install_launcher_shortcut(workspace)
+
+    content = bashrc.read_text(encoding="utf-8")
+    # Foreign line preserved, renamed block appended.
+    assert "function agnes {" in content
+    assert "function agnesai {" in content
+    captured = capsys.readouterr()
+    assert "shadow" in captured.err.lower()
+
+
+def test_shortcut_renamed_word_still_routes_via_raw_bin_launcher(tmp_path, monkeypatch):
+    """The IWT naming contract seeds `bin/<sanitized-folder-name>` (raw word,
+    no collision suffix). When the guard renames the function, the shortcut
+    must still route through the operator's `bin/agnes` launcher."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.delenv("SHELL", raising=False)
+    workspace = tmp_path / "Agnes"
+    workspace.mkdir()
+    bin_dir = workspace / "bin"
+    bin_dir.mkdir()
+    launcher = bin_dir / "agnes"
+    launcher.write_text('#!/bin/bash\nclaude --agent agnes "$@"\n', encoding="utf-8")
+    launcher.chmod(0o755)
+
+    from cli.lib.shortcut import install_launcher_shortcut
+
+    install_launcher_shortcut(workspace)
+
+    content = (home / ".bashrc").read_text(encoding="utf-8")
+    assert "function agnesai {" in content
+    assert str(launcher) in content
+    assert "--permission-mode auto" in content
+
+
+def test_shortcut_windows_heals_stale_shadowing_block(tmp_path, monkeypatch):
+    """Windows: the stale marked `function agnes` block is removed from an
+    existing PowerShell profile and the renamed block lands in both."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("sys.platform", "win32")
+    workspace = tmp_path / "Agnes"
+    workspace.mkdir()
+
+    ps5 = home / "Documents" / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1"
+    ps5.parent.mkdir(parents=True)
+    stale_block = (
+        "\n# >>> agnes launcher: agnes <<<\n"
+        "function agnes {\n"
+        f'  Set-Location "{workspace}"; claude --permission-mode auto @args\n'
+        "}\n"
+        "# <<< agnes launcher: agnes >>>\n"
+    )
+    ps5.write_text(f"# profile{stale_block}", encoding="utf-8")
+
+    from cli.lib.shortcut import install_launcher_shortcut
+
+    install_launcher_shortcut(workspace)
+
+    ps7 = home / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1"
+    for prof in (ps5, ps7):
+        content = prof.read_text(encoding="utf-8")
+        assert "# >>> agnes launcher: agnes <<<" not in content
+        assert "function agnes {" not in content
+        assert "# >>> agnes launcher: agnesai <<<" in content
