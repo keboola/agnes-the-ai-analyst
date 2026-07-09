@@ -50,9 +50,7 @@ def _resolve_schema(conn, user, table_id: str, bq: BqAccess) -> dict:
     return {c["name"]: c["type"] for c in s.get("columns", [])}
 
 
-def _bq_dry_run_bytes(
-    bq: BqAccess, sql: str, *, user: dict | None = None, agent_name: str = "scan"
-) -> int:
+def _bq_dry_run_bytes(bq: BqAccess, sql: str, *, user: dict | None = None, agent_name: str = "scan") -> int:
     """Run a BQ dry-run via the google-cloud-bigquery client and return totalBytesProcessed.
 
     SQL here is user-derived (built from req.select/where/order_by), so BadRequest → 400
@@ -329,21 +327,54 @@ def _max_limit() -> int:
     return int(get_value("api", "scan", "max_limit", default=10_000_000) or 10_000_000)
 
 
-def _run_bq_scan(bq: BqAccess, sql: str) -> pa.Table:
-    """Run a BQ query via DuckDB BQ extension. Returns Arrow table.
+def _run_bq_scan(bq: BqAccess, sql: str, *, user: dict | None = None) -> tuple[pa.Table, dict]:
+    """Run the billable BQ scan query via the google-cloud-bigquery client
+    (not the DuckDB `bigquery_query()` extension) so the job carries cost-
+    attribution labels (`job_labels_for(user, "scan")`) and its job metadata
+    (job_id / bytes_processed / bytes_billed) can be surfaced in the scan
+    audit log. Mirrors the labeled-job shape of `src.remote_query.register_bq`
+    (#751) — a scan result is fully materialized to Arrow anyway, so
+    `client.query(...).to_arrow()` is shape-equivalent to the extension call
+    it replaces.
+
+    The remote-select path (`agnes query --remote` / `run_remote_select_to_arrow`)
+    stays on the DuckDB extension for Storage Read API streaming + predicate
+    pushdown — its labeling is deferred upstream.
+
+    Returns (arrow_table, job_info) where job_info has keys
+    bq_job_id/bytes_scanned/bytes_billed for the caller's audit log.
 
     SQL here is user-derived → BadRequest → 400 (`bad_request_status="client_error"`).
     """
+    from google.cloud import bigquery
     from connectors.bigquery.access import translate_bq_error
 
-    with bq.duckdb_session() as conn:
+    client = bq.client()  # raises BqAccessError(bq_lib_missing/auth_failed) — propagates
+    try:
+        job = client.query(
+            sql,
+            job_config=bigquery.QueryJobConfig(labels=job_labels_for(user, "scan")),
+        )
         try:
-            return conn.execute(
-                "SELECT * FROM bigquery_query(?, ?)",
-                [bq.projects.billing, sql],
-            ).arrow()
-        except Exception as e:
-            raise translate_bq_error(e, bq.projects, bad_request_status="client_error")
+            table = job.to_arrow()
+        except Exception as storage_exc:
+            # Mirrors register_bq's fallback (#751): some SAs lack BQ Storage
+            # Read API access; fall back to the slower REST-based fetch
+            # rather than failing the whole scan.
+            if "readsessions" in str(storage_exc) or "PERMISSION_DENIED" in str(storage_exc):
+                logger.warning("BQ Storage API unavailable for scan, falling back to REST")
+                table = job.to_arrow(create_bqstorage_client=False)
+            else:
+                raise
+    except Exception as e:
+        raise translate_bq_error(e, bq.projects, bad_request_status="client_error")
+
+    job_info = {
+        "bq_job_id": getattr(job, "job_id", None),
+        "bytes_scanned": getattr(job, "total_bytes_processed", None),
+        "bytes_billed": getattr(job, "total_bytes_billed", None),
+    }
+    return table, job_info
 
 
 def run_scan(
@@ -353,8 +384,15 @@ def run_scan(
     *,
     bq: BqAccess,
     quota: QuotaTracker,
+    job_info: dict | None = None,
 ) -> bytes:
     """Validate → quota → execute → serialize. Returns Arrow IPC bytes.
+
+    ``job_info``, if provided, is populated in place with the billable BQ
+    job's ``bq_job_id`` / ``bytes_scanned`` / ``bytes_billed`` (see
+    ``_run_bq_scan``) so the caller can attach them to the audit log. Stays
+    empty for local-table scans and the ``from_query`` streaming path, which
+    doesn't expose per-job metadata.
 
     Raises:
         WhereValidationError, QuotaExceededError, FileNotFoundError, PermissionError,
@@ -438,7 +476,9 @@ def run_scan(
                 local.close()
         else:
             bq_sql = _build_bq_sql(row, bq.projects.data, req, safe_where=safe_where)
-            table = _run_bq_scan(bq, bq_sql)
+            table, bq_job_info = _run_bq_scan(bq, bq_sql, user=user)
+            if job_info is not None:
+                job_info.update(bq_job_info)
 
         # Enforce max_result_bytes guard (spec §3.4 step 8). Streams with the
         # cap applied, so a RecordBatchReader (duckdb>=1.5 `.arrow()`) is
@@ -462,14 +502,13 @@ def scan_endpoint(
     table_id = raw.get("table_id", "") if isinstance(raw, dict) else ""
     snapshot_name = raw.get("as") if isinstance(raw, dict) else None
     resource = (f"table:{table_id}:as:{snapshot_name}" if snapshot_name else f"table:{table_id}")[:256]
+    job_info: dict = {}
     try:
-        ipc = run_scan(conn, user, raw, bq=bq, quota=quota)
+        ipc = run_scan(conn, user, raw, bq=bq, quota=quota, job_info=job_info)
         # Decode row count from IPC without re-running the scan.
-        # bytes_scanned / bytes_billed / bq_job_id are deferred — the BQ
-        # extension doesn't expose per-job metadata through the DuckDB
-        # execute() path; adding that plumbing is a multi-site change.
-        # TODO: surface bytes_scanned / bytes_billed / bq_job_id once the
-        # BQ extension or _run_bq_scan is extended to return job metadata.
+        # bytes_scanned / bytes_billed / bq_job_id come from job_info,
+        # populated by _run_bq_scan for BigQuery-source scans (#752); stay
+        # None for local-table scans and the from_query streaming path.
         try:
             from app.api.v2_arrow import parse_ipc_bytes
 
@@ -483,9 +522,9 @@ def scan_endpoint(
                 resource=resource,
                 params={
                     "rows_written": rows_written,
-                    "bytes_scanned": None,  # deferred — see TODO above
-                    "bytes_billed": None,  # deferred
-                    "bq_job_id": None,  # deferred
+                    "bytes_scanned": job_info.get("bytes_scanned"),
+                    "bytes_billed": job_info.get("bytes_billed"),
+                    "bq_job_id": job_info.get("bq_job_id"),
                     "snapshot_name": snapshot_name,
                     "duration_ms": int((time.monotonic() - t0) * 1000),
                 },
