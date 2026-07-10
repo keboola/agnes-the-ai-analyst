@@ -99,9 +99,7 @@ def _audit(
     params: Optional[dict] = None,
 ) -> None:
     try:
-        audit_repo().log(
-            user_id=actor_id, action=action, resource=target, params=params
-        )
+        audit_repo().log(user_id=actor_id, action=action, resource=target, params=params)
     except Exception:
         pass
 
@@ -124,9 +122,7 @@ async def get_my_stack(
     # One round trip — set membership intersection in Python is cheaper
     # than joining marketplace_plugins per-row inside resolve_allowed_plugins
     # (which is also called from the marketplace_filter / packager hot path).
-    system_plugins: set[tuple[str, str]] = set(
-        marketplace_plugins_repo().list_system_keys()
-    )
+    system_plugins: set[tuple[str, str]] = set(marketplace_plugins_repo().list_system_keys())
 
     curated: List[CuratedPlugin] = []
     for p in granted:
@@ -149,14 +145,14 @@ async def get_my_stack(
     installs = user_store_installs_repo().list_for_user(user["id"])
     store_items: List[StoreInstallEntry] = []
     from src.store_naming import strip_archive_suffix
+
     for row in installs:
         photo_url = (
             # ``?v=`` cache-busting fingerprint via ``version_no`` — see
             # ``app/api/store.py:get_entity_photo`` for the cache-header
             # contract. Bumps on every re-upload, so the URL refresh
             # forces a browser refetch exactly when the bytes change.
-            f"/api/store/entities/{row['id']}/photo?v={row.get('version_no', 1)}"
-            if row.get("photo_path") else None
+            f"/api/store/entities/{row['id']}/photo?v={row.get('version_no', 1)}" if row.get("photo_path") else None
         )
         # Display name strips the archive-rename suffix so the user
         # sees their installed plugin's original label even after the
@@ -212,10 +208,7 @@ async def toggle_curated(
     # Sanity: caller must actually have the plugin granted (otherwise the
     # toggle is meaningless and would just leak rows for ungranted plugins).
     granted = resolve_allowed_plugins(conn, user)
-    has_grant = any(
-        p["marketplace_id"] == marketplace_id and p["original_name"] == plugin_name
-        for p in granted
-    )
+    has_grant = any(p["marketplace_id"] == marketplace_id and p["original_name"] == plugin_name for p in granted)
     if not has_grant:
         raise HTTPException(status_code=404, detail="grant_not_found")
 
@@ -245,6 +238,7 @@ async def toggle_curated(
 
     try:
         from app.marketplace_server import packager
+
         packager.invalidate_etag_cache()
     except Exception:
         logger.exception("failed to invalidate marketplace etag cache")
