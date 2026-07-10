@@ -14,6 +14,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- /home onboarding now recommends launching Claude with `claude --permission-mode auto` instead of `--dangerously-skip-permissions`. Auto mode's classifier auto-approves safe actions (file edits and safe Bash) so the setup script runs mostly unattended while riskier commands can still prompt — an honest middle ground rather than a blanket skip. The broad-blast-radius flag is no longer surfaced on /home (it stays documented as an advanced option on /setup-advanced), and the workspace launcher comment examples were updated to match.
+
 ### Fixed
 
 ### Removed
