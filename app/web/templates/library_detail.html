@@ -179,7 +179,14 @@
           </span>
           <div class="file__body">
             <div class="file__name">{{ f.filename }}</div>
-            <div class="file__meta">{{ ft or "file" }}</div>
+            {% set detail = f.processing_detail or {} %}
+            {% if detail.get("kind") == "bundle" %}
+              <div class="file__meta">archive · {{ detail.get("children", 0) }} files · {{ detail.get("indexed", 0) }} indexed</div>
+            {% elif f.parent_file_id %}
+              <div class="file__meta">{{ ft or "file" }} · from archive</div>
+            {% else %}
+              <div class="file__meta">{{ ft or "file" }}</div>
+            {% endif %}
             {% if reason and f.processing_status in ("rejected", "needs_review") %}
               <div class="file__reason">{{ reason }}</div>
             {% endif %}
