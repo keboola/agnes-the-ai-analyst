@@ -287,6 +287,31 @@ values. Never commit `.env`.
 | `CONFIG_DIR` | Override config directory path |
 | `LOG_LEVEL` | Logging level: `debug`, `info`, `warning`, `error` |
 | `DOMAIN` | Public hostname for Caddy TLS (production profile) |
+| `AGNES_BASE_URL` | Operator-pinned public origin (see below). Wins over `SERVER_URL`. |
+| `SERVER_URL` | Deployment's public URL (see below). |
+| `AGNES_INTERNAL_URL` | Data-rails-only server URL for the chat sandbox + workspace seed (see below). |
+
+### Public origin & data-rails URLs
+
+Three URL variables with distinct jobs:
+
+- **`AGNES_BASE_URL`**, then **`SERVER_URL`** — the *public origin* pin
+  (`app/auth/public_url.py`). First non-empty wins; feeds MCP OAuth issuer +
+  discovery metadata, connector/Cowork bundles, and external links. When both
+  are unset, the origin is derived per-request from the incoming host
+  (proxy-aware), so most TLS-proxied deployments don't need either.
+- **`SERVER_URL`**, then **`AGNES_INTERNAL_URL`** — the *data rails* chain
+  (`agnes_server_url()` in `app/chat/manager.py`): the URL the cloud-chat
+  sandbox (`AGNES_SERVER` for the agnes CLI) and the seeded analyst workspace
+  use to reach the server. Falls back to loopback for local dev.
+
+> **Plain-HTTP deployments** (`tls_mode=none`, no TLS proxy): an `http://`
+> non-localhost URL cannot serve as an MCP OAuth issuer (RFC 8414 requires
+> HTTPS), so setting `SERVER_URL`/`AGNES_BASE_URL` to one disables the
+> streamable MCP connector at `/api/mcp/http` — the app boots and logs a loud
+> ERROR, everything else keeps working. To get cloud-chat data rails without
+> touching the public origin (and without the ERROR), set `AGNES_INTERNAL_URL`
+> instead — it feeds *only* the rails chain, never OAuth metadata.
 
 ---
 
