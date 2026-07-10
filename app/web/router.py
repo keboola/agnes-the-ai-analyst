@@ -33,6 +33,7 @@ from app.instance_config import (
     get_instance_logo_svg,
     get_instance_overview,
     get_instance_support,
+    get_hidden_login_features,
     get_instance_theme,
     get_custom_scripts,
 )
@@ -505,6 +506,7 @@ def _build_context(
         LOGO_SVG = get_instance_logo_svg()
         INSTANCE_OVERVIEW = get_instance_overview()
         INSTANCE_SUPPORT = get_instance_support()
+        HIDE_LOGIN_FEATURES = get_hidden_login_features()
         TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "")
         SSH_ALIAS = "data-analyst"
         SERVER_HOST = os.environ.get("SERVER_HOST", "")

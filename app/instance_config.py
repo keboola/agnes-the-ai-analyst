@@ -460,6 +460,41 @@ def get_instance_support() -> str:
     return (raw or "").strip()
 
 
+def get_hidden_login_features() -> frozenset[str]:
+    """Stable keys of the ``/login`` feature cards to hide on this instance.
+
+    The ``/login`` left panel renders a fixed set of feature-card tiles, each
+    tagged with a stable key (``data``, ``marketplace``, ``mcp``, ``memory``,
+    ``anywhere``). Listing a key here drops that card — a generic,
+    per-deployment way to trim the landing chrome without forking the
+    template.
+
+    Resolution: ``AGNES_INSTANCE_HIDE_LOGIN_FEATURES`` env (comma-separated,
+    e.g. ``"mcp,memory"``) > ``instance.hide_login_features`` in instance.yaml
+    (a YAML list *or* a comma-separated string) > empty. Values are split on
+    commas, stripped, lowercased, de-duplicated, and empties dropped, yielding
+    a ``frozenset`` the template membership-tests against.
+
+    The empty default hides nothing — the shipped OSS renders every card, so
+    the concrete choice of what to hide stays a deployment-level decision and
+    the public repo stays vendor-neutral. Mirrors :func:`get_instance_overview`
+    in the env-overrides-yaml shape.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_HIDE_LOGIN_FEATURES")
+    if raw is None:
+        raw = get_value("instance", "hide_login_features", default="")
+    # Accept a YAML list (``["mcp", "memory"]``) or a comma-separated string
+    # (``"mcp, memory"``) interchangeably — split every piece on commas so
+    # either form normalizes the same way.
+    if isinstance(raw, (list, tuple)):
+        tokens: list[str] = []
+        for item in raw:
+            tokens.extend(str(item).split(","))
+    else:
+        tokens = str(raw or "").split(",")
+    return frozenset(token.strip().lower() for token in tokens if token.strip())
+
+
 _CUSTOM_SCRIPT_PLACEMENTS = ("head_start", "head_end", "body_end")
 
 
