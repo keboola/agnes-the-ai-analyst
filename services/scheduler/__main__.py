@@ -112,6 +112,12 @@ _DEFAULTS = {
     # Jira ingest pay no cost for these jobs running on the default schedule.
     "SCHEDULER_JIRA_SLA_POLL_INTERVAL": 15 * 60,
     "SCHEDULER_JIRA_CONSISTENCY_INTERVAL": 30 * 60,
+    # K3 (#798) local knowledge packaging: rebuilds per-collection
+    # knowledge.duckdb artifacts whose chunk content changed since the last
+    # pass (fingerprint-only when idle — cheap). The ingest pipeline writes
+    # chunks asynchronously, so a 15 min ceiling on artifact staleness
+    # matches the corporate-memory cadence class.
+    "SCHEDULER_KNOWLEDGE_PACKAGING_INTERVAL": 15 * 60,
 }
 
 
@@ -304,8 +310,11 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
     usageprune = _read_positive_int("SCHEDULER_USAGE_PRUNE_INTERVAL")
     jirasla = _read_positive_int("SCHEDULER_JIRA_SLA_POLL_INTERVAL")
     jiraconsis = _read_positive_int("SCHEDULER_JIRA_CONSISTENCY_INTERVAL")
+    kpkg = _read_positive_int("SCHEDULER_KNOWLEDGE_PACKAGING_INTERVAL")
     tick = _read_positive_int("SCHEDULER_TICK_SECONDS")
-    smallest = min(refresh, health, scripts, sess, verify, usage, corpmem, bqmeta, usageprune, jirasla, jiraconsis)
+    smallest = min(
+        refresh, health, scripts, sess, verify, usage, corpmem, bqmeta, usageprune, jirasla, jiraconsis, kpkg
+    )
     if tick > smallest:
         raise ValueError(
             f"SCHEDULER_TICK_SECONDS={tick} must be <= the smallest job "
@@ -386,6 +395,9 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
             "POST",
             1800,
         ),
+        # K3 (#798): per-collection knowledge.duckdb artifact rebuild.
+        # Fingerprint-only when nothing changed since the last pass.
+        ("knowledge-packaging", _seconds_to_schedule(kpkg), "/api/admin/run-knowledge-packaging", "POST", 600),
     ]
 
     # Initial Workspace Template nightly auto-sync (#622 Slice 3 PR-B).

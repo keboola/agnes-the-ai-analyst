@@ -363,6 +363,87 @@ class TestRunCorporateMemory:
         assert "RuntimeError" in params_json
 
 
+class TestRunKnowledgePackaging:
+    """POST /api/admin/run-knowledge-packaging — scheduler-driven rebuild of
+    per-collection knowledge.duckdb artifacts (K3, #798). Mirrors
+    run_corporate_memory's audit + error posture exactly."""
+
+    def test_admin_can_trigger_knowledge_packaging(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        fake_summary = {
+            "built": ["col_a"],
+            "skipped": ["col_b"],
+            "pruned": [],
+            "errors": [],
+        }
+        with patch(
+            "src.knowledge_packaging.run_packaging_pass",
+            return_value=fake_summary,
+        ) as m:
+            resp = c.post("/api/admin/run-knowledge-packaging", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["details"] == fake_summary
+        m.assert_called_once()
+
+    def test_errors_set_ok_false(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        fake_summary = {
+            "built": [],
+            "skipped": [],
+            "pruned": [],
+            "errors": [{"corpus_id": "col_a", "error": "boom"}],
+        }
+        with patch(
+            "src.knowledge_packaging.run_packaging_pass",
+            return_value=fake_summary,
+        ):
+            resp = c.post("/api/admin/run-knowledge-packaging", headers=_auth(token))
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is False
+
+    def test_non_admin_blocked(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+        resp = c.post("/api/admin/run-knowledge-packaging", headers=_auth(token))
+        assert resp.status_code == 403
+
+    def test_unauth_blocked(self, seeded_app):
+        c = seeded_app["client"]
+        resp = c.post("/api/admin/run-knowledge-packaging")
+        assert resp.status_code == 401
+
+    def test_unhandled_exception_still_audits(self, seeded_app):
+        """Mirror run_corporate_memory: record the failure in audit_log even
+        when run_packaging_pass() raises, so /admin/scheduler-runs sees the
+        failure instead of only docker logs."""
+        from src.db import get_system_db
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch(
+            "src.knowledge_packaging.run_packaging_pass",
+            side_effect=RuntimeError("simulated DuckDB lock"),
+        ):
+            resp = c.post("/api/admin/run-knowledge-packaging", headers=_auth(token))
+        assert resp.status_code == 500
+        assert "RuntimeError" in resp.json()["detail"]
+        conn = get_system_db()
+        try:
+            rows = conn.execute(
+                "SELECT params FROM audit_log WHERE action = 'run_knowledge_packaging' ORDER BY timestamp DESC LIMIT 1"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert rows, "audit row missing on unhandled exception"
+        params_json = rows[0][0]
+        assert "unhandled_error" in params_json
+        assert "RuntimeError" in params_json
+
+
 class TestRunKnowledgeMigration:
     def test_imports_items_from_json(self, seeded_app):
         data_dir = seeded_app["env"]["data_dir"]
@@ -543,6 +624,23 @@ class TestSchedulerJobsWireUp:
         _, _, endpoint, method, _t = target
         assert endpoint == "/api/admin/run-corporate-memory"
         assert method == "POST"
+
+    def test_knowledge_packaging_endpoint_is_registered(self, monkeypatch):
+        for v in (
+            "SCHEDULER_DATA_REFRESH_INTERVAL",
+            "SCHEDULER_HEALTH_CHECK_INTERVAL",
+            "SCHEDULER_TICK_SECONDS",
+            "SCHEDULER_SCRIPT_RUN_INTERVAL",
+        ):
+            monkeypatch.delenv(v, raising=False)
+        from services.scheduler.__main__ import build_jobs
+
+        target = next(j for j in build_jobs() if j[0] == "knowledge-packaging")
+        _, schedule, endpoint, method, timeout = target
+        assert schedule == "every 15m"
+        assert endpoint == "/api/admin/run-knowledge-packaging"
+        assert method == "POST"
+        assert timeout == 600
 
     def test_new_jobs_have_offset_cadences(self, monkeypatch):
         """Three jobs in the same family must NOT all fire on the same tick.
