@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 86
+SCHEMA_VERSION = 87
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1345,6 +1345,7 @@ CREATE TABLE IF NOT EXISTS corpus_files (
     file_type VARCHAR,
     size_bytes BIGINT,
     storage_path VARCHAR,
+    parent_file_id VARCHAR,
     processing_status VARCHAR NOT NULL DEFAULT 'pending',
     processing_detail VARCHAR,
     created_at TIMESTAMP DEFAULT current_timestamp,
@@ -5287,6 +5288,7 @@ def _v81_to_v82(conn: duckdb.DuckDBPyConnection) -> None:
             file_type VARCHAR,
             size_bytes BIGINT,
             storage_path VARCHAR,
+            parent_file_id VARCHAR,
             processing_status VARCHAR NOT NULL DEFAULT 'pending',
             processing_detail VARCHAR,
             created_at TIMESTAMP DEFAULT current_timestamp,
@@ -5455,6 +5457,20 @@ def _v85_to_v86(conn: duckdb.DuckDBPyConnection) -> None:
         [everyone_group_id, everyone_group_id],
     )
     conn.execute("UPDATE schema_version SET version = 86")
+
+
+def _v86_to_v87(conn: duckdb.DuckDBPyConnection) -> None:
+    """v86→v87: ``corpus_files.parent_file_id`` — bundle (zip) child linkage (K1).
+
+    Children extracted from an uploaded archive point at the archive's own
+    ``corpus_files`` row; directly-uploaded files (and archive rows
+    themselves) keep NULL. Guarded ALTER so upgrades from a fresh-install
+    schema (which already carries the column) stay idempotent.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('corpus_files')").fetchall()}
+    if "parent_file_id" not in cols:
+        conn.execute("ALTER TABLE corpus_files ADD COLUMN parent_file_id VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 87")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -5804,6 +5820,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # and so a fresh-install-then-manual-user-insert-before-boot
             # scenario in tests still lands correctly.
             _v85_to_v86(conn)
+            # v86→v87: corpus_files.parent_file_id (bundle children).
+            # _SYSTEM_SCHEMA already carries the column on fresh installs;
+            # the guarded ALTER is a no-op here.
+            _v86_to_v87(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -6029,6 +6049,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v84_to_v85(conn)
             if current < 86:
                 _v85_to_v86(conn)
+            if current < 87:
+                _v86_to_v87(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

@@ -58,6 +58,9 @@ class CorpusFile(Base):
     file_type: Mapped[str | None] = mapped_column(String, nullable=True)
     size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     storage_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Set on children extracted from an uploaded archive (K1 bundle ingest);
+    # NULL for directly-uploaded files and for the archive row itself.
+    parent_file_id: Mapped[str | None] = mapped_column(String, nullable=True)
     # Five-state lifecycle: pending | processing | indexed | needs_review | rejected
     processing_status: Mapped[str] = mapped_column(String, server_default=_text("'pending'"), nullable=False)
     # JSON text: {tier, vision_used, error, derived_table_id, chunk_count}

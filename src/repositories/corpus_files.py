@@ -30,6 +30,7 @@ class CorpusFilesRepository:
         "file_type",
         "size_bytes",
         "storage_path",
+        "parent_file_id",
         "processing_status",
         "processing_detail",
         "created_at",
@@ -63,17 +64,19 @@ class CorpusFilesRepository:
         file_type: Optional[str],
         size_bytes: Optional[int],
         storage_path: Optional[str],
+        parent_file_id: Optional[str] = None,
     ) -> str:
         """Insert a new file row with default status 'pending'.
 
+        ``parent_file_id`` links a bundle-extracted child to its archive row.
         Returns the generated ``cf_*`` id.
         """
         file_id = "cf_" + secrets.token_hex(8)
         self.conn.execute(
             "INSERT INTO corpus_files "
-            "(id, corpus_id, filename, sha256, file_type, size_bytes, storage_path) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [file_id, corpus_id, filename, sha256, file_type, size_bytes, storage_path],
+            "(id, corpus_id, filename, sha256, file_type, size_bytes, storage_path, parent_file_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [file_id, corpus_id, filename, sha256, file_type, size_bytes, storage_path, parent_file_id],
         )
         return file_id
 
@@ -92,6 +95,14 @@ class CorpusFilesRepository:
         rows = self.conn.execute(
             f"SELECT {self._SELECT} FROM corpus_files WHERE corpus_id = ? ORDER BY created_at",
             [corpus_id],
+        ).fetchall()
+        return [self._decode_row(dict(zip(self._COLS, r))) for r in rows]
+
+    def list_children(self, parent_file_id: str) -> List[Dict[str, Any]]:
+        """All child rows extracted from the given archive file, by created_at."""
+        rows = self.conn.execute(
+            f"SELECT {self._SELECT} FROM corpus_files WHERE parent_file_id = ? ORDER BY created_at",
+            [parent_file_id],
         ).fetchall()
         return [self._decode_row(dict(zip(self._COLS, r))) for r in rows]
 
