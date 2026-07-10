@@ -1,5 +1,5 @@
 """
-AI Data Analyst - Data Sync Engine
+Agnes AI Harness - Data Sync Engine
 
 Downloads data from configured sources, converts to Parquet files,
 and syncs to analysts via rsync.

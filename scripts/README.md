@@ -1,6 +1,6 @@
 # Scripts
 
-Utility and migration scripts for Agnes AI Data Analyst.
+Utility and migration scripts for Agnes.
 
 ## Active Scripts
 

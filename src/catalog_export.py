@@ -2,7 +2,7 @@
 Catalog Export - generate YAML metric and table definitions from OpenMetadata.
 
 Fetches metrics and table metadata from the OpenMetadata catalog API,
-transforms them into YAML files compatible with the AI Data Analyst agent
+transforms them into YAML files compatible with the Agnes agent
 (MetricParser format), and writes them to the docs directory.
 
 Output structure:

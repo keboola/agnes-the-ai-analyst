@@ -68,7 +68,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 
 | Knob | Env override | `instance.yaml` path | Default | Resolver |
 |------|--------------|----------------------|---------|----------|
-| Deployment display name (page titles, email subjects) | — | `instance.name` | `AI Data Analyst` | `get_instance_name()` |
+| Deployment display name (page titles, email subjects) | — | `instance.name` | `AI Harness` | `get_instance_name()` |
 | Header subtitle | — | `instance.subtitle` | `""` | `get_instance_subtitle()` |
 | Product brand string (hero copy, CTAs, setup script) | `AGNES_INSTANCE_BRAND` | `instance.brand` | `Agnes` | `get_instance_brand()` |
 | Inline `<svg>` logo for the header brand slot | `AGNES_INSTANCE_LOGO_SVG` | `instance.logo_svg` | `""` (text brand) | `get_instance_logo_svg()` |
@@ -139,7 +139,7 @@ The main configuration file lives at `config/instance.yaml`. See
 
 ```yaml
 instance:
-  name: "AI Data Analyst"        # UI title, email subjects (get_instance_name)
+  name: "AI Harness"        # UI title, email subjects (get_instance_name)
   subtitle: "Acme Corp"          # Header subtitle (get_instance_subtitle)
   copyright: "Acme Corp"         # Footer copyright
   brand: "Acme Analyst"          # Product brand string (get_instance_brand)

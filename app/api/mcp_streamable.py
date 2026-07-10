@@ -324,7 +324,7 @@ def _make_streamable_app() -> ASGIApp:
     mcp = FastMCP(
         "Agnes",
         instructions=(
-            "Agnes is an AI Data Analyst platform. "
+            "Agnes is a self-hosted AI harness for the organization's data, skills, and memory. "
             "Use `catalog` first to discover available tables, then `schema` to "
             "understand columns, `describe` for sample rows, and `query` to run SQL. "
             "Run `server_info` to check connectivity at the start of a session."

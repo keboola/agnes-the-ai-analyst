@@ -1,4 +1,4 @@
-"""agnes — CLI tool for AI Data Analyst.
+"""agnes — CLI tool for the Agnes AI harness.
 
 Primary interface for AI agents. Install: uv tool install agnes-the-ai-analyst
 """
@@ -82,7 +82,7 @@ def _version_callback(value: bool) -> None:
 
 app = typer.Typer(
     name="agnes",
-    help="Agnes — AI Data Analyst CLI",
+    help="Agnes — AI Harness CLI",
     no_args_is_help=True,
 )
 
