@@ -15,6 +15,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- MCP wheel bootstrap no longer trusts the `.installed.json` marker alone: the marker lives on the persistent data volume while `pip install --user` lands in the ephemeral container filesystem, so after a container recreate the boot skipped the reinstall and every stdio MCP source failed with `[Errno 2] No such file or directory`. The skip path now also verifies the wheel's distribution is actually importable and reinstalls when it is gone.
+
+- Backend-split cleanup (batch 2): the CLI-login PAT mint and four corporate-memory admin endpoints (mark-mandatory, mark-unmandatory, admin item GET, memory-domain item lookup, and the per-domain markdown bundle) wrote/read via direct `AccessTokenRepository(conn)` / `KnowledgeRepository(conn)` instantiation, which always targets DuckDB — on a Postgres-backed instance those writes/reads bypassed the active backend. Migrated to `access_token_repo()` / `knowledge_repo()` and shrank the backend-split guard's grandfathered allow-list accordingly.
+- `resource_grants` `requirement='required'` tier now applies to marketplace plugins: `resolve_user_marketplace` serves `granted ∩ (subscribed ∪ required)` (previously a required plugin grant was a silent no-op — only the global `is_system` flag was mandatory). Required plugins report `enabled`/`installed` plus a new `is_required` field on `/api/my-stack` and `/api/marketplace` items/detail, refuse unsubscribe/uninstall with 409 (`cannot_unsubscribe_required_plugin` / `cannot_uninstall_required_plugin`), and the `required → available` soft-downgrade materializes `user_plugin_optouts` rows for group members (previously it wrote dead rows into `user_stack_subscriptions`).
 
 ### Removed
 

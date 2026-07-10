@@ -57,6 +57,15 @@ joins `resource_grants ↔ marketplace_plugins` (matching
 shortcut for the marketplace feed, so admins curate their own view by granting
 plugins to the Admin group (or any group they belong to).
 
+A grant is eligibility, not inclusion: the served set is
+`granted ∩ (subscribed ∪ required)`. Users subscribe per-plugin on
+`/marketplace`; grants held at `requirement='required'` are always-in-stack
+for the granted groups' members (no subscription row needed, unsubscribe
+returns 409) — the same tier semantics the StackResolver applies to data
+packages. The separate global `marketplace_plugins.is_system` flag remains
+the instance-wide mandatory path (fans out materialized subscriptions to
+every user).
+
 **Two filtering layers — `admin_disabled` gates above RBAC.** Before the
 grant/group join runs, a plugin an admin disables via the `/admin/marketplaces`
 Details modal (`marketplace_plugins.admin_disabled = TRUE`) is removed

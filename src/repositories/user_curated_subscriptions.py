@@ -7,7 +7,9 @@ intentionally skipped to avoid migration churn on running operator instances;
 the v28 migration wipes the rows so the inverted reading starts clean.
 
 Used by ``src/marketplace_filter.py:resolve_user_marketplace`` to compute the
-served plugin set as ``(rbac_grants ∩ subscriptions) ∪ store_installs``.
+served plugin set as ``(rbac_grants ∩ (subscriptions ∪ required)) ∪
+store_installs`` — required-tier grant keys come from ``resource_grants``,
+not this table.
 """
 
 from __future__ import annotations
@@ -117,6 +119,34 @@ class UserCuratedSubscriptionsRepository:
             [marketplace_id],
         )
         return int(before)
+
+    def subscribe_group_members(self, group_id: str, marketplace_id: str, plugin_name: str) -> int:
+        """Subscribe every current member of ``group_id`` to the plugin.
+
+        Soft-downgrade fan-out for marketplace_plugin grants (mirrors
+        ``UserStackSubscriptionsRepository.subscribe_group_members`` for
+        stack resource types): when a grant moves required → available
+        the plugin must stay in each member's served set, so a
+        subscription row is materialized per member. Idempotent via
+        ON CONFLICT DO NOTHING. Returns the number of newly-created rows.
+        """
+        before = self.conn.execute(
+            "SELECT COUNT(*) FROM user_plugin_optouts WHERE marketplace_id = ? AND plugin_name = ?",
+            [marketplace_id, plugin_name],
+        ).fetchone()[0]
+        self.conn.execute(
+            """INSERT INTO user_plugin_optouts
+               (user_id, marketplace_id, plugin_name)
+               SELECT m.user_id, ?, ? FROM user_group_members m
+               WHERE m.group_id = ?
+               ON CONFLICT (user_id, marketplace_id, plugin_name) DO NOTHING""",
+            [marketplace_id, plugin_name, group_id],
+        )
+        after = self.conn.execute(
+            "SELECT COUNT(*) FROM user_plugin_optouts WHERE marketplace_id = ? AND plugin_name = ?",
+            [marketplace_id, plugin_name],
+        ).fetchone()[0]
+        return max(0, int(after) - int(before))
 
     def fanout_system_for_plugin(
         self,

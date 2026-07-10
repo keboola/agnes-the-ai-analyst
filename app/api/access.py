@@ -741,7 +741,9 @@ async def update_grant_requirement(
     transitioning ``required → available`` we eagerly materialize a
     ``user_stack_subscriptions`` row for every user currently in the
     granted group, so the resource stays in their stack instead of
-    silently disappearing on the next refresh.
+    silently disappearing on the next refresh. ``marketplace_plugin``
+    grants fan out into ``user_plugin_optouts`` instead — that is the
+    subscription table ``resolve_user_marketplace`` reads.
 
     Both writes route through the ``src.repositories`` factory so they hit
     the active backend (Postgres when configured) — the old raw
@@ -769,13 +771,29 @@ async def update_grant_requirement(
     # Soft-downgrade: required → available eagerly subscribes every current
     # group member to preserve continuity. Idempotent (ON CONFLICT DO NOTHING).
     if prior == "required" and payload.requirement == "available":
-        from src.repositories import user_stack_subscriptions_repo
+        if existing["resource_type"] == "marketplace_plugin":
+            # Plugin subscriptions live in ``user_plugin_optouts`` (read by
+            # ``resolve_user_marketplace``), not ``user_stack_subscriptions``
+            # — fanning out to the stack table would let every group
+            # member's served set silently shrink on downgrade.
+            # resource_id format is ``<marketplace_slug>/<plugin_name>``.
+            from src.repositories import user_curated_subscriptions_repo
 
-        user_stack_subscriptions_repo().subscribe_group_members(
-            existing["group_id"],
-            existing["resource_type"],
-            existing["resource_id"],
-        )
+            slug, _, plugin_name = existing["resource_id"].partition("/")
+            if plugin_name:
+                user_curated_subscriptions_repo().subscribe_group_members(
+                    existing["group_id"],
+                    slug,
+                    plugin_name,
+                )
+        else:
+            from src.repositories import user_stack_subscriptions_repo
+
+            user_stack_subscriptions_repo().subscribe_group_members(
+                existing["group_id"],
+                existing["resource_type"],
+                existing["resource_id"],
+            )
 
     _audit(
         conn,

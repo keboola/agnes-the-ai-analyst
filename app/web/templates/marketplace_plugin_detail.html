@@ -1251,7 +1251,8 @@
   // cannot be removed. Render only the locked amber status pill; the
   // install + remove controls stay hidden. API also refuses uninstall
   // with 409 so a devtools-poke can't bypass the visual lock.
-  if (d.is_system) {
+  // Group-scoped required-tier grants (is_required) lock identically.
+  if (d.is_system || d.is_required) {
     installBtn.hidden = true;
     removeBtn.hidden = true;
     statusPill.hidden = false;
