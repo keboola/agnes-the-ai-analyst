@@ -13,6 +13,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 - Cloud-chat sandbox agents now connect to the Agnes MCP stdio server (`agnes mcp`) via `ClaudeAgentOptions.mcp_servers`, so a web-chat agent sees the same RBAC-filtered Universal-MCP passthrough tools (`crm_*`, etc.) that a local Claude Code / Cowork install gets — previously the sandbox agent could only reach Agnes through the `agnes` CLI's Bash surface and never saw passthrough tools. Auth (`AGNES_SERVER`/`AGNES_TOKEN`/`AGNES_SESSION_ID`) is forwarded on the MCP server's own env; unconfigured spawns (fake-agent tests) fall back to built-in tools only.
 
+### Fixed
+- Cloud-chat MCP subprocess now receives `HOME` from the parent env so `agnes mcp` can resolve its config dir via `expanduser`; SDK env inheritance across the `claude`-CLI spawn hop is not guaranteed.
+
 ---
 
 ## [0.74.47] - 2026-07-10
