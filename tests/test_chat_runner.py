@@ -2,13 +2,13 @@
 
 Uses asyncio.run() per the project convention (no pytest-asyncio required).
 """
+
 import asyncio
 import json
 import os
 import sys
 from pathlib import Path
 
-import pytest
 
 # Project root as seen from this worktree — needed so the subprocess can
 # import app.chat.runner when the editable install points at a different
@@ -30,9 +30,16 @@ def test_runner_emits_ready_then_echoes_with_fake_agent(tmp_path: Path):
         env["AGNES_PER_TOOL_CALL_SECONDS"] = "90"
 
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "app.chat.runner", "--session-id", "chat_test",
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE, env=env, cwd=str(tmp_path),
+            sys.executable,
+            "-m",
+            "app.chat.runner",
+            "--session-id",
+            "chat_test",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            cwd=str(tmp_path),
         )
         assert proc.stdin and proc.stdout
 
@@ -64,6 +71,7 @@ def test_tool_call_budget_emits_confirmation_required(tmp_path: Path):
     fire N tool_call frames in a row; the budget gate stops at the configured
     cap.
     """
+
     async def _run():
         env = os.environ.copy()
         env["PYTHONPATH"] = _PROJECT_ROOT + os.pathsep + env.get("PYTHONPATH", "")
@@ -76,18 +84,23 @@ def test_tool_call_budget_emits_confirmation_required(tmp_path: Path):
         env["AGNES_TOKEN"] = "fake"
 
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "app.chat.runner", "--session-id", "s",
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE, env=env, cwd=str(tmp_path),
+            sys.executable,
+            "-m",
+            "app.chat.runner",
+            "--session-id",
+            "s",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            cwd=str(tmp_path),
         )
         assert proc.stdin and proc.stdout
 
         line = await asyncio.wait_for(proc.stdout.readline(), timeout=5)
         assert json.loads(line) == {"type": "runner_ready"}
 
-        proc.stdin.write(
-            (json.dumps({"type": "user_msg", "text": "__many_tools__:5"}) + "\n").encode()
-        )
+        proc.stdin.write((json.dumps({"type": "user_msg", "text": "__many_tools__:5"}) + "\n").encode())
         await proc.stdin.drain()
 
         tool_calls_seen = 0
@@ -102,9 +115,7 @@ def test_tool_call_budget_emits_confirmation_required(tmp_path: Path):
                 assert frame.get("reason") == "tool_call_budget"
                 break
 
-        assert saw_budget, (
-            f"expected confirmation_required after tool budget; saw {tool_calls_seen} calls"
-        )
+        assert saw_budget, f"expected confirmation_required after tool budget; saw {tool_calls_seen} calls"
         # Budget capped emission at 2.
         assert tool_calls_seen == 2
 
@@ -185,6 +196,7 @@ def test_install_agnes_cli_swallows_pip_failure(tmp_path: Path, monkeypatch, cap
 
 def test_per_tool_call_timeout_emits_synthetic_result(tmp_path: Path):
     """__slow_tool__ triggers a tool_call followed by tool_result: {timeout: true}."""
+
     async def _run():
         env = os.environ.copy()
         env["PYTHONPATH"] = _PROJECT_ROOT + os.pathsep + env.get("PYTHONPATH", "")
@@ -196,9 +208,16 @@ def test_per_tool_call_timeout_emits_synthetic_result(tmp_path: Path):
         env["AGNES_TOKEN"] = "fake"
 
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "app.chat.runner", "--session-id", "s",
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE, env=env, cwd=str(tmp_path),
+            sys.executable,
+            "-m",
+            "app.chat.runner",
+            "--session-id",
+            "s",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            cwd=str(tmp_path),
         )
         assert proc.stdin and proc.stdout
 
@@ -226,3 +245,40 @@ def test_per_tool_call_timeout_emits_synthetic_result(tmp_path: Path):
         await proc.wait()
 
     asyncio.run(_run())
+
+
+def test_agnes_mcp_servers_builds_stdio_config(monkeypatch):
+    """With AGNES_SERVER + AGNES_TOKEN set, the runner exposes the Agnes MCP
+    stdio server to the sandbox agent so it sees passthrough tools."""
+    from app.chat import runner
+
+    monkeypatch.setenv("AGNES_SERVER", "http://34.77.102.61:8000")
+    monkeypatch.setenv("AGNES_TOKEN", "jwt-token")
+    monkeypatch.setenv("AGNES_SESSION_ID", "chat_abc")
+
+    cfg = runner._agnes_mcp_servers()
+    assert set(cfg) == {"agnes"}
+    server = cfg["agnes"]
+    assert server["type"] == "stdio"
+    assert server["command"] == "agnes"
+    assert server["args"] == ["mcp"]
+    # Auth + session are forwarded on the server's own env (not left to
+    # inheritance across the claude-CLI hop).
+    assert server["env"]["AGNES_SERVER"] == "http://34.77.102.61:8000"
+    assert server["env"]["AGNES_TOKEN"] == "jwt-token"
+    assert server["env"]["AGNES_SESSION_ID"] == "chat_abc"
+    assert "PATH" in server["env"]
+
+
+def test_agnes_mcp_servers_empty_when_unconfigured(monkeypatch):
+    """No AGNES_SERVER/AGNES_TOKEN (fake-agent path) → empty dict so the agent
+    still runs on built-in tools instead of a broken MCP handshake."""
+    from app.chat import runner
+
+    monkeypatch.delenv("AGNES_SERVER", raising=False)
+    monkeypatch.delenv("AGNES_TOKEN", raising=False)
+    assert runner._agnes_mcp_servers() == {}
+
+    monkeypatch.setenv("AGNES_SERVER", "http://x:8000")
+    monkeypatch.setenv("AGNES_TOKEN", "")  # blank token is not usable
+    assert runner._agnes_mcp_servers() == {}
