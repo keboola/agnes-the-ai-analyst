@@ -50,8 +50,10 @@ async function createEntity() {
     result.textContent = "Fill in the required fields.";
     return;
   }
-  // Admins create directly; everyone else submits to the moderation queue.
-  if (!CFG.isAdmin) return submitSuggestion(payload);
+  // Admins create directly; direct-submit domains (the store has its own
+  // review pipeline) publish directly for everyone; otherwise non-admins
+  // go to the moderation queue.
+  if (!CFG.isAdmin && !CFG.submitDirect) return submitSuggestion(payload);
   result.textContent = "Creating…";
   try {
     const created = await api(CFG.endpoint, {

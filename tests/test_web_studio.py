@@ -85,3 +85,30 @@ def test_skill_domain_registered_as_direct_submit():
     assert [f.key for f in spec.fields] == ["name", "description", "category", "skill_md"]
     # every other domain still routes through the suggestions queue
     assert all(not d.submit_directly for s, d in STUDIO_DOMAINS.items() if s != "skill")
+
+
+def test_skill_studio_renders_publish_for_non_admin(seeded_app):
+    c = seeded_app["client"]
+    resp = c.get("/admin/studio/skill", headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    body = resp.text
+    assert "isAdmin: false" in body
+    assert "submitDirect: true" in body
+    assert ">Publish<" in body  # direct-submit domains publish, not suggest
+    assert "Submit for approval" not in body
+    assert "store" in body.lower()  # footer explains the store review pipeline
+
+
+def test_skill_studio_renders_for_admin(seeded_app):
+    c = seeded_app["client"]
+    resp = c.get("/admin/studio/skill", headers=_auth(seeded_app["admin_token"]))
+    assert resp.status_code == 200
+    assert "submitDirect: true" in resp.text
+    assert 'id="studio-f-skill_md"' in resp.text  # the markdown textarea rendered
+
+
+def test_existing_domains_keep_suggestion_flow(seeded_app):
+    c = seeded_app["client"]
+    resp = c.get("/admin/studio/data-package", headers=_auth(seeded_app["analyst_token"]))
+    assert "submitDirect: false" in resp.text
+    assert "Submit for approval" in resp.text
