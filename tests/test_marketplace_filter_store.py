@@ -54,20 +54,21 @@ def _add_member(conn, *, user_id, group_id):
     UserGroupMembersRepository(conn).add_member(user_id, group_id, source="admin")
 
 
-def _grant(conn, *, group_id, marketplace, plugin):
+def _grant(conn, *, group_id, marketplace, plugin, requirement=None):
     from src.repositories.resource_grants import ResourceGrantsRepository
 
     ResourceGrantsRepository(conn).create(
         group_id=group_id,
         resource_type="marketplace_plugin",
         resource_id=f"{marketplace}/{plugin}",
+        requirement=requirement,
     )
 
 
-def _seed_user_with_grant(conn, *, marketplace, plugin, user_id="u1"):
+def _seed_user_with_grant(conn, *, marketplace, plugin, user_id="u1", requirement=None):
     _register_marketplace(conn, id=marketplace, plugins=[{"name": plugin, "version": "1.0"}])
     gid = _make_group(conn, name=f"G-{user_id}")
-    _grant(conn, group_id=gid, marketplace=marketplace, plugin=plugin)
+    _grant(conn, group_id=gid, marketplace=marketplace, plugin=plugin, requirement=requirement)
     _make_user(conn, user_id=user_id, email=f"{user_id}@x")
     _add_member(conn, user_id=user_id, group_id=gid)
 
@@ -142,6 +143,62 @@ class TestResolveUserMarketplace:
         repo.unsubscribe("u1", "mkt", "p1")
         result = resolve_user_marketplace(db_conn, {"id": "u1"})
         assert result == []
+
+    def test_required_grant_served_without_subscription(self, db_conn):
+        """v49 ``requirement='required'`` is the always-in-stack tier —
+        a required marketplace_plugin grant enters the served set with
+        NO explicit subscription, mirroring the StackResolver's
+        ``required ∪ subscribed`` union for data packages."""
+        from src.marketplace_filter import resolve_user_marketplace
+
+        _seed_user_with_grant(db_conn, marketplace="mkt", plugin="p1", requirement="required")
+        result = resolve_user_marketplace(db_conn, {"id": "u1"})
+        assert [p["prefixed_name"] for p in result] == ["mkt-p1"]
+        assert result[0]["source"] == "marketplace"
+
+    def test_required_plus_subscribed_appears_once(self, db_conn):
+        from src.marketplace_filter import resolve_user_marketplace
+
+        _seed_user_with_grant(db_conn, marketplace="mkt", plugin="p1", requirement="required")
+        _subscribe(db_conn, user_id="u1", marketplace="mkt", plugin="p1")
+        result = resolve_user_marketplace(db_conn, {"id": "u1"})
+        assert [p["prefixed_name"] for p in result] == ["mkt-p1"]
+
+    def test_required_beats_available_across_groups(self, db_conn):
+        """Section 4.3 OR rule: a required grant in ANY of the user's
+        groups wins over an available grant on the same plugin."""
+        from src.marketplace_filter import resolve_user_marketplace
+
+        _seed_user_with_grant(db_conn, marketplace="mkt", plugin="p1")
+        g2 = _make_group(db_conn, name="G2")
+        _grant(
+            db_conn,
+            group_id=g2,
+            marketplace="mkt",
+            plugin="p1",
+            requirement="required",
+        )
+        _add_member(db_conn, user_id="u1", group_id=g2)
+        result = resolve_user_marketplace(db_conn, {"id": "u1"})
+        assert [p["prefixed_name"] for p in result] == ["mkt-p1"]
+
+    def test_malformed_required_resource_id_is_ignored(self, db_conn):
+        """A required grant whose resource_id has no ``<slug>/<name>``
+        separator must not crash the serve path — it is skipped."""
+        from src.marketplace_filter import resolve_user_marketplace
+        from src.repositories.resource_grants import ResourceGrantsRepository
+
+        _seed_user_with_grant(db_conn, marketplace="mkt", plugin="p1")
+        gid = _make_group(db_conn, name="G-mal")
+        ResourceGrantsRepository(db_conn).create(
+            group_id=gid,
+            resource_type="marketplace_plugin",
+            resource_id="no-slash-here",
+            requirement="required",
+        )
+        _add_member(db_conn, user_id="u1", group_id=gid)
+        result = resolve_user_marketplace(db_conn, {"id": "u1"})
+        assert result == []  # available grant unsubscribed; malformed skipped
 
     def test_skill_install_yields_bundle_entry(self, db_conn):
         """A single skill install becomes a bundle entry, not a standalone
