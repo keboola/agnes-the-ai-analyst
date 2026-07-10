@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.43] - 2026-07-10
+
 ### Added
 - `instance.custom_preamble` install-prompt hook (env `AGNES_INSTANCE_CUSTOM_PREAMBLE`, resolver `get_instance_custom_preamble()`): an operator-authored block injected at the very top of the `agnes init` install prompt, above `Set up the … CLI`. Empty/unset (the default) emits zero lines, so the rendered prompt stays byte-identical; `{instance_brand}` and the other server-side placeholders are substituted, but it must not contain literal `{server_url}`/`{token}`. Documented in `docs/CONFIGURATION.md` and surfaced by `GET /api/admin/config-surface`.
 
