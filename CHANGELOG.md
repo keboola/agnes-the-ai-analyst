@@ -16,10 +16,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+## [0.74.31] - 2026-07-10
+
+### Fixed
+
 - Filesystem-fallback master views now record success in `sync_state`: a table published via the fallback path (parquet on disk, `_meta` row missing) previously kept whatever stale `set_error()` row the failed run left behind, so the admin dashboard and manifest kept reporting a long-fixed failure indefinitely
 - Keboola CSV materialize path (`connectors/keboola/extractor.py`): the DuckDB `read_csv` conversion to parquet now pins the RFC-4180 dialect (`quote='"', escape='"'`) matching Storage API's CSV export format, instead of relying on DuckDB's dialect sniffer. Guards against a mis-detected escape character on rows carrying their own embedded quoting (e.g. JSON/SQL text columns) surfacing as a spurious `CSV Error on Line: N`.
-
-### Removed
 
 ### Internal
 - Keboola connector: added test coverage for the GCS/Azure sliced-download branches in `connectors/keboola/storage_api.py` and the equivalent `gs://` rewrite in the legacy `connectors/keboola/client.py` fallback path — previously exercised only by manual verification, not the test suite.
