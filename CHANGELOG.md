@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.46] - 2026-07-10
+
 ### Changed
 - **Rebrand: "AI Data Analyst" → "AI Harness".** Agnes outgrew its data-analyst framing — it now spans governed data access, an aggregated skills marketplace, corporate memory, and multiple agent surfaces (web chat, Slack, Telegram, MCP, CLI). Renamed the platform one-liner and brand strings across README, docs, the FastAPI/OpenAPI title, MCP server instructions, CLI help, web page-title fallbacks, `config/instance.yaml.example`, and the marketplace owner name. The default `instance.name` is now `"AI Harness"` (was `"AI Data Analyst"`; instances that set `instance.name` explicitly are unaffected). The `agnes init` workspace CLAUDE.md template heading no longer contains the legacy `AI Data Analyst` marker — workspace-initialized detection has been sentinel-based (`.claude/init-complete`) since #259, and the legacy substring check is retained for pre-#259 workspaces.
 
