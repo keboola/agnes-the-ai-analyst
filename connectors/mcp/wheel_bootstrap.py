@@ -19,14 +19,21 @@ client spawns them.
 Fail-soft by design: a bad wheel logs an ERROR and is retried next
 boot; it never blocks startup. Idempotent via a content-hash marker
 (``.installed.json``) so unchanged wheels cost one hash per boot, not a
-pip run.
+pip run — but the marker alone is never trusted: it lives on the
+persistent data volume while the install target (``~/.local``) is the
+ephemeral container filesystem, so after a container recreate the
+marker still says "installed" for a distribution that no longer
+exists. The skip path therefore also verifies the distribution is
+importable in this process.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -59,6 +66,35 @@ def ensure_user_bin_on_path() -> None:
         os.environ["PATH"] = user_bin + os.pathsep + os.environ.get("PATH", "")
 
 
+def _distribution_present(whl_name: str) -> bool:
+    """True iff the wheel's distribution is importable in THIS process.
+
+    The marker lives on the persistent data volume, but ``pip install
+    --user`` lands in the container's ephemeral filesystem — after a
+    container recreate the marker still says "installed" while the
+    site-packages entry is gone. Skipping on the marker alone then leaves
+    the stdio ``command`` missing and every spawn fails with ``[Errno 2]``.
+    The marker only spares the pip run when the install actually survived
+    (plain restarts); presence is the authoritative signal.
+
+    Wheel filenames carry the distribution name as the first dash-separated
+    segment with runs of ``-``/``.`` escaped to ``_`` (PEP 427), so both the
+    raw segment and its dash-normalized form are tried — older Pythons don't
+    normalize the lookup name themselves.
+    """
+    from importlib import metadata
+
+    stem = whl_name.split("-", 1)[0]
+    normalized = re.sub(r"[-_.]+", "-", stem).lower()
+    for name in dict.fromkeys((stem, normalized)):
+        try:
+            metadata.distribution(name)
+            return True
+        except metadata.PackageNotFoundError:
+            continue
+    return False
+
+
 def install_operator_wheels(data_dir: Optional[Path] = None) -> List[str]:
     """Install wheels from ``<data_dir>/mcp/wheels/``; return installed names.
 
@@ -68,6 +104,7 @@ def install_operator_wheels(data_dir: Optional[Path] = None) -> List[str]:
     """
     if data_dir is None:
         from src.db import _get_data_dir
+
         data_dir = _get_data_dir()
 
     wheels_dir = Path(data_dir) / "mcp" / "wheels"
@@ -89,16 +126,24 @@ def install_operator_wheels(data_dir: Optional[Path] = None) -> List[str]:
         except OSError as exc:
             logger.error("mcp wheel bootstrap: cannot read %s: %s", whl.name, exc)
             continue
-        if marker.get(whl.name) == digest:
+        if marker.get(whl.name) == digest and _distribution_present(whl.name):
             continue
         cmd = [
-            sys.executable, "-m", "pip", "install",
-            "--user", "--no-deps", "--no-warn-script-location",
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--user",
+            "--no-deps",
+            "--no-warn-script-location",
             str(whl),
         ]
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=_PIP_TIMEOUT_SECONDS,
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=_PIP_TIMEOUT_SECONDS,
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
             logger.error("mcp wheel bootstrap: pip failed for %s: %s", whl.name, exc)
@@ -106,7 +151,9 @@ def install_operator_wheels(data_dir: Optional[Path] = None) -> List[str]:
         if result.returncode != 0:
             logger.error(
                 "mcp wheel bootstrap: pip exited %s for %s: %s",
-                result.returncode, whl.name, (result.stderr or "")[-500:],
+                result.returncode,
+                whl.name,
+                (result.stderr or "")[-500:],
             )
             continue
         marker[whl.name] = digest
