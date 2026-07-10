@@ -16,9 +16,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Postgres-backed instances: ~30 backend-split sites read/wrote app-state on the always-DuckDB connection instead of the active backend, breaking (among others) CLI login (`agnes auth login` minted a PAT the server couldn't verify), the per-table MCP endpoint (404 for every table), internal-source registration, MCP passthrough-tool registration, knowledge mark-mandatory / add-item-to-domain, memory-endpoint RBAC audience filtering, blocked-bundle purge (reaped 0 rows), session-pipeline user attribution and marketplace usage attribution (empty telemetry rollups), home-page stats, the admin activity health pulse, catalog profile display, workspace CLAUDE.md rendering (empty tables/metrics/marketplace sections), OpenMetadata catalog export, Slack-bot user identity + channel allowlist, chat audit-log writes, and the Keboola/BigQuery/MCP extractor registry reads. All sites now route through the backend-aware repository factory.
+
 ### Removed
 
 ### Internal
+
+- Backend-split guard hardened: state-table list is now derived from the SQLAlchemy model metadata (a new model automatically extends the guard), `connectors/` joined the scan dirs, and a new detector flags raw state-SQL through *any* connection outside the repository layer — closing the helper-param blind spot behind this bug batch. New cross-engine repo methods added in pairs with contract-test coverage.
 
 ## [0.74.35] - 2026-07-10
 
