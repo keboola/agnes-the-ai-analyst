@@ -1390,6 +1390,11 @@ KNOWN_UNTESTED = {
     "POST /api/collections",
     "GET /api/collections",
     "GET /api/collections/search",
+    # Unified knowledge search (K2, #797) — behaviorally covered in
+    # tests/test_api_knowledge_search.py (shape, 401, RBAC fail-closed) and
+    # tests/test_search_unified.py; requires a `q` param so it has no place
+    # in the parameter-free smoke sweep.
+    "GET /api/knowledge/search",
     "GET /api/collections/{collection_id}",
     "DELETE /api/collections/{collection_id}",
     "POST /api/collections/{collection_id}/files",
