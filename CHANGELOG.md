@@ -16,6 +16,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Store uploads: `_safe_zip_extract` now rejects archives with more than 2000 members (`413 zip_too_many_entries`) — the existing size caps didn't bound member count, so a small ZIP packed with tiny files could exhaust inodes on the data volume (#779)
+
 ### Removed
 
 ### Internal
