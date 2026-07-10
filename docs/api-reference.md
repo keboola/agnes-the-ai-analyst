@@ -1114,6 +1114,7 @@ interactive OAuth browser flow. The token is returned once and must be saved by 
 - /api/store/categories
 - /api/store/entities
 - /api/store/entities/dryrun
+- /api/store/entities/from-markdown
 - /api/store/entities/preview
 - /api/store/entities/{entity_id}
 - /api/store/entities/{entity_id}/docs/{filename}
