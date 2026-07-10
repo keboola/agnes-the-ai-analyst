@@ -140,6 +140,42 @@ def test_set_skipped_preserves_prior_sync_fields(sync_repo):
     assert state["last_sync"] is not None
 
 
+def test_update_sync_can_preserve_last_sync(sync_repo):
+    """`bump_last_sync=False` records fresh rows/hash and clears a prior
+    error WITHOUT touching last_sync — the filesystem-fallback publish path
+    for materialized rows needs exactly this so the daily schedule gate
+    stays open (a bumped last_sync would starve same-day retries)."""
+    repo, _, _ = sync_repo
+
+    repo.update_sync(table_id="mat.orders", rows=1, file_size_bytes=10, hash="a" * 32)
+    before = repo.get_table_state("mat.orders")["last_sync"]
+    assert before is not None
+    repo.set_error("mat.orders", "killed mid-run")
+
+    repo.update_sync(table_id="mat.orders", rows=7, file_size_bytes=70, hash="b" * 32, bump_last_sync=False)
+
+    state = repo.get_table_state("mat.orders")
+    assert state["last_sync"] == before, "bump_last_sync=False must preserve last_sync"
+    assert state["rows"] == 7
+    assert state["hash"] == "b" * 32
+    assert state["status"] == "ok"
+    assert state["error"] in (None, "")
+
+
+def test_update_sync_preserve_on_fresh_row_leaves_last_sync_null(sync_repo):
+    """First-ever write with bump_last_sync=False must not fabricate a
+    last_sync — NULL keeps the row 'due' and the manifest honest."""
+    repo, _, _ = sync_repo
+
+    repo.update_sync(table_id="mat.fresh", rows=3, file_size_bytes=30, hash="c" * 32, bump_last_sync=False)
+
+    state = repo.get_table_state("mat.fresh")
+    assert state is not None
+    assert state["last_sync"] is None
+    assert state["rows"] == 3
+    assert state["status"] == "ok"
+
+
 def test_update_sync_clears_a_prior_skip(sync_repo):
     """A table that gets skipped one run and materializes successfully the
     next must flip back to status='ok' — mirrors `update_sync` already

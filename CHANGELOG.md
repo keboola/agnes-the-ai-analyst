@@ -22,6 +22,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.40] - 2026-07-10
+
+### Fixed
+
+- Failed or killed scheduled materializations are retried the same day instead of silently waiting until the next schedule boundary. The orchestrator's post-rebuild bookkeeping bumped `sync_state.last_sync` for every table in `_meta` — including `query_mode='materialized'` rows, whose daily due-check reads that timestamp — so one failed `daily 06:00` run left the table stale for 24 h (observed live as a week-long refresh gap). Materialized rows' sync_state is now owned solely by the materialized pass; the filesystem-fallback publish still records rows/hash and clears stale errors but preserves `last_sync` (new `update_sync(bump_last_sync=False)` on both backends), keeping the schedule gate open so the next tick re-materializes and heals the missing `_meta` row. Also fixes the filesystem-fallback path detecting materialized rows via `get_by_name()` instead of `get()` so that the schedule-gate protection applies when the registry `id` differs from the `name` (parquet filename stem).
+
+---
+
 ## [0.74.39] - 2026-07-10
 
 ### Added
