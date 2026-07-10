@@ -166,6 +166,57 @@ class TestInstanceBrand:
         mod._instance_config = None
 
 
+class TestInstanceCustomPreamble:
+    """instance.custom_preamble — operator-authored block injected at the
+    top of the install prompt. Resolution: env > YAML > "" (mirrors the
+    overview/support knobs)."""
+
+    def _reload(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        import importlib
+        import app.instance_config as mod
+        mod._instance_config = None
+        importlib.reload(mod)
+        return mod
+
+    def test_defaults_to_empty(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AGNES_INSTANCE_CUSTOM_PREAMBLE", raising=False)
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_custom_preamble() == ""
+        mod._instance_config = None
+
+    def test_from_yaml(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AGNES_INSTANCE_CUSTOM_PREAMBLE", raising=False)
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "instance.yaml").write_text(
+            "instance:\n  name: Acme\n  custom_preamble: |\n    From YAML preamble\n"
+        )
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_custom_preamble() == "From YAML preamble"
+        mod._instance_config = None
+
+    def test_env_overrides_yaml(self, tmp_path, monkeypatch):
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "instance.yaml").write_text(
+            "instance:\n  name: Acme\n  custom_preamble: From YAML\n"
+        )
+        monkeypatch.setenv("AGNES_INSTANCE_CUSTOM_PREAMBLE", "From env")
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_custom_preamble() == "From env"
+        mod._instance_config = None
+
+    def test_empty_env_falls_back_to_empty_default(self, tmp_path, monkeypatch):
+        # Whitespace-only env resolves to "" (stripped), not a stray blank block.
+        monkeypatch.setenv("AGNES_INSTANCE_CUSTOM_PREAMBLE", "   ")
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_custom_preamble() == ""
+        mod._instance_config = None
+
+
 class TestCustomScripts:
     """instance.custom_scripts — operator-injected HTML/JS blocks rendered
     by base.html. Validates the normalization + filtering done by

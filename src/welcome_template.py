@@ -208,7 +208,11 @@ def compute_default_agent_prompt(
             )
             connector_manifest = []  # explicit empty — skip the connector block
 
-        from app.instance_config import get_instance_brand, get_workspace_dir_name
+        from app.instance_config import (
+            get_instance_brand,
+            get_instance_custom_preamble,
+            get_workspace_dir_name,
+        )
         lines = resolve_lines(
             _wheel_filename,
             plugin_install_names=plugin_install_names,
@@ -217,6 +221,7 @@ def compute_default_agent_prompt(
             connector_manifest=connector_manifest,
             instance_brand=get_instance_brand(),
             workspace_dir=get_workspace_dir_name(),
+            custom_preamble=get_instance_custom_preamble(),
         )
         return "\n".join(lines)
     except Exception:

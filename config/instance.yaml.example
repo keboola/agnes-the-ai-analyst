@@ -53,6 +53,12 @@ instance:
   #                                  # where to ask for help. HTML in, HTML out (same `| safe`
   #                                  # filter as overview). Empty/unset = block hidden.
   #                                  # Env override: AGNES_INSTANCE_SUPPORT.
+  # custom_preamble: |               # Plain-text block injected at the TOP of the `agnes init`
+  #   Trust note: {instance_brand} is operated internally.
+  #                                  # install prompt (above "Set up the … CLI"). {instance_brand}
+  #                                  # etc. are substituted; do NOT use {server_url}/{token}.
+  #                                  # Empty/unset = default prompt unchanged. Env override:
+  #                                  # AGNES_INSTANCE_CUSTOM_PREAMBLE.
   # sync_interval: "1 hour"          # Cadence shown in analyst CLAUDE.md (e.g., "1 hour", "30 minutes", "daily")
   # admin_email: "ops@acme.com"      # Operator contact shown on /home GWS connector tile as
                                      # an "Email admin" mailto button (analysts whose operator

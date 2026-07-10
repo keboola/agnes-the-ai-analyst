@@ -474,11 +474,8 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "",
         "   NOTE: the heredoc below contains the literal PAT, so it lands in",
         "   this Claude Code session's transcript — which `agnes push` uploads",
-        "   to the server. Treat the token as exposed once this prompt is in a",
-        "   stored transcript. To keep this bootstrap session out of the upload,",
-        "   run `/agnes-private` BEFORE pasting these commands; `agnes init`",
-        "   deletes `~/.agnes/token` once it has consumed it, but the transcript",
-        "   copy persists unless the session is marked private.",
+        "   to the server. The server generated the token so it is NOT a security",
+        "   issue to have it here and share it back to the server.",
         "",
         "   mkdir -p ~/.agnes && umask 077 && cat > ~/.agnes/token <<'AGNES_PAT'",
         "{token}",
@@ -654,7 +651,7 @@ def _connectors_block(
     return lines
 
 
-def _restart_claude_lines(step_num: str) -> list[str]:
+def _restart_claude_lines(step_num: str, *, confirm_step_num: str) -> list[str]:
     """Final 'restart Claude Code' instruction emitted immediately before
     Confirm. Marketplace plugins, MCP server registrations, and the
     SessionStart hooks installed during init only load on the next
@@ -663,12 +660,19 @@ def _restart_claude_lines(step_num: str) -> list[str]:
     later. The marketplace step's trailer already mentions /exit
     + claude conditionally; this is the unconditional equivalent so
     every path (with or without plugins) ends on the same cue.
+
+    `confirm_step_num` is threaded in (mirroring how `_finale_lines`
+    receives it) so the trailing recap line can name the Confirm step
+    explicitly. The recap intentionally overlaps the Confirm summary in
+    `_finale_lines` as a short bridge — it asks for a plain-language
+    outcome summary right before the structured Confirm bullets.
     """
     return [
         "",
         f"{step_num}) Restart Claude Code so every plugin, MCP server, and SessionStart hook installed above actually loads:",
         "   Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same directory — the install dir confirmed in step 2 (`~/Desktop/{workspace_dir}` on the default path, or whatever cwd the user explicitly accepted with 'install here').",
         "   The next session boots with all marketplace plugins, every connector's keychain entries / OAuth grants, and the agnes-welcome + agnes-update SessionStart hooks active. This is the last action before the Confirm summary — once I'm back in Claude Code, setup is complete.",
+        f"   Before step {confirm_step_num} (Confirm): after all the steps and asks above (whatever the answers), give me a short recap of what was installed or was already present — CLI, workspace files, hooks, marketplace plugins, connectors — so the outcome is clear, then continue.",
     ]
 
 
@@ -882,13 +886,20 @@ def _marketplace_block(
 
 
 
-def _preamble_lines(*, has_ca: bool) -> list[str]:
+def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
     """Header that opens the prompt before the numbered steps. The
     `step 0(d) fallback chain` reference is only emitted when the trust
     block actually exists (`has_ca`); without it the line points at a
     non-existent step. The "don't disable TLS verification" advice itself
     stays unconditional — it's good guidance regardless of whether the
-    server runs with a private CA."""
+    server runs with a private CA.
+
+    `custom_preamble` is an operator-authored block prepended at the very
+    top (above `Set up the {instance_brand} CLI…`). Empty/unset emits zero
+    extra lines so the default output is byte-identical. Any
+    `{instance_brand}` etc. inside it is substituted by the `resolve_lines`
+    loop; it must NOT contain literal `{server_url}`/`{token}` (those only
+    resolve at click time in the JS clipboard flow, not in the preamble)."""
     lines = [
         "Set up the {instance_brand} CLI on this machine.",
         "",
@@ -909,6 +920,8 @@ def _preamble_lines(*, has_ca: bool) -> list[str]:
             "use; that's what fallback chains are for."
         )
     lines.append("")
+    if custom_preamble:
+        lines = [*custom_preamble.split("\n"), "", *lines]
     return lines
 
 
@@ -976,6 +989,7 @@ def resolve_lines(
     connector_manifest: Optional[list["ConnectorEntry"]] = None,
     instance_brand: str = "Agnes",
     workspace_dir: str = "Agnes",
+    custom_preamble: str = "",
 ) -> list[str]:
     """Return the template lines with server-side placeholders substituted.
 
@@ -1022,7 +1036,7 @@ def resolve_lines(
     lines: list[str] = []
     if has_ca:
         lines.extend(_tls_trust_block(ca_pem))  # type: ignore[arg-type]
-    lines.extend(_preamble_lines(has_ca=has_ca))
+    lines.extend(_preamble_lines(has_ca=has_ca, custom_preamble=custom_preamble))
     lines.extend(_install_cli_lines(has_ca=has_ca))   # 1
     lines.extend(_init_lines())                        # 2, 3
     lines.extend(_preflight_block(steps["preflight"]))                       # 4
@@ -1041,7 +1055,7 @@ def resolve_lines(
     # picks up freshly-registered plugins / MCP servers / hooks on the
     # next session — without this every path silently expected the user
     # to know they had to re-launch.
-    lines.extend(_restart_claude_lines(steps["restart_claude"]))
+    lines.extend(_restart_claude_lines(steps["restart_claude"], confirm_step_num=steps["confirm"]))
     lines.append("")
     lines.extend(_finale_lines(
         confirm_step_num=steps["confirm"],
@@ -1070,6 +1084,7 @@ def render_setup_instructions(
     connector_manifest: Optional[list["ConnectorEntry"]] = None,
     instance_brand: str = "Agnes",
     workspace_dir: str = "Agnes",
+    custom_preamble: str = "",
 ) -> str:
     """Render the setup instructions as a single string.
 
@@ -1087,6 +1102,7 @@ def render_setup_instructions(
         connector_manifest=connector_manifest,
         instance_brand=instance_brand,
         workspace_dir=workspace_dir,
+        custom_preamble=custom_preamble,
     )
     text = "\n".join(lines)
     return text.replace("{server_url}", server_url).replace("{token}", token)
