@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- `resource_grants` `requirement='required'` tier now applies to marketplace plugins: `resolve_user_marketplace` serves `granted ∩ (subscribed ∪ required)` (previously a required plugin grant was a silent no-op — only the global `is_system` flag was mandatory). Required plugins report `enabled`/`installed` plus a new `is_required` field on `/api/my-stack` and `/api/marketplace` items/detail, refuse unsubscribe/uninstall with 409 (`cannot_unsubscribe_required_plugin` / `cannot_uninstall_required_plugin`), and the `required → available` soft-downgrade materializes `user_plugin_optouts` rows for group members (previously it wrote dead rows into `user_stack_subscriptions`).
 
 ### Removed
 

@@ -163,6 +163,57 @@ class TestRequiredToAvailableMaterializesSubscriptions:
         assert r.status_code == 403
 
 
+class TestMarketplacePluginSoftDowngrade:
+    """marketplace_plugin grants fan out into ``user_plugin_optouts`` — the
+    subscription table ``resolve_user_marketplace`` reads — NOT into
+    ``user_stack_subscriptions``. Without this, a required → available flip
+    silently dropped the plugin from every group member's served set."""
+
+    def test_downgrade_materializes_plugin_subscriptions(self, seeded_app):
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        conn.execute(
+            "INSERT INTO user_groups(id, name, description, created_by) VALUES ('g_plug', 'Pluggers', 'test', 'test')"
+        )
+        for uid in ("pu1", "pu2"):
+            conn.execute(
+                "INSERT INTO users(id, email) VALUES (?, ?)",
+                [uid, f"{uid}@x.test"],
+            )
+            _add_user_to_group(conn, uid, "g_plug")
+        grant_id = _seed_grant(
+            conn,
+            "g_plug",
+            "marketplace_plugin",
+            "mkt/p1",
+            "required",
+        )
+        conn.close()
+
+        c = seeded_app["client"]
+        r = c.put(
+            f"/api/admin/grants/{grant_id}",
+            json={"requirement": "available"},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 200, r.text
+
+        conn = get_system_db()
+        try:
+            subs = conn.execute(
+                "SELECT user_id FROM user_plugin_optouts WHERE marketplace_id='mkt' AND plugin_name='p1'"
+            ).fetchall()
+            stack_rows = conn.execute(
+                "SELECT COUNT(*) FROM user_stack_subscriptions WHERE resource_type='marketplace_plugin'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert {row[0] for row in subs} == {"pu1", "pu2"}
+        # No dead rows in the stack table — plugins don't live there.
+        assert stack_rows == 0
+
+
 class TestSoftDowngradePerf:
     """Section 4.5 perf gate (Phase 9 / Task 9.5).
 

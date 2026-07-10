@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.dependencies import _get_db, get_current_user
-from src.marketplace_filter import resolve_allowed_plugins
+from src.marketplace_filter import required_plugin_keys, resolve_allowed_plugins
 from src.repositories import (
     audit_repo,
     marketplace_plugins_repo,
@@ -48,6 +48,12 @@ class CuratedPlugin(BaseModel):
     # toggle, API guard returns 409). Pre-subscribed by mark_system +
     # creation hooks so ``enabled`` is always TRUE here.
     is_system: bool = False
+    # Group-scoped Required tier: TRUE when any of the caller's groups
+    # holds a ``requirement='required'`` grant for this plugin. Same
+    # locked-toggle semantics as ``is_system`` (409 on unsubscribe), but
+    # scoped to the granted groups; served without a subscription row,
+    # so ``enabled`` reports TRUE even with no explicit subscription.
+    is_required: bool = False
 
 
 class StoreInstallEntry(BaseModel):
@@ -115,8 +121,12 @@ async def get_my_stack(
     granted = resolve_allowed_plugins(conn, user)
     # Model B (v28+): explicit subscriptions decide what's enabled.
     # `enabled` mirrors the legacy "not opted_out" UX so the existing toggle
-    # remains semantically intuitive in the my-stack view.
+    # remains semantically intuitive in the my-stack view. Required-tier
+    # grant keys are unioned in because the resolver serves them without a
+    # subscription row — the toggle must not claim "off" for a plugin the
+    # user's sandbox actually has.
     subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
+    required = required_plugin_keys(conn, user["id"])
 
     # v39: surface is_system flag so the template can lock the toggle.
     # One round trip — set membership intersection in Python is cheaper
@@ -129,6 +139,7 @@ async def get_my_stack(
         key = (p["marketplace_id"], p["original_name"])
         is_subscribed = key in subs
         is_system = key in system_plugins
+        is_required = key in required
         curated.append(
             CuratedPlugin(
                 marketplace_id=p["marketplace_id"],
@@ -137,8 +148,9 @@ async def get_my_stack(
                 manifest_name=p["manifest_name"],
                 description=p["raw"].get("description"),
                 version=p.get("version"),
-                enabled=is_subscribed,
+                enabled=is_subscribed or is_required,
                 is_system=is_system,
+                is_required=is_required,
             )
         )
 
@@ -221,6 +233,15 @@ async def toggle_curated(
             raise HTTPException(
                 status_code=409,
                 detail="cannot_unsubscribe_system_plugin",
+            )
+        # Group-scoped Required tier: the resolver serves required-granted
+        # plugins regardless of the subscription row, so honoring the
+        # unsubscribe would leave the toggle claiming "off" for a plugin
+        # still in the user's sandbox. Refuse, mirroring is_system.
+        if (marketplace_id, plugin_name) in required_plugin_keys(conn, user["id"]):
+            raise HTTPException(
+                status_code=409,
+                detail="cannot_unsubscribe_required_plugin",
             )
 
     repo = user_curated_subscriptions_repo()

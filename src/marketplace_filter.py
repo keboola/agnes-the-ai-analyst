@@ -45,10 +45,48 @@ from app.auth.access import _user_group_ids
 from app.utils import get_marketplaces_dir, get_store_dir
 from src.repositories import (
     marketplace_plugins_repo,
+    resource_grants_repo,
     user_curated_subscriptions_repo,
     user_groups_repo,
     user_store_installs_repo,
 )
+
+
+def required_plugin_keys(conn: duckdb.DuckDBPyConnection | None, user_id: str | None) -> set[tuple[str, str]]:
+    """``(marketplace_id, plugin_name)`` keys held at the ``required`` tier
+    by any of the user's groups.
+
+    v49 gave ``resource_grants`` a ``requirement`` enum
+    (``available`` | ``required``) where required is the always-in-stack
+    tier: the StackResolver unions required ids into the effective stack
+    without an explicit subscription row. Marketplace plugins keep their
+    own resolver (design D1), so the same union has to be applied here —
+    ``resolve_user_marketplace`` serves
+    ``(rbac ∩ (subscriptions ∪ required)) ∪ store_installs``. Before this
+    helper existed, flipping a marketplace_plugin grant to ``required``
+    was a silent no-op for the served set (the separate global
+    ``is_system`` flag was the only mandatory path).
+
+    ``resource_id`` format is ``<marketplace_slug>/<plugin_name>``; rows
+    without a slash are skipped defensively so a hand-written grant can
+    never crash the serve path. Reads go through the repo factory (not
+    raw SQL on ``conn``) for the same PG-backend reason documented in
+    ``resolve_allowed_plugins``.
+    """
+    group_ids = _user_group_ids(user_id, conn) if user_id else set()
+    if not group_ids:
+        return set()
+    rows = resource_grants_repo().list_for_groups(list(group_ids), "marketplace_plugin")
+    keys: set[tuple[str, str]] = set()
+    for r in rows:
+        if (r.get("requirement") or "available") != "required":
+            continue
+        resource_id = r.get("resource_id") or ""
+        if "/" not in resource_id:
+            continue
+        slug, _, name = resource_id.partition("/")
+        keys.add((slug, name))
+    return keys
 
 
 def _resolve_raw(raw: Any) -> dict:
@@ -264,7 +302,7 @@ def resolve_user_marketplace(conn: duckdb.DuckDBPyConnection, user: dict) -> Lis
 
     Composition::
 
-        (admin_granted ∖ opt_outs) ∪ store_installs
+        (admin_granted ∩ (subscriptions ∪ required)) ∪ store_installs
 
     Output entries match ``resolve_allowed_plugins`` shape so that the
     existing ``packager`` / ``git_backend`` machinery iterates them
@@ -284,12 +322,15 @@ def resolve_user_marketplace(conn: duckdb.DuckDBPyConnection, user: dict) -> Lis
 
     # Model B (v28+): RBAC grant is only eligibility — the user must explicitly
     # subscribe via /marketplace for a curated plugin to enter their served set.
-    # Pre-v28 the filter was (rbac ∖ opt_outs); now it's (rbac ∩ subscriptions).
+    # Pre-v28 the filter was (rbac ∖ opt_outs); now it's (rbac ∩ in_stack),
+    # where in_stack = subscriptions ∪ required-tier grant keys: a grant at
+    # ``requirement='required'`` is always-in-stack for every group member,
+    # matching the StackResolver union for data packages / memory domains.
     # Reads through the repo factory so subscriptions resolve correctly on
     # the active backend (PG / DuckDB) — same rationale as
     # ``resolve_allowed_plugins`` above.
-    subs = user_curated_subscriptions_repo().subscribed_set(user_id)
-    admin = [p for p in admin if (p["marketplace_id"], p["original_name"]) in subs]
+    in_stack = user_curated_subscriptions_repo().subscribed_set(user_id) | required_plugin_keys(conn, user_id)
+    admin = [p for p in admin if (p["marketplace_id"], p["original_name"]) in in_stack]
     for p in admin:
         p["source"] = "marketplace"
 
