@@ -122,6 +122,7 @@ def _file_out(row: dict) -> dict:
         "sha256": row["sha256"],
         "file_type": row["file_type"],
         "size_bytes": row["size_bytes"],
+        "parent_file_id": row.get("parent_file_id"),
         "processing_status": row["processing_status"],
         "processing_detail": row.get("processing_detail"),
         "created_at": str(row["created_at"]) if row.get("created_at") else None,
@@ -396,6 +397,9 @@ async def upload_files(
       ``processing_status='pending'``.
     * **tier2** (png, jpg, tiff, …) → same write + ``'pending'``
       (vision/OCR ingestion deferred to Slice 5).
+    * **bundle** (zip) → same write + ``'pending'``; the background task
+      unpacks it and ingests every supported member as its own child row
+      (``parent_file_id`` → the archive row).
     * **unsupported** (.dwg, .exe, …) → stored raw +
       ``processing_status='rejected'`` with ``processing_detail`` describing
       the reason. The *whole response* returns **422** when any file is
