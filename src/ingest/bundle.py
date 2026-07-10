@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import posixpath
 import zipfile
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from src.corpus_allowlist import MAX_UPLOAD_BYTES, classify
 from src.file_storage import store_corpus_bytes
@@ -79,6 +79,18 @@ def ingest_bundle(
         cf_repo.set_status(file_id, status="rejected", detail={"reason": "invalid_archive"})
         return "rejected"
 
+    with zf:
+        return _ingest_bundle_members(zf, infos, file_id, corpus_id, cf_repo, ingest_child)
+
+
+def _ingest_bundle_members(
+    zf: "zipfile.ZipFile",
+    infos: list,
+    file_id: str,
+    corpus_id: str,
+    cf_repo: Any,
+    ingest_child: Callable[[str], str],
+) -> str:
     if len(infos) > MAX_BUNDLE_MEMBERS:
         cf_repo.set_status(
             file_id,

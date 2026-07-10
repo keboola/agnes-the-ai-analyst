@@ -21,7 +21,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   per-member status, Confluence navigation chrome stripped automatically (#796).
 
 ### Internal
-- Schema v88: `corpus_files.parent_file_id` links archive-extracted children to their bundle row (DuckDB `_v87_to_v88` + Alembic `0034_parent_file_id_v87`).
+- Schema v88: `corpus_files.parent_file_id` links archive-extracted children to their bundle row (DuckDB `_v87_to_v88` + Alembic `0035_parent_file_id_v88`).
 
 ---
 
@@ -156,8 +156,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 - /home onboarding now recommends launching Claude with `claude --permission-mode auto` instead of `--dangerously-skip-permissions`. Auto mode's classifier auto-approves safe actions (file edits and safe Bash) so the setup script runs mostly unattended while riskier commands can still prompt — an honest middle ground rather than a blanket skip. The broad-blast-radius flag is no longer surfaced on /home (it stays documented as an advanced option on /setup-advanced), and the workspace launcher comment examples were updated to match.
-- Schema v87: `corpus_files.parent_file_id` links archive-extracted children to
-  their bundle row (DuckDB `_v86_to_v87` + Alembic `0034_parent_file_id_v87`).
 
 ## [0.74.31] - 2026-07-10
 
