@@ -1395,6 +1395,12 @@ KNOWN_UNTESTED = {
     # tests/test_api_knowledge_search.py (shape, 401, RBAC fail-closed);
     # dual-backend grant resolution in tests/db_pg/test_knowledge_search_both.py.
     "GET /api/knowledge/search",
+    # K3 local knowledge packaging (#798) — binary artifact download; no new
+    # repo methods/migration (state.json lives on disk), so no dual-backend
+    # contract test is needed. Behaviour covered in
+    # tests/test_api_knowledge_artifacts.py (manifest section, 401/404/200/304,
+    # RBAC fail-closed).
+    "GET /api/knowledge/artifacts/{corpus_id}/download",
     "GET /api/collections/{collection_id}",
     "DELETE /api/collections/{collection_id}",
     "POST /api/collections/{collection_id}/files",

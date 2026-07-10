@@ -27,6 +27,7 @@ from src.repositories import (
     audit_repo,
     connection_secrets_repo,
     data_packages_repo,
+    file_corpora_repo,
     memory_domains_repo,
     profile_repo,
     source_connections_repo,
@@ -1160,6 +1161,44 @@ def _build_data_packages_section(conn, user, registry_by_name: dict, states_by_t
     return out, packaged_table_ids
 
 
+def _build_knowledge_artifacts_section(user) -> list:
+    """Per-corpus knowledge.duckdb artifacts (K3, #798), collection-grant filtered.
+
+    Reads ``DATA_DIR/knowledge/state.json`` (written by the packaging pass) and
+    lists only corpora the caller may access — the same fail-closed filter as
+    ``/api/collections``. The ``kind`` field keeps the seam generic for K4
+    digests. Key is ALWAYS present in the manifest (empty list for zero
+    grants) — ``agnes pull`` gates its prune on key presence, mirroring the
+    typed-sections gate.
+    """
+    from app.api.collections import _accessible_corpus_ids
+    from src.knowledge_packaging import artifacts_dir, load_state
+
+    state = load_state()
+    if not state:
+        return []
+    allowed = set(_accessible_corpus_ids(user))
+    names = {c["id"]: c.get("name") for c in file_corpora_repo().list()}
+    out = []
+    for cid in sorted(state):
+        if cid not in allowed or not (artifacts_dir() / f"{cid}.duckdb").exists():
+            continue
+        entry = state[cid]
+        out.append(
+            {
+                "kind": "chunks",
+                "corpus_id": cid,
+                "name": names.get(cid),
+                "md5": entry.get("md5", ""),
+                "size_bytes": entry.get("size_bytes", 0),
+                "chunks": entry.get("chunks", 0),
+                "built_at": entry.get("built_at"),
+                "url": f"/api/knowledge/artifacts/{cid}/download",
+            }
+        )
+    return out
+
+
 def _build_memory_domains_section(conn, user) -> list:
     """Build the ``memory_domains`` array per Section 5.1.
 
@@ -1360,6 +1399,11 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     except Exception:
         logger.exception("manifest direct_tables section build failed")
         direct_tables = []
+    try:
+        knowledge_artifacts = _build_knowledge_artifacts_section(user)
+    except Exception:
+        logger.exception("manifest knowledge_artifacts section build failed")
+        knowledge_artifacts = []
 
     return {
         "tables": tables,
@@ -1368,6 +1412,7 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
         "data_packages": data_packages,
         "memory_domains": memory_domains,
         "direct_tables": direct_tables,
+        "knowledge_artifacts": knowledge_artifacts,
     }
 
 
