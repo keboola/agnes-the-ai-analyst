@@ -1469,8 +1469,33 @@ $("chat-form").onsubmit = async (e) => {
 // alone (``isComposing`` is true while a CJK candidate is open —
 // submitting then would eat the user's in-progress input). The textarea
 // retains its native newline behavior for Shift+Enter so multi-line
-// prompts stay possible.
+// prompts stay possible. When the slash menu (see below) is open, arrow
+// keys / Enter / Tab / Escape are claimed by it first.
 $("chat-input").addEventListener("keydown", (e) => {
+  if (_slashMenu.open) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      _slashMenu.selected = Math.min(_slashMenu.selected + 1, _slashMenu.filtered.length - 1);
+      _refreshSlashMenuSelection();
+      return;
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      _slashMenu.selected = Math.max(_slashMenu.selected - 1, 0);
+      _refreshSlashMenuSelection();
+      return;
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeSlashMenu();
+      return;
+    } else if ((e.key === "Enter" || e.key === "Tab") && _slashMenu.filtered.length > 0) {
+      // Only claim Enter/Tab when there's something to select — an empty
+      // filtered list (no match for what's typed) leaves Enter free to
+      // submit the message as-is instead of feeling "stuck".
+      e.preventDefault();
+      _slashMenu_selectCurrent();
+      return;
+    }
+  }
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     $("chat-form").dispatchEvent(new SubmitEvent("submit", { cancelable: true }));
@@ -1480,7 +1505,155 @@ $("chat-input").addEventListener("keydown", (e) => {
     e.target.blur();
   }
 });
-$("chat-input").addEventListener("input", autosizeComposer);
+$("chat-input").addEventListener("input", () => {
+  autosizeComposer();
+  _onSlashInputChanged();
+});
+
+// ---------- Slash menu (skills/commands) ----------------------------------
+// Typing "/" as the very first character of an otherwise-empty composer
+// opens a filterable menu fed by GET /api/chat/skills (server-normalized,
+// RBAC-filtered skills merged with — currently empty — recognized
+// commands; see app/chat/skills_catalog.py). Continuing to type narrows
+// the list by prefix; selecting (click, or Enter/Tab while a match is
+// highlighted) inserts "/name " and closes the menu. A trailing space (or
+// any character breaking the "/token" shape) closes it — the user is just
+// typing a message that happens to start with a slash.
+
+const _slashMenu = { open: false, selected: 0, filtered: [] };
+
+// Fetched once per page load and cached — the catalog doesn't change
+// mid-session. A failure (network blip, chat not granted after all)
+// degrades to an empty list rather than blocking the composer.
+let _slashItemsPromise = null;
+function _fetchSlashItems() {
+  if (!_slashItemsPromise) {
+    _slashItemsPromise = api("/api/chat/skills")
+      .then((body) => {
+        const skills = (body?.skills || []).map((s) => ({ ...s, kind: "skill" }));
+        const commands = (body?.commands || []).map((c) => ({ ...c, kind: "command" }));
+        return [...skills, ...commands];
+      })
+      .catch(() => []);
+  }
+  return _slashItemsPromise;
+}
+
+/** Return the "/token" the user is currently typing, or null when the
+ *  composer isn't in slash-trigger shape (must be the ENTIRE value —
+ *  a slash anywhere else in a longer message is just punctuation). */
+function _slashQuery() {
+  const ta = $("chat-input");
+  if (!ta) return null;
+  const m = ta.value.match(/^\/(\S*)$/);
+  return m ? m[1] : null;
+}
+
+function _renderSlashMenuResults(items, needle) {
+  const ul = $("chat-slash-menu-results");
+  if (!ul) return;
+  ul.innerHTML = "";
+  const q = needle.toLowerCase();
+  const matches = items.filter((it) => !q || it.name.toLowerCase().startsWith(q));
+  _slashMenu.filtered = matches;
+  if (matches.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "cloud-chat-slash-menu-empty";
+    empty.textContent = needle
+      ? `No skill or command matches "/${needle}"`
+      : "No skills or commands available.";
+    ul.appendChild(empty);
+    return;
+  }
+  if (_slashMenu.selected >= matches.length) _slashMenu.selected = 0;
+  matches.forEach((it, i) => {
+    const li = document.createElement("li");
+    if (i === _slashMenu.selected) li.classList.add("is-selected");
+    li.setAttribute("role", "option");
+    li.setAttribute("aria-selected", i === _slashMenu.selected ? "true" : "false");
+
+    const name = document.createElement("span");
+    name.className = "cloud-chat-slash-menu-name";
+    name.textContent = `/${it.name}`;
+    li.appendChild(name);
+
+    if (it.description) {
+      const desc = document.createElement("span");
+      desc.className = "cloud-chat-slash-menu-desc";
+      desc.textContent = it.description;
+      li.appendChild(desc);
+    }
+
+    if (it.source) {
+      const src = document.createElement("span");
+      src.className = "cloud-chat-slash-menu-source";
+      src.textContent = it.source;
+      li.appendChild(src);
+    }
+
+    li.onmouseenter = () => {
+      _slashMenu.selected = i;
+      _refreshSlashMenuSelection();
+    };
+    li.onclick = () => _slashMenu_selectCurrent();
+    ul.appendChild(li);
+  });
+}
+
+function _refreshSlashMenuSelection() {
+  const ul = $("chat-slash-menu-results");
+  if (!ul) return;
+  const items = ul.querySelectorAll("li:not(.cloud-chat-slash-menu-empty)");
+  items.forEach((li, i) => {
+    const on = i === _slashMenu.selected;
+    li.classList.toggle("is-selected", on);
+    li.setAttribute("aria-selected", on ? "true" : "false");
+    if (on) li.scrollIntoView({ block: "nearest" });
+  });
+}
+
+async function openSlashMenu(needle) {
+  const wrap = $("chat-slash-menu");
+  if (!wrap) return;
+  _slashMenu.open = true;
+  _slashMenu.selected = 0;
+  wrap.hidden = false;
+  const items = await _fetchSlashItems();
+  // The composer may have moved on (menu closed, query changed) while the
+  // fetch was in flight — bail rather than render stale/mismatched results.
+  if (!_slashMenu.open) return;
+  _renderSlashMenuResults(items, needle);
+}
+
+function closeSlashMenu() {
+  if (!_slashMenu.open) return;
+  _slashMenu.open = false;
+  _slashMenu.filtered = [];
+  const wrap = $("chat-slash-menu");
+  if (wrap) wrap.hidden = true;
+}
+
+function _slashMenu_selectCurrent() {
+  const it = _slashMenu.filtered[_slashMenu.selected];
+  if (!it) return;
+  const ta = $("chat-input");
+  if (ta) {
+    ta.value = `/${it.name} `;
+    autosizeComposer();
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  }
+  closeSlashMenu();
+}
+
+function _onSlashInputChanged() {
+  const q = _slashQuery();
+  if (q === null) {
+    closeSlashMenu();
+    return;
+  }
+  openSlashMenu(q);
+}
 
 // Global keyboard shortcuts. ``targetIsTypeable`` keeps shortcuts
 // inert while the user is typing in any input / textarea /
