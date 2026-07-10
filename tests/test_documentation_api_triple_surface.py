@@ -36,8 +36,7 @@ _COHORT: dict[str, tuple[str, str]] = {
     # Owner-facing review-pipeline status (upload-friction feedback).
     "/api/store/entities/{entity_id}/status": ("store status", "store_status"),
     # Markdown-first skill publish (studio Skill Builder direct-publish flow,
-    # issue #688). CLI landed here; MCP tool `store_publish_markdown` lands in the
-    # follow-up task — until then test_mcp_tools_registered is expected red.
+    # issue #688). CLI: `store publish-md`. MCP: `store_publish_markdown`.
     "/api/store/entities/from-markdown": ("store publish-md", "store_publish_markdown"),
     # Collections — bring-your-files (Slice 2). The read surfaces are
     # triple-surface; the multipart-upload + file-mutation paths are _EXEMPT

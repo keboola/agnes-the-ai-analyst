@@ -1917,9 +1917,12 @@ async def studio(
 
     A generic form-based builder with an embedded assistant panel. The domain
     config (``app/web/studio.py``) drives the fields, the chat profile, and the
-    create endpoint, so all four authoring agents share one surface. Admins
-    create directly; non-admins submit a suggestion to the moderation queue
-    (the page renders the right action via ``is_admin``).
+    create endpoint, so all five authoring agents share one surface. Most
+    domains: admins create directly, non-admins submit a suggestion to the
+    moderation queue (the page renders the right action via ``is_admin``).
+    Domains with ``submit_directly=True`` (e.g. the Skill Builder) skip the
+    queue entirely — everyone posts straight to ``endpoint``, which runs its
+    own guardrail/review pipeline instead.
     """
     spec = get_studio_domain(domain)
     if spec is None:
