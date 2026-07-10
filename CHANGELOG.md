@@ -13,6 +13,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+---
+
+## [0.74.42] - 2026-07-10
+
+### Changed
 - The cloud-chat workspace seed (`WorkdirManager.server_url`) now resolves its
   server URL through the same fallback chain as the sandbox data rails
   (`SERVER_URL` → `AGNES_INTERNAL_URL` → loopback) via the new
@@ -28,10 +40,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   issuer (RFC 8414 requires HTTPS); the streamable MCP connector at
   `/api/mcp/http` now degrades instead (loud ERROR log, connector + its OAuth
   discovery/consent routes skipped) and the rest of the app boots normally.
-
-### Removed
-
-### Internal
 
 ---
 
