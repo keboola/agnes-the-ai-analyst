@@ -1,6 +1,6 @@
-# AI Data Analyst
+# Agnes — AI Harness
 
-Source-available data distribution platform for AI analytical systems. Extracts data from sources into DuckDB, serves via FastAPI, and distributes parquets to analysts who use Claude Code for local analysis.
+Source-available, self-hosted AI harness for organizations — governed data access, skills marketplace, corporate memory, and agent surfaces (web chat, Slack, Telegram, MCP, CLI). The data engine extracts data from sources into DuckDB, serves via FastAPI, and distributes parquets to analysts who use Claude Code for local analysis.
 
 Full documentation index: [`docs/README.md`](docs/README.md).
 

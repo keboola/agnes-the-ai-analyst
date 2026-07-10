@@ -503,4 +503,4 @@ New items start as `pending` and become available to agents after admin approval
 
 ## License
 
-Part of [Agnes](../../README.md) — open-source data distribution platform for AI analytical systems.
+Part of [Agnes](../../README.md) — source-available AI harness for organizations.

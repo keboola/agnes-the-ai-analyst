@@ -382,7 +382,7 @@ def get_home_status_frame_visibility() -> bool:
 
 
 def get_instance_name() -> str:
-    return get_value("instance", "name", default="AI Data Analyst")
+    return get_value("instance", "name", default="AI Harness")
 
 
 def get_instance_subtitle() -> str:
@@ -396,7 +396,7 @@ def get_instance_brand() -> str:
     set it to e.g. ``"Foundry AI"`` without forking.
 
     Distinct from :func:`get_instance_name` which drives page titles and
-    represents the deploying organization's display name ("AI Data Analyst").
+    represents the deploying organization's display name ("AI Harness").
     Brand is the *product*; name is the *deployment*.
 
     Resolution: ``AGNES_INSTANCE_BRAND`` env > ``instance.brand`` YAML > ``"Agnes"``.

@@ -27,7 +27,7 @@ class TestCLIHelp:
     def test_main_help(self):
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        assert "AI Data Analyst CLI" in result.output
+        assert "AI Harness CLI" in result.output
 
     def test_auth_help(self):
         result = runner.invoke(app, ["auth", "--help"])

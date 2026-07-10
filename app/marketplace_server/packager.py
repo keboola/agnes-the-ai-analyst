@@ -52,9 +52,9 @@ _ETAG_CACHE: Optional[TTLCache] = (
     TTLCache(maxsize=512, ttl=_ETAG_CACHE_TTL) if _ETAG_CACHE_TTL > 0 else None
 )
 _ETAG_CACHE_LOCK = threading.Lock()
-MARKETPLACE_OWNER = {"name": "Agnes AI Analyst"}
+MARKETPLACE_OWNER = {"name": "Agnes"}
 MARKETPLACE_DESCRIPTION = (
-    "Aggregated per-user Claude Code marketplace — served by agnes-the-ai-analyst"
+    "Aggregated per-user Claude Code marketplace — served by Agnes"
 )
 DETERMINISTIC_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 

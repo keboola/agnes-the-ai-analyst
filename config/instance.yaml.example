@@ -1,4 +1,4 @@
-# AI Data Analyst - Instance Configuration
+# Agnes AI Harness - Instance Configuration
 # ==========================================
 # This is the main configuration file for your instance.
 # Copy to instance.yaml and fill in your values.
@@ -13,7 +13,7 @@ config_version: 1
 
 # --- Instance branding ---
 instance:
-  name: "AI Data Analyst"
+  name: "AI Harness"
   subtitle: "Your Organization"
   copyright: "Your Organization"
   # brand: "Agnes"                   # Product-name brand string used in analyst-facing UI copy
@@ -245,7 +245,7 @@ data_source:
 # For production, configure any SMTP relay (Gmail, Mailgun, SendGrid SMTP, etc.)
 email:
   from_address: "noreply@example.com"
-  from_name: "AI Data Analyst"
+  from_name: "AI Harness"
   smtp_host: "${SMTP_HOST}"          # e.g., "smtp.gmail.com"
   smtp_port: 587                     # 587 for STARTTLS, 465 for SSL
   smtp_user: "${SMTP_USER}"

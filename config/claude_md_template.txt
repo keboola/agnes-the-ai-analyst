@@ -13,7 +13,7 @@
      user.id, user.email, user.name, user.is_admin, user.groups
      now, today                   — datetime / date string
 #}
-# {{ instance.name }} — AI Data Analyst
+# {{ instance.name }} — AI Harness
 
 This workspace is connected to {{ server.url }}.
 {% if instance.subtitle %}Operated by **{{ instance.subtitle }}**.{% endif %}

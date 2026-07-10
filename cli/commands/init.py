@@ -58,10 +58,12 @@ from cli.lib.pull import PullResult, _override_server_env, run_pull
 from cli.lib.shortcut import install_launcher_shortcut
 
 
-# Substring that flags an already-bootstrapped workspace. The current default
-# CLAUDE.md template renders `# {{ instance.name }} — AI Data Analyst` so this
-# appears in every server-rendered CLAUDE.md. Operators who use a custom admin
-# template can override this via the `--force` flag.
+# Legacy substring that flags an already-bootstrapped workspace. Pre-rebrand
+# default CLAUDE.md templates rendered `# {{ instance.name }} — AI Data
+# Analyst`, so the string appears in every server-rendered CLAUDE.md from
+# those CLI versions. Current inits are detected via the `.claude/init-complete`
+# sentinel instead (the default template no longer contains this string);
+# the substring check is kept only for pre-#259 workspaces.
 _INIT_MARKER = "AI Data Analyst"
 
 # Sentinel written at the very END of a successful `agnes init`. Existence

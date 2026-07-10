@@ -64,7 +64,7 @@ def _load_default_template() -> str:
 
     # 3. Embedded fallback (image stripped down, partial Docker COPY, etc.)
     return (
-        "# {{ instance.name }} — AI Data Analyst\n\n"
+        "# {{ instance.name }} — AI Harness\n\n"
         "This workspace is connected to {{ server.url }}.\n"
         "Data refreshes every {{ sync_interval }}.\n"
     )

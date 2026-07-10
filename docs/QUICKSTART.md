@@ -13,7 +13,7 @@
 1. Clone the repository:
    ```bash
    git clone <repo-url>
-   cd ai-data-analyst
+   cd agnes-the-ai-analyst
    ```
 
 2. Create virtual environment and install dependencies:

@@ -1,8 +1,13 @@
-# Agnes — AI Data Analyst
+# Agnes — AI Harness
 
-Agnes is a source-available data distribution platform for AI analytical systems. It extracts data from configured sources into DuckDB, serves it via a FastAPI backend, and distributes Parquet files to analysts who query them locally using Claude Code and DuckDB.
+Agnes is a source-available, self-hosted AI harness for organizations: one governed home for the data, skills, memory, and workspaces your AI agents work with.
 
-Each data source produces a self-describing `extract.duckdb` file. The `SyncOrchestrator` attaches all extract databases into a master `analytics.duckdb`, making every table available through a unified view layer without copying data unnecessarily.
+- **Data** — extracts data from configured sources into DuckDB, serves it via a FastAPI backend, and distributes RBAC-filtered Parquet files to analysts who query them locally using Claude Code and DuckDB.
+- **Skills & plugins** — aggregates curated Claude Code marketplaces into one RBAC-filtered feed, with a store for publishing skills and a studio for authoring them.
+- **Corporate memory** — captures and governs organizational knowledge (memory domains, session mining) so agents answer with company context.
+- **Agent surfaces** — web chat with a sandboxed runtime, Slack and Telegram bots, an MCP server, and a headless CLI, all behind the same access control.
+
+The data engine is the platform's core. Each data source produces a self-describing `extract.duckdb` file. The `SyncOrchestrator` attaches all extract databases into a master `analytics.duckdb`, making every table available through a unified view layer without copying data unnecessarily.
 
 ## Architecture: extract.duckdb Contract
 
