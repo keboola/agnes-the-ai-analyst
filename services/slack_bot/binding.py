@@ -229,18 +229,20 @@ def is_channel_allowlisted(conn: duckdb.DuckDBPyConnection, channel_id: str) -> 
     Admin god-mode short-circuit cannot auto-open a channel. Channel openness
     is a property of the channel (an Everyone grant), not of the mentioning
     user's group. Default-deny: no grant → False.
+
+    ``conn`` is accepted for call-site/signature stability but no longer
+    used directly — the lookup resolves through ``resource_grants_repo()`` /
+    ``user_groups_repo()`` so it reads from whichever backend (DuckDB or
+    Postgres) is active, mirroring ``lookup_user_email`` above. The prior
+    raw JOIN on the DuckDB-typed conn always missed grants that live in
+    Postgres on a PG-backed instance.
     """
-    row = conn.execute(
-        """SELECT 1
-           FROM resource_grants rg
-           JOIN user_groups ug ON ug.id = rg.group_id
-           WHERE ug.name = 'Everyone'
-             AND rg.resource_type = 'slack_channel'
-             AND rg.resource_id = ?
-           LIMIT 1""",
-        [channel_id],
-    ).fetchone()
-    return row is not None
+    from src.repositories import resource_grants_repo, user_groups_repo
+
+    everyone = user_groups_repo().get_by_name("Everyone")
+    if not everyone:
+        return False
+    return resource_grants_repo().has_grant([everyone["id"]], "slack_channel", channel_id)
 
 
 def lookup_user_email(repo, slack_user_id: str) -> Optional[str]:

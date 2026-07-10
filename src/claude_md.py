@@ -70,6 +70,24 @@ def _load_default_template() -> str:
     )
 
 
+def _missing_table_excs() -> "tuple[type[BaseException], ...]":
+    """Exception types that mean 'the backing table doesn't exist yet'
+    (e.g. a half-migrated DB) — the graceful-degrade boundary this module
+    has tolerated since the original DuckDB-only ``duckdb.CatalogException``
+    catch. Postgres surfaces the same condition as
+    ``sqlalchemy.exc.ProgrammingError`` (wrapping ``UndefinedTable``), so
+    both are caught regardless of which backend the repo factory resolves
+    to."""
+    excs: "tuple[type[BaseException], ...]" = (duckdb.CatalogException,)
+    try:
+        from sqlalchemy.exc import ProgrammingError
+
+        excs = excs + (ProgrammingError,)
+    except ImportError:
+        pass
+    return excs
+
+
 def _list_tables(conn: duckdb.DuckDBPyConnection, *, user: dict) -> list[dict[str, Any]]:
     """Return registered tables filtered by the calling user's RBAC grants.
 
@@ -77,39 +95,34 @@ def _list_tables(conn: duckdb.DuckDBPyConnection, *, user: dict) -> list[dict[st
     user has explicit ``resource_grants(resource_type='table')`` access to.
     """
     from src.rbac import get_accessible_tables
+    from src.repositories import table_registry_repo
+
     try:
         allowed_ids = get_accessible_tables(user, conn)   # None=admin, list=non-admin
-        if allowed_ids is None:
-            rows = conn.execute(
-                "SELECT name, description, query_mode FROM table_registry ORDER BY name"
-            ).fetchall()
-        elif not allowed_ids:
+        if allowed_ids is not None and not allowed_ids:
             return []
-        else:
-            placeholders = ",".join(["?"] * len(allowed_ids))
-            rows = conn.execute(
-                f"SELECT name, description, query_mode FROM table_registry "
-                f"WHERE id IN ({placeholders}) ORDER BY name",
-                allowed_ids,
-            ).fetchall()
-    except duckdb.CatalogException:
+        rows = table_registry_repo().list_all()
+    except _missing_table_excs():
         return []
+    if allowed_ids is not None:
+        allowed_set = set(allowed_ids)
+        rows = [r for r in rows if r.get("id") in allowed_set]
     return [
-        {"name": r[0], "description": r[1] or "", "query_mode": r[2] or "local"}
+        {"name": r.get("name"), "description": r.get("description") or "", "query_mode": r.get("query_mode") or "local"}
         for r in rows
     ]
 
 
-def _metrics_summary(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
+def _metrics_summary() -> dict[str, Any]:
+    from src.repositories import metric_repo
+
     try:
-        rows = conn.execute(
-            "SELECT category, COUNT(*) FROM metric_definitions GROUP BY category"
-        ).fetchall()
-    except duckdb.CatalogException:
+        rows = metric_repo().list()
+    except _missing_table_excs():
         return {"count": 0, "categories": []}
     return {
-        "count": sum(r[1] for r in rows),
-        "categories": sorted({r[0] for r in rows if r[0]}),
+        "count": len(rows),
+        "categories": sorted({r.get("category") for r in rows if r.get("category")}),
     }
 
 
@@ -121,8 +134,10 @@ def _marketplaces_for_user(
     Delegates RBAC filtering entirely to resolve_allowed_plugins, which
     returns List[dict] with marketplace_slug, original_name, etc.
     Results are grouped by marketplace slug; display names are fetched
-    from marketplace_registry in a single query.
+    from marketplace_registry via the repo factory.
     """
+    from src.repositories import marketplace_registry_repo
+
     try:
         from src.marketplace_filter import resolve_allowed_plugins
         allowed = resolve_allowed_plugins(conn, user)
@@ -133,16 +148,12 @@ def _marketplaces_for_user(
         return []
 
     # Build slug → display name lookup from registry
-    slugs = list({p["marketplace_slug"] for p in allowed})
-    placeholders = ",".join(["?"] * len(slugs))
+    slugs = {p["marketplace_slug"] for p in allowed}
     try:
-        name_rows = conn.execute(
-            f"SELECT id, name FROM marketplace_registry WHERE id IN ({placeholders})",
-            slugs,
-        ).fetchall()
-    except duckdb.CatalogException:
-        name_rows = []
-    slug_to_name: dict[str, str] = {r[0]: r[1] for r in name_rows}
+        all_rows = marketplace_registry_repo().list_all()
+    except _missing_table_excs():
+        all_rows = []
+    slug_to_name: dict[str, str] = {r["id"]: r["name"] for r in all_rows if r["id"] in slugs}
 
     grouped: dict[str, dict[str, Any]] = {}
     for plugin in allowed:
@@ -181,7 +192,7 @@ def build_claude_md_context(
         "sync_interval": get_sync_interval(),
         "data_source": {"type": get_data_source_type()},
         "tables": _list_tables(conn, user=user),
-        "metrics": _metrics_summary(conn),
+        "metrics": _metrics_summary(),
         "marketplaces": _marketplaces_for_user(conn, user),
         "user": {
             "id": user.get("id", ""),

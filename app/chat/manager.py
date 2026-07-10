@@ -807,7 +807,6 @@ class ChatManager:
                 live.turn_in_flight = False
             if ftype == "tool_call":
                 write_audit(
-                    self._repo._conn,
                     user_email=live.user_email,
                     action="chat.tool_call",
                     details={
@@ -1188,7 +1187,6 @@ class ChatManager:
             t.cancel()
         self._repo.clear_sandbox_ref(chat_id)
         write_audit(
-            self._repo._conn,
             user_email=live.user_email,
             action="chat.session_killed",
             details={"session_id": chat_id, "reason": reason},

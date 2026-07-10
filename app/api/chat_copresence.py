@@ -117,7 +117,7 @@ async def invite(
     # SR-8: seed with a summary, never a raw clone.
     from app.chat.copresence_summary import build_intersection_summary
     seed = build_intersection_summary(
-        session_id, [user["email"], body.invitee_email], conn
+        session_id, [user["email"], body.invitee_email]
     )
 
     s1 = repo.fork_session_as_co_session(
@@ -131,7 +131,6 @@ async def invite(
 
     from app.chat.audit import write_audit
     write_audit(
-        conn,
         user_email=user["email"],
         action="co_session_fork",
         details={"source": session_id, "co_session": s1.id, "invitee": body.invitee_email},

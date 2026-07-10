@@ -51,7 +51,7 @@ def system_db(tmp_path, monkeypatch):
 
     conn = get_system_db()
     _ensure_schema(conn)
-    ensure_internal_tables_registered(conn)
+    ensure_internal_tables_registered()
     # Seed a couple of canonical rows for the RBAC checks.
     conn.execute(
         "INSERT INTO usage_session_summary "
@@ -282,10 +282,9 @@ def _seed_internal_via_api():
     that puts agnes_sessions / agnes_telemetry / agnes_audit into
     ``table_registry`` doesn't run. Register them inline so the API
     routes (`/api/query`, `/api/v2/sample`) can find them."""
-    from src.db import get_system_db
     from connectors.internal.registry import ensure_internal_tables_registered
 
-    ensure_internal_tables_registered(get_system_db())
+    ensure_internal_tables_registered()
 
 
 def test_query_internal_via_api_admin_path(seeded_app, admin_user):
