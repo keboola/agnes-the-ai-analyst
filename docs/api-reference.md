@@ -982,6 +982,14 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/initial-workspace.zip
 - /api/initial-workspace/applied
 
+### `/api/knowledge` — Unified knowledge search
+
+- /api/knowledge/search — one query fanned out across document Collections
+  (hybrid lexical+vector), corporate-memory knowledge items (fulltext), and
+  table catalog cards; typed results (`chunk | knowledge | table`) with
+  citations, RBAC fail-closed per source. Params: `q` (required), `k` (1–50,
+  default 10). Triple-surface: `agnes search` + MCP tool `knowledge_search`.
+
 ### `/api/marketplace` and `/api/marketplaces` — Marketplace
 
 - /api/marketplace/categories
