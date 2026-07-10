@@ -40,6 +40,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterator
 
+from src.repositories import marketplace_plugins_repo, store_entities_repo
+
 # v9: phase-6 plugin-level rollup parity for flea. `_aggregate_events`
 # now produces synthetic (source='flea', type='plugin', parent_plugin='',
 # name=<plugin_synth>) rows aggregating nested skill/agent invocations,
@@ -275,22 +277,18 @@ class MarketplaceItemLookup:
       (slash commands count as skill per product rule).
     """
 
-    def __init__(self, conn):
-        self._curated_plugins: set[str] = {
-            row[0] for row in conn.execute("SELECT DISTINCT name FROM marketplace_plugins").fetchall()
-        }
+    def __init__(self):
+        # Routed through the src.repositories factory (not a raw conn read)
+        # so both lookups hit the active backend — a raw DuckDB read here
+        # silently returned zero rows on Postgres instances.
+        self._curated_plugins: set[str] = set(marketplace_plugins_repo().list_distinct_names())
         # v49 phase-5: lookup table keyed by `synthetic_name` (the
         # `<name>-by-<owner>` slug baked into the served plugin tree). Claude
         # Code writes the local part of a flea invocation as that synthetic
         # name (`flea:xlsx-by-c-marustamyan`), so matching against `name`
         # (un-suffixed) never landed. Type comes along so the rollup writer
         # knows whether to record the invocation as skill / agent / plugin.
-        self._flea_entities: dict[str, str] = {
-            row[0]: row[1]
-            for row in conn.execute(
-                "SELECT synthetic_name, type FROM store_entities WHERE visibility_status='approved'"
-            ).fetchall()
-        }
+        self._flea_entities: dict[str, str] = store_entities_repo().list_approved_synthetic_types()
         # Flea PLUGIN entities can be matched as a prefix too — `<plugin>:<inner>`
         # invocations of a skill / agent that lives inside a flea plugin bundle
         # land here, mirroring the curated nested attribution path. Standalone

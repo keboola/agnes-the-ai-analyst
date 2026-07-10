@@ -30,6 +30,12 @@ class MarketplacePluginsPgRepository:
                     pass
         return d
 
+    def list_distinct_names(self) -> List[str]:
+        """PG sibling of the DuckDB ``list_distinct_names``."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(sa.text("SELECT DISTINCT name FROM marketplace_plugins")).all()
+        return [r[0] for r in rows]
+
     def list_for_marketplace(self, marketplace_id: str) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
             rows = (

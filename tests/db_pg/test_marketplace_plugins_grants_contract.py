@@ -621,3 +621,31 @@ class TestSetSystem:
         assert row is not None
         assert bool(row.get("is_system")) is True
         assert bool(row.get("admin_disabled")) is True
+
+
+# ---------------------------------------------------------------------------
+# list_distinct_names — backs MarketplaceItemLookup (usage-telemetry
+# attribution) curated-plugin-prefix recognition.
+# ---------------------------------------------------------------------------
+
+
+class TestListDistinctNames:
+    def test_empty_when_no_plugins(self, repos):
+        assert repos["plugins"].list_distinct_names() == []
+
+    def test_returns_every_distinct_name(self, repos):
+        _seed_registry(repos, "mp-names-1", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _seed_plugins(repos, "mp-names-1", ["alpha", "beta"])
+        names = set(repos["plugins"].list_distinct_names())
+        assert names == {"alpha", "beta"}
+
+    def test_deduplicates_across_marketplaces(self, repos):
+        """The same plugin name registered under two marketplaces must
+        surface once — MarketplaceItemLookup only cares about the name,
+        not which marketplace it came from."""
+        _seed_registry(repos, "mp-names-2a", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _seed_registry(repos, "mp-names-2b", datetime(2026, 1, 2, tzinfo=timezone.utc))
+        _seed_plugin(repos, "mp-names-2a", "shared")
+        _seed_plugin(repos, "mp-names-2b", "shared")
+        names = repos["plugins"].list_distinct_names()
+        assert names == ["shared"]

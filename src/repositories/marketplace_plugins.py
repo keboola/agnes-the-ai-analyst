@@ -34,6 +34,18 @@ class MarketplacePluginsRepository:
                     pass
         return d
 
+    def list_distinct_names(self) -> List[str]:
+        """Every distinct plugin ``name`` across all marketplaces.
+
+        Backs ``MarketplaceItemLookup`` (usage-telemetry attribution) — it
+        needs the set of curated plugin names to recognise a Claude Code
+        identifier prefix (``<plugin>:<local>``) without caring which
+        marketplace registered it. Routed through the factory so the read
+        hits the active backend (a raw DuckDB read here silently returned
+        zero rows on Postgres instances)."""
+        rows = self.conn.execute("SELECT DISTINCT name FROM marketplace_plugins").fetchall()
+        return [r[0] for r in rows]
+
     def list_for_marketplace(self, marketplace_id: str) -> List[Dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT * FROM marketplace_plugins WHERE marketplace_id = ? ORDER BY name",

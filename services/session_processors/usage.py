@@ -50,7 +50,7 @@ class UsageProcessor:
                 session_id = sid
                 break
 
-        lookup = MarketplaceItemLookup(conn)
+        lookup = MarketplaceItemLookup()
         rows = []
         for e in events:
             source, parent_plugin, _local, _type = lookup.resolve(e)
