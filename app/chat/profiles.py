@@ -196,7 +196,7 @@ _SKILL_AUTHOR = ChatProfile(
         "## Contract\n"
         "- `name`: lowercase letters, digits, dashes (`^[a-z][a-z0-9-]{0,63}$`).\n"
         "- `description`: one line encoding the *use when …* trigger "
-        "(>= 30 chars, >= 4 distinct words).\n"
+        "(>= 60 chars, >= 5 distinct words).\n"
         "- Body: >= 200 chars of instructions; keep it under ~5k tokens.\n\n"
         "## Publish\n"
         "- `POST /api/store/entities/from-markdown` — JSON `{type: 'skill', "
