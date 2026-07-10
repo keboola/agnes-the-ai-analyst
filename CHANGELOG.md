@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- MCP wheel bootstrap no longer trusts the `.installed.json` marker alone: the marker lives on the persistent data volume while `pip install --user` lands in the ephemeral container filesystem, so after a container recreate the boot skipped the reinstall and every stdio MCP source failed with `[Errno 2] No such file or directory`. The skip path now also verifies the wheel's distribution is actually importable and reinstalls when it is gone.
 
 ### Removed
 
