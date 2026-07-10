@@ -290,13 +290,21 @@ def materialize_query(
                 # exceeded`. 64 MB is generous enough to absorb any
                 # reasonable embedded blob; DuckDB allocates a single
                 # buffer of this size per worker thread.
+                #
+                # `quote='"', escape='"'` pin the RFC-4180 dialect Keboola
+                # Storage API exports use (delimiter ',', quote '"', embedded
+                # quotes doubled). Without this, DuckDB's dialect sniffer can
+                # misdetect the escape char on cells holding embedded
+                # JSON/SQL text with their own quoting, producing a false
+                # `CSV Error on Line: N` — pinning removes the guesswork.
                 safe_csv = str(csv_path).replace("'", "''")
                 safe_tmp = str(tmp_parquet).replace("'", "''")
                 try:
                     conv = _open_consolidation_conn()
                     conv.execute(
                         f"COPY (SELECT * FROM read_csv('{safe_csv}', "
-                        f"all_varchar=true, max_line_size=67108864)) "
+                        f"all_varchar=true, max_line_size=67108864, "
+                        f"quote='\"', escape='\"')) "
                         f"TO '{safe_tmp}' (FORMAT PARQUET)"
                     )
                     conv.close()
