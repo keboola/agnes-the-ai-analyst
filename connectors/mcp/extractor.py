@@ -35,6 +35,36 @@ from src.repositories.tool_registry import MATERIALIZE, ToolRegistryRepository
 logger = logging.getLogger(__name__)
 
 
+# ── backend-aware repo accessors ────────────────────────────────────────────
+#
+# ``extract_source`` / ``extract_source_async`` take a caller-supplied
+# ``system_conn`` (a DuckDB connection) for reading ``mcp_sources`` /
+# ``tool_registry``. On a Postgres-backed instance those tables live in
+# Postgres — a direct ``MCPSourceRepository(system_conn)`` would silently
+# read an empty DuckDB shard regardless of what the caller passed in (the
+# admin materialize endpoint hands over a ``Depends(_get_db)`` connection,
+# which is always DuckDB). Mirror the escape-hatch pattern used by
+# ``app.services.stack_resolver`` / ``app.auth.access``: honor the caller's
+# connection only when the active backend actually is DuckDB, otherwise
+# route through the factory.
+
+
+def _sources_repo(system_conn: duckdb.DuckDBPyConnection) -> Any:
+    from src.repositories import mcp_sources_repo, use_pg
+
+    if use_pg():
+        return mcp_sources_repo()
+    return MCPSourceRepository(system_conn)
+
+
+def _tools_repo(system_conn: duckdb.DuckDBPyConnection) -> Any:
+    from src.repositories import tool_registry_repo, use_pg
+
+    if use_pg():
+        return tool_registry_repo()
+    return ToolRegistryRepository(system_conn)
+
+
 # ── result parsing ──────────────────────────────────────────────────────────
 
 def _find_data_array(payload: Any) -> Optional[List[Dict[str, Any]]]:
@@ -181,8 +211,8 @@ async def extract_source_async(
     going through ``asyncio.run`` (which is illegal inside a running
     event loop).
     """
-    sources_repo = MCPSourceRepository(system_conn)
-    tools_repo = ToolRegistryRepository(system_conn)
+    sources_repo = _sources_repo(system_conn)
+    tools_repo = _tools_repo(system_conn)
 
     source = sources_repo.get(source_id)
     if source is None:
@@ -269,8 +299,8 @@ def extract_source(
 
     Returns a summary dict: ``{"source_name": ..., "tables": [...], "errors": [...]}``.
     """
-    sources_repo = MCPSourceRepository(system_conn)
-    tools_repo = ToolRegistryRepository(system_conn)
+    sources_repo = _sources_repo(system_conn)
+    tools_repo = _tools_repo(system_conn)
 
     source = sources_repo.get(source_id)
     if source is None:
