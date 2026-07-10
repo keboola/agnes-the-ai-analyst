@@ -1,6 +1,6 @@
 # Server Operations
 
-Operational guide for the AI Data Analyst Docker deployment.
+Operational guide for the Agnes Docker deployment.
 
 ## Basic Information
 

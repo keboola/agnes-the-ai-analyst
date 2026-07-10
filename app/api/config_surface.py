@@ -52,7 +52,7 @@ _KNOB_CATALOGUE: list[dict[str, Any]] = [
         "resolver": "get_instance_name",
         "env_var": None,
         "yaml_path": "instance.name",
-        "default": "AI Data Analyst",
+        "default": "AI Harness",
     },
     {
         "key": "instance_subtitle",

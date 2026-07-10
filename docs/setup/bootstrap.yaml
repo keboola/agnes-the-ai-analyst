@@ -1,4 +1,4 @@
-# AI Data Analyst - Setup Instructions
+# Agnes - Setup Instructions
 #
 # Single source of truth for local environment setup.
 # Webapp reads this, substitutes placeholders, and generates clipboard text.
@@ -12,7 +12,7 @@
 #   {project_dir}  - local project folder name (instance.yaml: server.project_dir)
 
 header: |
-  Set up my AI Data Analyst local environment.
+  Set up my Agnes local environment.
 
 connection:
   server_host: "{server_host}"
@@ -79,7 +79,7 @@ steps:
       Also copy server/docs/setup/claude_settings.json to .claude/settings.json.
 
 existing_project:
-  check: "If CLAUDE.md already exists and contains 'AI Data Analyst'"
+  check: "If .claude/init-complete exists, or CLAUDE.md exists and contains 'AI Data Analyst' (legacy workspaces)"
   message: |
     This directory is already set up. Just sync latest data:
       bash server/scripts/sync_data.sh

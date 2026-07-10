@@ -1092,8 +1092,8 @@ def create_app() -> FastAPI:
     from app.serialization import AgnesJSONResponse
 
     app = FastAPI(
-        title="AI Data Analyst",
-        description="Data distribution platform for AI analytical systems",
+        title="AI Harness",
+        description="Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
         version=APP_VERSION,
         lifespan=lifespan,
         # Swagger UI / OpenAPI JSON gated behind authentication — custom

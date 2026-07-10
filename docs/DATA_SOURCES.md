@@ -2,7 +2,7 @@
 
 ## Overview
 
-AI Data Analyst uses a connector system where each connector produces an `extract.duckdb` following a standard contract. The SyncOrchestrator auto-discovers and ATTACHes these into the master `analytics.duckdb`.
+Agnes uses a connector system where each connector produces an `extract.duckdb` following a standard contract. The SyncOrchestrator auto-discovers and ATTACHes these into the master `analytics.duckdb`.
 
 Configure the data source type in `config/instance.yaml`:
 

@@ -1,11 +1,11 @@
 # Architecture — Detailed Reference
 
-Comprehensive architectural overview of the AI Data Analyst platform (v2).
+Comprehensive architectural overview of the Agnes platform (v2).
 
 ## Top-Level Module Map
 
 ```
-ai-data-analyst/
+agnes-the-ai-analyst/
 ├── src/                  Core engine (db, orchestrator, rbac, profiler, repositories)
 ├── connectors/           Pluggable data connectors (keboola, bigquery, jira, llm, openmetadata)
 ├── app/                  FastAPI application (API + web UI)
