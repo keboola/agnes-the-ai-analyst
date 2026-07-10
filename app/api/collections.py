@@ -122,6 +122,7 @@ def _file_out(row: dict) -> dict:
         "sha256": row["sha256"],
         "file_type": row["file_type"],
         "size_bytes": row["size_bytes"],
+        "parent_file_id": row.get("parent_file_id"),
         "processing_status": row["processing_status"],
         "processing_detail": row.get("processing_detail"),
         "created_at": str(row["created_at"]) if row.get("created_at") else None,

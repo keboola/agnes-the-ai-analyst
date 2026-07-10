@@ -202,3 +202,24 @@ def test_zero_chunk_document_is_needs_review(e2e_env, tmp_path, monkeypatch):
     row = corpus_files_repo().get(file_id)
     assert row["processing_status"] == "needs_review"
     assert row["processing_detail"]["reason"] == "extraction produced no text chunks"
+
+
+def test_ingest_file_routes_zip_to_bundle(e2e_env, tmp_path, monkeypatch):
+    """A zip row delegates to ingest_bundle (K1) instead of the prose path."""
+    import src.ingest.bundle as bundle_mod
+    from src.ingest.runner import ingest_file
+
+    corpus_id = _new_corpus("ing-zip-route")
+    zip_path = tmp_path / "dump.zip"
+    zip_path.write_bytes(b"PK\x03\x04placeholder")
+    file_id = _add_file(corpus_id, "dump.zip", "zip", str(zip_path))
+
+    calls: dict = {}
+
+    def fake_bundle(cid, fid, path, **kw):
+        calls["args"] = (cid, fid, path)
+        return "indexed"
+
+    monkeypatch.setattr(bundle_mod, "ingest_bundle", fake_bundle)
+    assert ingest_file(file_id) == "indexed"
+    assert calls["args"] == (corpus_id, file_id, str(zip_path))
