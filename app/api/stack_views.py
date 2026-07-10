@@ -71,9 +71,7 @@ def _require_access(user: dict, rt: ResourceType, resource_id: str, conn) -> Non
 @router.get("/api/data-packages/{slug}")
 async def view_data_package(
     slug: str,
-    source: Optional[str] = Query(
-        None, description="Originating page hint for telemetry (browse|my-stack)"
-    ),
+    source: Optional[str] = Query(None, description="Originating page hint for telemetry (browse|my-stack)"),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -106,9 +104,7 @@ async def view_data_package(
 @router.get("/api/memory/domains/{slug}")
 async def view_memory_domain(
     slug: str,
-    source: Optional[str] = Query(
-        None, description="Originating page hint for telemetry (browse|my-stack)"
-    ),
+    source: Optional[str] = Query(None, description="Originating page hint for telemetry (browse|my-stack)"),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -133,14 +129,16 @@ async def view_memory_domain(
         item = knowledge.get_by_id(s["id"])
         if not item:
             continue
-        items.append({
-            "id": item["id"],
-            "title": item.get("title"),
-            "content": item.get("content"),
-            "status": item.get("status"),
-            "is_required": bool(item.get("is_required")),
-            "category": item.get("category"),
-        })
+        items.append(
+            {
+                "id": item["id"],
+                "title": item.get("title"),
+                "content": item.get("content"),
+                "status": item.get("status"),
+                "is_required": bool(item.get("is_required")),
+                "category": item.get("category"),
+            }
+        )
     return {
         "id": dom["id"],
         "slug": dom["slug"],
