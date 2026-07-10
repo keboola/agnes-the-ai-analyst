@@ -802,6 +802,13 @@ class SyncOrchestrator:
             extracts_dir = _get_extracts_dir()
             repo = sync_state_repo()
             for table_name, rows, size_bytes, query_mode in meta_rows:
+                # Materialized rows own their sync_state: the materialized
+                # pass writes it on success (update_sync) and failure
+                # (set_error). Re-bumping last_sync here would reset the
+                # schedule gate every rebuild, so a failed/killed daily run
+                # is never retried until the next day.
+                if query_mode == "materialized":
+                    continue
                 pq_path = extracts_dir / source_name / "data" / f"{table_name}.parquet"
                 file_hash = ""
                 if pq_path.exists():
@@ -829,7 +836,16 @@ class SyncOrchestrator:
         failure must never take down the rebuild.
         """
         try:
-            from src.repositories import sync_state_repo
+            from src.repositories import sync_state_repo, table_registry_repo
+
+            # Materialized rows own their last_sync (see _update_sync_state):
+            # the fallback fires exactly when `_meta` is missing — e.g. a
+            # materialize killed between the parquet swap and the `_meta`
+            # update. Record the publish (fresh rows/hash, error cleared)
+            # but keep last_sync so the schedule gate stays open and the
+            # next tick re-runs the materialize, healing `_meta`.
+            registry_row = table_registry_repo().get(table_id)
+            is_materialized = bool(registry_row and registry_row.get("query_mode") == "materialized")
 
             h = hashlib.md5()
             with open(parquet_path, "rb") as f:
@@ -841,6 +857,7 @@ class SyncOrchestrator:
                 rows=int(row_count or 0),
                 file_size_bytes=parquet_path.stat().st_size,
                 hash=h.hexdigest(),
+                bump_last_sync=not is_materialized,
             )
         except Exception as e:
             logger.warning(
