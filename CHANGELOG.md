@@ -12,8 +12,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-- Web chat composer: a filterable slash menu (type `/` at the start of a message) showing the skills and slash commands actually invokable in your chat sandbox — server-normalized from bundled workspace-template skills and your RBAC-filtered marketplace/store plugin skills via the new `GET /api/chat/skills` endpoint (also reachable as `agnes chat skills` and the `chat_skills` MCP tool). (#780)
-
 ### Changed
 
 ### Fixed
@@ -21,6 +19,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+## [0.74.35] - 2026-07-10
+
+### Added
+
+- Web chat composer: a filterable slash menu (type `/` at the start of a message) showing the skills and slash commands actually invokable in your chat sandbox — server-normalized from bundled workspace-template skills and your RBAC-filtered marketplace/store plugin skills via the new `GET /api/chat/skills` endpoint (also reachable as `agnes chat skills` and the `chat_skills` MCP tool). (#780)
 
 ## [0.74.34] - 2026-07-10
 
