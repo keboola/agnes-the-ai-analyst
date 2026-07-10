@@ -52,7 +52,7 @@ _KNOB_CATALOGUE: list[dict[str, Any]] = [
         "resolver": "get_instance_name",
         "env_var": None,
         "yaml_path": "instance.name",
-        "default": "AI Data Analyst",
+        "default": "AI Harness",
     },
     {
         "key": "instance_subtitle",
@@ -123,6 +123,13 @@ _KNOB_CATALOGUE: list[dict[str, Any]] = [
         "resolver": "get_instance_support",
         "env_var": "AGNES_INSTANCE_SUPPORT",
         "yaml_path": "instance.support",
+        "default": "",
+    },
+    {
+        "key": "instance_custom_preamble",
+        "resolver": "get_instance_custom_preamble",
+        "env_var": "AGNES_INSTANCE_CUSTOM_PREAMBLE",
+        "yaml_path": "instance.custom_preamble",
         "default": "",
     },
     {

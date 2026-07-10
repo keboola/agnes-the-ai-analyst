@@ -201,7 +201,7 @@
             v{{ (entity.version_no or 1) + 1 }} and re-runs guardrails.
           </div>
         </div>
-        <input type="file" id="zip" accept=".zip"
+        <input type="file" id="zip" accept=".zip,.skill"
                {% if pending_sub %}disabled{% endif %}>
         <button type="button" id="zip-pick" {% if pending_sub %}disabled{% endif %}>Choose file</button>
       </div>
@@ -332,7 +332,7 @@ wireDropZone(
   document.getElementById('zip'),
   document.getElementById('zip-pick'),
   document.getElementById('zip-label'),
-  (f) => f.size > 50 * 1024 * 1024 ? 'ZIP too large (max 50 MB).' : null,
+  (f) => f.size > 50 * 1024 * 1024 ? 'File too large (max 50 MB).' : null,
 );
 wireDropZone(
   document.getElementById('photo-drop'),

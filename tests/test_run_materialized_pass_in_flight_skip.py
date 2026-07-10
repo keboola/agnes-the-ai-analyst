@@ -221,7 +221,7 @@ def test_targeted_trigger_only_processes_listed_tables(
     pass ignored the `tables` arg entirely."""
     materialized_calls = []
 
-    def fake_mat(table_id, sql, bq, output_dir, max_bytes):
+    def fake_mat(table_id, sql, bq, output_dir, max_bytes, fetch_timeout_s=None):
         materialized_calls.append(table_id)
         return {"rows": 1, "size_bytes": 100, "hash": "abc"}
 

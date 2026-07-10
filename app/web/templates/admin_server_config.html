@@ -1523,7 +1523,7 @@ async function loadDsVaultHint() {
     if (vaultConfigured) {
       el.innerHTML = `<a href="/admin/datasource-credentials" class="ds-vault-hint ds-vault-hint--ready">
         <span class="ds-vault-hint-icon">&#128274;</span>
-        <span>Credentials can also be managed via the encrypted vault &rarr; <strong>Manage datasource credentials</strong></span>
+        <span>Credentials can also be managed via the encrypted vault &rarr; <strong>Manage instance secrets</strong></span>
       </a>`;
     } else {
       el.innerHTML = `<div class="ds-vault-hint ds-vault-hint--info">

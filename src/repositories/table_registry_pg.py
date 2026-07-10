@@ -304,6 +304,18 @@ class TableRegistryPgRepository:
             )
         return self._decode_row(dict(row)) if row else None
 
+    def get_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM table_registry WHERE name = :name"),
+                    {"name": name},
+                )
+                .mappings()
+                .first()
+            )
+        return self._decode_row(dict(row)) if row else None
+
     def list_all(self) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
             rows = conn.execute(sa.text("SELECT * FROM table_registry ORDER BY name")).mappings().all()

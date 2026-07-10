@@ -13,7 +13,7 @@ import duckdb
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
-from app.auth.jwt import create_access_token
+from app.auth.jwt import create_access_token, SESSION_COOKIE_MAX_AGE_SECONDS
 from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, is_local_dev_mode
 from app.auth.rate_limit import limiter as _rate_limiter
@@ -84,7 +84,7 @@ def _set_login_cookie(response, user_id: str, email: str) -> None:
         key="access_token",
         value=token,
         httponly=True,
-        max_age=86400,
+        max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
         samesite="lax",
         secure=_cookie_secure(),
     )

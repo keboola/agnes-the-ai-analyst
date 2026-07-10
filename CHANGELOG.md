@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Agnes AI Data Analyst.
+All notable changes to Agnes.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html), pre-1.0 — public surface (CLI flags, REST endpoints, `instance.yaml` schema, `extract.duckdb` contract) may shift between minor versions; breaking changes called out under **Changed** or **Removed** with the **BREAKING** marker.
 
@@ -10,19 +10,157 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- Postgres-backed instances: ~25 further backend-split sites (beyond the 0.74.36 batch) read/wrote app-state on the always-DuckDB connection instead of the active backend, breaking (among others) the per-table MCP endpoint (404 for every table), internal-source registration, MCP passthrough-tool registration, memory-endpoint RBAC audience filtering, blocked-bundle purge (reaped 0 rows), session-pipeline user attribution and marketplace usage attribution (empty telemetry rollups), home-page stats, the admin activity health pulse, catalog profile display, workspace CLAUDE.md rendering (empty tables/metrics/marketplace sections), OpenMetadata catalog export, Slack-bot user identity + channel allowlist, chat audit-log writes, and the Keboola/BigQuery/MCP extractor registry reads. All sites now route through the backend-aware repository factory.
+
+### Internal
+
+- Backend-split guard hardened: state-table list is now derived from the SQLAlchemy model metadata (a new model automatically extends the guard), `connectors/` joined the scan dirs, and a new detector flags raw state-SQL through *any* connection outside the repository layer — closing the helper-param blind spot behind this bug batch. New cross-engine repo methods added in pairs with contract-test coverage.
+
+---
+
+## [0.74.48] - 2026-07-10
+
 ### Added
+- Cloud-chat sandbox agents now connect to the Agnes MCP stdio server (`agnes mcp`) via `ClaudeAgentOptions.mcp_servers`, so a web-chat agent sees the same RBAC-filtered Universal-MCP passthrough tools (`crm_*`, etc.) that a local Claude Code / Cowork install gets — previously the sandbox agent could only reach Agnes through the `agnes` CLI's Bash surface and never saw passthrough tools. Auth (`AGNES_SERVER`/`AGNES_TOKEN`/`AGNES_SESSION_ID`) is forwarded on the MCP server's own env; unconfigured spawns (fake-agent tests) fall back to built-in tools only.
+
+### Fixed
+- Cloud-chat MCP subprocess: `HOME` is now forwarded to the `agnes mcp` stdio server so it can resolve its config dir via `expanduser("~/.config/agnes")`. The `claude` CLI spawns the server and env inheritance across that hop is not guaranteed, so a missing `HOME` could break config-dir resolution.
+
+---
+
+## [0.74.47] - 2026-07-10
 
 ### Changed
 
+- Compose hardening for the app and scheduler services: `CURL_CA_BUNDLE`/`SSL_CERT_FILE` pinned to the image's CA bundle (the statically linked libcurl inside DuckDB extensions intermittently failed new TLS handshakes with `CURL error 77` while its own CA discovery raced fd pressure) and the file-descriptor soft limit raised from the 1024 default to 65536 (fd exhaustion during bursts produces the same error signature).
+
 ### Fixed
 
-- Postgres-backed instances: ~30 backend-split sites read/wrote app-state on the always-DuckDB connection instead of the active backend, breaking (among others) CLI login (`agnes auth login` minted a PAT the server couldn't verify), the per-table MCP endpoint (404 for every table), internal-source registration, MCP passthrough-tool registration, knowledge mark-mandatory / add-item-to-domain, memory-endpoint RBAC audience filtering, blocked-bundle purge (reaped 0 rows), session-pipeline user attribution and marketplace usage attribution (empty telemetry rollups), home-page stats, the admin activity health pulse, catalog profile display, workspace CLAUDE.md rendering (empty tables/metrics/marketplace sections), OpenMetadata catalog export, Slack-bot user identity + channel allowlist, chat audit-log writes, and the Keboola/BigQuery/MCP extractor registry reads. All sites now route through the backend-aware repository factory.
+- Materialized BQ syncs no longer hang indefinitely when the result download wedges. The BQ jobs API computes results in seconds, but the extension's client-side fetch could stall on a dead HTTP stream — the extension's own query timeout covers the job phase only — leaving a wedged COPY holding the per-table lock for hours (observed live: a 2 h stall for a result a retry then fetched in ~70 s). The COPY now runs under a fetch-phase watchdog (`data_source.bigquery.materialize_fetch_timeout_seconds`, default 900 s, `0` disables) that interrupts the connection and retries once on a fresh session.
+- Orphaned DuckDB spill files (`duckdb_temp_storage_*`) left behind by hard process deaths are now swept at app startup (with a 5-minute age margin so live spill is never touched) — they previously accumulated as multi-GB dead weight in `{STATE_DIR}/duckdb-tmp` across incidents.
+
+---
+
+## [0.74.46] - 2026-07-10
+
+### Changed
+- **Rebrand: "AI Data Analyst" → "AI Harness".** Agnes outgrew its data-analyst framing — it now spans governed data access, an aggregated skills marketplace, corporate memory, and multiple agent surfaces (web chat, Slack, Telegram, MCP, CLI). Renamed the platform one-liner and brand strings across README, docs, the FastAPI/OpenAPI title, MCP server instructions, CLI help, web page-title fallbacks, `config/instance.yaml.example`, and the marketplace owner name. The default `instance.name` is now `"AI Harness"` (was `"AI Data Analyst"`; instances that set `instance.name` explicitly are unaffected). The `agnes init` workspace CLAUDE.md template heading no longer contains the legacy `AI Data Analyst` marker — workspace-initialized detection has been sentinel-based (`.claude/init-complete`) since #259, and the legacy substring check is retained for pre-#259 workspaces.
+
+---
+
+## [0.74.45] - 2026-07-10
+
+### Added
+
+- Collections: zip archive upload — a bundle (e.g. a Confluence HTML space export)
+  is unpacked server-side, every supported member ingested as its own file with
+  per-member status, Confluence navigation chrome stripped automatically (#796).
+
+### Internal
+
+- Schema v88: `corpus_files.parent_file_id` links archive-extracted children to
+  their bundle row (DuckDB `_v87_to_v88` + Alembic `0035_parent_file_id_v88`).
+
+---
+
+## [0.74.44] - 2026-07-10
+
+### Changed
+- Interactive web login sessions now persist for 30 days (JWT `exp` + `access_token` cookie `max_age`), up from 24 hours. Session JWTs remain non-revocable per-session — the only server-side kill switch is deactivating the account.
+
+---
+
+## [0.74.43] - 2026-07-10
+
+### Added
+- `instance.custom_preamble` install-prompt hook (env `AGNES_INSTANCE_CUSTOM_PREAMBLE`, resolver `get_instance_custom_preamble()`): an operator-authored block injected at the very top of the `agnes init` install prompt, above `Set up the … CLI`. Empty/unset (the default) emits zero lines, so the rendered prompt stays byte-identical; `{instance_brand}` and the other server-side placeholders are substituted, but it must not contain literal `{server_url}`/`{token}`. Documented in `docs/CONFIGURATION.md` and surfaced by `GET /api/admin/config-surface`.
+
+### Changed
+- Install prompt: the section-3 NOTE about the PAT landing in the session transcript is reworded — the server generated the token, so having it in the transcript and sharing it back to the server is not a security issue.
+- Install prompt: the restart-Claude step (9) now closes with a recap cue asking, before Confirm, for a short plain-language summary of what was installed or already present (CLI, workspace files, hooks, marketplace plugins, connectors).
+
+### Fixed
+
+---
+
+## [0.74.42] - 2026-07-10
+
+### Changed
+- The cloud-chat workspace seed (`WorkdirManager.server_url`) now resolves its
+  server URL through the same fallback chain as the sandbox data rails
+  (`SERVER_URL` → `AGNES_INTERNAL_URL` → loopback) via the new
+  `agnes_server_url()` helper, so plain-HTTP deployments that use
+  `AGNES_INTERNAL_URL` get a working workspace seed too. `SERVER_URL`,
+  `AGNES_BASE_URL`, and the previously undocumented `AGNES_INTERNAL_URL` are
+  now documented in `docs/CONFIGURATION.md`.
+
+### Fixed
+- Setting `SERVER_URL` (or `AGNES_BASE_URL`) to a plain-HTTP, non-localhost
+  URL — the natural move on a `tls_mode=none` deployment — no longer crashes
+  `create_app()` in a boot loop. The MCP SDK rejects such a URL as OAuth
+  issuer (RFC 8414 requires HTTPS); the streamable MCP connector at
+  `/api/mcp/http` now degrades instead (loud ERROR log, connector + its OAuth
+  discovery/consent routes skipped) and the rest of the app boots normally.
+
+---
+
+## [0.74.41] - 2026-07-10
+
+### Added
+
+- Studio Skill Builder (`/admin/studio/skill`, issue #688): guided authoring of a SKILL.md with an assistant profile, published straight into the store's guardrail + review pipeline via the new `POST /api/store/entities/from-markdown` (also `agnes store publish-md` and the `store_publish_markdown` MCP tool). Direct-submit domains bypass the authoring-suggestions queue — the store's own review is the moderation.
+
+---
+
+## [0.74.40] - 2026-07-10
+
+### Fixed
+
+- Failed or killed scheduled materializations are retried the same day instead of silently waiting until the next schedule boundary. The orchestrator's post-rebuild bookkeeping bumped `sync_state.last_sync` for every table in `_meta` — including `query_mode='materialized'` rows, whose daily due-check reads that timestamp — so one failed `daily 06:00` run left the table stale for 24 h (observed live as a week-long refresh gap). Materialized rows' sync_state is now owned solely by the materialized pass; the filesystem-fallback publish still records rows/hash and clears stale errors but preserves `last_sync` (new `update_sync(bump_last_sync=False)` on both backends), keeping the schedule gate open so the next tick re-materializes and heals the missing `_meta` row. Also fixes the filesystem-fallback path detecting materialized rows via `get_by_name()` instead of `get()` so that the schedule-gate protection applies when the registry `id` differs from the `name` (parquet filename stem).
+
+---
+
+## [0.74.39] - 2026-07-10
+
+### Added
+- Single `.skill` file uploads to the Store: the marketplace now accepts a lone `.skill` file (a `SKILL.md` document with YAML frontmatter `name`+`description` and a markdown body) as an alternative to a `.zip` bundle. The file is materialized server-side as `scratch/SKILL.md` and is identical to a zip upload; only valid for `type=skill` (uploading as plugin/agent returns 422 `skill_file_wrong_type`).
+
+---
+
+## [0.74.38] - 2026-07-10
+
+### Fixed
+- MCP wheel bootstrap no longer trusts the `.installed.json` marker alone: the marker lives on the persistent data volume while `pip install --user` lands in the ephemeral container filesystem, so after a container recreate the boot skipped the reinstall and every stdio MCP source failed with `[Errno 2] No such file or directory`. The skip path now also verifies the wheel's distribution is actually importable and reinstalls when it is gone.
+
+- Backend-split cleanup (batch 2): the CLI-login PAT mint and four corporate-memory admin endpoints (mark-mandatory, mark-unmandatory, admin item GET, memory-domain item lookup, and the per-domain markdown bundle) wrote/read via direct `AccessTokenRepository(conn)` / `KnowledgeRepository(conn)` instantiation, which always targets DuckDB — on a Postgres-backed instance those writes/reads bypassed the active backend. Migrated to `access_token_repo()` / `knowledge_repo()` and shrank the backend-split guard's grandfathered allow-list accordingly.
+- `resource_grants` `requirement='required'` tier now applies to marketplace plugins: `resolve_user_marketplace` serves `granted ∩ (subscribed ∪ required)` (previously a required plugin grant was a silent no-op — only the global `is_system` flag was mandatory). Required plugins report `enabled`/`installed` plus a new `is_required` field on `/api/my-stack` and `/api/marketplace` items/detail, refuse unsubscribe/uninstall with 409 (`cannot_unsubscribe_required_plugin` / `cannot_uninstall_required_plugin`), and the `required → available` soft-downgrade materializes `user_plugin_optouts` rows for group members (previously it wrote dead rows into `user_stack_subscriptions`).
+
+---
+
+## [0.74.37] - 2026-07-10
+
+### Added
+- Operator toggle to hide individual `/login` feature cards without forking: set `instance.hide_login_features` (a YAML list or comma-separated string of the stable keys `data`, `marketplace`, `mcp`, `memory`, `anywhere`) in `instance.yaml`, or the `AGNES_INSTANCE_HIDE_LOGIN_FEATURES` env override. Empty by default — nothing is hidden.
+
+### Fixed
 
 ### Removed
 
 ### Internal
 
-- Backend-split guard hardened: state-table list is now derived from the SQLAlchemy model metadata (a new model automatically extends the guard), `connectors/` joined the scan dirs, and a new detector flags raw state-SQL through *any* connection outside the repository layer — closing the helper-param blind spot behind this bug batch. New cross-engine repo methods added in pairs with contract-test coverage.
+## [0.74.36] - 2026-07-10
+
+### Changed
+- Admin secrets/data-sources UX consolidation: Keboola project connect/browse/register/"Set as default"/"Rotate token" now live entirely on `/admin/data-sources`, removing the duplicate Keboola section from `/admin/datasource-credentials`. That page is retitled "Instance secrets" (Google Workspace + BigQuery only) and links back to `/admin/data-sources` for Keboola; `/admin/data-sources` gains a reciprocal link to Instance secrets.
+
+### Fixed
+- MCP wheel bootstrap no longer trusts the `.installed.json` marker alone: the marker lives on the persistent data volume while `pip install --user` lands in the ephemeral container filesystem, so after a container recreate the boot skipped the reinstall and every stdio MCP source failed with `[Errno 2] No such file or directory`. The skip path now also verifies the wheel's distribution is actually importable and reinstalls when it is gone.
+
+- Backend-split cleanup (batch 2): the CLI-login PAT mint and four corporate-memory admin endpoints (mark-mandatory, mark-unmandatory, admin item GET, memory-domain item lookup, and the per-domain markdown bundle) wrote/read via direct `AccessTokenRepository(conn)` / `KnowledgeRepository(conn)` instantiation, which always targets DuckDB — on a Postgres-backed instance those writes/reads bypassed the active backend. Migrated to `access_token_repo()` / `knowledge_repo()` and shrank the backend-split guard's grandfathered allow-list accordingly.
+
+---
 
 ## [0.74.35] - 2026-07-10
 
@@ -55,6 +193,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 - /home onboarding now recommends launching Claude with `claude --permission-mode auto` instead of `--dangerously-skip-permissions`. Auto mode's classifier auto-approves safe actions (file edits and safe Bash) so the setup script runs mostly unattended while riskier commands can still prompt — an honest middle ground rather than a blanket skip. The broad-blast-radius flag is no longer surfaced on /home (it stays documented as an advanced option on /setup-advanced), and the workspace launcher comment examples were updated to match.
+- Schema v87: `corpus_files.parent_file_id` links archive-extracted children to
+  their bundle row (DuckDB `_v86_to_v87` + Alembic `0034_parent_file_id_v87`).
 
 ## [0.74.31] - 2026-07-10
 

@@ -803,12 +803,17 @@ async def mark_mandatory(
     repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.set_is_required(item_id, True)
-    audit_repo().log(
-        user_id=user["email"],
-        action="memory_item.set_required",
-        resource=f"knowledge_item:{item_id}",
-        params={"new_value": True},
-    )
+    # Best-effort like the sibling /admin/mandate — the flag flip has already
+    # committed; an audit hiccup must not surface as a 500.
+    try:
+        audit_repo().log(
+            user_id=user["email"],
+            action="memory_item.set_required",
+            resource=f"knowledge_item:{item_id}",
+            params={"new_value": True},
+        )
+    except Exception:
+        pass
     return {"id": item_id, "is_required": True}
 
 
@@ -827,12 +832,16 @@ async def mark_unmandatory(
     repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.set_is_required(item_id, False)
-    audit_repo().log(
-        user_id=user["email"],
-        action="memory_item.set_required",
-        resource=f"knowledge_item:{item_id}",
-        params={"new_value": False},
-    )
+    # Best-effort like the sibling /admin/mandate.
+    try:
+        audit_repo().log(
+            user_id=user["email"],
+            action="memory_item.set_required",
+            resource=f"knowledge_item:{item_id}",
+            params={"new_value": False},
+        )
+    except Exception:
+        pass
     return {"id": item_id, "is_required": False}
 
 
@@ -1553,10 +1562,10 @@ def _build_per_domain_markdown(slug: str, user: dict, conn: duckdb.DuckDBPyConne
         return Response(content=body, media_type="text/markdown; charset=utf-8")
 
     # Fetch full bodies — list_items_of_domain only returns id/title/status.
-    knowledge = knowledge_repo()
+    kn_repo = knowledge_repo()
     full_items: list = []
     for meta in sorted(items_meta, key=lambda r: r["id"]):
-        full = knowledge.get_by_id(meta["id"])
+        full = kn_repo.get_by_id(meta["id"])
         if not full:
             continue
         full_items.append(full)

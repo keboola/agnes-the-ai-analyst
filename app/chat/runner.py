@@ -9,6 +9,7 @@ E2BProvider passes these through ``AsyncSandbox.create(envs=...)``):
 - AGNES_SESSION_ID, AGNES_USER_EMAIL, AGNES_SERVER, AGNES_TOKEN
 - AGNES_DAILY_BUDGET_USD, AGNES_PER_TOOL_CALL_SECONDS
 """
+
 from __future__ import annotations
 
 import argparse
@@ -82,8 +83,12 @@ def _install_agnes_cli() -> None:
     try:
         subprocess.run(
             [
-                sys.executable, "-m", "pip", "install",
-                "--no-deps", "--break-system-packages",
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--no-deps",
+                "--break-system-packages",
                 wheels[-1],
             ],
             # stdin MUST be isolated from the parent's fd 0: the runner's
@@ -99,6 +104,60 @@ def _install_agnes_cli() -> None:
         )
     except Exception as exc:  # noqa: BLE001 — non-fatal; agent still runs
         print(f"agnes CLI install failed: {exc}", file=sys.stderr, flush=True)
+
+
+def _agnes_mcp_servers() -> dict:
+    """Build the ``mcp_servers`` config that connects the sandbox agent to the
+    Agnes MCP stdio server (``agnes mcp``).
+
+    This is what makes the cloud-chat agent == local Claude Code / Cowork for
+    MCP: the same ``agnes mcp`` stdio server that an analyst's local install
+    spawns (cli/mcp/server.py) is spawned here as a child of the SDK's
+    ``claude`` process. It exposes the built-in cowork tools (catalog, query,
+    describe, …) PLUS the RBAC-filtered Universal-MCP *passthrough* tools the
+    caller's groups can see (registered dynamically at run() start via
+    cli/mcp/_dynamic_passthrough.py against ``/api/mcp/passthrough/tools``).
+    Without this, the sandbox agent could only reach Agnes through the
+    ``agnes`` CLI's Bash surface and never saw passthrough tools at all.
+
+    The stdio server authenticates the same way the CLI does — off
+    ``AGNES_SERVER`` + ``AGNES_TOKEN`` (+ ``AGNES_SESSION_ID`` for the
+    per-session re-mint path), which ChatManager._spawn_runner already seeds
+    into this process's env. We forward them explicitly on the MCP server's
+    own ``env`` rather than relying on inheritance, because the SDK spawns the
+    server through the ``claude`` CLI and env inheritance across that hop is
+    not guaranteed. ``PATH`` is forwarded so the ``agnes`` console script
+    (installed by ``_install_agnes_cli`` into /usr/local/bin) resolves.
+
+    Returns ``{}`` when ``AGNES_SERVER``/``AGNES_TOKEN`` are absent (e.g. the
+    fake-agent test path or a misconfigured spawn) so the agent still runs
+    with its built-in tools rather than failing on a broken MCP handshake.
+    """
+    server = os.environ.get("AGNES_SERVER", "").strip()
+    token = os.environ.get("AGNES_TOKEN", "").strip()
+    if not server or not token:
+        return {}
+    env = {
+        "AGNES_SERVER": server,
+        "AGNES_TOKEN": token,
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        # ``agnes mcp`` resolves its config dir via ``expanduser("~/.config/
+        # agnes")`` (cli/config.py), which needs HOME. The ``claude`` CLI
+        # spawns the stdio server and env inheritance across that hop is not
+        # guaranteed, so forward HOME explicitly (default matches the sandbox
+        # ``user`` home the manager seeds into the runner process).
+        "HOME": os.environ.get("HOME", "/home/user"),
+    }
+    if session_id := os.environ.get("AGNES_SESSION_ID", "").strip():
+        env["AGNES_SESSION_ID"] = session_id
+    return {
+        "agnes": {
+            "type": "stdio",
+            "command": "agnes",
+            "args": ["mcp"],
+            "env": env,
+        }
+    }
 
 
 def _bootstrap_marketplace(workdir: str) -> None:
@@ -119,6 +178,7 @@ def _bootstrap_marketplace(workdir: str) -> None:
     corrupts the stdout JSON-frame protocol.
     """
     from shutil import which
+
     if which("agnes") is None:
         return
     try:
@@ -186,11 +246,13 @@ async def _fake_agent_loop(
                         timeout=per_tool_seconds,
                     )
                 except asyncio.TimeoutError:
-                    _emit({
-                        "type": "tool_result",
-                        "tool": "run_query",
-                        "result": {"timeout": True},
-                    })
+                    _emit(
+                        {
+                            "type": "tool_result",
+                            "tool": "run_query",
+                            "result": {"timeout": True},
+                        }
+                    )
                 continue
             if text.startswith("__many_tools__:"):
                 try:
@@ -204,29 +266,37 @@ async def _fake_agent_loop(
                 budget_hit = False
                 for i in range(requested):
                     if count >= tool_calls_per_turn:
-                        _emit({
-                            "type": "confirmation_required",
-                            "reason": "tool_call_budget",
-                            "budget": tool_calls_per_turn,
-                        })
+                        _emit(
+                            {
+                                "type": "confirmation_required",
+                                "reason": "tool_call_budget",
+                                "budget": tool_calls_per_turn,
+                            }
+                        )
                         budget_hit = True
                         break
                     _emit({"type": "tool_call", "tool": f"t{i}", "args": {}})
                     count += 1
                 if not budget_hit:
-                    _emit({
-                        "type": "assistant_message",
-                        "content": f"emitted {count} tool calls",
-                        "tokens_in": 1, "tokens_out": 1, "model": "fake",
-                    })
+                    _emit(
+                        {
+                            "type": "assistant_message",
+                            "content": f"emitted {count} tool calls",
+                            "tokens_in": 1,
+                            "tokens_out": 1,
+                            "model": "fake",
+                        }
+                    )
                 continue
-            _emit({
-                "type": "assistant_message",
-                "content": f"echo: {text}",
-                "tokens_in": 1,
-                "tokens_out": 1,
-                "model": "fake",
-            })
+            _emit(
+                {
+                    "type": "assistant_message",
+                    "content": f"echo: {text}",
+                    "tokens_in": 1,
+                    "tokens_out": 1,
+                    "model": "fake",
+                }
+            )
 
 
 async def _real_agent_loop(
@@ -275,16 +345,15 @@ async def _real_agent_loop(
     def _emit_tool_result(block) -> None:
         result = block.content
         if isinstance(result, list):
-            result = " ".join(
-                item.get("text", "") if isinstance(item, dict) else str(item)
-                for item in result
-            )
-        _emit({
-            "type": "tool_result",
-            "id": block.tool_use_id,
-            "tool": block.tool_use_id,
-            "result": result,
-        })
+            result = " ".join(item.get("text", "") if isinstance(item, dict) else str(item) for item in result)
+        _emit(
+            {
+                "type": "tool_result",
+                "id": block.tool_use_id,
+                "tool": block.tool_use_id,
+                "result": result,
+            }
+        )
 
     # ``bypassPermissions`` so the agent can run its tools (Bash → ``agnes
     # catalog``/``query``/…) autonomously. The SDK's default permission mode
@@ -304,11 +373,17 @@ async def _real_agent_loop(
     # marketplace plugins. Loading them keeps cloud-chat == local. (The
     # marketplace registers in user scope and enables plugins at project scope,
     # so both must load for a bootstrapped plugin to resolve.)
+    # ``mcp_servers`` connects the agent to the Agnes MCP stdio server so it
+    # sees the RBAC-filtered passthrough tools (crm_* etc.) — the same surface
+    # a local Claude Code / Cowork install gets. Empty dict when unconfigured
+    # (fake-agent tests) so the agent still runs with built-in tools.
+    mcp_servers = _agnes_mcp_servers()
     async with ClaudeSDKClient(
         options=ClaudeAgentOptions(
             permission_mode="bypassPermissions",
             cwd=str(workdir),
             setting_sources=["user", "project", "local"],
+            mcp_servers=mcp_servers,
         )
     ) as client:
         # Flag to track whether we've called connect() yet
@@ -359,11 +434,13 @@ async def _real_agent_loop(
                             collected_text.append(block.text)
                         elif isinstance(block, ToolUseBlock):
                             if tool_calls_this_turn >= tool_calls_per_turn:
-                                _emit({
-                                    "type": "confirmation_required",
-                                    "reason": "tool_call_budget",
-                                    "budget": tool_calls_per_turn,
-                                })
+                                _emit(
+                                    {
+                                        "type": "confirmation_required",
+                                        "reason": "tool_call_budget",
+                                        "budget": tool_calls_per_turn,
+                                    }
+                                )
                                 budget_hit = True
                                 break
                             # ``id`` is the per-call ``tool_use_id`` —
@@ -373,12 +450,14 @@ async def _real_agent_loop(
                             # same tool are in flight. ``tool`` carries
                             # the human-readable name for the inline
                             # block header.
-                            _emit({
-                                "type": "tool_call",
-                                "id": block.id,
-                                "tool": block.name,
-                                "args": block.input,
-                            })
+                            _emit(
+                                {
+                                    "type": "tool_call",
+                                    "id": block.id,
+                                    "tool": block.name,
+                                    "args": block.input,
+                                }
+                            )
                             tool_calls_this_turn += 1
                         elif isinstance(block, ToolResultBlock):
                             _emit_tool_result(block)
@@ -403,13 +482,15 @@ async def _real_agent_loop(
                         tokens_in = msg.usage.get("input_tokens", tokens_in)
                         tokens_out = msg.usage.get("output_tokens", tokens_out)
                     # ResultMessage signals turn end; receive_response() stops after it
-                    _emit({
-                        "type": "assistant_message",
-                        "content": "".join(collected_text),
-                        "tokens_in": tokens_in,
-                        "tokens_out": tokens_out,
-                        "model": model,
-                    })
+                    _emit(
+                        {
+                            "type": "assistant_message",
+                            "content": "".join(collected_text),
+                            "tokens_in": tokens_in,
+                            "tokens_out": tokens_out,
+                            "model": model,
+                        }
+                    )
 
             # Turn finished (receive_response() drained, or budget gate broke
             # the loop). Emit a `done` frame so the UI hides the Stop button —
@@ -451,13 +532,16 @@ async def amain() -> None:
     tool_calls_per_turn = int(os.environ.get("AGNES_TOOL_CALLS_PER_TURN", "50"))
     if fake_agent:
         await _fake_agent_loop(
-            queue, per_tool_seconds=per_tool,
+            queue,
+            per_tool_seconds=per_tool,
             tool_calls_per_turn=tool_calls_per_turn,
         )
     else:
         try:
             await _real_agent_loop(
-                queue, workdir, tool_calls_per_turn=tool_calls_per_turn,
+                queue,
+                workdir,
+                tool_calls_per_turn=tool_calls_per_turn,
             )
         except Exception as exc:
             _emit({"type": "error", "kind": "runner_exception", "message": str(exc)})

@@ -649,3 +649,93 @@ class TestListDistinctNames:
         _seed_plugin(repos, "mp-names-2b", "shared")
         names = repos["plugins"].list_distinct_names()
         assert names == ["shared"]
+# user_curated_subscriptions.subscribe_group_members — soft-downgrade fan-out
+# ---------------------------------------------------------------------------
+
+
+def _make_curated_repo(repos: dict):
+    """Return a UserCuratedSubscriptionsRepository / Pg sibling."""
+    if repos["backend"] == "duckdb":
+        from src.repositories.user_curated_subscriptions import (
+            UserCuratedSubscriptionsRepository,
+        )
+
+        return UserCuratedSubscriptionsRepository(repos["conn"])
+    else:
+        from src.repositories.user_curated_subscriptions_pg import (
+            UserCuratedSubscriptionsPgRepository,
+        )
+
+        return UserCuratedSubscriptionsPgRepository(repos["engine"])
+
+
+def _seed_user(repos: dict, user_id: str) -> None:
+    if repos["backend"] == "duckdb":
+        repos["conn"].execute(
+            "INSERT INTO users (id, email) VALUES (?, ?)",
+            [user_id, f"{user_id}@x.test"],
+        )
+    else:
+        import sqlalchemy as sa
+
+        with repos["engine"].begin() as conn:
+            conn.execute(
+                sa.text("INSERT INTO users (id, email) VALUES (:u, :e)"),
+                {"u": user_id, "e": f"{user_id}@x.test"},
+            )
+
+
+def _seed_membership(repos: dict, user_id: str, group_id: str) -> None:
+    if repos["backend"] == "duckdb":
+        repos["conn"].execute(
+            "INSERT INTO user_group_members (user_id, group_id, source) "
+            "VALUES (?, ?, 'admin')",
+            [user_id, group_id],
+        )
+    else:
+        import sqlalchemy as sa
+
+        with repos["engine"].begin() as conn:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO user_group_members (user_id, group_id, source) "
+                    "VALUES (:u, :g, 'admin')"
+                ),
+                {"u": user_id, "g": group_id},
+            )
+
+
+class TestSubscribeGroupMembers:
+    """Contract for the marketplace_plugin required → available soft-downgrade
+    fan-out (``app/api/access.py:update_grant_requirement``): every current
+    group member gets a ``user_plugin_optouts`` row, idempotently."""
+
+    def test_materializes_rows_for_group_members(self, repos):
+        curated = _make_curated_repo(repos)
+        g = repos["groups"].create(name="sgm-grp", created_by="test")
+        for uid in ("sgm-u1", "sgm-u2"):
+            _seed_user(repos, uid)
+            _seed_membership(repos, uid, g["id"])
+        _seed_user(repos, "sgm-outsider")
+
+        created = curated.subscribe_group_members(g["id"], "mkt", "p1")
+        assert created == 2
+        assert curated.is_subscribed("sgm-u1", "mkt", "p1") is True
+        assert curated.is_subscribed("sgm-u2", "mkt", "p1") is True
+        assert curated.is_subscribed("sgm-outsider", "mkt", "p1") is False
+
+    def test_idempotent_and_preserves_existing(self, repos):
+        curated = _make_curated_repo(repos)
+        g = repos["groups"].create(name="sgm-grp2", created_by="test")
+        _seed_user(repos, "sgm-u3")
+        _seed_membership(repos, "sgm-u3", g["id"])
+        curated.subscribe("sgm-u3", "mkt", "p2")
+
+        created = curated.subscribe_group_members(g["id"], "mkt", "p2")
+        assert created == 0
+        assert curated.is_subscribed("sgm-u3", "mkt", "p2") is True
+
+    def test_empty_group_creates_nothing(self, repos):
+        curated = _make_curated_repo(repos)
+        g = repos["groups"].create(name="sgm-empty", created_by="test")
+        assert curated.subscribe_group_members(g["id"], "mkt", "p3") == 0

@@ -1,6 +1,6 @@
 # Disaster Recovery
 
-Recovery procedures for the AI Data Analyst Docker deployment.
+Recovery procedures for the Agnes Docker deployment.
 
 ## Overview
 

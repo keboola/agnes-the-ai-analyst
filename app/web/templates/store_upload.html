@@ -430,9 +430,9 @@
             <div class="icon">📦</div>
             <div class="file-info">
               <div class="label" id="zip-label">No file selected</div>
-              <div class="meta" id="zip-meta">Drag & drop a .zip here, or click Choose file</div>
+              <div class="meta" id="zip-meta">Drag & drop a .zip or .skill here, or click Choose file</div>
             </div>
-            <input type="file" id="zip" accept=".zip">
+            <input type="file" id="zip" accept=".zip,.skill">
             <button type="button" id="zip-pick">Choose file</button>
           </div>
         </div>
@@ -963,7 +963,7 @@ function wireDropZone(dropEl, fileInput, pickBtn, validate, onAccept) {
 // ZIP zone
 wireDropZone(
   zipDrop, zipInput, zipPick,
-  (f) => /\.zip$/i.test(f.name) ? null : 'Only .zip files are accepted.',
+  (f) => /\.(zip|skill)$/i.test(f.name) ? null : 'Only .zip or .skill files are accepted.',
   (f) => {
     zipFile = f;
     zipDrop.classList.add('has-file');

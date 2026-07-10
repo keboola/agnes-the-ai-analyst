@@ -18,12 +18,12 @@ import typer
 # `.claude/init-complete` is the authoritative sentinel written by every
 # successful init (default OR Initial-Workspace-override mode); the legacy
 # CLAUDE.md substring is kept as a fallback for pre-#259 workspaces. The
-# sentinel-first ordering matters for override workspaces: a customer-
-# supplied template body may legitimately omit the literal "AI Data
-# Analyst" substring (the marker is hardcoded against the default Agnes
-# template's `# {{ instance.name }} — AI Data Analyst` heading), and the
-# legacy grep alone would then falsely report "Initialized: no" even
-# when init wrote the sentinel and the workspace is functional.
+# sentinel-first ordering matters for override workspaces AND all
+# post-rebrand default workspaces: neither contains the literal "AI Data
+# Analyst" substring (the marker is hardcoded against the pre-rebrand
+# default template's `# {{ instance.name }} — AI Data Analyst` heading),
+# and the legacy grep alone would then falsely report "Initialized: no"
+# even when init wrote the sentinel and the workspace is functional.
 _INIT_SENTINEL = Path(".claude") / "init-complete"
 _INIT_MARKER = "AI Data Analyst"
 
@@ -60,6 +60,7 @@ def status(
     # from any cwd reports the real workspace. 0 when unset.
     from cli.config import get_workspace_root
     from cli.lib.session_paths import list_session_files
+
     ws_root = get_workspace_root()
     session_count = len(list_session_files(Path(ws_root))) if ws_root else 0
 

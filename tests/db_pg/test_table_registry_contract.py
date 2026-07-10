@@ -79,6 +79,25 @@ def _seed(repos: dict, id: str, name: str, source_type=None) -> None:
     repos["registry"].register(id=id, name=name, source_type=source_type)
 
 
+class TestGetByName:
+    def test_returns_row_when_name_matches(self, repos):
+        _seed(repos, "mat_001", "Orders Daily", source_type="bigquery")
+        row = repos["registry"].get_by_name("Orders Daily")
+        assert row is not None
+        assert row["id"] == "mat_001"
+        assert row["name"] == "Orders Daily"
+
+    def test_returns_none_when_name_absent(self, repos):
+        _seed(repos, "mat_002", "Sales Weekly", source_type="bigquery")
+        assert repos["registry"].get_by_name("nonexistent") is None
+
+    def test_name_differs_from_id(self, repos):
+        """id != name: get_by_name must hit WHERE name = ?, not WHERE id = ?."""
+        _seed(repos, "tbl_id", "human_readable_name", source_type="keboola")
+        assert repos["registry"].get_by_name("human_readable_name") is not None
+        assert repos["registry"].get_by_name("tbl_id") is None
+
+
 class TestCountNonInternal:
     def test_empty_registry_is_zero(self, repos):
         assert repos["registry"].count_non_internal() == 0

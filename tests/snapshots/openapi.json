@@ -5380,8 +5380,8 @@
     }
   },
   "info": {
-    "description": "Data distribution platform for AI analytical systems",
-    "title": "AI Data Analyst",
+    "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
+    "title": "AI Harness",
     "version": "0.54.16"
   },
   "openapi": "3.1.0",

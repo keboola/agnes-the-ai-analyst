@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sample data generator for AI Data Analyst demo and testing.
+Sample data generator for Agnes demo and testing.
 
 Generates realistic synthetic e-commerce + marketing data as CSV or Parquet.
 Tables: customers, products, campaigns, web_sessions, web_leads,

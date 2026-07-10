@@ -440,6 +440,18 @@ async def lifespan(app):
 
     app.state.public_url = get_public_url()
 
+    # Sweep DuckDB spill files orphaned by a previous hard death (SIGKILL,
+    # crash, container stop timeout) — DuckDB never cleans these up itself
+    # and they accumulate as multi-GB dead weight. Safe here: this process
+    # is the only DuckDB writer for the state dir and no connection exists
+    # yet. Fail-soft — a cleanup hiccup must never block startup.
+    try:
+        from src.db import cleanup_orphaned_temp_files
+
+        cleanup_orphaned_temp_files()
+    except Exception:
+        logger.exception("duckdb-tmp orphan sweep failed (non-fatal)")
+
     # Install operator-provided stdio-MCP wheels from the persistent data
     # volume (${DATA_DIR}/mcp/wheels) and put ~/.local/bin on PATH so their
     # console scripts resolve when the stdio client spawns them. Without
@@ -861,10 +873,14 @@ async def lifespan(app):
                 from typing import Optional
                 from app.chat.workdir import WorkdirManager
                 from app.chat.e2b_provider import E2BProvider
-                from app.chat.manager import ChatManager
+                from app.chat.manager import ChatManager, agnes_server_url
                 from app.version import APP_VERSION as _APP_VERSION_CHAT
 
-                _server_url = os.environ.get("SERVER_URL", "http://localhost:8000")
+                # Same fallback chain as the sandbox env (AGNES_SERVER in
+                # manager.py): SERVER_URL → AGNES_INTERNAL_URL → loopback.
+                # Plain-HTTP deployments that keep SERVER_URL unset get their
+                # workspace seed pointed at the same rails URL the CLI uses.
+                _server_url = agnes_server_url()
 
                 def _render_workspace_prompt(user_email: str) -> Optional[str]:
                     """Render the analyst CLAUDE.md (admin Workspace Prompt
@@ -1090,8 +1106,8 @@ def create_app() -> FastAPI:
     from app.serialization import AgnesJSONResponse
 
     app = FastAPI(
-        title="AI Data Analyst",
-        description="Data distribution platform for AI analytical systems",
+        title="AI Harness",
+        description="Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
         version=APP_VERSION,
         lifespan=lifespan,
         # Swagger UI / OpenAPI JSON gated behind authentication — custom
@@ -1506,26 +1522,49 @@ def create_app() -> FastAPI:
     # SSE app (broadest, last). All three precede web_router's catch-all and
     # are GZip-excluded below via skip_prefixes.
 
+    # Streamable-HTTP MCP server with native OAuth 2.1 (remote MCP connectors).
+    # Boot-safety boundary: a misconfigured public origin must NEVER crash app
+    # startup. The canonical trap is SERVER_URL/AGNES_BASE_URL pinning a plain
+    # http:// non-localhost origin (tls_mode=none deployments) — the MCP SDK
+    # rejects it as OAuth issuer (RFC 8414 requires HTTPS; only localhost /
+    # 127.0.0.1 may be http). Degrade: skip the connector, keep the app up.
+    try:
+        _streamable_app = _make_mcp_streamable_app()
+    except Exception:
+        _streamable_app = None
+        logger.exception(
+            "Streamable MCP connector DISABLED: building its OAuth app failed. "
+            "Most common cause: AGNES_BASE_URL/SERVER_URL pins a plain-HTTP, "
+            "non-localhost origin, which cannot serve as an OAuth issuer "
+            "(RFC 8414 requires HTTPS). Set it to an https:// URL — or unset "
+            "it and use AGNES_INTERNAL_URL for the chat-sandbox data rails — "
+            "to re-enable /api/mcp/http. Everything else keeps running."
+        )
+
     # Native OAuth 2.1 consent/login bridge (/api/mcp/oauth/*). Plain Starlette
     # routes (not a FastAPI router) so this browser OAuth flow stays off the
     # documented JSON-API surface, like the SDK's authorize/token endpoints.
-    for _route in _make_mcp_consent_routes():
-        app.router.routes.append(_route)
+    # Skipped in degraded mode along with the discovery routes below — all
+    # three surfaces exist solely for the streamable connector.
+    if _streamable_app is not None:
+        for _route in _make_mcp_consent_routes():
+            app.router.routes.append(_route)
 
-    # Root-level OAuth discovery metadata (RFC 8414 + RFC 9728). The SDK
-    # serves these relative to the streamable sub-app (under /api/mcp/http),
-    # but standards-compliant MCP clients probe the ORIGIN ROOT, so we also
-    # publish them there. Content is identical — endpoints are derived from
-    # the issuer URL, not from where the document is served.
-    for _route in _mcp_oauth_discovery_routes():
-        app.router.routes.append(_route)
+        # Root-level OAuth discovery metadata (RFC 8414 + RFC 9728). The SDK
+        # serves these relative to the streamable sub-app (under /api/mcp/http),
+        # but standards-compliant MCP clients probe the ORIGIN ROOT, so we also
+        # publish them there. Content is identical — endpoints are derived from
+        # the issuer URL, not from where the document is served.
+        for _route in _mcp_oauth_discovery_routes():
+            app.router.routes.append(_route)
 
-    # Streamable-HTTP MCP server with native OAuth 2.1 (remote MCP connectors).
-    _streamable_app = _make_mcp_streamable_app()
-    app.mount("/api/mcp/http", _streamable_app)
+        app.mount("/api/mcp/http", _streamable_app)
     # Lift the FastMCP instance onto the main app so the lifespan can run its
-    # session manager (Starlette doesn't run mounted sub-app lifespans).
-    app.state.mcp_streamable_instance = getattr(_streamable_app.state, "mcp_streamable_instance", None)
+    # session manager (Starlette doesn't run mounted sub-app lifespans). None
+    # in degraded mode — streamable_session_manager_lifespan no-ops on None.
+    app.state.mcp_streamable_instance = (
+        getattr(_streamable_app.state, "mcp_streamable_instance", None) if _streamable_app is not None else None
+    )
 
     # HTTP MCP (SSE transport) for cowork VM access — broadest prefix, last.
     app.mount("/api/mcp", _make_mcp_sse_app())

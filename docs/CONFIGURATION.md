@@ -68,13 +68,14 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 
 | Knob | Env override | `instance.yaml` path | Default | Resolver |
 |------|--------------|----------------------|---------|----------|
-| Deployment display name (page titles, email subjects) | — | `instance.name` | `AI Data Analyst` | `get_instance_name()` |
+| Deployment display name (page titles, email subjects) | — | `instance.name` | `AI Harness` | `get_instance_name()` |
 | Header subtitle | — | `instance.subtitle` | `""` | `get_instance_subtitle()` |
 | Product brand string (hero copy, CTAs, setup script) | `AGNES_INSTANCE_BRAND` | `instance.brand` | `Agnes` | `get_instance_brand()` |
 | Inline `<svg>` logo for the header brand slot | `AGNES_INSTANCE_LOGO_SVG` | `instance.logo_svg` | `""` (text brand) | `get_instance_logo_svg()` |
 | UI theme/palette (`blue`/`navy`/`dark`/`auto`) | `AGNES_INSTANCE_THEME` | `instance.theme` | `blue` | `get_instance_theme()` |
 | Analyst workspace folder name (`~/<name>`) | `AGNES_WORKSPACE_DIR_NAME` | `instance.workspace_dir` | derived from brand (non-alphanumerics stripped) | `get_workspace_dir_name()` |
 | Operator-injected HTML/JS blocks (analytics, widgets) | — | `instance.custom_scripts` | `[]` | `get_custom_scripts()` |
+| Hide individual `/login` feature cards (keys: `data`, `marketplace`, `mcp`, `memory`, `anywhere`; list or comma-string) | `AGNES_INSTANCE_HIDE_LOGIN_FEATURES` | `instance.hide_login_features` | `""` (nothing hidden) | `get_hidden_login_features()` |
 | Legacy theme block (colors/fonts) | — | `theme` | `{}` | `get_theme()` |
 
 ### Onboarding & `/home`
@@ -86,6 +87,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Show the homepage status frame (sync/sessions/tokens) | `AGNES_HOME_SHOW_STATUS_FRAME` | `instance.home.show_status_frame` | `true` | `get_home_status_frame_visibility()` |
 | Operator-authored Overview HTML on `/home` | `AGNES_INSTANCE_OVERVIEW` | `instance.overview` | `""` (hidden) | `get_instance_overview()` |
 | Operator-authored Support HTML on `/home` | `AGNES_INSTANCE_SUPPORT` | `instance.support` | `""` (hidden) | `get_instance_support()` |
+| Operator-authored preamble injected at the TOP of the `agnes init` install prompt (above `Set up the … CLI`). Empty/unset emits zero lines (default prompt byte-identical). `{instance_brand}` and the other server-side placeholders are substituted, but it must NOT contain literal `{server_url}`/`{token}` (those resolve at click time, not in the preamble). | `AGNES_INSTANCE_CUSTOM_PREAMBLE` | `instance.custom_preamble` | `""` (no extra lines) | `get_instance_custom_preamble()` |
 | Admin contact address for user-side "email admin" prompts | `AGNES_INSTANCE_ADMIN_EMAIL` | `instance.admin_email` | `""` | `get_instance_admin_email()` |
 | Infrastructure/provisioning repo URL (used by operator plugin to name the concrete infra repo for this instance; empty = vendor-neutral OSS default) | `AGNES_INFRA_REPO_URL` | `instance.infra_repo_url` | `""` (unset) | `get_infra_repo_url()` |
 | Refresh-cadence string shown in the welcome prompt | — | `instance.sync_interval` | `1 hour` | `get_sync_interval()` |
@@ -137,7 +139,7 @@ The main configuration file lives at `config/instance.yaml`. See
 
 ```yaml
 instance:
-  name: "AI Data Analyst"        # UI title, email subjects (get_instance_name)
+  name: "AI Harness"        # UI title, email subjects (get_instance_name)
   subtitle: "Acme Corp"          # Header subtitle (get_instance_subtitle)
   copyright: "Acme Corp"         # Footer copyright
   brand: "Acme Analyst"          # Product brand string (get_instance_brand)
@@ -286,6 +288,31 @@ values. Never commit `.env`.
 | `CONFIG_DIR` | Override config directory path |
 | `LOG_LEVEL` | Logging level: `debug`, `info`, `warning`, `error` |
 | `DOMAIN` | Public hostname for Caddy TLS (production profile) |
+| `AGNES_BASE_URL` | Operator-pinned public origin (see below). Wins over `SERVER_URL`. |
+| `SERVER_URL` | Deployment's public URL (see below). |
+| `AGNES_INTERNAL_URL` | Data-rails-only server URL for the chat sandbox + workspace seed (see below). |
+
+### Public origin & data-rails URLs
+
+Three URL variables with distinct jobs:
+
+- **`AGNES_BASE_URL`**, then **`SERVER_URL`** — the *public origin* pin
+  (`app/auth/public_url.py`). First non-empty wins; feeds MCP OAuth issuer +
+  discovery metadata, connector/Cowork bundles, and external links. When both
+  are unset, the origin is derived per-request from the incoming host
+  (proxy-aware), so most TLS-proxied deployments don't need either.
+- **`SERVER_URL`**, then **`AGNES_INTERNAL_URL`** — the *data rails* chain
+  (`agnes_server_url()` in `app/chat/manager.py`): the URL the cloud-chat
+  sandbox (`AGNES_SERVER` for the agnes CLI) and the seeded analyst workspace
+  use to reach the server. Falls back to loopback for local dev.
+
+> **Plain-HTTP deployments** (`tls_mode=none`, no TLS proxy): an `http://`
+> non-localhost URL cannot serve as an MCP OAuth issuer (RFC 8414 requires
+> HTTPS), so setting `SERVER_URL`/`AGNES_BASE_URL` to one disables the
+> streamable MCP connector at `/api/mcp/http` — the app boots and logs a loud
+> ERROR, everything else keeps working. To get cloud-chat data rails without
+> touching the public origin (and without the ERROR), set `AGNES_INTERNAL_URL`
+> instead — it feeds *only* the rails chain, never OAuth metadata.
 
 ---
 

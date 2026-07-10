@@ -55,8 +55,16 @@ class SyncStatePgRepository:
         status: str = "ok",
         error: Optional[str] = None,
         duration_ms: Optional[int] = None,
+        bump_last_sync: bool = True,
     ) -> None:
-        now = datetime.now(timezone.utc)
+        """Upsert the row's sync bookkeeping.
+
+        ``bump_last_sync=False`` records fresh rows/hash/status without
+        touching ``last_sync`` (NULL on a first-ever write) — used by the
+        filesystem-fallback publish for materialized rows, whose schedule
+        gate reads ``last_sync`` and must stay open for same-day retries.
+        """
+        now = datetime.now(timezone.utc) if bump_last_sync else None
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
@@ -65,7 +73,7 @@ class SyncStatePgRepository:
                         uncompressed_size_bytes, columns, hash, status, error)
                        VALUES (:table_id, :now, :rows, :fsb, :usb, :cols, :hash, :status, :error)
                        ON CONFLICT (table_id) DO UPDATE SET
-                         last_sync = EXCLUDED.last_sync,
+                         last_sync = COALESCE(EXCLUDED.last_sync, sync_state.last_sync),
                          rows = EXCLUDED.rows,
                          file_size_bytes = EXCLUDED.file_size_bytes,
                          uncompressed_size_bytes = EXCLUDED.uncompressed_size_bytes,
@@ -95,7 +103,10 @@ class SyncStatePgRepository:
                 {
                     "id": str(uuid.uuid4()),
                     "table_id": table_id,
-                    "now": now,
+                    # History rows always carry a real timestamp — `now` is
+                    # None when the caller preserves last_sync, but the
+                    # history event still happened.
+                    "now": now or datetime.now(timezone.utc),
                     "rows": rows,
                     "dms": duration_ms,
                     "status": status,

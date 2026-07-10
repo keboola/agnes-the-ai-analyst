@@ -382,7 +382,7 @@ def get_home_status_frame_visibility() -> bool:
 
 
 def get_instance_name() -> str:
-    return get_value("instance", "name", default="AI Data Analyst")
+    return get_value("instance", "name", default="AI Harness")
 
 
 def get_instance_subtitle() -> str:
@@ -396,7 +396,7 @@ def get_instance_brand() -> str:
     set it to e.g. ``"Foundry AI"`` without forking.
 
     Distinct from :func:`get_instance_name` which drives page titles and
-    represents the deploying organization's display name ("AI Data Analyst").
+    represents the deploying organization's display name ("AI Harness").
     Brand is the *product*; name is the *deployment*.
 
     Resolution: ``AGNES_INSTANCE_BRAND`` env > ``instance.brand`` YAML > ``"Agnes"``.
@@ -461,6 +461,63 @@ def get_instance_support() -> str:
     raw = os.environ.get("AGNES_INSTANCE_SUPPORT")
     if raw is None:
         raw = get_value("instance", "support", default="")
+    return (raw or "").strip()
+
+
+def get_hidden_login_features() -> frozenset[str]:
+    """Stable keys of the ``/login`` feature cards to hide on this instance.
+
+    The ``/login`` left panel renders a fixed set of feature-card tiles, each
+    tagged with a stable key (``data``, ``marketplace``, ``mcp``, ``memory``,
+    ``anywhere``). Listing a key here drops that card — a generic,
+    per-deployment way to trim the landing chrome without forking the
+    template.
+
+    Resolution: ``AGNES_INSTANCE_HIDE_LOGIN_FEATURES`` env (comma-separated,
+    e.g. ``"mcp,memory"``) > ``instance.hide_login_features`` in instance.yaml
+    (a YAML list *or* a comma-separated string) > empty. Values are split on
+    commas, stripped, lowercased, de-duplicated, and empties dropped, yielding
+    a ``frozenset`` the template membership-tests against.
+
+    The empty default hides nothing — the shipped OSS renders every card, so
+    the concrete choice of what to hide stays a deployment-level decision and
+    the public repo stays vendor-neutral. Mirrors :func:`get_instance_overview`
+    in the env-overrides-yaml shape.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_HIDE_LOGIN_FEATURES")
+    if raw is None:
+        raw = get_value("instance", "hide_login_features", default="")
+    # Accept a YAML list (``["mcp", "memory"]``) or a comma-separated string
+    # (``"mcp, memory"``) interchangeably — split every piece on commas so
+    # either form normalizes the same way.
+    if isinstance(raw, (list, tuple)):
+        tokens: list[str] = []
+        for item in raw:
+            tokens.extend(str(item).split(","))
+    else:
+        tokens = str(raw or "").split(",")
+    return frozenset(token.strip().lower() for token in tokens if token.strip())
+
+
+def get_instance_custom_preamble() -> str:
+    """Operator-authored preamble injected at the TOP of the `agnes init`
+    install prompt (above ``Set up the {instance_brand} CLI…``). Empty/unset
+    emits zero lines so the rendered prompt stays byte-identical to the
+    default — keeping the OSS vendor-neutral; the brand-specific value is
+    set in production config, outside this repo.
+
+    ``{instance_brand}`` (and the other server-side placeholders substituted
+    by :func:`app.web.setup_instructions.resolve_lines`) are honored inside
+    the preamble, but it MUST NOT contain literal ``{server_url}`` /
+    ``{token}`` — those are only substituted at click time in the JS
+    clipboard flow, not in the preamble body.
+
+    Resolution: ``AGNES_INSTANCE_CUSTOM_PREAMBLE`` env > ``instance.custom_preamble``
+    YAML > ``""``. Mirrors :func:`get_instance_overview`.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_CUSTOM_PREAMBLE")
+    if raw is None:
+        raw = get_value("instance", "custom_preamble", default="")
     return (raw or "").strip()
 
 

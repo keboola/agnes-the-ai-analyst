@@ -836,3 +836,61 @@ def test_reingest_stale_processing_is_recoverable(seeded_app, tmp_path):
 
     # TestClient runs BackgroundTasks synchronously after the response — by now ingest re-ran.
     assert corpus_files_repo().get(fid)["processing_status"] == "indexed"
+
+
+class TestBundleUpload:
+    """K1 — zip upload unpacks into ingested child rows."""
+
+    def _create_and_grant(self, seeded_app, name: str = "Bundle Target"):
+        c = seeded_app["client"]
+        cr = c.post(
+            "/api/collections",
+            json={"name": name},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        corpus_id = cr.json()["id"]
+        _seed_collection_grant(corpus_id, "analyst1")
+        return corpus_id
+
+    def test_upload_zip_bundle_end_to_end(self, seeded_app):
+        import zipfile
+
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app)
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("notes.md", "# Notes\n\nBundle ingestion works end to end.")
+            zf.writestr("junk.dwg", "binary")
+        buf.seek(0)
+
+        resp = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files={"files": ("dump.zip", buf, "application/zip")},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        # zip itself accepted; member-level rejection ≠ upload rejection.
+        assert resp.status_code == 201, resp.text
+
+        listing = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        by_name = {f["filename"]: f for f in listing.json()["files"]}
+        archive = by_name["dump.zip"]
+        assert archive["processing_status"] == "indexed"
+        assert archive["parent_file_id"] is None
+        assert archive["processing_detail"]["kind"] == "bundle"
+        assert archive["processing_detail"]["children"] == 2
+        assert by_name["notes.md"]["processing_status"] == "indexed"
+        assert by_name["notes.md"]["parent_file_id"] == archive["file_id"]
+        assert by_name["junk.dwg"]["processing_status"] == "rejected"
+
+        # Bundle content is searchable like any directly-uploaded document.
+        hits = c.get(
+            "/api/collections/search",
+            params={"q": "bundle ingestion works", "corpus_id": corpus_id},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert hits.status_code == 200
+        assert any("notes.md" in str(h) for h in hits.json()["results"])

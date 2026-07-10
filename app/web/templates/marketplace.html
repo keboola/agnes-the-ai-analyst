@@ -337,9 +337,11 @@ function buildCard(it) {
   // (force-installed via mark_system materialization), so "in stack"
   // is implied and stacking both pills wastes vertical space. The
   // shield icon makes the org-policy semantic visually distinct from
-  // the user-action "✓ in stack" semantic.
+  // the user-action "✓ in stack" semantic. Group-scoped required-tier
+  // grants (is_required) get the same treatment — always served, never
+  // removable, org-mandated.
   let installedBadge = '';
-  if (it.is_system) {
+  if (it.is_system || it.is_required) {
     installedBadge = `<div class="installed-badge" title="Required by your organization — managed by admin"
           style="background:#fef3c7;color:#92400e;border-color:#fde68a;">
        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"

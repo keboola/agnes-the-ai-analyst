@@ -9,8 +9,6 @@ the design doc D11 explicitly avoids).
 
 import uuid
 
-import pytest
-
 
 def _auth(token):
     return {"Authorization": f"Bearer {token}"}
@@ -30,8 +28,7 @@ def _seed_grant(conn, group_id, resource_type, resource_id, requirement):
 
 def _add_user_to_group(conn, user_id, group_id):
     conn.execute(
-        "INSERT INTO user_group_members(user_id, group_id, source) "
-        "VALUES (?, ?, 'admin')",
+        "INSERT INTO user_group_members(user_id, group_id, source) VALUES (?, ?, 'admin')",
         [user_id, group_id],
     )
 
@@ -46,8 +43,7 @@ class TestRequiredToAvailableMaterializesSubscriptions:
         conn = get_system_db()
         # Create group + 3 users
         conn.execute(
-            "INSERT INTO user_groups(id, name, description, created_by) "
-            "VALUES ('g_sales', 'Sales', 'test', 'test')"
+            "INSERT INTO user_groups(id, name, description, created_by) VALUES ('g_sales', 'Sales', 'test', 'test')"
         )
         for uid in ("u1", "u2", "u3"):
             conn.execute(
@@ -56,12 +52,13 @@ class TestRequiredToAvailableMaterializesSubscriptions:
             )
             _add_user_to_group(conn, uid, "g_sales")
         # Seed an existing data package + a required grant for it
-        conn.execute(
-            "INSERT INTO data_packages(id, slug, name) "
-            "VALUES ('pkg_sales', 'sales', 'Sales bundle')"
-        )
+        conn.execute("INSERT INTO data_packages(id, slug, name) VALUES ('pkg_sales', 'sales', 'Sales bundle')")
         grant_id = _seed_grant(
-            conn, "g_sales", "data_package", "pkg_sales", "required",
+            conn,
+            "g_sales",
+            "data_package",
+            "pkg_sales",
+            "required",
         )
         conn.close()
 
@@ -92,19 +89,17 @@ class TestRequiredToAvailableMaterializesSubscriptions:
 
         conn = get_system_db()
         conn.execute(
-            "INSERT INTO user_groups(id, name, description, created_by) "
-            "VALUES ('g_eng', 'Eng', 'test', 'test')"
+            "INSERT INTO user_groups(id, name, description, created_by) VALUES ('g_eng', 'Eng', 'test', 'test')"
         )
-        conn.execute(
-            "INSERT INTO users(id, email) VALUES ('u_eng', 'u_eng@x.test')"
-        )
+        conn.execute("INSERT INTO users(id, email) VALUES ('u_eng', 'u_eng@x.test')")
         _add_user_to_group(conn, "u_eng", "g_eng")
-        conn.execute(
-            "INSERT INTO data_packages(id, slug, name) "
-            "VALUES ('pkg_eng', 'eng', 'Eng bundle')"
-        )
+        conn.execute("INSERT INTO data_packages(id, slug, name) VALUES ('pkg_eng', 'eng', 'Eng bundle')")
         grant_id = _seed_grant(
-            conn, "g_eng", "data_package", "pkg_eng", "available",
+            conn,
+            "g_eng",
+            "data_package",
+            "pkg_eng",
+            "available",
         )
         conn.close()
 
@@ -118,10 +113,9 @@ class TestRequiredToAvailableMaterializesSubscriptions:
 
         conn = get_system_db()
         try:
-            cnt = conn.execute(
-                "SELECT COUNT(*) FROM user_stack_subscriptions "
-                "WHERE resource_id='pkg_eng'"
-            ).fetchone()[0]
+            cnt = conn.execute("SELECT COUNT(*) FROM user_stack_subscriptions WHERE resource_id='pkg_eng'").fetchone()[
+                0
+            ]
         finally:
             conn.close()
         assert cnt == 0
@@ -131,16 +125,14 @@ class TestRequiredToAvailableMaterializesSubscriptions:
         from src.db import get_system_db
 
         conn = get_system_db()
-        conn.execute(
-            "INSERT INTO user_groups(id, name, description, created_by) "
-            "VALUES ('g_x', 'X', 'test', 'test')"
-        )
-        conn.execute(
-            "INSERT INTO data_packages(id, slug, name) "
-            "VALUES ('pkg_x', 'x', 'X bundle')"
-        )
+        conn.execute("INSERT INTO user_groups(id, name, description, created_by) VALUES ('g_x', 'X', 'test', 'test')")
+        conn.execute("INSERT INTO data_packages(id, slug, name) VALUES ('pkg_x', 'x', 'X bundle')")
         grant_id = _seed_grant(
-            conn, "g_x", "data_package", "pkg_x", "available",
+            conn,
+            "g_x",
+            "data_package",
+            "pkg_x",
+            "available",
         )
         conn.close()
 
@@ -171,6 +163,57 @@ class TestRequiredToAvailableMaterializesSubscriptions:
         assert r.status_code == 403
 
 
+class TestMarketplacePluginSoftDowngrade:
+    """marketplace_plugin grants fan out into ``user_plugin_optouts`` — the
+    subscription table ``resolve_user_marketplace`` reads — NOT into
+    ``user_stack_subscriptions``. Without this, a required → available flip
+    silently dropped the plugin from every group member's served set."""
+
+    def test_downgrade_materializes_plugin_subscriptions(self, seeded_app):
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        conn.execute(
+            "INSERT INTO user_groups(id, name, description, created_by) VALUES ('g_plug', 'Pluggers', 'test', 'test')"
+        )
+        for uid in ("pu1", "pu2"):
+            conn.execute(
+                "INSERT INTO users(id, email) VALUES (?, ?)",
+                [uid, f"{uid}@x.test"],
+            )
+            _add_user_to_group(conn, uid, "g_plug")
+        grant_id = _seed_grant(
+            conn,
+            "g_plug",
+            "marketplace_plugin",
+            "mkt/p1",
+            "required",
+        )
+        conn.close()
+
+        c = seeded_app["client"]
+        r = c.put(
+            f"/api/admin/grants/{grant_id}",
+            json={"requirement": "available"},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 200, r.text
+
+        conn = get_system_db()
+        try:
+            subs = conn.execute(
+                "SELECT user_id FROM user_plugin_optouts WHERE marketplace_id='mkt' AND plugin_name='p1'"
+            ).fetchall()
+            stack_rows = conn.execute(
+                "SELECT COUNT(*) FROM user_stack_subscriptions WHERE resource_type='marketplace_plugin'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert {row[0] for row in subs} == {"pu1", "pu2"}
+        # No dead rows in the stack table — plugins don't live there.
+        assert stack_rows == 0
+
+
 class TestSoftDowngradePerf:
     """Section 4.5 perf gate (Phase 9 / Task 9.5).
 
@@ -189,7 +232,8 @@ class TestSoftDowngradePerf:
     )
 
     def test_thousand_user_downgrade_under_one_second_single_audit(
-        self, seeded_app,
+        self,
+        seeded_app,
     ):
         import time as _time
         from src.db import get_system_db
@@ -201,8 +245,7 @@ class TestSoftDowngradePerf:
         # WHERE m.group_id = ?`` — so the cost is dominated by the JOIN
         # and the constraint check, not by individual Python writes.
         conn.execute(
-            "INSERT INTO user_groups(id, name, description, created_by) "
-            "VALUES ('g_perf', 'PerfGroup', '', 'test')"
+            "INSERT INTO user_groups(id, name, description, created_by) VALUES ('g_perf', 'PerfGroup', '', 'test')"
         )
         for i in range(1000):
             uid = f"uperf_{i:04d}"
@@ -211,16 +254,16 @@ class TestSoftDowngradePerf:
                 [uid, f"{uid}@x.test"],
             )
             conn.execute(
-                "INSERT INTO user_group_members(user_id, group_id, source) "
-                "VALUES (?, 'g_perf', 'test')",
+                "INSERT INTO user_group_members(user_id, group_id, source) VALUES (?, 'g_perf', 'test')",
                 [uid],
             )
-        conn.execute(
-            "INSERT INTO data_packages(id, slug, name) "
-            "VALUES ('pkg_perf', 'pkg-perf', 'PerfPkg')"
-        )
+        conn.execute("INSERT INTO data_packages(id, slug, name) VALUES ('pkg_perf', 'pkg-perf', 'PerfPkg')")
         grant_id = _seed_grant(
-            conn, "g_perf", "data_package", "pkg_perf", "required",
+            conn,
+            "g_perf",
+            "data_package",
+            "pkg_perf",
+            "required",
         )
         # Baseline audit row count so we can isolate the rows produced by
         # the soft-downgrade alone. Older test fixtures may have seeded
@@ -255,12 +298,8 @@ class TestSoftDowngradePerf:
         finally:
             conn.close()
 
-        print(
-            f"\nsoft-downgrade fan-out: {elapsed_s*1000:.1f} ms for 1000 users"
-        )
-        assert sub_count == 1000, (
-            f"expected 1000 subscription rows materialized, got {sub_count}"
-        )
+        print(f"\nsoft-downgrade fan-out: {elapsed_s * 1000:.1f} ms for 1000 users")
+        assert sub_count == 1000, f"expected 1000 subscription rows materialized, got {sub_count}"
         # Exactly ONE audit row produced — the per-user fan-out is bundled
         # into a single admin action audit line.
         assert new_audit - baseline_audit == 1, (

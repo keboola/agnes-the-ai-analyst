@@ -460,3 +460,39 @@ def test_loopback_redirect_uri_different_port_accepted(seeded_app):
     assert r.status_code in (302, 307), (
         f"loopback redirect_uri with different port must be accepted (got {r.status_code}): {r.text}"
     )
+
+
+def test_create_app_boots_with_plain_http_server_url(seeded_app, monkeypatch):
+    """A plain-HTTP deployment (tls_mode=none) that sets SERVER_URL to its
+    public http:// address must still boot. The MCP SDK rejects a
+    non-localhost http:// OAuth issuer (RFC 8414 requires HTTPS), so the
+    streamable connector degrades — loud ERROR log, endpoint not mounted —
+    instead of crashing create_app() in a boot loop."""
+    monkeypatch.delenv("AGNES_BASE_URL", raising=False)
+    monkeypatch.setenv("SERVER_URL", "http://203.0.113.10")
+
+    from app.main import create_app
+    from starlette.testclient import TestClient
+
+    app = create_app()  # must not raise
+    assert app.state.mcp_streamable_instance is None
+
+    client = TestClient(app, base_url="http://203.0.113.10")
+    # The rest of the app is fully alive.
+    r = client.get("/api/health")
+    assert r.status_code == 200, r.text
+    # Degraded mode: the streamable connector's OAuth discovery documents are
+    # not advertised (they would point at endpoints that are not mounted).
+    assert client.get("/.well-known/oauth-authorization-server").status_code == 404
+
+
+def test_create_app_keeps_streamable_mcp_on_localhost_http(seeded_app, monkeypatch):
+    """The SDK explicitly allows an http://localhost issuer for local dev —
+    the degradation guard must not over-trigger there."""
+    monkeypatch.delenv("AGNES_BASE_URL", raising=False)
+    monkeypatch.setenv("SERVER_URL", "http://localhost:8000")
+
+    from app.main import create_app
+
+    app = create_app()
+    assert app.state.mcp_streamable_instance is not None

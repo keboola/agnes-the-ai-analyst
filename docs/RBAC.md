@@ -223,9 +223,9 @@ Schema v49 (unified Browse + My Stack for Data Packages and Memory):
   - `DATA_PACKAGE` — admin-curated bundle of tables (`data_packages` table; M:N to `table_registry` via `data_package_tables`). Effective `TABLE` set for a user = `(direct TABLE grants) ∪ (tables in DATA_PACKAGE grants the user has)`.
   - `MEMORY_ITEM` — per-group item-level Required override. Default for an item comes from `knowledge_items.is_required` flag; a `MEMORY_ITEM` grant flips that for the specified group.
 - `MEMORY_DOMAIN` grants migrated from slug strings to `memory_domains.id` references. Orphan grants (pointing at non-existent domains) preserved for admin cleanup.
-- Marketplace stays untouched — `marketplace_plugins.is_system` continues to control the mandatory tier for plugins.
+- Marketplace plugins: v49 originally left them out (`marketplace_plugins.is_system` was the only mandatory path), but the tier now applies to `marketplace_plugin` grants too — `resolve_user_marketplace` serves `granted ∩ (subscribed ∪ required)`, so a required grant puts the plugin in every group member's served set without a subscription row (unsubscribe/uninstall return 409). `is_system` remains the *global* (all-users) mandatory flag; `requirement='required'` is the *group-scoped* one.
 
-Effective Required = OR across grants. Any grant with `requirement='required'` wins for the user. Soft downgrade (`required → available` on `PUT /api/admin/grants/{id}`) eagerly materializes `user_stack_subscriptions` rows for every current group member in the same transaction so users don't silently lose the resource on next `agnes pull`.
+Effective Required = OR across grants. Any grant with `requirement='required'` wins for the user. Soft downgrade (`required → available` on `PUT /api/admin/grants/{id}`) eagerly materializes subscription rows for every current group member in the same transaction so users don't silently lose the resource on next `agnes pull` — into `user_stack_subscriptions` for stack resource types, into `user_plugin_optouts` for `marketplace_plugin` grants.
 
 ## Schema v14 — FK constraints
 

@@ -33,6 +33,8 @@ from app.instance_config import (
     get_instance_logo_svg,
     get_instance_overview,
     get_instance_support,
+    get_hidden_login_features,
+    get_instance_custom_preamble,
     get_instance_theme,
     get_custom_scripts,
 )
@@ -506,6 +508,7 @@ def _build_context(
         LOGO_SVG = get_instance_logo_svg()
         INSTANCE_OVERVIEW = get_instance_overview()
         INSTANCE_SUPPORT = get_instance_support()
+        HIDE_LOGIN_FEATURES = get_hidden_login_features()
         TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "")
         SSH_ALIAS = "data-analyst"
         SERVER_HOST = os.environ.get("SERVER_HOST", "")
@@ -580,6 +583,7 @@ def _build_context(
             connector_manifest=_connector_manifest,
             instance_brand=get_instance_brand(),
             workspace_dir=get_workspace_dir_name(),
+            custom_preamble=get_instance_custom_preamble(),
         )
 
     ctx = {
@@ -1910,9 +1914,12 @@ async def studio(
 
     A generic form-based builder with an embedded assistant panel. The domain
     config (``app/web/studio.py``) drives the fields, the chat profile, and the
-    create endpoint, so all four authoring agents share one surface. Admins
-    create directly; non-admins submit a suggestion to the moderation queue
-    (the page renders the right action via ``is_admin``).
+    create endpoint, so all five authoring agents share one surface. Most
+    domains: admins create directly, non-admins submit a suggestion to the
+    moderation queue (the page renders the right action via ``is_admin``).
+    Domains with ``submit_directly=True`` (e.g. the Skill Builder) skip the
+    queue entirely — everyone posts straight to ``endpoint``, which runs its
+    own guardrail/review pipeline instead.
     """
     spec = get_studio_domain(domain)
     if spec is None:
@@ -2742,7 +2749,9 @@ async def admin_datasource_credentials_page(
     request: Request,
     user: dict = Depends(require_admin),
 ):
-    """Keboola and BigQuery credential management via the server vault.
+    """Instance-level secrets (Google Workspace, BigQuery) via the server
+    vault. Keboola project connect/browse/rotate lives on
+    /admin/data-sources — this page carries a callout linking there.
 
     Passes ``vault_key_configured`` so the template can render a blocking
     banner when ``AGNES_VAULT_KEY`` is absent. Secret values are never read
@@ -2763,15 +2772,17 @@ async def admin_data_sources_page(
 ):
     """ "Add data source" wizard (#755): paste a Keboola project's connection
     URL + storage token, validate, then browse buckets/tables and register
-    the ones you want — no SSH, no config-file edits.
+    the ones you want — no SSH, no config-file edits. Also the home for
+    per-project "Set as default" and "Rotate token" controls — the single
+    place to manage a Keboola connection end to end.
 
     Distinct from /admin/mcp-sources (MCP tool servers Agnes calls at
-    runtime) and from /admin/datasource-credentials (raw secret-vault CRUD
-    for GWS/BQ/Keboola tokens, still reachable directly for credential
-    rotation) — this page is the connect-and-browse onboarding flow. Passes
-    ``vault_key_configured`` so the template can render the same blocking
-    banner as /admin/datasource-credentials when ``AGNES_VAULT_KEY`` is
-    absent (the wizard can't store a secret without it).
+    runtime) and from /admin/datasource-credentials (GWS/BQ instance
+    secrets) — this page owns Keboola project connect/browse/register/
+    default/rotate. Passes ``vault_key_configured`` so the template can
+    render the same blocking banner as /admin/datasource-credentials when
+    ``AGNES_VAULT_KEY`` is absent (the wizard can't store a secret without
+    it).
     """
     from app.secrets_vault import vault_key_configured
 

@@ -240,6 +240,32 @@ def test_delete_removes_file(repo):
     assert repo.get(file_id) is None
 
 
+def test_parent_file_id_roundtrip_and_children(repo):
+    """`parent_file_id` (v87, K1 bundle ingest) links archive children to their zip."""
+    parent = repo.add(
+        corpus_id=CORPUS_ID,
+        filename="dump.zip",
+        sha256="p" * 64,
+        file_type="zip",
+        size_bytes=10,
+        storage_path="/tmp/p.zip",
+    )
+    child = repo.add(
+        corpus_id=CORPUS_ID,
+        filename="page.html",
+        sha256="c" * 64,
+        file_type="html",
+        size_bytes=5,
+        storage_path="/tmp/c.html",
+        parent_file_id=parent,
+    )
+    assert repo.get(parent)["parent_file_id"] is None
+    assert repo.get(child)["parent_file_id"] == parent
+    kids = repo.list_children(parent)
+    assert [k["id"] for k in kids] == [child]
+    assert repo.list_children(child) == []
+
+
 def test_set_status_needs_review_roundtrip(repo):
     """`needs_review` (status-honesty, spec 2026-07-08) persists with its reason."""
     fid = repo.add(

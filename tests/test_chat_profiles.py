@@ -7,6 +7,7 @@ ALL_SLUGS = [
     "mcp-connect",
     "marketplace-author",
     "corporate-memory",
+    "skill-author",
 ]
 
 
@@ -18,6 +19,15 @@ def test_known_profile_resolves():
     assert p.skill_name and p.skill_body
     # persona must steer the agent at the existing admin endpoints
     assert "/api/admin/data-packages" in p.skill_body
+
+
+def test_skill_author_profile_registered():
+    p = get_profile("skill-author")
+    assert p is not None
+    assert p.skill_name == "agnes-skill-authoring"
+    assert "use when" in p.claude_md.lower()  # trigger-quality rule is in the persona
+    assert p.skill_body.startswith("---\n")
+    assert "/api/store/entities/from-markdown" in p.skill_body
 
 
 @pytest.mark.parametrize("slug", ALL_SLUGS)

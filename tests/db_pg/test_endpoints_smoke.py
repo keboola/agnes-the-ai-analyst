@@ -789,6 +789,7 @@ class TestStoreSmoke:
         "POST /api/store/entities/preview",
         "POST /api/store/entities/dryrun",
         "POST /api/store/entities",
+        "POST /api/store/entities/from-markdown",
         "PUT /api/store/entities/{entity_id}",
         "POST /api/store/entities/{entity_id}/install",
         "DELETE /api/store/entities/{entity_id}/install",
@@ -826,6 +827,27 @@ class TestStoreSmoke:
             headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code == 200, r.text
+
+    def test_entities_create_from_markdown(self, seeded_app_both):
+        """POST /entities/from-markdown — studio Skill Builder's JSON publish path."""
+        r = seeded_app_both["client"].post(
+            "/api/store/entities/from-markdown",
+            json={
+                "name": "smoke-from-markdown",
+                "description": (
+                    "Use when smoke-testing the from-markdown publish endpoint end to end across both backends."
+                ),
+                "category": "Other",
+                "skill_md": (
+                    "Step one: describe the scenario under test in plain language. "
+                    "Step two: call the endpoint with a valid payload and capture the response. "
+                    "Step three: assert the entity was created with status 201 and a non-empty id field."
+                ),
+            },
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["id"]
 
 
 # ---------------------------------------------------------------------------
@@ -1487,7 +1509,7 @@ KNOWN_UNTESTED = {
     "DELETE /api/admin/source-connections/{connection_id}/secret",
     "POST /api/admin/source-connections/{connection_id}/test",
     "GET /api/admin/source-connections/{connection_id}/tables",
-    # Admin datasource credentials — vault-backed Keboola/BQ secrets (web UI only)
+    # Admin datasource credentials — vault-backed GWS/BQ instance secrets (web UI only)
     "GET /api/admin/datasource-secrets",
     "GET /admin/datasource-credentials",
     # Admin data-sources page (#755) — tested in test_admin_data_sources_page.py

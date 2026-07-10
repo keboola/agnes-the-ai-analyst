@@ -49,6 +49,7 @@ from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
 from app.utils import get_marketplace_cache_dir, get_marketplaces_dir
 from src.marketplace_filter import (
+    required_plugin_keys,
     resolve_allowed_plugins,
     resolve_manifest_name,
 )
@@ -91,6 +92,11 @@ class MarketplaceItem(BaseModel):
     # v39: drives the "Required" pill on the curated browse cards. Only
     # set on curated items (flea/store entities are never system).
     is_system: bool = False
+    # Group-scoped Required tier: TRUE when any of the caller's groups
+    # holds a ``requirement='required'`` grant for this plugin. Renders
+    # the same locked "Required" state as ``is_system`` but only for the
+    # granted groups' members, not globally.
+    is_required: bool = False
     # Rich-content fields from marketplace-metadata.json (plugin-level only
     # for now; skill/agent rich content lands in a later phase). Frontend
     # falls back to `name` / `description` when these are missing, so the
@@ -283,6 +289,10 @@ class PluginDetailResponse(BaseModel):
     # detail page. The same flag travels via /api/marketplace/items so
     # the browse cards can show a "Required" pill.
     is_system: bool = False
+    # Group-scoped Required tier (resource_grants.requirement='required'
+    # on any of the caller's groups) — same locked UI treatment as
+    # ``is_system``, scoped to the granted groups instead of all users.
+    is_required: bool = False
     # Rich-content fields from marketplace-metadata.json (plugin-level, curated
     # only — flea entities don't have a metadata layer). All optional; UI
     # sections render only when populated.
@@ -459,6 +469,21 @@ def _flea_detail_url(entity_id: str) -> str:
     return f"/marketplace/flea/{entity_id}"
 
 
+def _curated_stack_sets(conn: duckdb.DuckDBPyConnection, user_id: str) -> Tuple[set, set]:
+    """``(in_stack, required)`` curated plugin key sets for a user.
+
+    ``in_stack`` is the union ``resolve_user_marketplace`` actually serves:
+    explicit subscriptions ∪ required-tier grant keys
+    (``resource_grants.requirement='required'`` for any of the user's
+    groups). ``required`` is surfaced separately so cards / detail pages
+    can render the locked "Required" state for group-required plugins the
+    same way they do for global ``is_system`` ones.
+    """
+    required = required_plugin_keys(conn, user_id)
+    subs = user_curated_subscriptions_repo().subscribed_set(user_id)
+    return subs | required, required
+
+
 def _resolve_marketplace_meta(conn: duckdb.DuckDBPyConnection, marketplace_id: str) -> Dict[str, Optional[str]]:
     """Look up display name + curator metadata in one DB hit.
 
@@ -490,6 +515,7 @@ def _curated_to_item(
     marketplace_meta: Dict[str, Dict[str, Optional[str]]],
     stats: Optional[Dict[str, Dict]] = None,
     stack_counts: Optional[Dict[Tuple[str, str], int]] = None,
+    required_keys: set = frozenset(),
 ) -> MarketplaceItem:
     marketplace_id = plugin_row["marketplace_id"]
     plugin_name = plugin_row["name"]
@@ -531,6 +557,7 @@ def _curated_to_item(
         marketplace_name=meta["name"],
         detail_url=_curated_detail_url(marketplace_id, plugin_name),
         is_system=bool(plugin_row.get("is_system")),
+        is_required=(marketplace_id, plugin_name) in required_keys,
         display_name=enrichment.get("display_name"),
         tagline=enrichment.get("tagline"),
         invocations_30d=stat.get("invocations_30d", 0),
@@ -748,7 +775,7 @@ async def list_items(
 
     if tab == "curated":
         group_ids = _user_group_ids(user["id"], conn) or set()
-        subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
+        subs, required = _curated_stack_sets(conn, user["id"])
         # When sorting, we need all rows to sort before paginating.
         if needs_sort:
             all_rows, total = marketplace_plugins_repo().list_with_filters(
@@ -781,6 +808,7 @@ async def list_items(
                 marketplace_meta=marketplace_meta,
                 stats=curated_stats,
                 stack_counts=curated_stack_counts,
+                required_keys=required,
             )
             for r in all_rows
         ]
@@ -859,7 +887,7 @@ async def list_items(
     items: List[MarketplaceItem] = []
 
     granted = resolve_allowed_plugins(conn, user)
-    subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
+    subs, required = _curated_stack_sets(conn, user["id"])
     marketplace_meta: Dict[str, Dict[str, Optional[str]]] = {}
 
     # Pull the enriched rows the Curated tab uses (cover_photo_url, video_url,
@@ -915,6 +943,7 @@ async def list_items(
                 marketplace_meta=marketplace_meta,
                 stats=curated_stats,
                 stack_counts=curated_stack_counts,
+                required_keys=required,
             )
         )
 
@@ -987,7 +1016,7 @@ async def list_categories(
             counts.update(marketplace_plugins_repo().category_counts(group_ids=group_ids))
         else:  # my — direct read mirroring the items endpoint's `my` branch.
             granted = resolve_allowed_plugins(conn, user)
-            subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
+            subs, _required = _curated_stack_sets(conn, user["id"])
             # Curated plugins are always type='plugin'. When the type filter
             # is set to skill/agent, those rows won't show in the items grid
             # (filtered out by the items endpoint at line 579), so they must
@@ -1437,7 +1466,7 @@ async def curated_detail(
     hooks = _list_hooks(plugin_root)
     mcps = _list_mcps(plugin_root)
 
-    subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
+    subs, required = _curated_stack_sets(conn, user["id"])
     raw = plugin_row.get("raw") or {}
     if isinstance(raw, str):
         try:
@@ -1495,6 +1524,7 @@ async def curated_detail(
         files=_walk_files(plugin_root),
         docs=doc_link_entries,
         is_system=bool(plugin_row.get("is_system")),
+        is_required=(marketplace_id, plugin_name) in required,
         **enrichment,
         telemetry=_build_telemetry("curated", plugin_name),
         # stack_count mirrors what the listing card shows ("N installed")
@@ -1739,6 +1769,16 @@ async def curated_uninstall(
         raise HTTPException(
             status_code=409,
             detail="cannot_uninstall_system_plugin",
+        )
+
+    # Group-scoped Required tier: a ``requirement='required'`` grant keeps
+    # the plugin in every group member's served set regardless of the
+    # subscription row, so uninstall would be a lie — the resolver would
+    # keep serving it. Refuse, mirroring the is_system guard above.
+    if (marketplace_id, plugin_name) in required_plugin_keys(None, user["id"]):
+        raise HTTPException(
+            status_code=409,
+            detail="cannot_uninstall_required_plugin",
         )
 
     deleted = user_curated_subscriptions_repo().unsubscribe(
