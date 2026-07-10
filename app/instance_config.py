@@ -499,6 +499,28 @@ def get_hidden_login_features() -> frozenset[str]:
     return frozenset(token.strip().lower() for token in tokens if token.strip())
 
 
+def get_instance_custom_preamble() -> str:
+    """Operator-authored preamble injected at the TOP of the `agnes init`
+    install prompt (above ``Set up the {instance_brand} CLI…``). Empty/unset
+    emits zero lines so the rendered prompt stays byte-identical to the
+    default — keeping the OSS vendor-neutral; the brand-specific value is
+    set in production config, outside this repo.
+
+    ``{instance_brand}`` (and the other server-side placeholders substituted
+    by :func:`app.web.setup_instructions.resolve_lines`) are honored inside
+    the preamble, but it MUST NOT contain literal ``{server_url}`` /
+    ``{token}`` — those are only substituted at click time in the JS
+    clipboard flow, not in the preamble body.
+
+    Resolution: ``AGNES_INSTANCE_CUSTOM_PREAMBLE`` env > ``instance.custom_preamble``
+    YAML > ``""``. Mirrors :func:`get_instance_overview`.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_CUSTOM_PREAMBLE")
+    if raw is None:
+        raw = get_value("instance", "custom_preamble", default="")
+    return (raw or "").strip()
+
+
 _CUSTOM_SCRIPT_PLACEMENTS = ("head_start", "head_end", "body_end")
 
 
