@@ -24,14 +24,12 @@ from services.session_pipeline.lib import compute_file_hash
 
 from src.repositories import (
     session_processor_state_repo,
+    users_repo,
 )
 logger = logging.getLogger(__name__)
 
 
-def resolve_user_identity(
-    conn: duckdb.DuckDBPyConnection,
-    username: str,
-) -> tuple[str | None, str | None]:
+def resolve_user_identity(username: str) -> tuple[str | None, str | None]:
     """Map a session-directory name to ``(users.id, users.email)``.
 
     Two conventions exist for the directory name under
@@ -54,35 +52,29 @@ def resolve_user_identity(
     session arrived through — otherwise the admin telemetry dropdown
     lists the same user under both their UUID (upload API) and their
     email (REST event emitters).
+
+    Routes through :func:`src.repositories.users_repo` (not a raw
+    connection) so the lookup hits the active backend — a raw DuckDB
+    query here silently returned no rows on Postgres instances.
     """
-    row = conn.execute(
-        "SELECT id, email FROM users WHERE id = ?",
-        [username],
-    ).fetchone()
+    repo = users_repo()
+    row = repo.get_by_id(username)
     if row:
-        return row[0], row[1]
-    escaped = username.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    row = conn.execute(
-        "SELECT id, email FROM users WHERE email LIKE ? || '@%' ESCAPE '\\' "
-        "ORDER BY updated_at DESC NULLS LAST LIMIT 1",
-        [escaped],
-    ).fetchone()
+        return row["id"], row["email"]
+    row = repo.get_by_email_prefix(username)
     if row:
-        return row[0], row[1]
+        return row["id"], row["email"]
     return None, None
 
 
-def resolve_user_id(
-    conn: duckdb.DuckDBPyConnection,
-    username: str,
-) -> str | None:
+def resolve_user_id(username: str) -> str | None:
     """Backward-compatible wrapper returning just the resolved ``users.id``.
 
     Existing call sites (and tests) that only need the UUID stay
     unchanged; new code in ``run_processor`` uses
     :func:`resolve_user_identity` to get the email too.
     """
-    uid, _ = resolve_user_identity(conn, username)
+    uid, _ = resolve_user_identity(username)
     return uid
 
 
@@ -155,7 +147,7 @@ def run_processor(
             continue
 
         if dir_name not in _identity_cache:
-            _identity_cache[dir_name] = resolve_user_identity(conn, dir_name)
+            _identity_cache[dir_name] = resolve_user_identity(dir_name)
         resolved_uid, resolved_email = _identity_cache[dir_name]
         # Canonical username = email when the user resolves; fall back
         # to the directory name otherwise (orphaned uploads, sessions

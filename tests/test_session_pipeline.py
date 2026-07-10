@@ -119,19 +119,19 @@ class TestResolveUserId:
     def test_exact_uuid_match(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         self._seed_users(conn, [("uuid-aaa", "alice@example.com", "2026-01-01")])
-        assert resolve_user_id(conn, "uuid-aaa") == "uuid-aaa"
+        assert resolve_user_id("uuid-aaa") == "uuid-aaa"
         conn.close()
 
     def test_email_local_part_match(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         self._seed_users(conn, [("uuid-bbb", "bob@example.com", "2026-01-01")])
-        assert resolve_user_id(conn, "bob") == "uuid-bbb"
+        assert resolve_user_id("bob") == "uuid-bbb"
         conn.close()
 
     def test_null_fallback_for_unknown(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         self._seed_users(conn, [("uuid-aaa", "alice@example.com", "2026-01-01")])
-        assert resolve_user_id(conn, "nobody") is None
+        assert resolve_user_id("nobody") is None
         conn.close()
 
     def test_tiebreak_picks_most_recently_updated(self, tmp_path, monkeypatch):
@@ -143,7 +143,7 @@ class TestResolveUserId:
                 ("uuid-new", "zara@new.com", "2026-06-01"),
             ],
         )
-        assert resolve_user_id(conn, "zara") == "uuid-new"
+        assert resolve_user_id("zara") == "uuid-new"
         conn.close()
 
     def test_underscore_not_treated_as_wildcard(self, tmp_path, monkeypatch):
@@ -156,13 +156,13 @@ class TestResolveUserId:
             ],
         )
         # "alice_smith" must match only the literal underscore email
-        assert resolve_user_id(conn, "alice_smith") == "uuid-real"
+        assert resolve_user_id("alice_smith") == "uuid-real"
         conn.close()
 
     def test_uuid_branch_takes_priority_over_email(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         self._seed_users(conn, [("uuid-aaa", "uuid-aaa@example.com", "2026-01-01")])
-        assert resolve_user_id(conn, "uuid-aaa") == "uuid-aaa"
+        assert resolve_user_id("uuid-aaa") == "uuid-aaa"
         conn.close()
 
 
@@ -185,7 +185,7 @@ class TestResolveUserIdentity:
         readable instead of the raw UUID."""
         conn = _fresh_db(tmp_path, monkeypatch)
         self._seed(conn, [("uuid-aaa", "alice@example.com", "2026-01-01")])
-        uid, email = resolve_user_identity(conn, "uuid-aaa")
+        uid, email = resolve_user_identity("uuid-aaa")
         assert uid == "uuid-aaa"
         assert email == "alice@example.com"
         conn.close()
@@ -195,7 +195,7 @@ class TestResolveUserIdentity:
         — resolver returns the matching email."""
         conn = _fresh_db(tmp_path, monkeypatch)
         self._seed(conn, [("uuid-bbb", "bob@example.com", "2026-01-01")])
-        uid, email = resolve_user_identity(conn, "bob")
+        uid, email = resolve_user_identity("bob")
         assert uid == "uuid-bbb"
         assert email == "bob@example.com"
         conn.close()
@@ -203,7 +203,7 @@ class TestResolveUserIdentity:
     def test_unknown_returns_none_pair(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         self._seed(conn, [("uuid-aaa", "alice@example.com", "2026-01-01")])
-        uid, email = resolve_user_identity(conn, "nobody")
+        uid, email = resolve_user_identity("nobody")
         assert uid is None
         assert email is None
         conn.close()
