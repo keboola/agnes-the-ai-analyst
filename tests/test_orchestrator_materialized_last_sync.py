@@ -59,7 +59,9 @@ def system_db_path(tmp_path):
         )
         # Yesterday's successful materialize — the timestamp the schedule
         # gate must keep seeing after a failed run today.
-        SyncStateRepository(conn).update_sync(table_id="orders_daily_econ", rows=100, file_size_bytes=1000, hash="a" * 32)
+        SyncStateRepository(conn).update_sync(
+            table_id="orders_daily_econ", rows=100, file_size_bytes=1000, hash="a" * 32
+        )
     finally:
         conn.close()
     return db_path
@@ -164,3 +166,58 @@ def test_rebuild_still_bumps_local_rows(system_db_path, tmp_path):
     local_state = _get_state(system_db_path, "orders")
     assert local_state is not None, "local rows must still get sync_state bookkeeping"
     assert isinstance(local_state["last_sync"], datetime)
+
+
+def test_fallback_publish_preserves_gate_when_id_differs_from_name(tmp_path):
+    """Regression: _record_fallback_sync_state previously called
+    table_registry_repo().get(table_id) which queries WHERE id = ?. When
+    registry id != name (parquet filename stem), the lookup returned None,
+    is_materialized was False, and last_sync was bumped — starving retries."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    try:
+        _ensure_schema(conn)
+        registry = TableRegistryRepository(conn)
+        registry.register(
+            id="mat_001",
+            name="orders_daily_econ",
+            source_type="bigquery",
+            bucket="",
+            source_table="orders_daily_econ",
+            query_mode="materialized",
+            description="",
+            sync_schedule="daily 06:00",
+        )
+        from src.repositories.sync_state import SyncStateRepository
+
+        SyncStateRepository(conn).update_sync(
+            table_id="orders_daily_econ", rows=100, file_size_bytes=1000, hash="a" * 32
+        )
+        SyncStateRepository(conn).set_error("orders_daily_econ", "killed mid-run")
+        before = SyncStateRepository(conn).get_table_state("orders_daily_econ")
+    finally:
+        conn.close()
+    assert before["last_sync"] is not None
+
+    pq = tmp_path / "orders_daily_econ.parquet"
+    pq.write_bytes(b"PAR1" + b"x" * 64 + b"PAR1")
+
+    def fake_get_system_db():
+        return duckdb.connect(str(db_path))
+
+    view_conn = duckdb.connect()
+    view_conn.execute('CREATE TABLE "orders_daily_econ" AS SELECT 1 AS x')
+    with (
+        patch("src.db.get_system_db", side_effect=fake_get_system_db),
+        patch("src.repositories.get_system_db", side_effect=fake_get_system_db),
+    ):
+        orch = SyncOrchestrator.__new__(SyncOrchestrator)
+        orch._record_fallback_sync_state(view_conn, "orders_daily_econ", pq)
+    view_conn.close()
+
+    after = _get_state(db_path, "orders_daily_econ")
+    assert after["last_sync"] == before["last_sync"], (
+        "fallback publish bumped last_sync for a materialized row with id != name; "
+        "get_by_name must be used so the schedule gate stays open"
+    )
+    assert after["status"] == "ok"

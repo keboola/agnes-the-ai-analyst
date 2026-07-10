@@ -844,7 +844,7 @@ class SyncOrchestrator:
             # update. Record the publish (fresh rows/hash, error cleared)
             # but keep last_sync so the schedule gate stays open and the
             # next tick re-runs the materialize, healing `_meta`.
-            registry_row = table_registry_repo().get(table_id)
+            registry_row = table_registry_repo().get_by_name(table_id)
             is_materialized = bool(registry_row and registry_row.get("query_mode") == "materialized")
 
             h = hashlib.md5()

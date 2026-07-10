@@ -351,6 +351,13 @@ class TableRegistryRepository:
         columns = [desc[0] for desc in self.conn.description]
         return self._decode_row(dict(zip(columns, result)))
 
+    def get_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        result = self.conn.execute("SELECT * FROM table_registry WHERE name = ?", [name]).fetchone()
+        if not result:
+            return None
+        columns = [desc[0] for desc in self.conn.description]
+        return self._decode_row(dict(zip(columns, result)))
+
     def list_all(self) -> List[Dict[str, Any]]:
         results = self.conn.execute("SELECT * FROM table_registry ORDER BY name").fetchall()
         if not results:
