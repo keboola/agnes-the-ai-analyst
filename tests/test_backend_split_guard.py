@@ -126,7 +126,8 @@ def _get_system_db_caller_files() -> set[str]:
 # ---------------------------------------------------------------------------
 
 _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
-    "app/api/cli_auth.py": {"AccessTokenRepository"},
+    # cli_auth.py — AccessTokenRepository call site migrated to
+    # access_token_repo() (batch 2); entry removed.
     # cowork_bundle.py — fully migrated to the factory (setup_tokens_repo /
     # users_repo / access_token_repo / audit_repo); entry removed.
     # admin_chat.py, admin_mcp.py, data_packages.py, memory_domain_suggestions.py,
@@ -134,10 +135,14 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     "app/api/mcp/tools_generator.py": {"MCPSourceRepository", "ToolRegistryRepository"},
     "app/api/mcp_per_table.py": {"TableRegistryRepository"},
     # mcp_user_secrets.py — migrated to mcp_sources_repo()/per_user_secrets_repo(); entry removed.
-    "app/api/memory.py": {"KnowledgeRepository"},
-    "app/api/memory_domains.py": {"KnowledgeRepository"},
-    # stack.py — _emit_event migrated to usage_repo(); entry removed.
-    "app/api/stack_views.py": {"KnowledgeRepository", "UsageRepository"},
+    # memory.py — KnowledgeRepository call sites (mark-mandatory,
+    # mark-unmandatory, admin GET, per-domain bundle) migrated to
+    # knowledge_repo() (batch 2); entry removed.
+    # memory_domains.py — KnowledgeRepository call site migrated to
+    # knowledge_repo() (batch 2); entry removed.
+    # stack_views.py — KnowledgeRepository call site migrated to
+    # knowledge_repo() (batch 2); UsageRepository stays grandfathered.
+    "app/api/stack_views.py": {"UsageRepository"},
     "app/auth/access.py": {
         "ResourceGrantsRepository",
         "UserGroupMembersRepository",

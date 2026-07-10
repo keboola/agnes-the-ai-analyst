@@ -24,9 +24,9 @@ from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
 from src.repositories import (
     data_packages_repo,
+    knowledge_repo,
     memory_domains_repo,
 )
-from src.repositories.knowledge import KnowledgeRepository
 from src.repositories.usage import UsageRepository
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,7 @@ async def view_memory_domain(
     item_summaries = repo.list_items_of_domain(dom["id"], limit=1000)
     # Hydrate item titles + is_required from the knowledge repo for the
     # drill-down — the junction's projection is intentionally minimal.
-    knowledge = KnowledgeRepository(conn)
+    knowledge = knowledge_repo()
     items: list = []
     for s in item_summaries:
         item = knowledge.get_by_id(s["id"])

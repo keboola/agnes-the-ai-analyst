@@ -27,8 +27,7 @@ from pydantic import BaseModel, field_validator
 from app.api.data_packages import _validate_color
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.repositories import audit_repo, memory_domains_repo
-from src.repositories.knowledge import KnowledgeRepository
+from src.repositories import audit_repo, knowledge_repo, memory_domains_repo
 
 logger = logging.getLogger(__name__)
 
@@ -305,7 +304,7 @@ async def add_item_to_domain(
     repo = memory_domains_repo()
     if not repo.get(domain_id):
         raise HTTPException(status_code=404, detail="memory_domain_not_found")
-    item = KnowledgeRepository(conn).get_by_id(payload.item_id)
+    item = knowledge_repo().get_by_id(payload.item_id)
     if not item:
         raise HTTPException(status_code=404, detail="item_not_found")
     added = repo.add_item(domain_id, payload.item_id, added_by=user.get("email") or user["id"])
