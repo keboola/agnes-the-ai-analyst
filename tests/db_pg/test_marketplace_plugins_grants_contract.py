@@ -180,9 +180,7 @@ def _set_is_system(repos: dict, slug: str, name: str, value: bool) -> None:
 
         with repos["engine"].begin() as conn:
             conn.execute(
-                sa.text(
-                    "UPDATE marketplace_plugins SET is_system = :v WHERE marketplace_id = :m AND name = :n"
-                ),
+                sa.text("UPDATE marketplace_plugins SET is_system = :v WHERE marketplace_id = :m AND name = :n"),
                 {"v": value, "m": slug, "n": name},
             )
 
