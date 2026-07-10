@@ -1390,10 +1390,10 @@ KNOWN_UNTESTED = {
     "POST /api/collections",
     "GET /api/collections",
     "GET /api/collections/search",
-    # Unified knowledge search (K2, #797) — behaviorally covered in
-    # tests/test_api_knowledge_search.py (shape, 401, RBAC fail-closed) and
-    # tests/test_search_unified.py; requires a `q` param so it has no place
-    # in the parameter-free smoke sweep.
+    # Unified knowledge search (K2, #797) — requires a `q` param so it has no
+    # place in the parameter-free smoke sweep. DuckDB behaviour covered in
+    # tests/test_api_knowledge_search.py (shape, 401, RBAC fail-closed);
+    # dual-backend grant resolution in tests/db_pg/test_knowledge_search_both.py.
     "GET /api/knowledge/search",
     "GET /api/collections/{collection_id}",
     "DELETE /api/collections/{collection_id}",
