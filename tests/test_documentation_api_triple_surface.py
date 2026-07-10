@@ -274,6 +274,11 @@ _EXEMPT: dict[str, str] = {
         "`agnes pull` (hash-verified, atomic promotion, pruned on de-authorization); "
         "no MCP/JSON analogue, mirrors the parquet /api/data/{table_id}/download channel"
     ),
+    "/api/admin/run-knowledge-packaging": (
+        "scheduler-driven knowledge-artifact rebuild trigger (K3, #798) — "
+        "admin/scheduler maintenance op, mirrors the run-corporate-memory "
+        "exemption; no analyst CLI/MCP analogue"
+    ),
 }
 
 

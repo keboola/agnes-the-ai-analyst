@@ -4191,6 +4191,51 @@ def run_corporate_memory(
     }
 
 
+@router.post("/run-knowledge-packaging")
+def run_knowledge_packaging(
+    user: dict = Depends(require_admin),
+):
+    """Rebuild per-collection knowledge.duckdb artifacts whose content changed.
+
+    Scheduler-driven (K3, #798): fingerprints each corpus's chunks, rebuilds
+    stale artifacts, prunes artifacts for deleted corpora. Idempotent and
+    cheap when nothing changed (fingerprint check only). Mirrors
+    run_corporate_memory's audit + error posture.
+    """
+    from src.knowledge_packaging import run_packaging_pass
+
+    job_error: Optional[Exception] = None
+    summary: dict = {}
+    try:
+        summary = run_packaging_pass()
+    except Exception as e:
+        # Mirror run_corporate_memory / run_verification_detector: capture
+        # any unhandled error so audit_log + /admin/scheduler-runs reflect
+        # the failure. Re-raised below after audit.
+        job_error = e
+
+    audit_params: dict = {
+        "built": len(summary.get("built", [])),
+        "skipped": len(summary.get("skipped", [])),
+        "pruned": len(summary.get("pruned", [])),
+        "errors": len(summary.get("errors", [])),
+    }
+    if job_error is not None:
+        audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
+
+    audit_repo().log(
+        user_id=user.get("id"),
+        action="run_knowledge_packaging",
+        resource="job:knowledge-packaging",
+        params=audit_params,
+    )
+
+    if job_error is not None:
+        raise HTTPException(status_code=500, detail=audit_params["unhandled_error"])
+
+    return {"ok": not summary.get("errors"), "details": summary}
+
+
 @router.post("/run-knowledge-migration")
 def run_knowledge_migration(
     user: dict = Depends(require_admin),
