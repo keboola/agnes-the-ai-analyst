@@ -9,6 +9,7 @@ volume) at startup: fail-soft per wheel, idempotent via a content-hash
 marker, and ``~/.local/bin`` is put on PATH so console scripts resolve
 when the stdio client spawns them.
 """
+
 from __future__ import annotations
 
 import json
@@ -27,9 +28,11 @@ def _fake_run_factory(calls, rc=0):
             self.returncode = rc
             self.stdout = ""
             self.stderr = "boom" if rc else ""
+
     def _fake_run(cmd, **kw):
         calls.append(cmd)
         return _R()
+
     return _fake_run
 
 
@@ -65,7 +68,7 @@ def test_skips_already_installed_wheel(tmp_path, monkeypatch):
     install_operator_wheels(tmp_path)
     calls.clear()
 
-    assert install_operator_wheels(tmp_path) == []   # same content → skip
+    assert install_operator_wheels(tmp_path) == []  # same content → skip
     assert calls == []
 
     # Content change → reinstall (hash mismatch).
@@ -84,10 +87,10 @@ def test_failing_wheel_is_fail_soft_and_not_marked(tmp_path, monkeypatch):
 
     installed = install_operator_wheels(tmp_path)
 
-    assert installed == []                       # nothing succeeded
-    assert len(calls) == 2                       # but both were attempted
+    assert installed == []  # nothing succeeded
+    assert len(calls) == 2  # but both were attempted
     marker = json.loads((wheels / ".installed.json").read_text())
-    assert marker == {}                          # failures not marked → retried next boot
+    assert marker == {}  # failures not marked → retried next boot
 
 
 def test_ensure_user_bin_on_path_idempotent(monkeypatch):
@@ -96,4 +99,4 @@ def test_ensure_user_bin_on_path_idempotent(monkeypatch):
     p1 = os.environ["PATH"]
     assert str(Path.home() / ".local" / "bin") in p1.split(os.pathsep)
     ensure_user_bin_on_path()
-    assert os.environ["PATH"] == p1              # no duplicate prepend
+    assert os.environ["PATH"] == p1  # no duplicate prepend
