@@ -440,6 +440,18 @@ async def lifespan(app):
 
     app.state.public_url = get_public_url()
 
+    # Sweep DuckDB spill files orphaned by a previous hard death (SIGKILL,
+    # crash, container stop timeout) — DuckDB never cleans these up itself
+    # and they accumulate as multi-GB dead weight. Safe here: this process
+    # is the only DuckDB writer for the state dir and no connection exists
+    # yet. Fail-soft — a cleanup hiccup must never block startup.
+    try:
+        from src.db import cleanup_orphaned_temp_files
+
+        cleanup_orphaned_temp_files()
+    except Exception:
+        logger.exception("duckdb-tmp orphan sweep failed (non-fatal)")
+
     # Install operator-provided stdio-MCP wheels from the persistent data
     # volume (${DATA_DIR}/mcp/wheels) and put ~/.local/bin on PATH so their
     # console scripts resolve when the stdio client spawns them. Without

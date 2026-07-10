@@ -156,7 +156,7 @@ def test_materialized_pass_collects_errors_per_row(system_db, stub_bq, tmp_path)
 
     from app.api import sync as sync_mod
 
-    def _fake(table_id, sql, bq, output_dir, max_bytes):
+    def _fake(table_id, sql, bq, output_dir, max_bytes, fetch_timeout_s=None):
         if table_id == "bad":
             raise RuntimeError("simulated COPY failure")
         return {"rows": 1, "size_bytes": 100, "query_mode": "materialized"}
@@ -389,7 +389,7 @@ def test_materialized_pass_max_bytes_yaml_coercion(
 
     captured = {}
 
-    def _spy(table_id, sql, bq, output_dir, max_bytes):
+    def _spy(table_id, sql, bq, output_dir, max_bytes, fetch_timeout_s=None):
         captured["max_bytes"] = max_bytes
         return {"rows": 1, "size_bytes": 100, "query_mode": "materialized"}
 
@@ -437,7 +437,7 @@ def test_materialized_pass_keys_sync_state_by_name_not_id(
 
     captured = {}
 
-    def _spy(table_id, sql, bq, output_dir, max_bytes):
+    def _spy(table_id, sql, bq, output_dir, max_bytes, fetch_timeout_s=None):
         captured["table_id"] = table_id
         return {"rows": 1, "size_bytes": 100, "query_mode": "materialized"}
 

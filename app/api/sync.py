@@ -124,6 +124,7 @@ def _materialize_table(
     bq,
     output_dir: str,
     max_bytes: Optional[int],
+    fetch_timeout_s: Optional[float] = None,
 ) -> dict:
     """Thin wrapper around `connectors.bigquery.extractor.materialize_query`
     so the trigger pass can be unit-tested by patching this seam without
@@ -136,6 +137,7 @@ def _materialize_table(
         bq=bq,
         output_dir=output_dir,
         max_bytes=max_bytes,
+        fetch_timeout_s=fetch_timeout_s,
     )
 
 
@@ -214,6 +216,29 @@ def _run_materialized_pass(
         n = 0
     bq_max_bytes = n if n > 0 else None
 
+    # Fetch-phase watchdog for the COPY's client-side result download —
+    # the phase the BQ extension's own timeout does not cover. Default
+    # 15 min (a healthy fetch of a multi-hundred-MB result is ~1 min; a
+    # wedged stream otherwise holds the per-table lock for hours and
+    # starves the daily schedule). Explicit `0` disables.
+    raw_fetch_timeout = get_value(
+        "data_source",
+        "bigquery",
+        "materialize_fetch_timeout_seconds",
+        default=900,
+    )
+    try:
+        t = float(raw_fetch_timeout) if raw_fetch_timeout is not None else 900.0
+    except (TypeError, ValueError):
+        logger.warning(
+            "data_source.bigquery.materialize_fetch_timeout_seconds is not "
+            "numeric (%r); using the 900s default. Set a number of seconds "
+            "or 0 to disable.",
+            raw_fetch_timeout,
+        )
+        t = 900.0
+    bq_fetch_timeout_s = t if t > 0 else None
+
     registry = table_registry_repo()
     state = sync_state_repo()
 
@@ -287,6 +312,7 @@ def _run_materialized_pass(
                     bq=bq,
                     output_dir=bq_output_dir,
                     max_bytes=bq_max_bytes,
+                    fetch_timeout_s=bq_fetch_timeout_s,
                 )
             elif row_source_type == "keboola":
                 conn_id = row.get("connection_id")
