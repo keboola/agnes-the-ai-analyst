@@ -99,6 +99,16 @@ class SyncStateRepository:
         rows = self.conn.execute(sql, params).fetchall()
         return self._rows_to_dicts(rows)
 
+    def status_counts_since(self, since: datetime) -> Dict[str, int]:
+        """``{status: count}`` over ``sync_history`` rows synced at/after
+        *since*. Backs the Activity Center health pulse's "sync_24h" field
+        (``app/api/activity.py`` ``_compute_health``)."""
+        rows = self.conn.execute(
+            "SELECT status, COUNT(*) FROM sync_history WHERE synced_at >= ? GROUP BY status",
+            [since],
+        ).fetchall()
+        return {r[0]: int(r[1]) for r in rows}
+
     def set_error(self, table_id: str, error_message: str) -> None:
         """Record a per-table sync failure on the existing `error` /`status`
         columns so admin endpoints can surface it (`GET /api/admin/registry`

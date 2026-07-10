@@ -791,6 +791,22 @@ class KnowledgePgRepository:
             rows = conn.execute(sa.text("".join(sql_parts)), params).mappings().all()
         return [self._normalize_row(dict(r)) for r in rows]
 
+    def count_relations(
+        self,
+        relation_type: Optional[str] = None,
+        resolved: Optional[bool] = None,
+    ) -> int:
+        sql_parts = ["SELECT COUNT(*) FROM knowledge_item_relations WHERE 1=1"]
+        params: Dict[str, Any] = {}
+        if relation_type is not None:
+            sql_parts.append(" AND relation_type = :rt")
+            params["rt"] = relation_type
+        if resolved is not None:
+            sql_parts.append(" AND resolved = :r")
+            params["r"] = resolved
+        with self._engine.connect() as conn:
+            return conn.execute(sa.text("".join(sql_parts)), params).scalar_one()
+
     def resolve_relation(
         self,
         item_a_id: str,

@@ -268,6 +268,23 @@ def test_knowledge_relation_resolve(k_engine):
     assert rel["resolved"] is True
 
 
+def test_knowledge_count_relations_filters_match_list_relations(k_engine):
+    from src.repositories.knowledge_pg import KnowledgePgRepository
+
+    repo = KnowledgePgRepository(k_engine)
+    for iid in ("a", "b", "c", "d", "e", "f"):
+        repo.create(id=iid, title=iid, content="c", category="c")
+    repo.create_relation("a", "b", "likely_duplicate")
+    repo.create_relation("c", "d", "likely_duplicate")
+    repo.create_relation("e", "f", "other_type")
+    repo.resolve_relation("a", "b", "likely_duplicate", resolved_by="admin",
+                           resolution="duplicate")
+    assert repo.count_relations() == 3
+    assert repo.count_relations(relation_type="likely_duplicate") == 2
+    assert repo.count_relations(relation_type="likely_duplicate", resolved=False) == 1
+    assert repo.count_relations(relation_type="likely_duplicate", resolved=True) == 1
+
+
 # ---------------------------------------------------------------------------
 # duplicate-candidate finder + aggregations
 # ---------------------------------------------------------------------------

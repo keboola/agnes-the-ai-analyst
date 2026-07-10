@@ -9,6 +9,8 @@ _ensure_schema, Postgres via alembic upgrade -> head.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 
@@ -152,3 +154,28 @@ def test_update_sync_clears_a_prior_skip(sync_repo):
     state = repo.get_table_state("bucket.orders")
     assert state["status"] == "ok"
     assert state["error"] in (None, "")
+
+
+# ---------------------------------------------------------------------------
+# status_counts_since — Activity Center health-pulse "sync_24h" field
+# ---------------------------------------------------------------------------
+
+
+def test_status_counts_since_groups_by_status(sync_repo):
+    repo, _, _ = sync_repo
+
+    repo.update_sync(table_id="t.ok1", rows=1, file_size_bytes=10, hash="h1", status="ok")
+    repo.update_sync(table_id="t.ok2", rows=1, file_size_bytes=10, hash="h2", status="ok")
+    repo.update_sync(table_id="t.err", rows=0, file_size_bytes=0, hash="h3", status="error", error="boom")
+
+    since = datetime.now(timezone.utc) - timedelta(hours=1)
+    counts = repo.status_counts_since(since)
+    assert counts == {"ok": 2, "error": 1}
+
+
+def test_status_counts_since_empty_window_returns_empty_dict(sync_repo):
+    repo, _, _ = sync_repo
+    repo.update_sync(table_id="t.ok1", rows=1, file_size_bytes=10, hash="h1")
+
+    since = datetime.now(timezone.utc) + timedelta(hours=1)
+    assert repo.status_counts_since(since) == {}

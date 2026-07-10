@@ -277,3 +277,28 @@ def test_list_google_sync_groups_for_user_empty(repos):
 
     rows = members.list_google_sync_groups_for_user("u-only-admin")
     assert rows == []
+
+
+def test_google_sync_summary_counts_and_last_added_at(repos):
+    """`google_sync_summary` returns ``{count, last_added_at}`` over the
+    user's ``source='google_sync'`` rows only — the admin membership must
+    not be counted. Backs ``app.api.me_debug._last_sync_summary``."""
+    ug, members, users, _, _ = repos
+    synced, admin = _seed_user_and_two_groups(ug, members, users)
+
+    summary = members.google_sync_summary("u-1")
+    assert set(summary.keys()) == {"count", "last_added_at"}
+    assert summary["count"] == 1
+    assert summary["last_added_at"] is not None
+
+
+def test_google_sync_summary_empty_user_returns_zero(repos):
+    """A user with no google_sync rows gets count=0, last_added_at=None on
+    both engines."""
+    ug, members, users, _, _ = repos
+    users.create(id="u-only-admin-2", email="adminonly2@example.com", name="AO2")
+    grp = ug.ensure("admin-only-grp-2")
+    members.add_member("u-only-admin-2", grp["id"], source="admin")
+
+    summary = members.google_sync_summary("u-only-admin-2")
+    assert summary == {"count": 0, "last_added_at": None}

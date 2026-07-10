@@ -108,6 +108,19 @@ class TestRelationsCRUD:
         assert len(resolved) == 1
         conn.close()
 
+    def test_count_relations_filters_match_list_relations(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        repo = KnowledgeRepository(conn)
+        repo.create_relation("kv_a", "kv_b", "likely_duplicate")
+        repo.create_relation("kv_c", "kv_d", "likely_duplicate")
+        repo.create_relation("kv_e", "kv_f", "other_type")
+        repo.resolve_relation("kv_a", "kv_b", "likely_duplicate", "admin@x", "duplicate")
+        assert repo.count_relations() == 3
+        assert repo.count_relations(relation_type="likely_duplicate") == 2
+        assert repo.count_relations(relation_type="likely_duplicate", resolved=False) == 1
+        assert repo.count_relations(relation_type="likely_duplicate", resolved=True) == 1
+        conn.close()
+
     def test_resolve_relation_returns_zero_when_missing(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         repo = KnowledgeRepository(conn)

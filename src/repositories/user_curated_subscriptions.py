@@ -168,6 +168,27 @@ class UserCuratedSubscriptionsRepository:
         ).fetchone()[0]
         return max(0, int(after) - int(before))
 
+    def stack_counts(self) -> Dict[Tuple[str, str], int]:
+        """Return ``{(marketplace_id, plugin_name): subscriber_count}`` for
+        every curated plugin with at least one subscriber.
+
+        Post-v28, row PRESENCE in ``user_plugin_optouts`` means the user is
+        subscribed; ``fanout_system_for_user`` materialises rows for every
+        ``is_system`` plugin × user pair, so the COUNT naturally includes
+        system plugins without a separate code path. Backs the marketplace
+        listing/detail pages' subscriber-count badge
+        (``app.api.marketplace._load_curated_stack_counts``) — one query per
+        page render, avoiding N+1.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT marketplace_id, plugin_name, COUNT(DISTINCT user_id)
+            FROM user_plugin_optouts
+            GROUP BY marketplace_id, plugin_name
+            """
+        ).fetchall()
+        return {(r[0], r[1]): int(r[2]) for r in rows}
+
     def fanout_system_for_user(self, user_id: str) -> None:
         """Subscribe ``user_id`` to every active system marketplace_plugin.
 

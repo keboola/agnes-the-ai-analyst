@@ -397,6 +397,54 @@ class UsageRepository:
         }
 
     # ------------------------------------------------------------------
+    # /home status frame (DuckDB).  Source: app.api.me.compute_home_stats.
+    # ------------------------------------------------------------------
+
+    def home_stats(self, user_id: str, username: str, since: datetime) -> dict:
+        """Sessions / prompts / tokens / distinct-projects counters for the
+        /home status frame, over ``[since, now)``.
+
+        Matches on both ``user_id`` (stable, populated by the v45 pipeline)
+        and ``username`` (legacy rows before the v45 backfill) so stats stay
+        complete during the transition period. Mirrored in
+        ``UsagePgRepository.home_stats`` with identical aggregation semantics.
+        """
+        sess = self.conn.execute(
+            """
+            SELECT
+                COUNT(*)                                 AS sessions,
+                COALESCE(SUM(user_messages), 0)          AS prompts,
+                COALESCE(SUM(input_tokens), 0)            AS input_tokens,
+                COALESCE(SUM(output_tokens), 0)           AS output_tokens,
+                COALESCE(SUM(cache_read_tokens), 0)       AS cache_read,
+                COALESCE(SUM(cache_creation_tokens), 0)   AS cache_creation
+            FROM usage_session_summary
+            WHERE (user_id = ? OR username = ?)
+              AND started_at >= ?
+            """,
+            [user_id, username, since],
+        ).fetchone()
+        proj = self.conn.execute(
+            """
+            SELECT COUNT(DISTINCT cwd) FROM usage_events
+            WHERE (user_id = ? OR username = ?)
+              AND cwd IS NOT NULL
+              AND occurred_at >= ?
+            """,
+            [user_id, username, since],
+        ).fetchone()
+        sessions, prompts, input_t, output_t, cache_read, cache_creation = (int(x or 0) for x in sess)
+        return {
+            "sessions": sessions,
+            "prompts": prompts,
+            "input_tokens": input_t,
+            "output_tokens": output_t,
+            "cache_read": cache_read,
+            "cache_creation": cache_creation,
+            "projects": int(proj[0] or 0),
+        }
+
+    # ------------------------------------------------------------------
     # session summary aggregate reads (DuckDB).
     # ------------------------------------------------------------------
 

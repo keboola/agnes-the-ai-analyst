@@ -214,3 +214,17 @@ class UserGroupMembersPgRepository:
                 {"u": user_id},
             ).first()
         return row is not None
+
+    def google_sync_summary(self, user_id: str) -> Dict[str, Any]:
+        """Mirrors ``UserGroupMembersRepository.google_sync_summary``."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    """SELECT COUNT(*) AS n, MAX(added_at) AS last_at
+                         FROM user_group_members
+                        WHERE user_id = :u AND source = 'google_sync'"""
+                ),
+                {"u": user_id},
+            ).first()
+        n, last_at = row if row else (0, None)
+        return {"count": int(n or 0), "last_added_at": last_at}

@@ -299,3 +299,22 @@ class UserGroupMembersRepository:
             [user_id],
         ).fetchone()
         return row is not None
+
+    def google_sync_summary(self, user_id: str) -> Dict[str, Any]:
+        """Count + most recent ``added_at`` of the user's
+        ``source='google_sync'`` rows.
+
+        Backs the /me/profile diagnostic's "when did Agnes last hear from
+        Google about me?" panel (``app.api.me_debug._last_sync_summary``).
+        Not authoritative timestamps — Google sync writes DELETE+INSERT
+        every login, so all rows share the same ``added_at`` — but
+        sufficient for that purpose.
+        """
+        row = self.conn.execute(
+            """SELECT COUNT(*) AS n, MAX(added_at) AS last_at
+                 FROM user_group_members
+                WHERE user_id = ? AND source = 'google_sync'""",
+            [user_id],
+        ).fetchone()
+        n, last_at = row if row else (0, None)
+        return {"count": int(n or 0), "last_added_at": last_at}

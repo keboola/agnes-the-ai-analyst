@@ -941,6 +941,26 @@ class KnowledgeRepository:
         params.append(limit)
         return self._rows_to_dicts(self.conn.execute(sql, params).fetchall())
 
+    def count_relations(
+        self,
+        relation_type: Optional[str] = None,
+        resolved: Optional[bool] = None,
+    ) -> int:
+        """Count relation rows matching the given filters.
+
+        Used for badge counts (e.g. unresolved duplicate candidates) where
+        callers only need the total, not the rows themselves.
+        """
+        sql = "SELECT COUNT(*) FROM knowledge_item_relations WHERE 1=1"
+        params: List[Any] = []
+        if relation_type is not None:
+            sql += " AND relation_type = ?"
+            params.append(relation_type)
+        if resolved is not None:
+            sql += " AND resolved = ?"
+            params.append(resolved)
+        return self.conn.execute(sql, params).fetchone()[0]
+
     def resolve_relation(
         self,
         item_a_id: str,
