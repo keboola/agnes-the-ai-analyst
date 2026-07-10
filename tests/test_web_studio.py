@@ -72,3 +72,16 @@ def test_suggestions_review_page_requires_admin(seeded_app):
         follow_redirects=False,
     )
     assert resp.status_code in (302, 307, 401, 403)
+
+
+def test_skill_domain_registered_as_direct_submit():
+    from app.web.studio import STUDIO_DOMAINS, get_domain
+
+    spec = get_domain("skill")
+    assert spec is not None
+    assert spec.submit_directly is True
+    assert spec.endpoint == "/api/store/entities/from-markdown"
+    assert spec.profile == "skill-author"
+    assert [f.key for f in spec.fields] == ["name", "description", "category", "skill_md"]
+    # every other domain still routes through the suggestions queue
+    assert all(not d.submit_directly for s, d in STUDIO_DOMAINS.items() if s != "skill")
