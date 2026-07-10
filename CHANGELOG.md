@@ -12,15 +12,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.34] - 2026-07-10
+
+### Added
+
 - Marketplace registration supports pinning a marketplace to a fixed git tag or full 40-char commit SHA via a new `ref` field (mutually exclusive with `branch` — 400 if both are set). Nightly and manual syncs stay at the pinned ref even when upstream's default branch moves; a mismatched/unreachable SHA pin fails the sync and keeps serving the previous checkout, same as any other sync failure. Surfaced on the `/admin/marketplaces` cards/edit modal and in the `MarketplaceResponse` API shape (#781)
 
 ### Changed
 
 - `/admin/marketplaces` edit modal: clearing the Branch field now actually clears it on save — a blanked-out field was previously silently converted to "leave untouched" client-side, so the server-stored branch never cleared from the UI
-
-### Fixed
-
-### Removed
 
 ### Internal
 
