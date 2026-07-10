@@ -169,6 +169,10 @@ class TestToolRegistration:
             # Web chat composer slash-menu catalog (issue #780). Triple-surface
             # with GET /api/chat/skills + `agnes chat skills`.
             "chat_skills",
+            # Markdown-first skill publish (studio Skill Builder, issue #688).
+            # Triple-surface with POST /api/store/entities/from-markdown +
+            # `agnes store publish-md`.
+            "store_publish_markdown",
         }
 
     def test_no_client_only_tools(self):
@@ -342,6 +346,51 @@ class TestStackTools:
         assert result["unsubscribed"] is True
         called_url = mock_delete.call_args[0][0]
         assert "/api/stack/subscription/data_package/pkg_a" in called_url
+
+
+class TestStorePublishMarkdownTool:
+    def test_posts_full_payload(self):
+        mod = _import_mod()
+        data = {"id": "ent_1", "name": "my-skill", "version": 1, "visibility_status": "pending"}
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_post = AsyncMock(return_value=_mock_resp(data, status=201))
+            MC.return_value.__aenter__.return_value.post = mock_post
+            result = _run(
+                mod.store_publish_markdown(
+                    "my-skill",
+                    "# My Skill\n\nBody text.",
+                    description="Use when doing X",
+                    category="analytics",
+                )
+            )
+
+        assert result == data
+        called_url = mock_post.call_args[0][0]
+        assert "/api/store/entities/from-markdown" in called_url
+        posted = mock_post.call_args[1]["json"]
+        assert posted == {
+            "type": "skill",
+            "name": "my-skill",
+            "skill_md": "# My Skill\n\nBody text.",
+            "description": "Use when doing X",
+            "category": "analytics",
+        }
+
+    def test_omits_optional_fields_when_absent(self):
+        mod = _import_mod()
+        data = {"id": "ent_2", "name": "bare-skill", "version": 1, "visibility_status": "approved"}
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_post = AsyncMock(return_value=_mock_resp(data, status=201))
+            MC.return_value.__aenter__.return_value.post = mock_post
+            result = _run(mod.store_publish_markdown("bare-skill", "# Bare Skill"))
+
+        assert result == data
+        posted = mock_post.call_args[1]["json"]
+        assert posted == {"type": "skill", "name": "bare-skill", "skill_md": "# Bare Skill"}
 
 
 # ── server_info tool ────────────────────────────────────────────────────────────
