@@ -129,3 +129,18 @@ def test_approve_mcp_unsafe_name_is_rejected(seeded_app):
         json={},
     )
     assert a.status_code == 409  # create_failed — unsafe SQL identifier
+
+
+def test_submit_rejects_direct_domain(seeded_app):
+    """Domains with their own moderation (the store) must not enter the
+    suggestions queue — there is no _SAFE_REPLAY for them, so an approve
+    would silently create nothing."""
+    c = seeded_app["client"]
+    r = _submit(
+        c,
+        seeded_app["analyst_token"],
+        domain="skill",
+        payload={"name": "x", "skill_md": "y"},
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["kind"] == "domain_submits_directly"

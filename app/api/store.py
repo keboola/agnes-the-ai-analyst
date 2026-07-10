@@ -29,7 +29,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlparse
 
 import duckdb
@@ -771,9 +771,7 @@ async def _intake_bundle_to_scratch(file: UploadFile, type_: str, scratch: Path)
         fm = _parse_frontmatter(text)
         if not fm.get("name") or not fm.get("description"):
             # Nicer error than the generic downstream ``zip_missing_skill_md``.
-            raise HTTPException(
-                status_code=422, detail="skill_file_missing_frontmatter"
-            )
+            raise HTTPException(status_code=422, detail="skill_file_missing_frontmatter")
         (scratch / "SKILL.md").write_text(text, encoding="utf-8")
         return size
 
@@ -1653,6 +1651,71 @@ async def dryrun_entity(
 # ---------------------------------------------------------------------------
 # Create (upload) — POST /api/store/entities
 # ---------------------------------------------------------------------------
+
+
+class CreateFromMarkdownBody(BaseModel):
+    """JSON contract for markdown-first publishing (studio Skill Builder)."""
+
+    type: Literal["skill"] = "skill"
+    name: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    skill_md: str
+
+
+@router.post(
+    "/entities/from-markdown",
+    response_model=StoreEntityResponse,
+    status_code=201,
+)
+async def create_entity_from_markdown(
+    body: CreateFromMarkdownBody,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user),  # no resource gate: store is open-to-authed, enforced downstream
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """JSON sibling of ``POST /entities`` — synthesizes ``<name>/SKILL.md``
+    into an in-memory ZIP and delegates to ``create_entity``, so quota,
+    guardrails, LLM review, naming and versioning apply identically.
+    """
+    name = body.name.strip()
+    if not _NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="invalid_name_format")
+    # Normalize once: writing the lstripped text is always safe, and it
+    # keeps this check in sync with parse_frontmatter (regex anchored at
+    # position 0, no lstrip) so leading whitespace before `---` doesn't
+    # cause the real frontmatter to be shadowed by a synthesized one.
+    text = body.skill_md.lstrip()
+    if not _FRONTMATTER_RE.match(text):
+        import yaml
+
+        fm = yaml.safe_dump(
+            {"name": name, "description": body.description or ""},
+            default_flow_style=False,
+            allow_unicode=True,
+            sort_keys=False,
+        )
+        text = f"---\n{fm}---\n\n{text}"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{name}/SKILL.md", text)
+    buf.seek(0)
+    upload = UploadFile(file=buf, filename=f"{name}.zip")
+    return await create_entity(
+        background_tasks,
+        file=upload,
+        type=body.type,
+        name=name,
+        description=body.description,
+        category=body.category,
+        video_url=None,
+        title=None,
+        tagline=None,
+        photo=None,
+        docs=[],
+        user=user,
+        conn=conn,
+    )
 
 
 @router.post("/entities", response_model=StoreEntityResponse, status_code=201)

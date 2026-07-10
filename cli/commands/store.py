@@ -67,6 +67,41 @@ def upload_entity(
         typer.echo(f"Held for automated review — check progress with: agnes store status {body['id']} --wait")
 
 
+@store_app.command("publish-md")
+def publish_markdown(
+    name: str = typer.Argument(..., help="Skill name (lowercase, digits, dashes)"),
+    skill_md: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True, help="Path to the SKILL.md"),
+    description: Optional[str] = typer.Option(None, "--description"),
+    category: Optional[str] = typer.Option(
+        None,
+        "--category",
+        help="Category (case-insensitive). One of: " + ", ".join(STORE_CATEGORIES),
+    ),
+):
+    """Publish a skill from a single Markdown file — no ZIP needed.
+
+    The server wraps the file into the same guardrail + review pipeline as
+    ``agnes store upload``.
+    """
+    payload: dict = {
+        "type": "skill",
+        "name": name,
+        "skill_md": skill_md.read_text(encoding="utf-8"),
+    }
+    if description:
+        payload["description"] = description
+    if category:
+        payload["category"] = category
+    try:
+        body = api_post_json("/api/store/entities/from-markdown", payload)
+    except V2ClientError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Published: id={body['id']} name={body['name']} version={body['version']}")
+    if body.get("visibility_status") == "pending":
+        typer.echo(f"Held for automated review — check progress with: agnes store status {body['id']} --wait")
+
+
 @store_app.command("delete")
 def delete_entity(
     entity_id: str = typer.Argument(...),

@@ -454,6 +454,47 @@ async def store_status(entity_id: str) -> dict:
 
 
 @mcp.tool()
+async def store_publish_markdown(
+    name: str,
+    skill_md: str,
+    description: str | None = None,
+    category: str | None = None,
+) -> dict:
+    """Publish a skill to the store from Markdown content — no ZIP needed.
+
+    The server synthesizes the SKILL.md folder and routes it through the same
+    guardrail + review pipeline as a ZIP upload. The result may be held for
+    automated review (``visibility_status: pending``) before it appears.
+    Mirrors ``POST /api/store/entities/from-markdown`` and
+    ``agnes store publish-md``.
+
+    Args:
+        name:        Skill name — lowercase letters, digits, dashes.
+        skill_md:    The SKILL.md content (frontmatter optional; synthesized
+                     from ``name``/``description`` when absent).
+        description: One-line *use when …* trigger (goes into frontmatter).
+        category:    Optional store category (case-insensitive).
+
+    Returns the created entity — ``{"id", "name", "invocation_name",
+    "version", "visibility_status", …}``.
+    """
+    payload: dict = {"type": "skill", "name": name, "skill_md": skill_md}
+    if description:
+        payload["description"] = description
+    if category:
+        payload["category"] = category
+    async with httpx.AsyncClient() as c:
+        r = await c.post(
+            f"{_BASE}/api/store/entities/from-markdown",
+            json=payload,
+            headers=_headers(),
+            timeout=60,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
 async def documentation_api() -> str:
     """Return the curated Agnes REST API reference as Markdown.
 

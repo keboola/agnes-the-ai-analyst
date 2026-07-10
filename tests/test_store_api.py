@@ -1934,3 +1934,79 @@ class TestSubmissionStatus:
         assert body["submission"]["status"] == "review_error"
         assert body["submission"]["error"] == "timeout_or_crash"
         assert "admin" in body["hint"].lower()
+
+
+class TestCreateFromMarkdown:
+    """JSON sibling of POST /entities — the studio Skill Builder path."""
+
+    def _publish(self, client, cookies, **overrides):
+        payload = {
+            "name": "md-first-skill",
+            "description": _OK_DESC,
+            "skill_md": _OK_BODY,
+        }
+        payload.update(overrides)
+        return client.post("/api/store/entities/from-markdown", json=payload, cookies=cookies)
+
+    def test_publishes_skill_without_frontmatter(self, web_client, tmp_path):
+        _, cookies = _create_user(web_client, "alice@x.com")
+        r = self._publish(web_client, cookies)
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["type"] == "skill"
+        assert body["name"] == "md-first-skill"
+        assert body["invocation_name"] == "md-first-skill-by-alice"
+        # The baked tree exists exactly like a ZIP upload's.
+        skill_md = tmp_path / "store" / body["id"] / "plugin" / "skills" / "md-first-skill-by-alice" / "SKILL.md"
+        assert skill_md.is_file()
+        text = skill_md.read_text()
+        assert "name: md-first-skill-by-alice" in text  # synthesized + suffixed
+        assert _OK_DESC.split()[0] in text  # description landed in frontmatter
+
+    def test_keeps_existing_frontmatter(self, web_client):
+        _, cookies = _create_user(web_client, "bob@x.com")
+        full = f"---\nname: md-first-skill\ndescription: {_OK_DESC}\n---\n\n{_OK_BODY}\n"
+        r = self._publish(web_client, cookies, skill_md=full)
+        assert r.status_code == 201, r.text
+        assert r.json()["name"] == "md-first-skill"
+
+    def test_leading_whitespace_before_frontmatter_is_not_shadowed(self, web_client, tmp_path):
+        """A skill_md that starts with blank lines before `---` must not be
+        treated as frontmatter-less: the un-lstripped text used to be baked
+        as-is, so parse_frontmatter's position-0-anchored regex missed the
+        real block and a synthesized one got prepended on top of it."""
+        _, cookies = _create_user(web_client, "frank@x.com")
+        full = "\n\n" + f"---\nname: md-first-skill\ndescription: {_OK_DESC}\n---\n\n{_OK_BODY}\n"
+        r = self._publish(web_client, cookies, skill_md=full)
+        assert r.status_code == 201, r.text
+        body = r.json()
+        skill_md = tmp_path / "store" / body["id"] / "plugin" / "skills" / body["invocation_name"] / "SKILL.md"
+        assert skill_md.is_file()
+        text = skill_md.read_text()
+        assert text.startswith("---")
+        assert text.count("---\n") == 2  # opening + closing fence, no synthesized duplicate
+
+    def test_rejects_bad_name(self, web_client):
+        _, cookies = _create_user(web_client, "carol@x.com")
+        r = self._publish(web_client, cookies, name="Bad Name!")
+        assert r.status_code == 400
+        assert r.json()["detail"] == "invalid_name_format"
+
+    def test_guardrails_apply_same_as_zip(self, web_client):
+        """Short body must be blocked by the content guardrail, proving the
+        JSON path rides the same pipeline as the multipart one."""
+        _, cookies = _create_user(web_client, "dave@x.com")
+        r = self._publish(web_client, cookies, skill_md="too short")
+        assert r.status_code == 422, r.text
+
+    def test_rejects_non_skill_type(self, web_client):
+        _, cookies = _create_user(web_client, "erin@x.com")
+        r = self._publish(web_client, cookies, type="plugin")
+        assert r.status_code == 422  # pydantic Literal["skill"]
+
+    def test_requires_auth(self, web_client):
+        r = web_client.post(
+            "/api/store/entities/from-markdown",
+            json={"name": "x", "skill_md": "y"},
+        )
+        assert r.status_code in (401, 403)

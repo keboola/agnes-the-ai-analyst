@@ -148,8 +148,14 @@ async def submit_suggestion(
     body: CreateSuggestionBody,
     user: dict = Depends(get_current_user),
 ):
-    if get_domain(body.domain) is None:
+    spec = get_domain(body.domain)
+    if spec is None:
         raise HTTPException(status_code=400, detail={"kind": "unknown_domain", "hint": body.domain})
+    if spec.submit_directly:
+        raise HTTPException(
+            status_code=400,
+            detail={"kind": "domain_submits_directly", "hint": spec.endpoint},
+        )
     if not body.payload:
         raise HTTPException(status_code=400, detail={"kind": "empty_payload"})
     sid = authoring_suggestions_repo().create(domain=body.domain, payload=body.payload, created_by=user["email"])

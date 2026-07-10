@@ -168,9 +168,9 @@
 
     <div class="st-foot">
       <div class="st-result" id="studio-result"></div>
-      <span class="note">{% if not is_admin %}An admin reviews your submission before it goes live.{% endif %}</span>
+      <span class="note">{% if domain.submit_directly %}Published items go through the store's automated review before they appear.{% elif not is_admin %}An admin reviews your submission before it goes live.{% endif %}</span>
       <span class="spacer"></span>
-      <button class="btn btn-primary" id="studio-create" type="button">{% if is_admin %}Create{% else %}Submit for approval{% endif %}</button>
+      <button class="btn btn-primary" id="studio-create" type="button">{% if domain.submit_directly %}Publish{% elif is_admin %}Create{% else %}Submit for approval{% endif %}</button>
     </div>
 
   </div>
@@ -184,6 +184,7 @@
     domain: "{{ domain.slug }}",
     endpoint: "{{ domain.endpoint }}",
     isAdmin: {{ 'true' if is_admin else 'false' }},
+    submitDirect: {{ 'true' if domain.submit_directly else 'false' }},
     fields: [{% for f in domain.fields %}"{{ f.key }}"{% if not loop.last %}, {% endif %}{% endfor %}],
   };
 </script>
