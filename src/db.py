@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 86
+SCHEMA_VERSION = 87
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -504,7 +504,11 @@ CREATE TABLE IF NOT EXISTS marketplace_registry (
     -- v78: built-in marketplace shipped with the wheel (not a git clone).
     -- TRUE for the single system-seeded row; FALSE for all admin-registered rows.
     -- The nightly git-sync path skips is_builtin=TRUE rows (nothing to fetch).
-    is_builtin      BOOLEAN NOT NULL DEFAULT FALSE
+    is_builtin      BOOLEAN NOT NULL DEFAULT FALSE,
+    -- v87: pin the marketplace to a fixed tag name or full 40-char commit
+    -- SHA (issue #781). Mutually exclusive with `branch` — enforced at the
+    -- admin API layer. NULL = float on `branch` (or remote HEAD) as before.
+    ref             VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS marketplace_plugins (
@@ -5457,6 +5461,18 @@ def _v85_to_v86(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 86")
 
 
+def _v86_to_v87(conn: duckdb.DuckDBPyConnection) -> None:
+    """v87: add `ref` (tag/commit pin) column to marketplace_registry (#781).
+
+    Pins a registered marketplace to a fixed tag name or full 40-char commit
+    SHA so nightly/manual syncs stop tracking `branch` (or remote HEAD) once
+    set. NULL on every existing row — floating (branch/HEAD) behavior is
+    unchanged until an admin opts in via the edit modal / API.
+    """
+    conn.execute("ALTER TABLE marketplace_registry ADD COLUMN IF NOT EXISTS ref VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 87")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -5804,6 +5820,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # and so a fresh-install-then-manual-user-insert-before-boot
             # scenario in tests still lands correctly.
             _v85_to_v86(conn)
+            # v86→v87: ref (tag/commit pin) column on marketplace_registry.
+            # _SYSTEM_SCHEMA already declares it on fresh installs (no-op
+            # ALTER here). Issue #781.
+            _v86_to_v87(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -6029,6 +6049,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v84_to_v85(conn)
             if current < 86:
                 _v85_to_v86(conn)
+            if current < 87:
+                _v86_to_v87(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

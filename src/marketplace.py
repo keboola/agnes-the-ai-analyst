@@ -34,6 +34,14 @@ _lock = threading.Lock()
 
 PLUGIN_MANIFEST_REL = Path(".claude-plugin") / "marketplace.json"
 
+# A pinned `ref` is either a tag name or a full 40-char commit SHA. The tag
+# charset is deliberately conservative (vs. full git-check-ref-format rules)
+# so a malformed value can never be mistaken for a git CLI flag when passed
+# as a positional arg to `git fetch`/`git clone --branch` — must start with
+# an alnum (no leading `-`), no `..`, no trailing `.lock`/`.`.
+_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
 
 class MarketplaceNotFound(Exception):
     """Raised when a marketplace id is not present in the registry."""
@@ -41,6 +49,28 @@ class MarketplaceNotFound(Exception):
 
 def is_valid_slug(slug: str) -> bool:
     return bool(_SLUG_RE.match(slug or ""))
+
+
+def is_full_sha(ref: str) -> bool:
+    """True when `ref` is a full 40-character (hex) commit SHA."""
+    return bool(_SHA_RE.match(ref or ""))
+
+
+def is_valid_ref(ref: str) -> bool:
+    """True when `ref` is a syntactically valid tag name or commit SHA.
+
+    Used both by the admin API (400 on a malformed pin at registration time)
+    and defensively by ``_sync_spec`` (a row edited directly in the DB, or
+    seeded by an older Agnes version, must not reach `git` with an
+    attacker-controlled or flag-like value).
+    """
+    if not ref:
+        return False
+    if is_full_sha(ref):
+        return True
+    if ".." in ref or ref.endswith(".lock") or ref.endswith("."):
+        return False
+    return bool(_REF_RE.match(ref))
 
 
 def _authenticated_url(repo_url: str, token: str) -> str:
@@ -77,16 +107,60 @@ def _run_git(args: List[str], cwd: Optional[Path] = None) -> subprocess.Complete
     )
 
 
+def _checkout_pinned_sha(target: Path, sha: str) -> None:
+    """Resolve a full-length commit-SHA pin into `target`'s working tree.
+
+    Tries a direct shallow fetch of the SHA first (`git fetch --depth 1
+    origin <sha>`) — works when the git server enables
+    `uploadpack.allowReachableSHA1InWant` / `allowAnySHA1InWant` (GitHub,
+    GitLab, and most modern hosts do). Falls back to a full (unshallow)
+    fetch of the default branch history when the server rejects direct-SHA
+    fetches, then checks the SHA out of that history directly.
+
+    Raises `subprocess.CalledProcessError` (propagated to `_sync_spec`'s
+    handler, which turns it into a token-redacted `RuntimeError`) if the SHA
+    still isn't reachable after the fallback — a mismatched/nonexistent pin
+    fails the sync loudly. Neither the initial `fetch` nor a failed
+    `checkout` touch the working tree, so a previously-synced checkout is
+    left exactly as it was when this raises.
+    """
+    try:
+        _run_git(["fetch", "--depth", "1", "origin", sha], cwd=target)
+        _run_git(["checkout", "--detach", "FETCH_HEAD"], cwd=target)
+        return
+    except subprocess.CalledProcessError:
+        pass  # server doesn't support direct-SHA fetch; fall back below
+
+    is_shallow = (target / ".git" / "shallow").exists()
+    fetch_args = ["fetch", "origin"]
+    if is_shallow:
+        fetch_args.insert(1, "--unshallow")
+    _run_git(fetch_args, cwd=target)
+    _run_git(["checkout", "--detach", sha], cwd=target)
+
+
 def _sync_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
     """Perform the clone/update for a single marketplace spec.
 
     Raises RuntimeError on git failure (with token-redacted message).
-    Raises ValueError on invalid slug.
+    Raises ValueError on invalid slug/ref.
+
+    `ref` (tag name or full 40-char commit SHA) pins the marketplace to a
+    fixed point in history — nightly/manual syncs keep resolving that same
+    ref even when upstream's default branch moves. Mutually exclusive with
+    `branch` (enforced at registration by the admin API's 400; re-checked
+    here as defense-in-depth against a row edited directly in the DB).
+    A tag pin reuses the exact same `git fetch <ref>` + `reset --hard
+    FETCH_HEAD` path as a branch pin — tags and branches are both valid
+    refspecs there. A SHA pin needs the special handling in
+    `_checkout_pinned_sha` because `git clone --branch` doesn't accept an
+    arbitrary commit SHA.
     """
     slug = (spec.get("id") or "").strip()
     name = spec.get("name") or slug
     url = (spec.get("url") or "").strip()
     branch = (spec.get("branch") or "").strip() or None
+    ref = (spec.get("ref") or "").strip() or None
     token_env = (spec.get("token_env") or "").strip()
     token = os.environ.get(token_env, "") if token_env else ""
 
@@ -94,6 +168,17 @@ def _sync_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(f"marketplace id {slug!r} invalid (must match [a-z0-9][a-z0-9_-]{{0,63}})")
     if not url:
         raise ValueError(f"marketplace {slug!r}: url is required")
+    if branch and ref:
+        raise ValueError(f"marketplace {slug!r}: branch and ref are mutually exclusive")
+    if ref and not is_valid_ref(ref):
+        raise ValueError(f"marketplace {slug!r}: ref {ref!r} is not a valid tag name or 40-character commit SHA")
+
+    pinned_sha = ref if ref and is_full_sha(ref) else None
+    pinned_tag = ref if ref and not pinned_sha else None
+    # Tags and branches resolve identically via `git fetch origin <name>` +
+    # `reset --hard FETCH_HEAD` (and via `clone --branch <name>` on first
+    # clone) — this is the single "checkout target" for that shared path.
+    checkout_ref = pinned_tag or branch
 
     target = get_marketplaces_dir() / slug
     auth_url = _authenticated_url(url, token)
@@ -105,16 +190,26 @@ def _sync_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
             if target.exists():
                 shutil.rmtree(target)
             target.parent.mkdir(parents=True, exist_ok=True)
-            clone_args = ["clone", "--depth", "1"]
-            if branch:
-                clone_args += ["--branch", branch]
-            clone_args += [auth_url, str(target)]
-            _run_git(clone_args)
+            if pinned_sha:
+                # A commit SHA isn't a valid `--branch` name for git clone —
+                # shallow-clone the default branch first, then resolve the
+                # pin below (shared with the update path).
+                _run_git(["clone", "--depth", "1", auth_url, str(target)])
+                _checkout_pinned_sha(target, pinned_sha)
+            else:
+                clone_args = ["clone", "--depth", "1"]
+                if checkout_ref:
+                    clone_args += ["--branch", checkout_ref]
+                clone_args += [auth_url, str(target)]
+                _run_git(clone_args)
         else:
             _run_git(["remote", "set-url", "origin", auth_url], cwd=target)
-            ref = branch or "HEAD"
-            _run_git(["fetch", "--depth", "1", "origin", ref], cwd=target)
-            _run_git(["reset", "--hard", "FETCH_HEAD"], cwd=target)
+            if pinned_sha:
+                _checkout_pinned_sha(target, pinned_sha)
+            else:
+                fetch_ref = checkout_ref or "HEAD"
+                _run_git(["fetch", "--depth", "1", "origin", fetch_ref], cwd=target)
+                _run_git(["reset", "--hard", "FETCH_HEAD"], cwd=target)
         sha = _run_git(["rev-parse", "HEAD"], cwd=target).stdout.strip()
     except subprocess.CalledProcessError as e:
         stderr = _redact(e.stderr or "", token).strip()

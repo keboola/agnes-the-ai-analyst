@@ -28,17 +28,20 @@ class MarketplaceRegistryPgRepository:
         curator_name: Optional[str] = None,
         curator_email: Optional[str] = None,
         is_builtin: bool = False,
+        ref: Optional[str] = None,
     ) -> None:
         # is_builtin is excluded from ON CONFLICT SET — immutable after initial
         # seed so re-seeding on upgrade cannot flip admin-registered rows.
+        # `ref` is always overwritten on conflict, mirroring `branch` — see
+        # the DuckDB sibling for the rationale.
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
                     """INSERT INTO marketplace_registry
                         (id, name, url, branch, token_env, description, registered_by,
-                         registered_at, curator_name, curator_email, is_builtin)
-                    VALUES (:id, :name, :url, :branch, :te, :desc, :rb, :now, :cn, :ce, :ib)
+                         registered_at, curator_name, curator_email, is_builtin, ref)
+                    VALUES (:id, :name, :url, :branch, :te, :desc, :rb, :now, :cn, :ce, :ib, :ref)
                     ON CONFLICT (id) DO UPDATE SET
                         name = EXCLUDED.name,
                         url = EXCLUDED.url,
@@ -46,7 +49,8 @@ class MarketplaceRegistryPgRepository:
                         token_env = EXCLUDED.token_env,
                         description = EXCLUDED.description,
                         curator_name = COALESCE(EXCLUDED.curator_name, marketplace_registry.curator_name),
-                        curator_email = COALESCE(EXCLUDED.curator_email, marketplace_registry.curator_email)"""
+                        curator_email = COALESCE(EXCLUDED.curator_email, marketplace_registry.curator_email),
+                        ref = EXCLUDED.ref"""
                 ),
                 {
                     "id": id,
@@ -60,6 +64,7 @@ class MarketplaceRegistryPgRepository:
                     "cn": curator_name,
                     "ce": curator_email,
                     "ib": is_builtin,
+                    "ref": ref,
                 },
             )
 

@@ -30,6 +30,7 @@ class MarketplaceRegistryRepository:
         curator_name: Optional[str] = None,
         curator_email: Optional[str] = None,
         is_builtin: bool = False,
+        ref: Optional[str] = None,
     ) -> None:
         # ON CONFLICT updates curator fields too — but ONLY when the caller
         # supplied a non-None value. Passing curator_name=None on an UPDATE
@@ -39,6 +40,12 @@ class MarketplaceRegistryRepository:
         # gives that semantics: when excluded is non-null it wins, otherwise
         # the prior value survives.
         #
+        # `ref` (tag/commit pin) is always overwritten on conflict, same as
+        # `branch` — both are "current desired state" fields, not sticky
+        # metadata like curator, so re-registering with ref=None clears a
+        # previous pin (mirrors the admin API's explicit-None-means-unset
+        # PATCH semantics for branch).
+        #
         # is_builtin is NOT included in the ON CONFLICT SET — the built-in
         # flag is immutable after the initial seed so re-seeding on upgrade
         # cannot accidentally flip admin-registered rows.
@@ -46,8 +53,8 @@ class MarketplaceRegistryRepository:
         self.conn.execute(
             """INSERT INTO marketplace_registry
                 (id, name, url, branch, token_env, description, registered_by,
-                 registered_at, curator_name, curator_email, is_builtin)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 registered_at, curator_name, curator_email, is_builtin, ref)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name,
                 url = excluded.url,
@@ -55,7 +62,8 @@ class MarketplaceRegistryRepository:
                 token_env = excluded.token_env,
                 description = excluded.description,
                 curator_name = COALESCE(excluded.curator_name, marketplace_registry.curator_name),
-                curator_email = COALESCE(excluded.curator_email, marketplace_registry.curator_email)""",
+                curator_email = COALESCE(excluded.curator_email, marketplace_registry.curator_email),
+                ref = excluded.ref""",
             [
                 id,
                 name,
@@ -68,6 +76,7 @@ class MarketplaceRegistryRepository:
                 curator_name,
                 curator_email,
                 is_builtin,
+                ref,
             ],
         )
 
