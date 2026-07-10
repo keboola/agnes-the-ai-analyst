@@ -675,6 +675,66 @@ class TestStoreSecurityFixes:
             raise AssertionError("expected HTTPException 413, got none")
         assert zf.extracted is False, "guard fired AFTER extractall — bug in fix"
 
+    def test_zip_too_many_entries_rejected(self, tmp_path):
+        """#779 — _safe_zip_extract must refuse archives with more than
+        MAX_ZIP_ENTRIES members BEFORE extractall touches disk. The size
+        caps don't bound member count: a ZIP within both size limits can
+        still hold hundreds of thousands of tiny files and exhaust inodes.
+
+        Same direct-helper approach as the zip-bomb test above — building
+        a real over-the-cap archive is pointlessly slow when the guard
+        only reads infolist().
+        """
+        from fastapi import HTTPException
+
+        from app.api import store as store_module
+
+        class _FakeZipFile:
+            def __init__(self, infolist):
+                self._infolist = infolist
+                self.extracted = False
+
+            def infolist(self):
+                return self._infolist
+
+            def extractall(self, dest):
+                self.extracted = True
+
+        members = [zipfile.ZipInfo(f"plugin/skills/s{i}/SKILL.md") for i in range(store_module.MAX_ZIP_ENTRIES + 1)]
+        zf = _FakeZipFile(members)
+
+        try:
+            store_module._safe_zip_extract(zf, tmp_path)
+        except HTTPException as exc:
+            assert exc.status_code == 413
+            assert "zip_too_many_entries" in str(exc.detail)
+        else:
+            raise AssertionError("expected HTTPException 413, got none")
+        assert zf.extracted is False, "guard fired AFTER extractall — bug in fix"
+
+    def test_zip_at_entry_cap_accepted(self, tmp_path):
+        """#779 companion — an archive with exactly MAX_ZIP_ENTRIES members
+        passes the entry-count guard (cap is exclusive)."""
+        from app.api import store as store_module
+
+        class _FakeZipFile:
+            def __init__(self, infolist):
+                self._infolist = infolist
+                self.extracted = False
+
+            def infolist(self):
+                return self._infolist
+
+            def extractall(self, dest):
+                self.extracted = True
+
+        members = [zipfile.ZipInfo(f"plugin/f{i}.md") for i in range(store_module.MAX_ZIP_ENTRIES)]
+        for m in members:
+            m.file_size = 10
+        zf = _FakeZipFile(members)
+        store_module._safe_zip_extract(zf, tmp_path)
+        assert zf.extracted is True
+
     def test_admin_can_update_non_owned_entity(self, web_client):
         """F4 — UPDATE must permit owner OR admin (parity with DELETE)."""
         from argon2 import PasswordHasher
@@ -1748,16 +1808,16 @@ class TestSubmissionStatus:
         ph = PasswordHasher()
         conn = get_system_db()
         UserRepository(conn).create(
-            id="stat-adm", email="stat-adm@x.com", name="adm",
+            id="stat-adm",
+            email="stat-adm@x.com",
+            name="adm",
             password_hash=ph.hash("AdminPass1!"),
         )
         grant_admin(conn, "stat-adm")
-        tok = web_client.post(
-            "/auth/token", json={"email": "stat-adm@x.com", "password": "AdminPass1!"}
-        ).json()["access_token"]
-        r = web_client.get(
-            f"/api/store/entities/{eid}/status", cookies={"access_token": tok}
-        )
+        tok = web_client.post("/auth/token", json={"email": "stat-adm@x.com", "password": "AdminPass1!"}).json()[
+            "access_token"
+        ]
+        r = web_client.get(f"/api/store/entities/{eid}/status", cookies={"access_token": tok})
         assert r.status_code == 200
 
     def test_unknown_entity_404(self, web_client):
@@ -1773,7 +1833,8 @@ class TestSubmissionStatus:
 
         sub = store_submissions_repo().latest_for_entity(eid)
         store_submissions_repo().update_status(
-            sub["id"], status="review_error",
+            sub["id"],
+            status="review_error",
             llm_findings={"error": "timeout_or_crash", "findings": []},
             allow_terminal_overwrite=True,
         )

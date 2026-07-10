@@ -97,6 +97,12 @@ _ALLOWED_VIDEO_SCHEMES = {"http", "https"}
 # file_size before extracting and refuse anything above this bound.
 MAX_ZIP_UNCOMPRESSED = 200 * 1024 * 1024  # 200 MB
 
+# Cap on the number of archive members. The size caps above don't bound entry
+# count — a 50 MB ZIP within MAX_ZIP_UNCOMPRESSED can still hold hundreds of
+# thousands of tiny files and exhaust inodes / stall extraction on the data
+# volume. Generous: real skill/agent/plugin trees are well under a thousand.
+MAX_ZIP_ENTRIES = 2000
+
 
 def _suffixed_already_taken(
     suffixed: str,
@@ -667,21 +673,30 @@ async def _stream_to_temp(
 def _safe_zip_extract(zf: zipfile.ZipFile, dest: Path) -> None:
     """Extract ``zf`` into ``dest`` while rejecting unsafe members.
 
-    Three guards:
+    Four guards:
 
-    1. Path traversal (zip-slip) — refuse absolute paths or ``..`` segments.
-    2. Decompression bomb — reject if the sum of declared uncompressed sizes
+    1. Entry-count cap — refuse archives with more than ``MAX_ZIP_ENTRIES``
+       members. The size caps don't bound member count; a small ZIP can
+       hold hundreds of thousands of tiny files and exhaust inodes.
+    2. Path traversal (zip-slip) — refuse absolute paths or ``..`` segments.
+    3. Decompression bomb — reject if the sum of declared uncompressed sizes
        exceeds ``MAX_ZIP_UNCOMPRESSED``. The compressed-side cap
        (``MAX_ZIP_SIZE``) does not bound the decompressed footprint; a 50 MB
        ZIP at ratio 1:1000 expands to 50 GB on disk.
-    3. (Note) Python's stdlib ``ZipFile.extractall`` does NOT honor symlink
+    4. (Note) Python's stdlib ``ZipFile.extractall`` does NOT honor symlink
        mode bits — symlink entries are written as regular files containing
        the link target text, not as actual symlinks. So no extra symlink
        guard is needed for the stdlib path.
     """
+    members = zf.infolist()
+    if len(members) > MAX_ZIP_ENTRIES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"zip_too_many_entries (max {MAX_ZIP_ENTRIES})",
+        )
     dest_resolved = dest.resolve()
     total_uncompressed = 0
-    for member in zf.infolist():
+    for member in members:
         # Path traversal.
         member_path = Path(member.filename)
         if member_path.is_absolute() or any(part == ".." for part in member_path.parts):
