@@ -13,6 +13,7 @@ intermediate, no DuckDB COPY of full file). Tests cover both the
 default parquet path and the legacy CSV opt-in (via
 ``source_query='{"file_type":"csv"}'``).
 """
+
 import hashlib
 import os
 from pathlib import Path
@@ -51,6 +52,7 @@ def fake_storage_client_parquet():
     """Mock for the **default** parquet path. ``prepare_export`` returns a
     file_info marking a single (non-sliced) file. ``download_file``
     writes a real 2-row parquet at the requested dest."""
+
     def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
         return {
             "job_id": 100,
@@ -75,10 +77,10 @@ def fake_storage_client_csv():
     """Mock for the legacy CSV opt-in path. ``export_table`` writes a
     small CSV at dest. Used for tests that pin
     ``source_query='{"file_type":"csv"}'``."""
+
     def fake_export(table_id, dest, *, export_filter=None, export_timeout=None):
         _seed_csv(Path(dest), "id,name", ["1,alpha", "2,beta"])
-        return {"job_id": 100, "file_id": 200, "rows": 2,
-                "bytes": Path(dest).stat().st_size, "file_type": "csv"}
+        return {"job_id": 100, "file_id": 200, "rows": 2, "bytes": Path(dest).stat().st_size, "file_type": "csv"}
 
     client = MagicMock()
     client.export_table.side_effect = fake_export
@@ -87,9 +89,8 @@ def fake_storage_client_csv():
 
 # ---- default parquet path --------------------------------------------------
 
-def test_materialize_query_writes_parquet_and_returns_metadata(
-    tmp_path, fake_storage_client_parquet
-):
+
+def test_materialize_query_writes_parquet_and_returns_metadata(tmp_path, fake_storage_client_parquet):
     """Default path: no source_query → file_type=parquet, single file."""
     output_dir = tmp_path / "out"
     output_dir.mkdir()
@@ -119,9 +120,7 @@ def test_materialize_query_writes_parquet_and_returns_metadata(
     assert call_args.kwargs["export_filter"].file_type == "parquet"
 
 
-def test_materialize_query_resolves_date_placeholder_in_where_filters(
-    tmp_path, fake_storage_client_parquet
-):
+def test_materialize_query_resolves_date_placeholder_in_where_filters(tmp_path, fake_storage_client_parquet):
     """Materialized where_filters must resolve {{last_6_months}} to a literal
     date before reaching the Storage API — an unresolved placeholder is
     compared verbatim and silently returns 0 rows. Mirrors the local path's
@@ -136,27 +135,20 @@ def test_materialize_query_resolves_date_placeholder_in_where_filters(
         bucket="in.c-kbc_telemetry",
         source_table="kbc_job",
         source_query=(
-            '{"where_filters": [{"column": "job_created_at", '
-            '"operator": "ge", "values": ["{{last_6_months}}"]}]}'
+            '{"where_filters": [{"column": "job_created_at", "operator": "ge", "values": ["{{last_6_months}}"]}]}'
         ),
         storage_client=fake_storage_client_parquet,
         output_dir=output_dir,
     )
 
-    wf = fake_storage_client_parquet.prepare_export.call_args.kwargs[
-        "export_filter"
-    ].where_filters
+    wf = fake_storage_client_parquet.prepare_export.call_args.kwargs["export_filter"].where_filters
     resolved = wf[0]["values"][0]
     assert "{{" not in resolved, f"placeholder left unresolved: {resolved!r}"
-    expected = (
-        datetime.now(timezone.utc).date() - timedelta(days=180)
-    ).strftime("%Y-%m-%d")
+    expected = (datetime.now(timezone.utc).date() - timedelta(days=180)).strftime("%Y-%m-%d")
     assert resolved == expected
 
 
-def test_materialize_query_rejects_unknown_where_filter_placeholder(
-    tmp_path, fake_storage_client_parquet
-):
+def test_materialize_query_rejects_unknown_where_filter_placeholder(tmp_path, fake_storage_client_parquet):
     """An unknown placeholder must fail loudly, not silently pass a literal
     `{{typo}}` to the Storage API (which would return 0 rows)."""
     output_dir = tmp_path / "out"
@@ -168,8 +160,7 @@ def test_materialize_query_rejects_unknown_where_filter_placeholder(
             bucket="in.c-kbc_telemetry",
             source_table="kbc_job",
             source_query=(
-                '{"where_filters": [{"column": "job_created_at", '
-                '"operator": "ge", "values": ["{{lasst_week}}"]}]}'
+                '{"where_filters": [{"column": "job_created_at", "operator": "ge", "values": ["{{lasst_week}}"]}]}'
             ),
             storage_client=fake_storage_client_parquet,
             output_dir=output_dir,
@@ -182,9 +173,12 @@ def test_materialize_query_parquet_sliced_merges_via_duckdb(tmp_path):
     ``download_file_slices`` to keep them as separate files, then
     DuckDB-COPY across ``read_parquet([slice1, slice2])`` to merge —
     naive concat would corrupt the per-slice footer."""
+
     def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
         return {
-            "job_id": 100, "file_id": 200, "rows": 4,
+            "job_id": 100,
+            "file_id": 200,
+            "rows": 4,
             "file_info": {"id": 200, "url": "https://fake/manifest", "isSliced": True},
             "file_type": "parquet",
         }
@@ -206,7 +200,8 @@ def test_materialize_query_parquet_sliced_merges_via_duckdb(tmp_path):
 
     result = kbe.materialize_query(
         table_id="big_table",
-        bucket="in.c-x", source_table="t",
+        bucket="in.c-x",
+        source_table="t",
         source_query=None,
         storage_client=client,
         output_dir=output_dir,
@@ -215,9 +210,11 @@ def test_materialize_query_parquet_sliced_merges_via_duckdb(tmp_path):
     # Final parquet contains all 4 rows from both slices.
     final = output_dir / "big_table.parquet"
     assert final.exists()
-    n = duckdb.connect().execute(
-        f"SELECT COUNT(*) FROM read_parquet('{str(final).replace(chr(39), chr(39)*2)}')"
-    ).fetchone()[0]
+    n = (
+        duckdb.connect()
+        .execute(f"SELECT COUNT(*) FROM read_parquet('{str(final).replace(chr(39), chr(39) * 2)}')")
+        .fetchone()[0]
+    )
     assert n == 4
     assert result["rows"] == 4
 
@@ -229,9 +226,12 @@ def test_materialize_query_parquet_sliced_merges_via_duckdb(tmp_path):
 def test_materialize_query_parquet_zero_rows_emits_empty_parquet(tmp_path, caplog):
     """Storage API parquet succeeded but the filter matched 0 rows (file
     is empty/missing). We log a warning and emit an empty placeholder."""
+
     def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
         return {
-            "job_id": 1, "file_id": 2, "rows": 0,
+            "job_id": 1,
+            "file_id": 2,
+            "rows": 0,
             "file_info": {"id": 2, "url": "https://fake/x", "isSliced": False},
             "file_type": "parquet",
         }
@@ -250,7 +250,8 @@ def test_materialize_query_parquet_zero_rows_emits_empty_parquet(tmp_path, caplo
     with caplog.at_level("WARNING"):
         result = kbe.materialize_query(
             table_id="empty_subset",
-            bucket="in.c-test", source_table="empty",
+            bucket="in.c-test",
+            source_table="empty",
             source_query=None,
             storage_client=client,
             output_dir=output_dir,
@@ -269,7 +270,8 @@ def test_materialize_query_admin_can_pin_file_type_csv(tmp_path, fake_storage_cl
 
     result = kbe.materialize_query(
         table_id="legacy_csv",
-        bucket="in.c-x", source_table="t",
+        bucket="in.c-x",
+        source_table="t",
         source_query='{"file_type": "csv"}',
         storage_client=fake_storage_client_csv,
         output_dir=output_dir,
@@ -285,6 +287,7 @@ def test_materialize_query_admin_can_pin_file_type_csv(tmp_path, fake_storage_cl
 
 
 # ---- tempdir cleanup on failure --------------------------------------------
+
 
 def test_materialize_query_sliced_parquet_tempdir_cleaned_on_exception(tmp_path):
     """When a sliced parquet download raises mid-flight (e.g. OSError 28
@@ -302,7 +305,9 @@ def test_materialize_query_sliced_parquet_tempdir_cleaned_on_exception(tmp_path)
 
     def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
         return {
-            "job_id": 1, "file_id": 2, "rows": 1,
+            "job_id": 1,
+            "file_id": 2,
+            "rows": 1,
             "file_info": {"id": 2, "url": "https://fake/manifest", "isSliced": True},
             "file_type": "parquet",
         }
@@ -325,7 +330,8 @@ def test_materialize_query_sliced_parquet_tempdir_cleaned_on_exception(tmp_path)
     with pytest.raises(OSError, match="No space left"):
         kbe.materialize_query(
             table_id="will_fail_sliced",
-            bucket="in.c-test", source_table="t",
+            bucket="in.c-test",
+            source_table="t",
             source_query=None,
             storage_client=client,
             output_dir=output_dir,
@@ -336,8 +342,7 @@ def test_materialize_query_sliced_parquet_tempdir_cleaned_on_exception(tmp_path)
     assert "path" in captured_tmpdir, "download_file_slices was not invoked"
     leftover = captured_tmpdir["path"]
     assert not leftover.exists(), (
-        f"tempdir {leftover} must be cleaned on exception "
-        f"(otherwise leaks under disk-full conditions)"
+        f"tempdir {leftover} must be cleaned on exception (otherwise leaks under disk-full conditions)"
     )
     # Final parquet must NOT exist.
     assert not (output_dir / "will_fail_sliced.parquet").exists()
@@ -345,8 +350,11 @@ def test_materialize_query_sliced_parquet_tempdir_cleaned_on_exception(tmp_path)
 
 # ---- AGNES_TEMP_DIR routing -------------------------------------------------
 
+
 def test_materialize_query_uses_AGNES_TEMP_DIR_when_set(
-    monkeypatch, tmp_path, fake_storage_client_parquet,
+    monkeypatch,
+    tmp_path,
+    fake_storage_client_parquet,
 ):
     """The per-call tempdir lands under ``AGNES_TEMP_DIR`` when set —
     routes Snowflake-UNLOAD slice staging off the container's overlayfs
@@ -366,7 +374,8 @@ def test_materialize_query_uses_AGNES_TEMP_DIR_when_set(
 
     kbe.materialize_query(
         table_id="anywhere",
-        bucket="in.c-x", source_table="t",
+        bucket="in.c-x",
+        source_table="t",
         source_query=None,
         storage_client=fake_storage_client_parquet,
         output_dir=output_dir,
@@ -381,6 +390,7 @@ def test_materialize_query_uses_AGNES_TEMP_DIR_when_set(
     # the parent"). We do this indirectly by calling get_temp_root
     # ourselves under the same env and asserting the value flows.
     from connectors.keboola.storage_api import get_temp_root
+
     assert get_temp_root() == str(custom_root)
 
     # And the dir is empty post-run (cleanup happened) but still exists
@@ -389,7 +399,9 @@ def test_materialize_query_uses_AGNES_TEMP_DIR_when_set(
 
 
 def test_materialize_query_falls_back_to_system_tmp_when_unset(
-    monkeypatch, tmp_path, fake_storage_client_parquet,
+    monkeypatch,
+    tmp_path,
+    fake_storage_client_parquet,
 ):
     """No AGNES_TEMP_DIR → no behavioural change vs. pre-fix code.
     The function still returns successfully; we don't peek inside
@@ -402,7 +414,8 @@ def test_materialize_query_falls_back_to_system_tmp_when_unset(
 
     result = kbe.materialize_query(
         table_id="default_tmp",
-        bucket="in.c-x", source_table="t",
+        bucket="in.c-x",
+        source_table="t",
         source_query=None,
         storage_client=fake_storage_client_parquet,
         output_dir=output_dir,
@@ -414,6 +427,7 @@ def test_materialize_query_falls_back_to_system_tmp_when_unset(
 
 # ---- generic guards (file_type-agnostic) -----------------------------------
 
+
 def test_materialize_query_rejects_unsafe_table_id(tmp_path, fake_storage_client_parquet):
     """Defense: table_id is interpolated into the parquet filename. SQL/
     path-traversal-unsafe values must be rejected up-front."""
@@ -422,7 +436,8 @@ def test_materialize_query_rejects_unsafe_table_id(tmp_path, fake_storage_client
     with pytest.raises(ValueError, match="table_id"):
         kbe.materialize_query(
             table_id="../../etc/passwd",
-            bucket="in.c-test", source_table="t",
+            bucket="in.c-test",
+            source_table="t",
             source_query=None,
             storage_client=fake_storage_client_parquet,
             output_dir=output_dir,
@@ -435,7 +450,8 @@ def test_materialize_query_invalid_source_query_json_raises(tmp_path, fake_stora
     with pytest.raises(ValueError, match="not valid JSON"):
         kbe.materialize_query(
             table_id="bad_filter",
-            bucket="in.c-test", source_table="t",
+            bucket="in.c-test",
+            source_table="t",
             source_query="this is not json",
             storage_client=fake_storage_client_parquet,
             output_dir=output_dir,
@@ -451,19 +467,17 @@ def test_materialize_query_passes_filter_spec_to_export(tmp_path, fake_storage_c
 
     kbe.materialize_query(
         table_id="filtered",
-        bucket="in.c-sales", source_table="orders",
+        bucket="in.c-sales",
+        source_table="orders",
         source_query=(
-            '{"where_filters": [{"column": "status", "operator": "eq", '
-            '"values": ["open"]}], "columns": ["id"]}'
+            '{"where_filters": [{"column": "status", "operator": "eq", "values": ["open"]}], "columns": ["id"]}'
         ),
         storage_client=fake_storage_client_parquet,
         output_dir=output_dir,
     )
 
     f = fake_storage_client_parquet.prepare_export.call_args.kwargs["export_filter"]
-    assert f.where_filters == [
-        {"column": "status", "operator": "eq", "values": ["open"]}
-    ]
+    assert f.where_filters == [{"column": "status", "operator": "eq", "values": ["open"]}]
     assert f.columns == ["id"]
     # No explicit file_type → defaults to parquet.
     assert f.file_type == "parquet"
@@ -471,14 +485,15 @@ def test_materialize_query_passes_filter_spec_to_export(tmp_path, fake_storage_c
 
 # ---- atomic write contract -------------------------------------------------
 
+
 def test_keboola_materialize_atomic_write_on_failure(tmp_path):
     """If the CSV→parquet conversion fails (legacy CSV opt-in), no
     partial file is left at the final .parquet path AND the .parquet.tmp
     staging file is cleaned up."""
+
     def fake_export(table_id, dest, *, export_filter=None, export_timeout=None):
         _seed_csv(Path(dest), "id,name", ["1,alpha"])
-        return {"job_id": 1, "file_id": 2, "rows": 1,
-                "bytes": Path(dest).stat().st_size, "file_type": "csv"}
+        return {"job_id": 1, "file_id": 2, "rows": 1, "bytes": Path(dest).stat().st_size, "file_type": "csv"}
 
     client = MagicMock()
     client.export_table.side_effect = fake_export
@@ -507,7 +522,8 @@ def test_keboola_materialize_atomic_write_on_failure(tmp_path):
         with pytest.raises(RuntimeError, match="simulated mid-COPY failure"):
             kbe.materialize_query(
                 table_id="atomic_test",
-                bucket="in.c-test", source_table="t",
+                bucket="in.c-test",
+                source_table="t",
                 source_query='{"file_type": "csv"}',
                 storage_client=client,
                 output_dir=output_dir,
@@ -540,7 +556,8 @@ def test_keboola_materialize_uses_tmp_path_during_copy(tmp_path, fake_storage_cl
     with patch.object(kbe.os, "replace", side_effect=trace_replace):
         result = kbe.materialize_query(
             table_id="tmp_path_test",
-            bucket="in.c-test", source_table="t",
+            bucket="in.c-test",
+            source_table="t",
             source_query=None,
             storage_client=fake_storage_client_parquet,
             output_dir=output_dir,
@@ -556,6 +573,7 @@ def test_keboola_materialize_uses_tmp_path_during_copy(tmp_path, fake_storage_cl
 
 
 # ---- consolidation-connection resource caps (#431 / #432) ------------------
+
 
 def test_consolidation_conn_applies_memory_and_thread_caps():
     """``_open_consolidation_conn`` must apply the three resource caps that
@@ -575,9 +593,7 @@ def test_consolidation_conn_applies_memory_and_thread_caps():
         threads = conn.execute("SELECT current_setting('threads')").fetchone()[0]
         assert int(threads) == 2
 
-        preserve = conn.execute(
-            "SELECT current_setting('preserve_insertion_order')"
-        ).fetchone()[0]
+        preserve = conn.execute("SELECT current_setting('preserve_insertion_order')").fetchone()[0]
         # DuckDB returns this as a bool (or a 'false' string on older builds).
         assert preserve in (False, "false")
 
