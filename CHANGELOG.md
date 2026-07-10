@@ -12,6 +12,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.49] - 2026-07-10
+
+### Added
+
+- Unified knowledge search: one query across document Collections (hybrid
+  lexical+vector), the corporate-memory knowledge base (fulltext), and the
+  table catalog — `GET /api/knowledge/search`, `agnes search`, MCP tool
+  `knowledge_search`. Table hits return a "pivot to SQL" hint instead of
+  rows (#797).
+
+---
+
 ## [0.74.48] - 2026-07-10
 
 ### Added
