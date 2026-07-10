@@ -148,6 +148,22 @@ def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict
 
 
 @mcp.tool()
+def knowledge_search(query: str, k: int = 10) -> dict:
+    """One query across documents, the knowledge base, and the data catalog.
+
+    Fans out server-side over Collections chunks (hybrid lexical+vector),
+    corporate-memory knowledge items (fulltext), and table catalog cards —
+    all RBAC-filtered. Results are typed ``chunk | knowledge | table``;
+    a ``table`` hit means structured data: pivot to SQL via the ``query``
+    tool with the hit's ``table_id`` instead of reading text chunks.
+    """
+    try:
+        return api_get_json("/api/knowledge/search", q=query, k=k)
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error("knowledge_search", exc)) from exc
+
+
+@mcp.tool()
 def collections_reingest(collection_id: str, file_id: str) -> dict:
     """Re-run ingestion for one file in a Collection (requires access to the collection).
 

@@ -28,6 +28,10 @@ from pathlib import Path
 # (the policy is a ratchet, not a sweep). Tuple of (cli_cmd, mcp_tool).
 _COHORT: dict[str, tuple[str, str]] = {
     "/documentation/api": ("docs api", "documentation_api"),
+    # Unified knowledge search (K2, #797): one query across Collections
+    # chunks + knowledge items + table catalog cards. CLI is the top-level
+    # `agnes search` (callback-style single command, like `agnes pull`).
+    "/api/knowledge/search": ("search", "knowledge_search"),
     # Stack discovery (issue #621). subscribe/unsubscribe paths are already
     # grandfathered; browse is the new triple-surface endpoint.
     "/api/stack/browse": ("stack browse", "stack_browse"),
@@ -82,6 +86,14 @@ def test_cli_subcommands_registered():
     groups: dict[str, object] = {g.name: g.typer_instance for g in app.registered_groups if g.name}
 
     for path, (cli_cmd, _mcp_tool) in _COHORT.items():
+        if " " not in cli_cmd:
+            # Single-token command: a callback-style Typer group registered at
+            # the top level (e.g. `agnes search`, same shape as `agnes pull`) —
+            # the group's existence IS the command surface.
+            assert cli_cmd in groups, (
+                f"CLI command '{cli_cmd}' missing for {path} — register via `app.add_typer(...)` in cli/main.py"
+            )
+            continue
         head, tail = cli_cmd.split(" ", 1)
         assert head in groups, (
             f"CLI group '{head}' missing for {path} — register via `app.add_typer(...)` in cli/main.py"

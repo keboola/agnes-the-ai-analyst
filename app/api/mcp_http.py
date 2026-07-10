@@ -177,6 +177,31 @@ async def collections_search(query: str, k: int = 10, collection_id: str = "") -
 
 
 @mcp.tool()
+async def knowledge_search(query: str, k: int = 10) -> dict:
+    """One query across documents, the knowledge base, and the data catalog.
+
+    Fans out server-side over Collections chunks (hybrid lexical+vector),
+    corporate-memory knowledge items (fulltext), and table catalog cards —
+    all RBAC-filtered. Results are typed ``chunk | knowledge | table``;
+    a ``table`` hit means structured data: pivot to SQL via the ``query``
+    tool with the hit's ``table_id`` instead of reading text chunks.
+
+    Args:
+        query: Natural-language or keyword query.
+        k: Max results (default 10).
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{_BASE}/api/knowledge/search",
+            headers=_headers(),
+            params={"q": query, "k": k},
+            timeout=60,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
 async def collections_reingest(collection_id: str, file_id: str) -> dict:
     """Re-run ingestion for one file in a Collection (requires access to the collection).
 
