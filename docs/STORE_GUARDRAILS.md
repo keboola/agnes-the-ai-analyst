@@ -123,6 +123,19 @@ exfiltration script and the system happily marked it `approved`.
 
 ---
 
+## Accepted upload formats
+
+Uploads accept either a `.zip` bundle or a single `.skill` file. A `.skill`
+is just a lone `SKILL.md` document — YAML frontmatter with `name` and
+`description` followed by a markdown body — and is materialized server-side
+as `scratch/SKILL.md`, so it is exactly equivalent to a one-file skill ZIP.
+Because a single file cannot carry `scripts/` / `references/` / `assets/`
+subdirs, `.skill` uploads are only valid for `type=skill`; uploading one as
+`type=plugin` or `type=agent` is rejected with HTTP 422
+(`skill_file_wrong_type`). The upload path is detected purely by filename
+suffix; everything downstream (validation, bake, guardrails) is
+format-agnostic.
+
 ## What gets checked
 
 ### 1. Manifest & metadata (inline, deterministic)

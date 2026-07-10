@@ -82,6 +82,9 @@ router = APIRouter(prefix="/api/store", tags=["store"])
 
 
 MAX_ZIP_SIZE = 50 * 1024 * 1024  # 50 MB — matches app/api/upload.py
+# A single ``.skill`` upload is just one SKILL.md document — a tiny text file.
+# Cap it well below the ZIP limit so a bogus huge upload is rejected early.
+MAX_SKILL_FILE_SIZE = 1 * 1024 * 1024  # 1 MB
 MAX_PHOTO_SIZE = 5 * 1024 * 1024  # 5 MB
 MAX_DOC_SIZE = 10 * 1024 * 1024  # 10 MB per uploaded doc
 ALLOWED_PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp"}
@@ -720,6 +723,71 @@ def _safe_zip_extract(zf: zipfile.ZipFile, dest: Path) -> None:
             )
 
     zf.extractall(dest)
+
+
+def _is_skill_file_upload(file: UploadFile) -> bool:
+    """Whether the upload is a single ``.skill`` file (vs. a ``.zip`` bundle).
+
+    Detection is purely by filename suffix. The upload wizard resubmits the
+    same File object (and the browser resends its original filename) for both
+    the preview and the create step, so filename-based detection is stable
+    across the two-step flow.
+    """
+    name = (file.filename or "").lower()
+    return name.endswith(".skill")
+
+
+async def _intake_bundle_to_scratch(file: UploadFile, type_: str, scratch: Path) -> int:
+    """Stream the uploaded bundle into ``scratch`` and return bytes written.
+
+    Accepts either:
+
+    * a ``.zip`` bundle — extracted into ``scratch`` with the same safety
+      guards (``_safe_zip_extract``) as before; or
+    * a single ``.skill`` file — a lone SKILL.md-shaped document (YAML
+      frontmatter with ``name`` + ``description`` followed by a markdown body)
+      materialized as ``scratch/SKILL.md``.
+
+    A single file cannot carry ``scripts/`` / ``references/`` / ``assets/``
+    subdirs, so ``.skill`` uploads are only valid for ``type_ == "skill"``.
+
+    Everything downstream (``_validate_and_extract_metadata``,
+    ``_bake_plugin_tree``, ``run_inline_checks``) operates on the extracted
+    tree and is format-agnostic — it never learns which intake produced it.
+    """
+    if _is_skill_file_upload(file):
+        if type_ != "skill":
+            raise HTTPException(status_code=422, detail="skill_file_wrong_type")
+        tmp, size = await _stream_to_temp(file, MAX_SKILL_FILE_SIZE, suffix=".skill")
+        try:
+            tmp.close()
+            raw = Path(tmp.name).read_bytes()
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=422, detail="skill_file_invalid")
+        fm = _parse_frontmatter(text)
+        if not fm.get("name") or not fm.get("description"):
+            # Nicer error than the generic downstream ``zip_missing_skill_md``.
+            raise HTTPException(
+                status_code=422, detail="skill_file_missing_frontmatter"
+            )
+        (scratch / "SKILL.md").write_text(text, encoding="utf-8")
+        return size
+
+    # Default: a .zip bundle. Stream to temp, then extract into scratch.
+    tmp, size = await _stream_to_temp(file, MAX_ZIP_SIZE, suffix=".zip")
+    tmp.close()
+    try:
+        with zipfile.ZipFile(tmp.name, "r") as zf:
+            _safe_zip_extract(zf, scratch)
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=422, detail="zip_invalid")
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+    return size
 
 
 def _parse_frontmatter(text: str) -> dict:
@@ -1442,24 +1510,15 @@ async def preview_entity(
     if type not in _VALID_TYPES:
         raise HTTPException(status_code=400, detail="invalid_type")
 
-    tmp, _ = await _stream_to_temp(file, MAX_ZIP_SIZE, suffix=".zip")
+    scratch = Path(tempfile.mkdtemp(prefix="agnes_store_preview_"))
     try:
-        tmp.close()
-        scratch = Path(tempfile.mkdtemp(prefix="agnes_store_preview_"))
-        try:
-            try:
-                with zipfile.ZipFile(tmp.name, "r") as zf:
-                    _safe_zip_extract(zf, scratch)
-            except zipfile.BadZipFile:
-                raise HTTPException(status_code=422, detail="zip_invalid")
-            meta = _validate_and_extract_metadata(type, scratch)
-            from src.store_guardrails.content_check import summarize_for_preview
+        await _intake_bundle_to_scratch(file, type, scratch)
+        meta = _validate_and_extract_metadata(type, scratch)
+        from src.store_guardrails.content_check import summarize_for_preview
 
-            component_rows = summarize_for_preview(scratch, type)
-        finally:
-            shutil.rmtree(scratch, ignore_errors=True)
+        component_rows = summarize_for_preview(scratch, type)
     finally:
-        Path(tmp.name).unlink(missing_ok=True)
+        shutil.rmtree(scratch, ignore_errors=True)
 
     from src.store_naming import humanize_name
 
@@ -1516,88 +1575,79 @@ async def dryrun_entity(
     if type not in _VALID_TYPES:
         raise HTTPException(status_code=400, detail="invalid_type")
 
-    tmp, _ = await _stream_to_temp(file, MAX_ZIP_SIZE, suffix=".zip")
+    scratch = Path(tempfile.mkdtemp(prefix="agnes_store_dryrun_"))
+    plugin_root = Path(tempfile.mkdtemp(prefix="agnes_store_dryrun_baked_"))
+    plugin_dir = plugin_root / "plugin"
     try:
-        tmp.close()
-        scratch = Path(tempfile.mkdtemp(prefix="agnes_store_dryrun_"))
-        plugin_root = Path(tempfile.mkdtemp(prefix="agnes_store_dryrun_baked_"))
-        plugin_dir = plugin_root / "plugin"
-        try:
-            try:
-                with zipfile.ZipFile(tmp.name, "r") as zf:
-                    _safe_zip_extract(zf, scratch)
-            except zipfile.BadZipFile:
-                raise HTTPException(status_code=422, detail="zip_invalid")
+        await _intake_bundle_to_scratch(file, type, scratch)
 
-            meta = _validate_and_extract_metadata(type, scratch)
-            meta_name = meta.get("name") or ""
+        meta = _validate_and_extract_metadata(type, scratch)
+        meta_name = meta.get("name") or ""
 
-            # Bake into a throwaway tree so the checks see the same canonical
-            # layout the real create path would persist. final_name == the
-            # raw bundle name (no -by-<user> suffix needed for a dry-run; the
-            # checks don't care about the namespaced name).
-            _bake_plugin_tree(
-                type_=type,
-                extracted_root=scratch,
-                plugin_dir=plugin_dir,
-                final_name=meta_name,
-                suffixed=meta_name or "dryrun",
-                description=description,
-            )
+        # Bake into a throwaway tree so the checks see the same canonical
+        # layout the real create path would persist. final_name == the
+        # raw bundle name (no -by-<user> suffix needed for a dry-run; the
+        # checks don't care about the namespaced name).
+        _bake_plugin_tree(
+            type_=type,
+            extracted_root=scratch,
+            plugin_dir=plugin_dir,
+            final_name=meta_name,
+            suffixed=meta_name or "dryrun",
+            description=description,
+        )
 
-            inline = run_inline_checks(
+        inline = run_inline_checks(
+            plugin_dir,
+            type_=type,
+            description=description,
+        )
+
+        verdict: Optional[dict] = None
+        safe = False
+        if get_guardrails_enabled() and get_guardrails_llm_provider_ready():
+            from src.store_guardrails import llm_review
+
+            # review_bundle makes a blocking Anthropic round-trip; run it
+            # off the event loop so a dry-run can't stall other requests.
+            verdict = await run_in_threadpool(
+                llm_review.review_bundle,
                 plugin_dir,
                 type_=type,
+                name=meta_name,
+                version="",
                 description=description,
+                api_key=default_api_key_loader(),
+                model=default_model_loader(),
             )
+            safe = llm_review.is_safe(verdict)
+        else:
+            # Guardrails OFF: the LLM tier is a no-op, so publication
+            # hinges on inline alone -> safe. Guardrails ON but provider
+            # NOT configured: the real create path holds the entity at
+            # "pending" with no LLM review scheduled (fail-CLOSED), so it
+            # would never auto-publish -> mirror that. Reporting
+            # would_publish=True for this state would be a false positive.
+            safe = not get_guardrails_enabled()
 
-            verdict: Optional[dict] = None
-            safe = False
-            if get_guardrails_enabled() and get_guardrails_llm_provider_ready():
-                from src.store_guardrails import llm_review
+        # Mirror the anti-enumeration shadowing the real upload path applies
+        # in _reject_inline_or_continue: when manifest or content fails, the
+        # static_scan findings are withheld so a malformed bundle can't be
+        # used to probe the deny-list rule set. would_publish is unaffected
+        # — inline.passed already folds in static_security.
+        inline_checks = inline.to_response_dict()
+        validation_failed = inline.manifest.get("status") != "pass" or inline.content.get("status") != "pass"
+        if validation_failed:
+            inline_checks["static_security"] = {"status": "skipped"}
 
-                # review_bundle makes a blocking Anthropic round-trip; run it
-                # off the event loop so a dry-run can't stall other requests.
-                verdict = await run_in_threadpool(
-                    llm_review.review_bundle,
-                    plugin_dir,
-                    type_=type,
-                    name=meta_name,
-                    version="",
-                    description=description,
-                    api_key=default_api_key_loader(),
-                    model=default_model_loader(),
-                )
-                safe = llm_review.is_safe(verdict)
-            else:
-                # Guardrails OFF: the LLM tier is a no-op, so publication
-                # hinges on inline alone -> safe. Guardrails ON but provider
-                # NOT configured: the real create path holds the entity at
-                # "pending" with no LLM review scheduled (fail-CLOSED), so it
-                # would never auto-publish -> mirror that. Reporting
-                # would_publish=True for this state would be a false positive.
-                safe = not get_guardrails_enabled()
-
-            # Mirror the anti-enumeration shadowing the real upload path applies
-            # in _reject_inline_or_continue: when manifest or content fails, the
-            # static_scan findings are withheld so a malformed bundle can't be
-            # used to probe the deny-list rule set. would_publish is unaffected
-            # — inline.passed already folds in static_security.
-            inline_checks = inline.to_response_dict()
-            validation_failed = inline.manifest.get("status") != "pass" or inline.content.get("status") != "pass"
-            if validation_failed:
-                inline_checks["static_security"] = {"status": "skipped"}
-
-            return DryRunResponse(
-                inline_checks=inline_checks,
-                llm_findings=verdict,
-                would_publish=inline.passed and safe,
-            )
-        finally:
-            shutil.rmtree(scratch, ignore_errors=True)
-            shutil.rmtree(plugin_root, ignore_errors=True)
+        return DryRunResponse(
+            inline_checks=inline_checks,
+            llm_findings=verdict,
+            would_publish=inline.passed and safe,
+        )
     finally:
-        Path(tmp.name).unlink(missing_ok=True)
+        shutil.rmtree(scratch, ignore_errors=True)
+        shutil.rmtree(plugin_root, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1685,25 +1735,15 @@ async def create_entity(
                 },
             )
 
-    # Stream + extract ZIP into a scratch dir. Both the temp-file (`tmp`)
-    # AND the scratch dir need cleanup on every exit path, including
-    # validation HTTPExceptions raised inside _safe_zip_extract
-    # (zip_unsafe_path, zip_too_large_uncompressed) and the BadZipFile→422
-    # conversion. Pre-fix the scratch was created in one try/finally and
-    # cleaned up in a SEPARATE one — when extraction raised, control
-    # exited the first scope and the second never ran, leaking the dir.
-    # Single try/finally fixes both.
-    tmp, size = await _stream_to_temp(file, MAX_ZIP_SIZE, suffix=".zip")
-    tmp.close()
+    # Stream + materialize the bundle into a scratch dir. The scratch dir
+    # needs cleanup on every exit path, including validation HTTPExceptions
+    # raised inside _intake_bundle_to_scratch (zip_unsafe_path,
+    # zip_too_large_uncompressed, the BadZipFile→422 conversion, and the
+    # .skill intake errors). _intake_bundle_to_scratch owns cleanup of its
+    # own temp file; the try/finally here owns the scratch dir.
     scratch = Path(tempfile.mkdtemp(prefix="agnes_store_"))
     try:
-        try:
-            with zipfile.ZipFile(tmp.name, "r") as zf:
-                _safe_zip_extract(zf, scratch)
-        except zipfile.BadZipFile:
-            raise HTTPException(status_code=422, detail="zip_invalid")
-        finally:
-            Path(tmp.name).unlink(missing_ok=True)
+        await _intake_bundle_to_scratch(file, type, scratch)
 
         meta = _validate_and_extract_metadata(type, scratch)
         final_name = (name or meta.get("name") or "").strip()
@@ -2087,8 +2127,6 @@ async def _update_entity_locked(
         # there. On approval the live ``plugin/`` dir is replaced with
         # a copy of the new version's contents — prior versions stay on
         # disk so rollback can copy them forward.
-        tmp, size = await _stream_to_temp(file, MAX_ZIP_SIZE, suffix=".zip")
-        tmp.close()
         scratch = Path(tempfile.mkdtemp(prefix="agnes_store_"))
         # New version number is max(version_history.n) + 1, NOT
         # entity.version_no + 1. Under deferred promotion (v37+),
@@ -2106,13 +2144,7 @@ async def _update_entity_locked(
         new_version_dir = version_root  # exposed to outer scope
         backup_plugin: Optional[Path] = None  # set if the swap starts
         try:
-            try:
-                with zipfile.ZipFile(tmp.name, "r") as zf:
-                    _safe_zip_extract(zf, scratch)
-            except zipfile.BadZipFile:
-                raise HTTPException(status_code=422, detail="zip_invalid")
-            finally:
-                Path(tmp.name).unlink(missing_ok=True)
+            await _intake_bundle_to_scratch(file, entity["type"], scratch)
 
             _validate_and_extract_metadata(entity["type"], scratch)
             # v49 phase-3: read the stored synthetic_name. Entity row was

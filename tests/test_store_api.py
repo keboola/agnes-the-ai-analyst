@@ -111,6 +111,18 @@ def _make_agent_zip(
     return buf.getvalue()
 
 
+def _make_skill_file(
+    skill_name: str = "code-review",
+    desc: str = _OK_DESC,
+    body: str = _OK_BODY,
+) -> bytes:
+    """Bytes of a single ``.skill`` file — a lone SKILL.md document. Mirrors
+    ``_make_skill_zip`` but without the ZIP wrapper (single-file upload)."""
+    return (
+        f"---\nname: {skill_name}\ndescription: {desc}\n---\n\n{body}\n"
+    ).encode("utf-8")
+
+
 class TestStoreOwners:
     def test_owners_endpoint_lists_uploaders(self, web_client):
         a_id, a_cookies = _create_user(web_client, "alice@x.com")
@@ -414,6 +426,84 @@ class TestStoreUpload:
         # skill-mismatch guard first; either error code is acceptable proof
         # that the validator caught the mismatch.
         assert r.json()["detail"] in {"zip_looks_like_plugin", "zip_looks_like_skill"}
+
+
+class TestStoreSkillFileUpload:
+    """A single ``.skill`` file (a lone SKILL.md document) is accepted as an
+    equivalent to a one-file skill ZIP, detected purely by filename suffix."""
+
+    def test_upload_skill_file_creates_baked_tree(self, web_client, tmp_path):
+        _, cookies = _create_user(web_client, "skillfile@x.com")
+        skill_bytes = _make_skill_file("code-review")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("code-review.skill", skill_bytes, "application/octet-stream")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["type"] == "skill"
+        assert body["name"] == "code-review"
+        assert body["owner_username"] == "skillfile"
+        assert body["invocation_name"] == "code-review-by-skillfile"
+        assert body["version"]
+        # Same baked tree a one-file skill ZIP would produce.
+        plugin_dir = tmp_path / "store" / body["id"] / "plugin"
+        skill_md = plugin_dir / "skills" / "code-review-by-skillfile" / "SKILL.md"
+        assert skill_md.is_file()
+        assert "name: code-review-by-skillfile" in skill_md.read_text()
+        assert (plugin_dir / ".claude-plugin" / "plugin.json").is_file()
+
+    def test_upload_skill_file_as_plugin_422(self, web_client):
+        _, cookies = _create_user(web_client, "skillfile-plugin@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("x.skill", _make_skill_file("nope"), "application/octet-stream")},
+            data={"type": "plugin", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"] == "skill_file_wrong_type"
+
+    def test_upload_skill_file_as_agent_422(self, web_client):
+        _, cookies = _create_user(web_client, "skillfile-agent@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("x.skill", _make_skill_file("nope"), "application/octet-stream")},
+            data={"type": "agent", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"] == "skill_file_wrong_type"
+
+    def test_upload_skill_file_missing_frontmatter_422(self, web_client):
+        _, cookies = _create_user(web_client, "skillfile-nofm@x.com")
+        # Body only, no frontmatter name/description.
+        bad = b"# Just a heading\n\nSome content without frontmatter.\n"
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("x.skill", bad, "application/octet-stream")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"] == "skill_file_missing_frontmatter"
+
+    def test_preview_skill_file_returns_frontmatter(self, web_client):
+        _, cookies = _create_user(web_client, "skillfile-preview@x.com")
+        skill_bytes = _make_skill_file("from-preview", desc="Pulled from frontmatter.")
+        r = web_client.post(
+            "/api/store/entities/preview",
+            files={"file": ("from-preview.skill", skill_bytes, "application/octet-stream")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["type"] == "skill"
+        assert body["name"] == "from-preview"
+        assert body["description"] == "Pulled from frontmatter."
 
 
 class TestStoreV49Metadata:

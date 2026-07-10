@@ -22,6 +22,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.39] - 2026-07-10
+
+### Added
+- Single `.skill` file uploads to the Store: the marketplace now accepts a lone `.skill` file (a `SKILL.md` document with YAML frontmatter `name`+`description` and a markdown body) as an alternative to a `.zip` bundle. The file is materialized server-side as `scratch/SKILL.md` and is identical to a zip upload; only valid for `type=skill` (uploading as plugin/agent returns 422 `skill_file_wrong_type`).
+
+---
+
 ## [0.74.38] - 2026-07-10
 
 ### Fixed
