@@ -25,6 +25,7 @@ if sys.platform == "win32":
         pass
 
 from cli.commands.auth import auth_app
+from cli.commands.chat import chat_app
 from cli.commands.init import init_app
 from cli.commands.mark_private import mark_private_app
 from cli.commands.onboarded import onboarded_app
@@ -277,6 +278,7 @@ def _maybe_warn_token_expiry() -> None:
 
 # Register subcommands
 app.add_typer(auth_app, name="auth")
+app.add_typer(chat_app, name="chat")
 app.add_typer(init_app, name="init")
 app.add_typer(onboarded_app, name="onboarded")
 app.add_typer(pull_app, name="pull")

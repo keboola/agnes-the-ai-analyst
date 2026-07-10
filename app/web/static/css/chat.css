@@ -904,6 +904,7 @@ body.chat-page-body main { margin: 0; padding: 0; }
    textarea + send button. The wrapper owns the focus ring so the
    textarea border disappears inside it. */
 .cloud-chat-form {
+  position: relative;    /* anchors .cloud-chat-slash-menu (see below) */
   flex: 0 0 auto;        /* never shrink — the composer must stay visible */
   /* ``margin-top: auto`` absorbs leftover space in the chat-main flex
      column and pushes the composer to the bottom of the viewport so
@@ -962,6 +963,80 @@ body.chat-page-body main { margin: 0; padding: 0; }
 .cloud-chat-send-btn:disabled {
   opacity: 0.55;
   cursor: progress;
+}
+
+/* ============================================================ slash menu
+   Filterable "/" catalog (GET /api/chat/skills) — pops up above the
+   composer, anchored to .cloud-chat-form's position: relative. Visual
+   language mirrors .cloud-chat-palette-results (same surface / hover /
+   selected treatment) at composer scale rather than full-page-modal scale. */
+.cloud-chat-slash-menu[hidden] { display: none; }
+.cloud-chat-slash-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + var(--space-2));
+  z-index: 20;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-elevated);
+}
+.cloud-chat-slash-menu-results {
+  list-style: none;
+  padding: var(--space-2);
+  margin: 0;
+}
+.cloud-chat-slash-menu-results li {
+  padding: 7px var(--space-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--ds-text-primary);
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  border: 1px solid transparent;
+}
+.cloud-chat-slash-menu-results li:hover,
+.cloud-chat-slash-menu-results li.is-selected {
+  background: var(--ds-accent-info-bg);
+  border-color: var(--ds-accent-info-line);
+  color: var(--ds-accent-info-ink);
+}
+.cloud-chat-slash-menu-results .cloud-chat-slash-menu-name {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-weight: var(--font-medium);
+}
+.cloud-chat-slash-menu-results .cloud-chat-slash-menu-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--text-xs);
+  color: var(--ds-text-muted);
+}
+.cloud-chat-slash-menu-results .cloud-chat-slash-menu-source {
+  flex: 0 0 auto;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--ds-text-muted);
+}
+.cloud-chat-slash-menu-results .cloud-chat-slash-menu-empty {
+  padding: var(--space-3);
+  text-align: center;
+  color: var(--ds-text-muted);
+  font-size: var(--text-sm);
+  cursor: default;
+}
+.cloud-chat-slash-menu-results .cloud-chat-slash-menu-empty:hover {
+  background: transparent;
+  border-color: transparent;
 }
 
 .cloud-chat-disclaimer {
