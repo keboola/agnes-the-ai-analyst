@@ -254,6 +254,35 @@ class StoreSubmissionsPgRepository:
             ).all()
         return [(r[0], r[1]) for r in rows]
 
+    def find_purge_candidates(
+        self,
+        *,
+        statuses: List[str],
+        older_than: datetime,
+    ) -> List[Tuple[str, Optional[str]]]:
+        """Postgres mirror of
+        ``StoreSubmissionsRepository.find_purge_candidates``."""
+        statuses = list(statuses)
+        if not statuses:
+            return []
+        in_keys: List[str] = []
+        params: Dict[str, Any] = {"older_than": older_than}
+        for i, s in enumerate(statuses):
+            k = f"status_{i}"
+            in_keys.append(f":{k}")
+            params[k] = s
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    f"""SELECT id, entity_id FROM store_submissions
+                        WHERE status IN ({",".join(in_keys)})
+                          AND bundle_purged_at IS NULL
+                          AND created_at < :older_than"""
+                ),
+                params,
+            ).all()
+        return [(r[0], r[1]) for r in rows]
+
     def count_for_submitter(self, submitter_id: str, exclude_id: Optional[str] = None) -> int:
         with self._engine.connect() as conn:
             if exclude_id:
