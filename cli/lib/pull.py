@@ -882,8 +882,8 @@ def _sync_knowledge_artifacts(manifest: dict, workspace: Path, local_state: dict
                 entry.get("url") or f"/api/knowledge/artifacts/{cid}/download",
                 str(sidecar),
             )
-            if md5 and _file_md5(sidecar) != md5:
-                actual = _file_md5(sidecar)
+            actual = _file_md5(sidecar)
+            if md5 and actual != md5:
                 raise ValueError(f"hash mismatch: expected {md5[:12]}, got {actual[:12]}")
             os.replace(sidecar, target)
             known[cid] = {"md5": md5, "size_bytes": entry.get("size_bytes", 0)}
