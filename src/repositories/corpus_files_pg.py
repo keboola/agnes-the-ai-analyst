@@ -62,9 +62,11 @@ class CorpusFilesPgRepository:
         file_type: Optional[str],
         size_bytes: Optional[int],
         storage_path: Optional[str],
+        parent_file_id: Optional[str] = None,
     ) -> str:
         """Insert a new file row with default status 'pending'.
 
+        ``parent_file_id`` links a bundle-extracted child to its archive row.
         Returns the generated ``cf_*`` id.
         """
         file_id = "cf_" + secrets.token_hex(8)
@@ -72,9 +74,9 @@ class CorpusFilesPgRepository:
             conn.execute(
                 sa.text(
                     "INSERT INTO corpus_files "
-                    "(id, corpus_id, filename, sha256, file_type, size_bytes, storage_path) "
+                    "(id, corpus_id, filename, sha256, file_type, size_bytes, storage_path, parent_file_id) "
                     "VALUES (:id, :corpus_id, :filename, :sha256, "
-                    "        :file_type, :size_bytes, :storage_path)"
+                    "        :file_type, :size_bytes, :storage_path, :parent_file_id)"
                 ),
                 {
                     "id": file_id,
@@ -84,6 +86,7 @@ class CorpusFilesPgRepository:
                     "file_type": file_type,
                     "size_bytes": size_bytes,
                     "storage_path": storage_path,
+                    "parent_file_id": parent_file_id,
                 },
             )
         return file_id
@@ -108,6 +111,19 @@ class CorpusFilesPgRepository:
                 conn.execute(
                     sa.text("SELECT * FROM corpus_files WHERE corpus_id = :corpus_id ORDER BY created_at"),
                     {"corpus_id": corpus_id},
+                )
+                .mappings()
+                .all()
+            )
+        return [self._decode_row(dict(r)) for r in rows]
+
+    def list_children(self, parent_file_id: str) -> List[Dict[str, Any]]:
+        """All child rows extracted from the given archive file, by created_at."""
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    sa.text("SELECT * FROM corpus_files WHERE parent_file_id = :pid ORDER BY created_at"),
+                    {"pid": parent_file_id},
                 )
                 .mappings()
                 .all()

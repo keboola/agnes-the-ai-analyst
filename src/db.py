@@ -1349,6 +1349,7 @@ CREATE TABLE IF NOT EXISTS corpus_files (
     file_type VARCHAR,
     size_bytes BIGINT,
     storage_path VARCHAR,
+    parent_file_id VARCHAR,
     processing_status VARCHAR NOT NULL DEFAULT 'pending',
     processing_detail VARCHAR,
     created_at TIMESTAMP DEFAULT current_timestamp,
@@ -5291,6 +5292,7 @@ def _v81_to_v82(conn: duckdb.DuckDBPyConnection) -> None:
             file_type VARCHAR,
             size_bytes BIGINT,
             storage_path VARCHAR,
+            parent_file_id VARCHAR,
             processing_status VARCHAR NOT NULL DEFAULT 'pending',
             processing_detail VARCHAR,
             created_at TIMESTAMP DEFAULT current_timestamp,
@@ -5471,6 +5473,20 @@ def _v86_to_v87(conn: duckdb.DuckDBPyConnection) -> None:
     """
     conn.execute("ALTER TABLE marketplace_registry ADD COLUMN IF NOT EXISTS ref VARCHAR")
     conn.execute("UPDATE schema_version SET version = 87")
+
+
+def _v87_to_v88(conn: duckdb.DuckDBPyConnection) -> None:
+    """v88: ``corpus_files.parent_file_id`` — bundle (zip) child linkage (K1).
+
+    Children extracted from an uploaded archive point at the archive's own
+    ``corpus_files`` row; directly-uploaded files (and archive rows
+    themselves) keep NULL. Guarded ALTER so upgrades from a fresh-install
+    schema (which already carries the column) stay idempotent.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('corpus_files')").fetchall()}
+    if "parent_file_id" not in cols:
+        conn.execute("ALTER TABLE corpus_files ADD COLUMN parent_file_id VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 88")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -5824,6 +5840,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # _SYSTEM_SCHEMA already declares it on fresh installs (no-op
             # ALTER here). Issue #781.
             _v86_to_v87(conn)
+            # v87→v88: corpus_files.parent_file_id (bundle children).
+            # _SYSTEM_SCHEMA already carries the column on fresh installs;
+            # the guarded ALTER is a no-op here.
+            _v87_to_v88(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
