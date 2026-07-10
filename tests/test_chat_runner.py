@@ -252,7 +252,7 @@ def test_agnes_mcp_servers_builds_stdio_config(monkeypatch):
     stdio server to the sandbox agent so it sees passthrough tools."""
     from app.chat import runner
 
-    monkeypatch.setenv("AGNES_SERVER", "http://34.77.102.61:8000")
+    monkeypatch.setenv("AGNES_SERVER", "http://localhost:8000")
     monkeypatch.setenv("AGNES_TOKEN", "jwt-token")
     monkeypatch.setenv("AGNES_SESSION_ID", "chat_abc")
 
@@ -264,7 +264,7 @@ def test_agnes_mcp_servers_builds_stdio_config(monkeypatch):
     assert server["args"] == ["mcp"]
     # Auth + session are forwarded on the server's own env (not left to
     # inheritance across the claude-CLI hop).
-    assert server["env"]["AGNES_SERVER"] == "http://34.77.102.61:8000"
+    assert server["env"]["AGNES_SERVER"] == "http://localhost:8000"
     assert server["env"]["AGNES_TOKEN"] == "jwt-token"
     assert server["env"]["AGNES_SESSION_ID"] == "chat_abc"
     assert "PATH" in server["env"]
