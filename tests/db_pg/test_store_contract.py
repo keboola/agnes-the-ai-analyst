@@ -7,6 +7,7 @@ produce identical outputs from both engines.
 
 Follows the pattern established in test_audit_contract.py.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,7 @@ import sqlalchemy as sa
 # ---------------------------------------------------------------------------
 # repo construction helpers — one per backend
 # ---------------------------------------------------------------------------
+
 
 def _make_duckdb_repos(tmp_path):
     from src.db import _ensure_schema
@@ -42,7 +44,6 @@ def _make_duckdb_repos(tmp_path):
 
 
 def _make_pg_repos(pg_engine, monkeypatch):
-    from pathlib import Path
     from alembic import command
     from alembic.config import Config
 
@@ -54,6 +55,7 @@ def _make_pg_repos(pg_engine, monkeypatch):
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
     import src.db_pg as db_pg
+
     db_pg.dispose()
     engine = db_pg.get_engine()
 
@@ -90,6 +92,7 @@ def store_repos(request, tmp_path, pg_engine, monkeypatch):
 # helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_entity(repo, **kwargs):
     defaults = dict(
         id="entity-1",
@@ -110,6 +113,7 @@ def _make_entity(repo, **kwargs):
 # ---------------------------------------------------------------------------
 # contract tests
 # ---------------------------------------------------------------------------
+
 
 def test_register_marketplace_then_list_returns_it(store_repos):
     repos, _, _ = store_repos
@@ -138,6 +142,29 @@ def test_register_marketplace_upsert_preserves_curator(store_repos):
     row = reg.get("mp-2")
     assert row["name"] == "MP v2"
     assert row["curator_name"] == "bob"
+
+
+def test_register_marketplace_with_ref_pin(store_repos):
+    """`ref` (tag/commit pin, #781) round-trips through register + get."""
+    repos, _, _ = store_repos
+    reg = repos["registry"]
+    reg.register(id="mp-ref", name="Ref MP", url="https://example.com/r.git", ref="v1.2.3")
+    row = reg.get("mp-ref")
+    assert row["ref"] == "v1.2.3"
+    assert row["branch"] is None
+
+
+def test_register_marketplace_upsert_overwrites_ref(store_repos):
+    """Unlike curator fields, `ref` is always overwritten on conflict —
+    mirrors `branch`'s "current desired state" semantics, not sticky
+    metadata. Re-registering with ref=None clears a previous pin."""
+    repos, _, _ = store_repos
+    reg = repos["registry"]
+    reg.register(id="mp-ref-2", name="Ref MP", url="https://example.com/r.git", ref="v1.0.0")
+    reg.register(id="mp-ref-2", name="Ref MP v2", url="https://example.com/r.git", branch="main")
+    row = reg.get("mp-ref-2")
+    assert row["ref"] is None
+    assert row["branch"] == "main"
 
 
 def test_store_entity_create_then_get(store_repos):
@@ -306,20 +333,28 @@ def test_category_counts_groups_and_buckets_other(store_repos):
     # Two approved skills in 'Productivity', one approved skill with empty
     # category (→ 'Other'), one approved agent, plus a pending skill owned by
     # user-1 and an archived skill owned by user-1.
-    _make_entity(se, id="e1", name="s1", category="Productivity",
-                 visibility_status="approved")
-    _make_entity(se, id="e2", name="s2", category="Productivity",
-                 visibility_status="approved")
-    _make_entity(se, id="e3", name="s3", category="   ",
-                 visibility_status="approved")
-    _make_entity(se, id="e4", name="a1", type="agent", category="Data",
-                 visibility_status="approved")
-    _make_entity(se, id="e5", name="s5", owner_user_id="user-1",
-                 owner_username="alice", category="Pending",
-                 visibility_status="pending")
-    _make_entity(se, id="e6", name="s6", owner_user_id="user-1",
-                 owner_username="alice", category="Gone",
-                 visibility_status="approved")
+    _make_entity(se, id="e1", name="s1", category="Productivity", visibility_status="approved")
+    _make_entity(se, id="e2", name="s2", category="Productivity", visibility_status="approved")
+    _make_entity(se, id="e3", name="s3", category="   ", visibility_status="approved")
+    _make_entity(se, id="e4", name="a1", type="agent", category="Data", visibility_status="approved")
+    _make_entity(
+        se,
+        id="e5",
+        name="s5",
+        owner_user_id="user-1",
+        owner_username="alice",
+        category="Pending",
+        visibility_status="pending",
+    )
+    _make_entity(
+        se,
+        id="e6",
+        name="s6",
+        owner_user_id="user-1",
+        owner_username="alice",
+        category="Gone",
+        visibility_status="approved",
+    )
     se.archive("e6", by_user_id="user-1")
 
     # No filters → counts everything, empty category bucketed as 'Other'.
@@ -340,7 +375,8 @@ def test_category_counts_groups_and_buckets_other(store_repos):
     # 4 approved (Productivity x2, Other, Data) plus their own pending one,
     # but NOT their archived e6.
     counts_user1 = se.category_counts(
-        visibility_status=["approved"], owner_id="user-1",
+        visibility_status=["approved"],
+        owner_id="user-1",
     )
     assert counts_user1.get("Productivity") == 2
     assert counts_user1.get("Other") == 1
@@ -350,7 +386,8 @@ def test_category_counts_groups_and_buckets_other(store_repos):
 
     # A different non-owner (user-2) sees only the approved set.
     counts_user2 = se.category_counts(
-        visibility_status=["approved"], owner_id="user-2",
+        visibility_status=["approved"],
+        owner_id="user-2",
     )
     assert counts_user2.get("Pending") is None
     assert counts_user2.get("Productivity") == 2
@@ -372,9 +409,7 @@ def _backdate_created_at(repos, conn, backend, sub_id, ts):
     else:
         with repos["submissions"]._engine.begin() as c:
             c.execute(
-                sa.text(
-                    "UPDATE store_submissions SET created_at = :ts WHERE id = :id"
-                ),
+                sa.text("UPDATE store_submissions SET created_at = :ts WHERE id = :id"),
                 {"ts": ts, "id": sub_id},
             )
 
@@ -391,21 +426,32 @@ def test_reap_stuck_pending_llm_contract(store_repos):
     # Aged pending_llm — should be reaped.
     _make_entity(repos["entities"], id="entity-old", name="old-skill")
     old_id = subs.create(
-        submitter_id="user-1", submitter_email="alice@x.com",
-        type="skill", name="old-skill", version="abc123",
-        status="pending_llm", entity_id="entity-old",
+        submitter_id="user-1",
+        submitter_email="alice@x.com",
+        type="skill",
+        name="old-skill",
+        version="abc123",
+        status="pending_llm",
+        entity_id="entity-old",
     )
     _backdate_created_at(
-        repos, conn, backend, old_id,
+        repos,
+        conn,
+        backend,
+        old_id,
         datetime.now(timezone.utc) - timedelta(hours=1),
     )
 
     # Fresh pending_llm — within grace, must survive.
     _make_entity(repos["entities"], id="entity-fresh", name="fresh-skill")
     fresh_id = subs.create(
-        submitter_id="user-1", submitter_email="alice@x.com",
-        type="skill", name="fresh-skill", version="abc123",
-        status="pending_llm", entity_id="entity-fresh",
+        submitter_id="user-1",
+        submitter_email="alice@x.com",
+        type="skill",
+        name="fresh-skill",
+        version="abc123",
+        status="pending_llm",
+        entity_id="entity-fresh",
     )
 
     err = {"error": "timeout_or_crash"}
@@ -429,12 +475,19 @@ def test_reap_stuck_pending_llm_contract(store_repos):
     # test_does_not_flip_other_statuses).
     _make_entity(repos["entities"], id="entity-appr", name="appr-skill")
     appr_id = subs.create(
-        submitter_id="user-1", submitter_email="alice@x.com",
-        type="skill", name="appr-skill", version="abc123",
-        status="approved", entity_id="entity-appr",
+        submitter_id="user-1",
+        submitter_email="alice@x.com",
+        type="skill",
+        name="appr-skill",
+        version="abc123",
+        status="approved",
+        entity_id="entity-appr",
     )
     _backdate_created_at(
-        repos, conn, backend, appr_id,
+        repos,
+        conn,
+        backend,
+        appr_id,
         datetime.now(timezone.utc) - timedelta(hours=24),
     )
     assert subs.reap_stuck_pending_llm(grace_seconds=1800, error_payload=err) == []
@@ -450,9 +503,13 @@ def test_submission_delete_removes_row(store_repos):
     _make_entity(repos["entities"])
 
     sub_id = repos["submissions"].create(
-        submitter_id="user-1", submitter_email="alice@x.com",
-        type="skill", name="my-skill", version="abc123",
-        status="pending_llm", entity_id="entity-1",
+        submitter_id="user-1",
+        submitter_email="alice@x.com",
+        type="skill",
+        name="my-skill",
+        version="abc123",
+        status="pending_llm",
+        entity_id="entity-1",
     )
     assert repos["submissions"].get(sub_id) is not None
 
@@ -474,26 +531,41 @@ def test_submission_list_for_entity_newest_first(store_repos):
     _make_entity(repos["entities"])
 
     older_id = repos["submissions"].create(
-        submitter_id="user-1", submitter_email="alice@x.com",
-        type="skill", name="my-skill", version="v-old",
-        status="approved", entity_id="entity-1",
+        submitter_id="user-1",
+        submitter_email="alice@x.com",
+        type="skill",
+        name="my-skill",
+        version="v-old",
+        status="approved",
+        entity_id="entity-1",
     )
     _backdate_created_at(
-        repos, conn, backend, older_id,
+        repos,
+        conn,
+        backend,
+        older_id,
         datetime.now(timezone.utc) - timedelta(hours=2),
     )
     newer_id = repos["submissions"].create(
-        submitter_id="user-1", submitter_email="alice@x.com",
-        type="skill", name="my-skill", version="v-new",
-        status="pending_llm", entity_id="entity-1",
+        submitter_id="user-1",
+        submitter_email="alice@x.com",
+        type="skill",
+        name="my-skill",
+        version="v-new",
+        status="pending_llm",
+        entity_id="entity-1",
     )
 
     # An unrelated entity's submission must not leak in.
     _make_entity(repos["entities"], id="entity-other", name="other-skill")
     repos["submissions"].create(
-        submitter_id="user-1", submitter_email="alice@x.com",
-        type="skill", name="other-skill", version="v-x",
-        status="approved", entity_id="entity-other",
+        submitter_id="user-1",
+        submitter_email="alice@x.com",
+        type="skill",
+        name="other-skill",
+        version="v-x",
+        status="approved",
+        entity_id="entity-other",
     )
 
     rows = repos["submissions"].list_for_entity("entity-1")
@@ -502,7 +574,11 @@ def test_submission_list_for_entity_newest_first(store_repos):
     assert rows[0]["status"] == "pending_llm"
     # Fixed projection — exactly these keys, no JSON columns.
     assert set(rows[0].keys()) == {
-        "id", "status", "version", "created_at", "reviewed_by_model",
+        "id",
+        "status",
+        "version",
+        "created_at",
+        "reviewed_by_model",
     }
 
 
@@ -510,8 +586,10 @@ def _audit_for_backend(repos, conn, backend):
     """Build an audit repo bound to the same backend the fixture uses."""
     if backend == "duckdb":
         from src.repositories.audit import AuditRepository
+
         return AuditRepository(conn)
     from src.repositories.audit_pg import AuditPgRepository
+
     return AuditPgRepository(repos["submissions"]._engine)
 
 
@@ -527,9 +605,13 @@ def test_run_llm_review_persists_verdict_contract(store_repos, tmp_path):
     repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
     _make_entity(repos["entities"])
     sub_id = repos["submissions"].create(
-        submitter_id="user-1", submitter_email="alice@x.com",
-        type="skill", name="my-skill", version="abc123",
-        status="pending_llm", entity_id="entity-1",
+        submitter_id="user-1",
+        submitter_email="alice@x.com",
+        type="skill",
+        name="my-skill",
+        version="abc123",
+        status="pending_llm",
+        entity_id="entity-1",
         inline_checks={"manifest": {"status": "pass"}},
     )
 
@@ -538,9 +620,12 @@ def test_run_llm_review_persists_verdict_contract(store_repos, tmp_path):
     (plugin_dir / "SKILL.md").write_text("# Test\nbody " * 30)
 
     safe = {
-        "risk_level": "safe", "summary": "OK", "findings": [],
+        "risk_level": "safe",
+        "summary": "OK",
+        "findings": [],
         "template_placeholders_found": 0,
-        "reviewed_by_model": "claude-haiku-4-5-20251001", "error": None,
+        "reviewed_by_model": "claude-haiku-4-5-20251001",
+        "error": None,
     }
     audit = _audit_for_backend(repos, conn, backend)
     with patch(
@@ -548,7 +633,8 @@ def test_run_llm_review_persists_verdict_contract(store_repos, tmp_path):
         return_value=safe,
     ):
         result = run_llm_review(
-            sub_id, plugin_dir=plugin_dir,
+            sub_id,
+            plugin_dir=plugin_dir,
             api_key_loader=lambda: "sk-test",
             model_loader=lambda: "claude-haiku-4-5-20251001",
             subs_repo=repos["submissions"],
@@ -587,9 +673,13 @@ def test_run_llm_review_factory_path_resolves_pg(store_repos, tmp_path):
     repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
     _make_entity(repos["entities"])
     sub_id = repos["submissions"].create(
-        submitter_id="user-1", submitter_email="alice@x.com",
-        type="skill", name="my-skill", version="abc123",
-        status="pending_llm", entity_id="entity-1",
+        submitter_id="user-1",
+        submitter_email="alice@x.com",
+        type="skill",
+        name="my-skill",
+        version="abc123",
+        status="pending_llm",
+        entity_id="entity-1",
         inline_checks={"manifest": {"status": "pass"}},
     )
 
@@ -598,16 +688,20 @@ def test_run_llm_review_factory_path_resolves_pg(store_repos, tmp_path):
     (plugin_dir / "SKILL.md").write_text("# Test\nbody " * 30)
 
     safe = {
-        "risk_level": "safe", "summary": "OK", "findings": [],
+        "risk_level": "safe",
+        "summary": "OK",
+        "findings": [],
         "template_placeholders_found": 0,
-        "reviewed_by_model": "claude-haiku-4-5-20251001", "error": None,
+        "reviewed_by_model": "claude-haiku-4-5-20251001",
+        "error": None,
     }
     with patch(
         "src.store_guardrails.runner.llm_review.review_bundle",
         return_value=safe,
     ):
         result = run_llm_review(
-            sub_id, plugin_dir=plugin_dir,
+            sub_id,
+            plugin_dir=plugin_dir,
             api_key_loader=lambda: "sk-test",
             model_loader=lambda: "claude-haiku-4-5-20251001",
             # No subs_repo/ents_repo/audit → forces factory resolution.

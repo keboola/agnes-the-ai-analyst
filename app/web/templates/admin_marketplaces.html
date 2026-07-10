@@ -42,6 +42,14 @@
     background: #e0e7ff; color: #3730a3;
     font-family: var(--font-mono, ui-monospace, monospace);
   }
+  /* v87: pinned ref (tag/commit) badge — amber so it visually reads as
+     "locked" distinct from the neutral indigo floating-branch pill. */
+  .mp-ref-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 500;
+    background: #fef3c7; color: #92400e;
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
   .mp-sha { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; color: var(--text-primary, #111827); }
   .mp-muted { color: var(--text-secondary, #9ca3af); }
   .mp-err-badge {
@@ -315,6 +323,10 @@
     <label for="new-branch">Branch (optional)</label>
     <input id="new-branch" type="text" placeholder="main (leave empty for remote HEAD)" autocomplete="off">
 
+    <label for="new-ref">Pin to tag or commit SHA (optional)</label>
+    <input id="new-ref" type="text" placeholder="e.g. v1.2.3 or a 40-char commit SHA" autocomplete="off">
+    <div class="help">Mutually exclusive with Branch. Once set, nightly and manual syncs stay at this exact ref even when upstream moves — bump by editing this field.</div>
+
     <label for="new-description">Description (optional)</label>
     <textarea id="new-description" autocomplete="off"></textarea>
 
@@ -351,6 +363,10 @@
 
     <label for="edit-branch">Branch</label>
     <input id="edit-branch" type="text" placeholder="main (leave empty for remote HEAD)" autocomplete="off">
+
+    <label for="edit-ref">Pin to tag or commit SHA</label>
+    <input id="edit-ref" type="text" placeholder="e.g. v1.2.3 or a 40-char commit SHA (leave empty to unpin)" autocomplete="off">
+    <div class="help">Mutually exclusive with Branch. Once set, nightly and manual syncs stay at this exact ref even when upstream moves — bump by editing this field, clear it to go back to following Branch/HEAD.</div>
 
     <label for="edit-description">Description</label>
     <textarea id="edit-description" autocomplete="off"></textarea>
@@ -473,6 +489,9 @@ function esc(s) {
 }
 function fmtDate(s) { return s ? (window.AgnesTime.formatDateTime(s) || "—") : "—"; }
 function shortSha(s) { return s ? s.slice(0, 7) : "—"; }
+// v87: full 40-char SHA pins render short like a commit hash; tag names
+// render in full since they're already short and human-readable.
+function shortRef(r) { return /^[0-9a-f]{40}$/i.test(r || "") ? r.slice(0, 7) : r; }
 
 // ── Toast ──
 function toast(msg, kind = "") {
@@ -555,7 +574,12 @@ function renderMarketplaces() {
       <td>${m.curator_name
             ? `<div class="mp-curator-cell"><span class="name">${esc(m.curator_name)}</span>${m.curator_email ? `<span class="email">${esc(m.curator_email)}</span>` : ""}</div>`
             : `<span class="mp-muted" title="Open the Edit modal to fill in curator name + email">unset</span>`}</td>
-      <td><span class="mp-url" title="${esc(m.url)}${m.branch ? ` (branch: ${esc(m.branch)})` : ""}">${esc(m.url)}</span></td>
+      <td>
+        <span class="mp-url" title="${esc(m.url)}">${esc(m.url)}</span>
+        ${m.ref
+              ? `<br><span class="mp-ref-pill" title="Pinned to ${esc(m.ref)} — nightly/manual syncs stay here regardless of upstream changes">pinned: ${esc(shortRef(m.ref))}</span>`
+              : (m.branch ? `<br><span class="mp-branch-pill" title="Tracks branch ${esc(m.branch)}">branch: ${esc(m.branch)}</span>` : "")}
+      </td>
       <td>${m.plugin_count > 0
             ? `<span class="mp-plugin-count">${m.plugin_count}</span>`
             : `<span class="mp-muted">0</span>`}</td>
@@ -906,6 +930,7 @@ function openEdit(id) {
   document.getElementById("edit-name").value = m.name || "";
   document.getElementById("edit-url").value = m.url || "";
   document.getElementById("edit-branch").value = m.branch || "";
+  document.getElementById("edit-ref").value = m.ref || "";
   document.getElementById("edit-description").value = m.description || "";
   document.getElementById("edit-curator-name").value = m.curator_name || "";
   document.getElementById("edit-curator-email").value = m.curator_email || "";
@@ -917,14 +942,23 @@ function openEdit(id) {
     const payload = {
       name: document.getElementById("edit-name").value.trim() || null,
       url: document.getElementById("edit-url").value.trim() || null,
-      branch: document.getElementById("edit-branch").value.trim(), // empty string cleared by API (None=untouched)
+      // branch/ref: always send the current field value (never converted to
+      // null) — the API treats "" as an explicit clear and any non-empty
+      // string as the new value, so a blanked-out field really clears it.
+      // (Previously branch's empty string was silently rewritten to null —
+      // "untouched" — which meant clearing the field from the UI had no
+      // effect; that also blocked switching branch -> ref, since a stale
+      // branch value would keep tripping the mutual-exclusivity check.)
+      branch: document.getElementById("edit-branch").value.trim(),
+      ref: document.getElementById("edit-ref").value.trim(),
       description: document.getElementById("edit-description").value,
       curator_name: document.getElementById("edit-curator-name").value.trim() || null,
       curator_email: document.getElementById("edit-curator-email").value.trim() || null,
     };
-    // branch: null means untouched; explicit "" clears to HEAD. Treat empty input as clear only if user typed then erased.
-    // Simpler UX: always send current value (empty = HEAD).
-    if (payload.branch === "") payload.branch = null;  // untouched
+    if (payload.branch && payload.ref) {
+      toast("Branch and ref are mutually exclusive — clear one first", "error");
+      return;
+    }
     const tokenVal = document.getElementById("edit-token").value;
     const clearTok = document.getElementById("edit-clear-token").checked;
     if (clearTok) payload.token = "";
@@ -967,6 +1001,7 @@ document.getElementById("open-create-btn").addEventListener("click", () => {
   document.getElementById("new-slug").value = "";
   document.getElementById("new-url").value = "";
   document.getElementById("new-branch").value = "";
+  document.getElementById("new-ref").value = "";
   document.getElementById("new-description").value = "";
   document.getElementById("new-curator-name").value = "";
   document.getElementById("new-curator-email").value = "";
@@ -981,6 +1016,7 @@ document.getElementById("confirm-create-btn").addEventListener("click", async ()
     slug: document.getElementById("new-slug").value.trim().toLowerCase(),
     url: document.getElementById("new-url").value.trim(),
     branch: document.getElementById("new-branch").value.trim() || null,
+    ref: document.getElementById("new-ref").value.trim() || null,
     description: document.getElementById("new-description").value.trim() || null,
     curator_name: curatorName,
     curator_email: curatorEmail,
@@ -988,6 +1024,10 @@ document.getElementById("confirm-create-btn").addEventListener("click", async ()
   };
   if (!payload.name || !payload.slug || !payload.url) {
     toast("Name, slug, and URL are required", "error");
+    return;
+  }
+  if (payload.branch && payload.ref) {
+    toast("Branch and ref are mutually exclusive — set only one", "error");
     return;
   }
   if (!curatorName || !curatorEmail) {

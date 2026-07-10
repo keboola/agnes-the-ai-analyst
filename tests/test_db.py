@@ -1939,6 +1939,64 @@ class TestV85ToV86Migration:
             conn.close()
             close_system_db()
 
+    def test_v86_to_v87_adds_marketplace_ref_column(self, tmp_path, monkeypatch):
+        """v87: `ref` (tag/commit pin) column on marketplace_registry (#781)."""
+        from src.db import SCHEMA_VERSION, close_system_db, get_schema_version, get_system_db
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv(
+            "JWT_SECRET_KEY",
+            "test-jwt-secret-key-minimum-32-chars!!",
+        )
+        close_system_db()
+
+        # Simulate a pre-v87 DB: drop the column _SYSTEM_SCHEMA would
+        # otherwise have created on this fresh install, then rewind the
+        # version row so the v86->v87 step actually runs on next open.
+        conn = get_system_db()
+        try:
+            conn.execute("ALTER TABLE marketplace_registry DROP COLUMN IF EXISTS ref")
+            conn.execute("UPDATE schema_version SET version = 86")
+        finally:
+            conn.close()
+            close_system_db()
+
+        conn = get_system_db()
+        try:
+            assert get_schema_version(conn) == SCHEMA_VERSION
+            cols = [d[0] for d in conn.execute("SELECT * FROM marketplace_registry LIMIT 0").description]
+            assert "ref" in cols
+        finally:
+            conn.close()
+            close_system_db()
+
+    def test_v86_to_v87_idempotent(self, tmp_path, monkeypatch):
+        """Running migrations on an already-v87 DB is a no-op."""
+        from src.db import SCHEMA_VERSION, close_system_db, get_schema_version, get_system_db
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv(
+            "JWT_SECRET_KEY",
+            "test-jwt-secret-key-minimum-32-chars!!",
+        )
+        close_system_db()
+
+        conn = get_system_db()
+        try:
+            assert get_schema_version(conn) == SCHEMA_VERSION
+        finally:
+            conn.close()
+            close_system_db()
+
+        conn = get_system_db()
+        try:
+            assert get_schema_version(conn) == SCHEMA_VERSION
+        finally:
+            conn.close()
+            close_system_db()
+
 
 class TestCloseSingletonConnections:
     """``close_singleton_connections`` releases DuckDB locks so a subprocess

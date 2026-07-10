@@ -23,6 +23,12 @@ FastAPI can read their contents from disk.
   as `AGNES_MARKETPLACE_<SLUG>_TOKEN`. DuckDB stores only the env-var name
   (`token_env`), never the secret.
 - Registry lives in DuckDB table `marketplace_registry`.
+- A marketplace can be pinned to a fixed **tag name or full 40-char commit
+  SHA** via `ref` (mutually exclusive with `branch` — 400 if both are set).
+  Once set, nightly and manual syncs stay at that exact ref even when
+  upstream's default branch moves; bump the pin by editing the field.
+  A SHA pin that isn't reachable (mismatch/typo) fails the sync and leaves
+  the previous checkout serving, same as any other sync failure.
 - After each successful sync, `src/marketplace.py` parses
   `.claude-plugin/marketplace.json` from the cloned repo and caches the plugin
   list in `marketplace_plugins` (keyed by `(marketplace_id, plugin_name)`).

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -73,6 +72,18 @@ def _add_commit(fake_remote: dict, filename: str, content: str) -> str:
     return _git("rev-parse", "HEAD", cwd=work)
 
 
+def _add_tag(fake_remote: dict, tag_name: str) -> str:
+    """Tag the working clone's current HEAD and push the tag to the remote.
+
+    Returns the tagged commit's SHA (annotated/lightweight-agnostic — we
+    always create a lightweight tag, so the tag "sha" == the commit sha).
+    """
+    work = fake_remote["work"]
+    _git("tag", tag_name, cwd=work)
+    _git("push", "origin", tag_name, cwd=work)
+    return _git("rev-parse", "HEAD", cwd=work)
+
+
 # ---------------------------------------------------------------------------
 # Environment — fresh DATA_DIR + fresh system.duckdb per test
 # ---------------------------------------------------------------------------
@@ -124,8 +135,12 @@ def test_registry_crud(clean_env):
         assert repo.get("foo") is None
 
         repo.register(
-            id="foo", name="Foo", url="https://example.com/foo.git",
-            branch="main", token_env="FOO_TOKEN", description="demo",
+            id="foo",
+            name="Foo",
+            url="https://example.com/foo.git",
+            branch="main",
+            token_env="FOO_TOKEN",
+            description="demo",
             registered_by="admin@test.com",
         )
         row = repo.get("foo")
@@ -143,6 +158,7 @@ def test_registry_crud(clean_env):
         assert rows[0]["name"] == "Foo v2"
 
         from datetime import datetime, timezone
+
         repo.update_sync_status(
             "foo",
             commit_sha="abc123",
@@ -178,9 +194,7 @@ def test_sync_one_clone_then_update(clean_env, fake_remote):
 
     conn = get_system_db()
     try:
-        MarketplaceRegistryRepository(conn).register(
-            id="hello", name="Hello", url=fake_remote["url"], branch="main"
-        )
+        MarketplaceRegistryRepository(conn).register(id="hello", name="Hello", url=fake_remote["url"], branch="main")
     finally:
         conn.close()
 
@@ -275,6 +289,203 @@ def test_sync_marketplaces_mixed(clean_env, fake_remote, monkeypatch):
     assert result["synced"][0]["id"] == "good"
     assert len(result["errors"]) == 1
     assert result["errors"][0]["id"] == "bad"
+
+
+# ---------------------------------------------------------------------------
+# ref pinning (tag / commit SHA) — issue #781
+# ---------------------------------------------------------------------------
+
+
+def test_is_valid_ref():
+    from src.marketplace import is_full_sha, is_valid_ref
+
+    # valid tags
+    assert is_valid_ref("v1.2.3")
+    assert is_valid_ref("release/2026.05")
+    assert is_valid_ref("a")
+    # valid full SHA (40 hex chars, case-insensitive)
+    sha = "a" * 40
+    assert is_valid_ref(sha)
+    assert is_full_sha(sha)
+    assert is_full_sha(sha.upper())
+    assert not is_full_sha("v1.2.3")
+    # invalid: empty, leading dash (flag-injection risk), traversal, lock file
+    assert not is_valid_ref("")
+    assert not is_valid_ref("-flag")
+    assert not is_valid_ref("a..b")
+    assert not is_valid_ref("foo.lock")
+    assert not is_valid_ref("foo.")
+    # short hex string is a valid tag name (not long enough to be a SHA) — accepted
+    assert is_valid_ref("abc123")
+
+
+def test_sync_spec_rejects_branch_and_ref_together(clean_env, fake_remote):
+    from src.marketplace import sync_one
+    from src.db import get_system_db
+    from src.repositories.marketplace_registry import MarketplaceRegistryRepository
+
+    conn = get_system_db()
+    try:
+        MarketplaceRegistryRepository(conn).register(
+            id="both", name="Both", url=fake_remote["url"], branch="main", ref="v1.0.0"
+        )
+    finally:
+        conn.close()
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        sync_one("both")
+
+
+def test_sync_spec_rejects_invalid_ref_format(clean_env, fake_remote):
+    from src.marketplace import sync_one
+    from src.db import get_system_db
+    from src.repositories.marketplace_registry import MarketplaceRegistryRepository
+
+    conn = get_system_db()
+    try:
+        MarketplaceRegistryRepository(conn).register(
+            id="badref", name="BadRef", url=fake_remote["url"], ref="-not-valid"
+        )
+    finally:
+        conn.close()
+
+    with pytest.raises(ValueError, match="not a valid"):
+        sync_one("badref")
+
+
+def test_sync_one_pinned_tag_stays_when_remote_moves(clean_env, fake_remote):
+    """A tag pin resolves via the same fetch+reset path as branch, and stays
+    fixed across syncs even after the remote's default branch moves on."""
+    from src.marketplace import sync_one
+    from src.db import get_system_db
+    from src.repositories.marketplace_registry import MarketplaceRegistryRepository
+
+    tag_sha = _add_tag(fake_remote, "v1.0.0")
+
+    conn = get_system_db()
+    try:
+        MarketplaceRegistryRepository(conn).register(id="tagged", name="Tagged", url=fake_remote["url"], ref="v1.0.0")
+    finally:
+        conn.close()
+
+    result = sync_one("tagged")
+    assert result["action"] == "clone"
+    assert result["commit"] == tag_sha
+
+    # Move the remote's default branch forward — the tag itself is untouched.
+    new_sha = _add_commit(fake_remote, "moved-on.txt", "the future")
+    assert new_sha != tag_sha
+
+    result2 = sync_one("tagged")
+    assert result2["action"] == "update"
+    assert result2["commit"] == tag_sha
+    assert not (Path(result2["path"]) / "moved-on.txt").exists()
+
+
+def test_sync_one_pinned_sha_stays_when_remote_moves(clean_env, fake_remote):
+    """A commit-SHA pin stays fixed across syncs even after the remote's
+    default branch moves forward past it."""
+    from src.marketplace import sync_one
+    from src.db import get_system_db
+    from src.repositories.marketplace_registry import MarketplaceRegistryRepository
+
+    pinned_sha = fake_remote["sha"]
+
+    conn = get_system_db()
+    try:
+        MarketplaceRegistryRepository(conn).register(
+            id="shapinned", name="ShaPinned", url=fake_remote["url"], ref=pinned_sha
+        )
+    finally:
+        conn.close()
+
+    result = sync_one("shapinned")
+    assert result["action"] == "clone"
+    assert result["commit"] == pinned_sha
+
+    new_sha = _add_commit(fake_remote, "moved-on.txt", "the future")
+    assert new_sha != pinned_sha
+
+    result2 = sync_one("shapinned")
+    assert result2["action"] == "update"
+    assert result2["commit"] == pinned_sha
+    assert not (Path(result2["path"]) / "moved-on.txt").exists()
+
+
+def test_sync_one_pinned_sha_mismatch_fails_and_keeps_previous_checkout(clean_env, fake_remote):
+    """An unreachable SHA pin fails the sync (RuntimeError) and leaves the
+    previously-synced working tree exactly as it was — same contract as any
+    other sync failure."""
+    from src.marketplace import sync_one
+    from src.db import get_system_db
+    from src.repositories.marketplace_registry import MarketplaceRegistryRepository
+
+    conn = get_system_db()
+    try:
+        MarketplaceRegistryRepository(conn).register(
+            id="mismatch", name="Mismatch", url=fake_remote["url"], branch="main"
+        )
+    finally:
+        conn.close()
+
+    first = sync_one("mismatch")
+    assert first["commit"] == fake_remote["sha"]
+    target = Path(first["path"])
+    assert (target / "README.md").exists()
+
+    # Re-point the same row at an unreachable SHA (simulates a typo/rotated
+    # pin) — bypass the API's format validation to write directly via the repo.
+    bogus_sha = "deadbeef" * 5
+    conn = get_system_db()
+    try:
+        MarketplaceRegistryRepository(conn).register(
+            id="mismatch", name="Mismatch", url=fake_remote["url"], branch=None, ref=bogus_sha
+        )
+    finally:
+        conn.close()
+
+    with pytest.raises(RuntimeError):
+        sync_one("mismatch")
+
+    # Previous checkout untouched, and the failure is recorded.
+    assert (target / "README.md").exists()
+    conn = get_system_db()
+    try:
+        row = MarketplaceRegistryRepository(conn).get("mismatch")
+        assert row["last_error"]
+        assert row["last_commit_sha"] == fake_remote["sha"]  # not overwritten
+    finally:
+        conn.close()
+
+
+def test_checkout_pinned_sha_falls_back_when_direct_fetch_rejected(tmp_path, monkeypatch):
+    """Unit test of the fallback path with a mocked ``_run_git`` — simulates
+    a git server that rejects direct-SHA fetches (no
+    ``uploadpack.allowReachableSHA1InWant``), which we can't reliably force
+    with a local file:// remote in tests."""
+    from unittest.mock import patch
+
+    import src.marketplace as marketplace_mod
+
+    target = tmp_path / "repo"
+    (target / ".git").mkdir(parents=True)
+    sha = "b" * 40
+
+    calls = []
+
+    def fake_run_git(args, cwd=None):
+        calls.append(list(args))
+        if args[:2] == ["fetch", "--depth"] and args[-1] == sha:
+            raise subprocess.CalledProcessError(128, ["git", *args], stderr="not our ref")
+        return subprocess.CompletedProcess(["git", *args], 0, stdout="", stderr="")
+
+    with patch.object(marketplace_mod, "_run_git", side_effect=fake_run_git):
+        marketplace_mod._checkout_pinned_sha(target, sha)
+
+    assert calls[0] == ["fetch", "--depth", "1", "origin", sha]
+    # shallow (no .git/shallow file created in this fixture) -> plain fetch
+    assert calls[1] == ["fetch", "origin"]
+    assert calls[2] == ["checkout", "--detach", sha]
 
 
 # ---------------------------------------------------------------------------
@@ -378,6 +589,91 @@ def test_api_rejects_bad_slug_and_non_https(seeded_app):
     assert r.status_code == 400
 
 
+def test_api_rejects_ref_and_branch_together(seeded_app):
+    client = seeded_app["client"]
+    token_headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+    curator = {"curator_name": "Curator", "curator_email": "c@example.com"}
+
+    r = client.post(
+        "/api/marketplaces",
+        headers=token_headers,
+        json={
+            "name": "X",
+            "slug": "refbranch",
+            "url": "https://example.com/x.git",
+            "branch": "main",
+            "ref": "v1.0.0",
+            **curator,
+        },
+    )
+    assert r.status_code == 400
+    assert "mutually exclusive" in r.text
+
+
+def test_api_rejects_invalid_ref_format(seeded_app):
+    client = seeded_app["client"]
+    token_headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+    curator = {"curator_name": "Curator", "curator_email": "c@example.com"}
+
+    r = client.post(
+        "/api/marketplaces",
+        headers=token_headers,
+        json={
+            "name": "X",
+            "slug": "badref",
+            "url": "https://example.com/x.git",
+            "ref": "-not-valid",
+            **curator,
+        },
+    )
+    assert r.status_code == 400
+
+
+def test_api_create_and_patch_ref_pin(seeded_app):
+    """A ref pin round-trips through create + GET, and can be cleared via
+    an empty-string PATCH (switching back to floating branch/HEAD)."""
+    client = seeded_app["client"]
+    token_headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+    curator = {"curator_name": "Curator", "curator_email": "c@example.com"}
+
+    r = client.post(
+        "/api/marketplaces",
+        headers=token_headers,
+        json={
+            "name": "Pinned",
+            "slug": "pinned-mp",
+            "url": "https://example.com/x.git",
+            "ref": "v2.0.0",
+            **curator,
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["ref"] == "v2.0.0"
+    assert body["branch"] is None
+
+    # Switching to a branch while a ref pin is active must be rejected
+    # unless the ref is explicitly cleared in the same request.
+    r = client.patch("/api/marketplaces/pinned-mp", headers=token_headers, json={"branch": "main"})
+    assert r.status_code == 400
+    assert "mutually exclusive" in r.text
+
+    # Clearing ref + setting branch together works.
+    r = client.patch("/api/marketplaces/pinned-mp", headers=token_headers, json={"branch": "main", "ref": ""})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["branch"] == "main"
+    assert body["ref"] is None
+
+    # Re-pin to a commit SHA.
+    sha = "a" * 40
+    r = client.patch("/api/marketplaces/pinned-mp", headers=token_headers, json={"branch": "", "ref": sha})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ref"] == sha
+    assert body["branch"] is None
+
+
 def test_api_create_requires_curator(seeded_app):
     """v32: curator_name + curator_email are mandatory at create time.
 
@@ -402,7 +698,9 @@ def test_api_create_requires_curator(seeded_app):
         "/api/marketplaces",
         headers=token_headers,
         json={
-            "name": "X", "slug": "cmail", "url": "https://example.com/x.git",
+            "name": "X",
+            "slug": "cmail",
+            "url": "https://example.com/x.git",
             "curator_name": "Test",
         },
     )
@@ -414,8 +712,11 @@ def test_api_create_requires_curator(seeded_app):
         "/api/marketplaces",
         headers=token_headers,
         json={
-            "name": "X", "slug": "cbad", "url": "https://example.com/x.git",
-            "curator_name": "Test", "curator_email": "not-an-email",
+            "name": "X",
+            "slug": "cbad",
+            "url": "https://example.com/x.git",
+            "curator_name": "Test",
+            "curator_email": "not-an-email",
         },
     )
     assert r.status_code == 400
@@ -432,7 +733,8 @@ def test_api_curator_round_trip(seeded_app):
         "/api/marketplaces",
         headers=token_headers,
         json={
-            "name": "Curator Test", "slug": "curator-rt",
+            "name": "Curator Test",
+            "slug": "curator-rt",
             "url": "https://example.com/x.git",
             "curator_name": "Alice Original",
             "curator_email": "alice@example.com",
@@ -558,9 +860,12 @@ def test_api_delete_clears_overlay_binding(seeded_app):
         "/api/marketplaces",
         headers=token_headers,
         json={
-            "name": "Temp", "slug": "temp",
-            "url": "https://example.com/temp.git", "token": pat,
-            "curator_name": "Curator", "curator_email": "c@example.com",
+            "name": "Temp",
+            "slug": "temp",
+            "url": "https://example.com/temp.git",
+            "token": pat,
+            "curator_name": "Curator",
+            "curator_email": "c@example.com",
         },
     )
     assert os.environ.get("AGNES_MARKETPLACE_TEMP_TOKEN") == pat
@@ -592,32 +897,41 @@ def test_refresh_plugin_cache_drops_missing_internal_assets(clean_env, monkeypat
 
     # Real marketplace.json — single plugin
     (repo_root / ".claude-plugin" / "marketplace.json").write_text(
-        json.dumps({
-            "name": "drop-test", "owner": {"name": "T"},
-            "plugins": [{
-                "name": "demo", "description": "test",
-                "version": "1.0", "source": "./plugins/demo",
-            }],
-        }),
+        json.dumps(
+            {
+                "name": "drop-test",
+                "owner": {"name": "T"},
+                "plugins": [
+                    {
+                        "name": "demo",
+                        "description": "test",
+                        "version": "1.0",
+                        "source": "./plugins/demo",
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     # marketplace-metadata referencing a mix of valid + missing internal paths
     (repo_root / ".claude-plugin" / "marketplace-metadata.json").write_text(
-        json.dumps({
-            "version": 1,
-            "plugins": {
-                "demo": {
-                    # cover_photo points at a file that does NOT exist
-                    "cover_photo": ".agnes/missing-cover.png",
-                    "doc_links": [
-                        # Internal path that exists → should survive
-                        {"name": "ok-doc", "path": "docs/ok.md"},
-                        # Internal path that doesn't exist → dropped
-                        {"name": "missing-doc", "path": "docs/missing.md"},
-                    ],
+        json.dumps(
+            {
+                "version": 1,
+                "plugins": {
+                    "demo": {
+                        # cover_photo points at a file that does NOT exist
+                        "cover_photo": ".agnes/missing-cover.png",
+                        "doc_links": [
+                            # Internal path that exists → should survive
+                            {"name": "ok-doc", "path": "docs/ok.md"},
+                            # Internal path that doesn't exist → dropped
+                            {"name": "missing-doc", "path": "docs/missing.md"},
+                        ],
+                    },
                 },
-            },
-        }),
+            }
+        ),
         encoding="utf-8",
     )
     # Create the file referenced by the surviving doc_link
@@ -628,8 +942,11 @@ def test_refresh_plugin_cache_drops_missing_internal_assets(clean_env, monkeypat
     conn = get_system_db()
     try:
         MarketplaceRegistryRepository(conn).register(
-            id=slug, name="drop test", url="https://example.com/x.git",
-            curator_name="C", curator_email="c@example.com",
+            id=slug,
+            name="drop test",
+            url="https://example.com/x.git",
+            curator_name="C",
+            curator_email="c@example.com",
         )
     finally:
         conn.close()
@@ -643,9 +960,7 @@ def test_refresh_plugin_cache_drops_missing_internal_assets(clean_env, monkeypat
     conn = get_system_db()
     try:
         row = conn.execute(
-            "SELECT cover_photo_url, doc_links "
-            "FROM marketplace_plugins "
-            "WHERE marketplace_id = ? AND name = ?",
+            "SELECT cover_photo_url, doc_links FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",
             [slug, "demo"],
         ).fetchone()
     finally:
@@ -655,6 +970,7 @@ def test_refresh_plugin_cache_drops_missing_internal_assets(clean_env, monkeypat
     assert cover_url is None, f"missing internal cover should be dropped, got {cover_url}"
 
     import json as _json
+
     doc_links = _json.loads(doc_links_json) if isinstance(doc_links_json, str) else doc_links_json
     assert isinstance(doc_links, list) and len(doc_links) == 1
     assert doc_links[0]["name"] == "ok-doc"

@@ -54,6 +54,9 @@ class MarketplaceRegistry(Base):
     # System-seeded built-in marketplace (bundled in the wheel). The nightly
     # git-sync path skips is_builtin=TRUE rows (nothing to fetch).
     is_builtin: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), nullable=False)
+    # v87: pin to a fixed tag name or full 40-char commit SHA (issue #781).
+    # Mutually exclusive with `branch`, enforced at the admin API layer.
+    ref: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class MarketplacePlugin(Base):

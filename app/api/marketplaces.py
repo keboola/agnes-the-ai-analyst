@@ -22,6 +22,7 @@ from app.secrets import persist_overlay_token
 from src.marketplace import (
     MarketplaceNotFound,
     delete_marketplace_dir,
+    is_valid_ref,
     is_valid_slug,
     sync_marketplaces,
     sync_one,
@@ -81,6 +82,9 @@ class CreateMarketplaceRequest(BaseModel):
     slug: str
     url: str
     branch: Optional[str] = None
+    # v87: pin to a fixed tag name or full 40-char commit SHA (#781).
+    # Mutually exclusive with `branch` — validated in create_marketplace.
+    ref: Optional[str] = None
     description: Optional[str] = None
     token: Optional[str] = None
     # v32: required at create time. Surfaced on /marketplace cards + plugin
@@ -96,6 +100,9 @@ class UpdateMarketplaceRequest(BaseModel):
     name: Optional[str] = None
     url: Optional[str] = None
     branch: Optional[str] = None
+    # None = leave untouched; empty string = clear the pin; non-empty = set.
+    # Mutually exclusive with `branch` — validated in update_marketplace.
+    ref: Optional[str] = None
     description: Optional[str] = None
     # None = leave untouched; empty string = clear token; non-empty = rotate
     token: Optional[str] = None
@@ -111,6 +118,8 @@ class MarketplaceResponse(BaseModel):
     name: str
     url: str
     branch: Optional[str] = None
+    # v87: currently-pinned tag/commit ref, if any (#781).
+    ref: Optional[str] = None
     description: Optional[str] = None
     registered_by: Optional[str] = None
     registered_at: Optional[str] = None
@@ -129,6 +138,26 @@ class MarketplaceResponse(BaseModel):
 _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 
+def _validate_branch_ref_pair(branch: Optional[str], ref: Optional[str]) -> None:
+    """400 when `branch` and `ref` are both set, or `ref` is malformed.
+
+    `ref` (tag name or full 40-char commit SHA) pins a marketplace to a
+    fixed point in history; `branch` floats. The two are mutually
+    exclusive (#781) — an admin who wants to switch from one to the other
+    must explicitly clear the field they're leaving via an empty string.
+    """
+    if branch and ref:
+        raise HTTPException(
+            status_code=400,
+            detail="branch and ref are mutually exclusive — clear one before setting the other",
+        )
+    if ref and not is_valid_ref(ref):
+        raise HTTPException(
+            status_code=400,
+            detail="ref must be a valid tag name or a 40-character commit SHA",
+        )
+
+
 def _to_response(row: dict, plugin_count: int = 0) -> MarketplaceResponse:
     token_env = row.get("token_env") or ""
     has_token = bool(token_env) and bool(os.environ.get(token_env, ""))
@@ -137,6 +166,7 @@ def _to_response(row: dict, plugin_count: int = 0) -> MarketplaceResponse:
         name=row["name"],
         url=row["url"],
         branch=row.get("branch"),
+        ref=row.get("ref"),
         description=row.get("description"),
         registered_by=row.get("registered_by"),
         registered_at=str(row["registered_at"]) if row.get("registered_at") else None,
@@ -260,6 +290,10 @@ async def create_marketplace(
     if not (payload.name or "").strip():
         raise HTTPException(status_code=400, detail="name is required")
 
+    branch = (payload.branch or "").strip() or None
+    ref = (payload.ref or "").strip() or None
+    _validate_branch_ref_pair(branch, ref)
+
     # v32: curator is mandatory at create time. Validation lives here (not in
     # DB schema) so legacy rows that pre-date the column survive — admins
     # patch them via the edit modal at their leisure.
@@ -294,7 +328,8 @@ async def create_marketplace(
         id=slug,
         name=payload.name.strip(),
         url=payload.url.strip(),
-        branch=(payload.branch or "").strip() or None,
+        branch=branch,
+        ref=ref,
         token_env=token_env,
         description=payload.description,
         registered_by=user.get("email"),
@@ -329,6 +364,7 @@ async def update_marketplace(
         "name": existing["name"],
         "url": existing["url"],
         "branch": existing.get("branch"),
+        "ref": existing.get("ref"),
         "token_env": existing.get("token_env"),
         "description": existing.get("description"),
         "registered_by": existing.get("registered_by"),
@@ -350,6 +386,13 @@ async def update_marketplace(
     if payload.branch is not None:
         updated["branch"] = payload.branch.strip() or None
         changed["branch"] = updated["branch"]
+    if payload.ref is not None:
+        updated["ref"] = payload.ref.strip() or None
+        changed["ref"] = updated["ref"]
+    # Re-checked after merging both fields (not just when one of them was
+    # just touched) — an admin who only PATCHes `branch` while a `ref` pin
+    # from an earlier request is still on the row must also be caught here.
+    _validate_branch_ref_pair(updated["branch"], updated["ref"])
     if payload.description is not None:
         updated["description"] = payload.description
         changed["description"] = payload.description
@@ -403,6 +446,7 @@ async def update_marketplace(
         name=updated["name"],
         url=updated["url"],
         branch=updated["branch"],
+        ref=updated["ref"],
         token_env=updated["token_env"],
         description=updated["description"],
         registered_by=updated["registered_by"],
@@ -612,9 +656,7 @@ def mark_plugin_system(
     actor_email = user.get("email") or user.get("id")
     for group in user_groups_repo().list_all():
         group_id = group["id"]
-        already = grants_repo.has_grant(
-            [group_id], ResourceType.MARKETPLACE_PLUGIN.value, resource_id
-        )
+        already = grants_repo.has_grant([group_id], ResourceType.MARKETPLACE_PLUGIN.value, resource_id)
         grants_repo.ensure_grant(
             group_id,
             ResourceType.MARKETPLACE_PLUGIN.value,
