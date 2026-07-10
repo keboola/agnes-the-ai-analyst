@@ -7,6 +7,8 @@ Two tiers decide how an uploaded file is processed:
 * **tier2** — image formats (PNG, JPEG, GIF, WebP) stored now and processed
   later via vision/OCR (Slice 5); accepted and written to disk today with
   status ``'pending'``. Kept in lock-step with the vision-supported set.
+* **bundle** — zip archives (K1) stored like any upload, then unpacked in the
+  background into per-member ``corpus_files`` rows by ``src.ingest.bundle``.
 * **None** — unsupported; upload is rejected with HTTP 422.
 
 100 MiB ceiling per file. The cap is enforced during streaming by
@@ -62,6 +64,11 @@ TIER2_EXTENSIONS: frozenset[str] = frozenset(
     }
 )
 
+# Archives unpacked server-side into per-member corpus_files rows (K1 bundle
+# ingest). Zip only: it covers Confluence HTML/XML space exports and ad-hoc
+# document dumps. tar/7z/rar stay rejected — no streaming-unpack guarantees.
+BUNDLE_EXTENSIONS: frozenset[str] = frozenset({"zip"})
+
 # 100 MiB — roomy enough for realistic document uploads; blocks accidental
 # camera dumps and large binary assets that would swamp the ingestion queue.
 MAX_UPLOAD_BYTES: int = 100 * 1024 * 1024
@@ -73,7 +80,7 @@ MAX_UPLOAD_BYTES: int = 100 * 1024 * 1024
 
 
 def classify(filename: str) -> Optional[str]:
-    """Return ``'tier1'``, ``'tier2'``, or ``None`` (unsupported / reject).
+    """Return ``'tier1'``, ``'tier2'``, ``'bundle'``, or ``None`` (unsupported / reject).
 
     Classification is based solely on the file extension (lower-cased).
     Files without an extension always return ``None``.
@@ -84,7 +91,8 @@ def classify(filename: str) -> Optional[str]:
 
     Returns:
         ``'tier1'`` for text/document formats, ``'tier2'`` for image formats,
-        ``None`` for unsupported or extension-less files.
+        ``'bundle'`` for zip archives, ``None`` for unsupported or
+        extension-less files.
     """
     if not filename:
         return None
@@ -98,4 +106,6 @@ def classify(filename: str) -> Optional[str]:
         return "tier1"
     if ext in TIER2_EXTENSIONS:
         return "tier2"
+    if ext in BUNDLE_EXTENSIONS:
+        return "bundle"
     return None

@@ -396,6 +396,9 @@ async def upload_files(
       ``processing_status='pending'``.
     * **tier2** (png, jpg, tiff, …) → same write + ``'pending'``
       (vision/OCR ingestion deferred to Slice 5).
+    * **bundle** (zip) → same write + ``'pending'``; the background task
+      unpacks it and ingests every supported member as its own child row
+      (``parent_file_id`` → the archive row).
     * **unsupported** (.dwg, .exe, …) → stored raw +
       ``processing_status='rejected'`` with ``processing_detail`` describing
       the reason. The *whole response* returns **422** when any file is
