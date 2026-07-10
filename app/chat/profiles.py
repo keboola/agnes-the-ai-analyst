@@ -178,7 +178,7 @@ _SKILL_AUTHOR = ChatProfile(
         "- Skills are plain Markdown — write them harness-agnostic, never "
         "assuming one specific AI product.\n"
         "- Draft into the builder fields; never claim the skill is published "
-        "until the user clicks Create.\n"
+        "until the user clicks Publish.\n"
         "- Use the `agnes-skill-authoring` skill for the contract and endpoints.\n"
     ),
     skill_name="agnes-skill-authoring",
