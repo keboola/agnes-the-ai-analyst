@@ -52,16 +52,25 @@ class PullResult:
       stack. Always 0 against a pre-v49 server that emits no typed sections.
     - `parquets_total`: count of non-remote tables visible in the manifest.
     - `rules_count`: number of `km_*.md` files written to `.claude/rules/`.
+    - `knowledge_updated`: count of per-collection `user/knowledge/<corpus_id>.duckdb`
+      artifacts actually re-downloaded this run (K3, #798).
+    - `knowledge_removed`: count of local knowledge artifacts pruned this run
+      because the corpus left the manifest's `knowledge_artifacts` section
+      (de-authorization or corpus deletion). Always 0 against a pre-K3
+      server that emits no `knowledge_artifacts` key.
     - `duration_s`: wall time of the call.
     - `errors`: list of `{"table": ..., "error": ...}` (or
-      `{"stage": "memory_bundle", "error": ...}`) — best-effort flow,
-      individual failures don't abort the whole pull.
+      `{"stage": "memory_bundle", "error": ...}` /
+      `{"stage": "knowledge_artifacts", "corpus_id": ..., "error": ...}`) —
+      best-effort flow, individual failures don't abort the whole pull.
     """
 
     tables_updated: int = 0
     tables_removed: int = 0
     parquets_total: int = 0
     rules_count: int = 0
+    knowledge_updated: int = 0
+    knowledge_removed: int = 0
     duration_s: float = 0.0
     errors: list[dict] = field(default_factory=list)
     # v49 (Phase 7, Task 7.5) — per-type stack-sync result. Populated when
@@ -163,6 +172,7 @@ class _TextualProgress:
 
     def __init__(self, *, stream, total_files: int, file_sizes: dict[str, int]):
         import threading
+
         self._stream = stream
         self._total_files = total_files
         self._file_sizes = file_sizes
@@ -195,11 +205,7 @@ class _TextualProgress:
             elapsed = now - self._last_emit_at[tid]
             bytes_since_emit = current - self._last_emit_bytes.get(tid, 0)
             crossed_10 = pct >= self._last_emit_pct[tid] + 10
-            if (
-                crossed_10
-                or elapsed >= self._interval_seconds
-                or bytes_since_emit >= self._interval_bytes
-            ):
+            if crossed_10 or elapsed >= self._interval_seconds or bytes_since_emit >= self._interval_bytes:
                 self._last_emit_at[tid] = now
                 self._last_emit_pct[tid] = pct - (pct % 10)
                 self._last_emit_bytes[tid] = current
@@ -257,17 +263,12 @@ class _TextualProgress:
             raw_pct = int((current * 100) / total)
             pct_display = min(raw_pct, 100)
             pct_str = f"{pct_display}%"
-            size_str = (
-                f"({self._fmt_bytes(current)} / {self._fmt_bytes(total)})"
-            )
+            size_str = f"({self._fmt_bytes(current)} / {self._fmt_bytes(total)})"
         else:
             pct_str = "?"
             size_str = f"({self._fmt_bytes(current)})"
         idx = self._finished_idx + 1  # 1-based "currently working on file N"
-        line = (
-            f"[{idx}/{self._total_files} files] {tid}: {pct_str} "
-            f"{size_str} at {self._fmt_bytes(int(rate))}/s\n"
-        )
+        line = f"[{idx}/{self._total_files} files] {tid}: {pct_str} {size_str} at {self._fmt_bytes(int(rate))}/s\n"
         self._stream.write(line)
         try:
             self._stream.flush()
@@ -406,9 +407,7 @@ def run_pull(
         # an empty authorized set and prune every local parquet. The end-of-run
         # stack-sync gate keeps ``memory_domains`` (see below) — that path
         # legitimately fires on memory domains alone.
-        has_query_table_sections = any(
-            k in manifest for k in ("direct_tables", "data_packages")
-        )
+        has_query_table_sections = any(k in manifest for k in ("direct_tables", "data_packages"))
         authorized_names: set[str] | None = None
         if has_query_table_sections:
             authorized_names = set()
@@ -466,12 +465,7 @@ def run_pull(
             local_hash = local_tables.get(tid, {}).get("hash", "")
             server_hash = info.get("hash", "")
             target = parquet_dir / f"{tid}.parquet"
-            if (
-                server_hash != local_hash
-                or tid not in local_tables
-                or not server_hash
-                or not target.exists()
-            ):
+            if server_hash != local_hash or tid not in local_tables or not server_hash or not target.exists():
                 to_download.append(tid)
         result.parquets_total = non_remote_total
 
@@ -523,19 +517,21 @@ def run_pull(
         # download contract ("one file = one task, sum-of-chunks bytes")
         # is honored uniformly.
         import sys as _sys
+
         progress = None
         progress_tasks: dict[str, int] = {}
         textual = None
-        use_textual_fallback = (
-            show_progress
-            and to_download
-            and not _sys.stderr.isatty()
-        )
+        use_textual_fallback = show_progress and to_download and not _sys.stderr.isatty()
         if show_progress and to_download and not use_textual_fallback:
             from rich.progress import (
-                Progress, BarColumn, DownloadColumn, TextColumn,
-                TimeRemainingColumn, TransferSpeedColumn,
+                Progress,
+                BarColumn,
+                DownloadColumn,
+                TextColumn,
+                TimeRemainingColumn,
+                TransferSpeedColumn,
             )
+
             progress = Progress(
                 TextColumn("[bold]{task.fields[label]}[/]"),
                 BarColumn(),
@@ -550,16 +546,15 @@ def run_pull(
                 # Some manifest entries don't carry size — Rich shows
                 # an indeterminate bar in that case.
                 progress_tasks[tid] = progress.add_task(
-                    "download", label=tid, total=size if size > 0 else None,
+                    "download",
+                    label=tid,
+                    total=size if size > 0 else None,
                 )
         elif use_textual_fallback:
             textual = _TextualProgress(
                 stream=_sys.stderr,
                 total_files=len(to_download),
-                file_sizes={
-                    tid: int(server_tables[tid].get("size_bytes") or 0)
-                    for tid in to_download
-                },
+                file_sizes={tid: int(server_tables[tid].get("size_bytes") or 0) for tid in to_download},
             )
 
         def _download_one(tid: str) -> tuple[str, dict | None, str | None]:
@@ -590,13 +585,17 @@ def run_pull(
             reset_progress = None
             if progress is not None and tid in progress_tasks:
                 task_id = progress_tasks[tid]
+
                 def cb(n: int, _tid=tid, _task=task_id):
                     progress.update(_task, advance=n)
+
                 def reset_progress(_task=task_id):
                     progress.update(_task, completed=0)
             elif textual is not None:
+
                 def cb(n: int, _tid=tid):
                     textual.advance(_tid, n)
+
                 def reset_progress(_tid=tid):
                     textual.reset(_tid)
 
@@ -611,23 +610,19 @@ def run_pull(
                         # Download into a sidecar — the real target keeps
                         # the prior good bytes until verification passes.
                         stream_download(
-                            f"/api/data/{tid}/download", str(sidecar),
+                            f"/api/data/{tid}/download",
+                            str(sidecar),
                             progress_callback=cb,
                         )
                         if expected_hash:
                             actual_hash = _file_md5(sidecar)
                             if actual_hash != expected_hash:
-                                last_err = (
-                                    f"hash mismatch: expected "
-                                    f"{expected_hash[:12]}, got {actual_hash[:12]}"
-                                )
+                                last_err = f"hash mismatch: expected {expected_hash[:12]}, got {actual_hash[:12]}"
                                 sidecar.unlink(missing_ok=True)
                                 # Re-download on mismatch before giving up.
                                 if attempt < _DOWNLOAD_RETRIES:
                                     time.sleep(
-                                        _DOWNLOAD_RETRY_BACKOFFS_S[
-                                            min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)
-                                        ]
+                                        _DOWNLOAD_RETRY_BACKOFFS_S[min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)]
                                     )
                                     continue
                                 # Persistent mismatch: prior good target
@@ -637,9 +632,7 @@ def run_pull(
                             # Pre-v49 / no-hash legacy path — unchanged
                             # semantics, just verified on the sidecar.
                             sidecar.unlink(missing_ok=True)
-                            raise ValueError(
-                                "not a valid parquet (missing PAR1 magic)"
-                            )
+                            raise ValueError("not a valid parquet (missing PAR1 magic)")
                         # Verified — promote the sidecar atomically.
                         os.replace(sidecar, target)
                         entry = {
@@ -652,11 +645,7 @@ def run_pull(
                         last_err = str(exc)
                         sidecar.unlink(missing_ok=True)
                         if attempt < _DOWNLOAD_RETRIES:
-                            time.sleep(
-                                _DOWNLOAD_RETRY_BACKOFFS_S[
-                                    min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)
-                                ]
-                            )
+                            time.sleep(_DOWNLOAD_RETRY_BACKOFFS_S[min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)])
                             continue
                         return tid, None, last_err
                 # Loop exhausted without an explicit return (defensive).
@@ -669,6 +658,7 @@ def run_pull(
                 outcomes = [_download_one(tid) for tid in to_download]
             else:
                 from concurrent.futures import ThreadPoolExecutor
+
                 with ThreadPoolExecutor(max_workers=workers) as ex:
                     outcomes = list(ex.map(_download_one, to_download))
         finally:
@@ -704,12 +694,8 @@ def run_pull(
         # its parquet must leave the laptop, otherwise a copy downloaded
         # before the admin flipped the flag keeps a local view alive and the
         # table stays locally queryable despite server-only distribution.
-        server_only_names = {
-            tid for tid, info in server_tables.items() if info.get("server_only")
-        }
-        if parquet_dir.exists() and (
-            authorized_names is not None or server_only_names
-        ):
+        server_only_names = {tid for tid, info in server_tables.items() if info.get("server_only")}
+        if parquet_dir.exists() and (authorized_names is not None or server_only_names):
             for pq_file in sorted(parquet_dir.glob("*.parquet")):
                 stem = pq_file.stem
                 authorized = authorized_names is None or stem in authorized_names
@@ -718,6 +704,16 @@ def run_pull(
                 pq_file.unlink(missing_ok=True)
                 local_tables.pop(stem, None)
                 result.tables_removed += 1
+
+        # 4c. K3 (#798) — knowledge artifacts: same download/verify/promote/
+        # prune lifecycle as parquets, filtered by the manifest's own
+        # collection-grant RBAC. Runs before save_sync_state so the
+        # per-corpus md5s persist in the same on-disk state file.
+        # Best-effort: a broken artifact channel must not fail the pull.
+        try:
+            _sync_knowledge_artifacts(manifest, workspace, local_state, result)
+        except Exception as exc:
+            result.errors.append({"stage": "knowledge_artifacts", "error": str(exc)})
 
         # 5. Persist sync state (only on real runs).
         # TODO(workspace-scoped-sync-state): currently saved to
@@ -748,9 +744,7 @@ def run_pull(
         # backward-compat workspaces are untouched). Best-effort:
         # failure here records under ``result.errors`` but doesn't abort
         # the rest of the pull.
-        if any(
-            k in manifest for k in ("direct_tables", "data_packages", "memory_domains")
-        ):
+        if any(k in manifest for k in ("direct_tables", "data_packages", "memory_domains")):
             try:
                 result.stack_sync = _run_stack_sync_from_manifest(manifest, workspace)
             except Exception as exc:
@@ -850,6 +844,63 @@ def _file_md5(path: Path) -> str:
     return h.hexdigest()
 
 
+def _sync_knowledge_artifacts(manifest: dict, workspace: Path, local_state: dict, result: "PullResult") -> None:
+    """K3 (#798): download/verify/promote/prune per-collection knowledge.duckdb.
+
+    Same lifecycle as parquets: sidecar download -> md5 verify -> os.replace
+    promotion (a reader never sees a torn file; the prior good artifact
+    survives a failed refresh), prune anything the manifest no longer lists
+    (de-authorization / deleted corpus). Gate: the ``knowledge_artifacts``
+    KEY must be present — a pre-K3 server that omits it must not nuke the
+    local tree; a present-but-empty list is a legitimate zero-grants state
+    and prunes everything (the #506 typed-sections posture).
+
+    Simpler than the parquet loop by design: no retry-on-mismatch loop, no
+    parallel download pool — artifacts are far smaller and less frequent
+    than the parquet set. A persistent hash mismatch heals on the next
+    pull; it is not silently ignored (recorded under ``result.errors``).
+    """
+    section = manifest.get("knowledge_artifacts")
+    if section is None:
+        return
+    kdir = Path(workspace) / "user" / "knowledge"
+    known = local_state.setdefault("knowledge_artifacts", {})
+    listed: set[str] = set()
+    for entry in section or []:
+        cid = entry.get("corpus_id") or ""
+        md5 = entry.get("md5") or ""
+        if not _SAFE_ID_RE.match(cid):
+            continue
+        listed.add(cid)
+        target = kdir / f"{cid}.duckdb"
+        if md5 and known.get(cid, {}).get("md5") == md5 and target.exists():
+            continue  # hash-equal AND file present — same guard as parquets
+        kdir.mkdir(parents=True, exist_ok=True)  # lazy mkdir
+        sidecar = kdir / f"{cid}.duckdb.verify.tmp"
+        try:
+            stream_download(
+                entry.get("url") or f"/api/knowledge/artifacts/{cid}/download",
+                str(sidecar),
+            )
+            if md5 and _file_md5(sidecar) != md5:
+                actual = _file_md5(sidecar)
+                raise ValueError(f"hash mismatch: expected {md5[:12]}, got {actual[:12]}")
+            os.replace(sidecar, target)
+            known[cid] = {"md5": md5, "size_bytes": entry.get("size_bytes", 0)}
+            result.knowledge_updated += 1
+        except Exception as exc:
+            result.errors.append({"stage": "knowledge_artifacts", "corpus_id": cid, "error": str(exc)})
+        finally:
+            sidecar.unlink(missing_ok=True)
+    if kdir.exists():
+        for f in sorted(kdir.glob("*.duckdb")):
+            if f.stem in listed:
+                continue
+            f.unlink(missing_ok=True)
+            known.pop(f.stem, None)
+            result.knowledge_removed += 1
+
+
 def _is_valid_parquet(path: Path) -> bool:
     """Cheap structural check — parquet files begin and end with `PAR1`.
 
@@ -888,9 +939,9 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path) -> None:
         # Existing user-created BASE TABLEs we must not shadow with views.
         try:
             existing_tables = {
-                row[0] for row in conn.execute(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_type='BASE TABLE'"
+                row[0]
+                for row in conn.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_type='BASE TABLE'"
                 ).fetchall()
             }
         except Exception:
@@ -898,9 +949,7 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path) -> None:
 
         # Drop all current views so the rebuild is from a clean slate.
         try:
-            views = conn.execute(
-                "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
-            ).fetchall()
+            views = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'").fetchall()
             for (view_name,) in views:
                 conn.execute(f'DROP VIEW IF EXISTS "{view_name}"')
         except Exception:
@@ -918,10 +967,7 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path) -> None:
                     continue
                 abs_path = str(pq_file.resolve())
                 try:
-                    conn.execute(
-                        f'CREATE VIEW "{view_name}" AS '
-                        f"SELECT * FROM read_parquet('{abs_path}')"
-                    )
+                    conn.execute(f"CREATE VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{abs_path}')")
                 except duckdb.Error:
                     continue
     finally:
