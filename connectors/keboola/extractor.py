@@ -378,20 +378,18 @@ def _read_last_sync_for_tc(tc: Dict[str, Any]):
                 return None
         return injected
 
-    # Direct DB read — same-process fallback only.
+    # Direct DB read — same-process fallback only. Routed through the
+    # backend-aware factory (src.repositories.sync_state_repo) so a
+    # Postgres-backed instance reads the real sync_state row instead of an
+    # always-empty DuckDB one (get_system_db() is DuckDB-only).
     try:
-        from src.db import get_system_db
-        from src.repositories.sync_state import SyncStateRepository
+        from src.repositories import sync_state_repo
 
-        conn = get_system_db()
-        try:
-            repo = SyncStateRepository(conn)
-            state = repo.get_table_state(tc.get("id") or tc.get("name"))
-            if not state or state.get("status") == "error":
-                return None
-            return state.get("last_sync")
-        finally:
-            conn.close()
+        repo = sync_state_repo()
+        state = repo.get_table_state(tc.get("id") or tc.get("name"))
+        if not state or state.get("status") == "error":
+            return None
+        return state.get("last_sync")
     except Exception as e:
         logger.warning(
             "_read_last_sync_for_tc fallback failed for %s (%s); treating as first sync",
@@ -964,6 +962,21 @@ def compute_exit_code(stats: Dict[str, Any], total: int) -> int:
     return 2
 
 
+def _registered_keboola_tables() -> List[Dict[str, Any]]:
+    """Read Keboola rows from ``table_registry`` via the backend-aware factory.
+
+    Standalone-entrypoint helper for the ``__main__`` block below — reachable
+    from the ``extract`` one-shot service in ``docker-compose.yml``, which
+    runs ``python -m connectors.keboola.extractor`` directly (outside the
+    app's request-scoped sync path). Routes through ``table_registry_repo()``
+    so a Postgres-backed instance reads the real registry instead of an
+    always-empty DuckDB one (``get_system_db()`` is DuckDB-only).
+    """
+    from src.repositories import table_registry_repo
+
+    return table_registry_repo().list_by_source("keboola")
+
+
 if __name__ == "__main__":
     """Standalone: reads config from env + table_registry, runs extraction.
 
@@ -1005,15 +1018,7 @@ if __name__ == "__main__":
         exit(1)
 
     # Read table list from registry
-    from src.db import get_system_db
-    from src.repositories.table_registry import TableRegistryRepository
-
-    sys_conn = get_system_db()
-    try:
-        repo = TableRegistryRepository(sys_conn)
-        tables = repo.list_by_source("keboola")
-    finally:
-        sys_conn.close()
+    tables = _registered_keboola_tables()
 
     if not tables:
         logger.warning("No Keboola tables registered in table_registry")
