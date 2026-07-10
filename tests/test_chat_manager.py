@@ -1702,3 +1702,50 @@ def test_reaper_gcs_dead_sessions(manager: ChatManager):
         assert s.id not in manager._live
 
     asyncio.run(_run())
+
+
+def test_spawn_agnes_server_falls_back_to_internal_url(manager: ChatManager, tmp_path, monkeypatch):
+    """Plain-HTTP deployments keep SERVER_URL unset (or unusable) and point
+    the sandbox data rails at AGNES_INTERNAL_URL instead."""
+    monkeypatch.delenv("SERVER_URL", raising=False)
+    monkeypatch.setenv("AGNES_INTERNAL_URL", "http://10.0.0.5:8000")
+    monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "tok")
+
+    captured = {}
+
+    async def fake_spawn(**kw):
+        captured.update(kw)
+        return FakeHandle()
+
+    manager._provider.spawn = fake_spawn
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        sess = manager._repo.get_session(s.id)
+        await manager._spawn_runner(sess, tmp_path)
+
+    asyncio.run(_run())
+
+    assert captured["env"]["AGNES_SERVER"] == "http://10.0.0.5:8000"
+
+
+def test_agnes_server_url_resolution_chain(monkeypatch):
+    """SERVER_URL → AGNES_INTERNAL_URL → loopback; the same chain feeds both
+    the sandbox env (AGNES_SERVER) and the workspace seed (WorkdirManager)."""
+    from app.chat.manager import agnes_server_url
+
+    monkeypatch.setenv("SERVER_URL", "https://agnes.example.com/")
+    monkeypatch.setenv("AGNES_INTERNAL_URL", "http://10.0.0.5:8000")
+    assert agnes_server_url() == "https://agnes.example.com"
+
+    monkeypatch.delenv("SERVER_URL", raising=False)
+    assert agnes_server_url() == "http://10.0.0.5:8000"
+
+    monkeypatch.delenv("AGNES_INTERNAL_URL", raising=False)
+    assert agnes_server_url() == "http://127.0.0.1:8000"
+
+    # Empty string is "unset", not a value — .env files with SERVER_URL= must
+    # not produce an empty rails URL.
+    monkeypatch.setenv("SERVER_URL", "")
+    monkeypatch.setenv("AGNES_INTERNAL_URL", "http://10.0.0.5:8000")
+    assert agnes_server_url() == "http://10.0.0.5:8000"
