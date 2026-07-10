@@ -13,8 +13,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
+- The cloud-chat workspace seed (`WorkdirManager.server_url`) now resolves its
+  server URL through the same fallback chain as the sandbox data rails
+  (`SERVER_URL` → `AGNES_INTERNAL_URL` → loopback) via the new
+  `agnes_server_url()` helper, so plain-HTTP deployments that use
+  `AGNES_INTERNAL_URL` get a working workspace seed too. `SERVER_URL`,
+  `AGNES_BASE_URL`, and the previously undocumented `AGNES_INTERNAL_URL` are
+  now documented in `docs/CONFIGURATION.md`.
 
 ### Fixed
+- Setting `SERVER_URL` (or `AGNES_BASE_URL`) to a plain-HTTP, non-localhost
+  URL — the natural move on a `tls_mode=none` deployment — no longer crashes
+  `create_app()` in a boot loop. The MCP SDK rejects such a URL as OAuth
+  issuer (RFC 8414 requires HTTPS); the streamable MCP connector at
+  `/api/mcp/http` now degrades instead (loud ERROR log, connector + its OAuth
+  discovery/consent routes skipped) and the rest of the app boots normally.
 
 ### Removed
 

@@ -34,6 +34,25 @@ _PRICE_OUT_PER_MTOK = 15.0
 _DAILY_CACHE_TTL_SEC = 60
 
 
+def agnes_server_url() -> str:
+    """Server URL the chat sandbox and the seeded workspace use to reach Agnes.
+
+    Resolution order — first non-empty wins:
+
+    1. ``SERVER_URL`` — the deployment's public URL.
+    2. ``AGNES_INTERNAL_URL`` — data-rails-only override for deployments that
+       cannot (or don't want to) set ``SERVER_URL``; it feeds only this chain,
+       never OAuth issuers or discovery metadata.
+    3. Loopback — local dev.
+
+    Feeds both the sandbox env (``AGNES_SERVER``, read by the agnes CLI) and
+    the workspace seed (``WorkdirManager.server_url`` in app/main.py) so the
+    two rails can never drift apart again.
+    """
+    url = os.environ.get("SERVER_URL") or os.environ.get("AGNES_INTERNAL_URL") or "http://127.0.0.1:8000"
+    return url.rstrip("/")
+
+
 class ConcurrencyCapHit(Exception):
     """Raised when a user already has the maximum allowed active sessions."""
 
@@ -662,14 +681,13 @@ class ChatManager:
             # AGNES_SERVER (cli/config.py) — the previous AGNES_API had no
             # consumer, so `agnes catalog`/`query`/… silently fell back to
             # http://localhost:8000 and could never reach the server. The
-            # sandbox is a remote microVM, so this MUST be a publicly
-            # reachable URL: prefer SERVER_URL (the deployment's public URL,
-            # same value WorkdirManager seeds into the workspace), falling
-            # back to AGNES_INTERNAL_URL then loopback. Operators running
-            # cloud chat must set SERVER_URL for the data rails to work.
-            "AGNES_SERVER": (
-                os.environ.get("SERVER_URL") or os.environ.get("AGNES_INTERNAL_URL") or "http://127.0.0.1:8000"
-            ),
+            # sandbox is a remote microVM, so this MUST be a reachable URL:
+            # prefer SERVER_URL (the deployment's public URL, same value
+            # WorkdirManager seeds into the workspace), falling back to
+            # AGNES_INTERNAL_URL then loopback — see agnes_server_url().
+            # Operators running cloud chat must set one of the two for the
+            # data rails to work.
+            "AGNES_SERVER": agnes_server_url(),
             "AGNES_SESSION_ID": session.id,
             "AGNES_USER_EMAIL": session.user_email,
             "AGNES_DAILY_BUDGET_USD": str(self._config.daily_anthropic_spend_usd),
