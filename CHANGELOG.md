@@ -24,6 +24,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+- Schema v87: `ref` column added to `marketplace_registry` (DuckDB `_v86_to_v87` + Alembic `0034_marketplace_ref_pin_v87`)
+
 ## [0.74.33] - 2026-07-10
 
 ### Fixed
