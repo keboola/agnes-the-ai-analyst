@@ -62,6 +62,7 @@ def test_installs_new_wheel_and_writes_marker(tmp_path, monkeypatch):
 def test_skips_already_installed_wheel(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr("connectors.mcp.wheel_bootstrap.subprocess.run", _fake_run_factory(calls))
+    monkeypatch.setattr("connectors.mcp.wheel_bootstrap._distribution_present", lambda _: True)
     wheels = tmp_path / "mcp" / "wheels"
     wheels.mkdir(parents=True)
     (wheels / "a-1.whl").write_bytes(b"AAA")
@@ -75,6 +76,42 @@ def test_skips_already_installed_wheel(tmp_path, monkeypatch):
     (wheels / "a-1.whl").write_bytes(b"BBB")
     assert install_operator_wheels(tmp_path) == ["a-1.whl"]
     assert len(calls) == 1
+
+
+def test_reinstalls_when_marker_matches_but_distribution_is_gone(tmp_path, monkeypatch):
+    """Container recreate: the marker (persistent /data volume) survives, the
+    ``pip install --user`` target (ephemeral container FS) does not. A
+    hash-matching marker alone must NOT skip the install — otherwise every
+    recreate after the first successful boot leaves the stdio command
+    missing and the source fails with ``[Errno 2] No such file or directory``.
+    """
+    calls = []
+    monkeypatch.setattr("connectors.mcp.wheel_bootstrap.subprocess.run", _fake_run_factory(calls))
+    monkeypatch.setattr("connectors.mcp.wheel_bootstrap._distribution_present", lambda _: False)
+    wheels = tmp_path / "mcp" / "wheels"
+    wheels.mkdir(parents=True)
+    whl = "some_mcp-1.0-py3-none-any.whl"
+    (wheels / whl).write_bytes(b"fake-wheel-bytes")
+    install_operator_wheels(tmp_path)
+    assert len(calls) == 1
+    calls.clear()
+
+    # Same marker, same wheel content, but the distribution vanished with
+    # the old container filesystem → must reinstall, not skip.
+    assert install_operator_wheels(tmp_path) == [whl]
+    assert len(calls) == 1
+
+
+def test_distribution_present_checks_real_metadata():
+    from connectors.mcp.wheel_bootstrap import _distribution_present
+
+    # pytest is installed in the test venv; wheel filenames carry the dist
+    # name as the first dash-separated segment.
+    assert _distribution_present("pytest-8.0.0-py3-none-any.whl") is True
+    # Underscore escaping in wheel filenames must resolve to the dashed
+    # distribution name (PEP 427 escaping).
+    assert _distribution_present("typing_extensions-4.0-py3-none-any.whl") is True
+    assert _distribution_present("definitely_not_installed_xyz-1.0-py3-none-any.whl") is False
 
 
 def test_failing_wheel_is_fail_soft_and_not_marked(tmp_path, monkeypatch):
