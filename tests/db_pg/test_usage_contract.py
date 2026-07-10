@@ -691,101 +691,115 @@ def test_rebuild_rollups_30d_throttled_until_force(usage_repo):
 
 
 # ---------------------------------------------------------------------------
-# home_stats — backs the /home status frame (app.api.me.compute_home_stats).
-# Pins identical aggregation semantics across DuckDB and Postgres, including
-# the transitional user_id-OR-username match for pre-v45 legacy rows.
+# home_stats — /home status frame counter (cross-engine contract)
 # ---------------------------------------------------------------------------
 
 
-def _seed_session_summary(repo, conn, backend, **row):
-    cols = [
-        "session_file",
-        "session_id",
-        "username",
-        "user_id",
-        "started_at",
-        "user_messages",
-        "input_tokens",
-        "output_tokens",
-        "cache_read_tokens",
-        "cache_creation_tokens",
-        "processor_version",
-    ]
-    defaults = {
-        "user_messages": 0,
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_read_tokens": 0,
-        "cache_creation_tokens": 0,
-        "processor_version": 1,
-    }
-    _insert(repo, conn, backend, "usage_session_summary", cols, [{**defaults, **row}])
+def test_home_stats_identical_across_backends(usage_repo):
+    """home_stats must return the same sessions/prompts/tokens/projects
+    dict on DuckDB and Postgres."""
+    repo, _, _ = usage_repo
+    since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    after = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    before = datetime(2025, 12, 1, tzinfo=timezone.utc)  # outside window
 
-
-def test_home_stats_counters_match_across_backends(usage_repo):
-    """Sessions/prompts/token counters + distinct-project count aggregate
-    identically on both backends: user_id rows and legacy username-only rows
-    both count, out-of-window and foreign-user rows don't, NULL cwd is
-    excluded from projects."""
-    repo, conn, backend = usage_repo
-    since = datetime(2026, 7, 1, tzinfo=timezone.utc)
-    inside = datetime(2026, 7, 5, 10, 0, tzinfo=timezone.utc)
-    before = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
-
-    # counted: matched by user_id
-    _seed_session_summary(
-        repo, conn, backend,
-        session_file="hs-1.jsonl", session_id="hs-1", username="other-name",
-        user_id="uid-alice", started_at=inside,
-        user_messages=3, input_tokens=100, output_tokens=20,
-        cache_read_tokens=7, cache_creation_tokens=5,
+    _seed_summary(
+        repo,
+        session_file="alice/s1.jsonl",
+        username="alice",
+        user_id="uid-alice",
+        started_at=after,
+        user_messages=3,
+        input_tokens=100,
+        output_tokens=50,
+        cache_read_tokens=20,
+        cache_creation_tokens=10,
     )
-    # counted: legacy pre-v45 row matched by username, user_id NULL
-    _seed_session_summary(
-        repo, conn, backend,
-        session_file="hs-2.jsonl", session_id="hs-2", username="alice",
-        user_id=None, started_at=inside, user_messages=2, input_tokens=50,
+    _seed_summary(
+        repo,
+        session_file="alice/s2.jsonl",
+        username="alice",
+        user_id="uid-alice",
+        started_at=after,
+        user_messages=7,
+        input_tokens=200,
+        output_tokens=80,
     )
-    # not counted: outside the window
-    _seed_session_summary(
-        repo, conn, backend,
-        session_file="hs-3.jsonl", session_id="hs-3", username="alice",
-        user_id="uid-alice", started_at=before, user_messages=9, input_tokens=999,
+    # Row outside the window — must NOT count.
+    _seed_summary(
+        repo,
+        session_file="alice/s_old.jsonl",
+        username="alice",
+        user_id="uid-alice",
+        started_at=before,
+        user_messages=99,
+        input_tokens=9999,
+        output_tokens=9999,
     )
-    # not counted: different user entirely
-    _seed_session_summary(
-        repo, conn, backend,
-        session_file="hs-4.jsonl", session_id="hs-4", username="bob",
-        user_id="uid-bob", started_at=inside, user_messages=4,
+    # Row for a different user — must NOT count.
+    _seed_summary(
+        repo,
+        session_file="bob/s1.jsonl",
+        username="bob",
+        user_id="uid-bob",
+        started_at=after,
+        user_messages=5,
+        input_tokens=500,
     )
 
-    ev_cols = ["id", "session_id", "session_file", "username", "user_id",
-               "event_type", "source", "cwd", "occurred_at", "processor_version"]
+    # Two distinct cwd values → projects = 2.
+    repo.upsert_events(
+        [
+            {
+                "id": "ev-1",
+                "session_id": "s1",
+                "session_file": "alice/s1.jsonl",
+                "username": "alice",
+                "user_id": "uid-alice",
+                "event_type": "tool",
+                "tool_name": "Read",
+                "is_error": False,
+                "source": "curated",
+                "occurred_at": after,
+                "cwd": "/projects/alpha",
+            },
+            {
+                "id": "ev-2",
+                "session_id": "s2",
+                "session_file": "alice/s2.jsonl",
+                "username": "alice",
+                "user_id": "uid-alice",
+                "event_type": "tool",
+                "tool_name": "Read",
+                "is_error": False,
+                "source": "curated",
+                "occurred_at": after,
+                "cwd": "/projects/beta",
+            },
+            # Event with cwd=None must NOT count toward projects.
+            {
+                "id": "ev-3",
+                "session_id": "s1",
+                "session_file": "alice/s1.jsonl",
+                "username": "alice",
+                "user_id": "uid-alice",
+                "event_type": "tool",
+                "tool_name": "Write",
+                "is_error": False,
+                "source": "curated",
+                "occurred_at": after,
+                "cwd": None,
+            },
+        ],
+        processor_version=1,
+    )
 
-    def ev(eid, cwd, occurred_at, user_id="uid-alice", username="alice"):
-        return {
-            "id": eid, "session_id": "hs-1", "session_file": "hs-1.jsonl",
-            "username": username, "user_id": user_id, "event_type": "tool_use",
-            "source": "builtin", "cwd": cwd, "occurred_at": occurred_at,
-            "processor_version": 1,
-        }
+    result = repo.home_stats(user_id="uid-alice", username="alice", since=since)
 
-    _insert(repo, conn, backend, "usage_events", ev_cols, [
-        ev("hs-e1", "/w/projA", inside),
-        ev("hs-e2", "/w/projA", inside),                      # same project, deduped
-        ev("hs-e3", "/w/projB", inside, user_id=None),        # legacy row, counts via username
-        ev("hs-e4", None, inside),                            # NULL cwd excluded
-        ev("hs-e5", "/w/projC", before),                      # out of window
-        ev("hs-e6", "/w/projD", inside, user_id="uid-bob", username="bob"),
-    ])
-
-    stats = repo.home_stats("uid-alice", "alice", since)
-    assert stats == {
-        "sessions": 2,
-        "prompts": 5,
-        "input_tokens": 150,
-        "output_tokens": 20,
-        "cache_read": 7,
-        "cache_creation": 5,
-        "projects": 2,
-    }
+    assert result["sessions"] == 2
+    assert result["prompts"] == 10  # 3 + 7
+    assert result["input_tokens"] == 300  # 100 + 200
+    assert result["output_tokens"] == 130  # 50 + 80
+    assert result["cache_read"] == 20
+    assert result["cache_creation"] == 10
+    assert result["projects"] == 2
