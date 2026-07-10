@@ -23,6 +23,7 @@ def _make_duckdb_repos(tmp_path):
     from src.repositories.user_groups import UserGroupsRepository
     from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.memory_domains import MemoryDomainsRepository
     from src.repositories.users import UserRepository
 
     conn = duckdb.connect(str(tmp_path / "duck.duckdb"))
@@ -31,6 +32,7 @@ def _make_duckdb_repos(tmp_path):
         "groups": UserGroupsRepository(conn),
         "members": UserGroupMembersRepository(conn),
         "grants": ResourceGrantsRepository(conn),
+        "domains": MemoryDomainsRepository(conn),
         "users": UserRepository(conn),
     }, conn
 
@@ -77,12 +79,14 @@ def _make_pg_repos(pg_engine, monkeypatch):
     from src.repositories.user_groups_pg import UserGroupsPgRepository
     from src.repositories.user_group_members_pg import UserGroupMembersPgRepository
     from src.repositories.resource_grants_pg import ResourceGrantsPgRepository
+    from src.repositories.memory_domains_pg import MemoryDomainsPgRepository
     from src.repositories.users_pg import UsersPgRepository
 
     return {
         "groups": UserGroupsPgRepository(engine),
         "members": UserGroupMembersPgRepository(engine),
         "grants": ResourceGrantsPgRepository(engine),
+        "domains": MemoryDomainsPgRepository(engine),
         "users": UsersPgRepository(engine),
     }, None
 
@@ -321,3 +325,81 @@ def test_system_group_rename_raises(rbac_repos):
     assert admin is not None
     with pytest.raises(SystemGroupProtected):
         groups.update(admin["id"], name="Hacked")
+
+
+def test_list_group_names_for_user_returns_names_not_ids(rbac_repos):
+    """``list_group_names_for_user`` — the repo-routed equivalent of the raw
+    ``SELECT g.name FROM user_group_members m JOIN user_groups g ...`` query
+    that ``app.api.memory._effective_groups`` used to run on the always-DuckDB
+    connection. Same names, either engine."""
+    repos, _, _ = rbac_repos
+    users = repos["users"]
+    groups = repos["groups"]
+    members = repos["members"]
+
+    users.create(id="u-names", email="names@example.com", name="Names")
+    g1 = groups.create(name="grp-alpha", created_by="admin@x.com")
+    g2 = groups.create(name="grp-beta", created_by="admin@x.com")
+    members.add_member("u-names", g1["id"], source="admin")
+    members.add_member("u-names", g2["id"], source="admin")
+
+    names = members.list_group_names_for_user("u-names")
+    assert set(names) == {"grp-alpha", "grp-beta"}
+
+
+def test_list_group_names_for_user_empty_for_unknown_user(rbac_repos):
+    repos, _, _ = rbac_repos
+    members = repos["members"]
+    assert members.list_group_names_for_user("no-such-user") == []
+
+
+def test_list_resource_ids_for_user_returns_distinct_grants(rbac_repos):
+    """``list_resource_ids_for_user`` — the repo-routed equivalent of the raw
+    ``SELECT DISTINCT rg.resource_id FROM resource_grants rg JOIN
+    user_group_members m ...`` query that
+    ``app.api.memory._caller_granted_memory_domains`` used to run on the
+    always-DuckDB connection. Same resource_id set, either engine, scoped by
+    both user membership and resource_type.
+
+    Uses real ``memory_domains`` rows (rather than made-up ids) because PG
+    enforces a per-type FK from ``resource_grants.resource_id_memory_domain``
+    to ``memory_domains.id`` (migration 0013) that DuckDB doesn't — a bare
+    string id would pass on DuckDB and 500 on PG.
+    """
+    repos, _, _ = rbac_repos
+    users = repos["users"]
+    groups = repos["groups"]
+    members = repos["members"]
+    grants = repos["grants"]
+    domains = repos["domains"]
+
+    users.create(id="u-grants", email="grants@example.com", name="Grants")
+    g1 = groups.create(name="grants-g1", created_by="admin@x.com")
+    g2 = groups.create(name="grants-g2", created_by="admin@x.com")
+    members.add_member("u-grants", g1["id"], source="admin")
+    members.add_member("u-grants", g2["id"], source="admin")
+
+    finance_id = domains.create(
+        name="Finance", slug="grants-finance", description=None,
+        icon=None, color=None, created_by="admin@x.com",
+    )
+    legal_id = domains.create(
+        name="Legal", slug="grants-legal", description=None,
+        icon=None, color=None, created_by="admin@x.com",
+    )
+
+    grants.create(group_id=g1["id"], resource_type="memory_domain", resource_id=finance_id)
+    # Same resource granted via a second group — must not duplicate in the result.
+    grants.create(group_id=g2["id"], resource_type="memory_domain", resource_id=finance_id)
+    grants.create(group_id=g2["id"], resource_type="memory_domain", resource_id=legal_id)
+    # Different resource_type must not leak in.
+    grants.create(group_id=g1["id"], resource_type="marketplace_plugin", resource_id="mp/plugin")
+
+    ids = grants.list_resource_ids_for_user("u-grants", "memory_domain")
+    assert set(ids) == {finance_id, legal_id}
+
+
+def test_list_resource_ids_for_user_empty_when_no_membership(rbac_repos):
+    repos, _, _ = rbac_repos
+    grants = repos["grants"]
+    assert grants.list_resource_ids_for_user("no-such-user", "memory_domain") == []

@@ -24,10 +24,10 @@ from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
 from src.repositories import (
     data_packages_repo,
+    knowledge_repo,
     memory_domains_repo,
+    usage_repo,
 )
-from src.repositories.knowledge import KnowledgeRepository
-from src.repositories.usage import UsageRepository
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,6 @@ router = APIRouter(tags=["stack-views"])
 
 
 def _emit_view(
-    conn: duckdb.DuckDBPyConnection,
     *,
     event_type: str,
     user: dict,
@@ -43,7 +42,7 @@ def _emit_view(
     source: Optional[str],
 ) -> None:
     try:
-        UsageRepository(conn).emit_server_event(
+        usage_repo().emit_server_event(
             event_type=event_type,
             user_id=user["id"],
             username=user.get("email") or user["id"],
@@ -83,7 +82,7 @@ async def view_data_package(
     if not pkg:
         raise HTTPException(status_code=404, detail="data_package_not_found")
     _require_access(user, ResourceType.DATA_PACKAGE, pkg["id"], conn)
-    _emit_view(conn, event_type="data_package.view", user=user, slug=slug, source=source)
+    _emit_view(event_type="data_package.view", user=user, slug=slug, source=source)
     tables = repo.list_tables(pkg["id"])
     related_tools = repo.list_tools(pkg["id"])
     return {
@@ -123,11 +122,11 @@ async def view_memory_domain(
     if not dom:
         raise HTTPException(status_code=404, detail="memory_domain_not_found")
     _require_access(user, ResourceType.MEMORY_DOMAIN, dom["id"], conn)
-    _emit_view(conn, event_type="memory_domain.view", user=user, slug=slug, source=source)
+    _emit_view(event_type="memory_domain.view", user=user, slug=slug, source=source)
     item_summaries = repo.list_items_of_domain(dom["id"], limit=1000)
     # Hydrate item titles + is_required from the knowledge repo for the
     # drill-down — the junction's projection is intentionally minimal.
-    knowledge = KnowledgeRepository(conn)
+    knowledge = knowledge_repo()
     items: list = []
     for s in item_summaries:
         item = knowledge.get_by_id(s["id"])

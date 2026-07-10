@@ -574,6 +574,16 @@ class KnowledgePgRepository:
             ).first()
         return {"upvotes": int(row[0]), "downvotes": int(row[1])}
 
+    def get_votes_by_user(self, user_id: str) -> Dict[str, int]:
+        """``{item_id: vote}`` for every item the user has voted on. Mirrors
+        the DuckDB sibling."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text("SELECT item_id, vote FROM knowledge_votes WHERE user_id = :u"),
+                {"u": user_id},
+            ).all()
+        return {r[0]: r[1] for r in rows}
+
     # ----- dismissals (v46) -----
 
     def dismiss(self, user_id: str, item_id: str) -> None:

@@ -176,6 +176,23 @@ class TestKnowledgeRepository:
         assert len(results) == 1
         assert results[0]["id"] == "k1"
 
+    def test_get_votes_by_user(self, db_conn):
+        """Powers ``GET /api/memory/my-votes`` + the ``upvoted_by_me`` search
+        post-filter — both routed through the factory instead of a raw
+        ``conn.execute`` against ``knowledge_votes`` (#backend-split fix)."""
+        from src.repositories.knowledge import KnowledgeRepository
+        repo = KnowledgeRepository(db_conn)
+        repo.create(id="k1", title="A", content="a", category="c")
+        repo.create(id="k2", title="B", content="b", category="c")
+        repo.create(id="k3", title="C", content="c", category="c")
+        repo.vote("k1", "user1", 1)
+        repo.vote("k2", "user1", -1)
+        repo.vote("k3", "user2", 1)  # different user — excluded
+
+        votes = repo.get_votes_by_user("user1")
+        assert votes == {"k1": 1, "k2": -1}
+        assert repo.get_votes_by_user("no-such-user") == {}
+
 
 # ---- Audit ----
 

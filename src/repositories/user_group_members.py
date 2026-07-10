@@ -49,6 +49,23 @@ class UserGroupMembersRepository:
         ).fetchall()
         return [r[0] for r in rows]
 
+    def list_group_names_for_user(self, user_id: str) -> List[str]:
+        """Group ``name`` values (not ids) this user belongs to, any source.
+
+        Powers audience-filtering — callers build ``group:<name>`` tokens
+        against ``knowledge_items.audience``. Kept separate from
+        ``list_groups_with_meta_for_user`` (which returns full dict rows and
+        is ordered for display) since audience-filtering just needs the bare
+        name list, unordered.
+        """
+        rows = self.conn.execute(
+            """SELECT g.name FROM user_group_members m
+               JOIN user_groups g ON m.group_id = g.id
+               WHERE m.user_id = ?""",
+            [user_id],
+        ).fetchall()
+        return [r[0] for r in rows]
+
     def list_members_for_group(self, group_id: str) -> List[Dict[str, Any]]:
         """All users in a group, joined with users table for display data."""
         rows = self.conn.execute(

@@ -24,6 +24,22 @@ class UserGroupMembersPgRepository:
             ).all()
         return [r[0] for r in rows]
 
+    def list_group_names_for_user(self, user_id: str) -> List[str]:
+        """Group ``name`` values (not ids) this user belongs to, any source.
+
+        Mirrors the DuckDB sibling — same join, same (unordered) shape.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """SELECT g.name FROM user_group_members m
+                       JOIN user_groups g ON m.group_id = g.id
+                       WHERE m.user_id = :u"""
+                ),
+                {"u": user_id},
+            ).all()
+        return [r[0] for r in rows]
+
     def list_members_for_group(self, group_id: str) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
             rows = conn.execute(

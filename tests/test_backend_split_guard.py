@@ -136,10 +136,12 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     "app/api/mcp/tools_generator.py": {"MCPSourceRepository", "ToolRegistryRepository"},
     "app/api/mcp_per_table.py": {"TableRegistryRepository"},
     # mcp_user_secrets.py — migrated to mcp_sources_repo()/per_user_secrets_repo(); entry removed.
-    "app/api/memory.py": {"KnowledgeRepository"},
-    "app/api/memory_domains.py": {"KnowledgeRepository"},
+    # memory.py — mark_mandatory/mark_unmandatory/admin_get_item/domain markdown
+    # export migrated to knowledge_repo(); entry removed.
+    # memory_domains.py — add_item_to_domain migrated to knowledge_repo(); entry removed.
     # stack.py — _emit_event migrated to usage_repo(); entry removed.
-    "app/api/stack_views.py": {"KnowledgeRepository", "UsageRepository"},
+    # stack_views.py — _emit_view/view_memory_domain migrated to usage_repo()/
+    # knowledge_repo(); entry removed.
     "app/auth/access.py": {
         "ResourceGrantsRepository",
         "UserGroupMembersRepository",
