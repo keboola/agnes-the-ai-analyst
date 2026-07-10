@@ -141,6 +141,39 @@ async def store_corpus_file(
     )
 
 
+def store_corpus_bytes(corpus_id: str, filename: str, data: bytes) -> StoredFile:
+    """Store an in-memory blob content-addressed under ``corpus_id``.
+
+    Sync sibling of :func:`store_corpus_file` for bundle members already in
+    memory after archive extraction. Same layout (``<sha256><ext>``), size
+    cap, path-traversal neutralisation, and atomic ``.part`` write.
+
+    Raises:
+        ``HTTPException(413)`` when ``data`` exceeds ``MAX_UPLOAD_BYTES``.
+        ``HTTPException(400)`` for empty blobs.
+    """
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"file_too_large:max_{MAX_UPLOAD_BYTES}_bytes",
+        )
+    if not data:
+        raise HTTPException(status_code=400, detail="empty_upload")
+
+    ext = _safe_ext(filename)
+    digest = hashlib.sha256(data).hexdigest()
+    target = _corpus_dir(corpus_id) / f"{digest}{ext}"
+    if not target.exists():
+        tmp = target.with_suffix(target.suffix + ".part")
+        try:
+            tmp.write_bytes(data)
+            tmp.replace(target)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+    return StoredFile(sha256=digest, storage_path=str(target), size_bytes=len(data), ext=ext)
+
+
 def delete_corpus_file(storage_path: str) -> None:
     """Remove the blob at ``storage_path`` if it exists.
 
