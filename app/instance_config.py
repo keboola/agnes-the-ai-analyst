@@ -331,9 +331,13 @@ def get_instance_theme() -> str:
 
 def get_home_automode_visibility() -> bool:
     """Whether /home renders the "Step 3 — turn on auto-accept mode"
-    install-block. Auto-accept mode is the recommended middle ground
-    between default per-action prompting (slow) and full YOLO
-    (`--dangerously-skip-permissions`, broad blast radius).
+    install-block. /home recommends launching with
+    `claude --permission-mode auto`, whose classifier auto-approves
+    safe actions (file edits and safe Bash) so the setup script runs
+    mostly unattended while riskier commands can still prompt. The
+    broader-blast-radius YOLO flag (`--dangerously-skip-permissions`)
+    is no longer surfaced on /home — it stays documented as an
+    advanced option on /setup-advanced.
 
     Cautious-rollout instances can hide the section by setting
     ``AGNES_HOME_SHOW_AUTOMODE=0`` so users learn the permission flow
