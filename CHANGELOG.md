@@ -13,6 +13,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
+- Admin secrets/data-sources UX consolidation: Keboola project connect/browse/register/"Set as default"/"Rotate token" now live entirely on `/admin/data-sources`, removing the duplicate Keboola section from `/admin/datasource-credentials`. That page is retitled "Instance secrets" (Google Workspace + BigQuery only) and links back to `/admin/data-sources` for Keboola; `/admin/data-sources` gains a reciprocal link to Instance secrets.
 
 ### Fixed
 
