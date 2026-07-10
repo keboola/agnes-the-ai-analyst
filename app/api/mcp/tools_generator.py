@@ -17,12 +17,11 @@ import json
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
-import duckdb
 from mcp.server.fastmcp import FastMCP
 
 from connectors.mcp.client import call_tool_async
-from src.repositories.mcp_sources import MCPSourceRepository
-from src.repositories.tool_registry import PASSTHROUGH, ToolRegistryRepository
+from src.repositories import mcp_sources_repo, tool_registry_repo
+from src.repositories.tool_registry import PASSTHROUGH
 
 logger = logging.getLogger(__name__)
 
@@ -129,17 +128,14 @@ def _make_passthrough_callable(
     return fn
 
 
-def register_passthrough_tools(
-    mcp_instance: FastMCP,
-    system_conn: duckdb.DuckDBPyConnection,
-) -> List[str]:
+def register_passthrough_tools(mcp_instance: FastMCP) -> List[str]:
     """Register every enabled passthrough tool from ``tool_registry`` on ``mcp_instance``.
 
     Returns the list of exposed tool names that were registered (useful for
     logging and tests).
     """
-    sources_repo = MCPSourceRepository(system_conn)
-    tools_repo = ToolRegistryRepository(system_conn)
+    sources_repo = mcp_sources_repo()
+    tools_repo = tool_registry_repo()
 
     registered: List[str] = []
     for tool in tools_repo.list_by_mode(PASSTHROUGH, enabled_only=True):
