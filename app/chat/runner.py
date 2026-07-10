@@ -141,6 +141,10 @@ def _agnes_mcp_servers() -> dict:
         "AGNES_SERVER": server,
         "AGNES_TOKEN": token,
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        # HOME is required for `agnes mcp` config-dir resolution (expanduser
+        # fallback). Forward it explicitly since SDK env inheritance across the
+        # claude-CLI spawn hop is not guaranteed.
+        "HOME": os.environ.get("HOME", "/root"),
     }
     if session_id := os.environ.get("AGNES_SESSION_ID", "").strip():
         env["AGNES_SESSION_ID"] = session_id
@@ -496,7 +500,7 @@ async def _real_agent_loop(
 async def amain() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--session-id", required=True)
-    args = parser.parse_args()
+    parser.parse_args()
 
     workdir = Path(os.environ.get("AGNES_WORKDIR", os.getcwd()))
 
