@@ -29,6 +29,21 @@ services:
       # + "Group 'data-ops' not found" log noise. The bare-VM deployment
       # path leaves this unset and continues to scan + log normally.
       - AGNES_SKIP_LEGACY_COLLECTOR=1
+      # Pin the CA bundle for the statically linked libcurl inside DuckDB
+      # extensions. Its own CA discovery is fragile under fd pressure and
+      # intermittently fails new TLS handshakes with CURL error 77 while
+      # warm connections keep working; an explicit path removes the
+      # discovery step. Guarded by tests/test_compose_hardening.py.
+      - CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    # The 1024-fd default is too small for a server juggling ~100 remote
+    # tables, marketplace git clones, and parquet handles; fd exhaustion
+    # during bursts makes libcurl's CA-file open fail with the same
+    # CURL error 77 signature as a missing bundle.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/api/health"]
       interval: 30s
@@ -90,6 +105,12 @@ services:
       # ever invokes the collector module from this container directly, we want
       # the same skip behavior. Bare-VM path leaves this unset.
       - AGNES_SKIP_LEGACY_COLLECTOR=1
+    # Same fd headroom as the app service — the scheduler fans out
+    # concurrent HTTP jobs and inherits the same 1024-fd default.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     depends_on:
       app:
         condition: service_healthy

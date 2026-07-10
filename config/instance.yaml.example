@@ -211,6 +211,11 @@ data_source:
     #                                    # Dry-run check before running; exceeding -> registration / sync
     #                                    # rejected. Default 10 GiB (10737418240). Set 0 to disable.
     #                                    # null falls through to default. Configurable via /admin/server-config UI.
+    # materialize_fetch_timeout_seconds: 900
+    #                                    # Watchdog (seconds) on the COPY's client-side result download
+    #                                    # during materialize — the phase the extension's query timeout
+    #                                    # does not cover. On expiry the connection is interrupted and the
+    #                                    # COPY retried once on a fresh session. Default 900. Set 0 to disable.
     # query_timeout_ms: 600000
     #                                    # DuckDB BigQuery extension query timeout (milliseconds).
     #                                    # Applied via `SET bq_query_timeout_ms` after every LOAD bigquery

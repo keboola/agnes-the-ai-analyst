@@ -10,6 +10,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- Compose hardening for the app and scheduler services: `CURL_CA_BUNDLE`/`SSL_CERT_FILE` pinned to the image's CA bundle (the statically linked libcurl inside DuckDB extensions intermittently failed new TLS handshakes with `CURL error 77` while its own CA discovery raced fd pressure) and the file-descriptor soft limit raised from the 1024 default to 65536 (fd exhaustion during bursts produces the same error signature).
+
+### Fixed
+
+- Materialized BQ syncs no longer hang indefinitely when the result download wedges. The BQ jobs API computes results in seconds, but the extension's client-side fetch could stall on a dead HTTP stream — the extension's own query timeout covers the job phase only — leaving a wedged COPY holding the per-table lock for hours (observed live: a 2 h stall for a result a retry then fetched in ~70 s). The COPY now runs under a fetch-phase watchdog (`data_source.bigquery.materialize_fetch_timeout_seconds`, default 900 s, `0` disables) that interrupts the connection and retries once on a fresh session.
+- Orphaned DuckDB spill files (`duckdb_temp_storage_*`) left behind by hard process deaths are now swept at app startup (with a 5-minute age margin so live spill is never touched) — they previously accumulated as multi-GB dead weight in `{STATE_DIR}/duckdb-tmp` across incidents.
+
 ---
 
 ## [0.74.44] - 2026-07-10

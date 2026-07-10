@@ -153,6 +153,61 @@ _INIT_EXTRACT_LOCK = threading.Lock()
 _LOCK_TTL_DEFAULT_SECONDS: int = 86400  # 24h — overridable via materialize.lock_ttl_seconds
 
 
+class MaterializeFetchTimeoutError(Exception):
+    """The COPY's client-side result download exceeded the fetch timeout.
+
+    The BQ jobs API computes results in seconds; the production failure
+    mode is the extension's *download* of that result wedging on a dead
+    HTTP stream — the extension's own timeout covers the job phase only.
+    A wedged COPY holds the per-table lock and starves the schedule, so
+    the watchdog interrupts the connection and the caller retries once
+    on a fresh session."""
+
+    def __init__(self, subject: str, *, timeout_s: float):
+        self.subject = subject
+        self.timeout_s = timeout_s
+        super().__init__(
+            f"materialize fetch for {subject!r} exceeded {timeout_s}s "
+            "(client-side result download wedged) — connection interrupted"
+        )
+
+
+def _execute_interruptible(conn, sql: str, timeout_s: Optional[float]) -> None:
+    """Execute ``sql`` on ``conn``, interrupting it after ``timeout_s``.
+
+    ``timeout_s`` of ``None`` or ``<= 0`` disables the watchdog. The
+    watchdog calls ``conn.interrupt()`` from a daemon thread; DuckDB
+    aborts the running query, which surfaces here as an exception that
+    is re-raised as :class:`MaterializeFetchTimeoutError` (only when the
+    watchdog actually fired — an unrelated query error propagates as-is).
+    """
+    if not timeout_s or timeout_s <= 0:
+        conn.execute(sql)
+        return
+    fired = threading.Event()
+    done = threading.Event()
+
+    def _watchdog() -> None:
+        if not done.wait(timeout_s):
+            fired.set()
+            try:
+                conn.interrupt()
+            except Exception:  # pragma: no cover - interrupt is best-effort
+                pass
+
+    watchdog = threading.Thread(target=_watchdog, daemon=True, name="materialize-fetch-watchdog")
+    watchdog.start()
+    try:
+        conn.execute(sql)
+    except Exception as e:
+        if fired.is_set():
+            raise MaterializeFetchTimeoutError(sql[:80], timeout_s=timeout_s) from e
+        raise
+    finally:
+        done.set()
+        watchdog.join(timeout=1)
+
+
 class MaterializeInFlightError(Exception):
     """Raised when a per-table_id materialize is already running.
 
@@ -870,6 +925,7 @@ def materialize_query(
     bq,  # connectors.bigquery.access.BqAccess (untyped here to avoid circular import at type-check)
     output_dir: str,
     max_bytes: Optional[int] = None,
+    fetch_timeout_s: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Run `sql` through the DuckDB BigQuery extension and write the result
     to `<output_dir>/data/<table_id>.parquet` atomically.
@@ -916,6 +972,11 @@ def materialize_query(
         output_dir: Connector root, e.g. `/data/extracts/bigquery`.
             Parquet lands in `<output_dir>/data/<table_id>.parquet`.
         max_bytes: Optional cap on BQ bytes scanned. None or <= 0 disables.
+        fetch_timeout_s: Optional watchdog on the COPY's client-side result
+            download (the phase the extension's own timeout does not cover).
+            On expiry the connection is interrupted and the COPY retried
+            once on a fresh session; a second expiry raises
+            ``MaterializeFetchTimeoutError``. None or <= 0 disables.
 
     Returns:
         {"rows": int, "size_bytes": int, "query_mode": "materialized"}
@@ -982,29 +1043,51 @@ def materialize_query(
             # COPY through a BqAccess-managed session. The session has the BQ
             # extension loaded with a SECRET token; bigquery_query() reuses that
             # auth path against the billing_project for the jobs API call.
-            with bq.duckdb_session() as conn:
-                # Memory caps (memory_limit=2GB, threads=2,
-                # preserve_insertion_order=false) are applied uniformly
-                # on every pool acquire by ``apply_bq_session_settings``
-                # — see that function in ``connectors/bigquery/access.py``
-                # for the rationale and the empirical 2 GiB trace.
-                # Previously the SETs lived inline here, which only
-                # mutated whichever pool entry was acquired for this
-                # materialize call — leaving the other ~3 pool entries
-                # at the 80%-of-host default and re-opening the OOM
-                # window for any analyst query that landed on them.
-                attached = {r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()}
-                if "bq" not in attached:
-                    conn.execute(f"ATTACH 'project={bq.projects.data}' AS bq (TYPE bigquery, READ_ONLY)")
+            def _copy_attempt() -> int:
+                with bq.duckdb_session() as conn:
+                    # Memory caps (memory_limit=2GB, threads=2,
+                    # preserve_insertion_order=false) are applied uniformly
+                    # on every pool acquire by ``apply_bq_session_settings``
+                    # — see that function in ``connectors/bigquery/access.py``
+                    # for the rationale and the empirical 2 GiB trace.
+                    # Previously the SETs lived inline here, which only
+                    # mutated whichever pool entry was acquired for this
+                    # materialize call — leaving the other ~3 pool entries
+                    # at the 80%-of-host default and re-opening the OOM
+                    # window for any analyst query that landed on them.
+                    attached = {r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()}
+                    if "bq" not in attached:
+                        conn.execute(f"ATTACH 'project={bq.projects.data}' AS bq (TYPE bigquery, READ_ONLY)")
 
-                try:
                     safe_path = _escape_sql_string_literal(str(tmp_path))
-                    conn.execute(f"COPY ({wrapped_sql}) TO '{safe_path}' (FORMAT PARQUET)")
-                    rows = conn.execute(f"SELECT count(*) FROM read_parquet('{safe_path}')").fetchone()[0]
-                except Exception:
+                    # The watchdog covers the client-side result download —
+                    # the phase the extension's own timeout does not.
+                    _execute_interruptible(
+                        conn,
+                        f"COPY ({wrapped_sql}) TO '{safe_path}' (FORMAT PARQUET)",
+                        fetch_timeout_s,
+                    )
+                    return conn.execute(f"SELECT count(*) FROM read_parquet('{safe_path}')").fetchone()[0]
+
+            try:
+                try:
+                    rows = _copy_attempt()
+                except MaterializeFetchTimeoutError:
+                    # One retry on a FRESH session: the wedge is a dead HTTP
+                    # stream, not the query — a rerun typically finishes in
+                    # normal time while the first attempt hung indefinitely.
+                    logger.warning(
+                        "Materialize fetch for %s exceeded %ss — interrupted; retrying once on a fresh session",
+                        table_id,
+                        fetch_timeout_s,
+                    )
                     if tmp_path.exists():
                         tmp_path.unlink()
-                    raise
+                    rows = _copy_attempt()
+            except Exception:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+                raise
 
             # Compute the parquet hash inline before the atomic swap. The caller used
             # to re-read the file in `_run_materialized_pass` to hash it via
