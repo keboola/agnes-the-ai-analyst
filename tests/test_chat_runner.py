@@ -268,6 +268,9 @@ def test_agnes_mcp_servers_builds_stdio_config(monkeypatch):
     assert server["env"]["AGNES_TOKEN"] == "jwt-token"
     assert server["env"]["AGNES_SESSION_ID"] == "chat_abc"
     assert "PATH" in server["env"]
+    # HOME is forwarded so `agnes mcp` can expanduser its config dir; env
+    # inheritance across the claude-CLI spawn hop is not guaranteed.
+    assert server["env"]["HOME"]
 
 
 def test_agnes_mcp_servers_empty_when_unconfigured(monkeypatch):
