@@ -44,6 +44,12 @@ def test_app_raises_nofile_ulimit():
     assert int(soft) >= 65536
 
 
+def test_scheduler_pins_curl_ca_bundle():
+    env = _env_dict(_service("scheduler"))
+    assert env.get("CURL_CA_BUNDLE") == CA_PATH
+    assert env.get("SSL_CERT_FILE") == CA_PATH
+
+
 def test_scheduler_raises_nofile_ulimit():
     ulimits = _service("scheduler").get("ulimits", {})
     nofile = ulimits.get("nofile")
