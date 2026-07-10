@@ -48,7 +48,19 @@ def validate_jwt_secret_or_raise() -> None:
 _SECRET_KEY_CACHE: Optional[str] = None
 
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_HOURS = 24  # 24 hours
+
+# Interactive web-login session lifetime. Single source of truth for both the
+# JWT `exp` (default in create_access_token) and the `access_token` cookie
+# max_age set by every login provider (google / email / password).
+#
+# Deliberate tradeoff: session JWTs (typ="session") are trusted purely off
+# signature + exp — pat_resolver does NO per-session DB lookup or revocation
+# for them (see app/auth/pat_resolver.py). So a 30-day session means a leaked
+# cookie stays valid 30 days; the only server-side kill switch is deactivating
+# the account (users.active). Accepted for login-persistence UX.
+SESSION_TOKEN_TTL_DAYS = 30
+ACCESS_TOKEN_EXPIRE_HOURS = SESSION_TOKEN_TTL_DAYS * 24  # 720 h = 30 days (default JWT exp)
+SESSION_COOKIE_MAX_AGE_SECONDS = SESSION_TOKEN_TTL_DAYS * 24 * 3600  # 2_592_000 s
 
 
 def _get_cached_secret_key() -> str:

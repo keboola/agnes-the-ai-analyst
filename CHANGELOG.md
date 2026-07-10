@@ -14,6 +14,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- Interactive web login sessions now persist for 30 days (JWT `exp` + `access_token` cookie `max_age`), up from 24 hours. Session JWTs remain non-revocable per-session — the only server-side kill switch is deactivating the account.
+
 ### Fixed
 
 ### Removed

@@ -11,7 +11,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 import duckdb
 
-from app.auth.jwt import create_access_token
+from app.auth.jwt import create_access_token, SESSION_COOKIE_MAX_AGE_SECONDS
 from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, is_local_dev_mode
 from app.auth.rate_limit import limiter as _rate_limiter
@@ -193,7 +193,7 @@ async def verify_magic_link_get(
     response = RedirectResponse(url=get_home_route(), status_code=302)
     response.set_cookie(
         key="access_token", value=jwt_token,
-        httponly=True, max_age=86400, samesite="lax",
+        httponly=True, max_age=SESSION_COOKIE_MAX_AGE_SECONDS, samesite="lax",
         secure=use_secure,
     )
     return response
