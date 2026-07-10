@@ -104,11 +104,9 @@ real problem.
    line argv entirely.
 
    NOTE: the heredoc below contains the literal PAT, so it lands in
-   this Claude Code session's transcript. `agnes init` auto-marks THIS
-   bootstrap session private, so `agnes push` skips its transcript —
-   no action needed from you for this step. `agnes init` also deletes
-   `~/.agnes/token` once it has consumed it. Use `/agnes-private` to mark
-   any OTHER sensitive session private later.
+   this Claude Code session's transcript — which `agnes push` uploads
+   to the server. The server generated the token so it is NOT a security
+   issue to have it here and share it back to the server.
 
    mkdir -p ~/.agnes && umask 077 && cat > ~/.agnes/token <<'AGNES_PAT'
 {token}
@@ -438,6 +436,7 @@ AGNES_PAT
 9) Restart Claude Code so every plugin, MCP server, and SessionStart hook installed above actually loads:
    Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same directory — the install dir confirmed in step 2 (`~/Desktop/WORKSPACE` on the default path, or whatever cwd the user explicitly accepted with 'install here').
    The next session boots with all marketplace plugins, every connector's keychain entries / OAuth grants, and the agnes-welcome + agnes-update SessionStart hooks active. This is the last action before the Confirm summary — once I'm back in Claude Code, setup is complete.
+   Before step 10 (Confirm): after all the steps and asks above (whatever the answers), give me a short recap of what was installed or was already present — CLI, workspace files, hooks, marketplace plugins, connectors — so the outcome is clear, then continue.
 
 10) Confirm:
    Tell me "BRAND workspace is ready" and summarize:

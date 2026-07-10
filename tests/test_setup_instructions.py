@@ -48,27 +48,25 @@ def test_render_setup_instructions_wires_all_placeholders():
 
 
 def test_init_step_warns_about_transcript_exposure():
-    """#580 Finding 1 / #753: the step that writes the raw PAT to
-    ~/.agnes/token must explicitly call out the transcript exposure (the
-    heredoc lands in the session transcript) and that `agnes init` deletes
-    the transient token file once consumed. Since #753, the copy no longer
-    tells the user to run `/agnes-private` THEMSELVES before pasting — that
-    was only a recommendation, easy to miss — it instead states that
-    `agnes init` auto-marks the bootstrap session private, and reserves
-    `/agnes-private` for any OTHER sensitive session.
+    """#580 Finding 1: the step that writes the raw PAT to ~/.agnes/token
+    must explicitly call out the transcript exposure — the heredoc lands in
+    the session transcript that `agnes push` uploads to the server. The NOTE
+    frames this as a non-issue: the server itself generated the token, so
+    having it in the transcript and sending it back to the same server is
+    not a security concern. (The `/agnes-private` guidance for OTHER
+    sensitive sessions lives in the step-4 tip, covered separately.)
     """
     from app.web.setup_instructions import _init_lines
 
     joined = "\n".join(_init_lines())
     assert "transcript" in joined.lower()
-    assert "/agnes-private" in joined
     assert "agnes push" in joined
-    # The deletion guarantee is documented inline so the user understands the
-    # transcript copy — not the on-disk file — is the residual risk.
+    # The heredoc target is documented inline so the user knows the transcript
+    # copy — not the on-disk file — is where the token lands.
     assert "~/.agnes/token" in joined
-    # #753: auto-private is now unconditional, not a user action to remember.
-    assert "auto-marks" in joined
-    assert "no action needed from you" in joined
+    # The reworded NOTE: server-generated token → not a security issue.
+    assert "server generated the token" in joined
+    assert "NOT a security" in joined
 
 
 def test_step4_tip_reflects_auto_private_of_bootstrap_session():
@@ -1211,3 +1209,84 @@ def test_step_9_restart_references_install_dir_not_hardcoded():
     # Step 9 still mentions 'install here' as the legacy synonym so
     # users who learned the old flow recognise it.
     assert "'install here'" in joined
+
+
+# ---------------------------------------------------------------------------
+# Change B — recap bridge line at the end of the restart-Claude step.
+# ---------------------------------------------------------------------------
+
+def test_restart_claude_step_ends_with_recap_before_confirm():
+    """The restart-Claude step (9) closes with a recap cue naming the
+    Confirm step (10). It intentionally overlaps `_finale_lines`' Confirm
+    summary as a short bridge — a plain-language outcome summary right
+    before the structured Confirm bullets."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    assert "Before step 10 (Confirm):" in joined
+    assert "short recap of what was installed or was already present" in joined
+    # The recap belongs to the restart step, so it lands after the step-9
+    # header and before the step-10 Confirm header.
+    recap_idx = joined.index("Before step 10 (Confirm):")
+    restart_idx = joined.index("9) Restart Claude Code")
+    confirm_idx = joined.index("10) Confirm:")
+    assert restart_idx < recap_idx < confirm_idx
+
+
+# ---------------------------------------------------------------------------
+# Change C — operator-authored custom_preamble injected at the TOP.
+# ---------------------------------------------------------------------------
+
+def test_custom_preamble_appears_first_above_cli_line():
+    """A non-empty `custom_preamble` is prepended above the
+    `Set up the … CLI` opening line (before the numbered steps)."""
+    from app.web.setup_instructions import resolve_lines
+
+    lines = resolve_lines("agnes.whl", custom_preamble="TRUST LINE ONE\nTRUST LINE TWO")
+    joined = "\n".join(lines)
+    # Preamble text present and lands before the CLI opener.
+    assert "TRUST LINE ONE" in joined
+    assert "TRUST LINE TWO" in joined
+    assert joined.index("TRUST LINE ONE") < joined.index("Set up the Agnes CLI")
+    # The very first rendered line is the preamble's first line.
+    assert lines[0] == "TRUST LINE ONE"
+
+
+def test_custom_preamble_substitutes_instance_brand():
+    """`{instance_brand}` inside the preamble is substituted by the
+    resolve_lines placeholder loop (just like the rest of the prompt)."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines(
+        "agnes.whl",
+        instance_brand="Foundry AI",
+        custom_preamble="TRUST LINE {instance_brand}",
+    ))
+    assert "TRUST LINE Foundry AI" in joined
+    assert "{instance_brand}" not in joined
+
+
+def test_empty_custom_preamble_is_byte_identical_to_no_arg():
+    """Empty `custom_preamble` (the default) must emit ZERO extra lines —
+    the rendered prompt is byte-identical to the no-arg call. Whitespace
+    stripping is the getter's job (`get_instance_custom_preamble` follows
+    the env>yaml>default pattern and `.strip()`s), so `resolve_lines`
+    itself only needs to treat the empty string as absent."""
+    from app.web.setup_instructions import resolve_lines
+
+    baseline = "\n".join(resolve_lines("agnes.whl"))
+    assert "\n".join(resolve_lines("agnes.whl", custom_preamble="")) == baseline
+
+
+def test_render_setup_instructions_forwards_custom_preamble():
+    """The string-rendering entry point threads `custom_preamble` through
+    to the resolver."""
+    from app.web.setup_instructions import render_setup_instructions
+
+    out = render_setup_instructions(
+        server_url="https://agnes.example.com",
+        token="T-CP",
+        wheel_filename="agnes-1.0-py3-none-any.whl",
+        custom_preamble="OPERATOR TRUST NOTE",
+    )
+    assert out.startswith("OPERATOR TRUST NOTE")

@@ -34,6 +34,7 @@ from app.instance_config import (
     get_instance_overview,
     get_instance_support,
     get_hidden_login_features,
+    get_instance_custom_preamble,
     get_instance_theme,
     get_custom_scripts,
 )
@@ -581,6 +582,7 @@ def _build_context(
             connector_manifest=_connector_manifest,
             instance_brand=get_instance_brand(),
             workspace_dir=get_workspace_dir_name(),
+            custom_preamble=get_instance_custom_preamble(),
         )
 
     ctx = {
