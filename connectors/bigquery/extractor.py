@@ -33,8 +33,9 @@ def _pin_session_utc(conn):
     except duckdb.Error:
         pass
     return conn
+
+
 from src.sql_safe import (
-    validate_identifier as _validate_identifier,
     validate_project_id as _validate_project_id,
 )
 from src.identifier_validation import validate_identifier, validate_quoted_identifier
@@ -129,25 +130,15 @@ def parse_bq_fqn(value: Optional[str]) -> Optional[tuple]:
     parts = value.split(".")
     if len(parts) != 3 or not all(p for p in parts):
         raise ValueError(
-            f"malformed bq_fqn {value!r}: expected exactly three non-empty "
-            f"segments 'project.dataset.table'"
+            f"malformed bq_fqn {value!r}: expected exactly three non-empty segments 'project.dataset.table'"
         )
     project, dataset, table = parts
     if not _validate_project_id(project):
-        raise ValueError(
-            f"malformed bq_fqn {value!r}: project {project!r} fails BQ "
-            f"project-id grammar"
-        )
+        raise ValueError(f"malformed bq_fqn {value!r}: project {project!r} fails BQ project-id grammar")
     if not validate_quoted_identifier(dataset, "BQ dataset"):
-        raise ValueError(
-            f"malformed bq_fqn {value!r}: dataset {dataset!r} fails BQ "
-            f"identifier grammar"
-        )
+        raise ValueError(f"malformed bq_fqn {value!r}: dataset {dataset!r} fails BQ identifier grammar")
     if not validate_quoted_identifier(table, "BQ table"):
-        raise ValueError(
-            f"malformed bq_fqn {value!r}: table {table!r} fails BQ "
-            f"identifier grammar"
-        )
+        raise ValueError(f"malformed bq_fqn {value!r}: table {table!r} fails BQ identifier grammar")
     return (project, dataset, table)
 
 
@@ -175,9 +166,7 @@ class MaterializeInFlightError(Exception):
     def __init__(self, table_id: str, layer: str = "process"):
         self.table_id = table_id
         self.layer = layer
-        super().__init__(
-            f"materialize for {table_id!r} already in flight ({layer} lock held)"
-        )
+        super().__init__(f"materialize for {table_id!r} already in flight ({layer} lock held)")
 
 
 # Unbounded by design — each registered table_id gets one Lock for the
@@ -214,8 +203,10 @@ def _get_lock_ttl_seconds() -> int:
         # contexts where the app layer isn't bootstrapped (e.g. unit tests
         # that exercise extractor helpers without the FastAPI app).
         from app.instance_config import get_value
+
         v = get_value(
-            "materialize", "lock_ttl_seconds",
+            "materialize",
+            "lock_ttl_seconds",
             default=_LOCK_TTL_DEFAULT_SECONDS,
         )
         n = int(v) if v is not None else _LOCK_TTL_DEFAULT_SECONDS
@@ -268,7 +259,9 @@ def sweep_stale_parquet_locks(data_root: Path | str) -> int:
             lock_path.unlink()
             logger.info(
                 "Swept stale materialize lock at %s (age %.0fs > TTL %ds)",
-                lock_path, age, ttl,
+                lock_path,
+                age,
+                ttl,
             )
             reclaimed += 1
         except FileNotFoundError:
@@ -280,7 +273,9 @@ def sweep_stale_parquet_locks(data_root: Path | str) -> int:
     if reclaimed or errors:
         logger.info(
             "sweep_stale_parquet_locks: reclaimed=%d errors=%d under %s",
-            reclaimed, errors, root,
+            reclaimed,
+            errors,
+            root,
         )
     return reclaimed
 
@@ -330,7 +325,8 @@ def _try_acquire_file_lock(lock_path: Path):
         if age > _get_lock_ttl_seconds():
             logger.warning(
                 "Reclaiming stale materialize lock at %s (age %.1fs > TTL)",
-                lock_path, age,
+                lock_path,
+                age,
             )
             try:
                 lock_path.unlink()
@@ -395,10 +391,7 @@ def _detect_table_type(
     """
     if billing_project is None:
         billing_project = project
-    bq_sql = (
-        f"SELECT table_type FROM `{project}.{dataset}.INFORMATION_SCHEMA.TABLES` "
-        f"WHERE table_name = ? LIMIT 1"
-    )
+    bq_sql = f"SELECT table_type FROM `{project}.{dataset}.INFORMATION_SCHEMA.TABLES` WHERE table_name = ? LIMIT 1"
     # Parameter-bind billing_project (1st arg of bigquery_query), the inner BQ
     # SQL (2nd arg), and the table-name predicate. This avoids the nested-quote
     # bug where inline `'{table}'` would close the outer `bigquery_query('...')`
@@ -453,10 +446,7 @@ def _wrap_admin_sql_for_jobs_api(billing_project: str, inner_sql: str) -> str:
             f"billing_project {billing_project!r} is not a valid GCP project_id "
             "(grammar: ^[a-z][a-z0-9-]{4,28}[a-z0-9]$)"
         )
-    return (
-        f"SELECT * FROM bigquery_query('{billing_project}', "
-        f"'{_escape_sql_string_literal(inner_sql)}')"
-    )
+    return f"SELECT * FROM bigquery_query('{billing_project}', '{_escape_sql_string_literal(inner_sql)}')"
 
 
 def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
@@ -534,9 +524,7 @@ def _persist_materialized_inner_view(
             # new one, never both / neither.
             ext_conn.execute("BEGIN")
             try:
-                ext_conn.execute(
-                    "DELETE FROM _meta WHERE table_name = ?", [table_id]
-                )
+                ext_conn.execute("DELETE FROM _meta WHERE table_name = ?", [table_id])
                 ext_conn.execute(
                     "INSERT INTO _meta VALUES (?, '', ?, ?, CURRENT_TIMESTAMP, 'materialized')",
                     [table_id, rows, size_bytes],
@@ -546,10 +534,7 @@ def _persist_materialized_inner_view(
                 # and only creates a master view when an inner object
                 # exists by the same name. read_parquet() is hot per-call,
                 # so the master view path goes through the same disk.
-                ext_conn.execute(
-                    f"CREATE OR REPLACE VIEW \"{table_id}\" AS "
-                    f"SELECT * FROM read_parquet('{safe_path}')"
-                )
+                ext_conn.execute(f"CREATE OR REPLACE VIEW \"{table_id}\" AS SELECT * FROM read_parquet('{safe_path}')")
                 ext_conn.execute("COMMIT")
             except Exception:
                 try:
@@ -565,13 +550,14 @@ def _persist_materialized_inner_view(
             "materialize: failed to register %s in extract.duckdb (%s) — "
             "parquet at %s is fine, master view will appear after the "
             "next sync cycle. Error: %s",
-            table_id, extract_db_path, parquet_path, e,
+            table_id,
+            extract_db_path,
+            parquet_path,
+            e,
         )
 
 
-def _create_remote_attach_table(
-    conn: duckdb.DuckDBPyConnection, project_id: str
-) -> None:
+def _create_remote_attach_table(conn: duckdb.DuckDBPyConnection, project_id: str) -> None:
     """Write _remote_attach. token_env is empty for BQ — orchestrator
     detects extension='bigquery' and refreshes the token from GCE metadata
     on its own."""
@@ -658,25 +644,18 @@ def _init_extract_locked(
             conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
             # session-scoped DuckDB secret with the metadata token
             escaped_token = token.replace("'", "''")
-            conn.execute(
-                f"CREATE SECRET bq_session (TYPE bigquery, ACCESS_TOKEN '{escaped_token}')"
-            )
+            conn.execute(f"CREATE SECRET bq_session (TYPE bigquery, ACCESS_TOKEN '{escaped_token}')")
             from connectors.bigquery.access import apply_bq_session_settings
+
             apply_bq_session_settings(conn)
-            conn.execute(
-                f"ATTACH 'project={project_id}' AS bq (TYPE bigquery, READ_ONLY)"
-            )
+            conn.execute(f"ATTACH 'project={project_id}' AS bq (TYPE bigquery, READ_ONLY)")
             logger.info("Attached BigQuery project: %s", project_id)
         except Exception as attach_err:
             logger.error("Failed to attach BigQuery project %s: %s", project_id, attach_err)
-            stats["errors"].append(
-                {"table": "*", "error": f"BigQuery ATTACH failed: {attach_err}"}
-            )
+            stats["errors"].append({"table": "*", "error": f"BigQuery ATTACH failed: {attach_err}"})
             # No tables can be registered without a working connection
             for tc in table_configs:
-                stats["errors"].append(
-                    {"table": tc["name"], "error": "skipped: BigQuery ATTACH failed"}
-                )
+                stats["errors"].append({"table": tc["name"], "error": "skipped: BigQuery ATTACH failed"})
             return stats
 
         _create_meta_table(conn)
@@ -761,14 +740,15 @@ def _init_extract_locked(
                     # cached path.
                     entity_type = _normalize_entity_type(
                         _detect_table_type(
-                            conn, fqn_project, dataset, source_table,
+                            conn,
+                            fqn_project,
+                            dataset,
+                            source_table,
                             billing_project=project_id,
                         )
                     )
                 if entity_type is None:
-                    raise RuntimeError(
-                        f"BQ entity {fqn_project}.{dataset}.{source_table} not found"
-                    )
+                    raise RuntimeError(f"BQ entity {fqn_project}.{dataset}.{source_table} not found")
 
                 # Issue #160: always create a master view for query_mode='remote'
                 # rows we have proven runtime support for.
@@ -788,13 +768,12 @@ def _init_extract_locked(
                             "bq_fqn=%s, extractor ATTACHed to %s. Master "
                             "view skipped — multi-ATTACH follow-up needed "
                             "or register a same-project proxy view.",
-                            table_name, fqn_project, project_id,
+                            table_name,
+                            fqn_project,
+                            project_id,
                         )
                         continue
-                    view_sql = (
-                        f'CREATE OR REPLACE VIEW "{table_name}" AS '
-                        f'SELECT * FROM bq."{dataset}"."{source_table}"'
-                    )
+                    view_sql = f'CREATE OR REPLACE VIEW "{table_name}" AS SELECT * FROM bq."{dataset}"."{source_table}"'
                     conn.execute(view_sql)
                 elif entity_type in ("VIEW", "MATERIALIZED_VIEW"):
                     # `dataset` and `source_table` are validated above by
@@ -826,7 +805,10 @@ def _init_extract_locked(
                         "Unverified BQ entity_type %r for %s.%s.%s — master view skipped. "
                         "Use `agnes snapshot create` for this row, or file an issue with "
                         "a repro to request native support.",
-                        entity_type, fqn_project, dataset, source_table,
+                        entity_type,
+                        fqn_project,
+                        dataset,
+                        source_table,
                     )
                     continue  # Do NOT insert _meta — no inner view to point at.
 
@@ -837,7 +819,11 @@ def _init_extract_locked(
                 stats["tables_registered"] += 1
                 logger.info(
                     "Registered remote view: %s -> %s.%s.%s (%s)",
-                    table_name, fqn_project, dataset, source_table, entity_type,
+                    table_name,
+                    fqn_project,
+                    dataset,
+                    source_table,
+                    entity_type,
                 )
             except Exception as e:
                 logger.error("Failed to register %s: %s", table_name, e)
@@ -976,6 +962,7 @@ def materialize_query(
             if max_bytes is not None and max_bytes > 0:
                 try:
                     from app.api.v2_scan import _bq_dry_run_bytes  # reuse main's impl
+
                     estimated = _bq_dry_run_bytes(bq, sql)  # NB: pass inner SQL (BQ-native)
                 except Exception as e:
                     logger.warning(
@@ -986,8 +973,7 @@ def materialize_query(
                     estimated = 0
                 if estimated > max_bytes:
                     raise MaterializeBudgetError(
-                        f"dry-run estimate {estimated:,} bytes exceeds cap "
-                        f"{max_bytes:,} for table {table_id!r}",
+                        f"dry-run estimate {estimated:,} bytes exceeds cap {max_bytes:,} for table {table_id!r}",
                         table_id=table_id,
                         current=estimated,
                         limit=max_bytes,
@@ -1007,24 +993,14 @@ def materialize_query(
                 # materialize call — leaving the other ~3 pool entries
                 # at the 80%-of-host default and re-opening the OOM
                 # window for any analyst query that landed on them.
-                attached = {
-                    r[0] for r in conn.execute(
-                        "SELECT database_name FROM duckdb_databases()"
-                    ).fetchall()
-                }
+                attached = {r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()}
                 if "bq" not in attached:
-                    conn.execute(
-                        f"ATTACH 'project={bq.projects.data}' AS bq (TYPE bigquery, READ_ONLY)"
-                    )
+                    conn.execute(f"ATTACH 'project={bq.projects.data}' AS bq (TYPE bigquery, READ_ONLY)")
 
                 try:
                     safe_path = _escape_sql_string_literal(str(tmp_path))
-                    conn.execute(
-                        f"COPY ({wrapped_sql}) TO '{safe_path}' (FORMAT PARQUET)"
-                    )
-                    rows = conn.execute(
-                        f"SELECT count(*) FROM read_parquet('{safe_path}')"
-                    ).fetchone()[0]
+                    conn.execute(f"COPY ({wrapped_sql}) TO '{safe_path}' (FORMAT PARQUET)")
+                    rows = conn.execute(f"SELECT count(*) FROM read_parquet('{safe_path}')").fetchone()[0]
                 except Exception:
                     if tmp_path.exists():
                         tmp_path.unlink()
@@ -1069,9 +1045,9 @@ def materialize_query(
                 # log line and the per-row error aggregation. Caller decides whether
                 # to alert.
                 logger.warning(
-                    "Materialized %s produced 0 rows — verify the SQL filter is "
-                    "intentional. Parquet written: %s",
-                    table_id, parquet_path,
+                    "Materialized %s produced 0 rows — verify the SQL filter is intentional. Parquet written: %s",
+                    table_id,
+                    parquet_path,
                 )
 
             return {
@@ -1104,6 +1080,7 @@ def _resolve_bq_project_id() -> str:
     """
     try:
         from app.instance_config import get_value as _get_value  # noqa: PLC0415
+
         project_id = _get_value("data_source", "bigquery", "project", default="") or ""
         if project_id:
             return project_id
@@ -1112,6 +1089,7 @@ def _resolve_bq_project_id() -> str:
         pass
     try:
         from config.loader import load_instance_config as _load  # noqa: PLC0415
+
         cfg = _load() or {}
         return ((cfg.get("data_source") or {}).get("bigquery") or {}).get("project", "") or ""
     except Exception:
@@ -1199,6 +1177,7 @@ def rebuild_from_registry(
     # Resolve init_extract via this module so tests that monkey-patch it
     # (e.g. tests/test_admin_bq_register.py) see the patched callable.
     import connectors.bigquery.extractor as _self
+
     result = _self.init_extract(output_dir, project_id, tables)
     out = dict(result)
     out["project_id"] = project_id
