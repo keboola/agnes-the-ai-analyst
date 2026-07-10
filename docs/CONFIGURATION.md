@@ -87,6 +87,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Show the homepage status frame (sync/sessions/tokens) | `AGNES_HOME_SHOW_STATUS_FRAME` | `instance.home.show_status_frame` | `true` | `get_home_status_frame_visibility()` |
 | Operator-authored Overview HTML on `/home` | `AGNES_INSTANCE_OVERVIEW` | `instance.overview` | `""` (hidden) | `get_instance_overview()` |
 | Operator-authored Support HTML on `/home` | `AGNES_INSTANCE_SUPPORT` | `instance.support` | `""` (hidden) | `get_instance_support()` |
+| Operator-authored preamble injected at the TOP of the `agnes init` install prompt (above `Set up the … CLI`). Empty/unset emits zero lines (default prompt byte-identical). `{instance_brand}` and the other server-side placeholders are substituted, but it must NOT contain literal `{server_url}`/`{token}` (those resolve at click time, not in the preamble). | `AGNES_INSTANCE_CUSTOM_PREAMBLE` | `instance.custom_preamble` | `""` (no extra lines) | `get_instance_custom_preamble()` |
 | Admin contact address for user-side "email admin" prompts | `AGNES_INSTANCE_ADMIN_EMAIL` | `instance.admin_email` | `""` | `get_instance_admin_email()` |
 | Infrastructure/provisioning repo URL (used by operator plugin to name the concrete infra repo for this instance; empty = vendor-neutral OSS default) | `AGNES_INFRA_REPO_URL` | `instance.infra_repo_url` | `""` (unset) | `get_infra_repo_url()` |
 | Refresh-cadence string shown in the welcome prompt | — | `instance.sync_interval` | `1 hour` | `get_sync_interval()` |

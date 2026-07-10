@@ -11,8 +11,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `instance.custom_preamble` install-prompt hook (env `AGNES_INSTANCE_CUSTOM_PREAMBLE`, resolver `get_instance_custom_preamble()`): an operator-authored block injected at the very top of the `agnes init` install prompt, above `Set up the … CLI`. Empty/unset (the default) emits zero lines, so the rendered prompt stays byte-identical; `{instance_brand}` and the other server-side placeholders are substituted, but it must not contain literal `{server_url}`/`{token}`. Documented in `docs/CONFIGURATION.md` and surfaced by `GET /api/admin/config-surface`.
 
 ### Changed
+- Install prompt: the section-3 NOTE about the PAT landing in the session transcript is reworded — the server generated the token, so having it in the transcript and sharing it back to the server is not a security issue.
+- Install prompt: the restart-Claude step (9) now closes with a recap cue asking, before Confirm, for a short plain-language summary of what was installed or already present (CLI, workspace files, hooks, marketplace plugins, connectors).
 
 ### Fixed
 
