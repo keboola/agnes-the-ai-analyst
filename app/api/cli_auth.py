@@ -36,8 +36,7 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import _get_db, get_optional_user, require_session_token
 from app.auth.jwt import create_access_token
-from src.repositories import audit_repo
-from src.repositories.access_tokens import AccessTokenRepository
+from src.repositories import access_token_repo, audit_repo
 from src.repositories.cli_auth_codes import CliAuthCodeRepository
 
 router = APIRouter(prefix="/cli/auth", tags=["cli-auth"])
@@ -174,7 +173,7 @@ async def exchange(
     expires_at = datetime.now(timezone.utc) + expires_delta
     prefix = token_id.replace("-", "")[:8]
     token_hash = hashlib.sha256(jwt_token.encode()).hexdigest()
-    AccessTokenRepository(conn).create(
+    access_token_repo().create(
         id=token_id,
         user_id=user_id,
         name=name,
