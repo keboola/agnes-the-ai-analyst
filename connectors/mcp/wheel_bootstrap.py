@@ -21,6 +21,7 @@ boot; it never blocks startup. Idempotent via a content-hash marker
 (``.installed.json``) so unchanged wheels cost one hash per boot, not a
 pip run.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -68,6 +69,7 @@ def install_operator_wheels(data_dir: Optional[Path] = None) -> List[str]:
     """
     if data_dir is None:
         from src.db import _get_data_dir
+
         data_dir = _get_data_dir()
 
     wheels_dir = Path(data_dir) / "mcp" / "wheels"
@@ -92,13 +94,21 @@ def install_operator_wheels(data_dir: Optional[Path] = None) -> List[str]:
         if marker.get(whl.name) == digest:
             continue
         cmd = [
-            sys.executable, "-m", "pip", "install",
-            "--user", "--no-deps", "--no-warn-script-location",
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--user",
+            "--no-deps",
+            "--no-warn-script-location",
             str(whl),
         ]
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=_PIP_TIMEOUT_SECONDS,
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=_PIP_TIMEOUT_SECONDS,
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
             logger.error("mcp wheel bootstrap: pip failed for %s: %s", whl.name, exc)
@@ -106,7 +116,9 @@ def install_operator_wheels(data_dir: Optional[Path] = None) -> List[str]:
         if result.returncode != 0:
             logger.error(
                 "mcp wheel bootstrap: pip exited %s for %s: %s",
-                result.returncode, whl.name, (result.stderr or "")[-500:],
+                result.returncode,
+                whl.name,
+                (result.stderr or "")[-500:],
             )
             continue
         marker[whl.name] = digest
