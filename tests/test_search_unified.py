@@ -113,3 +113,25 @@ def test_table_scoring_prefers_term_overlap():
     scored = _table_scores("customer orders revenue", TABLES)
     assert scored[0]["table_id"] == "t_orders"
     assert scored[0]["score"] > 0
+
+
+def test_none_grants_mean_unfiltered_privileged_viewer():
+    """None (admin) must NOT be treated as fail-closed — repo gets None filters."""
+    from src.search.unified import unified_search
+
+    captured = {}
+
+    def spy_knowledge(query, **kw):
+        captured.update(kw)
+        return [{"id": "ki1", "title": "T", "content": "C", "domain": "d"}]
+
+    with (
+        patch("src.search.unified._chunk_search", _fake_chunks),
+        patch("src.search.unified._knowledge_search", spy_knowledge),
+    ):
+        hits = unified_search(
+            "invoices", corpus_ids=["c1"], user_groups=None, granted_domains=None, tables=[], k=5
+        )
+    assert any(h["type"] == "knowledge" for h in hits)
+    assert captured["user_groups"] is None
+    assert captured["granted_domains"] is None

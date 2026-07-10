@@ -10,6 +10,9 @@ Thin fan-out over the EXISTING search surfaces; none is modified here:
 RBAC is the caller's responsibility: pass only granted ``corpus_ids`` /
 ``user_groups`` / ``granted_domains`` / pre-filtered ``tables``. An empty
 grant set for a source contributes nothing (fail-closed), never "search all".
+``user_groups`` / ``granted_domains`` follow the knowledge repo's convention:
+``None`` means *no filter* (privileged viewer), ``[]`` means *no grants* —
+the knowledge source is skipped only when BOTH are empty lists.
 
 Merging: scores are min-max normalized WITHIN each source (the engines'
 score scales are incomparable), then interleaved by normalized score with a
@@ -20,7 +23,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 _TOKEN = re.compile(r"[a-z0-9]+")
 
@@ -87,8 +90,8 @@ def unified_search(
     query: str,
     *,
     corpus_ids: List[str],
-    user_groups: List[str],
-    granted_domains: List[str],
+    user_groups: Optional[List[str]],
+    granted_domains: Optional[List[str]],
     tables: List[Dict[str, Any]],
     k: int = 10,
 ) -> List[Dict[str, Any]]:
@@ -102,7 +105,9 @@ def unified_search(
     buckets.append(chunk_hits)
 
     knowledge_hits: List[Dict[str, Any]] = []
-    if user_groups or granted_domains:
+    # None = privileged viewer (no filter); [] = zero grants → fail-closed.
+    knowledge_enabled = user_groups is None or granted_domains is None or bool(user_groups or granted_domains)
+    if knowledge_enabled:
         for rank, item in enumerate(
             _knowledge_search(
                 query,
