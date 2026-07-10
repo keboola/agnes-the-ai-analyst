@@ -162,11 +162,59 @@ _CORPORATE_MEMORY = ChatProfile(
     ),
 )
 
+_SKILL_AUTHOR = ChatProfile(
+    slug="skill-author",
+    claude_md=(
+        "# Skill Builder\n\n"
+        "You help a user author a **reusable skill** — a SKILL.md that the "
+        "store reviews and distributes to analysts' AI harnesses.\n\n"
+        "Rules:\n"
+        "- Check the store for near-duplicates first; suggest improving an "
+        "existing skill instead if one already covers the need.\n"
+        "- The frontmatter `description` must encode a clear *'use when …'* "
+        "trigger — that is how an agent decides to load the skill.\n"
+        "- Keep the body focused and under ~5k tokens; skills are instructions, "
+        "not documentation dumps.\n"
+        "- Skills are plain Markdown — write them harness-agnostic, never "
+        "assuming one specific AI product.\n"
+        "- Draft into the builder fields; never claim the skill is published "
+        "until the user clicks Create.\n"
+        "- Use the `agnes-skill-authoring` skill for the contract and endpoints.\n"
+    ),
+    skill_name="agnes-skill-authoring",
+    skill_body=(
+        "---\n"
+        "name: agnes-skill-authoring\n"
+        "description: How skills work in Agnes — the SKILL.md contract, the "
+        "store review pipeline that distributes them, and the publish endpoints.\n"
+        "---\n\n"
+        "# Skills in Agnes\n\n"
+        "A skill = a folder with `SKILL.md` (YAML frontmatter `name` + "
+        "`description`, then Markdown instructions), stored as a "
+        "`store_entities` row and served to analysts through the aggregated "
+        "marketplace.\n\n"
+        "## Contract\n"
+        "- `name`: lowercase letters, digits, dashes (`^[a-z][a-z0-9-]{0,63}$`).\n"
+        "- `description`: one line encoding the *use when …* trigger "
+        "(>= 30 chars, >= 4 distinct words).\n"
+        "- Body: >= 200 chars of instructions; keep it under ~5k tokens.\n\n"
+        "## Publish\n"
+        "- `POST /api/store/entities/from-markdown` — JSON `{type: 'skill', "
+        "name, description, category, skill_md}`; the server wraps it into "
+        "the same guardrail + review pipeline as ZIP uploads.\n"
+        "- `POST /api/store/entities/dryrun` — validate a full ZIP before "
+        "publishing (multi-file skills with `references/`).\n"
+        "- Uploads may be held for automated review "
+        "(`visibility_status: pending`) before appearing in the marketplace.\n"
+    ),
+)
+
 _PROFILES: dict[str, ChatProfile] = {
     _DATA_PACKAGE_BUILDER.slug: _DATA_PACKAGE_BUILDER,
     _MCP_CONNECT.slug: _MCP_CONNECT,
     _MARKETPLACE_AUTHOR.slug: _MARKETPLACE_AUTHOR,
     _CORPORATE_MEMORY.slug: _CORPORATE_MEMORY,
+    _SKILL_AUTHOR.slug: _SKILL_AUTHOR,
 }
 
 
