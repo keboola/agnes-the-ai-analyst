@@ -464,20 +464,12 @@ def _register_dynamic_tools(mcp: FastMCP) -> None:
     """Best-effort registration of passthrough tools from tool_registry."""
     try:
         from app.api.mcp.tools_generator import register_passthrough_tools
-        from src.db import get_system_db
     except Exception:
         logger.exception("Streamable MCP: dynamic tool imports unavailable")
         return
     try:
-        conn = get_system_db()
-    except Exception:
-        logger.warning("Streamable MCP: system DB not ready; skipping dynamic tools")
-        return
-    try:
-        names = register_passthrough_tools(mcp, conn)
+        names = register_passthrough_tools(mcp)
         if names:
             logger.info("Streamable MCP: registered %d passthrough tools", len(names))
     except Exception:
         logger.exception("Streamable MCP: passthrough tool registration failed")
-    finally:
-        conn.close()

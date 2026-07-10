@@ -667,23 +667,15 @@ def _register_dynamic_tools() -> None:
     """
     try:
         from app.api.mcp.tools_generator import register_passthrough_tools
-        from src.db import get_system_db
     except Exception:  # pragma: no cover - import-time defensive
         logger.exception("Universal MCP imports unavailable; skipping dynamic tool registration")
         return
     try:
-        conn = get_system_db()
-    except Exception:
-        logger.warning("system DB not ready; skipping dynamic passthrough tool registration")
-        return
-    try:
-        names = register_passthrough_tools(mcp, conn)
+        names = register_passthrough_tools(mcp)
         if names:
             logger.info("MCP HTTP: registered %d passthrough tools", len(names))
     except Exception:
         logger.exception("Universal MCP passthrough registration failed")
-    finally:
-        conn.close()
 
 
 # ── factory ────────────────────────────────────────────────────────────────────
