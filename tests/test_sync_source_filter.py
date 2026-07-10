@@ -97,7 +97,7 @@ def test_materialized_pass_source_filter_scopes_to_bigquery(tmp_path, monkeypatc
 
     materialized = []
 
-    def _fake_bq(table_id, sql, bq, output_dir, max_bytes):
+    def _fake_bq(table_id, sql, bq, output_dir, max_bytes, fetch_timeout_s=None):
         materialized.append(table_id)
         return {"rows": 1, "size_bytes": 100, "query_mode": "materialized"}
 
@@ -136,7 +136,7 @@ def test_materialized_pass_no_filter_processes_all(tmp_path, monkeypatch, stub_b
 
     seen = []
 
-    def _fake_bq(table_id, sql, bq, output_dir, max_bytes):
+    def _fake_bq(table_id, sql, bq, output_dir, max_bytes, fetch_timeout_s=None):
         seen.append(("bq", table_id))
         return {"rows": 1, "size_bytes": 100, "query_mode": "materialized"}
 

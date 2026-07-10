@@ -1689,6 +1689,50 @@ def _apply_memory_caps(conn: duckdb.DuckDBPyConnection, memory_limit: str, *, la
         logger.debug("%s: temp_directory spill setup failed (%s)", label, e)
 
 
+def cleanup_orphaned_temp_files(temp_dir=None, *, min_age_s: float = 300.0) -> tuple[int, int]:
+    """Remove orphaned DuckDB spill files from the temp_directory.
+
+    DuckDB does not remove ``duckdb_temp_storage_*`` files when the
+    process dies hard (SIGKILL, crash, container stop timeout); they
+    accumulate as multi-GB dead weight across incidents. Only this
+    process ever opens DuckDB against ``{STATE_DIR}/duckdb-tmp`` (the
+    scheduler sidecar is a pure HTTP clock — see
+    ``services/scheduler/__main__.py``), so at process startup every
+    matching file is an orphan of a dead process. ``min_age_s`` is the
+    safety margin that makes the call-site ordering irrelevant: a file
+    the booting process itself just spilled is seconds old and is left
+    alone, while incident leftovers are hours to days old.
+
+    Best-effort: an unremovable file is skipped, never raised. Returns
+    ``(files_removed, bytes_freed)``.
+    """
+    d = Path(temp_dir) if temp_dir is not None else _get_state_dir() / "duckdb-tmp"
+    removed = 0
+    freed = 0
+    if not d.is_dir():
+        return (0, 0)
+    cutoff = time.time() - max(min_age_s, 0)
+    for f in d.glob("duckdb_temp_storage_*"):
+        try:
+            st = f.stat()
+            if st.st_mtime > cutoff:
+                continue
+            size = st.st_size
+            f.unlink()
+        except OSError:
+            continue
+        removed += 1
+        freed += size
+    if removed:
+        logger.info(
+            "cleaned %d orphaned DuckDB spill file(s), %d bytes freed, from %s",
+            removed,
+            freed,
+            d,
+        )
+    return (removed, freed)
+
+
 def get_system_db() -> duckdb.DuckDBPyConnection:
     """Get a connection to the system state database.
 
