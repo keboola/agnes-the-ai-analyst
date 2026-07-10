@@ -4,7 +4,9 @@ Each domain maps a builder page (`/admin/studio/<slug>`) to: a chat profile
 (see ``app/chat/profiles.py``), the form fields the builder renders, and the
 existing admin endpoint its Create action POSTs to. The page is generic — the
 domain config drives the fields, the assistant profile, and the create call —
-so all four authoring agents share one tested surface.
+so all five authoring agents share one tested surface. Domains with
+``submit_directly=True`` publish straight to their endpoint for every user
+instead of routing non-admins through the moderation queue.
 """
 
 from __future__ import annotations

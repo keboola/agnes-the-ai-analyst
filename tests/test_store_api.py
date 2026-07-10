@@ -1970,6 +1970,22 @@ class TestCreateFromMarkdown:
         assert r.status_code == 201, r.text
         assert r.json()["name"] == "md-first-skill"
 
+    def test_leading_whitespace_before_frontmatter_is_not_shadowed(self, web_client, tmp_path):
+        """A skill_md that starts with blank lines before `---` must not be
+        treated as frontmatter-less: the un-lstripped text used to be baked
+        as-is, so parse_frontmatter's position-0-anchored regex missed the
+        real block and a synthesized one got prepended on top of it."""
+        _, cookies = _create_user(web_client, "frank@x.com")
+        full = "\n\n" + f"---\nname: md-first-skill\ndescription: {_OK_DESC}\n---\n\n{_OK_BODY}\n"
+        r = self._publish(web_client, cookies, skill_md=full)
+        assert r.status_code == 201, r.text
+        body = r.json()
+        skill_md = tmp_path / "store" / body["id"] / "plugin" / "skills" / body["invocation_name"] / "SKILL.md"
+        assert skill_md.is_file()
+        text = skill_md.read_text()
+        assert text.startswith("---")
+        assert text.count("---\n") == 2  # opening + closing fence, no synthesized duplicate
+
     def test_rejects_bad_name(self, web_client):
         _, cookies = _create_user(web_client, "carol@x.com")
         r = self._publish(web_client, cookies, name="Bad Name!")

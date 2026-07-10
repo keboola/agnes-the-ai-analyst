@@ -1683,8 +1683,12 @@ async def create_entity_from_markdown(
     name = body.name.strip()
     if not _NAME_RE.match(name):
         raise HTTPException(status_code=400, detail="invalid_name_format")
-    text = body.skill_md
-    if not _FRONTMATTER_RE.match(text.lstrip()):
+    # Normalize once: writing the lstripped text is always safe, and it
+    # keeps this check in sync with parse_frontmatter (regex anchored at
+    # position 0, no lstrip) so leading whitespace before `---` doesn't
+    # cause the real frontmatter to be shadowed by a synthesized one.
+    text = body.skill_md.lstrip()
+    if not _FRONTMATTER_RE.match(text):
         import yaml
 
         fm = yaml.safe_dump(
