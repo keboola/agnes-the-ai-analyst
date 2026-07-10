@@ -286,6 +286,54 @@ def test_materialize_query_admin_can_pin_file_type_csv(tmp_path, fake_storage_cl
     assert call.kwargs["export_filter"].file_type == "csv"
 
 
+# ---- CSV dialect (RFC 4180 quote/escape pin) -------------------------------
+
+
+def test_materialize_query_csv_handles_embedded_quotes_and_commas(tmp_path):
+    """Regression: Keboola Storage API CSV exports are RFC-4180 (delimiter
+    ',', quote '"', embedded quotes doubled). DuckDB's dialect sniffer can
+    misdetect the escape char on cells holding their own quoting (real-world
+    failure: `CSV Error on Line: 18985` on a column carrying embedded
+    JSON/SQL text) — pinning `quote='"', escape='"'` removes the guesswork.
+    Verify row count + value fidelity survive a cell with a doubled
+    embedded quote plus a quoted comma."""
+
+    def fake_export(table_id, dest, *, export_filter=None, export_timeout=None):
+        _seed_csv(
+            Path(dest),
+            "id,payload,note",
+            [
+                '1,"a ""quoted"" value","has,comma"',
+                '2,plain,"another,one"',
+            ],
+        )
+        return {"job_id": 1, "file_id": 2, "rows": 2, "bytes": Path(dest).stat().st_size, "file_type": "csv"}
+
+    client = MagicMock()
+    client.export_table.side_effect = fake_export
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    result = kbe.materialize_query(
+        table_id="quoted_csv",
+        bucket="in.c-x",
+        source_table="t",
+        source_query='{"file_type": "csv"}',
+        storage_client=client,
+        output_dir=output_dir,
+    )
+
+    assert result["rows"] == 2
+    final = output_dir / "quoted_csv.parquet"
+    safe = str(final).replace("'", "''")
+    rows = duckdb.connect().execute(f"SELECT id, payload, note FROM read_parquet('{safe}') ORDER BY id").fetchall()
+    assert rows == [
+        ("1", 'a "quoted" value', "has,comma"),
+        ("2", "plain", "another,one"),
+    ]
+
+
 # ---- tempdir cleanup on failure --------------------------------------------
 
 

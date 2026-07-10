@@ -418,6 +418,130 @@ class TestDownloadFile:
         assert dest.read_bytes() == b"col\na\nb\n"
 
 
+# ---- _gs_to_https / _azure_to_https URL rewriting --------------------------
+
+
+class TestGsToHttps:
+    def test_encodes_bucket_and_key_for_json_api_media_url(self):
+        # Matches google-cloud-storage SDK's `bucket.blob(key).download_as_bytes()`
+        # wire shape: slashes and spaces inside the key are percent-encoded
+        # into a single path segment, `alt=media` switches JSON-metadata to
+        # raw bytes.
+        url = KeboolaStorageClient._gs_to_https("gs://bkt/a/b c.csv")
+        assert url == "https://storage.googleapis.com/storage/v1/b/bkt/o/a%2Fb%20c.csv?alt=media"
+
+    def test_rejects_non_gs_scheme(self):
+        with pytest.raises(ValueError, match="expects gs://"):
+            KeboolaStorageClient._gs_to_https("https://not-gs/x")
+
+    def test_rejects_malformed_url_missing_key(self):
+        with pytest.raises(ValueError, match="malformed"):
+            KeboolaStorageClient._gs_to_https("gs://bucket-only-no-key")
+
+
+class TestAzureToHttps:
+    def test_appends_sas_token_from_connection_string(self):
+        url = KeboolaStorageClient._azure_to_https(
+            "azure://acct.blob.core.windows.net/container/blob.csv",
+            {
+                "SASConnectionString": (
+                    "BlobEndpoint=https://acct.blob.core.windows.net;SharedAccessSignature=sv=2020-01-01&sig=abc"
+                ),
+            },
+        )
+        assert url == "https://acct.blob.core.windows.net/container/blob.csv?sv=2020-01-01&sig=abc"
+
+    def test_missing_credentials_returns_url_without_token(self):
+        url = KeboolaStorageClient._azure_to_https(
+            "azure://acct.blob.core.windows.net/container/blob.csv",
+            {},
+        )
+        assert url == "https://acct.blob.core.windows.net/container/blob.csv"
+
+    def test_rejects_non_azure_scheme(self):
+        with pytest.raises(ValueError, match="expects azure://"):
+            KeboolaStorageClient._azure_to_https("https://not-azure/x", {})
+
+
+# ---- sliced GCP download (download_file) ------------------------------------
+
+
+class TestSlicedGcpDownload:
+    """`download_file` sliced branch when the manifest carries `gs://`
+    entries — previously ZERO coverage, every other sliced test in this
+    module uses https:// entries which skip the GCS rewrite path entirely."""
+
+    def test_rewrites_gs_urls_and_sends_bearer_token(self, tmp_path):
+        sess = MagicMock()
+
+        manifest_resp = MagicMock()
+        manifest_resp.json.return_value = {
+            "entries": [
+                {"url": "gs://bkt/exp/slice-0"},
+                {"url": "gs://bkt/exp/slice-1"},
+            ]
+        }
+        manifest_resp.raise_for_status = MagicMock()
+
+        slice0 = MagicMock()
+        slice0.__enter__ = MagicMock(return_value=slice0)
+        slice0.__exit__ = MagicMock(return_value=False)
+        slice0.iter_content.return_value = [b"col\n", b"a\n"]
+        slice0.raise_for_status = MagicMock()
+
+        slice1 = MagicMock()
+        slice1.__enter__ = MagicMock(return_value=slice1)
+        slice1.__exit__ = MagicMock(return_value=False)
+        slice1.iter_content.return_value = [b"b\n"]
+        slice1.raise_for_status = MagicMock()
+
+        sess.get.side_effect = [manifest_resp, slice0, slice1]
+
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        dest = tmp_path / "out.csv"
+        c.download_file(
+            {
+                "url": "https://signed/manifest.json",
+                "name": "sliced",
+                "isSliced": True,
+                "gcsCredentials": {"access_token": "gcs-bearer-tok"},
+            },
+            dest,
+        )
+
+        # Header kept from slice 0 only, concat order preserved.
+        assert dest.read_bytes() == b"col\na\nb\n"
+
+        assert sess.get.call_count == 3
+        slice0_call = sess.get.call_args_list[1]
+        slice1_call = sess.get.call_args_list[2]
+        assert slice0_call.args[0] == "https://storage.googleapis.com/storage/v1/b/bkt/o/exp%2Fslice-0?alt=media"
+        assert slice0_call.kwargs["headers"] == {"Authorization": "Bearer gcs-bearer-tok"}
+        assert slice1_call.args[0] == "https://storage.googleapis.com/storage/v1/b/bkt/o/exp%2Fslice-1?alt=media"
+        assert slice1_call.kwargs["headers"] == {"Authorization": "Bearer gcs-bearer-tok"}
+
+    def test_missing_gcs_credentials_raises_storage_api_error(self, tmp_path):
+        sess = MagicMock()
+        manifest_resp = MagicMock()
+        manifest_resp.json.return_value = {"entries": [{"url": "gs://bkt/slice-0"}]}
+        manifest_resp.raise_for_status = MagicMock()
+        sess.get.return_value = manifest_resp
+
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        dest = tmp_path / "out.csv"
+
+        with pytest.raises(StorageApiError, match="no gcs_token"):
+            c.download_file(
+                {
+                    "url": "https://signed/manifest.json",
+                    "name": "sliced",
+                    "isSliced": True,
+                    # no gcsCredentials at all
+                },
+                dest,
+            )
+
+
 # ---- end-to-end export_table_to_csv ---------------------------------------
 
 
@@ -616,6 +740,45 @@ class TestParquetPath:
         # Naming preserves manifest order — required for deterministic
         # downstream merge.
         assert paths[0].name < paths[1].name
+
+    def test_download_file_slices_gcp_rewrites_url_and_sends_bearer(self, tmp_path):
+        """Parquet path, GCP manifest — same `gs://` rewrite + bearer-token
+        contract as the CSV `_download_sliced` branch, previously untested."""
+        sess = MagicMock()
+
+        manifest_resp = MagicMock()
+        manifest_resp.json.return_value = {
+            "entries": [{"url": "gs://bkt/exp/x.parquet"}],
+        }
+        manifest_resp.raise_for_status = MagicMock()
+
+        def mk_chunk_resp(payload: bytes):
+            r = MagicMock()
+            r.__enter__ = MagicMock(return_value=r)
+            r.__exit__ = MagicMock(return_value=False)
+            r.iter_content.return_value = [payload]
+            r.raise_for_status = MagicMock()
+            return r
+
+        slice0 = mk_chunk_resp(b"PAR1...slice0...")
+        sess.get.side_effect = [manifest_resp, slice0]
+
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        paths = c.download_file_slices(
+            {
+                "url": "https://signed/manifest.json",
+                "isSliced": True,
+                "name": "x.parquet",
+                "gcsCredentials": {"access_token": "gcs-bearer-tok"},
+            },
+            tmp_path / "slices",
+        )
+
+        assert len(paths) == 1
+        assert paths[0].read_bytes() == b"PAR1...slice0..."
+        slice_call = sess.get.call_args_list[1]
+        assert slice_call.args[0] == "https://storage.googleapis.com/storage/v1/b/bkt/o/exp%2Fx.parquet?alt=media"
+        assert slice_call.kwargs["headers"] == {"Authorization": "Bearer gcs-bearer-tok"}
 
     def test_download_file_slices_refuses_non_sliced(self):
         c = KeboolaStorageClient(url="https://kbc", token="t", session=MagicMock())
