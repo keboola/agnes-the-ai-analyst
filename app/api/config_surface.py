@@ -126,6 +126,13 @@ _KNOB_CATALOGUE: list[dict[str, Any]] = [
         "default": "",
     },
     {
+        "key": "instance_custom_preamble",
+        "resolver": "get_instance_custom_preamble",
+        "env_var": "AGNES_INSTANCE_CUSTOM_PREAMBLE",
+        "yaml_path": "instance.custom_preamble",
+        "default": "",
+    },
+    {
         "key": "instance_admin_email",
         "resolver": "get_instance_admin_email",
         "env_var": "AGNES_INSTANCE_ADMIN_EMAIL",
