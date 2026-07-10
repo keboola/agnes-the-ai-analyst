@@ -372,7 +372,8 @@ _GRANDFATHERED_DEPENDS_GET_DB_RAW_SQL: dict[str, set[str]] = {
     # table_profiles, knowledge_item_relations were missing from the old
     # hand-maintained tuple). Live backend-split debt — fix, then delete.
     # memory.py — get_my_votes/list_knowledge migrated to knowledge_repo(); entry removed.
-    "app/web/router.py": {"catalog_table_detail", "corporate_memory_admin"},
+    # web/router.py — catalog profile + memory-relations count migrated to
+    # profile_repo()/knowledge_repo(); entry removed.
 }
 
 
@@ -455,13 +456,13 @@ def scan_raw_state_sql(files) -> dict[str, set[str]]:
 # site is routed through the factory (its SQL moves into the repo pair), its
 # entry must be deleted. A minority are DuckDB-only by design and stay.
 _GRANDFATHERED_RAW_STATE_SQL: dict[str, set[str]] = {
-    "app/api/activity.py": {"_compute_health"},
-    "app/api/marketplace.py": {"_load_curated_stack_counts", "_load_users_display", "_resolve_owner_display"},
-    "app/api/me_debug.py": {"_last_sync_summary"},
+    # activity.py, marketplace.py, me.py, me_debug.py, web/router.py — health
+    # pulse, owner display, curated counts, home stats, google-sync summary,
+    # catalog profile, memory-relations count all migrated to the factory;
+    # entries removed.
     # memory.py — RBAC helpers + vote reads migrated to the factory; entry removed.
     "app/chat/audit.py": {"write_audit"},
     "app/chat/copresence_summary.py": {"build_intersection_summary"},
-    "app/web/router.py": {"catalog_table_detail", "corporate_memory_admin"},
     "connectors/internal/registry.py": {"ensure_internal_tables_registered"},
     # session_pipeline/runner.py, session_processors/usage_lib.py,
     # verification_detector/__main__.py — migrated to the factory; entries removed.
