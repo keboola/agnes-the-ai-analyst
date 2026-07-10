@@ -771,9 +771,7 @@ async def _intake_bundle_to_scratch(file: UploadFile, type_: str, scratch: Path)
         fm = _parse_frontmatter(text)
         if not fm.get("name") or not fm.get("description"):
             # Nicer error than the generic downstream ``zip_missing_skill_md``.
-            raise HTTPException(
-                status_code=422, detail="skill_file_missing_frontmatter"
-            )
+            raise HTTPException(status_code=422, detail="skill_file_missing_frontmatter")
         (scratch / "SKILL.md").write_text(text, encoding="utf-8")
         return size
 
@@ -1673,7 +1671,7 @@ class CreateFromMarkdownBody(BaseModel):
 async def create_entity_from_markdown(
     body: CreateFromMarkdownBody,
     background_tasks: BackgroundTasks,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),  # no resource gate: store is open-to-authed, enforced downstream
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """JSON sibling of ``POST /entities`` — synthesizes ``<name>/SKILL.md``
