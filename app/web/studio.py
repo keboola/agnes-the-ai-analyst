@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from src.store_categories import STORE_CATEGORIES
+
 
 @dataclass(frozen=True)
 class StudioField:
@@ -29,6 +31,10 @@ class StudioDomain:
     title: str
     subtitle: str
     endpoint: str  # admin endpoint the Create action POSTs to
+    # True → the domain has its own moderation pipeline (e.g. the store's
+    # guardrail + LLM review); EVERYONE posts directly to `endpoint` and the
+    # authoring_suggestions queue rejects it (no _SAFE_REPLAY exists).
+    submit_directly: bool = False
     fields: tuple[StudioField, ...] = field(default_factory=tuple)
 
 
@@ -89,6 +95,42 @@ STUDIO_DOMAINS: dict[str, StudioDomain] = {
         subtitle="Distill reusable knowledge into a memory domain granted to a group.",
         endpoint="/api/admin/memory-domains",
         fields=(_NAME, _SLUG, _DESC),
+    ),
+    "skill": StudioDomain(
+        slug="skill",
+        profile="skill-author",
+        title="Skill Builder",
+        subtitle="Author a reusable skill and publish it to the store.",
+        endpoint="/api/store/entities/from-markdown",
+        submit_directly=True,
+        fields=(
+            StudioField(
+                "name",
+                "Name",
+                required=True,
+                placeholder="quarterly-report-recipe",
+            ),
+            StudioField(
+                "description",
+                "Description",
+                type="textarea",
+                required=True,
+                placeholder="Use when … (the trigger that tells an agent to load this skill).",
+            ),
+            StudioField(
+                "category",
+                "Category",
+                type="select",
+                options=tuple(["", *STORE_CATEGORIES]),
+            ),
+            StudioField(
+                "skill_md",
+                "Skill content (Markdown)",
+                type="textarea",
+                required=True,
+                placeholder="Step-by-step instructions an AI agent should follow…",
+            ),
+        ),
     ),
 }
 
