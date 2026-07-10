@@ -350,11 +350,18 @@ class TestJwtClaims:
         assert "jti" in payload
         assert len(payload["jti"]) >= 16
 
-    def test_jwt_expiry_is_24_hours(self):
-        """ACCESS_TOKEN_EXPIRE_HOURS must be 24 (not 30*24)."""
+    def test_jwt_expiry_is_30_days(self):
+        """Interactive session JWTs last 30 days (720 h) by design.
+
+        Deliberate tradeoff: session JWTs (typ="session") carry no per-session
+        revocation — pat_resolver trusts them off signature + exp alone — so a
+        leaked cookie stays valid for the full window; the only server-side kill
+        switch is deactivating the account (users.active). 30 days is the chosen
+        login-persistence UX. This guard prevents silently drifting the value.
+        """
         os.environ.setdefault("TESTING", "1")
         from app.auth import jwt as jwt_module
-        assert jwt_module.ACCESS_TOKEN_EXPIRE_HOURS == 24
+        assert jwt_module.ACCESS_TOKEN_EXPIRE_HOURS == 30 * 24
 
 
 # ---- JWT Secret Hardening ----

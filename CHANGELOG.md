@@ -12,6 +12,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.44] - 2026-07-10
+
+### Changed
+- Interactive web login sessions now persist for 30 days (JWT `exp` + `access_token` cookie `max_age`), up from 24 hours. Session JWTs remain non-revocable per-session — the only server-side kill switch is deactivating the account.
+
+---
+
 ## [0.74.43] - 2026-07-10
 
 ### Added
@@ -87,8 +94,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 - Operator toggle to hide individual `/login` feature cards without forking: set `instance.hide_login_features` (a YAML list or comma-separated string of the stable keys `data`, `marketplace`, `mcp`, `memory`, `anywhere`) in `instance.yaml`, or the `AGNES_INSTANCE_HIDE_LOGIN_FEATURES` env override. Empty by default — nothing is hidden.
-
-### Changed
 
 ### Fixed
 

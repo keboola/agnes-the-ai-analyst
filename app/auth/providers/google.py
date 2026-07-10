@@ -16,7 +16,7 @@ from authlib.integrations.starlette_client import OAuth
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 
-from app.auth.jwt import create_access_token
+from app.auth.jwt import create_access_token, SESSION_COOKIE_MAX_AGE_SECONDS
 from app.auth._common import safe_next_path
 from app.instance_config import get_allowed_domains
 
@@ -178,7 +178,7 @@ async def google_callback(request: Request):
             key="access_token",
             value=jwt_token,
             httponly=True,
-            max_age=86400,
+            max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
             samesite="lax",
             secure=use_secure,
         )
