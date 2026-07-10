@@ -10,6 +10,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- Credential-free local knowledge packaging: the server builds a per-collection
+  `knowledge.duckdb` artifact (chunks + embeddings) whenever corpus content
+  changes and lists it in the sync manifest under the caller's collection
+  grants; `agnes pull` ships it to `user/knowledge/` (hash-verified, atomic,
+  pruned on de-authorization) and `agnes search --local` — plus the MCP tool
+  when the server is unreachable — runs the same hybrid search offline. Vector
+  scoring needs the `agnes[embeddings]` extra locally; without it search
+  degrades to lexical-only, same as the server (#798).
+
 ---
 
 ## [0.74.49] - 2026-07-10
