@@ -29,7 +29,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlparse
 
 import duckdb
@@ -1653,6 +1653,67 @@ async def dryrun_entity(
 # ---------------------------------------------------------------------------
 # Create (upload) — POST /api/store/entities
 # ---------------------------------------------------------------------------
+
+
+class CreateFromMarkdownBody(BaseModel):
+    """JSON contract for markdown-first publishing (studio Skill Builder)."""
+
+    type: Literal["skill"] = "skill"
+    name: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    skill_md: str
+
+
+@router.post(
+    "/entities/from-markdown",
+    response_model=StoreEntityResponse,
+    status_code=201,
+)
+async def create_entity_from_markdown(
+    body: CreateFromMarkdownBody,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """JSON sibling of ``POST /entities`` — synthesizes ``<name>/SKILL.md``
+    into an in-memory ZIP and delegates to ``create_entity``, so quota,
+    guardrails, LLM review, naming and versioning apply identically.
+    """
+    name = body.name.strip()
+    if not _NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="invalid_name_format")
+    text = body.skill_md
+    if not _FRONTMATTER_RE.match(text.lstrip()):
+        import yaml
+
+        fm = yaml.safe_dump(
+            {"name": name, "description": body.description or ""},
+            default_flow_style=False,
+            allow_unicode=True,
+            sort_keys=False,
+        )
+        text = f"---\n{fm}---\n\n{text}"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{name}/SKILL.md", text)
+    buf.seek(0)
+    upload = UploadFile(file=buf, filename=f"{name}.zip")
+    return await create_entity(
+        background_tasks,
+        file=upload,
+        type=body.type,
+        name=name,
+        description=body.description,
+        category=body.category,
+        video_url=None,
+        title=None,
+        tagline=None,
+        photo=None,
+        docs=[],
+        user=user,
+        conn=conn,
+    )
 
 
 @router.post("/entities", response_model=StoreEntityResponse, status_code=201)
