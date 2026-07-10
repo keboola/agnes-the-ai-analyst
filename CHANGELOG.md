@@ -14,6 +14,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [0.74.44] - 2026-07-10
 
+- Collections: zip archive upload — a bundle (e.g. a Confluence HTML space export)
+  is unpacked server-side, every supported member ingested as its own file with
+  per-member status, Confluence navigation chrome stripped automatically (#796).
+
 ### Changed
 - Interactive web login sessions now persist for 30 days (JWT `exp` + `access_token` cookie `max_age`), up from 24 hours. Session JWTs remain non-revocable per-session — the only server-side kill switch is deactivating the account.
 
