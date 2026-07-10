@@ -105,8 +105,9 @@ class TestUnsupportedExtensions:
     def test_exe_is_none(self):
         assert classify("setup.exe") is None
 
-    def test_zip_is_none(self):
-        assert classify("archive.zip") is None
+    def test_tarball_is_none(self):
+        # zip moved to the bundle tier (K1); other archive formats stay rejected.
+        assert classify("archive.tar") is None
 
     def test_mp4_is_none(self):
         assert classify("video.mp4") is None
@@ -121,6 +122,23 @@ class TestUnsupportedExtensions:
         # ".gitignore" has no real extension — the part after the last dot
         # would be "gitignore"; that's not in any tier.
         assert classify(".gitignore") is None
+
+
+class TestBundleTier:
+    def test_zip_is_bundle_tier(self):
+        assert classify("dump.zip") == "bundle"
+        assert classify("SPACE-export.ZIP") == "bundle"
+
+    def test_other_archives_still_rejected(self):
+        assert classify("a.tar.gz") is None
+        assert classify("a.7z") is None
+        assert classify("a.rar") is None
+
+    def test_bundle_disjoint_from_other_tiers(self):
+        from src.corpus_allowlist import BUNDLE_EXTENSIONS
+
+        assert BUNDLE_EXTENSIONS.isdisjoint(TIER1_EXTENSIONS)
+        assert BUNDLE_EXTENSIONS.isdisjoint(TIER2_EXTENSIONS)
 
 
 class TestConstants:
