@@ -1801,6 +1801,7 @@ KNOWN_UNTESTED = {
     "GET /api/chat/sessions",
     "GET /api/chat/sessions/{chat_id}/messages",
     "GET /api/chat/{session_id}/messages",
+    "GET /api/chat/skills",  # tested in tests/test_chat_skills_endpoint.py
     "POST /api/chat/sessions/{chat_id}/ticket",
     "POST /api/chat/{session_id}/fork",
     "POST /api/chat/{session_id}/invite",
