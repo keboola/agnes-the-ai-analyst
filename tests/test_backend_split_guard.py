@@ -137,14 +137,12 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     "app/api/mcp/tools_generator.py": {"MCPSourceRepository", "ToolRegistryRepository"},
     "app/api/mcp_per_table.py": {"TableRegistryRepository"},
     # mcp_user_secrets.py — migrated to mcp_sources_repo()/per_user_secrets_repo(); entry removed.
-    # memory.py — KnowledgeRepository call sites (mark-mandatory,
-    # mark-unmandatory, admin GET, per-domain bundle) migrated to
-    # knowledge_repo() (batch 2); entry removed.
-    # memory_domains.py — KnowledgeRepository call site migrated to
-    # knowledge_repo() (batch 2); entry removed.
-    # stack_views.py — KnowledgeRepository call site migrated to
-    # knowledge_repo() (batch 2); UsageRepository stays grandfathered.
-    "app/api/stack_views.py": {"UsageRepository"},
+    # memory.py — mark_mandatory/mark_unmandatory/admin_get_item/domain markdown
+    # export migrated to knowledge_repo(); entry removed.
+    # memory_domains.py — add_item_to_domain migrated to knowledge_repo(); entry removed.
+    # stack.py — _emit_event migrated to usage_repo(); entry removed.
+    # stack_views.py — _emit_view/view_memory_domain migrated to usage_repo()/
+    # knowledge_repo(); entry removed.
     "app/auth/access.py": {
         "ResourceGrantsRepository",
         "UserGroupMembersRepository",
@@ -283,6 +281,7 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
 # ``<conn>`` is a ``Depends(_get_db)`` parameter and the SQL names a state table.
 # ---------------------------------------------------------------------------
 
+
 # State tables that have a Postgres backend — reading/writing them off the
 # always-DuckDB ``_get_db`` connection is the backend-split bug. Derived from
 # the SQLAlchemy model metadata (``src/models/`` — the Alembic source of
@@ -409,7 +408,7 @@ _RAW_STATE_SQL_EXCLUDE = (
 def _state_sql_pattern() -> re.Pattern:
     tables = "|".join(re.escape(t) for t in _pg_state_tables())
     return re.compile(
-        r'\b(?:from|into|update|join|delete\s+from)\s+("?)(' + tables + r')\1\b',
+        r'\b(?:from|into|update|join|delete\s+from)\s+("?)(' + tables + r")\1\b",
         re.IGNORECASE,
     )
 
@@ -644,7 +643,7 @@ def test_raw_sql_detector_ignores_non_state_sql(tmp_path):
     clean = tmp_path / "clean_analytics.py"
     clean.write_text(
         "def rebuild(conn):\n"
-        '    conn.execute("CREATE VIEW v AS SELECT * FROM read_parquet(\'x.parquet\')")\n'
+        "    conn.execute(\"CREATE VIEW v AS SELECT * FROM read_parquet('x.parquet')\")\n"
         '    conn.execute("SELECT event_date FROM web_sessions_example LIMIT 5")\n'
     )
     found = scan_raw_state_sql([clean])

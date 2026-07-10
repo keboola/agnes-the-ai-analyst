@@ -85,6 +85,27 @@ class ResourceGrantsPgRepository:
             rows = conn.execute(sa.text(sql), params).mappings().all()
         return [dict(r) for r in rows]
 
+    def list_resource_ids_for_user(
+        self,
+        user_id: str,
+        resource_type: str,
+    ) -> List[str]:
+        """Distinct ``resource_id`` values of ``resource_type`` granted to
+        any group the user belongs to. Mirrors the DuckDB sibling.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """SELECT DISTINCT rg.resource_id
+                       FROM resource_grants rg
+                       JOIN user_group_members m ON m.group_id = rg.group_id
+                       WHERE m.user_id = :u
+                         AND rg.resource_type = :rtype"""
+                ),
+                {"u": user_id, "rtype": resource_type},
+            ).all()
+        return [r[0] for r in rows]
+
     def get(self, grant_id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
             row = (

@@ -18,7 +18,9 @@ from src.repositories import (
     audit_repo,
     knowledge_repo,
     memory_domains_repo,
+    resource_grants_repo,
     usage_repo,
+    user_group_members_repo,
 )
 
 logger = logging.getLogger(__name__)
@@ -114,13 +116,8 @@ def _effective_groups(user, conn: duckdb.DuckDBPyConnection) -> Optional[List[st
     user_id = user.get("id")
     if not user_id:
         return []
-    rows = conn.execute(
-        """SELECT g.name FROM user_group_members m
-           JOIN user_groups g ON m.group_id = g.id
-           WHERE m.user_id = ?""",
-        [user_id],
-    ).fetchall()
-    return [f"group:{r[0]}" for r in rows]
+    names = user_group_members_repo().list_group_names_for_user(user_id)
+    return [f"group:{n}" for n in names]
 
 
 def _caller_granted_memory_domains(
@@ -152,15 +149,7 @@ def _caller_granted_memory_domains(
     user_id = user.get("id")
     if not user_id:
         return []
-    rows = conn.execute(
-        """SELECT DISTINCT rg.resource_id
-           FROM resource_grants rg
-           JOIN user_group_members m ON m.group_id = rg.group_id
-           WHERE m.user_id = ?
-             AND rg.resource_type = 'memory_domain'""",
-        [user_id],
-    ).fetchall()
-    return [r[0] for r in rows]
+    return resource_grants_repo().list_resource_ids_for_user(user_id, "memory_domain")
 
 
 def _can_view_item(user: dict, item: dict, is_priv: bool) -> bool:
@@ -364,13 +353,8 @@ async def list_knowledge(
             # Best-effort post-filter for the search() path (which doesn't
             # plumb the upvote filter into its SQL). Search + "My Upvotes"
             # is rare enough that a post-filter is fine.
-            upvoted_ids = {
-                r[0]
-                for r in conn.execute(
-                    "SELECT item_id FROM knowledge_votes WHERE user_id = ? AND vote > 0",
-                    [upvoted_by_user_id],
-                ).fetchall()
-            }
+            votes_by_item = repo.get_votes_by_user(upvoted_by_user_id)
+            upvoted_ids = {item_id for item_id, v in votes_by_item.items() if v > 0}
             items = [it for it in items if it["id"] in upvoted_ids]
     else:
         items = repo.list_items(
@@ -575,11 +559,9 @@ async def vote_knowledge(
 @router.get("/my-votes")
 async def get_my_votes(
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get current user's votes on all items."""
-    results = conn.execute("SELECT item_id, vote FROM knowledge_votes WHERE user_id = ?", [user["id"]]).fetchall()
-    return {row[0]: row[1] for row in results}
+    return knowledge_repo().get_votes_by_user(user["id"])
 
 
 @router.get("/my-contributions")
@@ -1580,10 +1562,10 @@ def _build_per_domain_markdown(slug: str, user: dict, conn: duckdb.DuckDBPyConne
         return Response(content=body, media_type="text/markdown; charset=utf-8")
 
     # Fetch full bodies — list_items_of_domain only returns id/title/status.
-    kn_repo = knowledge_repo()
+    knowledge = knowledge_repo()
     full_items: list = []
     for meta in sorted(items_meta, key=lambda r: r["id"]):
-        full = kn_repo.get_by_id(meta["id"])
+        full = knowledge.get_by_id(meta["id"])
         if not full:
             continue
         full_items.append(full)
