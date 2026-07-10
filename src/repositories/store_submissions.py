@@ -342,6 +342,34 @@ class StoreSubmissionsRepository:
                 reaped.append((sub_id, submitter_id))
         return reaped
 
+    def find_purge_candidates(
+        self,
+        *,
+        statuses: List[str],
+        older_than: datetime,
+    ) -> List[Tuple[str, Optional[str]]]:
+        """Return ``(id, entity_id)`` for submissions eligible for TTL purge.
+
+        Scoped to rows whose ``status`` is one of ``statuses``,
+        ``bundle_purged_at`` is still NULL (bundle not already purged), and
+        ``created_at`` predates ``older_than``. Read-only helper for
+        ``src.store_guardrails.purge.purge_blocked_bundles`` — engine-specific
+        SQL lives here (not in the purge module) so the Postgres sibling can
+        mirror it; see ``store_submissions_pg.StoreSubmissionsPgRepository``.
+        """
+        statuses = list(statuses)
+        if not statuses:
+            return []
+        placeholders = ",".join("?" for _ in statuses)
+        rows = self.conn.execute(
+            f"""SELECT id, entity_id FROM store_submissions
+                WHERE status IN ({placeholders})
+                  AND bundle_purged_at IS NULL
+                  AND created_at < ?""",
+            [*statuses, older_than],
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
     def count_for_submitter(self, submitter_id: str, exclude_id: Optional[str] = None) -> int:
         """Number of submissions by a single user. Used by the detail page
         footer to render *"N other attempts by alice@x.com"* — pass the

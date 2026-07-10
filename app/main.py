@@ -508,10 +508,9 @@ async def lifespan(app):
     # name + description on every boot so operators can't drift them
     # away from the seed.
     try:
-        from src.db import get_system_db
         from connectors.internal.registry import ensure_internal_tables_registered
 
-        ensure_internal_tables_registered(get_system_db())
+        ensure_internal_tables_registered()
     except Exception:
         logger.exception("internal data-source seed failed; continuing")
 
@@ -976,9 +975,12 @@ async def lifespan(app):
     # Started here (worker-only), not create_app(): the uvicorn --reload
     # master must not touch system.duckdb (same reasoning as the seeding
     # above). Runs on Postgres-state instances too: boot still opens the
-    # DuckDB singleton unconditionally (ensure_internal_tables_registered /
-    # ensure_knowledge_fts_index above), so the file exists and takes writes
+    # DuckDB singleton unconditionally for the DuckDB-only FTS index rebuild
+    # (ensure_knowledge_fts_index above), so the file exists and takes writes
     # there as well — checkpointing it is cheap and keeps its WAL folded.
+    # (ensure_internal_tables_registered now routes through the repository
+    # factory and no longer forces the DuckDB singleton open on PG-backed
+    # instances.)
     _checkpoint_interval = _state_checkpoint_interval_s()
     _checkpoint_task = None
     if _checkpoint_interval > 0:

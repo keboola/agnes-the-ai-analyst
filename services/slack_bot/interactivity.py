@@ -136,7 +136,7 @@ async def _on_share(app, it: Interaction) -> None:
     except Exception:
         logger.warning("response_url clear failed after share (post already public)")
     write_audit(
-        conn, user_email=clicker_email, action="slack_share",
+        user_email=clicker_email, action="slack_share",
         details={"channel_id": channel_id},
     )
 

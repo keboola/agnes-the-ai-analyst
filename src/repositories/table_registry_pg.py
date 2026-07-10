@@ -236,6 +236,30 @@ class TableRegistryPgRepository:
                 {"id": table_id},
             )
 
+    def delete_internal_except(self, keep_ids: List[str]) -> int:
+        """Postgres mirror of
+        ``TableRegistryRepository.delete_internal_except``."""
+        keep_ids = list(keep_ids)
+        with self._engine.begin() as conn:
+            if keep_ids:
+                rows = conn.execute(
+                    sa.text(
+                        """DELETE FROM table_registry
+                            WHERE source_type = 'internal' AND id NOT IN :keep_ids
+                            RETURNING 1"""
+                    ).bindparams(sa.bindparam("keep_ids", expanding=True)),
+                    {"keep_ids": keep_ids},
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    sa.text(
+                        """DELETE FROM table_registry
+                            WHERE source_type = 'internal' AND id NOT IN ('')
+                            RETURNING 1"""
+                    )
+                ).fetchall()
+        return len(rows)
+
     def delete_for_corpus(self, corpus_id: str) -> List[str]:
         """Delete all table_registry rows belonging to a file-corpus collection.
 

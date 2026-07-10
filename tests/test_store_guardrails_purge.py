@@ -81,7 +81,7 @@ class TestPurgeBlockedBundles:
         assert plugin_dir.exists()
 
         result = purge_blocked_bundles(
-            conn, ttl_days=30,
+            ttl_days=30,
             store_dir_resolver=lambda: tmp_path / "store",
         )
         assert result["purged"] == 1
@@ -106,7 +106,7 @@ class TestPurgeBlockedBundles:
             status="blocked_llm", days_old=2,
         )
         result = purge_blocked_bundles(
-            conn, ttl_days=30,
+            ttl_days=30,
             store_dir_resolver=lambda: tmp_path / "store",
         )
         assert result["purged"] == 0
@@ -122,7 +122,7 @@ class TestPurgeBlockedBundles:
             status="approved", days_old=100,
         )
         result = purge_blocked_bundles(
-            conn, ttl_days=30,
+            ttl_days=30,
             store_dir_resolver=lambda: tmp_path / "store",
         )
         assert result["purged"] == 0
@@ -136,7 +136,7 @@ class TestPurgeBlockedBundles:
             status="overridden", days_old=100,
         )
         result = purge_blocked_bundles(
-            conn, ttl_days=30,
+            ttl_days=30,
             store_dir_resolver=lambda: tmp_path / "store",
         )
         assert result["purged"] == 0
@@ -149,14 +149,14 @@ class TestPurgeBlockedBundles:
             status="blocked_llm", days_old=45,
         )
         first = purge_blocked_bundles(
-            conn, ttl_days=30,
+            ttl_days=30,
             store_dir_resolver=lambda: tmp_path / "store",
         )
         assert first["purged"] == 1
         # Second run must purge nothing (bundle_purged_at already set,
         # entity_id is null).
         second = purge_blocked_bundles(
-            conn, ttl_days=30,
+            ttl_days=30,
             store_dir_resolver=lambda: tmp_path / "store",
         )
         assert second["purged"] == 0
@@ -169,7 +169,7 @@ class TestPurgeBlockedBundles:
             status="blocked_llm", days_old=999,
         )
         result = purge_blocked_bundles(
-            conn, ttl_days=0,
+            ttl_days=0,
             store_dir_resolver=lambda: tmp_path / "store",
         )
         assert result == {"purged": 0, "ids": [], "skipped": True}

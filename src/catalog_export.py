@@ -31,8 +31,7 @@ from connectors.openmetadata.transformer import (
     metric_to_yaml_dict,
     table_to_yaml_dict,
 )
-from src.db import get_system_db
-from src.repositories.table_registry import TableRegistryRepository
+from src.repositories import table_registry_repo
 
 logger = logging.getLogger(__name__)
 
@@ -440,9 +439,7 @@ def main() -> None:
 
         # Export tables
         try:
-            conn = get_system_db()
-            repo = TableRegistryRepository(conn)
-            registered_tables = repo.list_all()
+            registered_tables = table_registry_repo().list_all()
             tables_count = export_tables(client, registered_tables, docs_dir, catalog_url)
         except Exception as e:
             logger.warning(f"Table export skipped (registry error): {e}")

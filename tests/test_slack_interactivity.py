@@ -77,25 +77,28 @@ def test_send_ephemeral_posts_to_response_url(monkeypatch):
     assert body["text"] == "nope"
 
 
-def test_is_channel_allowlisted_default_deny_and_grant(tmp_path):
+def test_is_channel_allowlisted_default_deny_and_grant(tmp_path, monkeypatch):
     import duckdb
     from services.slack_bot.binding import is_channel_allowlisted
-    conn = duckdb.connect()
-    # Real schema: resource_grants uses group_id FK to user_groups.id
-    conn.execute(
-        "CREATE TABLE user_groups ("
-        " id VARCHAR PRIMARY KEY, name VARCHAR, is_system BOOLEAN)"
-    )
-    conn.execute(
-        "CREATE TABLE resource_grants ("
-        " id VARCHAR, group_id VARCHAR, resource_type VARCHAR, resource_id VARCHAR)"
-    )
-    conn.execute("INSERT INTO user_groups VALUES ('g1', 'Everyone', TRUE)")
+    from src.db import _ensure_schema
+    from src.repositories.resource_grants import ResourceGrantsRepository
+
+    # is_channel_allowlisted resolves the grant through the repo factory
+    # (resource_grants_repo()/user_groups_repo()), not the raw conn passed
+    # in — so the seed must land where the factory's DuckDB provider
+    # (get_system_db()) reads from, exactly like the real schema (the
+    # "Everyone" system group is seeded by _ensure_schema).
+    conn = duckdb.connect(str(tmp_path / "system.duckdb"))
+    _ensure_schema(conn)
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: conn)
+
+    everyone_id = conn.execute("SELECT id FROM user_groups WHERE name = 'Everyone'").fetchone()[0]
+
     # default-deny
     assert is_channel_allowlisted(conn, "C1") is False
     # Everyone grant flips it on
-    conn.execute(
-        "INSERT INTO resource_grants VALUES ('r1', 'g1', 'slack_channel', 'C1')"
+    ResourceGrantsRepository(conn).create(
+        group_id=everyone_id, resource_type="slack_channel", resource_id="C1",
     )
     assert is_channel_allowlisted(conn, "C1") is True
     # other channels stay denied
@@ -399,7 +402,7 @@ def _share_app(monkeypatch, *, bound_email, allowlisted, body="shared body"):
     monkeypatch.setattr(inter_mod, "lookup_user_email", lambda repo, uid: bound_email)
     monkeypatch.setattr(inter_mod, "is_channel_allowlisted", lambda conn, ch: allowlisted)
     audits = []
-    monkeypatch.setattr(inter_mod, "write_audit", lambda conn, **kw: audits.append(kw))
+    monkeypatch.setattr(inter_mod, "write_audit", lambda **kw: audits.append(kw))
     posts, clears = [], []
     async def fake_post(ch, text): posts.append((ch, text))
     async def fake_resp(url, b): clears.append((url, b))

@@ -10,21 +10,23 @@ Idempotency: ``TableRegistryRepository.register`` uses
 ``ON CONFLICT (id) DO UPDATE`` so re-running this on every startup just
 re-applies the canonical description / display name (operators can't
 accidentally edit the rows away).
+
+Backend-agnostic: the repo is resolved from the ``src.repositories``
+factory, so the seed lands in whichever backend (DuckDB or Postgres) the
+deployment runs on.
 """
 
 from __future__ import annotations
 
 import logging
 
-import duckdb
-
 from connectors.internal.access import INTERNAL_TABLES
-from src.repositories.table_registry import TableRegistryRepository
+from src.repositories import table_registry_repo
 
 logger = logging.getLogger(__name__)
 
 
-def ensure_internal_tables_registered(conn: duckdb.DuckDBPyConnection) -> None:
+def ensure_internal_tables_registered() -> None:
     """Insert / refresh the internal-source rows in ``table_registry``.
 
     Safe to call on every boot. Operators see these in /admin/tables
@@ -36,15 +38,10 @@ def ensure_internal_tables_registered(conn: duckdb.DuckDBPyConnection) -> None:
     (e.g. agnes_usage → agnes_telemetry). Without this the old row
     would linger in /catalog forever.
     """
-    repo = TableRegistryRepository(conn)
-    canonical_ids = {t.registry_id for t in INTERNAL_TABLES}
-    placeholders = ",".join("?" for _ in canonical_ids) if canonical_ids else "''"
+    repo = table_registry_repo()
+    canonical_ids = [t.registry_id for t in INTERNAL_TABLES]
     try:
-        conn.execute(
-            f"DELETE FROM table_registry "
-            f"WHERE source_type = 'internal' AND id NOT IN ({placeholders})",
-            list(canonical_ids),
-        )
+        repo.delete_internal_except(canonical_ids)
     except Exception:
         logger.exception(
             "ensure_internal_tables_registered: stale-row cleanup failed; "
