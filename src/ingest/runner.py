@@ -91,6 +91,13 @@ def ingest_file(file_id: str) -> str:
     ext = _ext_of(filename, file_type)
 
     try:
+        if ext == "zip":
+            # Bundle (K1): unpack + per-member child ingestion. ingest_bundle
+            # sets the archive row's own status in every path.
+            import src.ingest.bundle as _bundle
+
+            return _bundle.ingest_bundle(corpus_id, file_id, storage_path)
+
         if ext in TABULAR_EXTS:
             table_id = ingest_tabular(corpus_id, file_id, storage_path, file_type, filename=filename)
             cf_repo.set_status(
