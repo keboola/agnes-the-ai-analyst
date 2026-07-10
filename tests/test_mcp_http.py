@@ -166,6 +166,9 @@ class TestToolRegistration:
             "list_contributed_skills",
             "contribute_skill",
             "delete_contributed_skill",
+            # Web chat composer slash-menu catalog (issue #780). Triple-surface
+            # with GET /api/chat/skills + `agnes chat skills`.
+            "chat_skills",
         }
 
     def test_no_client_only_tools(self):
