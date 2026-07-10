@@ -146,6 +146,10 @@ class TestToolRegistration:
             "collections_list",
             "collection_get",
             "collections_search",
+            # Unified knowledge search (K2, #797) — one query across
+            # Collections chunks + knowledge items + table catalog cards.
+            # Triple-surface with GET /api/knowledge/search + `agnes search`.
+            "knowledge_search",
             # Re-run ingestion for one stuck file (needs_review/rejected) —
             # status-honesty follow-up (spec 2026-07-08). Triple-surface with
             # POST /api/collections/{cid}/files/{fid}/reingest +
