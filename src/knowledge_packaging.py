@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
-import duckdb
+from src.duckdb_conn import _open_duckdb
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +128,7 @@ def build_artifact(corpus_id: str) -> Dict[str, Any]:
     corpus = next((c for c in _list_corpora() if c["id"] == corpus_id), None)
     built_at = datetime.now(timezone.utc).isoformat()
 
-    con = duckdb.connect(str(tmp))
+    con = _open_duckdb(str(tmp))
     try:
         con.execute(
             "CREATE TABLE chunks ("
