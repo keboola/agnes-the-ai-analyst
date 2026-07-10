@@ -13,6 +13,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
+- Admin secrets/data-sources UX consolidation: Keboola project connect/browse/register/"Set as default"/"Rotate token" now live entirely on `/admin/data-sources`, removing the duplicate Keboola section from `/admin/datasource-credentials`. That page is retitled "Instance secrets" (Google Workspace + BigQuery only) and links back to `/admin/data-sources` for Keboola; `/admin/data-sources` gains a reciprocal link to Instance secrets.
 
 ### Fixed
 - MCP wheel bootstrap no longer trusts the `.installed.json` marker alone: the marker lives on the persistent data volume while `pip install --user` lands in the ephemeral container filesystem, so after a container recreate the boot skipped the reinstall and every stdio MCP source failed with `[Errno 2] No such file or directory`. The skip path now also verifies the wheel's distribution is actually importable and reinstalls when it is gone.

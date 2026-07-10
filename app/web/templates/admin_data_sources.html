@@ -40,6 +40,13 @@
   }
   .ds-section-desc { font-size: 12px; color: var(--text-secondary, var(--ds-text-secondary)); margin-top: 2px; }
 
+  .ds-footnote {
+    margin-top: 16px;
+    font-size: 12px; color: var(--text-secondary, var(--ds-text-secondary));
+  }
+  .ds-footnote a { color: var(--ds-primary, var(--ds-primary)); text-decoration: none; }
+  .ds-footnote a:hover { text-decoration: underline; }
+
   .ds-empty, .ds-loading {
     text-align: center; padding: 28px 20px;
     font-size: 13px; color: var(--text-secondary, var(--ds-text-secondary));
@@ -99,6 +106,22 @@
   .ds-conn-test-result.show { display: flex; }
   .ds-conn-test-result.ok   { color: var(--ds-accent-success-ink); }
   .ds-conn-test-result.fail { color: var(--ds-accent-danger-ink); }
+
+  /* Inline token rotate row */
+  .ds-rotate-row {
+    display: none; align-items: center; gap: 8px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--border, var(--ds-border));
+    background: var(--background, var(--ds-surface-dim));
+  }
+  .ds-rotate-row.show { display: flex; }
+  .ds-rotate-row input {
+    flex: 1; padding: 7px 10px;
+    border-radius: 8px; border: 1px solid var(--border, var(--ds-border));
+    background: var(--surface, var(--ds-surface)); color: var(--text-primary, var(--ds-text-primary));
+    font-size: 12px; font-family: var(--font-mono, ui-monospace, monospace);
+  }
+  .ds-rotate-row input:focus { outline: 2px solid var(--ds-primary, var(--ds-primary)); outline-offset: -1px; }
 
   /* Table-browse panel (inline, per connection card) */
   .ds-browse-panel {
@@ -252,6 +275,11 @@
   <div id="ds-conn-list">
     <div class="ds-loading">Loading…</div>
   </div>
+
+  <div class="ds-footnote">
+    BigQuery / Google Workspace secrets live in
+    <a href="/admin/datasource-credentials">Instance secrets</a>.
+  </div>
 </div>
 
 {# ── Add Keboola project wizard ──────────────────────────────────────── #}
@@ -357,8 +385,15 @@ function _connectionCardHtml(row) {
   <div class="ds-conn-actions">
     <button type="button" class="btn btn-secondary" onclick="testConn('${id}')">Test</button>
     <button type="button" class="btn btn-secondary" onclick="toggleBrowse('${id}')">Browse &amp; register tables</button>
+    ${!isDefault ? `<button type="button" class="btn btn-secondary" onclick="setDefaultConn('${id}')">Set as default</button>` : ""}
+    <button type="button" class="btn btn-secondary" onclick="toggleRotate('${id}')">Rotate token</button>
     <button type="button" class="btn btn-secondary" style="color:var(--ds-accent-danger-ink); border-color:var(--ds-accent-danger-line);" onclick="deleteConn('${id}')">Delete</button>
     <span class="ds-conn-test-result" id="ds-test-${id}"></span>
+  </div>
+  <div class="ds-rotate-row" id="ds-rotate-${id}">
+    <input type="password" id="ds-rotate-input-${id}" placeholder="paste new token" autocomplete="off">
+    <button type="button" class="btn btn-primary" onclick="saveRotatedToken('${id}')">Save token</button>
+    <button type="button" class="btn btn-secondary" onclick="toggleRotate('${id}')">Cancel</button>
   </div>
   <div class="ds-browse-panel" id="ds-browse-${id}"></div>
 </div>`;
@@ -431,6 +466,63 @@ async function deleteConn(id) {
         msg = detail;
       }
       showToast("Delete failed: " + msg, false);
+    }
+  } catch (_) {
+    showToast("Request failed.", false);
+  }
+}
+
+async function setDefaultConn(id) {
+  try {
+    const r = await fetch(`${API_CONNECTIONS}/${id}`, {
+      method: "PUT", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_default: true }),
+    });
+    if (r.ok) {
+      showToast("Default project updated.", true);
+      await loadConnections();
+    } else {
+      const body = await r.json().catch(() => ({}));
+      showToast("Failed: " + (body.detail || "unknown error"), false);
+    }
+  } catch (_) {
+    showToast("Request failed.", false);
+  }
+}
+
+function toggleRotate(id) {
+  const row = document.getElementById(`ds-rotate-${id}`);
+  if (row.classList.contains("show")) {
+    row.classList.remove("show");
+    document.getElementById(`ds-rotate-input-${id}`).value = "";
+  } else {
+    row.classList.add("show");
+    document.getElementById(`ds-rotate-input-${id}`).focus();
+  }
+}
+
+async function saveRotatedToken(id) {
+  const input = document.getElementById(`ds-rotate-input-${id}`);
+  const token = input.value.trim();
+  if (!token) { showToast("Paste a token first.", false); return; }
+  try {
+    const r = await fetch(`${API_CONNECTIONS}/${id}/secret`, {
+      method: "PUT", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value: token }),
+    });
+    if (r.ok || r.status === 204) {
+      showToast("Token rotated.", true);
+      input.value = "";
+      toggleRotate(id);
+      await loadConnections();
+    } else {
+      const body = await r.json().catch(() => ({}));
+      const msg = r.status === 409
+        ? "Server vault key missing — set AGNES_VAULT_KEY first."
+        : "Failed: " + (body.detail || "unknown error");
+      showToast(msg, false);
     }
   } catch (_) {
     showToast("Request failed.", false);
