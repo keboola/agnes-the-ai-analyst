@@ -184,14 +184,11 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
         "MetricRepository",
         "TableRegistryRepository",
     },
-    # Slack bot: the whole subsystem reads off `repo._conn` (= the DuckDB system
-    # connection that app.state.chat_repo is built on), consistently — user
-    # lookup, verification codes, and bindings all live there. Migrating Slack
-    # identity to the factory is a separate subsystem-wide effort; until then
-    # both handlers stay grandfathered as a coherent DuckDB-conn unit.
-    "services/slack_bot/commands.py": {"UserRepository"},
-    "services/slack_bot/events.py": {"UserRepository"},
-    "src/catalog_export.py": {"TableRegistryRepository"},
+    # Slack bot — user-identity lookups (commands.py/events.py) migrated to
+    # users_repo(); channel-allowlist grant lookup routed through the factory.
+    # The DuckDB-only binding-code tables stay on repo._conn by design.
+    # Entries removed.
+    # src/catalog_export.py — migrated to table_registry_repo(); entry removed.
     # src/claude_md.py — render_claude_md moved off direct instantiation onto
     # resolve_prompt() (#622); entry removed.
     # src/initial_workspace.py — resolve_prompt() binds the DuckDB repo to the
@@ -207,16 +204,18 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     # src/orchestrator.py — rebuild/sync_state/view_ownership migrated to the
     # factory; entry removed.
     # src/profiler.py — get_table_map migrated to metric_repo(); entry removed.
-    "src/store_guardrails/purge.py": {"StoreEntitiesRepository", "StoreSubmissionsRepository"},
+    # src/store_guardrails/purge.py — migrated to store_submissions_repo()/
+    # store_entities_repo() + find_purge_candidates(); entry removed.
     # surfaced when "connectors" joined SCAN_DIRS (previously unscanned — the
     # 2026-07 audit's guard-coverage gap). Extractors run server-side where
     # DATABASE_URL may be set; direct DuckDB repo construction there is the
     # same backend-split class. Live debt — verify/fix, then delete.
     # keboola/extractor.py — registry/sync-state reads migrated to the factory; entry removed.
+    # internal/registry.py — ensure_internal_tables_registered migrated to
+    # table_registry_repo() + delete_internal_except(); entry removed.
     # bigquery/extractor.py — kept: sanctioned `not use_pg()` conn escape hatch;
     # on Postgres the factory always wins.
     "connectors/bigquery/extractor.py": {"TableRegistryRepository"},
-    "connectors/internal/registry.py": {"TableRegistryRepository"},
     # mcp/extractor.py — kept: sanctioned `not use_pg()` conn escape hatch
     # (_sources_repo/_tools_repo); on Postgres the factory always wins.
     "connectors/mcp/extractor.py": {"MCPSourceRepository", "ToolRegistryRepository"},
@@ -261,7 +260,6 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "cli/commands/admin_data_semantics.py",
     "cli/commands/admin_metrics.py",
     "services/verification_detector/__main__.py",
-    "src/catalog_export.py",
     "src/rbac.py",
     # surfaced when "connectors" joined SCAN_DIRS — see the matching note in
     # _GRANDFATHERED_DIRECT_INSTANTIATION. internal/access.py is verified
@@ -462,15 +460,12 @@ _GRANDFATHERED_RAW_STATE_SQL: dict[str, set[str]] = {
     # catalog profile, memory-relations count all migrated to the factory;
     # entries removed.
     # memory.py — RBAC helpers + vote reads migrated to the factory; entry removed.
-    "app/chat/audit.py": {"write_audit"},
-    "app/chat/copresence_summary.py": {"build_intersection_summary"},
-    "connectors/internal/registry.py": {"ensure_internal_tables_registered"},
+    # chat/audit.py, chat/copresence_summary.py, internal/registry.py,
     # session_pipeline/runner.py, session_processors/usage_lib.py,
-    # verification_detector/__main__.py — migrated to the factory; entries removed.
-    "services/slack_bot/binding.py": {"is_channel_allowlisted"},
-    "services/slack_bot/events.py": {"_handle_mention"},
-    "src/claude_md.py": {"_list_tables", "_marketplaces_for_user", "_metrics_summary"},
-    "src/store_guardrails/purge.py": {"purge_blocked_bundles"},
+    # verification_detector/__main__.py, slack_bot/{binding,events}.py,
+    # claude_md.py, store_guardrails/purge.py — all migrated to the factory
+    # (2026-07 backend-split batch); entries removed. The list is empty: every
+    # raw state-SQL site now lives inside the repository layer.
 }
 
 
