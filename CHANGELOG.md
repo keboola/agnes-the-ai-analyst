@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- Operator toggle to hide individual `/login` feature cards without forking: set `instance.hide_login_features` (a YAML list or comma-separated string of the stable keys `data`, `marketplace`, `mcp`, `memory`, `anywhere`) in `instance.yaml`, or the `AGNES_INSTANCE_HIDE_LOGIN_FEATURES` env override. Empty by default — nothing is hidden.
 
 ### Changed
 

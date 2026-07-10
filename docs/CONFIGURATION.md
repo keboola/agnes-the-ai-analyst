@@ -75,6 +75,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | UI theme/palette (`blue`/`navy`/`dark`/`auto`) | `AGNES_INSTANCE_THEME` | `instance.theme` | `blue` | `get_instance_theme()` |
 | Analyst workspace folder name (`~/<name>`) | `AGNES_WORKSPACE_DIR_NAME` | `instance.workspace_dir` | derived from brand (non-alphanumerics stripped) | `get_workspace_dir_name()` |
 | Operator-injected HTML/JS blocks (analytics, widgets) | — | `instance.custom_scripts` | `[]` | `get_custom_scripts()` |
+| Hide individual `/login` feature cards (keys: `data`, `marketplace`, `mcp`, `memory`, `anywhere`; list or comma-string) | `AGNES_INSTANCE_HIDE_LOGIN_FEATURES` | `instance.hide_login_features` | `""` (nothing hidden) | `get_hidden_login_features()` |
 | Legacy theme block (colors/fonts) | — | `theme` | `{}` | `get_theme()` |
 
 ### Onboarding & `/home`

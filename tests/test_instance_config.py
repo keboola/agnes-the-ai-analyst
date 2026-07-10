@@ -166,6 +166,81 @@ class TestInstanceBrand:
         mod._instance_config = None
 
 
+class TestHiddenLoginFeatures:
+    """instance.hide_login_features / AGNES_INSTANCE_HIDE_LOGIN_FEATURES —
+    stable /login feature-card keys to hide. Resolution: env (comma-string) >
+    YAML (list or comma-string) > empty; normalized to a lowercase,
+    whitespace-stripped, de-duplicated frozenset."""
+
+    def _reload(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        import importlib
+        import app.instance_config as mod
+        mod._instance_config = None
+        importlib.reload(mod)
+        return mod
+
+    def _write(self, tmp_path, yaml_body: str):
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "instance.yaml").write_text(yaml_body)
+
+    def test_default_empty(self, tmp_path, monkeypatch):
+        """Unset env + unset YAML → hide nothing (OSS vendor-neutral default)."""
+        monkeypatch.delenv("AGNES_INSTANCE_HIDE_LOGIN_FEATURES", raising=False)
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_hidden_login_features() == frozenset()
+        mod._instance_config = None
+
+    def test_returns_frozenset(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AGNES_INSTANCE_HIDE_LOGIN_FEATURES", "mcp")
+        mod = self._reload(tmp_path, monkeypatch)
+        assert isinstance(mod.get_hidden_login_features(), frozenset)
+        mod._instance_config = None
+
+    def test_env_comma_separated(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AGNES_INSTANCE_HIDE_LOGIN_FEATURES", "mcp,memory")
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_hidden_login_features() == frozenset({"mcp", "memory"})
+        mod._instance_config = None
+
+    def test_env_whitespace_case_and_dedupe(self, tmp_path, monkeypatch):
+        """Whitespace trimmed, lowercased, empties dropped, duplicates collapsed."""
+        monkeypatch.setenv("AGNES_INSTANCE_HIDE_LOGIN_FEATURES", " MCP , Memory , mcp ,, ")
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_hidden_login_features() == frozenset({"mcp", "memory"})
+        mod._instance_config = None
+
+    def test_env_overrides_yaml(self, tmp_path, monkeypatch):
+        self._write(tmp_path, "instance:\n  name: Acme\n  hide_login_features: [data]\n")
+        monkeypatch.setenv("AGNES_INSTANCE_HIDE_LOGIN_FEATURES", "mcp")
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_hidden_login_features() == frozenset({"mcp"})
+        mod._instance_config = None
+
+    def test_yaml_list(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AGNES_INSTANCE_HIDE_LOGIN_FEATURES", raising=False)
+        self._write(
+            tmp_path,
+            "instance:\n  name: Acme\n  hide_login_features:\n    - MCP\n    - memory\n",
+        )
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_hidden_login_features() == frozenset({"mcp", "memory"})
+        mod._instance_config = None
+
+    def test_yaml_comma_string(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AGNES_INSTANCE_HIDE_LOGIN_FEATURES", raising=False)
+        self._write(
+            tmp_path,
+            'instance:\n  name: Acme\n  hide_login_features: "mcp, memory"\n',
+        )
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_hidden_login_features() == frozenset({"mcp", "memory"})
+        mod._instance_config = None
+
+
 class TestCustomScripts:
     """instance.custom_scripts — operator-injected HTML/JS blocks rendered
     by base.html. Validates the normalization + filtering done by
