@@ -21,13 +21,10 @@ class UserCuratedSubscriptionsRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection):
         self.conn = conn
 
-    def subscribe(
-        self, user_id: str, marketplace_id: str, plugin_name: str
-    ) -> bool:
+    def subscribe(self, user_id: str, marketplace_id: str, plugin_name: str) -> bool:
         """Idempotent. Returns True iff a new row was inserted."""
         before = self.conn.execute(
-            "SELECT 1 FROM user_plugin_optouts "
-            "WHERE user_id = ? AND marketplace_id = ? AND plugin_name = ?",
+            "SELECT 1 FROM user_plugin_optouts WHERE user_id = ? AND marketplace_id = ? AND plugin_name = ?",
             [user_id, marketplace_id, plugin_name],
         ).fetchone()
         if before:
@@ -40,31 +37,24 @@ class UserCuratedSubscriptionsRepository:
         )
         return True
 
-    def unsubscribe(
-        self, user_id: str, marketplace_id: str, plugin_name: str
-    ) -> bool:
+    def unsubscribe(self, user_id: str, marketplace_id: str, plugin_name: str) -> bool:
         """Returns True iff a row was deleted."""
         before = self.conn.execute(
-            "SELECT 1 FROM user_plugin_optouts "
-            "WHERE user_id = ? AND marketplace_id = ? AND plugin_name = ?",
+            "SELECT 1 FROM user_plugin_optouts WHERE user_id = ? AND marketplace_id = ? AND plugin_name = ?",
             [user_id, marketplace_id, plugin_name],
         ).fetchone()
         if not before:
             return False
         self.conn.execute(
-            "DELETE FROM user_plugin_optouts "
-            "WHERE user_id = ? AND marketplace_id = ? AND plugin_name = ?",
+            "DELETE FROM user_plugin_optouts WHERE user_id = ? AND marketplace_id = ? AND plugin_name = ?",
             [user_id, marketplace_id, plugin_name],
         )
         return True
 
-    def is_subscribed(
-        self, user_id: str, marketplace_id: str, plugin_name: str
-    ) -> bool:
+    def is_subscribed(self, user_id: str, marketplace_id: str, plugin_name: str) -> bool:
         return bool(
             self.conn.execute(
-                "SELECT 1 FROM user_plugin_optouts "
-                "WHERE user_id = ? AND marketplace_id = ? AND plugin_name = ?",
+                "SELECT 1 FROM user_plugin_optouts WHERE user_id = ? AND marketplace_id = ? AND plugin_name = ?",
                 [user_id, marketplace_id, plugin_name],
             ).fetchone()
         )
@@ -74,8 +64,7 @@ class UserCuratedSubscriptionsRepository:
         set — the shape ``resolve_user_marketplace`` filters against.
         """
         rows = self.conn.execute(
-            "SELECT marketplace_id, plugin_name FROM user_plugin_optouts "
-            "WHERE user_id = ?",
+            "SELECT marketplace_id, plugin_name FROM user_plugin_optouts WHERE user_id = ?",
             [user_id],
         ).fetchall()
         return {(r[0], r[1]) for r in rows}
@@ -97,22 +86,18 @@ class UserCuratedSubscriptionsRepository:
             for r in rows
         ]
 
-    def delete_for_plugin(
-        self, marketplace_id: str, plugin_name: str
-    ) -> int:
+    def delete_for_plugin(self, marketplace_id: str, plugin_name: str) -> int:
         """Drop all users' subscriptions for a given plugin.
 
         Called when a plugin's RBAC grant is revoked or the parent marketplace
         is deleted. Returns count of rows deleted (audit telemetry).
         """
         before = self.conn.execute(
-            "SELECT COUNT(*) FROM user_plugin_optouts "
-            "WHERE marketplace_id = ? AND plugin_name = ?",
+            "SELECT COUNT(*) FROM user_plugin_optouts WHERE marketplace_id = ? AND plugin_name = ?",
             [marketplace_id, plugin_name],
         ).fetchone()[0]
         self.conn.execute(
-            "DELETE FROM user_plugin_optouts "
-            "WHERE marketplace_id = ? AND plugin_name = ?",
+            "DELETE FROM user_plugin_optouts WHERE marketplace_id = ? AND plugin_name = ?",
             [marketplace_id, plugin_name],
         )
         return int(before)
@@ -134,7 +119,9 @@ class UserCuratedSubscriptionsRepository:
         return int(before)
 
     def fanout_system_for_plugin(
-        self, marketplace_id: str, plugin_name: str,
+        self,
+        marketplace_id: str,
+        plugin_name: str,
     ) -> int:
         """Subscribe every existing user to ``(marketplace_id, plugin_name)``.
 
@@ -150,8 +137,7 @@ class UserCuratedSubscriptionsRepository:
         plugin returns 0 instead of misleadingly reporting "every user".
         """
         before = self.conn.execute(
-            "SELECT COUNT(*) FROM user_plugin_optouts "
-            "WHERE marketplace_id = ? AND plugin_name = ?",
+            "SELECT COUNT(*) FROM user_plugin_optouts WHERE marketplace_id = ? AND plugin_name = ?",
             [marketplace_id, plugin_name],
         ).fetchone()[0]
         self.conn.execute(
@@ -162,8 +148,7 @@ class UserCuratedSubscriptionsRepository:
             [marketplace_id, plugin_name],
         )
         after = self.conn.execute(
-            "SELECT COUNT(*) FROM user_plugin_optouts "
-            "WHERE marketplace_id = ? AND plugin_name = ?",
+            "SELECT COUNT(*) FROM user_plugin_optouts WHERE marketplace_id = ? AND plugin_name = ?",
             [marketplace_id, plugin_name],
         ).fetchone()[0]
         return max(0, int(after) - int(before))

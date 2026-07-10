@@ -100,9 +100,7 @@ def resolve_manifest_name(plugin_dir: Path, fallback: str) -> str:
     return fallback
 
 
-def resolve_allowed_plugins(
-    conn: duckdb.DuckDBPyConnection, user: dict
-) -> List[dict]:
+def resolve_allowed_plugins(conn: duckdb.DuckDBPyConnection, user: dict) -> List[dict]:
     """Return the distinct, prefixed plugin list this user is allowed to install.
 
     Each entry:
@@ -261,9 +259,7 @@ def _compute_bundle_version(bundle_dirs: list[Path]) -> str:
     return h.hexdigest()[:16]
 
 
-def resolve_user_marketplace(
-    conn: duckdb.DuckDBPyConnection, user: dict
-) -> List[dict]:
+def resolve_user_marketplace(conn: duckdb.DuckDBPyConnection, user: dict) -> List[dict]:
     """Final, served plugin set for a user.
 
     Composition::
@@ -293,10 +289,7 @@ def resolve_user_marketplace(
     # the active backend (PG / DuckDB) — same rationale as
     # ``resolve_allowed_plugins`` above.
     subs = user_curated_subscriptions_repo().subscribed_set(user_id)
-    admin = [
-        p for p in admin
-        if (p["marketplace_id"], p["original_name"]) in subs
-    ]
+    admin = [p for p in admin if (p["marketplace_id"], p["original_name"]) in subs]
     for p in admin:
         p["source"] = "marketplace"
 
@@ -378,9 +371,7 @@ def resolve_user_marketplace(
     return list(admin) + store_plugin_entries + bundle_entry
 
 
-def resolve_user_groups(
-    conn: duckdb.DuckDBPyConnection, user: dict
-) -> List[str]:
+def resolve_user_groups(conn: duckdb.DuckDBPyConnection, user: dict) -> List[str]:
     """Return the names of groups this user belongs to, sorted alphabetically.
 
     Diagnostic only — the actual RBAC filtering of the marketplace feed is
@@ -445,10 +436,6 @@ def compute_etag(plugins: Iterable[dict]) -> str:
                         continue
                     rel = f.relative_to(plugin_dir).as_posix()
                     files.append([rel, _sha256_file(f)])
-        tokens.append(
-            [plugin["prefixed_name"], plugin.get("version") or "", files]
-        )
-    payload = json.dumps(
-        {"plugins": tokens}, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+        tokens.append([plugin["prefixed_name"], plugin.get("version") or "", files])
+    payload = json.dumps({"plugins": tokens}, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:16]
