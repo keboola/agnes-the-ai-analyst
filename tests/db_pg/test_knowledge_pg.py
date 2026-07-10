@@ -155,6 +155,24 @@ def test_knowledge_vote_aggregates(k_engine):
     assert v == {"upvotes": 2, "downvotes": 0}
 
 
+def test_knowledge_get_votes_by_user(k_engine):
+    """Mirrors the DuckDB ``test_get_votes_by_user`` — powers
+    ``GET /api/memory/my-votes`` + the ``upvoted_by_me`` search post-filter."""
+    from src.repositories.knowledge_pg import KnowledgePgRepository
+
+    repo = KnowledgePgRepository(k_engine)
+    repo.create(id="k1", title="A", content="a", category="c")
+    repo.create(id="k2", title="B", content="b", category="c")
+    repo.create(id="k3", title="C", content="c", category="c")
+    repo.vote("k1", "u1", 1)
+    repo.vote("k2", "u1", -1)
+    repo.vote("k3", "u2", 1)  # different user — excluded
+
+    votes = repo.get_votes_by_user("u1")
+    assert votes == {"k1": 1, "k2": -1}
+    assert repo.get_votes_by_user("no-such-user") == {}
+
+
 # ---------------------------------------------------------------------------
 # dismissals
 # ---------------------------------------------------------------------------

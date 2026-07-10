@@ -90,6 +90,30 @@ class ResourceGrantsRepository:
         cols = [d[0] for d in self.conn.description]
         return [dict(zip(cols, r)) for r in rows]
 
+    def list_resource_ids_for_user(
+        self,
+        user_id: str,
+        resource_type: str,
+    ) -> List[str]:
+        """Distinct ``resource_id`` values of ``resource_type`` granted to
+        any group the user belongs to.
+
+        Joins ``resource_grants`` against ``user_group_members`` directly on
+        ``user_id`` (rather than requiring the caller to first resolve the
+        user's group ids) — the caller-granted-domains helper in
+        ``app.api.memory`` used to run this as a raw ``conn.execute`` on the
+        always-DuckDB connection; this is its repo-routed equivalent.
+        """
+        rows = self.conn.execute(
+            """SELECT DISTINCT rg.resource_id
+               FROM resource_grants rg
+               JOIN user_group_members m ON m.group_id = rg.group_id
+               WHERE m.user_id = ?
+                 AND rg.resource_type = ?""",
+            [user_id, resource_type],
+        ).fetchall()
+        return [r[0] for r in rows]
+
     def get(self, grant_id: str) -> Optional[Dict[str, Any]]:
         row = self.conn.execute(
             f"SELECT {self._SELECT_COLS} FROM resource_grants WHERE id = ?",
