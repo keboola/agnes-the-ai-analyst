@@ -775,3 +775,17 @@ class StoreEntitiesRepository:
             "WHERE id = ?",
             [int(delta), id],
         )
+
+    def list_approved_synthetic_types(self) -> Dict[str, str]:
+        """Map ``synthetic_name -> type`` for every approved (flea) store
+        entity. Backs ``MarketplaceItemLookup`` (usage-telemetry attribution)
+        — Claude Code writes flea-bundle identifiers as
+        ``flea:<synthetic_name>``, and the resolver needs the entity's type
+        (skill/agent/plugin) without a per-event query. Only
+        ``visibility_status='approved'`` entities are eligible — pending /
+        hidden / archived entities must not attribute telemetry. Routed
+        through the factory so the read hits the active backend."""
+        rows = self.conn.execute(
+            "SELECT synthetic_name, type FROM store_entities WHERE visibility_status='approved'"
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}

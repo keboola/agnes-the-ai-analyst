@@ -205,6 +205,53 @@ def test_synthetic_name_taken(store_repos):
     assert se.synthetic_name_taken("my-skill-by-alice") is True  # still present without the flag
 
 
+# ---------------------------------------------------------------------------
+# list_approved_synthetic_types — backs MarketplaceItemLookup (usage-telemetry
+# attribution) flea-bundle prefix recognition.
+# ---------------------------------------------------------------------------
+
+
+def test_list_approved_synthetic_types_empty_when_no_entities(store_repos):
+    repos, _, _ = store_repos
+    assert repos["entities"].list_approved_synthetic_types() == {}
+
+
+def test_list_approved_synthetic_types_only_includes_approved(store_repos):
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    _make_entity(
+        repos["entities"],
+        id="entity-approved",
+        name="approved-skill",
+        synthetic_name="approved-skill-by-alice",
+        visibility_status="approved",
+    )
+    _make_entity(
+        repos["entities"],
+        id="entity-pending",
+        name="pending-skill",
+        synthetic_name="pending-skill-by-alice",
+        visibility_status="pending",
+    )
+    result = repos["entities"].list_approved_synthetic_types()
+    assert result == {"approved-skill-by-alice": "skill"}
+
+
+def test_list_approved_synthetic_types_maps_type(store_repos):
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    _make_entity(
+        repos["entities"],
+        id="entity-agent",
+        type="agent",
+        name="my-agent",
+        synthetic_name="my-agent-by-alice",
+        visibility_status="approved",
+    )
+    result = repos["entities"].list_approved_synthetic_types()
+    assert result == {"my-agent-by-alice": "agent"}
+
+
 def test_install_plugin_creates_row(store_repos):
     repos, _, _ = store_repos
     repos["users"].create(id="user-1", email="alice@x.com", name="Alice")

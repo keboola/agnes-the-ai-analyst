@@ -54,6 +54,23 @@ class UsersPgRepository:
             row = conn.execute(sa.text("SELECT * FROM users WHERE email = :email"), {"email": email}).mappings().first()
         return dict(row) if row else None
 
+    def get_by_email_prefix(self, local_part: str) -> Optional[Dict[str, Any]]:
+        """PG sibling of the DuckDB ``get_by_email_prefix``."""
+        escaped = local_part.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    sa.text(
+                        "SELECT * FROM users WHERE email LIKE :prefix || '@%' ESCAPE '\\' "
+                        "ORDER BY updated_at DESC NULLS LAST LIMIT 1"
+                    ),
+                    {"prefix": escaped},
+                )
+                .mappings()
+                .first()
+            )
+        return dict(row) if row else None
+
     def get_by_slack_user_id(self, slack_user_id: str) -> Optional[Dict[str, Any]]:
         """Resolve the account bound to a Slack ``user_id`` (NULL until the
         analyst redeems a /agnes verification code)."""
