@@ -12,11 +12,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
-## [0.74.44] - 2026-07-10
+## [0.74.45] - 2026-07-10
+
+### Added
 
 - Collections: zip archive upload — a bundle (e.g. a Confluence HTML space export)
   is unpacked server-side, every supported member ingested as its own file with
   per-member status, Confluence navigation chrome stripped automatically (#796).
+
+### Internal
+
+- Schema v88: `corpus_files.parent_file_id` links archive-extracted children to
+  their bundle row (DuckDB `_v87_to_v88` + Alembic `0035_parent_file_id_v88`).
+
+---
+
+## [0.74.44] - 2026-07-10
 
 ### Changed
 - Interactive web login sessions now persist for 30 days (JWT `exp` + `access_token` cookie `max_age`), up from 24 hours. Session JWTs remain non-revocable per-session — the only server-side kill switch is deactivating the account.
