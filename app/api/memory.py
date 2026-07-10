@@ -821,12 +821,17 @@ async def mark_mandatory(
     repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.set_is_required(item_id, True)
-    audit_repo().log(
-        user_id=user["email"],
-        action="memory_item.set_required",
-        resource=f"knowledge_item:{item_id}",
-        params={"new_value": True},
-    )
+    # Best-effort like the sibling /admin/mandate — the flag flip has already
+    # committed; an audit hiccup must not surface as a 500.
+    try:
+        audit_repo().log(
+            user_id=user["email"],
+            action="memory_item.set_required",
+            resource=f"knowledge_item:{item_id}",
+            params={"new_value": True},
+        )
+    except Exception:
+        pass
     return {"id": item_id, "is_required": True}
 
 
@@ -845,12 +850,16 @@ async def mark_unmandatory(
     repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.set_is_required(item_id, False)
-    audit_repo().log(
-        user_id=user["email"],
-        action="memory_item.set_required",
-        resource=f"knowledge_item:{item_id}",
-        params={"new_value": False},
-    )
+    # Best-effort like the sibling /admin/mandate.
+    try:
+        audit_repo().log(
+            user_id=user["email"],
+            action="memory_item.set_required",
+            resource=f"knowledge_item:{item_id}",
+            params={"new_value": False},
+        )
+    except Exception:
+        pass
     return {"id": item_id, "is_required": False}
 
 
