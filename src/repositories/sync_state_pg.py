@@ -135,6 +135,17 @@ class SyncStatePgRepository:
             rows = conn.execute(sa.text(sql), params).mappings().all()
         return [dict(r) for r in rows]
 
+    def status_counts_since(self, since: datetime) -> Dict[str, int]:
+        """Mirrors ``SyncStateRepository.status_counts_since``."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT status, COUNT(*) FROM sync_history WHERE synced_at >= :since GROUP BY status"
+                ),
+                {"since": since},
+            ).all()
+        return {r[0]: int(r[1]) for r in rows}
+
     def set_error(self, table_id: str, error_message: str) -> None:
         with self._engine.begin() as conn:
             conn.execute(

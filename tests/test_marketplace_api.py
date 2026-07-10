@@ -987,9 +987,9 @@ class TestFleaOwnerDisplayBatched:
         calls: list[str] = []
         original = marketplace_module._resolve_owner_display
 
-        def spy(conn, owner_user_id, fallback):
+        def spy(owner_user_id, fallback):
             calls.append(owner_user_id)
-            return original(conn, owner_user_id, fallback)
+            return original(owner_user_id, fallback)
 
         monkeypatch.setattr(marketplace_module, "_resolve_owner_display", spy)
 

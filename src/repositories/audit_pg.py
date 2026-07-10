@@ -331,6 +331,27 @@ class AuditPgRepository:
             "sources":   [{"value": r[0], "count": r[1]} for r in source_rows],
         }
 
+    def last_scheduler_tick(self) -> "datetime | None":
+        """Mirrors ``AuditRepository.last_scheduler_tick``."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    "SELECT MAX(timestamp) FROM audit_log WHERE action LIKE 'run_%' OR action='marketplace.sync_all'"
+                )
+            ).first()
+        return row[0] if row else None
+
+    def active_users_since(self, since: datetime) -> int:
+        """Mirrors ``AuditRepository.active_users_since``."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    "SELECT COUNT(DISTINCT user_id) FROM audit_log WHERE timestamp >= :since AND user_id IS NOT NULL"
+                ),
+                {"since": since},
+            ).first()
+        return int(row[0] or 0) if row else 0
+
     def kpis(self, *, since: datetime) -> "dict[str, Any]":
         """Headline KPIs over the window: events, active users, errors, p95.
 

@@ -44,6 +44,7 @@ from src.repositories import (
     knowledge_repo,
     memory_domains_repo,
     news_template_repo,
+    profile_repo,
     recipes_repo,
     store_entities_repo,
     store_submissions_repo,
@@ -902,7 +903,7 @@ async def home_page(
     from app.instance_config import get_home_status_frame_visibility
 
     status_frame_enabled = get_home_status_frame_visibility()
-    home_stats = compute_home_stats(conn, user, "24h") if (status_frame_enabled and onboarded) else None
+    home_stats = compute_home_stats(user, "24h") if (status_frame_enabled and onboarded) else None
 
     # Single template renders both states. The post-onboarding view keeps
     # the install-steps + connector prompts + auto-mode card visible —
@@ -1490,14 +1491,8 @@ async def catalog_table_detail(
     # the full profile, just the column list.
     columns = []
     try:
-        prof_row = conn.execute(
-            "SELECT profile FROM table_profiles WHERE table_id = ?",
-            [table_id],
-        ).fetchone()
-        if prof_row and prof_row[0]:
-            import json as _json
-
-            prof = _json.loads(prof_row[0]) if isinstance(prof_row[0], str) else prof_row[0]
+        prof = profile_repo().get(table_id)
+        if prof:
             for col in prof.get("columns") or []:
                 columns.append(
                     {
@@ -1933,7 +1928,6 @@ async def studio(
 async def corporate_memory_admin(
     request: Request,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Curated Memory review queue — admin-only.
 
@@ -1969,9 +1963,7 @@ async def corporate_memory_admin(
             }
 
     # Duplicate-candidate badge count (issue #62) — unresolved relations only.
-    duplicates_count = conn.execute(
-        "SELECT COUNT(*) FROM knowledge_item_relations WHERE relation_type = 'likely_duplicate' AND resolved = FALSE"
-    ).fetchone()[0]
+    duplicates_count = repo.count_relations(relation_type="likely_duplicate", resolved=False)
 
     # Mandate-form audience picker needs RBAC user_groups, not the
     # `corporate_memory.groups` YAML section — those are unrelated.
@@ -3541,7 +3533,7 @@ async def profile_page(
         user_record=user_record_safe,
         claims=_decoded_claims(raw_token),
         token_fingerprint=_token_fingerprint(raw_token),
-        sync_summary=_last_sync_summary(user["id"], conn),
+        sync_summary=_last_sync_summary(user["id"]),
         # Display-only — keep original case (no .lower()), unlike the
         # refetch-groups handler below which lowercases for set comparison.
         google_group_prefix=os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip(),

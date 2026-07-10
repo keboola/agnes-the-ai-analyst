@@ -90,6 +90,24 @@ class SessionProcessorStateRepository:
         ).fetchone()
         return row[0] if row else None
 
+    def activity_since(self, processor_name: str, since: datetime) -> dict:
+        """Most recent ``processed_at`` + summed ``items_extracted`` across
+        *processor_name*'s rows touched at/after *since*.
+
+        Backs the Activity Center health pulse's "memory pipeline" field
+        (``app/api/activity.py`` ``_compute_health``): a non-null
+        ``last_processed_at`` means the processor ran within the window.
+        """
+        row = self.conn.execute(
+            """SELECT MAX(processed_at), SUM(items_extracted)
+                FROM session_processor_state
+                WHERE processor_name = ? AND processed_at >= ?""",
+            [processor_name, since],
+        ).fetchone()
+        last_processed_at = row[0] if row else None
+        items_extracted = int(row[1] or 0) if row else 0
+        return {"last_processed_at": last_processed_at, "items_extracted": items_extracted}
+
     def processed_session_files(self, processor_name: str) -> "set[str]":
         """The set of session_file values this processor has a state row for.
         Backs the FIFO stuck-file check in app/api/health.py."""
