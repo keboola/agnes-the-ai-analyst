@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.50] - 2026-07-11
+
 ### Added
 
 - Credential-free local knowledge packaging: the server builds a per-collection
