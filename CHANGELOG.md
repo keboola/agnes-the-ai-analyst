@@ -24,6 +24,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+- Schema v87: `corpus_files.parent_file_id` links archive-extracted children to
+  their bundle row (DuckDB `_v86_to_v87` + Alembic `0034_parent_file_id_v87`).
+
 ## [0.74.31] - 2026-07-10
 
 ### Fixed
