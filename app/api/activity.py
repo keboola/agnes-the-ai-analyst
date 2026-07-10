@@ -19,15 +19,14 @@ import json
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-import duckdb
 from fastapi import APIRouter, Depends, Query
 
 from app.auth.access import require_admin
-from app.auth.dependencies import _get_db   # NOTE: lives in app.auth.dependencies, not app.dependencies
 from src.observability.posthog_client import get_posthog
 
 from src.repositories import (
     audit_repo,
+    session_processor_state_repo,
     sync_state_repo,
     users_repo,
 )
@@ -59,7 +58,7 @@ def _should_audit(actor_id: str, filter_payload: dict) -> bool:
     return True
 
 
-def _audit_read(conn, user: dict, endpoint: str, filter_payload: dict) -> None:
+def _audit_read(user: dict, endpoint: str, filter_payload: dict) -> None:
     """Emit a deduped audit row for an AC read endpoint."""
     actor_id = (user or {}).get("id") or "anonymous"
     if not _should_audit(actor_id, {"endpoint": endpoint, **filter_payload}):
@@ -94,7 +93,6 @@ def activity_timeline(
     cursor_id: Optional[str] = None,
     limit: int = Query(default=50, ge=1, le=200),
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
     cursor = (cursor_ts, cursor_id) if cursor_ts and cursor_id else None
@@ -123,7 +121,7 @@ def activity_timeline(
             r["user_email"] = extra.get("email")
             r["user_name"] = extra.get("name")
 
-    _audit_read(conn, user, "timeline", {
+    _audit_read(user, "timeline", {
         "since_minutes": since_minutes,
         "user_id": user_id, "action_prefix": action_prefix,
         "resource": resource, "resource_prefix": resource_prefix,
@@ -150,15 +148,14 @@ def activity_timeline(
 @router.get("/health")
 def activity_health(
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     now = datetime.now(timezone.utc)
     if _HEALTH_CACHE["data"] is not None and _HEALTH_CACHE["expires_at"] > now:
         return _HEALTH_CACHE["data"]
-    data = _compute_health(conn, now)
+    data = _compute_health(now)
     _HEALTH_CACHE["data"] = data
     _HEALTH_CACHE["expires_at"] = now + timedelta(seconds=_HEALTH_TTL_SECONDS)
-    _audit_read(conn, user, "health", {})
+    _audit_read(user, "health", {})
     return data
 
 
@@ -167,15 +164,14 @@ def activity_sync(
     since_minutes: int = Query(default=1440, ge=1, le=43200),
     limit: int = Query(default=100, ge=1, le=500),
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
     rows = sync_state_repo().list_recent(since=since, limit=limit)
-    _audit_read(conn, user, "sync", {"since_minutes": since_minutes})
+    _audit_read(user, "sync", {"since_minutes": since_minutes})
     return {"rows": rows}
 
 
-def _compute_health(conn: duckdb.DuckDBPyConnection, now: datetime) -> dict:
+def _compute_health(now: datetime) -> dict:
     """Build the health-pulse dict.
 
     Fields:
@@ -187,9 +183,7 @@ def _compute_health(conn: duckdb.DuckDBPyConnection, now: datetime) -> dict:
         diagnose_warnings: count of active diagnose warnings (placeholder 0 in MVP).
     """
     # 1) scheduler freshness
-    last_tick = conn.execute(
-        "SELECT MAX(timestamp) FROM audit_log WHERE action LIKE 'run_%' OR action='marketplace.sync_all'"
-    ).fetchone()[0]
+    last_tick = audit_repo().last_scheduler_tick()
     if last_tick is None:
         scheduler_age_s = None
         scheduler_color = "yellow"
@@ -207,12 +201,9 @@ def _compute_health(conn: duckdb.DuckDBPyConnection, now: datetime) -> dict:
         scheduler_value = _format_age(scheduler_age_s)
 
     # 2) sync 24h
-    sync_rows = conn.execute(
-        "SELECT status, COUNT(*) FROM sync_history WHERE synced_at >= ? GROUP BY status",
-        [now - timedelta(hours=24)]
-    ).fetchall()
-    ok = next((c for s, c in sync_rows if s == "ok"), 0)
-    fail = sum(c for s, c in sync_rows if s and s != "ok")
+    sync_counts = sync_state_repo().status_counts_since(now - timedelta(hours=24))
+    ok = sync_counts.get("ok", 0)
+    fail = sum(c for s, c in sync_counts.items() if s and s != "ok")
     total = ok + fail
     if total == 0:
         sync_color = "yellow"
@@ -226,19 +217,13 @@ def _compute_health(conn: duckdb.DuckDBPyConnection, now: datetime) -> dict:
 
     # 3) active users today
     midnight = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-    active = conn.execute(
-        "SELECT COUNT(DISTINCT user_id) FROM audit_log WHERE timestamp >= ? AND user_id IS NOT NULL",
-        [midnight]
-    ).fetchone()[0]
+    active = audit_repo().active_users_since(midnight)
 
     # 4) memory pipeline
-    mem_row = conn.execute(
-        "SELECT MAX(processed_at), SUM(items_extracted) FROM session_processor_state WHERE processor_name='verification' AND processed_at >= ?",
-        [now - timedelta(hours=1)]
-    ).fetchone()
-    if mem_row and mem_row[0]:
+    mem = session_processor_state_repo().activity_since("verification", now - timedelta(hours=1))
+    if mem["last_processed_at"]:
         mem_color = "green"
-        mem_value = f"ok ({mem_row[1] or 0} items 1h)"
+        mem_value = f"ok ({mem['items_extracted']} items 1h)"
     else:
         mem_color = "yellow"
         mem_value = "idle 1h+"

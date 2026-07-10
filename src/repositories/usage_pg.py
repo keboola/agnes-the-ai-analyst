@@ -440,6 +440,51 @@ class UsagePgRepository:
         }
 
     # ------------------------------------------------------------------
+    # /home status frame (Postgres).  Mirrors UsageRepository.home_stats.
+    # ------------------------------------------------------------------
+
+    def home_stats(self, user_id: str, username: str, since: datetime) -> dict:
+        with self._engine.connect() as conn:
+            sess = conn.execute(
+                sa.text(
+                    """
+                    SELECT
+                        COUNT(*)                                 AS sessions,
+                        COALESCE(SUM(user_messages), 0)          AS prompts,
+                        COALESCE(SUM(input_tokens), 0)            AS input_tokens,
+                        COALESCE(SUM(output_tokens), 0)           AS output_tokens,
+                        COALESCE(SUM(cache_read_tokens), 0)       AS cache_read,
+                        COALESCE(SUM(cache_creation_tokens), 0)   AS cache_creation
+                    FROM usage_session_summary
+                    WHERE (user_id = :uid OR username = :uname)
+                      AND started_at >= :since
+                    """
+                ),
+                {"uid": user_id, "uname": username, "since": since},
+            ).first()
+            proj = conn.execute(
+                sa.text(
+                    """
+                    SELECT COUNT(DISTINCT cwd) FROM usage_events
+                    WHERE (user_id = :uid OR username = :uname)
+                      AND cwd IS NOT NULL
+                      AND occurred_at >= :since
+                    """
+                ),
+                {"uid": user_id, "uname": username, "since": since},
+            ).first()
+        sessions, prompts, input_t, output_t, cache_read, cache_creation = (int(x or 0) for x in sess)
+        return {
+            "sessions": sessions,
+            "prompts": prompts,
+            "input_tokens": input_t,
+            "output_tokens": output_t,
+            "cache_read": cache_read,
+            "cache_creation": cache_creation,
+            "projects": int((proj[0] if proj else 0) or 0),
+        }
+
+    # ------------------------------------------------------------------
     # session summary aggregate reads (Postgres).
     # ------------------------------------------------------------------
 

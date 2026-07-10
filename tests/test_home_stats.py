@@ -154,10 +154,14 @@ def _seed_event(conn, *, ev_id, session_file, username, cwd, occurred_sql):
     )
 
 
-def test_compute_home_stats_24h_vs_7d_windowing(stats_conn):
+def test_compute_home_stats_24h_vs_7d_windowing(stats_conn, monkeypatch):
     """A session 1h ago shows in both windows; a session 3 days ago
     only in 7d; a session 30 days ago in neither."""
     from app.api.me import compute_home_stats
+
+    # compute_home_stats now reads through usage_repo()/users_repo() — point
+    # the DuckDB factory provider at this test connection.
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: stats_conn)
 
     _seed_user(stats_conn)
     _seed_session(
@@ -217,7 +221,7 @@ def test_compute_home_stats_24h_vs_7d_windowing(stats_conn):
 
     user = {"id": "u1", "email": "alice@example.com"}
 
-    s24 = compute_home_stats(stats_conn, user, "24h")
+    s24 = compute_home_stats(user, "24h")
     assert s24["window"] == "24h"
     assert s24["sessions"] == 1
     assert s24["prompts"] == 5
@@ -225,7 +229,7 @@ def test_compute_home_stats_24h_vs_7d_windowing(stats_conn):
     assert s24["tokens"]["total"] == 100 + 50 + 800 + 25
     assert s24["last_pull_at"] is not None
 
-    s7 = compute_home_stats(stats_conn, user, "7d")
+    s7 = compute_home_stats(user, "7d")
     assert s7["window"] == "7d"
     assert s7["sessions"] == 2
     assert s7["prompts"] == 10
@@ -233,22 +237,25 @@ def test_compute_home_stats_24h_vs_7d_windowing(stats_conn):
     assert s7["tokens"]["total"] == 2 * (100 + 50 + 800 + 25)
 
 
-def test_compute_home_stats_unknown_window_clamps_to_24h(stats_conn):
+def test_compute_home_stats_unknown_window_clamps_to_24h(stats_conn, monkeypatch):
     """Out-of-band window values clamp to 24h rather than 400-ing."""
     from app.api.me import compute_home_stats
 
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: stats_conn)
+
     _seed_user(stats_conn)
-    s = compute_home_stats(stats_conn, {"id": "u1", "email": "alice@example.com"}, "bogus")
+    s = compute_home_stats({"id": "u1", "email": "alice@example.com"}, "bogus")
     assert s["window"] == "24h"
 
 
-def test_compute_home_stats_empty_user_returns_zeros(stats_conn):
+def test_compute_home_stats_empty_user_returns_zeros(stats_conn, monkeypatch):
     """Brand-new user with no sessions / events surfaces zeros, not 500."""
     from app.api.me import compute_home_stats
 
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: stats_conn)
+
     _seed_user(stats_conn, uid="u_empty", email="nobody@example.com")
     s = compute_home_stats(
-        stats_conn,
         {"id": "u_empty", "email": "nobody@example.com"},
         "24h",
     )
@@ -261,13 +268,14 @@ def test_compute_home_stats_empty_user_returns_zeros(stats_conn):
     assert s["last_pull_at"] is not None
 
 
-def test_compute_home_stats_missing_users_row_returns_zeros(stats_conn):
+def test_compute_home_stats_missing_users_row_returns_zeros(stats_conn, monkeypatch):
     """If the users row is missing entirely (race during deletion), the
     helper returns a zeroed payload instead of crashing."""
     from app.api.me import compute_home_stats
 
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: stats_conn)
+
     s = compute_home_stats(
-        stats_conn,
         {"id": "ghost", "email": "ghost@example.com"},
         "24h",
     )

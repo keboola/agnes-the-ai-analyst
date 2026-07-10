@@ -22,14 +22,14 @@ origin: docs/brainstorms/home-page-requirements.md §2 + §6.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-import duckdb
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from app.auth.dependencies import _get_db, get_current_user
-from src.repositories import audit_repo, users_repo
+from app.auth.dependencies import get_current_user
+from src.repositories import audit_repo, usage_repo, users_repo
 
 router = APIRouter(prefix="/api/me", tags=["me"])
 
@@ -61,8 +61,8 @@ async def post_onboarded(
 
 
 _WINDOW_INTERVALS = {
-    "24h": "INTERVAL 24 HOUR",
-    "7d": "INTERVAL 7 DAY",
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
 }
 
 
@@ -80,7 +80,7 @@ def _username_for_stats(user: dict) -> str:
     return email.split("@")[0] if "@" in email else email
 
 
-def compute_home_stats(conn: duckdb.DuckDBPyConnection, user: dict, window: str = "24h") -> dict:
+def compute_home_stats(user: dict, window: str = "24h") -> dict:
     """Pure helper that returns the home-stats payload for the given user.
 
     Shared by the HTTP endpoint and the /home Jinja handler (server-side
@@ -88,86 +88,40 @@ def compute_home_stats(conn: duckdb.DuckDBPyConnection, user: dict, window: str 
     need to pre-validate. Returns a dict with ISO-stringified
     ``last_pull_at`` (or None) so the same shape works for both JSON
     serialization and Jinja rendering.
+
+    Routes through ``usage_repo()`` / ``users_repo()`` so the counters are
+    correct on either the DuckDB or Postgres state backend.
     """
-    interval = _WINDOW_INTERVALS.get(window)
-    if interval is None:
+    delta = _WINDOW_INTERVALS.get(window)
+    if delta is None:
         window = "24h"
-        interval = _WINDOW_INTERVALS["24h"]
+        delta = _WINDOW_INTERVALS["24h"]
 
     username = _username_for_stats(user)
     uid = user.get("id") or ""
+    since = datetime.now(timezone.utc) - delta
 
-    # f-string interpolates only the validated interval literal above;
-    # all user-controlled input flows through bound parameters.
-    # Match on both user_id (stable, populated by v45 pipeline) and
-    # username (legacy rows before v45 backfill) so stats are complete
-    # during the transition period.
-    sql = f"""
-        WITH win AS (
-            SELECT current_timestamp - {interval} AS since
-        ),
-        sess AS (
-            SELECT
-                COUNT(*)                                 AS sessions,
-                COALESCE(SUM(user_messages), 0)          AS prompts,
-                COALESCE(SUM(input_tokens), 0)           AS input_tokens,
-                COALESCE(SUM(output_tokens), 0)          AS output_tokens,
-                COALESCE(SUM(cache_read_tokens), 0)      AS cache_read,
-                COALESCE(SUM(cache_creation_tokens), 0)  AS cache_creation
-            FROM usage_session_summary, win
-            WHERE (user_id = ? OR username = ?)
-              AND started_at >= win.since
-        ),
-        proj AS (
-            SELECT COUNT(DISTINCT cwd) AS projects
-            FROM usage_events, win
-            WHERE (user_id = ? OR username = ?)
-              AND cwd IS NOT NULL
-              AND occurred_at >= win.since
-        ),
-        u AS (
-            SELECT last_pull_at FROM users WHERE id = ?
-        )
-        SELECT
-            u.last_pull_at,
-            sess.sessions, sess.prompts,
-            sess.input_tokens, sess.output_tokens,
-            sess.cache_read, sess.cache_creation,
-            proj.projects
-        FROM u, sess, proj
-    """
-    row = conn.execute(sql, [uid, username, uid, username, uid]).fetchone()
+    stats = usage_repo().home_stats(uid, username, since)
+    user_row = users_repo().get_by_id(uid) if uid else None
+    last_pull_at = user_row.get("last_pull_at") if user_row else None
 
-    if row is None:
-        return {
-            "window": window,
-            "last_pull_at": None,
-            "sessions": 0,
-            "prompts": 0,
-            "tokens": {
-                "input": 0,
-                "output": 0,
-                "cache_read": 0,
-                "cache_creation": 0,
-                "total": 0,
-            },
-            "projects": 0,
-        }
-
-    (last_pull_at, sessions, prompts, input_t, output_t, cache_read, cache_creation, projects) = row
+    input_t = stats["input_tokens"]
+    output_t = stats["output_tokens"]
+    cache_read = stats["cache_read"]
+    cache_creation = stats["cache_creation"]
     return {
         "window": window,
         "last_pull_at": last_pull_at.isoformat() if last_pull_at else None,
-        "sessions": int(sessions or 0),
-        "prompts": int(prompts or 0),
+        "sessions": stats["sessions"],
+        "prompts": stats["prompts"],
         "tokens": {
-            "input": int(input_t or 0),
-            "output": int(output_t or 0),
-            "cache_read": int(cache_read or 0),
-            "cache_creation": int(cache_creation or 0),
-            "total": int((input_t or 0) + (output_t or 0) + (cache_read or 0) + (cache_creation or 0)),
+            "input": input_t,
+            "output": output_t,
+            "cache_read": cache_read,
+            "cache_creation": cache_creation,
+            "total": input_t + output_t + cache_read + cache_creation,
         },
-        "projects": int(projects or 0),
+        "projects": stats["projects"],
     }
 
 
@@ -175,15 +129,12 @@ def compute_home_stats(conn: duckdb.DuckDBPyConnection, user: dict, window: str 
 async def get_home_stats(
     window: str = "24h",
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Return the five counters rendered in the /home status frame for
     the calling user, over a 24-hour or 7-day window.
 
-    Single round-trip: one DuckDB query joins ``users``,
-    ``usage_session_summary``, and ``usage_events`` so the homepage
-    renders without N+1. Missing rows (new user, no telemetry yet)
-    surface as zeros / null rather than 404 — the frame still renders
-    cleanly for first-day analysts.
+    Missing rows (new user, no telemetry yet) surface as zeros / null
+    rather than 404 — the frame still renders cleanly for first-day
+    analysts.
     """
-    return compute_home_stats(conn, user, window)
+    return compute_home_stats(user, window)

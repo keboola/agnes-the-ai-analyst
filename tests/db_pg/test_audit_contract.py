@@ -314,6 +314,42 @@ def test_kpis(audit_repo):
 
 
 # ---------------------------------------------------------------------------
+# last_scheduler_tick / active_users_since — Activity Center health pulse
+# ---------------------------------------------------------------------------
+
+
+def test_last_scheduler_tick_none_when_no_matching_rows(audit_repo):
+    repo, _, _ = audit_repo
+    repo.log(user_id="u1", action="other_action", result="success")
+    assert repo.last_scheduler_tick() is None
+
+
+def test_last_scheduler_tick_matches_run_prefix_or_marketplace_sync(audit_repo):
+    repo, _, _ = audit_repo
+    repo.log(user_id="u1", action="run_session_processor", result="success")
+    repo.log(user_id="u1", action="marketplace.sync_all", result="success")
+    repo.log(user_id="u1", action="unrelated", result="success")
+    assert repo.last_scheduler_tick() is not None
+
+
+def test_active_users_since_counts_distinct_non_null_user_ids(audit_repo):
+    repo, _, _ = audit_repo
+    since = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    repo.log(user_id="u1", action="a", result="success")
+    repo.log(user_id="u1", action="b", result="success")
+    repo.log(user_id="u2", action="c", result="success")
+    repo.log(user_id=None, action="sys", result="success")
+    assert repo.active_users_since(since) == 2
+
+
+def test_active_users_since_excludes_rows_before_window(audit_repo):
+    repo, _, _ = audit_repo
+    repo.log(user_id="u1", action="a", result="success")
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    assert repo.active_users_since(future) == 0
+
+
+# ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 

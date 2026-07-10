@@ -19,10 +19,10 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-import duckdb
 from fastapi import HTTPException, Request
 
 from app.auth.jwt import verify_token
+from src.repositories import user_group_members_repo
 
 logger = logging.getLogger(__name__)
 
@@ -85,21 +85,14 @@ def _decoded_claims(token: Optional[str]) -> Optional[Dict[str, Any]]:
     return verify_token(token)
 
 
-def _last_sync_summary(
-    user_id: str, conn: duckdb.DuckDBPyConnection
-) -> Dict[str, Any]:
+def _last_sync_summary(user_id: str) -> Dict[str, Any]:
     """Summary of the most recent google_sync run for this user, drawn from
     user_group_members. Not authoritative timestamps (Google sync writes
     DELETE+INSERT every login, so all rows share the same added_at), but
     sufficient to answer "when did Agnes last hear from Google about me?"."""
-    row = conn.execute(
-        """SELECT COUNT(*) AS n, MAX(added_at) AS last_at
-             FROM user_group_members
-            WHERE user_id = ? AND source = 'google_sync'""",
-        [user_id],
-    ).fetchone()
-    n, last_at = row if row else (0, None)
+    summary = user_group_members_repo().google_sync_summary(user_id)
+    last_at = summary.get("last_added_at")
     return {
-        "google_sync_count": int(n or 0),
+        "google_sync_count": summary.get("count", 0),
         "last_added_at": str(last_at) if last_at else None,
     }

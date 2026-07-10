@@ -43,6 +43,7 @@ from src.repositories import (
     store_submissions_repo,
     user_curated_subscriptions_repo,
     user_store_installs_repo,
+    users_repo,
 )
 from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
@@ -675,24 +676,15 @@ def _build_telemetry(
     }
 
 
-def _load_curated_stack_counts(conn: duckdb.DuckDBPyConnection) -> Dict[Tuple[str, str], int]:
+def _load_curated_stack_counts() -> Dict[Tuple[str, str], int]:
     """Return {(marketplace_id, plugin_name): subscriber_count} for every
     curated plugin with at least one subscriber.
 
-    Reads from ``user_plugin_optouts`` — historically named but post-v28
-    row PRESENCE means the user is subscribed. ``fanout_system_for_user``
-    materialises rows for every is_system plugin × user pair, so the
-    COUNT naturally includes system plugins without a separate code path.
-    One query per page render — avoids N+1.
+    Thin wrapper over ``UserCuratedSubscriptionsRepository.stack_counts`` /
+    ``UserCuratedSubscriptionsPgRepository.stack_counts`` so callers stay
+    backend-agnostic — one query per page render, avoids N+1.
     """
-    rows = conn.execute(
-        """
-        SELECT marketplace_id, plugin_name, COUNT(DISTINCT user_id)
-        FROM user_plugin_optouts
-        GROUP BY marketplace_id, plugin_name
-        """
-    ).fetchall()
-    return {(r[0], r[1]): int(r[2]) for r in rows}
+    return user_curated_subscriptions_repo().stack_counts()
 
 
 def _available_sorts(stats_dicts: List[Dict[str, Dict]]) -> List[str]:
@@ -807,7 +799,7 @@ async def list_items(
             for mp_id in distinct_ids:
                 marketplace_meta[mp_id] = _resolve_marketplace_meta(conn, mp_id)
         curated_stats = reports_repo().invocation_stats("curated")
-        curated_stack_counts = _load_curated_stack_counts(conn)
+        curated_stack_counts = _load_curated_stack_counts()
         items = [
             _curated_to_item(
                 conn,
@@ -867,7 +859,6 @@ async def list_items(
             )
         flea_stats = reports_repo().invocation_stats("flea")
         flea_users_display = _load_users_display(
-            conn,
             (r["owner_user_id"] for r in all_flea_rows),
         )
         items = [
@@ -915,7 +906,7 @@ async def list_items(
 
     curated_stats = reports_repo().invocation_stats("curated")
     flea_stats = reports_repo().invocation_stats("flea")
-    curated_stack_counts = _load_curated_stack_counts(conn)
+    curated_stack_counts = _load_curated_stack_counts()
 
     for p in granted:
         key = (p["marketplace_id"], p["original_name"])
@@ -959,7 +950,6 @@ async def list_items(
     flea_installs = user_store_installs_repo().list_for_user(user["id"])
     flea_installed_set = {row["id"] for row in flea_installs}
     flea_users_display = _load_users_display(
-        conn,
         (row["owner_user_id"] for row in flea_installs),
     )
     for entity in flea_installs:
@@ -1319,7 +1309,6 @@ def _walk_files(root: Path) -> List[FileEntry]:
 
 
 def _resolve_owner_display(
-    conn: duckdb.DuckDBPyConnection,
     owner_user_id: str,
     fallback: str,
 ) -> str:
@@ -1328,17 +1317,18 @@ def _resolve_owner_display(
     Mirrors the inline lookup ``app/web/router.py::store_detail`` already does
     so the marketplace API surfaces the same string the Store page shows.
 
-    Single-row variant for detail endpoints. List endpoints must use
-    ``_load_users_display`` to avoid an N+1 against ``users``.
+    Single-row variant for detail endpoints, routed through
+    ``users_repo()`` so it stays correct on either state backend. List
+    endpoints must use ``_load_users_display`` to avoid an N+1 against
+    ``users``.
     """
-    row = conn.execute("SELECT name, email FROM users WHERE id = ?", [owner_user_id]).fetchone()
+    row = users_repo().get_by_id(owner_user_id)
     if not row:
         return fallback
-    return row[0] or row[1] or fallback
+    return row.get("name") or row.get("email") or fallback
 
 
 def _load_users_display(
-    conn: duckdb.DuckDBPyConnection,
     user_ids: Iterable[str],
 ) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
     """Batch-fetch ``(name, email)`` for a set of user_ids — single round-trip.
@@ -1346,17 +1336,16 @@ def _load_users_display(
     Returns a dict keyed by user_id. Use with ``_owner_display_from_map``
     inside list comprehensions to compose the same
     ``users.name → users.email → fallback`` resolution that
-    ``_resolve_owner_display`` does per-row.
+    ``_resolve_owner_display`` does per-row. Thin wrapper over
+    ``users_repo().get_info_by_ids`` (already the N+1-avoidance batch
+    lookup shared with Activity Center) reshaped to the ``(name, email)``
+    tuple this module's callers expect.
     """
     ids = [u for u in {uid for uid in user_ids if uid}]
     if not ids:
         return {}
-    placeholders = ",".join("?" * len(ids))
-    rows = conn.execute(
-        f"SELECT id, name, email FROM users WHERE id IN ({placeholders})",
-        ids,
-    ).fetchall()
-    return {r[0]: (r[1], r[2]) for r in rows}
+    info = users_repo().get_info_by_ids(ids)
+    return {uid: (row.get("name"), row.get("email")) for uid, row in info.items()}
 
 
 def _owner_display_from_map(
@@ -1456,7 +1445,7 @@ async def curated_detail(
     # read from. Adoption is inherited from the parent plugin's stack
     # count because inner items can't be installed standalone.
     inner_stats = reports_repo().inner_items_stats_by_parent("curated", plugin_name)
-    parent_stack = _load_curated_stack_counts(conn).get(
+    parent_stack = _load_curated_stack_counts().get(
         (marketplace_id, plugin_name),
         0,
     )
@@ -1540,7 +1529,7 @@ async def curated_detail(
         telemetry=_build_telemetry("curated", plugin_name),
         # stack_count mirrors what the listing card shows ("N installed")
         # so the hero chip on this detail page renders the same figure.
-        stack_count=_load_curated_stack_counts(conn).get(
+        stack_count=_load_curated_stack_counts().get(
             (marketplace_id, plugin_name),
             0,
         ),
@@ -1655,7 +1644,6 @@ async def flea_detail(
         )
 
     owner_display = _resolve_owner_display(
-        conn,
         entity["owner_user_id"],
         entity.get("owner_username") or "",
     )
@@ -1891,7 +1879,6 @@ def _curated_inner_parent_fields(
 
 
 def _flea_inner_parent_fields(
-    conn: duckdb.DuckDBPyConnection,
     entity: dict,
 ) -> Dict[str, Any]:
     """Flea sibling of ``_curated_inner_parent_fields``: build the parent-plugin
@@ -1910,7 +1897,6 @@ def _flea_inner_parent_fields(
     from src.store_naming import strip_archive_suffix
 
     owner_display = _resolve_owner_display(
-        conn,
         entity["owner_user_id"],
         entity.get("owner_username") or "",
     )
@@ -2360,7 +2346,7 @@ async def curated_skill_detail(
         name=skill_name,
         item_type="skill",
     )
-    parent_stack_count = _load_curated_stack_counts(conn).get(
+    parent_stack_count = _load_curated_stack_counts().get(
         (marketplace_id, plugin_name),
         0,
     )
@@ -2426,7 +2412,7 @@ async def curated_agent_detail(
         name=agent_name,
         item_type="agent",
     )
-    parent_stack_count = _load_curated_stack_counts(conn).get(
+    parent_stack_count = _load_curated_stack_counts().get(
         (marketplace_id, plugin_name),
         0,
     )
@@ -2477,7 +2463,7 @@ async def flea_skill_detail(
         raise HTTPException(status_code=404, detail="skill_not_found")
     text, relpath = res
     fm = _parse_frontmatter(text)
-    parent = _flea_inner_parent_fields(conn, entity)
+    parent = _flea_inner_parent_fields(entity)
     # v49 phase-5: rollup `parent_plugin` carries the parent's synthetic_name.
     telemetry = reports_repo().inner_item_stats(
         "flea",
@@ -2534,7 +2520,7 @@ async def flea_agent_detail(
         agent_size = agent_path.stat().st_size
     except OSError:
         agent_size = 0
-    parent = _flea_inner_parent_fields(conn, entity)
+    parent = _flea_inner_parent_fields(entity)
     # v49 phase-5: rollup `parent_plugin` carries the parent's synthetic_name.
     telemetry = reports_repo().inner_item_stats(
         "flea",

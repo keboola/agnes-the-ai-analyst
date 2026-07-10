@@ -167,3 +167,17 @@ class UserCuratedSubscriptionsPgRepository:
                 ),
                 {"u": user_id},
             )
+
+    def stack_counts(self) -> Dict[Tuple[str, str], int]:
+        """Mirrors ``UserCuratedSubscriptionsRepository.stack_counts``."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """
+                    SELECT marketplace_id, plugin_name, COUNT(DISTINCT user_id)
+                    FROM user_plugin_optouts
+                    GROUP BY marketplace_id, plugin_name
+                    """
+                )
+            ).all()
+        return {(r[0], r[1]): int(r[2]) for r in rows}
