@@ -119,6 +119,10 @@
                         MCP sources
                         <span class="app-nav-menu-item-desc">MCP servers whose tools Agnes calls at runtime</span>
                     </a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/datasource-credentials') %}is-active{% endif %}" role="menuitem" href="/admin/datasource-credentials">
+                        Instance secrets
+                        <span class="app-nav-menu-item-desc">Vault-backed BigQuery / Google Workspace credentials</span>
+                    </a>
                 </details>
 
                 {# "Agent Experience" groups everything the admin curates

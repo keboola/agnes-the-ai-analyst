@@ -15,13 +15,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
-- MCP wheel bootstrap no longer trusts the `.installed.json` marker alone: the marker lives on the persistent data volume while `pip install --user` lands in the ephemeral container filesystem, so after a container recreate the boot skipped the reinstall and every stdio MCP source failed with `[Errno 2] No such file or directory`. The skip path now also verifies the wheel's distribution is actually importable and reinstalls when it is gone.
-
-- Backend-split cleanup (batch 2): the CLI-login PAT mint and four corporate-memory admin endpoints (mark-mandatory, mark-unmandatory, admin item GET, memory-domain item lookup, and the per-domain markdown bundle) wrote/read via direct `AccessTokenRepository(conn)` / `KnowledgeRepository(conn)` instantiation, which always targets DuckDB — on a Postgres-backed instance those writes/reads bypassed the active backend. Migrated to `access_token_repo()` / `knowledge_repo()` and shrank the backend-split guard's grandfathered allow-list accordingly.
 
 ### Removed
 
 ### Internal
+
+## [0.74.36] - 2026-07-10
+
+### Changed
+- Admin secrets/data-sources UX consolidation: Keboola project connect/browse/register/"Set as default"/"Rotate token" now live entirely on `/admin/data-sources`, removing the duplicate Keboola section from `/admin/datasource-credentials`. That page is retitled "Instance secrets" (Google Workspace + BigQuery only) and links back to `/admin/data-sources` for Keboola; `/admin/data-sources` gains a reciprocal link to Instance secrets.
+
+### Fixed
+- MCP wheel bootstrap no longer trusts the `.installed.json` marker alone: the marker lives on the persistent data volume while `pip install --user` lands in the ephemeral container filesystem, so after a container recreate the boot skipped the reinstall and every stdio MCP source failed with `[Errno 2] No such file or directory`. The skip path now also verifies the wheel's distribution is actually importable and reinstalls when it is gone.
+
+- Backend-split cleanup (batch 2): the CLI-login PAT mint and four corporate-memory admin endpoints (mark-mandatory, mark-unmandatory, admin item GET, memory-domain item lookup, and the per-domain markdown bundle) wrote/read via direct `AccessTokenRepository(conn)` / `KnowledgeRepository(conn)` instantiation, which always targets DuckDB — on a Postgres-backed instance those writes/reads bypassed the active backend. Migrated to `access_token_repo()` / `knowledge_repo()` and shrank the backend-split guard's grandfathered allow-list accordingly.
+
 
 ## [0.74.35] - 2026-07-10
 
