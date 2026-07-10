@@ -54,6 +54,7 @@ def _capture_orchestrator_exception(exc: BaseException, **props) -> None:
     """Best-effort PostHog forward for rebuild failures. No-op when disabled."""
     try:
         from src.observability import get_posthog
+
         get_posthog().capture_exception(
             exc,
             distinct_id="system",
@@ -61,6 +62,7 @@ def _capture_orchestrator_exception(exc: BaseException, **props) -> None:
         )
     except Exception:
         logger.debug("PostHog capture_exception failed in orchestrator", exc_info=True)
+
 
 # Identifier validation lives in src/identifier_validation.py so the
 # orchestrator and the extractors share the same regex (#81 Group D).
@@ -71,9 +73,11 @@ from src.identifier_validation import (  # noqa: E402
     validate_identifier as _validate_identifier,
 )
 
+
 def _atomic_swap_db(tmp_path: str, target_path: str) -> None:
     """Atomically replace target DuckDB file, cleaning up WAL files."""
     import shutil
+
     target = Path(target_path)
     tmp = Path(tmp_path)
 
@@ -177,9 +181,7 @@ class SyncOrchestrator:
         except Exception:
             return
         try:
-            row = ro.execute(
-                "SELECT url FROM _remote_attach WHERE alias='bq'"
-            ).fetchone()
+            row = ro.execute("SELECT url FROM _remote_attach WHERE alias='bq'").fetchone()
         except Exception:
             row = None
         finally:
@@ -197,14 +199,15 @@ class SyncOrchestrator:
             "BQ remote_attach drift detected: extract.duckdb has %r, "
             "overlay has %r — regenerating extract via "
             "rebuild_from_registry()",
-            current_url, expected_url,
+            current_url,
+            expected_url,
         )
         try:
             from connectors.bigquery.extractor import rebuild_from_registry
+
             result = rebuild_from_registry()
             logger.info(
-                "BQ remote_attach drift sync: regenerated extract — "
-                "tables_registered=%s errors=%s",
+                "BQ remote_attach drift sync: regenerated extract — tables_registered=%s errors=%s",
                 result.get("tables_registered"),
                 len(result.get("errors", [])),
             )
@@ -213,7 +216,8 @@ class SyncOrchestrator:
                 "BQ remote_attach drift sync: rebuild_from_registry() "
                 "failed: %s — extract.duckdb still points at %r, queries "
                 "will fail until next manual sync",
-                e, current_url,
+                e,
+                current_url,
             )
 
     def _scan_meta_pairs(self, extracts_dir: Path) -> tuple:
@@ -248,9 +252,7 @@ class SyncOrchestrator:
             try:
                 ro_conn = _open_duckdb(str(db_file), read_only=True)
                 try:
-                    rows = ro_conn.execute(
-                        "SELECT table_name FROM _meta"
-                    ).fetchall()
+                    rows = ro_conn.execute("SELECT table_name FROM _meta").fetchall()
                     for (table_name,) in rows:
                         if _validate_identifier(table_name, "table_name"):
                             pairs.append((ext_dir.name, table_name))
@@ -261,7 +263,8 @@ class SyncOrchestrator:
                     "scan_meta_pairs: failed to read %s (%s) — "
                     "skipping reconcile this rebuild to avoid releasing "
                     "ownerships prematurely",
-                    ext_dir.name, e,
+                    ext_dir.name,
+                    e,
                 )
                 clean = False
         return pairs, clean
@@ -293,7 +296,8 @@ class SyncOrchestrator:
             logger.warning(
                 "BQ remote_attach drift sync failed: %s — continuing with "
                 "existing extract.duckdb (queries may fail until next "
-                "manual sync if project drifted)", e,
+                "manual sync if project drifted)",
+                e,
             )
 
         # Issue #81 Group C — load view ownership map from system DB so we
@@ -304,6 +308,7 @@ class SyncOrchestrator:
         # Backend-aware: view ownership lives in system state (Postgres on a
         # PG instance) — use the factory, not a raw DuckDB conn.
         from src.repositories import view_ownership_repo
+
         view_repo = None
         try:
             view_repo = view_ownership_repo()
@@ -330,8 +335,8 @@ class SyncOrchestrator:
             existing_owners = view_repo.get_all()
         except Exception as e:
             logger.warning(
-                "view_ownership pre-scan failed: %s — proceeding without "
-                "collision detection", e,
+                "view_ownership pre-scan failed: %s — proceeding without collision detection",
+                e,
             )
             existing_owners = {}
             view_repo = None
@@ -373,7 +378,9 @@ class SyncOrchestrator:
                     continue
 
                 tables = self._attach_and_create_views(
-                    conn, ext_dir.name, str(db_file),
+                    conn,
+                    ext_dir.name,
+                    str(db_file),
                     existing_owners=existing_owners,
                     claimed_pairs=claimed_pairs,
                     view_repo=view_repo,
@@ -445,8 +452,7 @@ class SyncOrchestrator:
 
             # Read _meta to know what's available
             meta_rows = conn.execute(
-                f"SELECT table_name, rows, size_bytes, query_mode "
-                f"FROM {source_name}._meta"
+                f"SELECT table_name, rows, size_bytes, query_mode FROM {source_name}._meta"
             ).fetchall()
 
             # Pre-fetch the set of names that actually exist as views/tables in
@@ -459,8 +465,7 @@ class SyncOrchestrator:
             inner_objects = {
                 row[0]
                 for row in conn.execute(
-                    "SELECT table_name FROM information_schema.tables "
-                    f"WHERE table_catalog='{source_name}'"
+                    f"SELECT table_name FROM information_schema.tables WHERE table_catalog='{source_name}'"
                 ).fetchall()
             }
 
@@ -477,7 +482,8 @@ class SyncOrchestrator:
                     # continue normally.
                     logger.info(
                         "Skipping master view for %s.%s — no inner object",
-                        source_name, table_name,
+                        source_name,
+                        table_name,
                     )
                     continue
 
@@ -489,32 +495,31 @@ class SyncOrchestrator:
                 # is fine (idempotent rebuild).
                 if view_repo is not None:
                     if not view_repo.claim(table_name, source_name):
-                        prior_owner = (
-                            view_repo.get_owner(table_name)
-                            or existing_owners.get(table_name, "<unknown>")
-                        )
+                        prior_owner = view_repo.get_owner(table_name) or existing_owners.get(table_name, "<unknown>")
                         logger.error(
                             "view_ownership collision: %s already owns view %r; "
                             "%s.%s will NOT be exposed. Rename `name` in the "
                             "table_registry on one side to resolve.",
-                            prior_owner, table_name, source_name, table_name,
+                            prior_owner,
+                            table_name,
+                            source_name,
+                            table_name,
                         )
                         continue
                     if claimed_pairs is not None:
                         claimed_pairs.append((source_name, table_name))
 
                 try:
-                    conn.execute(
-                        f"CREATE OR REPLACE VIEW \"{table_name}\" AS "
-                        f"SELECT * FROM {source_name}.\"{table_name}\""
-                    )
+                    conn.execute(f'CREATE OR REPLACE VIEW "{table_name}" AS SELECT * FROM {source_name}."{table_name}"')
                     tables.append(table_name)
                 except Exception as e:
                     # Per-row catch so one bad row doesn't drop the rest of
                     # the source's master views from the rebuild.
                     logger.error(
                         "Failed to create master view for %s.%s: %s",
-                        source_name, table_name, e,
+                        source_name,
+                        table_name,
+                        e,
                     )
 
             # Filesystem-fallback master views (0.41.0). The 0.40.0 fix in
@@ -554,6 +559,7 @@ class SyncOrchestrator:
                         # (Postgres on a PG instance) — a raw DuckDB conn would
                         # see an empty registry and skip materialized parquets.
                         from src.repositories import table_registry_repo
+
                         rows = table_registry_repo().list_all()
                         # Match parquet stems against registry rows for
                         # THIS source where query_mode='materialized'.
@@ -575,7 +581,8 @@ class SyncOrchestrator:
                             "filesystem-fallback: registry read failed (%s); "
                             "skipping fallback scan for %s — orphan parquets "
                             "from a prior DELETE could otherwise be exposed.",
-                            e, source_name,
+                            e,
+                            source_name,
                         )
                         registered_ids = None
 
@@ -591,23 +598,25 @@ class SyncOrchestrator:
                             # materialized registry row. Orphans skip.
                             if table_id not in registered_ids:
                                 logger.debug(
-                                    "filesystem-fallback: skipping orphan "
-                                    "parquet %s/%s (no registry row)",
-                                    source_name, table_id,
+                                    "filesystem-fallback: skipping orphan parquet %s/%s (no registry row)",
+                                    source_name,
+                                    table_id,
                                 )
                                 continue
                             # view_repo claim — same first-come-first-served
                             # rule as the meta-path branch above.
                             if view_repo is not None:
                                 if not view_repo.claim(table_id, source_name):
-                                    prior_owner = (
-                                        view_repo.get_owner(table_id)
-                                        or existing_owners.get(table_id, "<unknown>")
+                                    prior_owner = view_repo.get_owner(table_id) or existing_owners.get(
+                                        table_id, "<unknown>"
                                     )
                                     logger.error(
                                         "view_ownership collision: %s already owns view %r; "
                                         "%s.%s (filesystem-fallback) will NOT be exposed.",
-                                        prior_owner, table_id, source_name, table_id,
+                                        prior_owner,
+                                        table_id,
+                                        source_name,
+                                        table_id,
                                     )
                                     continue
                                 if claimed_pairs is not None:
@@ -615,19 +624,31 @@ class SyncOrchestrator:
                             try:
                                 safe_path = str(parquet_path).replace("'", "''")
                                 conn.execute(
-                                    f"CREATE OR REPLACE VIEW \"{table_id}\" AS "
+                                    f'CREATE OR REPLACE VIEW "{table_id}" AS '
                                     f"SELECT * FROM read_parquet('{safe_path}')"
                                 )
                                 tables.append(table_id)
                                 logger.info(
                                     "filesystem-fallback master view created: "
                                     "%s/%s (parquet at %s) — meta row was missing",
-                                    source_name, table_id, parquet_path,
+                                    source_name,
+                                    table_id,
+                                    parquet_path,
                                 )
+                                # The fallback path publishes real, queryable
+                                # data, so it must also record success in
+                                # sync_state — it is the only rebuild path
+                                # that otherwise skips the write, leaving any
+                                # stale set_error() row (from the failed run
+                                # that necessitated the fallback) shadowing a
+                                # healthy table in the admin UI and manifest.
+                                self._record_fallback_sync_state(conn, table_id, parquet_path)
                             except Exception as e:
                                 logger.error(
                                     "filesystem-fallback master view failed for %s/%s: %s",
-                                    source_name, table_id, e,
+                                    source_name,
+                                    table_id,
+                                    e,
                                 )
 
             # Update sync_state in system DB
@@ -638,9 +659,7 @@ class SyncOrchestrator:
 
         return tables
 
-    def _attach_remote_extensions(
-        self, conn: duckdb.DuckDBPyConnection, source_name: str
-    ) -> None:
+    def _attach_remote_extensions(self, conn: duckdb.DuckDBPyConnection, source_name: str) -> None:
         """Read _remote_attach from extract.duckdb and ATTACH external sources."""
         try:
             # DuckDB attached-DB layout: ATTACH 'extract.duckdb' AS <alias>
@@ -660,9 +679,7 @@ class SyncOrchestrator:
         except Exception:
             return
 
-        rows = conn.execute(
-            f"SELECT alias, extension, url, token_env FROM {source_name}._remote_attach"
-        ).fetchall()
+        rows = conn.execute(f"SELECT alias, extension, url, token_env FROM {source_name}._remote_attach").fetchall()
 
         for alias, extension, url, token_env in rows:
             # Identifier sanity (defense against weird input). The hard
@@ -678,7 +695,8 @@ class SyncOrchestrator:
                 logger.error(
                     "Remote attach %s: extension %r is not in the allowlist; refusing. "
                     "Override via AGNES_REMOTE_ATTACH_EXTENSIONS if intended.",
-                    alias, extension,
+                    alias,
+                    extension,
                 )
                 continue
 
@@ -689,24 +707,19 @@ class SyncOrchestrator:
                 logger.error(
                     "Remote attach %s: token_env %r is not in the allowlist; refusing. "
                     "Override via AGNES_REMOTE_ATTACH_TOKEN_ENVS if intended.",
-                    alias, token_env,
+                    alias,
+                    token_env,
                 )
                 continue
 
             token = os.environ.get(token_env, "") if token_env else ""
             if token_env and not token:
-                logger.warning(
-                    "Remote attach %s: env var %s not set, skipping", alias, token_env
-                )
+                logger.warning("Remote attach %s: env var %s not set, skipping", alias, token_env)
                 continue
 
             try:
                 # Skip if already attached (e.g. multiple sources share same extension)
-                attached = {
-                    r[0] for r in conn.execute(
-                        "SELECT database_name FROM duckdb_databases()"
-                    ).fetchall()
-                }
+                attached = {r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()}
                 if alias in attached:
                     logger.debug("Remote source %s already attached", alias)
                     continue
@@ -728,25 +741,20 @@ class SyncOrchestrator:
                     except BQMetadataAuthError as e:
                         logger.error(
                             "Failed to fetch BQ metadata token for %s: %s — skipping ATTACH",
-                            alias, e,
+                            alias,
+                            e,
                         )
                         continue
                     escaped = escape_sql_string_literal(bq_token)
                     secret_name = f"bq_secret_{alias}"
-                    conn.execute(
-                        f"CREATE OR REPLACE SECRET {secret_name} "
-                        f"(TYPE bigquery, ACCESS_TOKEN '{escaped}')"
-                    )
+                    conn.execute(f"CREATE OR REPLACE SECRET {secret_name} (TYPE bigquery, ACCESS_TOKEN '{escaped}')")
                     from connectors.bigquery.access import apply_bq_session_settings
+
                     apply_bq_session_settings(conn)
-                    conn.execute(
-                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
-                    )
+                    conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
                 elif token:
                     escaped_token = escape_sql_string_literal(token)
-                    conn.execute(
-                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
-                    )
+                    conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')")
                     # Apply BQ session settings on every BQ-extension attach,
                     # not only the metadata-token branch above. The token-based
                     # branch previously fell through without calling
@@ -754,14 +762,14 @@ class SyncOrchestrator:
                     # default for bq_query_timeout_ms in place.
                     if extension == "bigquery":
                         from connectors.bigquery.access import apply_bq_session_settings
+
                         apply_bq_session_settings(conn)
                 else:
                     # No auth required (or extension handles it via env automatically)
-                    conn.execute(
-                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
-                    )
+                    conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
                     if extension == "bigquery":
                         from connectors.bigquery.access import apply_bq_session_settings
+
                         apply_bq_session_settings(conn)
 
                 logger.info("Attached remote source %s via %s extension", alias, extension)
@@ -811,3 +819,32 @@ class SyncOrchestrator:
                 )
         except Exception as e:
             logger.warning("Could not update sync_state: %s", e)
+
+    def _record_fallback_sync_state(self, conn, table_id: str, parquet_path) -> None:
+        """Record a successful filesystem-fallback publish in sync_state.
+
+        Mirrors `_update_sync_state`'s contract: full content MD5 (what
+        `agnes pull` verifies against), on-disk size, and a row count taken
+        from the just-created master view. Best-effort — a bookkeeping
+        failure must never take down the rebuild.
+        """
+        try:
+            from src.repositories import sync_state_repo
+
+            h = hashlib.md5()
+            with open(parquet_path, "rb") as f:
+                for chunk in iter(lambda: f.read(8192), b""):
+                    h.update(chunk)
+            row_count = conn.execute(f'SELECT COUNT(*) FROM "{table_id}"').fetchone()[0]
+            sync_state_repo().update_sync(
+                table_id=table_id,
+                rows=int(row_count or 0),
+                file_size_bytes=parquet_path.stat().st_size,
+                hash=h.hexdigest(),
+            )
+        except Exception as e:
+            logger.warning(
+                "filesystem-fallback: could not update sync_state for %s: %s",
+                table_id,
+                e,
+            )

@@ -198,9 +198,7 @@ class TestSyncOrchestrator:
         # Local table (has data, works without extension)
         conn.execute('CREATE TABLE "orders" (id VARCHAR)')
         conn.execute("INSERT INTO orders VALUES ('1')")
-        conn.execute(
-            "INSERT INTO _meta VALUES ('orders', '', 1, 0, current_timestamp, 'local')"
-        )
+        conn.execute("INSERT INTO _meta VALUES ('orders', '', 1, 0, current_timestamp, 'local')")
         conn.close()
 
         # Token env is set but extension install will fail (not available in test)
@@ -234,9 +232,7 @@ class TestSyncOrchestrator:
             "INSERT INTO _remote_attach VALUES ('kbc', 'keboola', 'https://kbc.example.com', 'NONEXISTENT_TOKEN_VAR')"
         )
         conn.execute('CREATE TABLE "orders" (id VARCHAR)')
-        conn.execute(
-            "INSERT INTO _meta VALUES ('orders', '', 0, 0, current_timestamp, 'local')"
-        )
+        conn.execute("INSERT INTO _meta VALUES ('orders', '', 0, 0, current_timestamp, 'local')")
         conn.close()
 
         # No token env set — remote attach should be skipped, local tables still work
@@ -311,9 +307,7 @@ class TestSyncOrchestrator:
         )"""
         )
         conn.execute('CREATE TABLE "orders" (id VARCHAR)')
-        conn.execute(
-            "INSERT INTO _meta VALUES ('orders', '', 0, 0, current_timestamp, 'local')"
-        )
+        conn.execute("INSERT INTO _meta VALUES ('orders', '', 0, 0, current_timestamp, 'local')")
         conn.close()
 
         # Also create a safe source to confirm non-malicious sources still work
@@ -363,7 +357,8 @@ class TestSyncOrchestrator:
         import duckdb
 
         _create_mock_extract(
-            setup_env["extracts_dir"], "keboola",
+            setup_env["extracts_dir"],
+            "keboola",
             [{"name": "orders", "data": [{"id": "1"}]}],
         )
         orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
@@ -395,14 +390,10 @@ class TestSyncOrchestrator:
         # Safe table
         conn.execute('CREATE TABLE "orders" (id VARCHAR)')
         conn.execute("INSERT INTO orders VALUES ('1')")
-        conn.execute(
-            "INSERT INTO _meta VALUES ('orders', '', 1, 0, current_timestamp, 'local')"
-        )
+        conn.execute("INSERT INTO _meta VALUES ('orders', '', 1, 0, current_timestamp, 'local')")
 
         # Malicious table_name in _meta (no actual table needed — validation rejects before access)
-        conn.execute(
-            "INSERT INTO _meta VALUES ('evil; DROP TABLE users--', '', 0, 0, current_timestamp, 'local')"
-        )
+        conn.execute("INSERT INTO _meta VALUES ('evil; DROP TABLE users--', '', 0, 0, current_timestamp, 'local')")
         conn.close()
 
         orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
@@ -436,22 +427,20 @@ class TestBQMetadataAuth:
         conn.execute("""CREATE TABLE _remote_attach (
             alias VARCHAR, extension VARCHAR, url VARCHAR, token_env VARCHAR
         )""")
-        conn.execute(
-            "INSERT INTO _remote_attach VALUES ('bq', 'bigquery', 'project=test-proj', '')"
-        )
+        conn.execute("INSERT INTO _remote_attach VALUES ('bq', 'bigquery', 'project=test-proj', '')")
         # Local stub view so rebuild has something to attach (avoids INSTALL bigquery in test)
         conn.execute('CREATE TABLE "stub" (x INT)')
         conn.execute("INSERT INTO stub VALUES (1)")
-        conn.execute(
-            "INSERT INTO _meta VALUES ('stub', '', 1, 0, current_timestamp, 'local')"
-        )
+        conn.execute("INSERT INTO _meta VALUES ('stub', '', 1, 0, current_timestamp, 'local')")
         conn.close()
 
         # Stub get_metadata_token
         called = {"count": 0}
+
         def fake_token():
             called["count"] += 1
             return "ya29.fake-token"
+
         monkeypatch.setattr(
             "src.orchestrator.get_metadata_token",
             fake_token,
@@ -494,18 +483,15 @@ class TestBQMetadataAuth:
         orch.rebuild()
 
         assert called["count"] >= 1, "get_metadata_token() must be called for BQ source"
-        assert any(
-            "CREATE OR REPLACE SECRET" in s.upper() and "TYPE BIGQUERY" in s.upper()
-            for s in captured
-        ), "orchestrator must create DuckDB secret with metadata token"
+        assert any("CREATE OR REPLACE SECRET" in s.upper() and "TYPE BIGQUERY" in s.upper() for s in captured), (
+            "orchestrator must create DuckDB secret with metadata token"
+        )
         # ATTACH for BQ must not include TOKEN= clause (auth is via the secret)
-        attach_for_bq = [
-            s for s in captured
-            if s.upper().startswith("ATTACH ") and "TYPE BIGQUERY" in s.upper()
-        ]
+        attach_for_bq = [s for s in captured if s.upper().startswith("ATTACH ") and "TYPE BIGQUERY" in s.upper()]
         assert attach_for_bq, "expected ATTACH for the bq alias"
-        assert all("TOKEN '" not in s for s in attach_for_bq), \
+        assert all("TOKEN '" not in s for s in attach_for_bq), (
             f"ATTACH for BQ must not pass TOKEN= directly (auth via secret); got: {attach_for_bq}"
+        )
 
     def test_bq_metadata_failure_logs_and_skips(self, setup_env, monkeypatch, caplog):
         """If metadata is unreachable, orchestrator logs and skips the BQ source — does not crash."""
@@ -525,18 +511,15 @@ class TestBQMetadataAuth:
         conn.execute("""CREATE TABLE _remote_attach (
             alias VARCHAR, extension VARCHAR, url VARCHAR, token_env VARCHAR
         )""")
-        conn.execute(
-            "INSERT INTO _remote_attach VALUES ('bq', 'bigquery', 'project=test-proj', '')"
-        )
+        conn.execute("INSERT INTO _remote_attach VALUES ('bq', 'bigquery', 'project=test-proj', '')")
         conn.execute('CREATE TABLE "stub" (x INT)')
         conn.execute("INSERT INTO stub VALUES (1)")
-        conn.execute(
-            "INSERT INTO _meta VALUES ('stub', '', 1, 0, current_timestamp, 'local')"
-        )
+        conn.execute("INSERT INTO _meta VALUES ('stub', '', 1, 0, current_timestamp, 'local')")
         conn.close()
 
         def boom():
             raise BQMetadataAuthError("metadata server unreachable: simulated")
+
         monkeypatch.setattr("src.orchestrator.get_metadata_token", boom)
 
         with caplog.at_level(logging.ERROR, logger="src.orchestrator"):
@@ -546,10 +529,9 @@ class TestBQMetadataAuth:
         # Local 'stub' view should still attach — failure of one source shouldn't break others
         assert "bigquery" in result
         assert "stub" in result["bigquery"]
-        assert any(
-            "metadata" in r.message.lower() and r.levelname == "ERROR"
-            for r in caplog.records
-        ), f"expected ERROR-level log mentioning metadata; got: {[(r.levelname, r.message) for r in caplog.records]}"
+        assert any("metadata" in r.message.lower() and r.levelname == "ERROR" for r in caplog.records), (
+            f"expected ERROR-level log mentioning metadata; got: {[(r.levelname, r.message) for r in caplog.records]}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -686,9 +668,6 @@ class TestOrchestratorFailureModes:
 # ----------------------------------------------------------------------------
 
 
-import struct
-
-
 def _write_minimal_parquet(path: Path, n_rows: int = 3) -> None:
     """Write a tiny valid parquet file using DuckDB's COPY. Used to seed
     the filesystem-fallback test cases where we want a parquet on disk
@@ -711,6 +690,7 @@ def _seed_registry_materialized_row(table_id: str, source_type: str = "bigquery"
     orchestrator's fallback uses internally."""
     from src.db import get_system_db
     from src.repositories.table_registry import TableRegistryRepository
+
     conn = get_system_db()
     try:
         TableRegistryRepository(conn).register(
@@ -719,7 +699,7 @@ def _seed_registry_materialized_row(table_id: str, source_type: str = "bigquery"
             source_type=source_type,
             bucket="bkt",
             source_table=table_id,
-            source_query=f"SELECT 1 AS id",
+            source_query="SELECT 1 AS id",
             query_mode="materialized",
         )
     finally:
@@ -763,8 +743,7 @@ class TestFilesystemFallbackMasterViews:
         assert "bigquery" in result
         assert "remote_one" in result["bigquery"]
         assert "order_economics" in result["bigquery"], (
-            "filesystem-fallback master view must be created when parquet "
-            "exists on disk but _meta row is missing"
+            "filesystem-fallback master view must be created when parquet exists on disk but _meta row is missing"
         )
 
         # Verify the master view actually queries the parquet.
@@ -774,6 +753,42 @@ class TestFilesystemFallbackMasterViews:
             assert n == 42, f"master view should return parquet rows, got {n}"
         finally:
             master.close()
+
+    def test_filesystem_fallback_overwrites_stale_sync_state_error(self, setup_env):
+        """A table published via the fallback path must record success in
+        sync_state — previously the fallback created the view but left any
+        stale set_error() row in place, so the admin UI kept reporting a
+        long-fixed failure (seen live: a May-era error row shadowing a
+        healthy table for two months)."""
+        from src.orchestrator import SyncOrchestrator
+        from src.repositories import sync_state_repo
+
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "bigquery",
+            tables=[
+                {"name": "remote_one", "data": [{"x": "1"}], "query_mode": "remote"},
+            ],
+        )
+        data_dir = setup_env["extracts_dir"] / "bigquery" / "data"
+        _write_minimal_parquet(data_dir / "order_economics.parquet", n_rows=7)
+        _seed_registry_materialized_row("order_economics")
+
+        # Stale failure from a prior run — exactly what the fallback is
+        # recovering from.
+        sync_state_repo().set_error("order_economics", "No connection adapters were found for 'gs://…'")
+
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result = orch.rebuild()
+        assert "order_economics" in result["bigquery"]
+
+        state = sync_state_repo().get_table_state("order_economics")
+        assert state is not None
+        assert state.get("status") == "ok", (
+            f"fallback publish must clear the stale error row, got {state.get('status')!r}: {state.get('error')!r}"
+        )
+        assert int(state.get("rows") or 0) == 7
+        assert len(state.get("hash") or "") == 32  # full content MD5
 
     def test_filesystem_fallback_does_not_duplicate_meta_path(self, setup_env, caplog):
         """When the same name is in BOTH _meta (with an inner view) AND
@@ -799,6 +814,7 @@ class TestFilesystemFallbackMasterViews:
         _seed_registry_materialized_row("order_economics")
 
         import logging
+
         orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
         with caplog.at_level(logging.INFO, logger="src.orchestrator"):
             result = orch.rebuild()
@@ -807,14 +823,12 @@ class TestFilesystemFallbackMasterViews:
         # meta path won, fallback skipped because the name was already
         # in the per-source `tables` set.
         bq_tables = result.get("bigquery", [])
-        assert bq_tables.count("order_economics") == 1, (
-            f"name should appear exactly once, got {bq_tables}"
-        )
+        assert bq_tables.count("order_economics") == 1, f"name should appear exactly once, got {bq_tables}"
         # Fallback log line must NOT have fired for this name.
         fallback_lines = [
-            r.getMessage() for r in caplog.records
-            if "filesystem-fallback master view created" in r.getMessage()
-            and "order_economics" in r.getMessage()
+            r.getMessage()
+            for r in caplog.records
+            if "filesystem-fallback master view created" in r.getMessage() and "order_economics" in r.getMessage()
         ]
         assert fallback_lines == [], (
             f"filesystem-fallback must not fire when meta path is viable; got: {fallback_lines}"
@@ -856,10 +870,12 @@ class TestFilesystemFallbackMasterViews:
         # Master DB has no such view.
         master = duckdb.connect(setup_env["analytics_db"], read_only=True)
         try:
-            tables = [r[0] for r in master.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema='main'"
-            ).fetchall()]
+            tables = [
+                r[0]
+                for r in master.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
+                ).fetchall()
+            ]
             assert "9bad_name" not in tables
         finally:
             master.close()
@@ -893,9 +909,7 @@ class TestFilesystemFallbackMasterViews:
         orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
         result = orch.rebuild()
         bq_tables = result.get("bigquery", [])
-        assert "deleted_table" not in bq_tables, (
-            f"orphan parquet must NOT resurrect as a master view; got {bq_tables}"
-        )
+        assert "deleted_table" not in bq_tables, f"orphan parquet must NOT resurrect as a master view; got {bq_tables}"
 
     def test_filesystem_fallback_no_data_dir_is_safe(self, setup_env):
         """Sources without a `<extract_dir>/data/` directory (e.g. the
