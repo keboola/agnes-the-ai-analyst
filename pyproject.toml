@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.74.37"
+version = "0.74.38"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = {file = "LICENSE"}

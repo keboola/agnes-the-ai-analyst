@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import List, Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 from app.auth.access import is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
-from app.resource_types import RESOURCE_TYPES, ResourceType, list_resource_types
+from app.resource_types import ResourceType, list_resource_types
 from src.repositories.user_groups import SystemGroupProtected
 
 from src.repositories import (
@@ -35,6 +35,7 @@ from src.repositories import (
     user_groups_repo,
     users_repo,
 )
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["access"])
@@ -55,13 +56,8 @@ def _audit(
     try:
         safe = None
         if params:
-            safe = {
-                k: (v.isoformat() if isinstance(v, datetime) else v)
-                for k, v in params.items()
-            }
-        audit_repo().log(
-            user_id=actor_id, action=action, resource=resource, params=safe
-        )
+            safe = {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in params.items()}
+        audit_repo().log(user_id=actor_id, action=action, resource=resource, params=safe)
     except Exception:
         # Audit failures must never break the mutation. Logged at WARN.
         logger.warning("audit log failed for %s/%s", action, resource)
@@ -89,12 +85,9 @@ def _is_google_managed(g: dict) -> bool:
         return True
     if g.get("is_system"):
         from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
-        admin_email = os.environ.get(
-            "AGNES_GROUP_ADMIN_EMAIL", ""
-        ).strip().lower()
-        everyone_email = os.environ.get(
-            "AGNES_GROUP_EVERYONE_EMAIL", ""
-        ).strip().lower()
+
+        admin_email = os.environ.get("AGNES_GROUP_ADMIN_EMAIL", "").strip().lower()
+        everyone_email = os.environ.get("AGNES_GROUP_EVERYONE_EMAIL", "").strip().lower()
         if admin_email and g.get("name") == SYSTEM_ADMIN_GROUP:
             return True
         if everyone_email and g.get("name") == SYSTEM_EVERYONE_GROUP:
@@ -124,10 +117,7 @@ def _validate_resource_type(value: str) -> ResourceType:
     except ValueError:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Unknown resource_type {value!r}. Known types: "
-                f"{[rt.value for rt in ResourceType]}"
-            ),
+            detail=(f"Unknown resource_type {value!r}. Known types: {[rt.value for rt in ResourceType]}"),
         )
 
 
@@ -178,21 +168,23 @@ async def access_overview(
 
     groups = []
     for g in groups_rows:
-        groups.append({
-            "id": g["id"],
-            "name": g["name"],
-            "description": g.get("description"),
-            "is_system": bool(g.get("is_system", False)),
-            "created_by": g.get("created_by"),
-            # Same origin / google-management surface as `/api/admin/groups`
-            # so the /admin/access sidebar can render the identical pill +
-            # subtitle treatment without a second source of truth.
-            "origin": _derive_origin(g),
-            "is_google_managed": _is_google_managed(g),
-            "mapped_email": _mapped_email(g),
-            "member_count": members_repo.count_members(g["id"]),
-            "grant_count": grants_repo.count_for_group(g["id"]),
-        })
+        groups.append(
+            {
+                "id": g["id"],
+                "name": g["name"],
+                "description": g.get("description"),
+                "is_system": bool(g.get("is_system", False)),
+                "created_by": g.get("created_by"),
+                # Same origin / google-management surface as `/api/admin/groups`
+                # so the /admin/access sidebar can render the identical pill +
+                # subtitle treatment without a second source of truth.
+                "origin": _derive_origin(g),
+                "is_google_managed": _is_google_managed(g),
+                "mapped_email": _mapped_email(g),
+                "member_count": members_repo.count_members(g["id"]),
+                "grant_count": grants_repo.count_for_group(g["id"]),
+            }
+        )
 
     grants = [
         {
@@ -210,6 +202,7 @@ async def access_overview(
     # AGNES_ENABLE_TABLE_GRANTS) are skipped so the admin UI does not
     # render a chip for grants the runtime cannot enforce yet.
     from app.resource_types import enabled_resource_types
+
     resources = [
         {
             "type_key": spec.key.value,
@@ -270,27 +263,26 @@ class UpdateGroupRequest(BaseModel):
 def _derive_origin(g: dict) -> str:
     """Project a 3-value origin tag from existing user_groups columns.
 
-      - mapped via ``AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL`` → 'google_sync'
-        (the seed badge is suppressed when the row is wired to Workspace —
-        Workspace is the authoritative source of membership)
-      - ``is_system=TRUE`` (otherwise)                   → 'system'
-      - ``created_by`` starts with 'system:google'       → 'google_sync'
-      - other ``system:`` prefixed creator               → 'system'
-      - else                                             → 'custom'
-        (admin-created via UI/CLI — the value is named after the *origin*,
-        not the creator's role, so it doesn't visually clash with the
-        seeded `Admin` system row in the chip layer)
+    - mapped via ``AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL`` → 'google_sync'
+      (the seed badge is suppressed when the row is wired to Workspace —
+      Workspace is the authoritative source of membership)
+    - ``is_system=TRUE`` (otherwise)                   → 'system'
+    - ``created_by`` starts with 'system:google'       → 'google_sync'
+    - other ``system:`` prefixed creator               → 'system'
+    - else                                             → 'custom'
+      (admin-created via UI/CLI — the value is named after the *origin*,
+      not the creator's role, so it doesn't visually clash with the
+      seeded `Admin` system row in the chip layer)
     """
     is_system = bool(g.get("is_system"))
     cb = g.get("created_by") or ""
     name = g.get("name") or ""
     if is_system:
         from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
+
         admin_email = os.environ.get("AGNES_GROUP_ADMIN_EMAIL", "").strip()
         everyone_email = os.environ.get("AGNES_GROUP_EVERYONE_EMAIL", "").strip()
-        if (admin_email and name == SYSTEM_ADMIN_GROUP) or (
-            everyone_email and name == SYSTEM_EVERYONE_GROUP
-        ):
+        if (admin_email and name == SYSTEM_ADMIN_GROUP) or (everyone_email and name == SYSTEM_EVERYONE_GROUP):
             return "google_sync"
         return "system"
     if cb.startswith("system:google"):
@@ -311,6 +303,7 @@ def _mapped_email(g: dict) -> Optional[str]:
     if not g.get("is_system"):
         return None
     from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
+
     name = g.get("name")
     if name == SYSTEM_ADMIN_GROUP:
         v = os.environ.get("AGNES_GROUP_ADMIN_EMAIL", "").strip()
@@ -385,7 +378,10 @@ async def create_group(
         created_by=user.get("email"),
     )
     _audit(
-        conn, user["id"], "user_group.created", f"group:{g['id']}",
+        conn,
+        user["id"],
+        "user_group.created",
+        f"group:{g['id']}",
         {"name": name},
     )
     members_repo = user_group_members_repo()
@@ -426,7 +422,8 @@ async def update_group(
             repo.update(group_id, **updates)
         except SystemGroupProtected:
             raise HTTPException(
-                status_code=409, detail="System groups cannot be renamed",
+                status_code=409,
+                detail="System groups cannot be renamed",
             )
         _audit(conn, user["id"], "user_group.updated", f"group:{group_id}", updates)
     g = repo.get(group_id)
@@ -465,7 +462,10 @@ async def delete_group(
     except SystemGroupProtected:
         raise HTTPException(status_code=409, detail="Cannot delete a system group")
     _audit(
-        conn, user["id"], "user_group.deleted", f"group:{group_id}",
+        conn,
+        user["id"],
+        "user_group.deleted",
+        f"group:{group_id}",
         {"name": g["name"]},
     )
 
@@ -536,7 +536,9 @@ async def add_member(
         added_by=user.get("email"),
     )
     _audit(
-        conn, user["id"], "user_group.member_added",
+        conn,
+        user["id"],
+        "user_group.member_added",
         f"group:{group_id}",
         {"user_email": payload.email},
     )
@@ -567,11 +569,7 @@ async def remove_member(
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     _guard_google_managed(group)
-    if (
-        group["name"] == "Admin"
-        and is_user_admin(user_id, conn)
-        and users_repo().count_admins(active_only=True) <= 1
-    ):
+    if group["name"] == "Admin" and is_user_admin(user_id, conn) and users_repo().count_admins(active_only=True) <= 1:
         raise HTTPException(
             status_code=409,
             detail="Cannot remove the last admin — at least one user must remain in the Admin group",
@@ -585,7 +583,9 @@ async def remove_member(
             detail="No admin-managed membership for this user in this group",
         )
     _audit(
-        conn, user["id"], "user_group.member_removed",
+        conn,
+        user["id"],
+        "user_group.member_removed",
         f"group:{group_id}",
         {"user_id": user_id},
     )
@@ -648,7 +648,8 @@ async def list_grants(
     if resource_type:
         _validate_resource_type(resource_type)
     rows = resource_grants_repo().list_all(
-        resource_type=resource_type, group_id=group_id,
+        resource_type=resource_type,
+        group_id=group_id,
     )
     return [_grant_to_response(r) for r in rows]
 
@@ -665,6 +666,7 @@ async def create_grant(
     # AGNES_ENABLE_TABLE_GRANTS). Listing + deleting existing rows still
     # works so operators can clean up legacy data.
     from app.resource_types import is_resource_type_enabled
+
     if not is_resource_type_enabled(rt):
         raise HTTPException(
             status_code=422,
@@ -683,7 +685,8 @@ async def create_grant(
     # the enum here so the 422 message matches the endpoint contract
     # rather than leaking a ValueError from the repo layer.
     if payload.requirement is not None and payload.requirement not in (
-        "available", "required",
+        "available",
+        "required",
     ):
         raise HTTPException(
             status_code=422,
@@ -703,7 +706,9 @@ async def create_grant(
             detail="Grant already exists for this group/resource_type/resource_id",
         )
     _audit(
-        conn, user["id"], "resource_grant.created",
+        conn,
+        user["id"],
+        "resource_grant.created",
         f"grant:{grant_id}",
         {
             "group_id": payload.group_id,
@@ -736,7 +741,9 @@ async def update_grant_requirement(
     transitioning ``required → available`` we eagerly materialize a
     ``user_stack_subscriptions`` row for every user currently in the
     granted group, so the resource stays in their stack instead of
-    silently disappearing on the next refresh.
+    silently disappearing on the next refresh. ``marketplace_plugin``
+    grants fan out into ``user_plugin_optouts`` instead — that is the
+    subscription table ``resolve_user_marketplace`` reads.
 
     Both writes route through the ``src.repositories`` factory so they hit
     the active backend (Postgres when configured) — the old raw
@@ -764,16 +771,34 @@ async def update_grant_requirement(
     # Soft-downgrade: required → available eagerly subscribes every current
     # group member to preserve continuity. Idempotent (ON CONFLICT DO NOTHING).
     if prior == "required" and payload.requirement == "available":
-        from src.repositories import user_stack_subscriptions_repo
+        if existing["resource_type"] == "marketplace_plugin":
+            # Plugin subscriptions live in ``user_plugin_optouts`` (read by
+            # ``resolve_user_marketplace``), not ``user_stack_subscriptions``
+            # — fanning out to the stack table would let every group
+            # member's served set silently shrink on downgrade.
+            # resource_id format is ``<marketplace_slug>/<plugin_name>``.
+            from src.repositories import user_curated_subscriptions_repo
 
-        user_stack_subscriptions_repo().subscribe_group_members(
-            existing["group_id"],
-            existing["resource_type"],
-            existing["resource_id"],
-        )
+            slug, _, plugin_name = existing["resource_id"].partition("/")
+            if plugin_name:
+                user_curated_subscriptions_repo().subscribe_group_members(
+                    existing["group_id"],
+                    slug,
+                    plugin_name,
+                )
+        else:
+            from src.repositories import user_stack_subscriptions_repo
+
+            user_stack_subscriptions_repo().subscribe_group_members(
+                existing["group_id"],
+                existing["resource_type"],
+                existing["resource_id"],
+            )
 
     _audit(
-        conn, user["id"], "resource_grant.requirement_updated",
+        conn,
+        user["id"],
+        "resource_grant.requirement_updated",
         f"grant:{grant_id}",
         {
             "prior": prior,
@@ -813,6 +838,7 @@ async def delete_grant(
         if "/" in rid:
             mp_id, plugin_name = rid.split("/", 1)
             from src.repositories import marketplace_plugins_repo
+
             plugin_rows = marketplace_plugins_repo().list_for_marketplace(mp_id)
             sys_plugin = next(
                 (p for p in plugin_rows if p["name"] == plugin_name and p.get("is_system")),
@@ -836,17 +862,23 @@ async def delete_grant(
         if "/" in rid:
             mp_id, plugin_name = rid.split("/", 1)
             from src.repositories import user_curated_subscriptions_repo
+
             optouts_dropped = user_curated_subscriptions_repo().delete_for_plugin(
-                mp_id, plugin_name,
+                mp_id,
+                plugin_name,
             )
         try:
             from app.marketplace_server import packager
+
             packager.invalidate_etag_cache()
         except Exception:
             pass
 
     _audit(
-        conn, user["id"], "resource_grant.deleted", f"grant:{grant_id}",
+        conn,
+        user["id"],
+        "resource_grant.deleted",
+        f"grant:{grant_id}",
         {
             "group_id": existing["group_id"],
             "resource_type": existing["resource_type"],
@@ -944,7 +976,9 @@ async def add_user_to_group(
         added_by=user.get("email"),
     )
     _audit(
-        conn, user["id"], "user_group.member_added",
+        conn,
+        user["id"],
+        "user_group.member_added",
         f"user:{user_id}",
         {"group_id": payload.group_id, "group_name": group["name"]},
     )
@@ -986,11 +1020,7 @@ async def remove_user_from_group(
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     _guard_google_managed(group)
-    if (
-        group["name"] == "Admin"
-        and is_user_admin(user_id, conn)
-        and users_repo().count_admins(active_only=True) <= 1
-    ):
+    if group["name"] == "Admin" and is_user_admin(user_id, conn) and users_repo().count_admins(active_only=True) <= 1:
         raise HTTPException(
             status_code=409,
             detail="Cannot remove the last admin — at least one user must remain in the Admin group",
@@ -1003,7 +1033,9 @@ async def remove_user_from_group(
             detail="No admin-managed membership for this user in this group",
         )
     _audit(
-        conn, user["id"], "user_group.member_removed",
+        conn,
+        user["id"],
+        "user_group.member_removed",
         f"user:{user_id}",
         {"group_id": group_id, "group_name": group["name"]},
     )
@@ -1055,15 +1087,15 @@ async def user_effective_access(
     grants_rows = resource_grants_repo().list_for_groups(list(by_gid.keys()))
 
     grouped: dict[tuple[str, str], EffectiveAccessItem] = {}
-    for gr in sorted(
-        grants_rows, key=lambda r: (r["resource_type"], r["resource_id"], by_gid.get(r["group_id"], ""))
-    ):
+    for gr in sorted(grants_rows, key=lambda r: (r["resource_type"], r["resource_id"], by_gid.get(r["group_id"], ""))):
         rt, rid, gid = gr["resource_type"], gr["resource_id"], gr["group_id"]
         gname = by_gid.get(gid, gid)
         key = (rt, rid)
         if key not in grouped:
             grouped[key] = EffectiveAccessItem(
-                resource_type=rt, resource_id=rid, via_groups=[],
+                resource_type=rt,
+                resource_id=rid,
+                via_groups=[],
             )
         grouped[key].via_groups.append({"group_id": gid, "group_name": gname})
 
@@ -1104,15 +1136,15 @@ async def my_effective_access(
     grants_rows = resource_grants_repo().list_for_groups(list(by_gid.keys()))
 
     grouped: dict[tuple[str, str], EffectiveAccessItem] = {}
-    for gr in sorted(
-        grants_rows, key=lambda r: (r["resource_type"], r["resource_id"], by_gid.get(r["group_id"], ""))
-    ):
+    for gr in sorted(grants_rows, key=lambda r: (r["resource_type"], r["resource_id"], by_gid.get(r["group_id"], ""))):
         rt, rid, gid = gr["resource_type"], gr["resource_id"], gr["group_id"]
         gname = by_gid.get(gid, gid)
         key = (rt, rid)
         if key not in grouped:
             grouped[key] = EffectiveAccessItem(
-                resource_type=rt, resource_id=rid, via_groups=[],
+                resource_type=rt,
+                resource_id=rid,
+                via_groups=[],
             )
         grouped[key].via_groups.append({"group_id": gid, "group_name": gname})
 
