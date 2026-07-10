@@ -128,14 +128,14 @@ def _get_system_db_caller_files() -> set[str]:
 # ---------------------------------------------------------------------------
 
 _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
-    # cli_auth.py — AccessTokenRepository call site migrated to
-    # access_token_repo() (batch 2); entry removed.
+    # cli_auth.py — PAT minting migrated to access_token_repo(); entry removed.
     # cowork_bundle.py — fully migrated to the factory (setup_tokens_repo /
     # users_repo / access_token_repo / audit_repo); entry removed.
     # admin_chat.py, admin_mcp.py, data_packages.py, memory_domain_suggestions.py,
     # recipes.py — AuditRepository call sites migrated to audit_repo(); entries removed.
-    "app/api/mcp/tools_generator.py": {"MCPSourceRepository", "ToolRegistryRepository"},
-    "app/api/mcp_per_table.py": {"TableRegistryRepository"},
+    # mcp/tools_generator.py — passthrough registration migrated to
+    # mcp_sources_repo()/tool_registry_repo(); entry removed.
+    # mcp_per_table.py — registry lookup migrated to table_registry_repo(); entry removed.
     # mcp_user_secrets.py — migrated to mcp_sources_repo()/per_user_secrets_repo(); entry removed.
     # memory.py — mark_mandatory/mark_unmandatory/admin_get_item/domain markdown
     # export migrated to knowledge_repo(); entry removed.
@@ -212,9 +212,13 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     # 2026-07 audit's guard-coverage gap). Extractors run server-side where
     # DATABASE_URL may be set; direct DuckDB repo construction there is the
     # same backend-split class. Live debt — verify/fix, then delete.
+    # keboola/extractor.py — registry/sync-state reads migrated to the factory; entry removed.
+    # bigquery/extractor.py — kept: sanctioned `not use_pg()` conn escape hatch;
+    # on Postgres the factory always wins.
     "connectors/bigquery/extractor.py": {"TableRegistryRepository"},
     "connectors/internal/registry.py": {"TableRegistryRepository"},
-    "connectors/keboola/extractor.py": {"SyncStateRepository", "TableRegistryRepository"},
+    # mcp/extractor.py — kept: sanctioned `not use_pg()` conn escape hatch
+    # (_sources_repo/_tools_repo); on Postgres the factory always wins.
     "connectors/mcp/extractor.py": {"MCPSourceRepository", "ToolRegistryRepository"},
     # src/store_guardrails/reaper.py + runner.py — both moved off direct
     # DuckDB-conn repo instantiation onto the src.repositories factory
@@ -233,11 +237,8 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "app/api/cache_warmup.py",
     "app/api/health.py",
     "app/api/mcp_http.py",
-    # app/api/mcp_streamable.py — startup-only get_system_db() in
-    # _register_dynamic_tools() to read tool_registry for passthrough tools,
-    # identical to mcp_http.py. Not a per-request handler, so not the
-    # backend-split bug class this ratchet guards.
-    "app/api/mcp_streamable.py",
+    # app/api/mcp_streamable.py — passthrough registration migrated to the
+    # factory; vestigial get_system_db() scaffolding deleted. Entry removed.
     # app/api/query.py — the bq-metadata VIEW-hint lookup (_view_targets_in)
     # now routes through the factory; no remaining get_system_db caller.
     "app/api/scripts.py",
@@ -265,7 +266,7 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     # surfaced when "connectors" joined SCAN_DIRS — see the matching note in
     # _GRANDFATHERED_DIRECT_INSTANTIATION. internal/access.py is verified
     # use_pg()-gated (data reads materialize PG rows into ephemeral DuckDB).
-    "connectors/bigquery/extractor.py",
+    # bigquery/extractor.py — migrated to the factory; entry removed.
     "connectors/internal/access.py",
     "connectors/keboola/extractor.py",
 }
@@ -371,7 +372,7 @@ _GRANDFATHERED_DEPENDS_GET_DB_RAW_SQL: dict[str, set[str]] = {
     # surfaced when the state-table list went metadata-driven (knowledge_votes,
     # table_profiles, knowledge_item_relations were missing from the old
     # hand-maintained tuple). Live backend-split debt — fix, then delete.
-    "app/api/memory.py": {"get_my_votes", "list_knowledge"},
+    # memory.py — get_my_votes/list_knowledge migrated to knowledge_repo(); entry removed.
     "app/web/router.py": {"catalog_table_detail", "corporate_memory_admin"},
 }
 
@@ -458,16 +459,15 @@ _GRANDFATHERED_RAW_STATE_SQL: dict[str, set[str]] = {
     "app/api/activity.py": {"_compute_health"},
     "app/api/marketplace.py": {"_load_curated_stack_counts", "_load_users_display", "_resolve_owner_display"},
     "app/api/me_debug.py": {"_last_sync_summary"},
-    "app/api/memory.py": {"_caller_granted_memory_domains", "_effective_groups", "get_my_votes", "list_knowledge"},
+    # memory.py — RBAC helpers + vote reads migrated to the factory; entry removed.
     "app/chat/audit.py": {"write_audit"},
     "app/chat/copresence_summary.py": {"build_intersection_summary"},
     "app/web/router.py": {"catalog_table_detail", "corporate_memory_admin"},
     "connectors/internal/registry.py": {"ensure_internal_tables_registered"},
-    "services/session_pipeline/runner.py": {"resolve_user_identity"},
-    "services/session_processors/usage_lib.py": {"__init__"},
+    # session_pipeline/runner.py, session_processors/usage_lib.py,
+    # verification_detector/__main__.py — migrated to the factory; entries removed.
     "services/slack_bot/binding.py": {"is_channel_allowlisted"},
     "services/slack_bot/events.py": {"_handle_mention"},
-    "services/verification_detector/__main__.py": {"main"},
     "src/claude_md.py": {"_list_tables", "_marketplaces_for_user", "_metrics_summary"},
     "src/store_guardrails/purge.py": {"purge_blocked_bundles"},
 }
