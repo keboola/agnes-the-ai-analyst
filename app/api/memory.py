@@ -13,7 +13,6 @@ import duckdb
 from app.auth.dependencies import get_current_user, _get_db
 from app.auth.access import require_admin, is_user_admin, can_access, can_access_session
 from app.auth.session_principal import SessionPrincipal
-from src.repositories.knowledge import KnowledgeRepository
 
 from src.repositories import (
     audit_repo,
@@ -812,7 +811,6 @@ async def admin_mandate(
 async def mark_mandatory(
     item_id: str,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Promote an item to required (``is_required = TRUE``).
 
@@ -820,15 +818,20 @@ async def mark_mandatory(
     param endpoint, matching the spec's Section 6 mapping table. Same audit
     pattern but no audience / reason fields — those stay on /admin/mandate.
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.set_is_required(item_id, True)
-    audit_repo().log(
-        user_id=user["email"],
-        action="memory_item.set_required",
-        resource=f"knowledge_item:{item_id}",
-        params={"new_value": True},
-    )
+    # Best-effort like the sibling /admin/mandate — the flag flip has already
+    # committed; an audit hiccup must not surface as a 500.
+    try:
+        audit_repo().log(
+            user_id=user["email"],
+            action="memory_item.set_required",
+            resource=f"knowledge_item:{item_id}",
+            params={"new_value": True},
+        )
+    except Exception:
+        pass
     return {"id": item_id, "is_required": True}
 
 
@@ -836,7 +839,6 @@ async def mark_mandatory(
 async def mark_unmandatory(
     item_id: str,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Demote an item from required (``is_required = FALSE``).
 
@@ -845,15 +847,19 @@ async def mark_unmandatory(
     flips. Audit row writes ``memory_item.set_required`` with
     ``{new_value: false}``.
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.set_is_required(item_id, False)
-    audit_repo().log(
-        user_id=user["email"],
-        action="memory_item.set_required",
-        resource=f"knowledge_item:{item_id}",
-        params={"new_value": False},
-    )
+    # Best-effort like the sibling /admin/mandate.
+    try:
+        audit_repo().log(
+            user_id=user["email"],
+            action="memory_item.set_required",
+            resource=f"knowledge_item:{item_id}",
+            params={"new_value": False},
+        )
+    except Exception:
+        pass
     return {"id": item_id, "is_required": False}
 
 
@@ -1181,7 +1187,6 @@ async def admin_resolve_duplicate_candidate(
 async def admin_get_item(
     item_id: str,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Single-item GET — powers the ``#item-<id>`` deep link from
     `/memory/d/<slug>`'s Edit affordance. The admin page uses this to
@@ -1194,7 +1199,7 @@ async def admin_get_item(
     catch-all ``{item_id}`` doesn't shadow them — FastAPI matches in
     declaration order.
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     item = repo.get_by_id(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="item_not_found")
@@ -1575,10 +1580,10 @@ def _build_per_domain_markdown(slug: str, user: dict, conn: duckdb.DuckDBPyConne
         return Response(content=body, media_type="text/markdown; charset=utf-8")
 
     # Fetch full bodies — list_items_of_domain only returns id/title/status.
-    knowledge_repo = KnowledgeRepository(conn)
+    kn_repo = knowledge_repo()
     full_items: list = []
     for meta in sorted(items_meta, key=lambda r: r["id"]):
-        full = knowledge_repo.get_by_id(meta["id"])
+        full = kn_repo.get_by_id(meta["id"])
         if not full:
             continue
         full_items.append(full)

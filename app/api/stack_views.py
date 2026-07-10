@@ -24,9 +24,9 @@ from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
 from src.repositories import (
     data_packages_repo,
+    knowledge_repo,
     memory_domains_repo,
 )
-from src.repositories.knowledge import KnowledgeRepository
 from src.repositories.usage import UsageRepository
 
 logger = logging.getLogger(__name__)
@@ -71,9 +71,7 @@ def _require_access(user: dict, rt: ResourceType, resource_id: str, conn) -> Non
 @router.get("/api/data-packages/{slug}")
 async def view_data_package(
     slug: str,
-    source: Optional[str] = Query(
-        None, description="Originating page hint for telemetry (browse|my-stack)"
-    ),
+    source: Optional[str] = Query(None, description="Originating page hint for telemetry (browse|my-stack)"),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -106,9 +104,7 @@ async def view_data_package(
 @router.get("/api/memory/domains/{slug}")
 async def view_memory_domain(
     slug: str,
-    source: Optional[str] = Query(
-        None, description="Originating page hint for telemetry (browse|my-stack)"
-    ),
+    source: Optional[str] = Query(None, description="Originating page hint for telemetry (browse|my-stack)"),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -127,20 +123,22 @@ async def view_memory_domain(
     item_summaries = repo.list_items_of_domain(dom["id"], limit=1000)
     # Hydrate item titles + is_required from the knowledge repo for the
     # drill-down — the junction's projection is intentionally minimal.
-    knowledge = KnowledgeRepository(conn)
+    knowledge = knowledge_repo()
     items: list = []
     for s in item_summaries:
         item = knowledge.get_by_id(s["id"])
         if not item:
             continue
-        items.append({
-            "id": item["id"],
-            "title": item.get("title"),
-            "content": item.get("content"),
-            "status": item.get("status"),
-            "is_required": bool(item.get("is_required")),
-            "category": item.get("category"),
-        })
+        items.append(
+            {
+                "id": item["id"],
+                "title": item.get("title"),
+                "content": item.get("content"),
+                "status": item.get("status"),
+                "is_required": bool(item.get("is_required")),
+                "category": item.get("category"),
+            }
+        )
     return {
         "id": dom["id"],
         "slug": dom["slug"],

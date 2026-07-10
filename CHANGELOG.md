@@ -16,6 +16,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Backend-split cleanup (batch 2): the CLI-login PAT mint and four corporate-memory admin endpoints (mark-mandatory, mark-unmandatory, admin item GET, memory-domain item lookup, and the per-domain markdown bundle) wrote/read via direct `AccessTokenRepository(conn)` / `KnowledgeRepository(conn)` instantiation, which always targets DuckDB — on a Postgres-backed instance those writes/reads bypassed the active backend. Migrated to `access_token_repo()` / `knowledge_repo()` and shrank the backend-split guard's grandfathered allow-list accordingly.
+
 ### Removed
 
 ### Internal
