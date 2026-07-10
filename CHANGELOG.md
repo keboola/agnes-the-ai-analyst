@@ -23,7 +23,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
-## [0.74.49] - 2026-07-10
+## [0.74.50] - 2026-07-10
 
 ### Fixed
 
