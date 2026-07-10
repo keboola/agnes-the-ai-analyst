@@ -141,6 +141,12 @@ def _agnes_mcp_servers() -> dict:
         "AGNES_SERVER": server,
         "AGNES_TOKEN": token,
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        # ``agnes mcp`` resolves its config dir via ``expanduser("~/.config/
+        # agnes")`` (cli/config.py), which needs HOME. The ``claude`` CLI
+        # spawns the stdio server and env inheritance across that hop is not
+        # guaranteed, so forward HOME explicitly (default matches the sandbox
+        # ``user`` home the manager seeds into the runner process).
+        "HOME": os.environ.get("HOME", "/home/user"),
     }
     if session_id := os.environ.get("AGNES_SESSION_ID", "").strip():
         env["AGNES_SESSION_ID"] = session_id
