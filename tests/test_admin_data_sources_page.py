@@ -49,6 +49,17 @@ class TestDataSourcesPageAuth:
         assert "/api/admin/source-connections" in body
         assert "/api/admin/register-table" in body
 
+        # Per-card "Set as default" + "Rotate token" controls, ported from
+        # the now-retired Keboola section of /admin/datasource-credentials.
+        assert "setDefaultConn" in body
+        assert "Set as default" in body
+        assert "toggleRotate" in body
+        assert "Rotate token" in body
+        assert 'class="ds-rotate-row"' in body
+
+        # Reciprocal link to the vault-secrets page.
+        assert "/admin/datasource-credentials" in body
+
     def test_non_admin_cannot_load_page(self, seeded_app):
         c = seeded_app["client"]
         token = seeded_app["analyst_token"]
