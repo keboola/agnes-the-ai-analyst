@@ -50,6 +50,8 @@ _COHORT: dict[str, tuple[str, str]] = {
     # Contributed-skill triple-surface (GET list + DELETE; POST contribute is _EXEMPT below).
     "/api/admin/contributed-skills": ("admin skill list", "list_contributed_skills"),
     "/api/admin/contributed-skills/{name}": ("admin skill delete", "delete_contributed_skill"),
+    # Web chat slash-menu catalog (issue #780).
+    "/api/chat/skills": ("chat skills", "chat_skills"),
 }
 
 

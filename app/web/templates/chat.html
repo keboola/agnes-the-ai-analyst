@@ -187,7 +187,17 @@
 
     <div id="chat-messages" class="cloud-chat-messages" aria-live="polite"></div>
     <form id="chat-form" class="cloud-chat-form">
-      <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes…" rows="2"></textarea>
+      {# Slash menu — GET /api/chat/skills backs it (server-normalized,
+         RBAC-filtered skills + recognized commands, see
+         app/chat/skills_catalog.py). Typing "/" at the start of the
+         composer opens this filterable list; chat.js renders + wires
+         keyboard nav. Positioned by CSS relative to this form
+         (position: relative, see chat.css). #}
+      <div id="chat-slash-menu" class="cloud-chat-slash-menu" hidden
+           role="listbox" aria-label="Skills and commands">
+        <ul id="chat-slash-menu-results" class="cloud-chat-slash-menu-results"></ul>
+      </div>
+      <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes… (try / for skills)" rows="2"></textarea>
       <div class="cloud-chat-form-actions">
         <button type="button" id="cancel-btn"
                 class="btn btn-danger cloud-chat-stop-btn" hidden>Stop</button>

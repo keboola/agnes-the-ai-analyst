@@ -291,6 +291,31 @@ async def skills() -> dict:
 
 
 @mcp.tool()
+async def chat_skills() -> dict:
+    """List skills + slash commands invokable in your web chat sandbox.
+
+    Unlike ``skills`` (every marketplace skill you're RBAC-granted, with full
+    bodies), this mirrors what the web chat composer's slash menu shows:
+    skills bundled into the chat sandbox's workspace template merged with
+    your RBAC-filtered marketplace/store plugin skills (marketplace wins name
+    clashes) — the same set ``app/chat/runner.py`` installs into a live
+    session. Requires cloud chat to be enabled and granted to you.
+
+    Returns ``{"skills": [{"name", "description", "source"}],
+    "commands": [{"name", "description"}]}``. ``commands`` is currently
+    always empty — no slash command is backend-recognized yet.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{_BASE}/api/chat/skills",
+            headers=_headers(),
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
 async def stack_browse(resource_type: str) -> dict:
     """List resources you could add to your stack (RBAC-granted candidates).
 

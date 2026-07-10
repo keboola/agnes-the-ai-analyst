@@ -8,13 +8,16 @@ import secrets
 import time
 from typing import Optional
 
+import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from app.auth.access import require_resource_access
+from app.auth.dependencies import _get_db
 from app.chat.manager import ChatManager, ConcurrencyCapHit, SessionNotFound
 from app.chat.persistence import ChatRepository
 from app.chat.profiles import get_profile
+from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR, list_recognized_commands, merged_skills
 from app.chat.types import Surface
 from app.resource_types import ResourceType
 
@@ -123,6 +126,34 @@ async def list_sessions(
         }
         for s in rows
     ]
+
+
+@router.get("/skills")
+async def list_skills(
+    user: dict = Depends(require_chat_access),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Server-normalized skills + commands catalog for the composer's slash menu.
+
+    ``{"skills": [{name, description, source}], "commands": [{name, description}]}``.
+
+    Two sources are merged server-side (see ``app.chat.skills_catalog`` for the
+    full rationale): skills shipped in the bundled chat workspace template
+    (``source="bundled"``) and the caller's RBAC-filtered marketplace/store
+    plugin skills (``source="marketplace"``) — the same set
+    ``app/chat/runner.py``'s ``_bootstrap_marketplace`` installs into the live
+    sandbox. **Shadowing**: when a skill name is present in both sources, the
+    marketplace entry wins (it is the more user-specific grant). Either source
+    failing to list degrades non-fatally — a warning is logged and the other
+    source's skills still come back.
+
+    ``commands`` is currently always empty: neither ``app/chat/runner.py`` nor
+    the bundled workspace template recognize any slash command today (checked,
+    not assumed — see ``list_recognized_commands``'s docstring). Nothing is
+    invented ahead of an actual implementation.
+    """
+    skills = merged_skills(BUNDLED_TEMPLATE_DIR, conn, user)
+    return {"skills": skills, "commands": list_recognized_commands()}
 
 
 @router.post("/sessions/{chat_id}/ticket", status_code=201)
