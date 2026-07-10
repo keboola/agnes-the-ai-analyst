@@ -12,6 +12,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- Studio Skill Builder (`/admin/studio/skill`, issue #688): guided authoring of a SKILL.md with an assistant profile, published straight into the store's guardrail + review pipeline via the new `POST /api/store/entities/from-markdown` (also `agnes store publish-md` and the `store_publish_markdown` MCP tool). Direct-submit domains bypass the authoring-suggestions queue — the store's own review is the moderation.
+
 ### Changed
 
 ### Fixed

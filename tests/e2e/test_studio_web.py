@@ -50,6 +50,22 @@ CASES = [
         },
         {},
     ),
+    (
+        "skill",
+        {
+            "name": "e2e-skill",
+            "description": (
+                "Use when exercising the studio skill builder end to end, from page load to store publish."
+            ),
+            "skill_md": (
+                "Step one: open the page under test and confirm the layout. "
+                "Step two: run the documented commands in order. "
+                "Step three: verify the output matches the expected values and "
+                "report any mismatch with the exact command and observed output."
+            ),
+        },
+        {"category": "Other"},
+    ),
 ]
 
 
