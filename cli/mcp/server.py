@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 
 from cli.client import api_get
@@ -156,11 +157,39 @@ def knowledge_search(query: str, k: int = 10) -> dict:
     all RBAC-filtered. Results are typed ``chunk | knowledge | table``;
     a ``table`` hit means structured data: pivot to SQL via the ``query``
     tool with the hit's ``table_id`` instead of reading text chunks.
+
+    Offline fallback (K3, #798): if the server is unreachable (network/VPN
+    down), falls back to `agnes pull`-shipped knowledge artifacts under
+    `user/knowledge/` and runs the same hybrid ranking locally — documents
+    (``chunk``) only, no ``knowledge``/``table`` hits. The response then
+    carries ``source: "local"`` and a ``note`` explaining the degradation.
+    An HTTP error from a reachable server (``V2ClientError``) is NOT a
+    fallback trigger — the server answered, its error is the truth.
     """
     try:
         return api_get_json("/api/knowledge/search", q=query, k=k)
     except V2ClientError as exc:
         raise ValueError(_mcp_error("knowledge_search", exc)) from exc
+    except httpx.TransportError as exc:
+        # Server unreachable (offline laptop, VPN down) — fall back to the
+        # artifacts `agnes pull` shipped. Same hybrid scoring, chunk source
+        # only; HTTP errors above do NOT fall back (the server answered).
+        from cli.config import get_workspace_root
+        from src.search.local import local_search
+
+        ws = get_workspace_root()
+        if not ws:
+            raise ValueError(
+                f"knowledge_search failed: server unreachable ({exc}) and no "
+                "local workspace configured — run `agnes init` + `agnes pull`."
+            ) from exc
+        results = local_search(query, workspace=Path(ws), k=k)
+        return {
+            "query": query,
+            "results": results,
+            "source": "local",
+            "note": "server unreachable — searched local knowledge artifacts (documents only)",
+        }
 
 
 @mcp.tool()

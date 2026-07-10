@@ -22,13 +22,34 @@ def search(
     query: str = typer.Argument(..., help="Search query"),
     k: int = typer.Option(10, "--k", help="Max results"),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
+    local: bool = typer.Option(
+        False,
+        "--local",
+        help=(
+            "Search knowledge artifacts pulled by `agnes pull` (offline; "
+            "documents only — knowledge rules are already in .claude/rules/, "
+            "the table catalog needs the server)"
+        ),
+    ),
 ):
     """One query across documents, the knowledge base, and the data catalog."""
-    try:
-        body = api_get_json("/api/knowledge/search", q=query, k=k)
-    except V2ClientError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(1)
+    if local:
+        from pathlib import Path as _Path
+
+        from cli.config import get_workspace_root
+        from src.search.local import local_search
+
+        ws = get_workspace_root()
+        if not ws:
+            typer.echo("No workspace configured — run `agnes init` (or unset --local).", err=True)
+            raise typer.Exit(1)
+        body = {"query": query, "results": local_search(query, workspace=_Path(ws), k=k), "source": "local"}
+    else:
+        try:
+            body = api_get_json("/api/knowledge/search", q=query, k=k)
+        except V2ClientError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1)
 
     if as_json:
         typer.echo(json_lib.dumps(body, indent=2, default=str))
