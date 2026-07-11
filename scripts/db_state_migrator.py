@@ -18,6 +18,7 @@ Spec: docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md
 """
 from __future__ import annotations
 import json
+import logging
 import os
 import re
 import sys
@@ -27,6 +28,8 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 
 def _bounded_engine(url: str):
@@ -456,6 +459,74 @@ def scrub_audit_log_pii(duckdb_path: Path) -> dict[str, int]:
     return {"rows_scanned": rows_scanned, "rows_redacted": rows_redacted}
 
 
+def _reset_target_state_tables(pg_engine) -> int:
+    """Empty every PG state table before a DuckDB→PG copy (B1 — retry safety).
+
+    The copy uses bare ``INSERT … ON CONFLICT DO NOTHING`` (to honour every
+    UNIQUE constraint, not just the PK — see
+    ``migrate_duckdb_to_pg.tasks._build_insert``). That makes a RETRY into a
+    NON-EMPTY target silently keep the PREVIOUS attempt's content: any row
+    edited in the DuckDB source between a failed first attempt and the retry
+    collides on its key, is skipped by ``DO NOTHING``, and keeps its stale
+    value — and the post-copy ``verify_row_counts`` (COUNT(*)-only) can't see
+    it because the counts still match.
+
+    On this path the PG target is, by definition, a fresh mirror of the
+    DuckDB source, so we truncate it first. A first attempt truncates empty
+    tables (no-op); a retry discards the partial/stale copy so the following
+    INSERT lands every current value. Truncating all tables in one statement
+    (+ CASCADE) satisfies inter-table foreign keys.
+
+    Safe against the two seeding alembic migrations: 0032 (vscode-mcp OAuth
+    client) is also seeded in the DuckDB ladder (v85), so the copy re-inserts
+    it; 0033 (Everyone backfill) is a no-op on a fresh PG. The DuckDB source
+    is the authoritative content for the cutover.
+
+    Returns the number of rows discarded (0 on a clean first attempt).
+    """
+    import sqlalchemy as sa
+
+    import src.models  # noqa: F401 — register every model on Base.metadata
+    from src.db_pg import Base
+
+    tables = list(Base.metadata.sorted_tables)
+    if not tables:
+        return 0
+    with pg_engine.begin() as conn:
+        # Truncate only tables that actually exist in the target. A partial
+        # alembic state or a dropped table must NOT crash the reset — the
+        # copy that follows surfaces a genuinely-missing table as a per-table
+        # error (which callers report), so failing here would hide it.
+        existing = set(
+            conn.execute(
+                sa.text(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = 'public'"
+                )
+            ).scalars()
+        )
+        present = [t for t in tables if t.name in existing]
+        discarded = 0
+        for t in present:
+            n = conn.execute(sa.text(f'SELECT COUNT(*) FROM "{t.name}"')).scalar()
+            discarded += int(n or 0)
+        # A clean first attempt still finds a couple of rows here — alembic
+        # seeds vscode-mcp (0032) into oauth_clients before the copy — so this
+        # runs every time, not just on retries. Log the count so a large
+        # number (a retry discarding a partial/stale copy) is visible.
+        log.info(
+            "reset target before DuckDB→PG copy: discarding %d pre-existing "
+            "row(s) across %d PG table(s) so the copy starts from an empty "
+            "mirror (no stale row can survive a retry — B1).",
+            discarded,
+            len(present),
+        )
+        if present:
+            quoted = ", ".join(f'"{t.name}"' for t in present)
+            conn.execute(sa.text(f"TRUNCATE {quoted} CASCADE"))
+    return discarded
+
+
 def copy_duckdb_to_pg(
     duckdb_path: Path,
     target_url: str,
@@ -503,6 +574,9 @@ def copy_duckdb_to_pg(
     try:
         pg_engine = _bounded_engine(target_url)
         try:
+            # B1 — start from an empty target so the ON CONFLICT DO NOTHING
+            # copy can't keep stale rows from a prior failed attempt.
+            reset_discarded = _reset_target_state_tables(pg_engine)
             reports = run_all(
                 duck_conn,
                 pg_engine,
@@ -524,6 +598,7 @@ def copy_duckdb_to_pg(
     return {
         "rows_total": sum(r.get("pg_rows", 0) for r in ok),
         "tables_migrated": len(ok),
+        "target_rows_reset": reset_discarded,
         "tables_failed": [
             {"table": r["table"], "error": str(r["error"])}
             for r in err
@@ -911,6 +986,48 @@ def verify_row_counts(duckdb_path: Path, target_url: str) -> list[dict]:
     return diffs
 
 
+def checkpoint_duckdb(duckdb_path: Path) -> bool:
+    """Fold the DuckDB WAL into the main file before backup + copy (B2).
+
+    DuckDB writes commits to a ``.wal`` sidecar and only folds it into the
+    main ``.duckdb`` file on a clean CHECKPOINT (normally at app shutdown).
+    If the app was hard-killed — OOM, or a shutdown that overran its
+    ``docker stop`` grace — the last committed changes live only in
+    ``system.duckdb.wal``. ``backup_duckdb`` gzips the ``.duckdb`` file
+    only, so the recovery artifact would silently lack those WAL-tail
+    commits. CHECKPOINT here folds the WAL into the file so both the backup
+    and the copy see a complete, self-contained database regardless of how
+    the app stopped.
+
+    The app container is already stopped (the applier stops it before
+    launching the migrator), so the exclusive DuckDB file lock is free.
+
+    Best-effort: returns ``True`` on success, ``False`` (with a WARNING) on
+    failure. The copy itself is unaffected either way — it opens the file
+    read-only, which replays the WAL into the read — so a checkpoint failure
+    only risks a slightly-incomplete *backup*, not a lossy migration.
+    """
+    if not Path(duckdb_path).exists():
+        return False
+    from src.duckdb_conn import _open_duckdb
+
+    try:
+        conn = _open_duckdb(str(duckdb_path))  # writable — needed to CHECKPOINT
+        try:
+            conn.execute("CHECKPOINT")
+        finally:
+            conn.close()
+        return True
+    except Exception as e:  # pragma: no cover - defensive
+        log.warning(
+            "DuckDB CHECKPOINT before backup/copy failed (%s); the copy still "
+            "captures WAL data via its read-only open, but the backup artifact "
+            "may omit un-checkpointed WAL-tail commits.",
+            e,
+        )
+        return False
+
+
 def backup_duckdb(duckdb_path: Path, backups_dir: Path) -> Path:
     """gzip the DuckDB file to backups dir with timestamp.
 
@@ -1074,6 +1191,12 @@ def main(
         if source_backend == "duckdb":
             # duckdb → side_car  OR  duckdb → cloud — both copy from the
             # DuckDB file to whichever PG target the operator picked.
+
+            # B2 — fold the WAL into the main file before we back it up or
+            # read it, so a hard-killed app's last commits are captured in
+            # both the backup artifact and the copy. Best-effort: the copy
+            # opens read-only (replays the WAL) regardless.
+            checkpoint_duckdb(duckdb_path)
 
             if to == "side_car":
                 # Backup the DuckDB file BEFORE any destructive operation on
