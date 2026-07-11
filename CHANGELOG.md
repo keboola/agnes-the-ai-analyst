@@ -17,6 +17,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- DuckDB→Postgres cutover was unsafe on a **retry**: the copy uses bare `INSERT … ON CONFLICT DO NOTHING`, so a second attempt into a non-empty target (the standard recovery flow after a partial failure) silently kept the *previous* attempt's row content — any row edited in the source between attempts was skipped on conflict and reverted to its stale value, invisibly to the `COUNT(*)`-only verify. The applier/state-machine copy path (`copy_duckdb_to_pg`) now truncates the target state tables first, so the copy always rebuilds a faithful, current mirror of the DuckDB source. (The docker-compose `data-migrate` path is intentionally left unchanged — it re-runs on every boot and must not truncate live post-cutover data.)
+- DuckDB→Postgres cutover could lose the last committed changes on a hard-killed app: the pre-cutover backup gzips only the `.duckdb` file, omitting the `.wal` sidecar that holds commits not yet folded in (OOM / `docker stop` grace exceeded). The migrator now `CHECKPOINT`s the DuckDB before the backup and copy, folding the WAL into the main file so both capture a complete, self-contained database regardless of how the app stopped.
+
 ### Removed
 
 ### Internal
