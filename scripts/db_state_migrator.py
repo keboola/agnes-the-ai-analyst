@@ -1131,10 +1131,23 @@ def main(
             # duckdb → side_car  OR  duckdb → cloud — both copy from the
             # DuckDB file to whichever PG target the operator picked.
 
+            if to == "side_car":
+                # H7 — scrub stale audit PII in the SOURCE *before* the
+                # pre-flip backup taken below, so the .duckdb.gz recovery
+                # artifact can't retain tokens/passwords captured before the
+                # runtime sanitiser existed. The scrub must precede both the
+                # checkpoint (so its rewrites get folded into the file) and
+                # the backup (so the artifact is clean). copy_duckdb_to_pg
+                # re-runs the same idempotent scrub for the copy path, so
+                # the copy itself is unchanged. (The direct duckdb → cloud
+                # path takes no backup, so its scrub stays inside the copy.)
+                scrub_audit_log_pii(duckdb_path)
+
             # B2 — fold the WAL into the main file before we back it up or
-            # read it, so a hard-killed app's last commits are captured in
-            # both the backup artifact and the copy. Best-effort: the copy
-            # opens read-only (replays the WAL) regardless.
+            # read it, so a hard-killed app's last commits (and the scrub's
+            # own rewrites, above) are captured in both the backup artifact
+            # and the copy. Best-effort: the copy opens read-only (replays
+            # the WAL) regardless.
             checkpoint_duckdb(duckdb_path)
 
             if to == "side_car":
