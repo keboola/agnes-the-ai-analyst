@@ -659,3 +659,90 @@ def test_run_all_halts_on_first_failure(tmp_path, pg_with_schema):
         assert "halted" in r.get("reason", "").lower(), (
             f"skip reason should mention halting, got {r.get('reason')!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# reset_target (--reset-target) — retry safety on the run_all / __main__ path
+# ---------------------------------------------------------------------------
+
+
+def test_run_all_reset_target_rebuilds_fresh(tmp_path, pg_with_schema):
+    """reset_target=True rebuilds a fresh mirror: a retry replaces the stale
+    row a prior attempt left behind (bare ON CONFLICT DO NOTHING would keep
+    it, invisibly to the COUNT(*)-only verify)."""
+    import sqlalchemy as sa
+    from src.db import _ensure_schema
+    from scripts.migrate_duckdb_to_pg import run_all
+
+    duck_path = tmp_path / "system.duckdb"
+    duck = duckdb.connect(str(duck_path))
+    _ensure_schema(duck)
+    duck.execute("INSERT INTO users (id, email, name) VALUES ('u1', 'new@x', 'New')")
+    duck.close()
+
+    # A prior failed attempt left a stale version of the same user in PG.
+    with pg_with_schema.begin() as c:
+        c.execute(sa.text(
+            "INSERT INTO users (id, email, name) VALUES ('u1', 'stale@x', 'Stale')"
+        ))
+
+    duck = duckdb.connect(str(duck_path), read_only=True)
+    run_all(duck, pg_with_schema, reset_target=True)
+    duck.close()
+
+    with pg_with_schema.connect() as c:
+        row = c.execute(sa.text("SELECT email, name FROM users WHERE id='u1'")).fetchone()
+    assert tuple(row) == ("new@x", "New")
+
+
+def test_run_all_default_does_not_truncate(tmp_path, pg_with_schema):
+    """C3 safety — WITHOUT reset_target, run_all must NOT wipe existing PG
+    rows. The docker-compose ``data-migrate`` one-shot re-runs on every boot;
+    truncating there would resurrect deleted rows / lose live post-cutover
+    data. A row present only in PG must survive a default run_all."""
+    import sqlalchemy as sa
+    from src.db import _ensure_schema
+    from scripts.migrate_duckdb_to_pg import run_all
+
+    duck_path = tmp_path / "system.duckdb"
+    duck = duckdb.connect(str(duck_path))
+    _ensure_schema(duck)
+    duck.close()
+
+    with pg_with_schema.begin() as c:
+        c.execute(sa.text(
+            "INSERT INTO users (id, email, name) VALUES ('ghost', 'g@x', 'Ghost')"
+        ))
+
+    duck = duckdb.connect(str(duck_path), read_only=True)
+    run_all(duck, pg_with_schema)  # default: reset_target=False
+    duck.close()
+
+    with pg_with_schema.connect() as c:
+        n = c.execute(sa.text("SELECT COUNT(*) FROM users WHERE id='ghost'")).scalar()
+    assert n == 1, "run_all without reset_target must not truncate existing PG data"
+
+
+def test_run_all_reset_target_dry_run_does_not_truncate(tmp_path, pg_with_schema):
+    """A dry run must never truncate, even with reset_target=True."""
+    import sqlalchemy as sa
+    from src.db import _ensure_schema
+    from scripts.migrate_duckdb_to_pg import run_all
+
+    duck_path = tmp_path / "system.duckdb"
+    duck = duckdb.connect(str(duck_path))
+    _ensure_schema(duck)
+    duck.close()
+
+    with pg_with_schema.begin() as c:
+        c.execute(sa.text(
+            "INSERT INTO users (id, email, name) VALUES ('ghost', 'g@x', 'Ghost')"
+        ))
+
+    duck = duckdb.connect(str(duck_path), read_only=True)
+    run_all(duck, pg_with_schema, reset_target=True, dry_run=True)
+    duck.close()
+
+    with pg_with_schema.connect() as c:
+        n = c.execute(sa.text("SELECT COUNT(*) FROM users WHERE id='ghost'")).scalar()
+    assert n == 1, "a dry run must not truncate even with reset_target=True"

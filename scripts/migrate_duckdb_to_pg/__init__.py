@@ -205,6 +205,71 @@ def validate_task(
     return task.validate(duck_conn, pg_engine)
 
 
+def reset_target_state_tables(pg_engine: Engine) -> int:
+    """Empty every PG state table before a DuckDB→PG copy (B1 — retry safety).
+
+    The copy uses bare ``INSERT … ON CONFLICT DO NOTHING`` (deliberately
+    bare, to honour every UNIQUE constraint — see ``tasks._build_insert``).
+    That makes a RETRY into a NON-EMPTY target silently keep the PREVIOUS
+    attempt's content: any row edited in the source between a failed first
+    attempt and the retry collides on its key, is skipped by ``DO NOTHING``,
+    and keeps its stale value — and a ``COUNT(*)``-only verify can't see it
+    because the counts still match.
+
+    When the target is meant to be a fresh mirror of the source (an explicit
+    one-time cutover), truncate it first: a first attempt truncates
+    near-empty tables (only alembic's small seeds), a retry discards the
+    partial/stale copy so the following INSERT lands every current value.
+    Truncating all present tables in one statement (+ CASCADE) satisfies
+    inter-table foreign keys.
+
+    Only tables that actually EXIST in the target are truncated — a partial
+    alembic state or a dropped table must not crash the reset; the copy that
+    follows surfaces a genuinely-missing table as a per-table error.
+
+    ⚠️ Callers must gate this on an explicit one-time-cutover intent. The
+    docker-compose ``data-migrate`` one-shot re-runs on every ``compose up``
+    and must NOT truncate live post-cutover data — hence ``run_all`` only
+    resets when ``reset_target=True`` (the ``--reset-target`` CLI flag /
+    the applier path), never by default.
+
+    Returns the number of rows discarded.
+    """
+    import sqlalchemy as sa
+
+    import src.models  # noqa: F401 — register every model on Base.metadata
+    from src.db_pg import Base
+
+    tables = list(Base.metadata.sorted_tables)
+    if not tables:
+        return 0
+    with pg_engine.begin() as conn:
+        existing = set(
+            conn.execute(
+                sa.text(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = 'public'"
+                )
+            ).scalars()
+        )
+        present = [t for t in tables if t.name in existing]
+        discarded = 0
+        for t in present:
+            n = conn.execute(sa.text(f'SELECT COUNT(*) FROM "{t.name}"')).scalar()
+            discarded += int(n or 0)
+        log.info(
+            "reset target before DuckDB→PG copy: discarding %d pre-existing "
+            "row(s) across %d PG table(s) so the copy starts from an empty "
+            "mirror (no stale row can survive a retry — B1).",
+            discarded,
+            len(present),
+        )
+        if present:
+            quoted = ", ".join(f'"{t.name}"' for t in present)
+            conn.execute(sa.text(f"TRUNCATE {quoted} CASCADE"))
+    return discarded
+
+
 def run_all(
     duck_conn: duckdb.DuckDBPyConnection,
     pg_engine: Engine,
@@ -212,6 +277,7 @@ def run_all(
     dry_run: bool = False,
     validate: bool = True,
     progress_callback: Optional[Any] = None,
+    reset_target: bool = False,
 ) -> List[Dict[str, Any]]:
     """Run every registered task (or a subset by ``only``).
 
@@ -253,6 +319,14 @@ def run_all(
     ``progress_callback`` is None the function behaves identically to
     pre-C.1.
     """
+    # B1 — when the caller asserts a one-time cutover (``reset_target``),
+    # empty the target first so the ``ON CONFLICT DO NOTHING`` copy can't
+    # keep stale rows from a prior failed attempt. Never on by default: the
+    # compose ``data-migrate`` one-shot re-runs every boot and must not
+    # truncate live post-cutover data.
+    if reset_target and not dry_run:
+        reset_target_state_tables(pg_engine)
+
     selected = [t for t in TASKS if not only or t.target_table in only]
     total = len(selected)
     reports: List[Dict[str, Any]] = []
