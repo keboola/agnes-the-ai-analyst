@@ -33,8 +33,27 @@ flock -n 9 || {
   exit 0
 }
 
-# shellcheck disable=SC1091
-set -a; . /opt/agnes/.env; set +a
+# Read only the three infra-controlled keys this script needs from
+# /opt/agnes/.env, rather than bash-sourcing the whole file. The .env also
+# carries free-text app config (AGNES_INSTANCE_CUSTOM_PREAMBLE,
+# AGNES_INSTANCE_BRAND, …) whose values can contain shell metacharacters
+# (backticks, `>`, `$`, quotes). `. /opt/agnes/.env` executed those and
+# aborted with a syntax error, silently blocking every 5-min upgrade tick.
+# Docker Compose parses .env with its own safe parser, so only this
+# host-side sourcing was affected. AGNES_TAG / STATE_DIR / COMPOSE_FILE are
+# all simple tokens (tag, path, colon-separated file list) — no free text —
+# so extracting them line-by-line is both sufficient and injection-proof.
+_env_get() {
+  # First KEY= line wins (startup.sh writes each once; env-reconcile upserts
+  # in place). Strips one surrounding layer of single/double quotes; the
+  # VALUE is never shell-evaluated. Always exits 0 (missing key → empty →
+  # the ${VAR:-default} fallbacks below apply).
+  grep -m1 -E "^$1=" /opt/agnes/.env 2>/dev/null \
+    | sed -e "s/^$1=//" -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" || true
+}
+export AGNES_TAG="$(_env_get AGNES_TAG)"
+export STATE_DIR="$(_env_get STATE_DIR)"
+export COMPOSE_FILE="$(_env_get COMPOSE_FILE)"
 
 STATE_DIR="${STATE_DIR:-/data/state}"
 
