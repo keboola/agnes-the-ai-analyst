@@ -51,9 +51,12 @@ _env_get() {
   grep -m1 -E "^$1=" /opt/agnes/.env 2>/dev/null \
     | sed -e "s/^$1=//" -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" || true
 }
-export AGNES_TAG="$(_env_get AGNES_TAG)"
-export STATE_DIR="$(_env_get STATE_DIR)"
-export COMPOSE_FILE="$(_env_get COMPOSE_FILE)"
+# Assign separately from `export` so shellcheck (SC2155) doesn't flag the
+# command substitution's return value as masked.
+AGNES_TAG="$(_env_get AGNES_TAG)"
+STATE_DIR="$(_env_get STATE_DIR)"
+COMPOSE_FILE="$(_env_get COMPOSE_FILE)"
+export AGNES_TAG STATE_DIR COMPOSE_FILE
 
 STATE_DIR="${STATE_DIR:-/data/state}"
 

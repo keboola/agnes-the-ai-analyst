@@ -65,7 +65,9 @@ _env_get() {
   grep -m1 -E "^$1=" "$COMPOSE_DIR/.env" 2>/dev/null \
     | sed -e "s/^$1=//" -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" || true
 }
-export AGNES_TAG="$(_env_get AGNES_TAG)"
+# Assign separately from `export` (SC2155: avoid masking the substitution's rc).
+AGNES_TAG="$(_env_get AGNES_TAG)"
+export AGNES_TAG
 
 # Compose chain reused for every invocation. Mirrors the layering in
 # agnes-auto-upgrade.sh so this daemon plays well with the existing -f

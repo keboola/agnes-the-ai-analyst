@@ -44,11 +44,13 @@ _env_get() {
   grep -m1 -E "^$1=" /opt/agnes/.env 2>/dev/null \
     | sed -e "s/^$1=//" -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" || true
 }
-export TLS_FULLCHAIN_URL="$(_env_get TLS_FULLCHAIN_URL)"
-export TLS_PRIVKEY_URL="$(_env_get TLS_PRIVKEY_URL)"
-export TLS_CSR_SUBJECT="$(_env_get TLS_CSR_SUBJECT)"
-export DOMAIN="$(_env_get DOMAIN)"
-export STATE_DIR="$(_env_get STATE_DIR)"
+# Assign separately from `export` (SC2155: avoid masking the substitution's rc).
+TLS_FULLCHAIN_URL="$(_env_get TLS_FULLCHAIN_URL)"
+TLS_PRIVKEY_URL="$(_env_get TLS_PRIVKEY_URL)"
+TLS_CSR_SUBJECT="$(_env_get TLS_CSR_SUBJECT)"
+DOMAIN="$(_env_get DOMAIN)"
+STATE_DIR="$(_env_get STATE_DIR)"
+export TLS_FULLCHAIN_URL TLS_PRIVKEY_URL TLS_CSR_SUBJECT DOMAIN STATE_DIR
 
 [ -n "${TLS_FULLCHAIN_URL:-}" ] || { echo "TLS_FULLCHAIN_URL empty — nothing to rotate"; exit 0; }
 
