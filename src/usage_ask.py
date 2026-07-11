@@ -175,7 +175,17 @@ _FORBIDDEN_FUNCS = re.compile(
     # denylist must cover both engines' escape hatches.
     r"pg_read_file|pg_read_binary_file|pg_ls_dir|pg_stat_file|pg_sleep|"
     r"pg_terminate_backend|pg_cancel_backend|pg_reload_conf|set_config|"
-    r"lo_import|lo_export|dblink|dblink_connect|dblink_exec|"
+    r"lo_import|lo_export|lo_create|lo_unlink|lo_put|dblink|dblink_connect|dblink_exec|"
+    # A syntactic SELECT can still mutate SESSION/database state on Postgres.
+    # Advisory locks are the sharp edge: ``SELECT pg_advisory_lock(636636636636)``
+    # grabs the SAME session-level lock the startup migration holds
+    # (src/db_pg.py::_PG_MIGRATE_LOCK_KEY). Because execute_readonly_select runs
+    # on a POOLED connection, a session-level lock is NOT released when the
+    # connection returns to the pool — it leaks and blocks the next migration.
+    # Also block sequence mutators (nextval/setval) and LISTEN/NOTIFY signalling.
+    # ``pg_(try_)?advisory_*`` covers both the blocking and try_ families
+    # (pg_advisory_lock, pg_try_advisory_lock, pg_advisory_xact_lock, …).
+    r"pg_(?:try_)?advisory_[a-z_]*|pg_notify|nextval|setval|"
     r"shell|system"
     r")\s*\(",
     re.IGNORECASE,
