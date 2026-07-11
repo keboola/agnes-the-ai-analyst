@@ -390,6 +390,8 @@ def scrub_audit_log_pii(duckdb_path: Path) -> dict[str, int]:
     Returns ``{"rows_scanned", "rows_redacted"}`` for the JobWriter
     summary.
     """
+    import duckdb  # needed to name duckdb.CatalogException in the except below
+
     from src.duckdb_conn import _open_duckdb
 
     conn = _open_duckdb(str(duckdb_path))
