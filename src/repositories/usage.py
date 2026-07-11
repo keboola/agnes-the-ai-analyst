@@ -397,6 +397,67 @@ class UsageRepository:
         }
 
     # ------------------------------------------------------------------
+    # admin telemetry export + text-to-SQL execution (DuckDB).
+    # Mirrored in UsagePgRepository.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _export_where(filters: dict) -> tuple[str, list]:
+        """Compose the WHERE clause for the admin export.
+
+        Unlike ``_events_where`` every key is optional:
+          since (datetime), until (datetime), username, source.
+        """
+        where, params = ["1=1"], []
+        if filters.get("since") is not None:
+            where.append("occurred_at >= ?")
+            params.append(filters["since"])
+        if filters.get("until") is not None:
+            where.append("occurred_at < ?")
+            params.append(filters["until"])
+        if filters.get("username"):
+            where.append("username = ?")
+            params.append(filters["username"])
+        if filters.get("source"):
+            where.append("source = ?")
+            params.append(filters["source"])
+        return " AND ".join(where), params
+
+    def count_events_export(self, filters: dict) -> int:
+        """Row count for the admin export's audit-log entry."""
+        where_sql, params = self._export_where(filters)
+        row = self.conn.execute(
+            f"SELECT COUNT(*) FROM usage_events WHERE {where_sql}", params
+        ).fetchone()
+        return int(row[0] or 0)
+
+    def export_events(self, filters: dict) -> tuple[list[str], list[tuple]]:
+        """Full-width usage_events read for the admin export.
+
+        Returns ``(columns, rows)`` ordered by occurred_at. Fully
+        materialised — the export is an occasional admin action and the
+        events table is bounded by retention pruning.
+        """
+        where_sql, params = self._export_where(filters)
+        rel = self.conn.execute(
+            f"SELECT * FROM usage_events WHERE {where_sql} ORDER BY occurred_at",
+            params,
+        )
+        cols = [d[0] for d in rel.description]
+        return cols, rel.fetchall()
+
+    def execute_readonly_select(self, sql: str) -> tuple[list[str], list[tuple]]:
+        """Execute a caller-validated SELECT (usage.ask) on this backend.
+
+        The caller MUST pass the statement through
+        ``src.usage_ask.validate_select_only`` first — this method adds no
+        validation of its own. Returns ``(columns, rows)``.
+        """
+        rel = self.conn.execute(sql)
+        cols = [d[0] for d in rel.description]
+        return cols, rel.fetchall()
+
+    # ------------------------------------------------------------------
     # /home status frame (DuckDB).  Source: app.api.me.compute_home_stats.
     # ------------------------------------------------------------------
 

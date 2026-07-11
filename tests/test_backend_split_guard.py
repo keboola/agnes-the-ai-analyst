@@ -177,13 +177,11 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     "src/grant_intersection.py": {"UserRepository"},
     # app/web/router.py — migrated to table_registry_repo()/sync_state_repo()
     # (catalog detail pages); entry removed as the residual shrank.
-    "cli/commands/admin_data_semantics.py": {
-        "BqMetadataCacheRepository",
-        "ColumnMetadataRepository",
-        "DataPackagesRepository",
-        "MetricRepository",
-        "TableRegistryRepository",
-    },
+    # cli/commands/admin_data_semantics.py — the entry claimed the sanctioned
+    # escape hatch, but the gate was actually MISSING (the five catalog repos
+    # were instantiated on the raw get_system_db() conn unconditionally — the
+    # data-semantics pack froze at cutover on PG instances). Migrated to the
+    # factory getters; entry removed.
     # Slack bot — user-identity lookups (commands.py/events.py) migrated to
     # users_repo(); channel-allowlist grant lookup routed through the factory.
     # The DuckDB-only binding-code tables stay on repo._conn by design.
@@ -257,7 +255,8 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "app/marketplace_server/git_router.py",
     "app/web/router.py",
     "cli/commands/admin.py",
-    "cli/commands/admin_data_semantics.py",
+    # cli/commands/admin_data_semantics.py — migrated to factory getters
+    # (see the matching note in _GRANDFATHERED_DIRECT_INSTANTIATION); removed.
     "cli/commands/admin_metrics.py",
     "services/verification_detector/__main__.py",
     "src/rbac.py",
