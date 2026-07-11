@@ -56,6 +56,22 @@ class UserRepository:
         result = self.conn.execute("SELECT * FROM users WHERE email = ?", [email]).fetchone()
         return self._row_to_dict(result)
 
+    def get_by_email_prefix(self, local_part: str) -> Optional[Dict[str, Any]]:
+        """Resolve the single user whose email's local part (before ``@``)
+        matches *local_part* exactly, picking the most recently updated when
+        multiple domains share the same local part. Backs
+        ``services.session_pipeline.runner.resolve_user_identity`` — maps a
+        session-directory name (OS-username convention) to a user when it
+        isn't a UUID. SQL LIKE metacharacters in *local_part* are escaped so
+        literal underscores / percents in a username don't act as wildcards."""
+        escaped = local_part.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        result = self.conn.execute(
+            "SELECT * FROM users WHERE email LIKE ? || '@%' ESCAPE '\\' "
+            "ORDER BY updated_at DESC NULLS LAST LIMIT 1",
+            [escaped],
+        ).fetchone()
+        return self._row_to_dict(result)
+
     def get_by_slack_user_id(self, slack_user_id: str) -> Optional[Dict[str, Any]]:
         """Resolve the account bound to a Slack ``user_id`` (NULL until the
         analyst redeems a /agnes verification code). Used by the Slack bot to

@@ -122,3 +122,39 @@ class TestCountNonInternal:
         result = repos["registry"].count_non_internal()
         assert isinstance(result, int)
         assert result == 1
+
+
+class TestDeleteInternalExcept:
+    """Pins ``delete_internal_except`` — backs
+    ``connectors.internal.registry.ensure_internal_tables_registered``'s
+    stale-row eviction (a renamed internal table's old id must not linger
+    in /catalog forever). Previously a raw ``DELETE ... WHERE source_type =
+    'internal' AND id NOT IN (...)`` on the DuckDB-typed conn, silently
+    no-op on Postgres-backed deployments."""
+
+    def test_deletes_internal_rows_not_in_keep_list(self, repos):
+        _seed(repos, "agnes_sessions", "Sessions", source_type="internal")
+        _seed(repos, "agnes_old_name", "Old Telemetry", source_type="internal")
+
+        removed = repos["registry"].delete_internal_except(["agnes_sessions"])
+        assert removed == 1
+        assert repos["registry"].get("agnes_old_name") is None
+        assert repos["registry"].get("agnes_sessions") is not None
+
+    def test_leaves_non_internal_rows_alone(self, repos):
+        _seed(repos, "t-keboola", "Keboola Table", source_type="keboola")
+        _seed(repos, "agnes_old_name", "Old Telemetry", source_type="internal")
+
+        removed = repos["registry"].delete_internal_except([])
+        assert removed == 1
+        assert repos["registry"].get("t-keboola") is not None
+        assert repos["registry"].get("agnes_old_name") is None
+
+    def test_noop_when_all_internal_rows_are_kept(self, repos):
+        _seed(repos, "agnes_sessions", "Sessions", source_type="internal")
+        _seed(repos, "agnes_telemetry", "Telemetry", source_type="internal")
+
+        removed = repos["registry"].delete_internal_except(["agnes_sessions", "agnes_telemetry"])
+        assert removed == 0
+        assert repos["registry"].get("agnes_sessions") is not None
+        assert repos["registry"].get("agnes_telemetry") is not None

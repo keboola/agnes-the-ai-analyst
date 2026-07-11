@@ -314,6 +314,26 @@ class TableRegistryRepository:
     def unregister(self, table_id: str) -> None:
         self.conn.execute("DELETE FROM table_registry WHERE id = ?", [table_id])
 
+    def delete_internal_except(self, keep_ids: List[str]) -> int:
+        """Delete every ``source_type='internal'`` row whose id is NOT in
+        ``keep_ids``. Returns the number of rows removed.
+
+        Backs ``connectors.internal.registry.ensure_internal_tables_registered``'s
+        stale-row eviction — used when an internal table is renamed (e.g.
+        agnes_usage → agnes_telemetry) so the old id doesn't linger in
+        /catalog forever. ``keep_ids`` is normally the current canonical id
+        set from ``INTERNAL_TABLES``.
+        """
+        keep_ids = list(keep_ids)
+        placeholders = ",".join("?" for _ in keep_ids) if keep_ids else "''"
+        rows = self.conn.execute(
+            f"""DELETE FROM table_registry
+                WHERE source_type = 'internal' AND id NOT IN ({placeholders})
+                RETURNING 1""",
+            keep_ids,
+        ).fetchall()
+        return len(rows)
+
     def delete_for_corpus(self, corpus_id: str) -> List[str]:
         """Delete all table_registry rows belonging to a file-corpus collection.
 

@@ -688,3 +688,118 @@ def test_rebuild_rollups_30d_throttled_until_force(usage_repo):
 
     repo.rebuild_rollups(since_day=today.date(), force_30d=True)
     assert _tracker_ts(repo, conn, backend) > t1
+
+
+# ---------------------------------------------------------------------------
+# home_stats — /home status frame counter (cross-engine contract)
+# ---------------------------------------------------------------------------
+
+
+def test_home_stats_identical_across_backends(usage_repo):
+    """home_stats must return the same sessions/prompts/tokens/projects
+    dict on DuckDB and Postgres."""
+    repo, _, _ = usage_repo
+    since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    after = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    before = datetime(2025, 12, 1, tzinfo=timezone.utc)  # outside window
+
+    _seed_summary(
+        repo,
+        session_file="alice/s1.jsonl",
+        username="alice",
+        user_id="uid-alice",
+        started_at=after,
+        user_messages=3,
+        input_tokens=100,
+        output_tokens=50,
+        cache_read_tokens=20,
+        cache_creation_tokens=10,
+    )
+    _seed_summary(
+        repo,
+        session_file="alice/s2.jsonl",
+        username="alice",
+        user_id="uid-alice",
+        started_at=after,
+        user_messages=7,
+        input_tokens=200,
+        output_tokens=80,
+    )
+    # Row outside the window — must NOT count.
+    _seed_summary(
+        repo,
+        session_file="alice/s_old.jsonl",
+        username="alice",
+        user_id="uid-alice",
+        started_at=before,
+        user_messages=99,
+        input_tokens=9999,
+        output_tokens=9999,
+    )
+    # Row for a different user — must NOT count.
+    _seed_summary(
+        repo,
+        session_file="bob/s1.jsonl",
+        username="bob",
+        user_id="uid-bob",
+        started_at=after,
+        user_messages=5,
+        input_tokens=500,
+    )
+
+    # Two distinct cwd values → projects = 2.
+    repo.upsert_events(
+        [
+            {
+                "id": "ev-1",
+                "session_id": "s1",
+                "session_file": "alice/s1.jsonl",
+                "username": "alice",
+                "user_id": "uid-alice",
+                "event_type": "tool",
+                "tool_name": "Read",
+                "is_error": False,
+                "source": "curated",
+                "occurred_at": after,
+                "cwd": "/projects/alpha",
+            },
+            {
+                "id": "ev-2",
+                "session_id": "s2",
+                "session_file": "alice/s2.jsonl",
+                "username": "alice",
+                "user_id": "uid-alice",
+                "event_type": "tool",
+                "tool_name": "Read",
+                "is_error": False,
+                "source": "curated",
+                "occurred_at": after,
+                "cwd": "/projects/beta",
+            },
+            # Event with cwd=None must NOT count toward projects.
+            {
+                "id": "ev-3",
+                "session_id": "s1",
+                "session_file": "alice/s1.jsonl",
+                "username": "alice",
+                "user_id": "uid-alice",
+                "event_type": "tool",
+                "tool_name": "Write",
+                "is_error": False,
+                "source": "curated",
+                "occurred_at": after,
+                "cwd": None,
+            },
+        ],
+        processor_version=1,
+    )
+
+    result = repo.home_stats(user_id="uid-alice", username="alice", since=since)
+
+    assert result["sessions"] == 2
+    assert result["prompts"] == 10  # 3 + 7
+    assert result["input_tokens"] == 300  # 100 + 200
+    assert result["output_tokens"] == 130  # 50 + 80
+    assert result["cache_read"] == 20
+    assert result["cache_creation"] == 10
+    assert result["projects"] == 2

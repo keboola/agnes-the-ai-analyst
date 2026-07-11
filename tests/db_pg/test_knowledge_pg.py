@@ -155,6 +155,24 @@ def test_knowledge_vote_aggregates(k_engine):
     assert v == {"upvotes": 2, "downvotes": 0}
 
 
+def test_knowledge_get_votes_by_user(k_engine):
+    """Mirrors the DuckDB ``test_get_votes_by_user`` — powers
+    ``GET /api/memory/my-votes`` + the ``upvoted_by_me`` search post-filter."""
+    from src.repositories.knowledge_pg import KnowledgePgRepository
+
+    repo = KnowledgePgRepository(k_engine)
+    repo.create(id="k1", title="A", content="a", category="c")
+    repo.create(id="k2", title="B", content="b", category="c")
+    repo.create(id="k3", title="C", content="c", category="c")
+    repo.vote("k1", "u1", 1)
+    repo.vote("k2", "u1", -1)
+    repo.vote("k3", "u2", 1)  # different user — excluded
+
+    votes = repo.get_votes_by_user("u1")
+    assert votes == {"k1": 1, "k2": -1}
+    assert repo.get_votes_by_user("no-such-user") == {}
+
+
 # ---------------------------------------------------------------------------
 # dismissals
 # ---------------------------------------------------------------------------
@@ -266,6 +284,23 @@ def test_knowledge_relation_resolve(k_engine):
     assert rc == 1
     rel = repo.get_relation("a", "b", "dup")
     assert rel["resolved"] is True
+
+
+def test_knowledge_count_relations_filters_match_list_relations(k_engine):
+    from src.repositories.knowledge_pg import KnowledgePgRepository
+
+    repo = KnowledgePgRepository(k_engine)
+    for iid in ("a", "b", "c", "d", "e", "f"):
+        repo.create(id=iid, title=iid, content="c", category="c")
+    repo.create_relation("a", "b", "likely_duplicate")
+    repo.create_relation("c", "d", "likely_duplicate")
+    repo.create_relation("e", "f", "other_type")
+    repo.resolve_relation("a", "b", "likely_duplicate", resolved_by="admin",
+                           resolution="duplicate")
+    assert repo.count_relations() == 3
+    assert repo.count_relations(relation_type="likely_duplicate") == 2
+    assert repo.count_relations(relation_type="likely_duplicate", resolved=False) == 1
+    assert repo.count_relations(relation_type="likely_duplicate", resolved=True) == 1
 
 
 # ---------------------------------------------------------------------------

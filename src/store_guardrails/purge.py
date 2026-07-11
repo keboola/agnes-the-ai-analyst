@@ -8,6 +8,14 @@ directory from disk, drops the linked entity row, and stamps
 
 The submission row + SHA256 + size are intentionally preserved so
 forensic correlation across the purge horizon still works.
+
+Backend-agnostic: repositories are resolved from the ``src.repositories``
+factory (mirrors ``src/store_guardrails/reaper.py``), so the sweep reads
+and writes whichever backend (DuckDB or Postgres) the deployment runs on.
+The pre-fix API took a raw DuckDB ``conn`` and ran the candidate-SELECT
+against it directly, which silently found nothing on Postgres-backed
+instances (submission rows live in PG, the conn pointed at an empty
+local DuckDB).
 """
 
 from __future__ import annotations
@@ -17,11 +25,6 @@ import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-import duckdb
-
-from src.repositories.store_entities import StoreEntitiesRepository
-from src.repositories.store_submissions import StoreSubmissionsRepository
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +49,16 @@ TERMINAL_BLOCKED_STATUSES = (
 
 
 def purge_blocked_bundles(
-    conn: duckdb.DuckDBPyConnection,
     *,
     ttl_days: int,
     store_dir_resolver=None,
     now: Optional[datetime] = None,
+    subs_repo: Any = None,
+    ents_repo: Any = None,
 ) -> Dict[str, Any]:
     """Remove bundle bytes for terminal-blocked submissions older than TTL.
 
     Args:
-        conn: DuckDB system handle.
         ttl_days: bundles whose ``created_at < now - ttl_days`` qualify.
             ``ttl_days <= 0`` short-circuits to a no-op so operators
             can disable cleanly without ripping the scheduler job.
@@ -63,6 +66,10 @@ def purge_blocked_bundles(
             Defaults to ``app.utils.get_store_dir`` (lazy import to keep
             this module independent of the FastAPI layer for tests).
         now: clock injection for tests; defaults to ``datetime.now(UTC)``.
+        subs_repo: injectable ``store_submissions`` repo (tests); defaults
+            to ``store_submissions_repo()``.
+        ents_repo: injectable ``store_entities`` repo (tests); defaults to
+            ``store_entities_repo()``.
 
     Returns dict with ``purged`` (int) and ``ids`` (list[str]) so the
     admin endpoint can emit a sensible audit row.
@@ -74,27 +81,28 @@ def purge_blocked_bundles(
         from app.utils import get_store_dir as _get_store
         store_dir_resolver = _get_store
 
+    if subs_repo is None:
+        from src.repositories import store_submissions_repo
+        subs_repo = store_submissions_repo()
+    if ents_repo is None:
+        from src.repositories import store_entities_repo
+        ents_repo = store_entities_repo()
+
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=int(ttl_days))
 
-    placeholders = ",".join("?" for _ in TERMINAL_BLOCKED_STATUSES)
-    rows = conn.execute(
-        f"""SELECT id, entity_id FROM store_submissions
-            WHERE status IN ({placeholders})
-              AND bundle_purged_at IS NULL
-              AND created_at < ?""",
-        list(TERMINAL_BLOCKED_STATUSES) + [cutoff],
-    ).fetchall()
+    candidates = subs_repo.find_purge_candidates(
+        statuses=list(TERMINAL_BLOCKED_STATUSES),
+        older_than=cutoff,
+    )
 
-    if not rows:
+    if not candidates:
         return {"purged": 0, "ids": []}
 
-    subs = StoreSubmissionsRepository(conn)
-    ents = StoreEntitiesRepository(conn)
     store_root: Path = store_dir_resolver()
 
     purged_ids: List[str] = []
-    for sub_id, entity_id in rows:
+    for sub_id, entity_id in candidates:
         if entity_id:
             entity_dir = store_root / entity_id
             try:
@@ -106,7 +114,7 @@ def purge_blocked_bundles(
                     entity_dir, sub_id, e,
                 )
             try:
-                ents.delete(entity_id)
+                ents_repo.delete(entity_id)
             except Exception as e:
                 logger.warning(
                     "purge: failed to delete entity %s for sub=%s: %s",
@@ -115,7 +123,7 @@ def purge_blocked_bundles(
         # mark_bundle_purged also nulls entity_id on the submission row
         # so the admin UI shows the bundle is gone without orphaning a
         # foreign-key-shaped reference to a deleted entity.
-        subs.mark_bundle_purged(sub_id)
+        subs_repo.mark_bundle_purged(sub_id)
         purged_ids.append(sub_id)
 
     return {"purged": len(purged_ids), "ids": purged_ids}

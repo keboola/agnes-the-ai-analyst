@@ -180,9 +180,7 @@ def _set_is_system(repos: dict, slug: str, name: str, value: bool) -> None:
 
         with repos["engine"].begin() as conn:
             conn.execute(
-                sa.text(
-                    "UPDATE marketplace_plugins SET is_system = :v WHERE marketplace_id = :m AND name = :n"
-                ),
+                sa.text("UPDATE marketplace_plugins SET is_system = :v WHERE marketplace_id = :m AND name = :n"),
                 {"v": value, "m": slug, "n": name},
             )
 
@@ -663,8 +661,7 @@ def _seed_user(repos: dict, user_id: str) -> None:
 def _seed_membership(repos: dict, user_id: str, group_id: str) -> None:
     if repos["backend"] == "duckdb":
         repos["conn"].execute(
-            "INSERT INTO user_group_members (user_id, group_id, source) "
-            "VALUES (?, ?, 'admin')",
+            "INSERT INTO user_group_members (user_id, group_id, source) VALUES (?, ?, 'admin')",
             [user_id, group_id],
         )
     else:
@@ -672,10 +669,7 @@ def _seed_membership(repos: dict, user_id: str, group_id: str) -> None:
 
         with repos["engine"].begin() as conn:
             conn.execute(
-                sa.text(
-                    "INSERT INTO user_group_members (user_id, group_id, source) "
-                    "VALUES (:u, :g, 'admin')"
-                ),
+                sa.text("INSERT INTO user_group_members (user_id, group_id, source) VALUES (:u, :g, 'admin')"),
                 {"u": user_id, "g": group_id},
             )
 
@@ -714,3 +708,31 @@ class TestSubscribeGroupMembers:
         curated = _make_curated_repo(repos)
         g = repos["groups"].create(name="sgm-empty", created_by="test")
         assert curated.subscribe_group_members(g["id"], "mkt", "p3") == 0
+
+
+# ---------------------------------------------------------------------------
+# list_distinct_names — backs MarketplaceItemLookup (usage-telemetry
+# attribution) curated-plugin-prefix recognition.
+# ---------------------------------------------------------------------------
+
+
+class TestListDistinctNames:
+    def test_empty_when_no_plugins(self, repos):
+        assert repos["plugins"].list_distinct_names() == []
+
+    def test_returns_every_distinct_name(self, repos):
+        _seed_registry(repos, "mp-names-1", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _seed_plugins(repos, "mp-names-1", ["alpha", "beta"])
+        names = set(repos["plugins"].list_distinct_names())
+        assert names == {"alpha", "beta"}
+
+    def test_deduplicates_across_marketplaces(self, repos):
+        """The same plugin name registered under two marketplaces must
+        surface once — MarketplaceItemLookup only cares about the name,
+        not which marketplace it came from."""
+        _seed_registry(repos, "mp-names-2a", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _seed_registry(repos, "mp-names-2b", datetime(2026, 1, 2, tzinfo=timezone.utc))
+        _seed_plugin(repos, "mp-names-2a", "shared")
+        _seed_plugin(repos, "mp-names-2b", "shared")
+        names = repos["plugins"].list_distinct_names()
+        assert names == ["shared"]

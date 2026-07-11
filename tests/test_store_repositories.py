@@ -210,3 +210,22 @@ class TestUserCuratedSubscriptions:
         dropped = repo.delete_for_marketplace("mkt-a")
         assert dropped == 2
         assert repo.subscribed_set("u1") == {("mkt-b", "p1")}
+
+    def test_stack_counts_groups_by_plugin(self, db_conn):
+        from src.repositories.user_curated_subscriptions import (
+            UserCuratedSubscriptionsRepository,
+        )
+        _make_user(db_conn, user_id="u1", email="u1@x")
+        _make_user(db_conn, user_id="u2", email="u2@x")
+        repo = UserCuratedSubscriptionsRepository(db_conn)
+        repo.subscribe("u1", "mkt", "p1")
+        repo.subscribe("u2", "mkt", "p1")
+        repo.subscribe("u1", "mkt", "p2")
+        assert repo.stack_counts() == {("mkt", "p1"): 2, ("mkt", "p2"): 1}
+
+    def test_stack_counts_empty_when_no_subscriptions(self, db_conn):
+        from src.repositories.user_curated_subscriptions import (
+            UserCuratedSubscriptionsRepository,
+        )
+        repo = UserCuratedSubscriptionsRepository(db_conn)
+        assert repo.stack_counts() == {}

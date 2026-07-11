@@ -12,6 +12,8 @@ identically on DuckDB and Postgres.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 
@@ -211,3 +213,36 @@ class TestGetStatesForSessionFiles:
             "verification", ["alice/a.jsonl", "alice/missing.jsonl"]
         )
         assert set(states.keys()) == {"alice/a.jsonl"}
+
+
+# ---------------------------------------------------------------------------
+# activity_since
+# ---------------------------------------------------------------------------
+
+
+class TestActivitySince:
+    def test_no_rows_returns_none_and_zero(self, repos):
+        since = datetime.now(timezone.utc) - timedelta(hours=1)
+        result = repos["repo"].activity_since("verification", since)
+        assert result == {"last_processed_at": None, "items_extracted": 0}
+
+    def test_sums_items_within_window(self, repos):
+        _seed(repos, "verification", "alice/a.jsonl", items=3)
+        _seed(repos, "verification", "alice/b.jsonl", items=4)
+        since = datetime.now(timezone.utc) - timedelta(hours=1)
+        result = repos["repo"].activity_since("verification", since)
+        assert result["items_extracted"] == 7
+        assert result["last_processed_at"] is not None
+
+    def test_excludes_rows_outside_window(self, repos):
+        _seed(repos, "verification", "alice/a.jsonl", items=5)
+        # A window in the future — the just-seeded row falls before it.
+        since = datetime.now(timezone.utc) + timedelta(hours=1)
+        result = repos["repo"].activity_since("verification", since)
+        assert result == {"last_processed_at": None, "items_extracted": 0}
+
+    def test_scoped_to_processor(self, repos):
+        _seed(repos, "usage", "alice/a.jsonl", items=9)
+        since = datetime.now(timezone.utc) - timedelta(hours=1)
+        result = repos["repo"].activity_since("verification", since)
+        assert result == {"last_processed_at": None, "items_extracted": 0}

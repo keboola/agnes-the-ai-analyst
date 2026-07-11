@@ -574,6 +574,16 @@ class KnowledgePgRepository:
             ).first()
         return {"upvotes": int(row[0]), "downvotes": int(row[1])}
 
+    def get_votes_by_user(self, user_id: str) -> Dict[str, int]:
+        """``{item_id: vote}`` for every item the user has voted on. Mirrors
+        the DuckDB sibling."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text("SELECT item_id, vote FROM knowledge_votes WHERE user_id = :u"),
+                {"u": user_id},
+            ).all()
+        return {r[0]: r[1] for r in rows}
+
     # ----- dismissals (v46) -----
 
     def dismiss(self, user_id: str, item_id: str) -> None:
@@ -790,6 +800,22 @@ class KnowledgePgRepository:
         with self._engine.connect() as conn:
             rows = conn.execute(sa.text("".join(sql_parts)), params).mappings().all()
         return [self._normalize_row(dict(r)) for r in rows]
+
+    def count_relations(
+        self,
+        relation_type: Optional[str] = None,
+        resolved: Optional[bool] = None,
+    ) -> int:
+        sql_parts = ["SELECT COUNT(*) FROM knowledge_item_relations WHERE 1=1"]
+        params: Dict[str, Any] = {}
+        if relation_type is not None:
+            sql_parts.append(" AND relation_type = :rt")
+            params["rt"] = relation_type
+        if resolved is not None:
+            sql_parts.append(" AND resolved = :r")
+            params["r"] = resolved
+        with self._engine.connect() as conn:
+            return conn.execute(sa.text("".join(sql_parts)), params).scalar_one()
 
     def resolve_relation(
         self,

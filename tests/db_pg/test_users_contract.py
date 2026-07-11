@@ -403,3 +403,57 @@ def test_get_info_by_ids_empty_input_returns_empty(users_repo):
     repo, _, _ = users_repo
     _make_user(repo)
     assert repo.get_info_by_ids([]) == {}
+
+
+# ---------------------------------------------------------------------------
+# get_by_email_prefix — session-directory-name → user resolution parity
+# ---------------------------------------------------------------------------
+
+
+def _set_updated_at(repo, backend, user_id, ts):
+    """Backfill ``updated_at`` for a user (mirrors ``_set_created_at``) so the
+    most-recently-updated tiebreak test has a deterministic spread."""
+    if backend == "duckdb":
+        repo.conn.execute("UPDATE users SET updated_at = ? WHERE id = ?", [ts, user_id])
+    else:
+        import sqlalchemy as sa
+
+        with repo._engine.begin() as conn:
+            conn.execute(
+                sa.text("UPDATE users SET updated_at = :ts WHERE id = :id"),
+                {"ts": ts, "id": user_id},
+            )
+
+
+def test_get_by_email_prefix_matches_local_part(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-bob", email="bob@example.com")
+    row = repo.get_by_email_prefix("bob")
+    assert row is not None
+    assert row["id"] == "user-bob"
+
+
+def test_get_by_email_prefix_no_match_returns_none(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-alice", email="alice@example.com")
+    assert repo.get_by_email_prefix("nobody") is None
+
+
+def test_get_by_email_prefix_picks_most_recently_updated(users_repo):
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-old", email="zara@old.com")
+    _make_user(repo, id="user-new", email="zara@new.com")
+    _set_updated_at(repo, backend, "user-old", datetime(2025, 1, 1, tzinfo=timezone.utc))
+    _set_updated_at(repo, backend, "user-new", datetime(2026, 6, 1, tzinfo=timezone.utc))
+    row = repo.get_by_email_prefix("zara")
+    assert row is not None
+    assert row["id"] == "user-new"
+
+
+def test_get_by_email_prefix_underscore_is_not_a_wildcard(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-x", email="alicexsmith@example.com")
+    _make_user(repo, id="user-real", email="alice_smith@example.com")
+    row = repo.get_by_email_prefix("alice_smith")
+    assert row is not None
+    assert row["id"] == "user-real"

@@ -317,6 +317,18 @@ def test_curated_fanout_system_for_user(store_engine):
     assert subs == {("m1", "p1"), ("m1", "p2")}
 
 
+def test_curated_stack_counts_groups_by_plugin(store_engine):
+    from src.repositories.user_curated_subscriptions_pg import (
+        UserCuratedSubscriptionsPgRepository,
+    )
+
+    repo = UserCuratedSubscriptionsPgRepository(store_engine)
+    repo.subscribe("u1", "m1", "p1")
+    repo.subscribe("u2", "m1", "p1")
+    repo.subscribe("u1", "m1", "p2")
+    assert repo.stack_counts() == {("m1", "p1"): 2, ("m1", "p2"): 1}
+
+
 # ---------------------------------------------------------------------------
 # store_submissions
 # ---------------------------------------------------------------------------

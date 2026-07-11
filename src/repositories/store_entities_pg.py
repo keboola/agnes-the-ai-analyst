@@ -631,3 +631,13 @@ class StoreEntitiesPgRepository:
                 ),
                 {"d": int(delta), "id": id},
             )
+
+    def list_approved_synthetic_types(self) -> Dict[str, str]:
+        """PG sibling of the DuckDB ``list_approved_synthetic_types``."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT synthetic_name, type FROM store_entities WHERE visibility_status='approved'"
+                )
+            ).all()
+        return {r[0]: r[1] for r in rows}

@@ -128,9 +128,9 @@ async def _handle_dm(app, event: dict) -> None:
     # spawning a session so Slack can't bypass the gate.
     from app.auth.access import can_access
     from app.resource_types import ResourceType
-    from src.repositories.users import UserRepository
+    from src.repositories import users_repo
 
-    _u = UserRepository(repo._conn).get_by_email(user_email)
+    _u = users_repo().get_by_email(user_email)
     if not _u or not can_access(_u["id"], ResourceType.CHAT.value, "chat", repo._conn):
         await send_thread_reply(
             channel,
@@ -209,9 +209,9 @@ async def _handle_mention(app, event: dict) -> None:
     # 5. CHAT grant.
     from app.auth.access import can_access
     from app.resource_types import ResourceType
-    from src.repositories.users import UserRepository
+    from src.repositories import users_repo
 
-    _u = UserRepository(conn).get_by_email(user_email)
+    _u = users_repo().get_by_email(user_email)
     if not _u or not can_access(_u["id"], ResourceType.CHAT.value, "chat", conn):
         await send_ephemeral_to_user(
             channel,
@@ -226,11 +226,12 @@ async def _handle_mention(app, event: dict) -> None:
 
     existing = repo.get_slack_thread_session(channel, thread_ts)
     if existing is not None and existing.user_email != user_email:
-        owner_row = conn.execute(
-            "SELECT slack_user_id FROM users WHERE email = ?",
-            [existing.user_email],
-        ).fetchone()
-        owner_ref = f"<@{owner_row[0]}>" if owner_row and owner_row[0] else "another user"
+        # Resolved through the factory (not a raw query on the DuckDB-typed
+        # conn) so the owner's slack_user_id is read from whichever backend
+        # is active.
+        owner_row = users_repo().get_by_email(existing.user_email)
+        owner_slack_id = owner_row.get("slack_user_id") if owner_row else None
+        owner_ref = f"<@{owner_slack_id}>" if owner_slack_id else "another user"
         await send_ephemeral_to_user(channel, slack_user_id, f"This thread belongs to {owner_ref}.")
         return
     session = await mgr.create_session(

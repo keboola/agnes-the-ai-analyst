@@ -4978,7 +4978,6 @@ async def admin_download_store_submission_bundle(
 @router.post("/run-blocked-purge")
 async def run_blocked_purge(
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Trigger the TTL purge of blocked bundle bytes.
 
@@ -4986,12 +4985,16 @@ async def run_blocked_purge(
     scheduler service hits this endpoint daily (under
     ``SCHEDULER_API_TOKEN`` like the corporate-memory + verification
     jobs); admins can also run it on demand from the UI.
+
+    ``purge_blocked_bundles`` resolves its repositories from the
+    ``src.repositories`` factory (backend-agnostic), so no DuckDB
+    connection is threaded through this handler anymore.
     """
     from app.instance_config import get_guardrails_blocked_bundle_ttl_days
     from src.store_guardrails.purge import purge_blocked_bundles
 
     ttl = get_guardrails_blocked_bundle_ttl_days()
-    result = purge_blocked_bundles(conn, ttl_days=ttl)
+    result = purge_blocked_bundles(ttl_days=ttl)
 
     audit_repo().log(
         user_id=user.get("id"),

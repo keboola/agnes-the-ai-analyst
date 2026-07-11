@@ -290,6 +290,26 @@ class AuditRepository:
             "sources":   [{"value": r[0], "count": r[1]} for r in source_rows],
         }
 
+    def last_scheduler_tick(self) -> "datetime | None":
+        """Most recent ``run_%`` or ``marketplace.sync_all`` audit row
+        timestamp, or ``None`` if the scheduler has never fired. Backs the
+        Activity Center health pulse's "scheduler" freshness field
+        (``app/api/activity.py`` ``_compute_health``)."""
+        row = self.conn.execute(
+            "SELECT MAX(timestamp) FROM audit_log WHERE action LIKE 'run_%' OR action='marketplace.sync_all'"
+        ).fetchone()
+        return row[0] if row else None
+
+    def active_users_since(self, since: datetime) -> int:
+        """Distinct ``user_id`` count over audit rows at/after *since*, NULL
+        user_ids excluded. Backs the Activity Center health pulse's
+        "active_users_today" field."""
+        row = self.conn.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM audit_log WHERE timestamp >= ? AND user_id IS NOT NULL",
+            [since],
+        ).fetchone()
+        return int(row[0] or 0) if row else 0
+
     def kpis(self, *, since: datetime) -> "dict[str, Any]":
         """Headline KPIs over the window: events, active users, errors, p95.
 

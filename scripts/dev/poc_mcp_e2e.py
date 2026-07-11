@@ -30,7 +30,7 @@ from mcp.server.fastmcp import FastMCP
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from app.api.mcp.tools_generator import register_passthrough_tools  # noqa: E402
+from app.api.mcp.tools_generator import _make_passthrough_callable  # noqa: E402
 from connectors.mcp.classifier import classify_all  # noqa: E402
 from connectors.mcp.client import list_tools  # noqa: E402
 from connectors.mcp.extractor import extract_source  # noqa: E402
@@ -136,8 +136,22 @@ def main() -> int:
     finally:
         ext.close()
 
+    # register_passthrough_tools() now reads through the src.repositories
+    # factory (no conn param) — this script deliberately keeps its own
+    # isolated `conn`/`sources`/`tools_repo` for the rest of the pipeline,
+    # so register the passthrough tools inline against those instead of
+    # going through the (DATA_DIR-keyed) factory singleton.
     mcp = FastMCP("agnes-poc-e2e")
-    registered = register_passthrough_tools(mcp, conn)
+    registered: list[str] = []
+    for tool in tools_repo.list_by_mode(PASSTHROUGH, enabled_only=True):
+        upstream_source = sources.get(tool["source_id"])
+        if upstream_source is None or not upstream_source.get("enabled", True):
+            continue
+        input_schema = tool.get("input_schema") if isinstance(tool.get("input_schema"), dict) else None
+        fn = _make_passthrough_callable(upstream_source, tool["original_name"], input_schema)
+        description = tool.get("description") or f"Passthrough to {upstream_source['name']}.{tool['original_name']}"
+        mcp.add_tool(fn, name=tool["exposed_name"], description=description)
+        registered.append(tool["exposed_name"])
     if set(registered) != {"crm.getAccount", "crm.searchContacts"}:
         print(f"[step 7] FAIL: unexpected registered set: {registered}")
         return 1

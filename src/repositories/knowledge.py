@@ -732,6 +732,19 @@ class KnowledgeRepository:
         ).fetchone()
         return {"upvotes": result[0], "downvotes": result[1]}
 
+    def get_votes_by_user(self, user_id: str) -> Dict[str, int]:
+        """``{item_id: vote}`` for every item the user has voted on.
+
+        Powers ``GET /api/memory/my-votes`` and the ``upvoted_by_me`` search
+        post-filter — both used to run a raw ``conn.execute`` against
+        ``knowledge_votes`` on the always-DuckDB request connection.
+        """
+        rows = self.conn.execute(
+            "SELECT item_id, vote FROM knowledge_votes WHERE user_id = ?",
+            [user_id],
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
     # --- Dismissals (v46 — per-user opt-out) ---
     #
     # Mandatory items are never dismissible. The API layer rejects POSTs
@@ -940,6 +953,26 @@ class KnowledgeRepository:
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         return self._rows_to_dicts(self.conn.execute(sql, params).fetchall())
+
+    def count_relations(
+        self,
+        relation_type: Optional[str] = None,
+        resolved: Optional[bool] = None,
+    ) -> int:
+        """Count relation rows matching the given filters.
+
+        Used for badge counts (e.g. unresolved duplicate candidates) where
+        callers only need the total, not the rows themselves.
+        """
+        sql = "SELECT COUNT(*) FROM knowledge_item_relations WHERE 1=1"
+        params: List[Any] = []
+        if relation_type is not None:
+            sql += " AND relation_type = ?"
+            params.append(relation_type)
+        if resolved is not None:
+            sql += " AND resolved = ?"
+            params.append(resolved)
+        return self.conn.execute(sql, params).fetchone()[0]
 
     def resolve_relation(
         self,

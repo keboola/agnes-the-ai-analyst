@@ -87,7 +87,7 @@ async def _cmd_agnes(app, cmd: dict) -> None:
     from app.chat.manager import ConcurrencyCapHit
     from app.chat.types import Surface
     from app.resource_types import ResourceType
-    from src.repositories.users import UserRepository
+    from src.repositories import users_repo
 
     repo = app.state.chat_repo
     mgr = app.state.chat_manager
@@ -102,7 +102,7 @@ async def _cmd_agnes(app, cmd: dict) -> None:
         await send_ephemeral(response_url, bind_prompt(public_url, code))
         return
 
-    _u = UserRepository(repo._conn).get_by_email(user_email)
+    _u = users_repo().get_by_email(user_email)
     if not _u or not can_access(_u["id"], ResourceType.CHAT.value, "chat", repo._conn):
         await send_ephemeral(
             response_url,

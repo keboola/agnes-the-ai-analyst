@@ -34,7 +34,7 @@ from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
 from src.db import get_analytics_db
 from src.rbac import can_access_table
-from src.repositories.table_registry import TableRegistryRepository
+from src.repositories import table_registry_repo
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ async def query_table(
     # Registry lookup + RBAC. Internal tables (agnes_sessions / _usage / _audit)
     # are implicitly granted to every authenticated user via can_access's
     # internal-table short-circuit.
-    tables_repo = TableRegistryRepository(conn)
+    tables_repo = table_registry_repo()
     table = tables_repo.get(table_id)
     if table is None:
         raise HTTPException(status_code=404, detail="table_not_found")
