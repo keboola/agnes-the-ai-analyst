@@ -1141,6 +1141,25 @@ def test_main_side_car_backup_artifact_is_pii_scrubbed(
     ), "backup artifact must not retain the scrubbed audit secret"
 
 
+def test_scrub_audit_log_pii_missing_table_is_noop(tmp_path):
+    """H7 — the scrub is schema-tolerant: a DuckDB without an ``audit_log``
+    table returns zeros, not a ``NameError``. The ``except
+    duckdb.CatalogException`` handler must be able to resolve the ``duckdb``
+    name (it is imported inside the function); pre-fix, ``duckdb`` was
+    undefined in scope, so a missing table raised NameError instead of the
+    documented silent no-op."""
+    import duckdb
+
+    from scripts.db_state_migrator import scrub_audit_log_pii
+
+    duck_path = tmp_path / "no-audit.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    conn.execute("CREATE TABLE unrelated (x INTEGER)")  # valid db, no audit_log
+    conn.close()
+
+    assert scrub_audit_log_pii(duck_path) == {"rows_scanned": 0, "rows_redacted": 0}
+
+
 def test_content_hash_sample_detects_non_pk_drift():
     """H12 — same PK set, different non-PK content must yield a
     different content hash.
