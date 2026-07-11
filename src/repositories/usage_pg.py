@@ -440,6 +440,78 @@ class UsagePgRepository:
         }
 
     # ------------------------------------------------------------------
+    # admin telemetry export + text-to-SQL execution (Postgres).
+    # Mirrors UsageRepository.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _export_where(filters: dict) -> tuple[str, dict]:
+        """Compose the WHERE clause for the admin export (named :params).
+
+        Unlike ``_events_where`` every key is optional:
+          since (datetime), until (datetime), username, source.
+        """
+        where, params = ["1=1"], {}
+        if filters.get("since") is not None:
+            where.append("occurred_at >= :since")
+            params["since"] = filters["since"]
+        if filters.get("until") is not None:
+            where.append("occurred_at < :until")
+            params["until"] = filters["until"]
+        if filters.get("username"):
+            where.append("username = :username")
+            params["username"] = filters["username"]
+        if filters.get("source"):
+            where.append("source = :source")
+            params["source"] = filters["source"]
+        return " AND ".join(where), params
+
+    def count_events_export(self, filters: dict) -> int:
+        """Row count for the admin export's audit-log entry."""
+        where_sql, params = self._export_where(filters)
+        with self._engine.connect() as conn:
+            n = conn.execute(
+                sa.text(f"SELECT COUNT(*) FROM usage_events WHERE {where_sql}"),
+                params,
+            ).scalar()
+        return int(n or 0)
+
+    def export_events(self, filters: dict) -> tuple[list[str], list[tuple]]:
+        """Full-width usage_events read for the admin export.
+
+        Returns ``(columns, rows)`` ordered by occurred_at. Fully
+        materialised — the export is an occasional admin action and the
+        events table is bounded by retention pruning.
+        """
+        where_sql, params = self._export_where(filters)
+        with self._engine.connect() as conn:
+            res = conn.execute(
+                sa.text(
+                    f"SELECT * FROM usage_events WHERE {where_sql} ORDER BY occurred_at"
+                ),
+                params,
+            )
+            cols = list(res.keys())
+            rows = [tuple(r) for r in res.fetchall()]
+        return cols, rows
+
+    def execute_readonly_select(self, sql: str) -> tuple[list[str], list[tuple]]:
+        """Execute a caller-validated SELECT (usage.ask) on this backend.
+
+        The caller MUST pass the statement through
+        ``src.usage_ask.validate_select_only`` first — this method adds no
+        validation of its own. Uses ``exec_driver_sql`` (raw DBAPI
+        passthrough) so colons inside string/time literals in the
+        LLM-generated SQL are not mistaken for SQLAlchemy bind params.
+        Returns ``(columns, rows)``.
+        """
+        with self._engine.connect() as conn:
+            res = conn.exec_driver_sql(sql)
+            cols = list(res.keys())
+            rows = [tuple(r) for r in res.fetchall()]
+        return cols, rows
+
+    # ------------------------------------------------------------------
     # /home status frame (Postgres).  Mirrors UsageRepository.home_stats.
     # ------------------------------------------------------------------
 

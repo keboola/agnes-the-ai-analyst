@@ -2,9 +2,10 @@
 data-semantics pack from the catalog (Gap 1 / #469).
 
 Reads ``data_packages`` + ``table_registry`` (+ ``column_metadata`` and
-``bq_metadata_cache``) and ``metric_definitions`` from the system DuckDB and
-emits a *starter* pack (``<slug>/tables/*.yml``, ``<slug>/metrics/*.yml``,
-``_brief.md``, ``_overview.md``) into an output directory. Re-run any time the
+``bq_metadata_cache``) and ``metric_definitions`` from the active state
+backend (via the repository factory) and emits a *starter* pack
+(``<slug>/tables/*.yml``, ``<slug>/metrics/*.yml``, ``_brief.md``,
+``_overview.md``) into an output directory. Re-run any time the
 catalog changes — human-authored content always wins (see
 :mod:`src.data_semantics_scaffold`).
 """
@@ -65,13 +66,8 @@ def generate(
         comparable_view,
         scaffold_pack,
     )
-    from src.db import get_system_db
 
-    conn = get_system_db()
-    try:
-        inputs, notes = _assemble_inputs(conn, package_filter=package)
-    finally:
-        conn.close()
+    inputs, notes = _assemble_inputs(package_filter=package)
 
     if not inputs["packages"]:
         typer.echo(
@@ -129,22 +125,28 @@ def generate(
 # --------------------------------------------------------------------------- #
 
 
-def _assemble_inputs(conn, *, package_filter: Optional[str] = None):
+def _assemble_inputs(*, package_filter: Optional[str] = None):
     """Build ``{"packages": [...]}`` for :func:`scaffold_pack`.
+
+    Reads through the backend-aware repository factory so the pack is
+    generated from the live catalog on either state backend (DuckDB or
+    Postgres) — never from the always-DuckDB connection (#513/#518).
 
     Returns ``(inputs, notes)`` where ``notes`` are CLI-level warnings (e.g.
     metrics that belong to no package and were dropped)."""
-    from src.repositories.bq_metadata_cache import BqMetadataCacheRepository
-    from src.repositories.column_metadata import ColumnMetadataRepository
-    from src.repositories.data_packages import DataPackagesRepository
-    from src.repositories.metrics import MetricRepository
-    from src.repositories.table_registry import TableRegistryRepository
+    from src.repositories import (
+        bq_metadata_cache_repo,
+        column_metadata_repo,
+        data_packages_repo,
+        metric_repo,
+        table_registry_repo,
+    )
 
-    pkg_repo = DataPackagesRepository(conn)
-    tbl_repo = TableRegistryRepository(conn)
-    col_repo = ColumnMetadataRepository(conn)
-    bq_repo = BqMetadataCacheRepository(conn)
-    met_repo = MetricRepository(conn)
+    pkg_repo = data_packages_repo()
+    tbl_repo = table_registry_repo()
+    col_repo = column_metadata_repo()
+    bq_repo = bq_metadata_cache_repo()
+    met_repo = metric_repo()
 
     members = pkg_repo.list_member_ids_bulk()  # {pkg_id: [table_id, ...]}
     all_metrics = met_repo.list()

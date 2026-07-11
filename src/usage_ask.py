@@ -1,8 +1,10 @@
 """Text-to-SQL for telemetry — schema-aware prompt + SELECT-only validator.
 
 The LLM is asked to translate a natural-language question into a single
-DuckDB SELECT statement against the v41 usage_* tables. The server then
-validates the result is SELECT-only and executes it.
+SELECT statement against the v41 usage_* tables, in the dialect of the
+active state backend (DuckDB or PostgreSQL — see ``system_prompt``). The
+server then validates the result is SELECT-only and executes it on that
+backend via the repository factory.
 """
 
 from __future__ import annotations
@@ -89,7 +91,27 @@ TABLE usage_marketplace_item_window
     PRIMARY KEY (period_label, source, type, parent_plugin, name)
 """
 
-SYSTEM_PROMPT = """You translate natural-language questions into DuckDB SELECT statements over a telemetry schema.
+_DIALECT_RULES = {
+    "duckdb": (
+        "You translate natural-language questions into DuckDB SELECT statements over a telemetry schema.",
+        "Use DuckDB-flavor SQL: `CURRENT_DATE`, `INTERVAL 7 DAY`, `DATE_TRUNC('week', ...)`, `EPOCH`, etc.",
+    ),
+    "postgresql": (
+        "You translate natural-language questions into PostgreSQL SELECT statements over a telemetry schema.",
+        "Use PostgreSQL-flavor SQL: `CURRENT_DATE`, `INTERVAL '7 days'`, `DATE_TRUNC('week', ...)`, `EXTRACT(EPOCH FROM ...)`, etc.",
+    ),
+}
+
+
+def system_prompt(dialect: str = "duckdb") -> str:
+    """System prompt for the given SQL dialect (``duckdb`` | ``postgresql``).
+
+    The active state backend decides the dialect — a Postgres-backed
+    instance executes the generated SQL on Postgres, so the LLM must be
+    told to write PostgreSQL, not DuckDB (#513/#518 bug class).
+    """
+    intro, flavor_rule = _DIALECT_RULES.get(dialect, _DIALECT_RULES["duckdb"])
+    return f"""{intro}
 
 Rules:
 1. Output a single SQL statement only.
@@ -97,7 +119,7 @@ Rules:
 3. No semicolons except optionally one at the end.
 4. No CTE that contains a write.
 5. Prefer rollup tables for date-range aggregations: `usage_tool_daily` (per-tool), `usage_marketplace_item_daily` (per marketplace item — plugin / skill / agent / command keyed by source + type + parent_plugin + name), and `usage_marketplace_item_window` (true-distinct counts across `last_7d` / `last_30d` snapshots). Use `usage_events` for forensic detail. The pre-v48 `usage_plugin_daily` and `usage_attribution_*` tables are gone — do not reference them.
-6. Use DuckDB-flavor SQL: `CURRENT_DATE`, `INTERVAL 7 DAY`, `DATE_TRUNC('week', ...)`, `EPOCH`, etc.
+6. {flavor_rule}
 7. Limit large result sets — default `LIMIT 100` unless the question asks for ALL rows.
 
 Schema:
@@ -109,10 +131,14 @@ Return JSON with:
 """
 
 
+# Backwards-compatible constant (DuckDB flavor) — prefer system_prompt(dialect).
+SYSTEM_PROMPT = system_prompt("duckdb")
+
+
 RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
-        "sql": {"type": "string", "description": "DuckDB SELECT statement"},
+        "sql": {"type": "string", "description": "SELECT statement in the requested dialect"},
         "rationale": {"type": "string", "description": "1-2 sentence explanation"},
     },
     "required": ["sql", "rationale"],
@@ -144,6 +170,12 @@ _FORBIDDEN_FUNCS = re.compile(
     r"pragma_table_info|pragma_storage_info|pragma_database_size|pragma_database_list|"
     r"duckdb_tables|duckdb_columns|duckdb_views|duckdb_indexes|duckdb_schemas|"
     r"duckdb_extensions|duckdb_functions|duckdb_settings|duckdb_databases|duckdb_secrets|"
+    # PostgreSQL file-read / network / admin functions — the same statement is
+    # executed on Postgres when the instance's state backend is PG, so the
+    # denylist must cover both engines' escape hatches.
+    r"pg_read_file|pg_read_binary_file|pg_ls_dir|pg_stat_file|pg_sleep|"
+    r"pg_terminate_backend|pg_cancel_backend|pg_reload_conf|set_config|"
+    r"lo_import|lo_export|dblink|dblink_connect|dblink_exec|"
     r"shell|system"
     r")\s*\(",
     re.IGNORECASE,

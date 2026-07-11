@@ -74,14 +74,12 @@ def seeded(monkeypatch, tmp_path):
 
 
 def test_assemble_inputs_groups_tables_and_metrics(seeded):
+    # _assemble_inputs reads through the repository factory (no conn arg) —
+    # on this DuckDB-backed fixture the factory resolves to the same
+    # DATA_DIR-scoped system DB the seed wrote into.
     from cli.commands.admin_data_semantics import _assemble_inputs
-    from src.db import get_system_db
 
-    conn = get_system_db()
-    try:
-        inputs, notes = _assemble_inputs(conn)
-    finally:
-        conn.close()
+    inputs, notes = _assemble_inputs()
 
     pkgs = {p["slug"]: p for p in inputs["packages"]}
     assert "engagement" in pkgs
