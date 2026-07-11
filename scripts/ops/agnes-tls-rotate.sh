@@ -29,8 +29,26 @@ set -euo pipefail
 ulimit -c 0
 
 cd /opt/agnes
-# shellcheck disable=SC1091
-set -a; . /opt/agnes/.env; set +a
+# Read only the five infra-controlled keys this script needs from
+# /opt/agnes/.env, rather than bash-sourcing the whole file. The .env also
+# holds free-text app config (AGNES_INSTANCE_CUSTOM_PREAMBLE,
+# AGNES_INSTANCE_BRAND, …) whose values can contain shell metacharacters
+# (backticks, `>`, `$`, quotes); `. .env` executes those and aborts under
+# `set -e`, which would silently stop daily cert rotation. Docker Compose
+# parses .env with its own safe parser, so only host-side sourcing was
+# affected. These five are all infra-controlled URLs / a path / a domain /
+# an X.509 subject — no free text; the VALUE is never shell-evaluated
+# (TLS_CSR_SUBJECT keeps its spaces/commas — only surrounding quotes are
+# stripped).
+_env_get() {
+  grep -m1 -E "^$1=" /opt/agnes/.env 2>/dev/null \
+    | sed -e "s/^$1=//" -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" || true
+}
+export TLS_FULLCHAIN_URL="$(_env_get TLS_FULLCHAIN_URL)"
+export TLS_PRIVKEY_URL="$(_env_get TLS_PRIVKEY_URL)"
+export TLS_CSR_SUBJECT="$(_env_get TLS_CSR_SUBJECT)"
+export DOMAIN="$(_env_get DOMAIN)"
+export STATE_DIR="$(_env_get STATE_DIR)"
 
 [ -n "${TLS_FULLCHAIN_URL:-}" ] || { echo "TLS_FULLCHAIN_URL empty — nothing to rotate"; exit 0; }
 

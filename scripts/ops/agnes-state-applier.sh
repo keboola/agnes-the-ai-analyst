@@ -51,8 +51,21 @@ fi
 TARGET="$(tr -d '[:space:]' < "$FLAG")"
 
 cd "$COMPOSE_DIR"
-# shellcheck disable=SC1091
-set -a; . "$COMPOSE_DIR/.env"; set +a
+# Read only the one infra-controlled key this daemon needs from .env
+# (AGNES_TAG, for the migrator image below), rather than bash-sourcing the
+# whole file. The .env also holds free-text app config
+# (AGNES_INSTANCE_CUSTOM_PREAMBLE, AGNES_INSTANCE_BRAND, …) whose values can
+# contain shell metacharacters (backticks, `>`, `$`, quotes) — `. .env`
+# executes those and aborts under `set -e`, which on this cutover daemon
+# would wedge the state machine mid-flip. Everything else here comes from
+# the job JSON (read below) or explicit `docker run -e`/CLI args; docker
+# compose parses .env with its own safe parser. The VALUE is never
+# shell-evaluated.
+_env_get() {
+  grep -m1 -E "^$1=" "$COMPOSE_DIR/.env" 2>/dev/null \
+    | sed -e "s/^$1=//" -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" || true
+}
+export AGNES_TAG="$(_env_get AGNES_TAG)"
 
 # Compose chain reused for every invocation. Mirrors the layering in
 # agnes-auto-upgrade.sh so this daemon plays well with the existing -f
