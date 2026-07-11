@@ -24,9 +24,9 @@ ExecStart=/usr/sbin/usermod -aG docker agnes-applier
 ExecStart=/bin/mkdir -p /data/state /data/postgres
 ExecStart=/bin/chown -R agnes-applier:agnes-applier /data/state
 ExecStart=/bin/bash -c 'chown 70:70 /data/postgres && chmod 700 /data/postgres'
-# Make /opt/agnes/.env readable by the applier. The script sources
-# this file (IMAGE_REPO, IMAGE_TAG, POSTGRES_PASSWORD, …) AND docker
-# compose's --env-file path reads it directly (not via shell source).
+# Make /opt/agnes/.env readable by the applier. The applier reads only
+# AGNES_TAG from it (via its _env_get helper — it does NOT shell-source
+# the file); docker compose's --env-file path also reads it directly.
 # We chown to ``agnes-applier:agnes-applier`` (owner = applier user,
 # mode 0600) rather than just chgrp + 0640: docker compose's Go file
 # loader opens the file with flags that fail for group-only access
