@@ -113,6 +113,56 @@ def test_validator_accepts_column_named_read_count():
     assert validate_select_only(sql) == sql.strip()
 
 
+# ---- PostgreSQL-specific escape hatches (Ask runs on PG after cutover) ----
+
+
+def test_validator_rejects_pg_advisory_lock():
+    """A syntactic SELECT must not be able to grab the migration advisory lock.
+
+    pg_advisory_lock(636636636636) acquires the SAME session-level lock as the
+    startup migration (src/db_pg.py::_PG_MIGRATE_LOCK_KEY); on a pooled
+    connection it leaks and wedges the next migration.
+    """
+    with pytest.raises(ValueError, match="forbidden function"):
+        validate_select_only("SELECT pg_advisory_lock(636636636636)")
+
+
+def test_validator_rejects_pg_advisory_lock_variants():
+    for fn in (
+        "pg_try_advisory_lock",
+        "pg_advisory_xact_lock",
+        "pg_advisory_unlock_all",
+    ):
+        with pytest.raises(ValueError, match="forbidden function"):
+            validate_select_only(f"SELECT {fn}(1)")
+
+
+def test_validator_rejects_pg_read_file():
+    with pytest.raises(ValueError, match="forbidden function"):
+        validate_select_only("SELECT pg_read_file('/etc/passwd')")
+
+
+def test_validator_rejects_dblink():
+    with pytest.raises(ValueError, match="forbidden function"):
+        validate_select_only("SELECT * FROM dblink('host=evil', 'SELECT 1') AS t(x int)")
+
+
+def test_validator_rejects_pg_notify_and_sequence_mutators():
+    for sql in (
+        "SELECT pg_notify('chan', 'msg')",
+        "SELECT nextval('some_seq')",
+        "SELECT setval('some_seq', 1)",
+    ):
+        with pytest.raises(ValueError, match="forbidden function"):
+            validate_select_only(sql)
+
+
+def test_validator_accepts_column_named_pg_advisory():
+    """Only the function-call form is rejected — a bare identifier is fine."""
+    sql = "SELECT pg_advisory FROM usage_events WHERE pg_advisory IS NOT NULL"
+    assert validate_select_only(sql) == sql.strip()
+
+
 # ---- Endpoint tests with mocked LLM ----
 
 
@@ -265,6 +315,56 @@ def test_ask_endpoint_rejects_too_long_question(seeded_app, admin_user, monkeypa
         headers=admin_user,
     )
     assert resp.status_code == 400
+
+
+def test_ask_endpoint_uses_postgresql_prompt_when_pg(seeded_app, admin_user, monkeypatch):
+    """On a PG-backed instance the LLM must be prompted for PostgreSQL SQL.
+
+    Pins the dialect branch introduced with the backend-routing fix: a
+    regression that sent the DuckDB prompt while executing on Postgres would
+    make normal Ask questions fail on dialect differences (e.g. interval
+    syntax). We patch only the `use_pg` name imported into admin_usage, so the
+    dialect flips to PostgreSQL while the repository factory still resolves to
+    the DuckDB test backend (audit + execution stay on DuckDB). The mocked LLM
+    returns benign, cross-dialect SQL so execution succeeds either way.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
+    monkeypatch.setattr("app.api.admin_usage.use_pg", lambda: True)
+    with patch("app.api.admin_usage.AnthropicExtractor") as mock_cls:
+        mock_cls.return_value.extract_json.return_value = {
+            "sql": "SELECT 1 AS x",
+            "rationale": "Tautology.",
+        }
+        resp = seeded_app["client"].post(
+            "/api/admin/telemetry/ask",
+            json={"question": "test"},
+            headers=admin_user,
+        )
+    assert resp.status_code == 200
+    # The system prompt handed to the LLM must be the PostgreSQL flavor.
+    _, kwargs = mock_cls.return_value.extract_json.call_args
+    system = kwargs["system"]
+    assert "PostgreSQL" in system
+    assert "INTERVAL '7 days'" in system
+    assert "DuckDB-flavor" not in system
+
+
+def test_ask_endpoint_uses_duckdb_prompt_by_default(seeded_app, admin_user, monkeypatch):
+    """Counterpart to the PG test — the default DuckDB backend gets the DuckDB prompt."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
+    with patch("app.api.admin_usage.AnthropicExtractor") as mock_cls:
+        mock_cls.return_value.extract_json.return_value = {
+            "sql": "SELECT 1 AS x",
+            "rationale": "Tautology.",
+        }
+        seeded_app["client"].post(
+            "/api/admin/telemetry/ask",
+            json={"question": "test"},
+            headers=admin_user,
+        )
+    _, kwargs = mock_cls.return_value.extract_json.call_args
+    assert "DuckDB" in kwargs["system"]
+    assert "PostgreSQL" not in kwargs["system"]
 
 
 def test_ask_endpoint_row_cap_truncation(seeded_app, admin_user, monkeypatch):
