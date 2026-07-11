@@ -952,7 +952,7 @@ def checkpoint_duckdb(duckdb_path: Path) -> bool:
         finally:
             conn.close()
         return True
-    except Exception as e:  # pragma: no cover - defensive
+    except Exception as e:
         log.warning(
             "DuckDB CHECKPOINT before backup/copy failed (%s); the copy still "
             "captures WAL data via its read-only open, but the backup artifact "
