@@ -803,3 +803,62 @@ def test_home_stats_identical_across_backends(usage_repo):
     assert result["cache_read"] == 20
     assert result["cache_creation"] == 10
     assert result["projects"] == 2
+
+
+# ---------------------------------------------------------------------------
+# admin telemetry export + text-to-SQL execution
+# (backend-routing fix: /api/admin/telemetry/{export,ask} read through the
+# factory instead of the always-DuckDB request connection)
+# ---------------------------------------------------------------------------
+
+
+def test_export_events_and_count_identical_across_backends(usage_repo):
+    repo, _, _ = usage_repo
+    base = datetime(2026, 5, 10, 10, 0, tzinfo=timezone.utc)
+    for i in range(3):
+        _seed_event(
+            repo,
+            event_id=f"exp-{i}",
+            username="alice" if i < 2 else "bob",
+            session_file="alice/a.jsonl",
+            occurred_at=base + timedelta(days=i),
+        )
+
+    # unfiltered: full width, all rows, ascending occurred_at
+    cols, rows = repo.export_events({})
+    assert "id" in cols and "occurred_at" in cols and "username" in cols
+    assert len(rows) == 3
+    ids = [r[cols.index("id")] for r in rows]
+    assert ids == ["exp-0", "exp-1", "exp-2"]
+    assert repo.count_events_export({}) == 3
+
+    # since / until half-open window
+    assert repo.count_events_export({"since": base + timedelta(days=1)}) == 2
+    window = {"since": base, "until": base + timedelta(days=1)}
+    _, w_rows = repo.export_events(window)
+    assert len(w_rows) == 1
+    assert repo.count_events_export(window) == 1
+
+    # username + source filters
+    assert repo.count_events_export({"username": "bob"}) == 1
+    assert repo.count_events_export({"source": "curated"}) == 3
+    assert repo.count_events_export({"source": "builtin"}) == 0
+
+
+def test_execute_readonly_select_identical_across_backends(usage_repo):
+    repo, _, _ = usage_repo
+    base = datetime(2026, 5, 10, 10, 0, tzinfo=timezone.utc)
+    for i in range(2):
+        _seed_event(
+            repo,
+            event_id=f"sel-{i}",
+            username="alice",
+            session_file="alice/a.jsonl",
+            occurred_at=base + timedelta(hours=i),
+        )
+
+    cols, rows = repo.execute_readonly_select(
+        "SELECT username, COUNT(*) AS n FROM usage_events GROUP BY username ORDER BY username"
+    )
+    assert cols == ["username", "n"]
+    assert [(r[0], int(r[1])) for r in rows] == [("alice", 2)]
