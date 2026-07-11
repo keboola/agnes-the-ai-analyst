@@ -50,6 +50,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- `agnes-auto-upgrade.sh` bash-sourced the entire `/opt/agnes/.env` (`set -a; . .env`) just to read `AGNES_TAG`/`STATE_DIR`/`COMPOSE_FILE`. A free-text app var in `.env` (e.g. an operator-set `AGNES_INSTANCE_CUSTOM_PREAMBLE` containing a backtick, `>`, `$`, or quote) made the source abort with a shell syntax error, silently blocking every 5-minute upgrade tick — the VM stopped pulling new images. The script now extracts only those three infra-controlled keys line-by-line, never shell-evaluating any value. (Docker Compose was unaffected — it parses `.env` with its own safe parser. `agnes-state-applier.sh` and `agnes-tls-rotate.sh` share the same latent bash-source pattern and should get the same treatment.)
+
 ### Removed
 
 ### Internal
