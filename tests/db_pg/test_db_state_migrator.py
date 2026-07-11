@@ -1079,6 +1079,68 @@ def test_pre_copy_scrubs_audit_log_pii(tmp_path, pg_engine):
         assert "eyjhbGciOiJIUzI1NiJ9".lower() not in blob
 
 
+def test_main_side_car_backup_artifact_is_pii_scrubbed(
+    tmp_path, pg_engine, monkeypatch
+):
+    """H7 — the pre-flip ``.duckdb.gz`` backup must NOT retain audit PII.
+
+    ``main()`` scrubs the source before ``backup_duckdb`` on the side_car
+    path, so a secret planted in ``audit_log`` is absent from the gunzipped
+    backup artifact — not just from the migrated PG. Guards the ordering
+    that ``test_pre_copy_scrubs_audit_log_pii`` cannot cover: it calls
+    ``copy_duckdb_to_pg`` directly and so never exercises the backup step,
+    which in ``main()`` runs *before* the copy's internal scrub."""
+    import gzip
+    import json
+    import shutil
+
+    import duckdb
+    from src.db import _ensure_schema
+    import scripts.db_state_migrator as m
+
+    duck_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.execute("INSERT INTO users (id, email, name) VALUES ('u1', 'a@x', 'A')")
+    conn.execute(
+        "INSERT INTO audit_log (id, action, params, params_before, timestamp) "
+        "VALUES ('a1', 'login', ?, NULL, current_timestamp)",
+        [json.dumps({"password": "secret123", "user": "alice"})],
+    )
+    conn.close()
+
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+    from src.db_state_machine import BackendState, write_backend_state
+    write_backend_state(BackendState.SIDE_CAR_IN_PROGRESS)
+
+    backups_dir = tmp_path / "backups"
+    rc = m.main(
+        job_id="job-scrub-before-backup",
+        to="side_car",
+        target_url=str(pg_engine.url),
+        duckdb_path=duck_path,
+        jobs_dir=tmp_path / "db-jobs",
+        backups_dir=backups_dir,
+    )
+    assert rc == 0
+
+    backups = list(backups_dir.glob("*.duckdb.gz"))
+    assert len(backups) == 1, f"expected exactly one backup, found {backups}"
+
+    restored = tmp_path / "restored.duckdb"
+    with gzip.open(backups[0], "rb") as fi, open(restored, "wb") as fo:
+        shutil.copyfileobj(fi, fo)
+    rconn = duckdb.connect(str(restored), read_only=True)
+    blob = str(
+        rconn.execute("SELECT params, params_before FROM audit_log").fetchall()
+    ).lower()
+    rconn.close()
+    assert (
+        "secret123" not in blob
+    ), "backup artifact must not retain the scrubbed audit secret"
+
+
 def test_content_hash_sample_detects_non_pk_drift():
     """H12 — same PK set, different non-PK content must yield a
     different content hash.
