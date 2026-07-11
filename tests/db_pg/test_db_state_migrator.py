@@ -1365,3 +1365,81 @@ def test_main_checkpoints_duckdb_before_backup(tmp_path, pg_engine, monkeypatch)
     assert rc == 0
     assert "checkpoint" in order and "backup" in order
     assert order.index("checkpoint") < order.index("backup")
+
+
+def test_checkpoint_duckdb_failure_is_nonfatal(tmp_path, monkeypatch, caplog):
+    """B2 — a CHECKPOINT failure is best-effort: returns False + logs a
+    WARNING, never raises. The copy still reads WAL through its read-only
+    open, so a failed checkpoint only risks a slightly-incomplete backup,
+    not a lossy migration. Pins that contract so a future edit can't turn
+    the exception into an abort unnoticed."""
+    import logging
+
+    from scripts.db_state_migrator import checkpoint_duckdb
+
+    duck_path = tmp_path / "system.duckdb"
+    duck_path.touch()  # must exist to get past the missing-file no-op
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("Cannot CHECKPOINT: there are other transactions active")
+
+    # checkpoint_duckdb imports _open_duckdb from src.duckdb_conn inside the
+    # function body, so patching the module attribute intercepts it.
+    monkeypatch.setattr("src.duckdb_conn._open_duckdb", boom)
+
+    with caplog.at_level(logging.WARNING, logger="scripts.db_state_migrator"):
+        assert checkpoint_duckdb(duck_path) is False
+    assert any(
+        "CHECKPOINT before backup/copy failed" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_main_checkpoints_duckdb_before_direct_cloud_copy(
+    tmp_path, pg_engine, monkeypatch
+):
+    """B2 — the direct DuckDB→CLOUD path has no backup step, so pin the
+    checkpoint against the *copy* instead: CHECKPOINT must run before the
+    source is read. Guards against a regression that moves the checkpoint
+    into the ``to == "side_car"`` branch — the side_car-only order test
+    above would still pass while the cloud path silently lost WAL-tail
+    commits."""
+    import scripts.db_state_migrator as m
+
+    order: list[str] = []
+    monkeypatch.setattr(
+        m, "checkpoint_duckdb", lambda p: (order.append("checkpoint"), True)[1]
+    )
+
+    def spy_copy(duckdb_path, target_url, writer=None):
+        order.append("copy")
+        return {
+            "rows_total": 0,
+            "tables_migrated": 0,
+            "target_rows_reset": 0,
+            "tables_failed": [],
+            "tables_skipped": [],
+        }
+
+    monkeypatch.setattr(m, "copy_duckdb_to_pg", spy_copy)
+    monkeypatch.setattr(m, "verify_row_counts", lambda *a, **k: [])
+
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+    from src.db_state_machine import BackendState, write_backend_state
+    write_backend_state(BackendState.CLOUD_IN_PROGRESS)
+
+    duck_path = tmp_path / "system.duckdb"
+    duck_path.touch()  # copy is stubbed — no real schema needed
+
+    rc = m.main(
+        job_id="job-cloud-checkpoint-order",
+        to="cloud",
+        source_backend="duckdb",
+        target_url=str(pg_engine.url),
+        duckdb_path=duck_path,
+        jobs_dir=tmp_path / "db-jobs",
+        backups_dir=tmp_path / "backups",
+    )
+    assert rc == 0
+    assert order == ["checkpoint", "copy"]
