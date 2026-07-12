@@ -256,12 +256,14 @@ def test_init_succeeds_when_bootstrap_token_absent(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
 
 
-def test_init_auto_marks_bootstrap_session_private_when_env_set(tmp_path, monkeypatch):
-    """#753: when init runs inside a Claude Code session (CLAUDE_CODE_SESSION_ID
-    set), the bootstrap session is auto-marked private so its transcript
-    (which may still contain the raw PAT from the setup-prompt heredoc) is
-    never uploaded by `agnes push`, even if the user never runs
-    `/agnes-private` themselves."""
+def test_init_does_not_mark_bootstrap_session_private(tmp_path, monkeypatch):
+    """The bootstrap session is deliberately NOT auto-marked private, even
+    when init runs inside a Claude Code session (CLAUDE_CODE_SESSION_ID set).
+    Marking a session private is exclusively the analyst's own deliberate
+    action (`/agnes-private`); the PAT pasted by the setup-prompt heredoc is
+    protected by push-time JWT redaction instead, so the setup transcript
+    uploads like any other session. (Reverts the auto-mark half of #771;
+    the redaction half stays.)"""
     monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "bootstrap-sid-123")
     api_get = _make_api_get()
@@ -281,11 +283,12 @@ def test_init_auto_marks_bootstrap_session_private_when_env_set(tmp_path, monkey
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "marked private" in result.output
+    assert "marked private" not in result.output
 
     from cli.lib.private_list import is_private
 
-    assert is_private(workspace, "bootstrap-sid-123")
+    assert not is_private(workspace, "bootstrap-sid-123")
+    assert not (workspace / ".claude" / "agnes-sessions-private.txt").exists()
 
 
 def test_init_does_not_mark_private_when_no_session_id(tmp_path, monkeypatch):

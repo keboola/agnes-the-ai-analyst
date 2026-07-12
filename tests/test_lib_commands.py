@@ -92,6 +92,12 @@ def test_install_writes_agnes_private_slash_command(tmp_path):
         encoding="utf-8"
     )
     assert body.startswith("---"), body[:120]
-    assert "description:" in body.split("---", 2)[1]
+    frontmatter = body.split("---", 2)[1]
+    assert "description:" in frontmatter
+    # User-only: the model must never invoke /agnes-private on its own —
+    # marking a session private is the analyst's deliberate action. The
+    # frontmatter flag hides the command from the model entirely while
+    # keeping it typeable by the user.
+    assert "disable-model-invocation: true" in frontmatter
     # `!`-prefix runs as bash directly — deterministic, no AI tokens.
     assert "agnes mark-private" in body

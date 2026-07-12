@@ -91,3 +91,27 @@ def test_redact_lines_generator():
 
 def test_empty_string():
     assert redact_text("") == ""
+
+
+def test_redacts_every_token_shape_the_server_can_mint(monkeypatch):
+    """Contract with `app/auth/jwt.py`: the redaction regex must catch every
+    token shape the server actually mints. Since the bootstrap session is no
+    longer auto-marked private, this scrub is the SOLE defense keeping the
+    setup-prompt PAT out of uploaded transcripts — a token-format change that
+    escapes `_JWT_RE` must fail loudly here, not silently leak."""
+    monkeypatch.setenv("TESTING", "1")
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
+    from app.auth.jwt import create_access_token
+
+    variants = (
+        {},  # interactive session token, default expiry
+        {"typ": "pat"},  # PAT with an exp claim
+        {"typ": "pat", "omit_exp": True},  # "no expiry" PAT — smallest payload
+    )
+    for kwargs in variants:
+        token = create_access_token("user-1", "analyst@example.com", **kwargs)
+        # Mirror the setup-prompt heredoc: the token sits on its own line.
+        text = f"cat > ~/.agnes/token <<'AGNES_PAT'\n{token}\nAGNES_PAT"
+        out = redact_text(text)
+        assert token not in out, kwargs
+        assert _SENTINEL in out, kwargs

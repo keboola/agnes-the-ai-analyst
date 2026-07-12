@@ -236,8 +236,8 @@ the workspace as on a default install.
 | Default behavior                                                       | Override behavior                                                                 |
 |------------------------------------------------------------------------|-----------------------------------------------------------------------------------|
 | `CLAUDE.md` fetched from `/api/welcome` (server-rendered Jinja2)       | `CLAUDE.md` comes verbatim from your repo (no Jinja2, no RBAC filtering)          |
-| `.claude/settings.json` seeded with `{model: sonnet, permissions: …}`  | Whatever your repo ships (or no file at all)                                      |
-| `install_claude_hooks(workspace)` installs SessionStart/End + statusLine | **Agnes installs these too** — on top of your template, after extraction. Agnes owns its SessionStart (`agnes update`) / SessionEnd (`agnes push`) hooks + statusLine in both modes; Agnes-looking entries your repo ships are replaced (foreign entries preserved). |
+| `.claude/settings.json` seeded with `{model: sonnet, permissions: …}`  | Whatever your repo ships (or no file at all) — but Agnes still appends its CLI allow-rules (`Bash(agnes:*)`, `Bash(agnes *)`) to a recognized `permissions.allow` list afterwards; your allow/deny/ask entries are preserved. |
+| `install_claude_hooks(workspace)` installs SessionStart/End + statusLine + Agnes CLI permission allow-rules | **Agnes installs these too** — on top of your template, after extraction. Agnes owns its SessionStart (`agnes update`) / SessionEnd (`agnes push`) hooks, statusLine, and `Bash(agnes …)` allow-rules in both modes; Agnes-looking hook entries your repo ships are replaced (foreign entries and your permission entries are preserved). |
 | `install_claude_commands(workspace)` installs `/update-agnes-plugins` + `/agnes-private` | **Agnes installs these too**; your other `.claude/commands/` files are preserved.                            |
 | `.claude/CLAUDE.local.md` stub written if absent                       | If your repo ships one, that wins; otherwise the file simply doesn't exist        |
 | `AGNES_WORKSPACE.md` rendered from `config/agnes_workspace_template.txt` | Your repo controls (or doesn't ship at all)                                       |
@@ -262,7 +262,7 @@ a documented contract, not an implementation detail. Concretely:
 
 | Runtime path                                                           | Behavior on override workspace                                                    |
 |------------------------------------------------------------------------|-----------------------------------------------------------------------------------|
-| `agnes self-upgrade` → `maybe_refresh_claude_hooks`                    | **Refreshes Agnes hook entries** in `.claude/settings.json` so analysts pick up new hook layouts (e.g. new SessionStart entries). Your custom hooks — anything whose command does NOT match `_OUR_COMMAND_MARKERS` in `cli/lib/hooks.py` — fall through unchanged. |
+| `agnes self-upgrade` → `maybe_refresh_claude_hooks`                    | **Refreshes Agnes hook entries + CLI allow-rules** in `.claude/settings.json` so analysts pick up new hook layouts (e.g. new SessionStart entries) and the `Bash(agnes …)` permission rules. Your custom hooks — anything whose command does NOT match `_OUR_COMMAND_MARKERS` in `cli/lib/hooks.py` — and your own permission entries fall through unchanged. |
 | `agnes refresh-marketplace` → `_enable_plugins_in_workspace_settings`  | **Writes `enabledPlugins` map** for the user's curated stack (`"<plugin>@agnes": true`). Stack is the source of truth — locally `claude plugin disable`-d plugins that remain in the stack get re-enabled. To permanently exclude, remove from stack via `agnes marketplace remove`. |
 | Future runtime CLI commands that need to update `.claude/`             | Treat override sentinel as non-existent. Same contract.                           |
 
@@ -286,6 +286,9 @@ entries; foreign hook entries and a custom statusLine are preserved):
 - **SessionEnd** → detached `agnes push`.
 - **statusLine** → `agnes statusline` (the `🔒 agnes-private` indicator).
 - **Slash commands** → `/update-agnes-plugins`, `/agnes-private`.
+- **Permission allow-rules** → `Bash(agnes:*)` + `Bash(agnes *)` appended to
+  `permissions.allow` so Claude Code's auto-mode classifier never pauses on
+  Agnes CLI commands (your own allow/deny/ask entries are preserved).
 
 Your repo's `workspace/.claude/settings.json` therefore only needs the parts
 YOU control (`model`, `permissions`, any third-party hooks). The block below
@@ -296,7 +299,7 @@ you don't ship the Agnes entries:
 {
   "model": "sonnet",
   "permissions": {
-    "allow": ["Read", "Bash", "Grep", "Glob"]
+    "allow": ["Read", "Bash", "Grep", "Glob", "Bash(agnes:*)", "Bash(agnes *)"]
   },
   "hooks": {
     "SessionStart": [

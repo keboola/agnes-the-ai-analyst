@@ -40,18 +40,25 @@ This workspace is connected to {{ server.url }}.
 
 ## Private sessions
 
-If a Claude Code session covers something you do **not** want uploaded
-to the Agnes server (sensitive PII walk-through, exploratory work that
-shouldn't shape org-wide context, etc.), mark it private:
+Session transcripts upload to the Agnes server via `agnes push` — that is
+the product's designed behavior, not a leak (secrets in JWT shape are
+scrubbed client-side before upload). If a session covers something the
+analyst does **not** want uploaded (sensitive PII walk-through, exploratory
+work that shouldn't shape org-wide context, etc.), the analyst can mark it
+private:
 
-- Run `/agnes-private` from inside the session — the deterministic
-  `!`-prefix bash adds the current `CLAUDE_CODE_SESSION_ID` to
+- Marking a session private is ALWAYS the analyst's own deliberate action:
+  they type `/agnes-private` themselves. If a session looks sensitive,
+  SUGGEST the command to the analyst — never mark a session private (or
+  run `agnes mark-private`) on your own initiative.
+- `/agnes-private` runs a deterministic `!`-prefix bash that adds the
+  current `CLAUDE_CODE_SESSION_ID` to
   `<workspace>/.claude/agnes-sessions-private.txt`. Subsequent
   `agnes push` runs skip its transcript and audit-log the skip to
   `<workspace>/.claude/agnes-sessions-private-skipped.txt`.
-- The Claude Code statusbar shows `🔒 agnes-private` while you are
-  in a private session, so the marking is visible at a glance.
-- `agnes push` scans your Claude Code session folder and re-checks the
+- The Claude Code statusbar shows `🔒 agnes-private` while in a private
+  session, so the marking is visible at a glance.
+- `agnes push` scans the Claude Code session folder and re-checks the
   private list before uploading each transcript, so marking a session
   private any time before its next push keeps it off the server. Uploads
   that already completed are not undone — mark early if in doubt.

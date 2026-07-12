@@ -62,6 +62,22 @@ def test_default_contains_user_reference(conn):
     assert "bob@example.com" in out
 
 
+def test_default_private_sessions_policy_is_user_only(conn):
+    """Pin the private-sessions policy copy in the default workspace CLAUDE.md
+    (config/claude_md_template.txt): transcript upload is designed behavior,
+    and marking a session private is exclusively the analyst's own deliberate
+    action — the agent may SUGGEST `/agnes-private`, never invoke it. Guards
+    against the copy drifting back to auto-marking guidance."""
+    out = compute_default_claude_md(conn, user=_user(), server_url="https://example.com")
+    assert "the product's designed behavior" in out
+    assert "scrubbed client-side" in out
+    assert "they type `/agnes-private` themselves" in out
+    assert "SUGGEST the command" in out
+    assert "never mark a session private" in out
+    assert "run `agnes mark-private`" in out
+    assert "auto-mark" not in out
+
+
 def test_render_uses_default_when_no_override(conn):
     out = render_claude_md(conn, user=_user(), server_url="https://example.com")
     assert out.strip() != ""
