@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.55] - 2026-07-12
+
 ### Changed
 
 - `agnes init` no longer auto-marks the bootstrap Claude Code session private (reverts the auto-mark half of #771; the push-time JWT redaction half stays and is the sole PAT defense — the raw token still never reaches the server's transcript store). Setup-session transcripts now upload like any other session, and marking a session private is exclusively the analyst's own deliberate action: the `/agnes-private` command template gains `disable-model-invocation: true` (the model can suggest the command but can never invoke it), and the install-prompt NOTE + step-4 tip + workspace CLAUDE.md template now instruct the agent to treat the PAT-in-transcript as designed behavior — no warnings, no self-initiated `agnes mark-private` — while still suggesting `/agnes-private` to the user for future sensitive sessions.
