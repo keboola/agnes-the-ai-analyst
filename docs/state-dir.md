@@ -107,7 +107,7 @@ Host scripts:
 - `scripts/ops/agnes-auto-upgrade.sh` — mount-sanity check + cert detection.
 - `scripts/ops/agnes-tls-rotate.sh` — `CERT_DIR=$STATE_DIR/certs`.
 
-Both scripts source `/opt/agnes/.env` with `set -a`, so adding `STATE_DIR=/data-state` to that file propagates everywhere.
+Both scripts extract `STATE_DIR` from `/opt/agnes/.env` line-by-line (they no longer shell-source the whole file), so adding `STATE_DIR=/data-state` to that file propagates to the host-side mount check and the TLS cert path.
 
 ## Caddy cert mount
 
