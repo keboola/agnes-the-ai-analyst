@@ -16,15 +16,12 @@ import logging
 import os
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Literal, Optional
 
-import duckdb
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from app.auth.access import require_admin
-from app.auth.dependencies import _get_db
 from connectors.llm.anthropic_provider import AnthropicExtractor
 from connectors.llm.exceptions import (
     LLMAuthError,
@@ -37,11 +34,12 @@ from connectors.llm.exceptions import (
 from src.repositories import (
     audit_repo,
     usage_repo,
+    use_pg,
 )
 from src.usage_ask import (
     RESPONSE_SCHEMA,
-    SYSTEM_PROMPT,
     build_prompt,
+    system_prompt,
     validate_select_only,
 )
 
@@ -61,40 +59,32 @@ def export_usage(
     user_id: Optional[str] = Query(None, description="Filter to a single user_id"),
     source: Optional[Literal["curated", "flea", "builtin"]] = Query(None),
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Stream usage_events filtered by since/until/user_id/source.
 
+    Reads through the backend-aware repository factory so the export
+    reflects the active state backend (DuckDB or Postgres), not the
+    always-DuckDB request connection (#513/#518 bug class).
+
     CSV: standard library `csv.writer`, one row per event with all columns.
     JSON: streaming NDJSON (one JSON object per line) — easier to pipe + tail.
-    Parquet: DuckDB `COPY (SELECT ...) TO '<tmp>.parquet'` then stream the file.
+    Parquet: pyarrow table written to an in-memory buffer (engine-agnostic).
     """
-    where, params = ["1=1"], []
+    filters: dict = {"username": user_id, "source": source}
     if since:
         try:
-            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            filters["since"] = datetime.fromisoformat(since.replace("Z", "+00:00"))
         except ValueError:
             raise HTTPException(status_code=400, detail=f"invalid since: {since}")
-        where.append("occurred_at >= ?")
-        params.append(since_dt)
     if until:
         try:
-            until_dt = datetime.fromisoformat(until.replace("Z", "+00:00"))
+            filters["until"] = datetime.fromisoformat(until.replace("Z", "+00:00"))
         except ValueError:
             raise HTTPException(status_code=400, detail=f"invalid until: {until}")
-        where.append("occurred_at < ?")
-        params.append(until_dt)
-    if user_id:
-        where.append("username = ?")
-        params.append(user_id)
-    if source:
-        where.append("source = ?")
-        params.append(source)
 
-    sql = f"SELECT * FROM usage_events WHERE {' AND '.join(where)} ORDER BY occurred_at"
+    repo = usage_repo()
     # Row count for audit (one extra query — acceptable for audit fidelity)
-    cnt_sql = f"SELECT COUNT(*) FROM usage_events WHERE {' AND '.join(where)}"
-    row_count = int(conn.execute(cnt_sql, params).fetchone()[0])
+    row_count = repo.count_events_export(filters)
 
     audit_params = {
         "format": format,
@@ -115,25 +105,24 @@ def export_usage(
     except Exception:
         logger.exception("audit_log write failed for usage.export; continuing")
 
+    cols, rows = repo.export_events(filters)
     if format == "csv":
-        return _stream_csv(conn, sql, params)
+        return _stream_csv(cols, rows)
     elif format == "json":
-        return _stream_ndjson(conn, sql, params)
+        return _stream_ndjson(cols, rows)
     else:
-        return _stream_parquet(conn, sql, params)
+        return _stream_parquet(cols, rows)
 
 
-def _stream_csv(conn, sql, params):
+def _stream_csv(cols, rows):
     def gen():
-        rel = conn.execute(sql, params)
-        cols = [d[0] for d in rel.description]
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow(cols)
         yield buf.getvalue()
         buf.seek(0)
         buf.truncate(0)
-        for row in rel.fetchall():
+        for row in rows:
             w.writerow(row)
             yield buf.getvalue()
             buf.seek(0)
@@ -146,11 +135,9 @@ def _stream_csv(conn, sql, params):
     )
 
 
-def _stream_ndjson(conn, sql, params):
+def _stream_ndjson(cols, rows):
     def gen():
-        rel = conn.execute(sql, params)
-        cols = [d[0] for d in rel.description]
-        for row in rel.fetchall():
+        for row in rows:
             d = {}
             for k, v in zip(cols, row):
                 if isinstance(v, datetime):
@@ -166,31 +153,29 @@ def _stream_ndjson(conn, sql, params):
     )
 
 
-def _stream_parquet(conn, sql, params):
-    import tempfile
+def _stream_parquet(cols, rows):
+    # Engine-agnostic: build the parquet in memory with pyarrow (a core
+    # dependency) instead of a DuckDB copy-to-file, so the same path serves
+    # both state backends and no temp file can be leaked.
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 
-    tmp = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False)
-    tmp.close()
-    out_path = Path(tmp.name)
-    # DuckDB COPY embeds the filter directly — use the same params
-    copy_sql = f"COPY ({sql}) TO '{out_path}' (FORMAT PARQUET)"
-    try:
-        conn.execute(copy_sql, params)
-    except Exception:
-        # Ensure the temp file is cleaned up if COPY fails before we hand off to StreamingResponse
-        out_path.unlink(missing_ok=True)
-        raise
+    if rows:
+        table = pa.Table.from_pylist([dict(zip(cols, r)) for r in rows])
+    else:
+        # Zero-row export still needs a valid schema; string-type every column.
+        table = pa.table({c: pa.array([], type=pa.string()) for c in cols})
+
+    buf = io.BytesIO()
+    pq.write_table(table, buf)
+    buf.seek(0)
 
     def gen():
-        try:
-            with out_path.open("rb") as f:
-                while True:
-                    chunk = f.read(64 * 1024)
-                    if not chunk:
-                        break
-                    yield chunk
-        finally:
-            out_path.unlink(missing_ok=True)
+        while True:
+            chunk = buf.read(64 * 1024)
+            if not chunk:
+                break
+            yield chunk
 
     return StreamingResponse(
         gen(),
@@ -210,9 +195,12 @@ _ASK_MODEL = os.environ.get("USAGE_ASK_MODEL", "claude-haiku-4-5-20251001")
 def ask_usage(
     payload: dict = Body(...),
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Translate a natural-language question to SELECT-only SQL via Anthropic + execute.
+
+    The prompt asks for the active backend's dialect and the validated
+    SELECT runs through the repository factory, so a Postgres-backed
+    instance answers from Postgres — not the orphaned DuckDB file.
 
     Returns the generated SQL even when validation rejects it, so the
     admin sees what the LLM tried.
@@ -230,6 +218,7 @@ def ask_usage(
             detail="ANTHROPIC_API_KEY is not configured on the server. Set it in instance env / .env_overlay.",
         )
 
+    dialect = "postgresql" if use_pg() else "duckdb"
     extractor = AnthropicExtractor(api_key=api_key, model=_ASK_MODEL)
     t0 = time.monotonic()
     try:
@@ -238,7 +227,7 @@ def ask_usage(
             max_tokens=1024,
             json_schema=RESPONSE_SCHEMA,
             schema_name="usage_ask_response",
-            system=SYSTEM_PROMPT,
+            system=system_prompt(dialect),
         )
     except LLMAuthError:
         raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY is invalid")
@@ -284,9 +273,7 @@ def ask_usage(
     # Execute the validated SQL with a row cap (defense in depth even though prompt asks for LIMIT)
     exec_t0 = time.monotonic()
     try:
-        rel = conn.execute(validated_sql)
-        cols = [d[0] for d in rel.description]
-        rows = rel.fetchall()
+        cols, rows = usage_repo().execute_readonly_select(validated_sql)
         if len(rows) > 1000:
             rows = rows[:1000]
             truncated = True
@@ -344,7 +331,6 @@ def ask_usage(
 @router.post("/reprocess")
 def reprocess_usage(
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Force re-extraction of all sessions for the usage processor.
 
@@ -411,7 +397,6 @@ def reprocess_usage(
 @router.post("/prune")
 def prune_usage(
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Delete usage_events older than USAGE_EVENTS_RETENTION_DAYS.
 

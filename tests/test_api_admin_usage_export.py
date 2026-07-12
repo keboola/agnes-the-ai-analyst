@@ -193,10 +193,28 @@ def test_export_admin_only(seeded_app, analyst_user):
     assert resp.status_code in (401, 403)
 
 
-def test_parquet_stream_has_dual_cleanup():
-    """Source-level check: _stream_parquet unlinks on both COPY-failure path and generator-finally."""
+def test_parquet_stream_is_in_memory():
+    """Source-level check: _stream_parquet builds the file in memory (pyarrow +
+    BytesIO) — no temp file to leak, no DuckDB COPY (the export must work
+    identically on both state backends)."""
     import inspect
     from app.api.admin_usage import _stream_parquet
     src = inspect.getsource(_stream_parquet)
-    # Two unlink calls expected: one inside the except (COPY-failure path) + one in the generator finally
-    assert src.count("unlink") >= 2
+    assert "BytesIO" in src
+    assert "NamedTemporaryFile" not in src
+    assert "COPY" not in src
+
+
+def test_export_parquet_empty_result_is_valid(seeded_app, admin_user, tmp_path):
+    """Zero-row export must still produce a readable parquet with the header schema."""
+    resp = seeded_app["client"].get(
+        "/api/admin/telemetry/export?format=parquet&user_id=nobody", headers=admin_user
+    )
+    assert resp.status_code == 200
+    out = tmp_path / "empty.parquet"
+    out.write_bytes(resp.content)
+    import duckdb as ddb
+
+    rel = ddb.connect().execute(f"SELECT * FROM read_parquet('{out}')")
+    assert rel.fetchall() == []
+    assert [d[0] for d in rel.description]  # columns present
