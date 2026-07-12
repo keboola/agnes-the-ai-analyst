@@ -17,11 +17,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
-- The three host-side ops scripts (`agnes-auto-upgrade.sh`, `agnes-state-applier.sh`, `agnes-tls-rotate.sh`) bash-sourced the entire `/opt/agnes/.env` (`set -a; . .env`) just to read a few infra-controlled keys. A free-text app var in `.env` (e.g. an operator-set `AGNES_INSTANCE_CUSTOM_PREAMBLE` containing a backtick, `>`, `$`, or quote) made the source abort with a shell syntax error under `set -e` — silently blocking every 5-minute auto-upgrade tick (VM stopped pulling new images), and latent on the cutover state-applier and daily TLS rotation. Each script now extracts only the keys it actually needs, line-by-line, never shell-evaluating any value (auto-upgrade: `AGNES_TAG`/`STATE_DIR`/`COMPOSE_FILE`; state-applier: `AGNES_TAG`; tls-rotate: `TLS_FULLCHAIN_URL`/`TLS_PRIVKEY_URL`/`TLS_CSR_SUBJECT`/`DOMAIN`/`STATE_DIR`). Docker Compose was unaffected — it parses `.env` with its own safe parser.
-
 ### Removed
 
 ### Internal
+
+---
+
+## [0.74.53] - 2026-07-12
+
+### Fixed
+
+- The three host-side ops scripts (`agnes-auto-upgrade.sh`, `agnes-state-applier.sh`, `agnes-tls-rotate.sh`) bash-sourced the entire `/opt/agnes/.env` (`set -a; . .env`) just to read a few infra-controlled keys. A free-text app var in `.env` (e.g. an operator-set `AGNES_INSTANCE_CUSTOM_PREAMBLE` containing a backtick, `>`, `$`, or quote) made the source abort with a shell syntax error under `set -e` — silently blocking every 5-minute auto-upgrade tick (VM stopped pulling new images), and latent on the cutover state-applier and daily TLS rotation. Each script now extracts only the keys it actually needs, line-by-line, never shell-evaluating any value (auto-upgrade: `AGNES_TAG`/`STATE_DIR`/`COMPOSE_FILE`; state-applier: `AGNES_TAG`; tls-rotate: `TLS_FULLCHAIN_URL`/`TLS_PRIVKEY_URL`/`TLS_CSR_SUBJECT`/`DOMAIN`/`STATE_DIR`). Docker Compose was unaffected — it parses `.env` with its own safe parser.
 
 ---
 
