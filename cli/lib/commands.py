@@ -52,6 +52,7 @@ _FALLBACK_BODIES: dict[str, str] = {
     "agnes-private.md": (
         "---\n"
         "description: Mark the current Claude Code session as private\n"
+        "disable-model-invocation: true\n"
         "---\n"
         "\n"
         "!`agnes mark-private`\n"

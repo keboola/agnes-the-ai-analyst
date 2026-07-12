@@ -1,5 +1,6 @@
 ---
 description: Mark the current Claude Code session as private — exclude it from Agnes upload
+disable-model-invocation: true
 ---
 
 !`agnes mark-private`

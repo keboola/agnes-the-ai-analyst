@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- `agnes init` no longer auto-marks the bootstrap Claude Code session private (reverts the auto-mark half of #771; the push-time JWT redaction half stays and is the sole PAT defense — the raw token still never leaves the client). Setup-session transcripts now upload like any other session, and marking a session private is exclusively the analyst's own deliberate action: the `/agnes-private` command template gains `disable-model-invocation: true` (the model can suggest the command but can never invoke it), and the install-prompt NOTE + step-4 tip + workspace CLAUDE.md template now instruct the agent to treat the PAT-in-transcript as designed behavior — no warnings, no self-initiated `agnes mark-private` — while still suggesting `/agnes-private` to the user for future sensitive sessions.
+
 ### Fixed
 
 - Claude Code's auto-mode permission classifier blocked the guided onboarding mid-flow: `agnes init` (flagged as a hook-install / credential-exfil pattern) and `agnes refresh-marketplace --bootstrap` (flagged as untrusted code integration) both paused for manual review, defeating the setup script's "runs mostly unattended" promise. Explicit permission allow-rules resolve *before* the classifier runs, so the Agnes CLI is now pre-approved on both ends: the /home launch step recommends `claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)"` (covers `agnes init` in the still-empty workspace; both rule spellings on purpose — trailing-`:*` is the classic prefix form, space-`*` the newer one), and `agnes init` seeds the same rules into the workspace's `.claude/settings.json` (`install_claude_hooks`, additive merge that preserves analyst/admin-authored entries). Claude Code live-reloads settings, so the rules cover the remainder of the very session that ran `agnes init`, and every later plain-`claude` session; existing workspaces pick them up via the SessionStart `agnes update` hook-refresh path.

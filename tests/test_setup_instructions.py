@@ -50,10 +50,11 @@ def test_render_setup_instructions_wires_all_placeholders():
 def test_init_step_warns_about_transcript_exposure():
     """#580 Finding 1: the step that writes the raw PAT to ~/.agnes/token
     must explicitly call out the transcript exposure — the heredoc lands in
-    the session transcript that `agnes push` uploads to the server. The NOTE
-    frames this as a non-issue: the server itself generated the token, so
-    having it in the transcript and sending it back to the same server is
-    not a security concern. (The `/agnes-private` guidance for OTHER
+    the session transcript. The NOTE frames this as designed behavior, not
+    an incident: the server generated the token, push-time JWT redaction
+    scrubs it client-side before upload, and the agent is explicitly told
+    NOT to warn, NOT to mark the session private, and NOT to run
+    `agnes mark-private`. (The `/agnes-private` guidance for future
     sensitive sessions lives in the step-4 tip, covered separately.)
     """
     from app.web.setup_instructions import _init_lines
@@ -64,20 +65,27 @@ def test_init_step_warns_about_transcript_exposure():
     # The heredoc target is documented inline so the user knows the transcript
     # copy — not the on-disk file — is where the token lands.
     assert "~/.agnes/token" in joined
-    # The reworded NOTE: server-generated token → not a security issue.
+    # The NOTE: server-generated token + client-side scrub → designed behavior.
     assert "server generated the token" in joined
-    assert "NOT a security" in joined
+    assert "scrubs JWT-shaped" in joined
+    # Explicit do-nots so the agent never "rescues" the session on its own.
+    assert "do not mark this session" in joined
+    assert "do not run `agnes mark-private`" in joined
+    # The auto-mark era is over — the copy must not claim it happens.
+    assert "auto-marked" not in joined
 
 
-def test_step4_tip_reflects_auto_private_of_bootstrap_session():
-    """#753: the step-4 `/agnes-private` tip must not imply the user still
-    needs to act on the bootstrap session — that's now automatic — while
-    still documenting `/agnes-private` for any OTHER sensitive session."""
+def test_step4_tip_private_is_users_deliberate_action():
+    """The step-4 tip documents that the setup session uploads like any other
+    and frames `/agnes-private` as the USER's deliberate action for future
+    sensitive sessions — the agent may suggest it, never run it."""
     from app.web.setup_instructions import _init_lines
 
     joined = "\n".join(_init_lines())
-    assert "already auto-marked the bootstrap session" in joined
-    assert "OTHER sensitive session" in joined
+    assert "already auto-marked" not in joined
+    assert "/agnes-private" in joined
+    assert "deliberate action" in joined
+    assert "never" in joined
 
 
 def test_resolve_lines_no_plugins_unified_layout():

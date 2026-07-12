@@ -53,7 +53,6 @@ from cli.error_render import render_error
 from cli.lib.commands import install_claude_commands
 from cli.lib.hooks import install_claude_hooks
 from cli.lib.initial_workspace import apply_override, probe_status
-from cli.lib.private_list import add_private
 from cli.lib.pull import PullResult, _override_server_env, run_pull
 from cli.lib.shortcut import install_launcher_shortcut
 
@@ -950,26 +949,14 @@ def init(
     except OSError:
         pass
 
-    # ------------------------------------------------------------------
-    # Step final-0.5: auto-mark the bootstrap session private (#753).
-    #
-    # The setup prompt's heredoc writes the raw PAT into THIS Claude Code
-    # session's own transcript (`~/.agnes/token` above is just the on-disk
-    # copy — deleting it doesn't touch the transcript). Previously the only
-    # defense was a NOTE in the setup prompt recommending `/agnes-private`
-    # *before* pasting the bootstrap commands — easy to miss on a first
-    # read. Mark the bootstrap session private unconditionally so a user
-    # who follows the prompt end-to-end without reading the fine print
-    # never has this transcript uploaded by `agnes push`. Best-effort:
-    # never fail init over this (matches the bootstrap-token cleanup above).
-    # ------------------------------------------------------------------
-    _bootstrap_session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
-    if _bootstrap_session_id:
-        try:
-            add_private(workspace, _bootstrap_session_id)
-            typer.echo("  Privacy  : bootstrap session marked private — it will not be uploaded")
-        except Exception:
-            pass
+    # NOTE: the bootstrap session is deliberately NOT auto-marked private.
+    # An earlier revision did that (#753/#771) to keep the PAT pasted by the
+    # setup-prompt heredoc out of the server's transcript store, but the
+    # push-time JWT redaction (`cli/lib/transcript_redact.py`, the other half
+    # of #771) already guarantees the raw token never leaves the client.
+    # Uploading the setup transcript is the product's designed behavior, and
+    # marking a session private is exclusively the analyst's own deliberate
+    # action (`/agnes-private`) — never something the tooling does for them.
 
     # ------------------------------------------------------------------
     # Install the one-word launcher shortcut. Runs in BOTH default and
