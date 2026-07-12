@@ -29,6 +29,18 @@ def main() -> int:
         action="store_true",
         help="Skip post-copy validation (row counts + checksums)",
     )
+    parser.add_argument(
+        "--reset-target",
+        action="store_true",
+        help=(
+            "Truncate the target state tables before copying so a RETRY "
+            "rebuilds a fresh mirror of the DuckDB source. Required for a "
+            "one-time cutover (e.g. infra pg-cutover.sh): without it the bare "
+            "ON CONFLICT DO NOTHING copy keeps stale rows from a prior failed "
+            "attempt. NEVER pass this on the docker-compose data-migrate "
+            "one-shot — it re-runs every boot and would wipe live data."
+        ),
+    )
     parser.add_argument("--verbose", action="store_true", help="DEBUG-level logging")
     args = parser.parse_args()
 
@@ -62,6 +74,7 @@ def main() -> int:
         only=args.only or None,
         dry_run=args.dry_run,
         validate=not args.no_validate,
+        reset_target=args.reset_target,
     )
     for r in reports:
         print(r)

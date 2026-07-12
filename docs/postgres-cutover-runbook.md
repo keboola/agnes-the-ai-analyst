@@ -170,6 +170,16 @@ verifies. The DuckDB system snapshot is gzipped under
 `/data/state/backups/duckdb-pre-<target>-<ts>.duckdb.gz` before the flip
 — see [Rollback to DuckDB](#rollback-to-duckdb) for the restore path.
 
+During a DuckDB→PG transition the applier first runs a best-effort DuckDB
+`CHECKPOINT` — folding any `.wal` sidecar into the main file so the
+pre-flip gzip backup is self-contained even if the app was hard-killed —
+and then copies into Postgres. On a **retry** after a partial failure it
+truncates the target PG state tables and rebuilds them from the current
+DuckDB source, so a nonzero `target_rows_reset` in the job record is
+deliberate (it stops the copy's bare `ON CONFLICT DO NOTHING` from keeping
+stale rows out of a prior attempt), **not** data loss. The docker-compose
+`data-migrate` one-shot is a separate path and is never reset this way.
+
 ### Manual smoke (agnes-dev)
 
 After deploying this release to agnes-dev, run the following on the VM

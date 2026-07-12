@@ -1079,6 +1079,87 @@ def test_pre_copy_scrubs_audit_log_pii(tmp_path, pg_engine):
         assert "eyjhbGciOiJIUzI1NiJ9".lower() not in blob
 
 
+def test_main_side_car_backup_artifact_is_pii_scrubbed(
+    tmp_path, pg_engine, monkeypatch
+):
+    """H7 — the pre-flip ``.duckdb.gz`` backup must NOT retain audit PII.
+
+    ``main()`` scrubs the source before ``backup_duckdb`` on the side_car
+    path, so a secret planted in ``audit_log`` is absent from the gunzipped
+    backup artifact — not just from the migrated PG. Guards the ordering
+    that ``test_pre_copy_scrubs_audit_log_pii`` cannot cover: it calls
+    ``copy_duckdb_to_pg`` directly and so never exercises the backup step,
+    which in ``main()`` runs *before* the copy's internal scrub."""
+    import gzip
+    import json
+    import shutil
+
+    import duckdb
+    from src.db import _ensure_schema
+    import scripts.db_state_migrator as m
+
+    duck_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.execute("INSERT INTO users (id, email, name) VALUES ('u1', 'a@x', 'A')")
+    conn.execute(
+        "INSERT INTO audit_log (id, action, params, params_before, timestamp) "
+        "VALUES ('a1', 'login', ?, NULL, current_timestamp)",
+        [json.dumps({"password": "secret123", "user": "alice"})],
+    )
+    conn.close()
+
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+    from src.db_state_machine import BackendState, write_backend_state
+    write_backend_state(BackendState.SIDE_CAR_IN_PROGRESS)
+
+    backups_dir = tmp_path / "backups"
+    rc = m.main(
+        job_id="job-scrub-before-backup",
+        to="side_car",
+        target_url=str(pg_engine.url),
+        duckdb_path=duck_path,
+        jobs_dir=tmp_path / "db-jobs",
+        backups_dir=backups_dir,
+    )
+    assert rc == 0
+
+    backups = list(backups_dir.glob("*.duckdb.gz"))
+    assert len(backups) == 1, f"expected exactly one backup, found {backups}"
+
+    restored = tmp_path / "restored.duckdb"
+    with gzip.open(backups[0], "rb") as fi, open(restored, "wb") as fo:
+        shutil.copyfileobj(fi, fo)
+    rconn = duckdb.connect(str(restored), read_only=True)
+    blob = str(
+        rconn.execute("SELECT params, params_before FROM audit_log").fetchall()
+    ).lower()
+    rconn.close()
+    assert (
+        "secret123" not in blob
+    ), "backup artifact must not retain the scrubbed audit secret"
+
+
+def test_scrub_audit_log_pii_missing_table_is_noop(tmp_path):
+    """H7 — the scrub is schema-tolerant: a DuckDB without an ``audit_log``
+    table returns zeros, not a ``NameError``. The ``except
+    duckdb.CatalogException`` handler must be able to resolve the ``duckdb``
+    name (it is imported inside the function); pre-fix, ``duckdb`` was
+    undefined in scope, so a missing table raised NameError instead of the
+    documented silent no-op."""
+    import duckdb
+
+    from scripts.db_state_migrator import scrub_audit_log_pii
+
+    duck_path = tmp_path / "no-audit.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    conn.execute("CREATE TABLE unrelated (x INTEGER)")  # valid db, no audit_log
+    conn.close()
+
+    assert scrub_audit_log_pii(duck_path) == {"rows_scanned": 0, "rows_redacted": 0}
+
+
 def test_content_hash_sample_detects_non_pk_drift():
     """H12 — same PK set, different non-PK content must yield a
     different content hash.
@@ -1223,3 +1304,223 @@ def test_copy_pg_to_pg_streams_without_full_materialize(tmp_path, pg_engine):
         "Switch the per-table copy SELECT to execution_options(yield_per=...) "
         "and iterate the Result instead of calling .all()."
     )
+
+
+# ---------------------------------------------------------------------------
+# B1 — retry into a non-empty target must not keep stale rows
+# ---------------------------------------------------------------------------
+
+
+def test_copy_duckdb_to_pg_retry_replaces_stale_rows(tmp_path, pg_engine):
+    """B1 — a retry into a non-empty target rebuilds the target fresh.
+
+    The copy uses bare ``ON CONFLICT DO NOTHING``. Without the pre-copy
+    truncate, a row edited in the source between a failed first attempt and
+    the retry would collide on its key, be skipped, and keep the stale
+    value — invisibly to the COUNT(*)-only verify. The truncate makes the
+    retry land every current value.
+    """
+    import duckdb
+    import sqlalchemy as sa
+    from src.db import _ensure_schema
+    from scripts.db_state_migrator import alembic_upgrade_head, copy_duckdb_to_pg
+
+    duck_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.execute("INSERT INTO users (id, email, name) VALUES ('u1', 'old@x', 'Old')")
+    conn.close()
+
+    alembic_upgrade_head(str(pg_engine.url))
+
+    # First attempt copies the 'old' row.
+    copy_duckdb_to_pg(duck_path, str(pg_engine.url))
+    with pg_engine.connect() as c:
+        assert c.execute(
+            sa.text("SELECT email FROM users WHERE id = 'u1'")
+        ).scalar() == "old@x"
+
+    # The source is edited between attempts (user changed their email + name).
+    conn = duckdb.connect(str(duck_path))
+    conn.execute("UPDATE users SET email = 'new@x', name = 'New' WHERE id = 'u1'")
+    conn.close()
+
+    # Retry into the now-non-empty target.
+    s2 = copy_duckdb_to_pg(duck_path, str(pg_engine.url))
+    assert s2["target_rows_reset"] >= 1  # discarded the prior attempt's rows
+
+    with pg_engine.connect() as c:
+        row = c.execute(
+            sa.text("SELECT email, name FROM users WHERE id = 'u1'")
+        ).fetchone()
+    # Without the truncate, ON CONFLICT DO NOTHING would keep ('old@x','Old').
+    assert tuple(row) == ("new@x", "New")
+
+
+def test_copy_duckdb_to_pg_reports_target_rows_reset(tmp_path, pg_engine):
+    """The copy summary surfaces how many pre-existing rows were discarded."""
+    import duckdb
+    from src.db import _ensure_schema
+    from scripts.db_state_migrator import alembic_upgrade_head, copy_duckdb_to_pg
+
+    duck_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.close()
+
+    alembic_upgrade_head(str(pg_engine.url))
+    summary = copy_duckdb_to_pg(duck_path, str(pg_engine.url))
+    assert "target_rows_reset" in summary
+    assert isinstance(summary["target_rows_reset"], int)
+
+
+# ---------------------------------------------------------------------------
+# B2 — checkpoint the DuckDB WAL before backup + copy
+# ---------------------------------------------------------------------------
+
+
+def test_checkpoint_duckdb_runs_and_leaves_no_wal(tmp_path):
+    """B2 — checkpoint_duckdb folds the WAL into the main file cleanly."""
+    from pathlib import Path
+
+    import duckdb
+    from src.db import _ensure_schema
+    from scripts.db_state_migrator import checkpoint_duckdb
+
+    duck_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.execute("INSERT INTO users (id, email, name) VALUES ('u1', 'a@x', 'A')")
+    conn.close()
+
+    assert checkpoint_duckdb(duck_path) is True
+    wal = Path(str(duck_path) + ".wal")
+    assert not wal.exists() or wal.stat().st_size == 0
+
+
+def test_checkpoint_duckdb_missing_file_is_noop(tmp_path):
+    """A missing DuckDB path returns False, never raises."""
+    from scripts.db_state_migrator import checkpoint_duckdb
+
+    assert checkpoint_duckdb(tmp_path / "does-not-exist.duckdb") is False
+
+
+def test_main_checkpoints_duckdb_before_backup(tmp_path, pg_engine, monkeypatch):
+    """B2 — main() must CHECKPOINT the DuckDB before backing it up, so the
+    backup artifact captures WAL-tail commits from a hard-killed app."""
+    import duckdb
+    from src.db import _ensure_schema
+    import scripts.db_state_migrator as m
+
+    duck_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.execute("INSERT INTO users (id, email, name) VALUES ('u1', 'a@x', 'A')")
+    conn.close()
+
+    order: list[str] = []
+    monkeypatch.setattr(
+        m, "checkpoint_duckdb", lambda p: (order.append("checkpoint"), True)[1]
+    )
+    orig_backup = m.backup_duckdb
+
+    def spy_backup(path, backups_dir):
+        order.append("backup")
+        return orig_backup(path, backups_dir)
+
+    monkeypatch.setattr(m, "backup_duckdb", spy_backup)
+
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+    from src.db_state_machine import BackendState, write_backend_state
+    write_backend_state(BackendState.SIDE_CAR_IN_PROGRESS)
+
+    rc = m.main(
+        job_id="job-checkpoint-order",
+        to="side_car",
+        target_url=str(pg_engine.url),
+        duckdb_path=duck_path,
+        jobs_dir=tmp_path / "db-jobs",
+        backups_dir=tmp_path / "backups",
+    )
+    assert rc == 0
+    assert "checkpoint" in order and "backup" in order
+    assert order.index("checkpoint") < order.index("backup")
+
+
+def test_checkpoint_duckdb_failure_is_nonfatal(tmp_path, monkeypatch, caplog):
+    """B2 — a CHECKPOINT failure is best-effort: returns False + logs a
+    WARNING, never raises. The copy still reads WAL through its read-only
+    open, so a failed checkpoint only risks a slightly-incomplete backup,
+    not a lossy migration. Pins that contract so a future edit can't turn
+    the exception into an abort unnoticed."""
+    import logging
+
+    from scripts.db_state_migrator import checkpoint_duckdb
+
+    duck_path = tmp_path / "system.duckdb"
+    duck_path.touch()  # must exist to get past the missing-file no-op
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("Cannot CHECKPOINT: there are other transactions active")
+
+    # checkpoint_duckdb imports _open_duckdb from src.duckdb_conn inside the
+    # function body, so patching the module attribute intercepts it.
+    monkeypatch.setattr("src.duckdb_conn._open_duckdb", boom)
+
+    with caplog.at_level(logging.WARNING, logger="scripts.db_state_migrator"):
+        assert checkpoint_duckdb(duck_path) is False
+    assert any(
+        "CHECKPOINT before backup/copy failed" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_main_checkpoints_duckdb_before_direct_cloud_copy(
+    tmp_path, pg_engine, monkeypatch
+):
+    """B2 — the direct DuckDB→CLOUD path has no backup step, so pin the
+    checkpoint against the *copy* instead: CHECKPOINT must run before the
+    source is read. Guards against a regression that moves the checkpoint
+    into the ``to == "side_car"`` branch — the side_car-only order test
+    above would still pass while the cloud path silently lost WAL-tail
+    commits."""
+    import scripts.db_state_migrator as m
+
+    order: list[str] = []
+    monkeypatch.setattr(
+        m, "checkpoint_duckdb", lambda p: (order.append("checkpoint"), True)[1]
+    )
+
+    def spy_copy(duckdb_path, target_url, writer=None):
+        order.append("copy")
+        return {
+            "rows_total": 0,
+            "tables_migrated": 0,
+            "target_rows_reset": 0,
+            "tables_failed": [],
+            "tables_skipped": [],
+        }
+
+    monkeypatch.setattr(m, "copy_duckdb_to_pg", spy_copy)
+    monkeypatch.setattr(m, "verify_row_counts", lambda *a, **k: [])
+
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+    from src.db_state_machine import BackendState, write_backend_state
+    write_backend_state(BackendState.CLOUD_IN_PROGRESS)
+
+    duck_path = tmp_path / "system.duckdb"
+    duck_path.touch()  # copy is stubbed — no real schema needed
+
+    rc = m.main(
+        job_id="job-cloud-checkpoint-order",
+        to="cloud",
+        source_backend="duckdb",
+        target_url=str(pg_engine.url),
+        duckdb_path=duck_path,
+        jobs_dir=tmp_path / "db-jobs",
+        backups_dir=tmp_path / "backups",
+    )
+    assert rc == 0
+    assert order == ["checkpoint", "copy"]
