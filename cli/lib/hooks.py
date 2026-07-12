@@ -35,6 +35,10 @@ Design notes:
 - SessionEnd gets one entry: `agnes push --quiet` wrapped to detach into
   the background.
 
+- `permissions.allow` gets the `Bash(agnes …)` allow-rules so Claude Code's
+  auto-mode classifier never pauses a session on Agnes CLI commands — see
+  `_AGNES_PERMISSION_ALLOW_RULES` for the mechanics and the dual spelling.
+
   The push must detach because Claude Code in `-p` (headless) mode
   terminates SessionEnd hook subprocesses after ~1 second regardless of
   work in progress, so a synchronous `agnes push` (which uploads N session
@@ -84,10 +88,28 @@ _OUR_COMMAND_MARKERS = (
 )
 
 
+# Workspace permission allow-rules for the Agnes CLI. Claude Code resolves an
+# explicit `permissions.allow` match immediately — BEFORE its auto-mode safety
+# classifier evaluates the command — so pre-approving `agnes …` keeps the
+# classifier from pausing setup (or any later session) on `agnes init` /
+# `agnes refresh-marketplace --bootstrap` / `agnes pull`: commands the
+# workspace owner installed this CLI to run. Claude Code live-reloads
+# settings.json mid-session, so the rules cover the remainder of the very
+# session that ran `agnes init`.
+#
+# Both spellings are written on purpose: `Bash(agnes:*)` is the classic
+# documented prefix form, `Bash(agnes *)` the newer space-wildcard form —
+# carrying both keeps the rules effective across Claude Code versions.
+_AGNES_PERMISSION_ALLOW_RULES = (
+    "Bash(agnes:*)",
+    "Bash(agnes *)",
+)
+
+
 def install_claude_hooks(workspace: Path) -> None:
     """Install the SessionStart hook (one detached `agnes update --quiet`) and
     the SessionEnd hook (detached `agnes push`), plus the `agnes statusline`
-    statusLine.
+    statusLine and the `Bash(agnes …)` permission allow-rules.
 
     Idempotent. Workspace-scoped (writes `<workspace>/.claude/settings.json`).
     Preserves third-party hooks and other event types. On a corrupt
@@ -203,6 +225,7 @@ def install_claude_hooks(workspace: Path) -> None:
     )
 
     _install_statusline(cfg)
+    _install_permissions(cfg)
 
     settings_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
 
@@ -238,6 +261,27 @@ def _install_statusline(cfg: dict) -> None:
         "add `agnes statusline` to your command.",
         file=sys.stderr,
     )
+
+
+def _install_permissions(cfg: dict) -> None:
+    """Merge the Agnes CLI allow-rules into ``permissions.allow``.
+
+    Additive and idempotent: existing entries (the analyst's own rules,
+    an admin template's deny/ask lists) are preserved untouched; each
+    Agnes rule is appended only when absent. Unrecognised shapes (a
+    non-dict ``permissions``, a non-list ``allow``) are left exactly as
+    found — same politeness contract as the statusLine writer: never
+    clobber a value we don't understand.
+    """
+    permissions = cfg.setdefault("permissions", {})
+    if not isinstance(permissions, dict):
+        return
+    allow = permissions.setdefault("allow", [])
+    if not isinstance(allow, list):
+        return
+    for rule in _AGNES_PERMISSION_ALLOW_RULES:
+        if rule not in allow:
+            allow.append(rule)
 
 
 def workspace_has_agnes_hooks(workspace: Path) -> bool:

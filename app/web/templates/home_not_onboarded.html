@@ -223,11 +223,11 @@
             <div class="label">Launch Claude with auto-approve on</div>
             <p class="step-lede">The next step pastes a setup script that runs ~20 shell commands. Launching Claude in <strong>auto mode</strong> lets its safety classifier auto-approve the safe ones (file edits and safe Bash), so the script runs mostly unattended — you may still get a prompt on a riskier command.</p>
             <div class="install-cmd">
-                <span class="multiline" id="install-cmd-claude-auto">claude --permission-mode auto</span>
+                <span class="multiline" id="install-cmd-claude-auto">claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)"</span>
                 <button class="copy-btn" data-copy-target="install-cmd-claude-auto">Copy</button>
             </div>
             <div class="install-note">
-                Session-scoped — drops on next plain <code>claude</code>. Auto mode auto-approves actions its classifier judges safe (file edits and safe Bash commands); it is <em>not</em> a blanket skip, so Claude may still pause for a Yes/No on a command it considers risky. Prefer to review each command? Run plain <code>claude</code> and press <strong>Shift + Tab</strong> to cycle on <strong>auto-accept edits</strong> (default → auto-accept edits → plan mode; footer shows <code>⏵⏵</code>). That covers file edits only, not Bash — expect ~20 prompt clicks during the next step.
+                Session-scoped — drops on next plain <code>claude</code>. Auto mode auto-approves actions its classifier judges safe (file edits and safe Bash commands); it is <em>not</em> a blanket skip, so Claude may still pause for a Yes/No on a command it considers risky. The <code>--allowedTools</code> part pre-approves the <code>agnes</code> CLI's own commands (<code>agnes init</code>, <code>agnes refresh-marketplace</code>, …) so the classifier never pauses on them — and <code>agnes init</code> writes the same allow-rules into the workspace's <code>.claude/settings.json</code>, so later plain <code>claude</code> sessions stay covered. Prefer to review each command? Run plain <code>claude</code> and press <strong>Shift + Tab</strong> to cycle on <strong>auto-accept edits</strong> (default → auto-accept edits → plan mode; footer shows <code>⏵⏵</code>). That covers file edits only, not Bash — expect ~20 prompt clicks during the next step.
             </div>
 
             <div class="code-output">Welcome to Claude Code!

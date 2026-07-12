@@ -323,6 +323,74 @@ def test_install_replaces_old_synchronous_session_end_push(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# permissions.allow — Agnes CLI pre-approval
+# ---------------------------------------------------------------------------
+
+
+def test_install_writes_agnes_permission_allow_rules(tmp_path):
+    """`agnes init` seeds `permissions.allow` with both spellings of the
+    Agnes CLI rule so Claude Code's auto-mode classifier never pauses on
+    `agnes …` commands — explicit allow-rules resolve before the classifier
+    runs, and settings live-reload mid-session, so the rules cover the
+    remainder of the very session that ran `agnes init`."""
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    allow = cfg["permissions"]["allow"]
+    assert "Bash(agnes:*)" in allow
+    assert "Bash(agnes *)" in allow
+
+
+def test_install_permission_rules_idempotent(tmp_path):
+    install_claude_hooks(tmp_path)
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    allow = cfg["permissions"]["allow"]
+    assert allow.count("Bash(agnes:*)") == 1
+    assert allow.count("Bash(agnes *)") == 1
+
+
+def test_install_preserves_existing_permission_entries(tmp_path):
+    """Analyst- or admin-authored permission entries survive the merge —
+    the Agnes rules are appended, never a wholesale replace."""
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({
+        "permissions": {
+            "allow": ["Bash(git status:*)"],
+            "deny": ["Read(**/.env)"],
+        }
+    }), encoding="utf-8")
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    assert "Bash(git status:*)" in cfg["permissions"]["allow"]
+    assert "Bash(agnes:*)" in cfg["permissions"]["allow"]
+    assert "Bash(agnes *)" in cfg["permissions"]["allow"]
+    assert cfg["permissions"]["deny"] == ["Read(**/.env)"]
+
+
+def test_install_leaves_malformed_permissions_untouched(tmp_path):
+    """A `permissions` value we don't understand is preserved verbatim —
+    same politeness contract as the statusLine writer."""
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({"permissions": "weird"}), encoding="utf-8")
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    assert cfg["permissions"] == "weird"
+
+
+def test_install_leaves_malformed_allow_list_untouched(tmp_path):
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps({"permissions": {"allow": "not-a-list"}}), encoding="utf-8"
+    )
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    assert cfg["permissions"]["allow"] == "not-a-list"
+
+
+# ---------------------------------------------------------------------------
 # workspace_has_agnes_hooks / maybe_refresh_claude_hooks
 # ---------------------------------------------------------------------------
 

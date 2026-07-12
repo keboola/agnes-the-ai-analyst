@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- Claude Code's auto-mode permission classifier blocked the guided onboarding mid-flow: `agnes init` (flagged as a hook-install / credential-exfil pattern) and `agnes refresh-marketplace --bootstrap` (flagged as untrusted code integration) both paused for manual review, defeating the setup script's "runs mostly unattended" promise. Explicit permission allow-rules resolve *before* the classifier runs, so the Agnes CLI is now pre-approved on both ends: the /home launch step recommends `claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)"` (covers `agnes init` in the still-empty workspace; both rule spellings on purpose — trailing-`:*` is the classic prefix form, space-`*` the newer one), and `agnes init` seeds the same rules into the workspace's `.claude/settings.json` (`install_claude_hooks`, additive merge that preserves analyst/admin-authored entries). Claude Code live-reloads settings, so the rules cover the remainder of the very session that ran `agnes init`, and every later plain-`claude` session; existing workspaces pick them up via the SessionStart `agnes update` hook-refresh path.
+
 ---
 
 ## [0.74.54] - 2026-07-12

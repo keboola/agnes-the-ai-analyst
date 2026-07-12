@@ -271,10 +271,13 @@ def test_home_renders_automode_block_by_default(fresh_db, monkeypatch):
     /home view. The block is Step 3 (folder creation moved up to Step 2
     so the user mkdir+cd's first, then this step launches Claude in that
     directory with the right flag for Step 4's ~20 shell commands).
-    Label primarily recommends `claude --permission-mode auto` via the
-    standard `.install-cmd` + copy-button affordance; auto-accept-edits
-    via Shift + Tab kept as the strict fallback for users who want to
-    review each command. The YOLO flag
+    Label primarily recommends `claude --permission-mode auto` plus
+    `--allowedTools` rules that pre-approve the Agnes CLI's own commands
+    (explicit allow-rules resolve before the auto-mode classifier runs,
+    so `agnes init` / `agnes refresh-marketplace` never pause the setup
+    script), via the standard `.install-cmd` + copy-button affordance;
+    auto-accept-edits via Shift + Tab kept as the strict fallback for
+    users who want to review each command. The YOLO flag
     (`--dangerously-skip-permissions`) is no longer surfaced on /home."""
     monkeypatch.delenv("AGNES_HOME_SHOW_AUTOMODE", raising=False)
 
@@ -292,8 +295,9 @@ def test_home_renders_automode_block_by_default(fresh_db, monkeypatch):
     # The `Step N —` prefix was dropped from labels (the step-number
     # badge already carries the number); match the bare label text.
     assert "Launch Claude with auto-approve on" in body
-    # Recommended path: `claude --permission-mode auto`.
-    assert "claude --permission-mode auto" in body
+    # Recommended path: auto mode + the Agnes CLI allow-rules (both
+    # spellings — see _AGNES_PERMISSION_ALLOW_RULES in cli/lib/hooks.py).
+    assert 'claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)"' in body
     # The YOLO flag is no longer recommended on /home.
     assert "--dangerously-skip-permissions" not in body
     # Strict fallback: Shift + Tab → auto-accept-edits.
