@@ -116,12 +116,13 @@ def install_claude_hooks(workspace: Path) -> None:
     settings.json it backs the file up (`.corrupt.<ts>`) and rebuilds rather
     than skipping.
 
-    Override-sentinel handling lives at the call site, not here. The
-    init-time caller (`cli/commands/init.py`, gated by `override_active`)
-    decides whether to skip this writer for admin-templated workspaces.
-    Runtime callers (`maybe_refresh_claude_hooks` from `agnes
-    self-upgrade`) invoke us unconditionally so existing override
-    workspaces still pick up new Agnes hook layouts.
+    Every caller invokes this writer unconditionally — `agnes init`
+    (BOTH default and override modes: in override it runs after
+    `apply_override`, re-asserting the Agnes-owned entries on top of the
+    admin template), `agnes update` step 3, and
+    `maybe_refresh_claude_hooks` from `agnes self-upgrade` — so hooks,
+    statusLine, and the permission allow-rules stay converged on every
+    path that touches the workspace.
     """
     settings_path = workspace / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
