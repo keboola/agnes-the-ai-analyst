@@ -116,12 +116,12 @@ async def download_knowledge_artifact(
 
     try:
         audit_repo().log(
-            user_id=user.get("id"),
+            user_id=user.get("id") if isinstance(user, dict) else None,
             action="knowledge.artifact_download",
             resource=f"collection:{corpus_id}"[:256],
             params={"bytes": stat.st_size},
             result="success",
-            client_kind=client_kind_from_user(user),
+            client_kind=client_kind_from_user(user) if isinstance(user, dict) else "web",
         )
     except Exception:
         logger.exception("audit_log write failed for knowledge.artifact_download; continuing")
