@@ -1,6 +1,10 @@
 [project]
 name = "agnes-the-ai-analyst"
+
 version = "0.74.51"
+=======
+version = "0.74.52"
+>>>>>>> d3631b29 (release: 0.74.52 — admin telemetry semantics backend-split fix)
 description = "Agnes — self-hosted AI harness for organizations: governed data access, skills marketplace, corporate memory, and agent workspaces"
 requires-python = ">=3.11,<3.14"
 license = {file = "LICENSE"}
