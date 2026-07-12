@@ -103,7 +103,7 @@ def test_download_unknown_corpus_404(seeded_app):
     assert resp.status_code == 404
 
 
-def test_download_ungranted_analyst_404(seeded_app):
+def test_download_ungranted_analyst_403(seeded_app):
     c = seeded_app["client"]
     admin = seeded_app["admin_token"]
     analyst = seeded_app["analyst_token"]
@@ -111,7 +111,9 @@ def test_download_ungranted_analyst_404(seeded_app):
     _seed_artifact(col["id"])
 
     resp = c.get(f"/api/knowledge/artifacts/{col['id']}/download", headers=_auth(analyst))
-    assert resp.status_code == 404
+    # require_resource_access gate (standard collection-scoped pattern) → 403;
+    # ids are unguessable (col_ + token_hex) so this is not an existence oracle.
+    assert resp.status_code == 403
 
 
 def test_download_granted_corpus_no_artifact_built_404(seeded_app):
