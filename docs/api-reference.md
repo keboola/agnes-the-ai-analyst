@@ -916,6 +916,7 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/admin/run-jira-consistency-check
 - /api/admin/run-jira-sla-poll
 - /api/admin/run-knowledge-migration
+- /api/admin/run-knowledge-packaging
 - /api/admin/run-reap-stuck-reviews
 - /api/admin/run-session-collector
 - /api/admin/run-session-processor
@@ -989,6 +990,13 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
   table catalog cards; typed results (`chunk | knowledge | table`) with
   citations, RBAC fail-closed per source. Params: `q` (required), `k` (1–50,
   default 10). Triple-surface: `agnes search` + MCP tool `knowledge_search`.
+- /api/knowledge/artifacts/{corpus_id}/download — streams the per-collection
+  `knowledge.duckdb` artifact (chunks + embeddings) built by the K3 local
+  packaging pass; listed in the sync manifest's `knowledge_artifacts` array
+  and fetched by `agnes pull`. ETag/304 support. RBAC = collection grants,
+  fail-closed: ungranted/unknown corpus or a not-yet-built artifact both
+  return 404. REST-only (no CLI/MCP analogue — mirrors
+  `/api/data/{table_id}/download`).
 
 ### `/api/marketplace` and `/api/marketplaces` — Marketplace
 

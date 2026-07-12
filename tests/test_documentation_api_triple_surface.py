@@ -269,6 +269,16 @@ _EXEMPT: dict[str, str] = {
         "keboola-only browse-and-register primitive with no analyst CLI/MCP analogue; "
         "`agnes admin register-table` already covers the actual registration step"
     ),
+    "/api/knowledge/artifacts/{corpus_id}/download": (
+        "K3 local packaging (#798) — binary knowledge.duckdb artifact consumed by "
+        "`agnes pull` (hash-verified, atomic promotion, pruned on de-authorization); "
+        "no MCP/JSON analogue, mirrors the parquet /api/data/{table_id}/download channel"
+    ),
+    "/api/admin/run-knowledge-packaging": (
+        "scheduler-driven knowledge-artifact rebuild trigger (K3, #798) — "
+        "admin/scheduler maintenance op, mirrors the run-corporate-memory "
+        "exemption; no analyst CLI/MCP analogue"
+    ),
 }
 
 

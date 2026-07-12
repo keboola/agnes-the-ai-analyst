@@ -131,23 +131,21 @@ def _confidence(sorted_scores: List[float], distinct_files: int) -> str:
     return "low"
 
 
-def search(
-    corpus_ids: List[str],
+def rank_chunks(
+    chunks: List[Dict[str, Any]],
     query: str,
     *,
     k: int = 10,
-) -> List[Dict[str, Any]]:
-    """Return up to ``k`` ranked chunks from the given corpora, with citations.
+) -> tuple[List[tuple[float, Dict[str, Any]]], str]:
+    """Score+rank a candidate chunk set (the #756 hybrid pipeline).
 
-    Fail-closed: empty ``corpus_ids`` or blank query → ``[]``.
+    Returns ``(top, confidence)`` where ``top`` is up to ``k``
+    ``(score, chunk)`` pairs, sorted by fused score descending with a stable
+    chunk-id tie-break. Pure scoring — no repo access, no RBAC, no filename
+    resolution — so both the server's ``search()`` and the offline
+    ``src.search.local`` reader can share the exact same ranking behavior
+    over their respective candidate sets.
     """
-    if not corpus_ids or not (query or "").strip():
-        return []
-
-    chunks = corpus_chunks_repo().list_for_corpora(corpus_ids)
-    if not chunks:
-        return []
-
     q_terms = set(_tokenize(query))
     q_vec: Optional[List[float]] = embed_query(query)  # None when extra absent
 
@@ -185,7 +183,27 @@ def search(
     distinct_files = len({ch.get("file_id") for ch in chunks})
     confidence = _confidence([s for s, _ in scored], distinct_files)
 
-    top = scored[:k]
+    return scored[:k], confidence
+
+
+def search(
+    corpus_ids: List[str],
+    query: str,
+    *,
+    k: int = 10,
+) -> List[Dict[str, Any]]:
+    """Return up to ``k`` ranked chunks from the given corpora, with citations.
+
+    Fail-closed: empty ``corpus_ids`` or blank query → ``[]``.
+    """
+    if not corpus_ids or not (query or "").strip():
+        return []
+
+    chunks = corpus_chunks_repo().list_for_corpora(corpus_ids)
+    if not chunks:
+        return []
+
+    top, confidence = rank_chunks(chunks, query, k=k)
 
     # Resolve filenames for citations (cache per file).
     cf_repo = corpus_files_repo()
