@@ -48,3 +48,40 @@ def test_quality_check_composed_via_temp_tree():
 def test_engine_never_raises_on_broken_input():
     r = lint_skill({"name": "x", "description": None, "type": "skill"}, "", candidates=[])
     assert isinstance(r["findings"], list)
+
+
+def test_craft_success_sets_llm_used_and_suppresses_degraded_rules():
+    craft_finding = {
+        "rule_id": "SL010",
+        "severity": "warn",
+        "message": "trigger unclear",
+        "evidence": {},
+        "doc_url": "/docs/skill-guidelines#sl010",
+    }
+
+    def _stub(entity, skill_md, candidates):
+        return [craft_finding]
+
+    bad = dict(_GOOD, description="A collection of many helpful things.")
+    cands = [({"id": "1", "name": "x", "description": "y", "body": "z"}, 1.0)]
+    r = lint_skill(bad, _md(), candidates=cands, craft=_stub)
+
+    assert r["llm_used"] is True
+    assert "SL011" not in r["rules_run"]
+    assert "SL012" not in r["rules_run"]
+    assert not [f for f in r["findings"] if f["rule_id"] in ("SL011", "SL012")]
+    assert any(f["rule_id"] == "SL010" for f in r["findings"])
+
+
+def test_craft_unavailable_falls_back_to_degraded_rules():
+    from src.store_guardrails.craft_review import CraftUnavailable
+
+    def _raising(entity, skill_md, candidates):
+        raise CraftUnavailable("llm call failed")
+
+    bad = dict(_GOOD, description="A collection of many helpful things.")
+    r = lint_skill(bad, _md(), candidates=[], craft=_raising)
+
+    assert r["llm_used"] is False
+    assert any(f["rule_id"] == "SL011" for f in r["findings"])
+    assert not [f for f in r["findings"] if f["rule_id"] == "SL010"]
