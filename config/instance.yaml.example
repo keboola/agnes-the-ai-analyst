@@ -347,6 +347,20 @@ ai:
 #   model: "anthropic/claude-3-haiku"
 #   structured_output: "auto"
 
+# --- Maintained digests (optional, K4) ---
+# Admin-defined digest documents (title + standing instructions + source
+# Collections) the scheduler regenerates via LLM only when the sources'
+# content fingerprint changes (or the digest definition itself was edited).
+# Provider/API key/model ride the ai: block above — this section only tunes
+# the per-pass LLM budget. All three knobs default sanely if omitted; 0
+# disables the corresponding budget/timeout gate.
+#
+# digests:
+#   llm:
+#     max_tokens: 4000                  # response cap per generation
+#     max_generations_per_pass: 3       # LLM-call cap per scheduler pass (0 = unlimited)
+#     timeout_seconds: 300              # wall-clock deadline per pass (0 = unlimited)
+
 # --- Flea-market upload guardrails (optional) ---
 # Controls the pre-publish check pipeline for skill/agent/plugin uploads
 # to /store. See docs/STORE_GUARDRAILS.md for the full check catalogue.
