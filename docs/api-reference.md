@@ -999,10 +999,21 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/knowledge/artifacts/{corpus_id}/download — streams the per-collection
   `knowledge.duckdb` artifact (chunks + embeddings) built by the K3 local
   packaging pass; listed in the sync manifest's `knowledge_artifacts` array
-  and fetched by `agnes pull`. ETag/304 support. RBAC = collection grants,
-  fail-closed: ungranted/unknown corpus or a not-yet-built artifact both
-  return 404. REST-only (no CLI/MCP analogue — mirrors
-  `/api/data/{table_id}/download`).
+  and fetched by `agnes pull`. ETag/304 support. RBAC = collection grants via
+  `require_resource_access`: ungranted analyst on a known collection → 403;
+  unknown corpus or a not-yet-built artifact → 404. REST-only (no CLI/MCP
+  analogue — mirrors `/api/data/{table_id}/download`).
+- /api/knowledge/digests/{digest_id}/content — serves one maintained
+  digest's markdown (K4, #799): `{id, slug, title, output_md, status,
+  status_reason, generated_at}`. Listed in the sync manifest's
+  `knowledge_artifacts` array as `kind: "digest"` entries (co-existing with
+  the K3 `kind: "chunks"` entries) and fetched by `agnes pull` into
+  `.claude/rules/ka_<slug>.md`. RBAC = `ResourceType.KNOWLEDGE_DIGEST`
+  grants via `require_resource_access` — same house style as the artifact
+  download above: ungranted analyst on a known digest → 403; unknown id or
+  a digest that has never generated (`pending`, empty `output_md`) → 404.
+  REST-only (no CLI/MCP analogue — pull-consumed, mirrors the artifact
+  download and `/api/memory/bundle` channels).
 
 ### `/api/marketplace` and `/api/marketplaces` — Marketplace
 

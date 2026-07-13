@@ -22,7 +22,7 @@ import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 
-from app.auth.access import is_user_admin, require_resource_access
+from app.auth.access import can_access, can_access_session, is_user_admin, require_resource_access
 from app.auth.dependencies import _get_db, get_current_user
 from app.auth.session_principal import SessionPrincipal
 from app.resource_types import ResourceType
@@ -132,3 +132,76 @@ async def download_knowledge_artifact(
         media_type="application/octet-stream",
         headers={"ETag": etag},
     )
+
+
+def _caller_can_read_digest(user, digest_id: str) -> bool:
+    """Fail-closed ``ResourceType.KNOWLEDGE_DIGEST`` grant check (K4, #799).
+
+    Shared by the manifest section builder
+    (``app.api.sync._build_knowledge_artifacts_section``, lazy-imported to
+    avoid a cycle) and this module — it's the same ``can_access`` /
+    ``can_access_session`` predicate that
+    ``require_resource_access(ResourceType.KNOWLEDGE_DIGEST, ...)`` gates the
+    content endpoint below with, exposed as a plain boolean so the manifest
+    builder can filter a whole list without raising per row. Admin
+    short-circuits via ``can_access``; ``SessionPrincipal`` co-session
+    callers route through ``can_access_session`` instead — the
+    ``_accessible_corpus_ids`` idiom (``app/api/collections.py``).
+    """
+    if isinstance(user, SessionPrincipal):
+        return can_access_session(user, ResourceType.KNOWLEDGE_DIGEST.value, digest_id)
+    user_id = user.get("id") if isinstance(user, dict) else None
+    if not user_id:
+        return False
+    return can_access(user_id, ResourceType.KNOWLEDGE_DIGEST.value, digest_id)
+
+
+@router.get("/digests/{digest_id}/content")
+async def get_knowledge_digest_content(
+    digest_id: str,
+    user=Depends(require_resource_access(ResourceType.KNOWLEDGE_DIGEST, "{digest_id}")),
+):
+    """Serve one maintained digest's markdown (K4, #799).
+
+    Consumed by ``agnes pull`` (writes ``.claude/rules/ka_<slug>.md``); the
+    PAT is the only credential. RBAC gate is
+    ``require_resource_access(ResourceType.KNOWLEDGE_DIGEST, ...)`` — the
+    same house style the sibling ``download_knowledge_artifact`` endpoint
+    above uses, so an ungranted caller on a real digest id sees **403**
+    (matching ``test_download_ungranted_analyst_403``'s posture; supersedes
+    the K4 plan's original 404-only guess — see the PR description). Unknown
+    id or a digest that has never generated (``pending``, empty
+    ``output_md``) is **404** for an admin, who always clears the gate — no
+    existence leak beyond "granted but nothing here", the same posture as
+    ``test_download_granted_corpus_no_artifact_built_404``. Staleness
+    (status + reason) travels in the body so the client can render a
+    visible banner — never a silent stale digest.
+    """
+    from src.repositories import knowledge_digests_repo
+
+    d = knowledge_digests_repo().get(digest_id)
+    if d is None or not (d.get("output_md") or "").strip():
+        raise HTTPException(status_code=404, detail="Digest not found")
+
+    try:
+        audit_repo().log(
+            user_id=user.get("id") if isinstance(user, dict) else None,
+            action="knowledge.digest_download",
+            resource=f"knowledge_digest:{digest_id}"[:256],
+            params={"slug": d.get("slug")},
+            result="success",
+            client_kind=client_kind_from_user(user) if isinstance(user, dict) else "web",
+        )
+    except Exception:
+        logger.exception("audit_log write failed for knowledge.digest_download; continuing")
+
+    generated_at = d.get("generated_at")
+    return {
+        "id": d["id"],
+        "slug": d["slug"],
+        "title": d["title"],
+        "output_md": d["output_md"],
+        "status": d.get("status") or "pending",
+        "status_reason": d.get("status_reason"),
+        "generated_at": generated_at.isoformat() if generated_at else None,
+    }

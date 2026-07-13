@@ -289,6 +289,12 @@ _EXEMPT: dict[str, str] = {
         "maintenance op, mirrors the run-knowledge-packaging / run-corporate-memory "
         "exemptions; no analyst CLI/MCP analogue"
     ),
+    "/api/knowledge/digests/{digest_id}/content": (
+        "K4 maintained digests (#799) — digest markdown consumed by `agnes pull` "
+        "(written to .claude/rules/ka_<slug>.md, pruned on de-authorization); "
+        "no interactive CLI/MCP analogue, mirrors the knowledge-artifact "
+        "download and /api/memory/bundle delivery channels"
+    ),
 }
 
 
