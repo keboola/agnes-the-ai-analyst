@@ -680,7 +680,9 @@ const ERROR_MESSAGES = {
   zip_missing_agent_md_with_frontmatter:
     'An Agent ZIP must contain a Markdown file with name + description in YAML frontmatter.',
   zip_missing_claude_plugin_json:
-    'A Plugin ZIP must contain a .claude-plugin/plugin.json file at its root.',
+    'A Plugin ZIP must contain a .claude-plugin/plugin.json file.',
+  zip_multiple_plugins:
+    'The ZIP contains more than one plugin (two .claude-plugin/plugin.json folders at the same level). Upload one plugin per ZIP.',
   plugin_json_invalid: 'The .claude-plugin/plugin.json file is not valid JSON.',
   zip_looks_like_skill:
     'This ZIP contains a SKILL.md — looks like a Skill, not an Agent. Switch the type to Skill or remove SKILL.md.',
