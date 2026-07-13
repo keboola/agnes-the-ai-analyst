@@ -17,6 +17,7 @@ is absent at call time we fall through to anonymous — the POC pattern
 matches how ``connectors/keboola`` + ``connectors/bigquery`` already gate
 secrets through env, ahead of the §4 vault landing.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -48,6 +49,7 @@ class ToolCallResult:
     (the common case for our connectors). ``data`` is ``text`` parsed as JSON
     when the upstream returns a JSON document, else None.
     """
+
     text: str
     data: Optional[Any]
     is_error: bool
@@ -75,22 +77,28 @@ def _lookup_secret_for_source(
     *,
     caller_user_id: Optional[str] = None,
 ) -> Optional[str]:
-    """Return the upstream auth token for ``source`` from one of three
-    places, in priority order:
+    """Return the upstream auth token for ``source``.
 
-    1. ``mcp_user_secrets`` row keyed on ``(source['id'], caller_user_id)``
-       — applies only when ``source['scope']=='per_user'`` AND the caller's
-       id was threaded through. Calls forward under the analyst's own
-       identity (RFC #461 §4 per-user credential passthrough).
-    2. ``mcp_secrets`` row keyed on ``source['id']`` (shared vault).
-    3. Env var named by ``source['auth_secret_env']`` (legacy POC path).
+    Precedence depends on ``source['scope']``:
+
+    * ``scope='per_user'`` with a truthy ``caller_user_id`` (an identified,
+      interactive caller): only the ``mcp_user_secrets`` row keyed on
+      ``(source['id'], caller_user_id)`` is consulted (RFC #461 §4 per-user
+      credential passthrough). If there is no such row, this returns
+      ``None`` — it does NOT fall back to the shared vault or the env var.
+      Fail closed: an identified caller must never borrow the shared
+      credential on a per_user source.
+    * ``scope='shared'``, or ``scope='per_user'`` with no ``caller_user_id``
+      (the caller-less scheduled materialize path): ``mcp_secrets`` row
+      keyed on ``source['id']`` (shared vault), else the env var named by
+      ``source['auth_secret_env']`` (legacy POC path).
 
     Returns ``None`` if none yields a value — callers fall through to
     anonymous connect, matching ``auth_method='none'`` behavior.
 
-    ``caller_user_id`` MUST stay None for scheduled materialize jobs —
-    they have no calling user; per-user scope ALWAYS falls back to
-    shared in that path.
+    ``caller_user_id`` MUST stay ``None`` for scheduled materialize jobs —
+    they have no calling user; per-user scope falls back to shared only in
+    that caller-less path.
     """
     source_id = source.get("id")
     scope = (source.get("scope") or "shared").lower()
@@ -112,7 +120,12 @@ def _lookup_secret_for_source(
                 value = per_user_secrets_repo().get(source_id, caller_user_id)
                 if value:
                     return value
-            # Either scope='shared', or per_user with no row → shared fallback
+                # Fail closed: an identified caller on a per_user source must
+                # NOT borrow the shared credential (or the env-var one). Only
+                # the caller-less materialize path (caller_user_id is None)
+                # reaches the shared fallback below.
+                return None
+            # scope='shared', or per_user materialize (caller_user_id is None)
             value = shared_secrets_repo().get(source_id)
             if value:
                 return value
@@ -282,6 +295,11 @@ def call_tool(
     caller_user_id: Optional[str] = None,
 ) -> ToolCallResult:
     """Sync wrapper around call_tool_async."""
-    return asyncio.run(call_tool_async(
-        source, tool_name, arguments, caller_user_id=caller_user_id,
-    ))
+    return asyncio.run(
+        call_tool_async(
+            source,
+            tool_name,
+            arguments,
+            caller_user_id=caller_user_id,
+        )
+    )
