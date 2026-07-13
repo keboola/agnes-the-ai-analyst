@@ -193,6 +193,7 @@ def test_schema_version_is_62():
     # v77 → v78: built-in marketplace — is_builtin on marketplace_registry,
     #            admin_disabled on marketplace_plugins.
     # v81 → v82: collections (file_corpora / corpus_files / corpus_chunks).
+    # v88 → v89: knowledge_digests table — maintained digests (K4, #799).
     assert SCHEMA_VERSION >= 80
 
 
@@ -801,5 +802,34 @@ def test_v77_to_v78_migration(tmp_path):
         "SELECT admin_disabled FROM marketplace_plugins WHERE marketplace_id = 'old' AND name = 'foo'"
     ).fetchone()
     assert plug_row[0] is False, f"pre-existing plugin row got admin_disabled={plug_row[0]!r}"
+
+
+def test_v89_knowledge_digests_table(tmp_path):
+    """v89 (K4, #799): knowledge_digests exists on fresh installs, ladder is
+    idempotent, and schema_version lands at SCHEMA_VERSION."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('knowledge_digests')").fetchall()}
+    assert {
+        "id",
+        "slug",
+        "title",
+        "instructions",
+        "source_corpus_ids",
+        "output_md",
+        "source_fingerprint",
+        "generated_at",
+        "model",
+        "status",
+        "status_reason",
+    } <= cols
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    # idempotency — re-running the step must not raise
+    from src.db import _v88_to_v89
+
+    _v88_to_v89(conn)
+    conn.close()
 
     conn.close()
