@@ -927,3 +927,26 @@ def test_pg_day_bucketing_is_utc_regardless_of_session_timezone(pg_repo_skewed_t
     # Read path: day-grain aggregates bucket on UTC days too.
     dau = repo.summary_dau(utc_day - timedelta(days=1))
     assert dau.get(utc_day) == 1
+
+    # started_at path (usage_session_summary): same UTC pin.
+    _seed_summary(
+        repo,
+        session_file="alice/tz.jsonl",
+        username="alice",
+        started_at=utc_now,
+        input_tokens=7,
+    )
+    tokens = repo.tokens_daily_series("alice", days=3)
+    assert [r["day"] for r in tokens] == [utc_day.isoformat()]
+
+    # audit_log.timestamp path (query-telemetry frequency): same UTC pin.
+    with repo._engine.begin() as c:
+        c.execute(
+            sa.text(
+                "INSERT INTO audit_log (id, timestamp, user_id, action, resource) "
+                "VALUES ('tz-a1', :ts, 'uid', 'query.remote', 'table:foo')"
+            ),
+            {"ts": utc_now},
+        )
+    telemetry = repo.summary_query_telemetry(cutoff=utc_now - timedelta(days=1))
+    assert [f["day"] for f in telemetry["frequency"]] == [utc_day.isoformat()]
