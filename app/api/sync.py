@@ -1162,14 +1162,28 @@ def _build_data_packages_section(conn, user, registry_by_name: dict, states_by_t
 
 
 def _build_knowledge_artifacts_section(user) -> list:
+    """``knowledge_artifacts`` manifest array: K3 chunk artifacts + K4 digests.
+
+    Two independent ``kind`` families share this one list (the seam K3 left
+    open, ``src/knowledge_packaging.py`` module docstring): ``kind:"chunks"``
+    per-corpus ``knowledge.duckdb`` artifacts, and ``kind:"digest"`` maintained
+    digests (K4, #799). Each family has its own RBAC filter and its own
+    "nothing built yet" empty case — a caller with digests but zero packaged
+    corpora (or vice versa) must still see the family they DO have access to,
+    so neither branch early-returns on the other's empty state. Both helpers
+    always return a (possibly empty) list, so this key is ALWAYS present in
+    the manifest — ``agnes pull`` gates its prune on key presence, mirroring
+    the typed-sections gate.
+    """
+    return _chunk_artifact_entries(user) + _digest_entries(user)
+
+
+def _chunk_artifact_entries(user) -> list:
     """Per-corpus knowledge.duckdb artifacts (K3, #798), collection-grant filtered.
 
     Reads ``DATA_DIR/knowledge/state.json`` (written by the packaging pass) and
     lists only corpora the caller may access — the same fail-closed filter as
-    ``/api/collections``. The ``kind`` field keeps the seam generic for K4
-    digests. Key is ALWAYS present in the manifest (empty list for zero
-    grants) — ``agnes pull`` gates its prune on key presence, mirroring the
-    typed-sections gate.
+    ``/api/collections``.
     """
     from app.api.collections import _accessible_corpus_ids
     from src.knowledge_packaging import artifacts_dir, load_state
@@ -1197,6 +1211,52 @@ def _build_knowledge_artifacts_section(user) -> list:
             }
         )
     return out
+
+
+def _digest_entries(user) -> list:
+    """``kind:"digest"`` manifest entries (K4, #799), knowledge-digest-grant filtered.
+
+    Frozen shape (see the K4 plan): ``{kind, id, slug, title, status,
+    status_reason, generated_at, md5, url}``. ``md5`` is a change-detection
+    token — not a byte-level integrity check of the downloaded content (the
+    JSON body over TLS+PAT is the truth, the per-domain md5 posture,
+    ``_build_memory_domains_section`` above) — computed over
+    ``slug|status|status_reason|generated_at|output_md`` so it flips when
+    EITHER content OR staleness changes: a digest going stale must re-fetch
+    so the staleness banner reaches ``agnes pull``'s ``.claude/rules/`` copy.
+
+    Digests with no ``output_md`` yet (``status='pending'``, never
+    generated) are never listed — nothing to distribute. Sorted by slug.
+    """
+    from app.api.knowledge_search import _caller_can_read_digest
+    from src.repositories import knowledge_digests_repo
+
+    out = []
+    for d in knowledge_digests_repo().list():
+        output_md = d.get("output_md") or ""
+        if not output_md.strip():
+            continue
+        if not _caller_can_read_digest(user, d["id"]):
+            continue
+        status = d.get("status") or "pending"
+        status_reason = d.get("status_reason")
+        generated_at = d.get("generated_at")
+        generated_at_str = generated_at.isoformat() if generated_at else None
+        token = f"{d['slug']}|{status}|{status_reason or ''}|{generated_at_str or ''}|{output_md}"
+        out.append(
+            {
+                "kind": "digest",
+                "id": d["id"],
+                "slug": d["slug"],
+                "title": d["title"],
+                "status": status,
+                "status_reason": status_reason,
+                "generated_at": generated_at_str,
+                "md5": hashlib.md5(token.encode()).hexdigest(),
+                "url": f"/api/knowledge/digests/{d['id']}/content",
+            }
+        )
+    return sorted(out, key=lambda e: e["slug"])
 
 
 def _build_memory_domains_section(conn, user) -> list:
