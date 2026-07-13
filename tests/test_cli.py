@@ -1,7 +1,6 @@
 """Tests for CLI commands."""
 
 import json
-import os
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -121,14 +120,15 @@ class TestAuth:
         from src.repositories.users import UserRepository
 
         from argon2 import PasswordHasher
+
         conn = get_system_db()
         repo = UserRepository(conn)
-        repo.create(id="u1", email="test@acme.com", name="Test",
-                    password_hash=PasswordHasher().hash("testpass"))
+        repo.create(id="u1", email="test@acme.com", name="Test", password_hash=PasswordHasher().hash("testpass"))
         conn.close()
 
         from fastapi.testclient import TestClient
         from app.main import create_app
+
         test_app = create_app()
 
         with patch("cli.client.get_client") as mock_get_client:
@@ -143,6 +143,7 @@ class TestAuth:
 
             # Save token manually (since we can't easily mock typer prompts)
             from cli.config import save_token
+
             save_token(token, "test@acme.com", "analyst")
 
             # Now whoami should work
@@ -170,7 +171,9 @@ class TestStatus:
 
 class TestQuery:
     def test_query_no_db(self, tmp_config):
-        result = runner.invoke(app, ["query", "SELECT 1"])
+        # --scope local pins the local-only path: the default (--scope auto)
+        # falls back to server-side execution instead of erroring.
+        result = runner.invoke(app, ["query", "--scope", "local", "SELECT 1"])
         assert result.exit_code == 1
         # Guidance now leads with the no-download --remote path.
         assert "--remote" in result.output
@@ -178,6 +181,7 @@ class TestQuery:
 
     def test_query_with_db(self, tmp_config):
         import duckdb
+
         local_dir = tmp_config / "local"
         db_dir = local_dir / "user" / "duckdb"
         db_dir.mkdir(parents=True)
@@ -200,12 +204,20 @@ class TestAdminCommands:
         mock_resp.json.return_value = {"id": "tbl-1", "name": "orders"}
 
         with patch("cli.commands.admin.api_post", return_value=mock_resp) as mock_post:
-            result = runner.invoke(app, [
-                "admin", "register-table", "orders",
-                "--source-type", "keboola",
-                "--bucket", "in.c-crm",
-                "--query-mode", "local",
-            ])
+            result = runner.invoke(
+                app,
+                [
+                    "admin",
+                    "register-table",
+                    "orders",
+                    "--source-type",
+                    "keboola",
+                    "--bucket",
+                    "in.c-crm",
+                    "--query-mode",
+                    "local",
+                ],
+            )
             assert result.exit_code == 0
             assert "Registered: orders" in result.output
             mock_post.assert_called_once()
@@ -232,7 +244,13 @@ class TestAdminCommands:
             "count": 2,
             "tables": [
                 {"name": "orders", "source_type": "keboola", "query_mode": "local", "bucket": "in.c-crm", "id": "t1"},
-                {"name": "customers", "source_type": "keboola", "query_mode": "local", "bucket": "in.c-crm", "id": "t2"},
+                {
+                    "name": "customers",
+                    "source_type": "keboola",
+                    "query_mode": "local",
+                    "bucket": "in.c-crm",
+                    "id": "t2",
+                },
             ],
         }
 
@@ -298,9 +316,7 @@ class TestCatalogMetrics:
             ],
         }
         with patch("cli.commands.catalog.api_get", return_value=mock_resp):
-            result = runner.invoke(
-                app, ["catalog", "--metrics", "--show", "sales_revenue/new_arr"]
-            )
+            result = runner.invoke(app, ["catalog", "--metrics", "--show", "sales_revenue/new_arr"])
         assert result.exit_code == 0
         assert "Notes:" in result.output
         assert "Has pre-built sql_variant(s) `by_company` - retrieve via --json" in result.output
@@ -323,8 +339,6 @@ class TestCatalogMetrics:
             "sql_variants": '{"by_company": "SELECT 1"}',
         }
         with patch("cli.commands.catalog.api_get", return_value=mock_resp):
-            result = runner.invoke(
-                app, ["catalog", "--metrics", "--show", "sales_revenue/new_arr"]
-            )
+            result = runner.invoke(app, ["catalog", "--metrics", "--show", "sales_revenue/new_arr"])
         assert result.exit_code == 0
         assert "sql_variants" not in result.output.lower()
