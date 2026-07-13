@@ -593,8 +593,12 @@ def test_plugin_daily_series_curated(invocation_stats_repo):
     series = repo.plugin_daily_series("curated", "widget")
     assert len(series) == 30
     by_day = {e["day"]: e["invocations"] for e in series}
-    today = date.today().isoformat()
-    prior_day = (date.today() - timedelta(days=10)).isoformat()
+    # UTC, matching the seed clock in _seed_invocation_events and the UTC
+    # day buckets of the rollup fact — date.today() breaks when the local
+    # date differs from the UTC date.
+    utc_today = datetime.now(timezone.utc).date()
+    today = utc_today.isoformat()
+    prior_day = (utc_today - timedelta(days=10)).isoformat()
     assert by_day[today] == 5
     assert by_day[prior_day] == 8
 

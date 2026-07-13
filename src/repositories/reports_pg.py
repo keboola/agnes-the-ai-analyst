@@ -27,7 +27,9 @@ def _zero_fill_daily_series(rows) -> List[Dict]:
     dialect-independent.
     """
     by_day = {str(r[0]): int(r[1] or 0) for r in rows}
-    today = _dt.date.today()
+    # UTC, not date.today() — same axis-vs-fact-day invariant as the module
+    # docstring's UTC day-bucketing rule.
+    today = _dt.datetime.now(_dt.timezone.utc).date()
     series = []
     for offset in range(29, -1, -1):
         day_str = (today - _dt.timedelta(days=offset)).isoformat()

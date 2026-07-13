@@ -12,6 +12,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.59] - 2026-07-13
+
+### Fixed
+- Marketplace daily-series telemetry (plugin detail chart, inner-item series): the 30-day axis is now built from the UTC date, matching the UTC day buckets of the rollup fact. Previously, on hosts where the local date differed from the UTC date (e.g. shortly after local midnight east of UTC), the series dropped or misplaced today's bucket; the daily-series contract test asserted on the local clock for the same reason.
+
+---
+
 ## [0.74.58] - 2026-07-13
 
 ### Changed
