@@ -653,3 +653,64 @@ def test_new_detail_helpers_identical_across_backends(pg_engine, monkeypatch, tm
     assert duck_series == pg_series
     assert duck_item == pg_item
     assert duck_by_parent == pg_by_parent
+
+
+# ---------------------------------------------------------------------------
+# PG session-TimeZone independence (#840)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def pg_reports_repo_skewed_tz(pg_engine, monkeypatch):
+    """PG reports repo whose pooled connections run in a session TimeZone
+    whose local date is guaranteed to differ from the UTC date right now —
+    mirrors ``test_usage_contract.pg_repo_skewed_tz``."""
+    repo, _ = _make_pg_repo(pg_engine, monkeypatch)
+    # UTC hour >= 12 -> UTC+14 is already tomorrow; else UTC-12 is yesterday.
+    # (POSIX Etc/GMT signs are inverted: Etc/GMT-14 == UTC+14.)
+    tz = "Etc/GMT-14" if datetime.now(timezone.utc).hour >= 12 else "Etc/GMT+12"
+
+    def _set_tz(dbapi_conn, _record):
+        cur = dbapi_conn.cursor()
+        cur.execute(f"SET TIME ZONE '{tz}'")
+        cur.close()
+        # PG's SET is transactional — commit it, or the pool's
+        # reset-on-return rollback reverts the GUC on check-in.
+        dbapi_conn.commit()
+
+    sa.event.listen(repo._engine, "connect", _set_tz)
+    repo._engine.dispose()  # drop pre-listener pooled connections
+    yield repo
+    sa.event.remove(repo._engine, "connect", _set_tz)
+    repo._engine.dispose()
+
+
+def test_pg_trend_windows_are_utc_regardless_of_session_timezone(pg_reports_repo_skewed_tz):
+    """The 7/14-day trend split in ``invocation_stats`` must anchor on the
+    UTC "today". A revert to bare ``CURRENT_DATE`` shifts both boundaries by
+    a day under a skewed session TimeZone: with the local date ahead of UTC
+    the day-7 row falls out of the recent window (recent=0, prior=8 ->
+    trend -100.0); with it behind, the day-8 row leaks into the recent
+    window (prior=0 < 3 -> trend None). Either direction breaks the
+    assertion below, so a CURRENT_DATE revert cannot pass CI."""
+    repo = pg_reports_repo_skewed_tz
+    utc_day = datetime.now(timezone.utc).date()
+
+    # Sanity: the session clock really is on the other side of midnight.
+    with repo._engine.connect() as c:
+        assert c.execute(sa.text("SELECT CURRENT_DATE")).scalar_one() != utc_day
+
+    base = {"source": "curated", "type": "plugin", "parent_plugin": "", "name": "tzplug", "distinct_users": 1, "error_count": 0}
+    _insert(
+        repo,
+        "pg",
+        "usage_marketplace_item_daily",
+        ["day", "source", "type", "parent_plugin", "name", "count", "distinct_users", "error_count"],
+        [
+            {**base, "day": utc_day - timedelta(days=7), "count": 5},
+            {**base, "day": utc_day - timedelta(days=8), "count": 3},
+        ],
+    )
+
+    stats = repo.invocation_stats("curated")
+    assert stats["tzplug"]["trend_pct"] == pytest.approx((5 - 3) / 3 * 100.0)
