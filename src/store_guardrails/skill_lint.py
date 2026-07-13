@@ -140,6 +140,33 @@ def lint_skill(
         except Exception as e:
             logger.exception("SL011 rule failed: %s", e)
 
+    # --- SL012: Lexical duplicate recall (degraded mode only) ---
+    # `candidates` is the caller's pre-computed lexical top-N (see
+    # `src.store_guardrails.lint_corpus.top_candidates`); this rule only
+    # renders it as a finding. When `craft` is available (Task 4), the LLM
+    # duplicate-review rule takes over and this info-level heads-up is
+    # redundant, so it's degraded-mode only.
+    if craft is None and candidates:
+        try:
+            rules_run.append("SL012")
+            scored = [
+                {"name": (c.get("name") if isinstance(c, dict) else None) or "", "score": round(float(score), 2)}
+                for c, score in candidates
+            ]
+            listing = ", ".join(f"{s['name']} ({s['score']:.2f})" for s in scored)
+            findings.append(
+                LintFinding(
+                    rule_id="SL012",
+                    severity="info",
+                    message=f"Lexically similar to existing marketplace skill(s): {listing}. "
+                    f"LLM-based duplicate review was unavailable (degraded mode) — verify manually.",
+                    evidence={"candidates": scored, "degraded": True},
+                    doc_url="/docs/skill-guidelines#sl012",
+                )
+            )
+        except Exception as e:
+            logger.exception("SL012 rule failed: %s", e)
+
     # --- Compose quality_check when plugin_dir is None ---
     try:
         rules_run.append("quality_check")
