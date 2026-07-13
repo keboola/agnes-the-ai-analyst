@@ -3,7 +3,7 @@
 
 {% set page_hero_eyebrow = "MCP" %}
 {% set page_hero_title = "Connect your editor" %}
-{% set page_hero_subtitle = "Generate a token so Cursor, VS Code / Copilot, or any MCP-compatible editor can reach Agnes without a browser login." %}
+{% set page_hero_subtitle = "Generate a token so Cursor, VS Code / Copilot, Claude Code, or any MCP-compatible editor can reach Agnes without a browser login." %}
 
 {% block head_extra %}
 <style>
@@ -124,6 +124,9 @@
                 aria-selected="false" aria-controls="tab-vscode" id="tbtn-vscode"
                 data-tab="vscode">VS Code / Copilot</button>
         <button class="mcp-tab-btn" role="tab"
+                aria-selected="false" aria-controls="tab-claude-code" id="tbtn-claude-code"
+                data-tab="claude-code">Claude Code</button>
+        <button class="mcp-tab-btn" role="tab"
                 aria-selected="false" aria-controls="tab-url" id="tbtn-url"
                 data-tab="url">Generic URL</button>
       </div>
@@ -146,6 +149,20 @@
                   data-copy-target="snippet-vscode">Copy</button>
         </div>
         <div class="mcp-path-hint">File: <code>.vscode/mcp.json</code> (workspace root)</div>
+      </div>
+
+      {# Claude Code — one-shot CLI registration with the PAT as a header #}
+      <div class="mcp-tab-panel" id="tab-claude-code" role="tabpanel" aria-labelledby="tbtn-claude-code">
+        <div class="mcp-snippet-wrap">
+          <pre class="mcp-snippet" id="snippet-claude-code"><span class="mcp-placeholder">Token will appear here…</span></pre>
+          <button class="btn btn-secondary btn-sm mcp-copy-btn" type="button"
+                  data-copy-target="snippet-claude-code">Copy</button>
+        </div>
+        <div class="mcp-path-hint">
+          Run in a terminal, then <strong>restart Claude Code</strong> — the server only
+          appears after a restart. Verify with <code>/mcp</code>; the token travels in the
+          Authorization header, so no browser sign-in is needed.
+        </div>
       </div>
 
       {# Generic URL for clients that accept only a URL with ?token= #}
@@ -198,10 +215,14 @@
       }
     }, null, 2);
 
+    var claudeCode = 'claude mcp add --transport sse agnes ' + sseUrl + ' \\\n' +
+      '  --header "Authorization: Bearer ' + token + '"';
+
     var genericUrl = sseUrl + '?token=' + token;
 
     document.getElementById('snippet-cursor').textContent = cursor;
     document.getElementById('snippet-vscode').textContent = vscode;
+    document.getElementById('snippet-claude-code').textContent = claudeCode;
     document.getElementById('snippet-url').textContent   = genericUrl;
   }
 

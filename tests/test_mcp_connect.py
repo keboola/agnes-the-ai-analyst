@@ -73,6 +73,22 @@ class TestMcpConnectPage:
         # Page should have the relevant content
         assert "mcp" in body.lower() or "connect" in body.lower() or "token" in body.lower()
 
+    def test_has_claude_code_tab(self, seeded_app):
+        """The editor-config tabs include Claude Code: a `claude mcp add`
+        one-liner carrying the PAT as an Authorization header, plus the
+        restart-before-it-appears note."""
+        token = seeded_app["analyst_token"]
+        r = seeded_app["client"].get(
+            "/mcp-connect",
+            headers={"Authorization": f"Bearer {token}"},
+            cookies={"access_token": token},
+        )
+        assert r.status_code == 200
+        body = r.text
+        assert 'id="snippet-claude-code"' in body
+        assert "claude mcp add --transport sse agnes" in body
+        assert "restart Claude Code" in body
+
 
 class TestWwwAuthenticate:
     """_AuthMiddleware must send WWW-Authenticate: Bearer on 401."""

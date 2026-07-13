@@ -202,6 +202,69 @@ def _mcp_oauth_discovery_routes() -> list:
     return routes
 
 
+class _ServeStreamableAtMountRootMiddleware:
+    """Serve the streamable MCP endpoint at the sub-app's mount root.
+
+    FastMCP routes the streamable transport at its internal ``/mcp`` path, so
+    after mounting at ``/api/mcp/http`` the JSON-RPC endpoint physically lives
+    at ``/api/mcp/http/mcp`` — but the advertised connector URL (and the OAuth
+    ``resource``) is the mount itself. Clients POST to the URL they were given
+    verbatim, hit a 404, and surface it as "MCP endpoint not found" right
+    after a successful OAuth. Rewrite mount-root requests to the transport
+    path; ``/api/mcp/http/mcp`` keeps working unchanged.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            # Starlette's Mount keeps the full URL in scope["path"] and records
+            # the mount prefix in root_path — compare the mount-relative part.
+            root_path = scope.get("root_path", "")
+            route_path = scope.get("path", "")
+            if route_path.startswith(root_path):
+                route_path = route_path[len(root_path) :]
+            if route_path in ("", "/"):
+                new_path = f"{root_path}/mcp"
+                scope = {**scope, "path": new_path, "raw_path": new_path.encode()}
+        await self._app(scope, receive, send)
+
+
+def mount_root_route(streamable_app: ASGIApp, mount_path: str = "/api/mcp/http"):
+    """Exact-path route for the bare (slash-less) advertised connector URL.
+
+    Starlette's ``Mount`` only matches ``<mount>/…`` — the bare URL, which is
+    exactly what users paste into their MCP client, falls through to the next
+    matching route: the broader SSE mount at ``/api/mcp``, whose router 404s
+    it once auth passes. Forward it into the streamable app as a mount-root
+    request so ``_ServeStreamableAtMountRootMiddleware`` lands it on the
+    transport path. Register this on the main app next to the mount.
+    """
+    from starlette.routing import Route
+
+    class _ForwardToStreamable:
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            path = f"{mount_path}/"
+            await streamable_app(
+                {
+                    **scope,
+                    "path": path,
+                    "raw_path": path.encode(),
+                    "root_path": mount_path,
+                    # Mirror Starlette's Mount: pin app_root_path to the
+                    # top-level app root, else Request.base_url absorbs the
+                    # connector mount path and the WWW-Authenticate
+                    # resource_metadata URL comes out doubled.
+                    "app_root_path": scope.get("app_root_path", scope.get("root_path", "")),
+                },
+                receive,
+                send,
+            )
+
+    return Route(mount_path, endpoint=_ForwardToStreamable(), methods=["GET", "POST", "DELETE", "OPTIONS"])
+
+
 class _FixMcpOAuthResourceMetadataMiddleware:
     """Rewrite ``WWW-Authenticate`` resource_metadata for proxied deployments.
 
@@ -450,8 +513,11 @@ def _make_streamable_app() -> ASGIApp:
     # lift it onto the main app and run its session manager in the lifespan.
     inner = mcp.streamable_http_app()
     inner.state.mcp_streamable_instance = mcp
+    # Layer 0: serve the MCP endpoint at the mount root — the URL clients
+    # actually paste — not only at the SDK-internal /mcp sub-path.
+    rooted = _ServeStreamableAtMountRootMiddleware(inner)
     # Layer 1: patch WWW-Authenticate resource_metadata for proxied deployments.
-    wrapped = _FixMcpOAuthResourceMetadataMiddleware(inner)
+    wrapped = _FixMcpOAuthResourceMetadataMiddleware(rooted)
     wrapped.state = inner.state
     # Layer 2: patch the FastMCP sub-app's own OAuth discovery to add 'none'
     # so VS Code native MCP proceeds with Dynamic Client Registration.
