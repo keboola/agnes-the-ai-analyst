@@ -8,6 +8,7 @@ Cover:
   shared vault when scope='per_user' AND caller_user_id matches; falls
   back to shared when the analyst has no row, regardless of scope.
 """
+
 from __future__ import annotations
 
 import duckdb
@@ -18,7 +19,6 @@ pytest.importorskip("mcp", reason="mcp SDK not installed")
 
 from app.secrets_vault import (
     PerUserSecretsRepository,
-    SharedSecretsRepository,
     _reset_ephemeral_key_for_tests,
 )
 from src.db import get_system_db
@@ -202,8 +202,9 @@ def test_lookup_per_user_wins_over_shared_when_scope_per_user(seeded_app):
     )
     src = {"id": "src_pu", "scope": "per_user"}
     assert _lookup_secret_for_source(src, caller_user_id="analyst1") == "analyst-own"
-    # Admin has no per-user row → shared fallback
-    assert _lookup_secret_for_source(src, caller_user_id="admin1") == "shared-fallback"
+    # Fail-closed: an identified caller with no per-user row must NOT borrow
+    # the shared credential on a per_user source.
+    assert _lookup_secret_for_source(src, caller_user_id="admin1") is None
 
 
 def test_lookup_falls_back_to_shared_when_scope_shared(seeded_app):
@@ -216,5 +217,37 @@ def test_lookup_falls_back_to_shared_when_scope_shared(seeded_app):
     )
     # Even with caller_user_id, scope=shared bypasses per-user lookup.
     from connectors.mcp.client import _lookup_secret_for_source
+
     src = {"id": "src_pu", "scope": "shared"}
     assert _lookup_secret_for_source(src, caller_user_id="analyst1") == "shared-only"
+
+
+def test_lookup_per_user_no_row_does_not_leak_shared(seeded_app):
+    """per_user source + identified caller + no per-user row → None, even when
+    a shared vault row exists. The shared credential is not borrowed."""
+    from connectors.mcp.client import _lookup_secret_for_source
+
+    _seed_per_user_source()
+    client = seeded_app["client"]
+    client.put(
+        "/api/admin/mcp-sources/src_pu/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"value": "shared-fallback"},
+    )
+    src = {"id": "src_pu", "scope": "per_user"}
+    assert _lookup_secret_for_source(src, caller_user_id="nobody") is None
+
+
+def test_lookup_per_user_materialize_uses_shared(seeded_app):
+    """per_user source + no caller (materialize job) → shared fallback stays."""
+    from connectors.mcp.client import _lookup_secret_for_source
+
+    _seed_per_user_source()
+    client = seeded_app["client"]
+    client.put(
+        "/api/admin/mcp-sources/src_pu/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"value": "shared-fallback"},
+    )
+    src = {"id": "src_pu", "scope": "per_user"}
+    assert _lookup_secret_for_source(src, caller_user_id=None) == "shared-fallback"
