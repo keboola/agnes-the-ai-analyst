@@ -289,6 +289,7 @@ from app.api.mcp_connect import router as mcp_connect_router  # noqa: E402
 from app.api.mcp_http import make_sse_app as _make_mcp_sse_app
 from app.api.mcp_streamable import _make_streamable_app as _make_mcp_streamable_app
 from app.api.mcp_streamable import _mcp_oauth_discovery_routes
+from app.api.mcp_streamable import mount_root_route as _mcp_streamable_mount_root_route
 from app.auth.mcp_oauth import make_consent_routes as _make_mcp_consent_routes
 from app.api.cache_warmup import router as cache_warmup_router
 from app.api.bq_metadata_refresh import router as bq_metadata_refresh_router
@@ -1560,6 +1561,10 @@ def create_app() -> FastAPI:
         for _route in _mcp_oauth_discovery_routes():
             app.router.routes.append(_route)
 
+        # The bare mount path is the advertised connector URL; Starlette's
+        # Mount alone doesn't match it (no trailing slash), so an exact-path
+        # route must catch it before the broader SSE mount below does.
+        app.router.routes.append(_mcp_streamable_mount_root_route(_streamable_app))
         app.mount("/api/mcp/http", _streamable_app)
     # Lift the FastMCP instance onto the main app so the lifespan can run its
     # session manager (Starlette doesn't run mounted sub-app lifespans). None
