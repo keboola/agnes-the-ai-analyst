@@ -48,6 +48,7 @@ class ResourceType(StrEnum):
     CHAT = "chat"
     SLACK_CHANNEL = "slack_channel"
     COLLECTION = "collection"
+    KNOWLEDGE_DIGEST = "knowledge_digest"
 
 
 # Shape returned by ``list_blocks`` delegates. Kept as plain ``dict`` to keep
@@ -136,7 +137,7 @@ def _marketplace_plugin_blocks() -> List[Block]:
             continue
         block["items"].append(
             {
-                "resource_id": f'{p["marketplace_id"]}/{p["name"]}',
+                "resource_id": f"{p['marketplace_id']}/{p['name']}",
                 "name": p["name"],
                 "version": p.get("version"),
                 "category": p.get("category"),
@@ -181,11 +182,7 @@ def _table_blocks() -> List[Block]:
     # which is exactly the confusion this filter prevents.
     # ``!= 'internal'`` keeps NULL source_type rows (matches the old
     # ``IS DISTINCT FROM 'internal'`` SQL semantics).
-    rows = [
-        r
-        for r in table_registry_repo().list_all()
-        if r.get("source_type") != "internal"
-    ]
+    rows = [r for r in table_registry_repo().list_all() if r.get("source_type") != "internal"]
     rows.sort(key=lambda r: ((r.get("bucket") or ""), r.get("name") or ""))
     blocks: dict[str, Block] = {}
     for r in rows:
@@ -315,7 +312,7 @@ def _memory_item_blocks() -> List[Block]:
     )
     if not rows:
         return []
-    rows = sorted(rows, key=lambda r: (r.get("title") or r["id"]))
+    rows = sorted(rows, key=lambda r: r.get("title") or r["id"])
     return [
         {
             "id": "memory_items",
@@ -426,9 +423,7 @@ def _slack_channel_blocks() -> List[Block]:
     everyone = user_groups_repo().get_by_name("Everyone")
     if not everyone:
         return []
-    grants = resource_grants_repo().list_all(
-        resource_type="slack_channel", group_id=everyone["id"]
-    )
+    grants = resource_grants_repo().list_all(resource_type="slack_channel", group_id=everyone["id"])
     channel_ids = sorted({g["resource_id"] for g in grants})
     if not channel_ids:
         return []
@@ -479,6 +474,43 @@ def _collection_blocks() -> List[Block]:
                     "description": r.get("description"),
                 }
                 for r in rows
+            ],
+        }
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Maintained-digest projection (K4, #799)
+# ---------------------------------------------------------------------------
+
+
+def _knowledge_digest_blocks() -> List[Block]:
+    """Project ``knowledge_digests`` into the (block → items) shape rendered
+    by the admin /access page.
+
+    Single synthetic block ``"Maintained digests"``; one item per digest.
+    ``resource_id`` is the digest id — the exact string the manifest
+    section builder and the content endpoint check against via
+    ``can_access``/``can_access_session``.
+    """
+    from src.repositories import knowledge_digests_repo
+
+    rows = knowledge_digests_repo().list()
+    if not rows:
+        return []
+    return [
+        {
+            "id": "knowledge_digests",
+            "name": "Maintained digests",
+            "items": [
+                {
+                    "resource_id": d["id"],
+                    "name": d["title"],
+                    "category": "knowledge_digest",
+                    "slug": d.get("slug"),
+                    "status": d.get("status"),
+                }
+                for d in rows
             ],
         }
     ]
@@ -572,6 +604,17 @@ RESOURCE_TYPES: dict[ResourceType, ResourceTypeSpec] = {
         ),
         id_format="<corpus_id>",
         list_blocks=_collection_blocks,
+    ),
+    ResourceType.KNOWLEDGE_DIGEST: ResourceTypeSpec(
+        key=ResourceType.KNOWLEDGE_DIGEST,
+        display_name="Maintained digests",
+        description=(
+            "An admin-defined digest document regenerated from its source "
+            "collections. Grant a group access so `agnes pull` delivers it "
+            "to members as .claude/rules/ka_<slug>.md."
+        ),
+        id_format="<digest_id>",
+        list_blocks=_knowledge_digest_blocks,
     ),
 }
 

@@ -1731,6 +1731,15 @@ KNOWN_UNTESTED = {
     "POST /api/admin/memory-domains/{domain_id}/items",
     "POST /api/admin/memory-domains/{domain_id}/restore",
     "PUT /api/admin/memory-domains/{domain_id}",
+    # Maintained digests (K4, #799) — admin CRUD behaviorally covered in
+    # tests/test_api_knowledge_digests.py (401/403 per method, slug/corpus
+    # validation, duplicate slug, PUT/DELETE, resource_grants cleanup); not
+    # duplicated in this PG smoke harness.
+    "GET /api/admin/knowledge-digests",
+    "POST /api/admin/knowledge-digests",
+    "GET /api/admin/knowledge-digests/{digest_id}",
+    "PUT /api/admin/knowledge-digests/{digest_id}",
+    "DELETE /api/admin/knowledge-digests/{digest_id}",
     # Admin news
     "GET /api/admin/news/current",
     "GET /api/admin/news/draft",

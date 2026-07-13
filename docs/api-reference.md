@@ -670,6 +670,11 @@ checks against.
 
 - /api/admin/resource-types
 
+### `/api/admin/knowledge-digests` — Maintained digests CRUD (admin, K4)
+
+- /api/admin/knowledge-digests
+- /api/admin/knowledge-digests/{digest_id}
+
 ### `/api/admin/mcp-sources` — MCP source management
 
 - /api/admin/mcp-sources
