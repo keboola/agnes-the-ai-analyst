@@ -26,6 +26,7 @@ from src.models.knowledge import (
     MemoryDomainSuggestion,
     VerificationEvidence,
 )
+from src.models.knowledge_digests import KnowledgeDigest
 from src.models.lookup import (
     BqMetadataCache,
     ColumnMetadata,
@@ -93,6 +94,7 @@ __all__ = [
     "DataPackageTool",
     "InstanceTemplate",
     "KnowledgeContradiction",
+    "KnowledgeDigest",
     "KnowledgeItem",
     "KnowledgeItemDomain",
     "KnowledgeItemRelation",
