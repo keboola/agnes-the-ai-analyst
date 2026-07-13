@@ -28,6 +28,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 import duckdb
+from sqlalchemy import exc as sa_exc
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 
@@ -226,7 +227,10 @@ async def create_knowledge_digest(
             source_corpus_ids=payload.source_corpus_ids,
             created_by=user.get("email") or user["id"],
         )
-    except duckdb.ConstraintException:
+    except (duckdb.ConstraintException, sa_exc.IntegrityError):
+        # DuckDB raises ConstraintException, Postgres (via SQLAlchemy) raises
+        # IntegrityError on the UNIQUE(slug) race the get_by_slug pre-check
+        # can't close — both mean the same 409.
         raise HTTPException(status_code=409, detail="slug_exists")
     _audit(
         user["id"],
