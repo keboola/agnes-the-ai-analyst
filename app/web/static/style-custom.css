@@ -3518,6 +3518,92 @@ a.app-header-logo:focus-visible {
     box-shadow: var(--focus-ring);
 }
 
+/* ── Global search box — sits right of the primary nav links, before the
+   Admin dropdown / user menu. Combobox input + listbox dropdown; fetch +
+   debounce wiring in app/web/static/js/global_search.js. Tokens only
+   (var(--ds-*)) so it themes for free in dark mode. ── */
+.app-header-search { position: relative; margin: 0 4px; }
+.app-header-search-input {
+    width: 220px;
+    height: 34px;
+    padding: 0 12px;
+    font-family: inherit;
+    font-size: 13px;
+    color: var(--ds-text-primary);
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border);
+    border-radius: 8px;
+    transition: width 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+.app-header-search-input::placeholder { color: var(--ds-text-muted); }
+.app-header-search-input:focus {
+    outline: none;
+    width: 280px;
+    background: var(--ds-surface);
+    border-color: var(--ds-primary);
+}
+.app-header-search-input:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+.app-header-search-panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    width: 340px;
+    max-height: 60vh;
+    overflow-y: auto;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 10px;
+    box-shadow: var(--ds-shadow-md);
+    padding: 6px;
+    z-index: 60;
+}
+.app-header-search-panel[hidden] { display: none; }
+.app-header-search-group {
+    padding: 6px 10px 4px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--ds-text-muted);
+}
+.app-header-search-result {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--ds-text-primary);
+    text-decoration: none;
+}
+.app-header-search-result:hover,
+.app-header-search-result:focus-visible {
+    background: var(--ds-border-light);
+    outline: none;
+}
+.app-header-search-result-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.app-header-search-result-badge {
+    flex: none;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    color: var(--ds-text-muted);
+}
+.app-header-search-empty {
+    padding: 12px 10px;
+    font-size: 13px;
+    color: var(--ds-text-muted);
+}
+
 .app-btn-logout {
     font-size: 13px;
     font-weight: 500;
@@ -3721,6 +3807,7 @@ a.app-header-logo:focus-visible {
     .app-header { padding: 0 16px; gap: 8px; }
     .app-header-email { display: none; }
     .app-nav-link { padding: 6px 8px; }
+    .app-header-search { display: none; }
 }
 
 /* ── Standard page shell ─────────────────────────────────────────────

@@ -42,6 +42,33 @@
            /admin/corporate-memory, in the Admin dropdown below. #}
         <a class="app-nav-link {% if _path == '/corporate-memory' %}is-active{% endif %}" href="/corporate-memory" data-tour="nav-memory">Memory</a>
 
+        {# Global search — one box across tables, curated knowledge, and
+           uploaded documents (GET /api/knowledge/search, see
+           app/web/static/js/global_search.js). Sits right of the primary
+           nav links, before the Admin dropdown / user area, so it reads as
+           part of the primary navigation rather than a page-local widget.
+           Not a hotkey target — Cmd/Ctrl-K is already the chat/admin
+           command palette (see the inline script below). #}
+        <div class="app-header-search" id="globalSearchWrap">
+            <input type="search"
+                   id="global-search"
+                   class="app-header-search-input"
+                   role="combobox"
+                   aria-expanded="false"
+                   aria-haspopup="listbox"
+                   aria-controls="globalSearchResults"
+                   aria-autocomplete="list"
+                   autocomplete="off"
+                   spellcheck="false"
+                   placeholder="Search data, knowledge, documents…"
+                   data-tour="nav-search">
+            <div class="app-header-search-panel"
+                 id="globalSearchResults"
+                 role="listbox"
+                 aria-label="Search results"
+                 hidden></div>
+        </div>
+
         {# Admin menu: admin-only. Backend gates the routes via
            require_admin (see app/web/router.py for /admin/*, including
            /admin/corporate-memory), so hiding the links is purely a
@@ -214,4 +241,8 @@
    keeps it non-blocking; placed after the header markup so the DOM is
    ready by the time the IIFE runs init(). #}
 <script src="{{ static_url('app.js') }}" defer></script>
+{# Global search wiring — same rationale as app.js above: co-located with
+   the header partial (not _app_scripts.html) so every page that renders
+   _app_header.html gets it, including standalone includes. #}
+<script src="{{ static_url('js/global_search.js') }}" defer></script>
 {% endif %}
