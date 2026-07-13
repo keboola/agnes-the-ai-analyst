@@ -59,6 +59,11 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/admin/contributed-skills/{name}": ("admin skill delete", "delete_contributed_skill"),
     # Web chat slash-menu catalog (issue #780).
     "/api/chat/skills": ("chat skills", "chat_skills"),
+    # Maintained digests (K4, #799) — admin CRUD, triple-surface. Surfaces
+    # (CLI `agnes admin digest …` + MCP tools) land in Task 7 — these two
+    # entries are RED until then by design (see the K4 plan's Task 3).
+    "/api/admin/knowledge-digests": ("admin digest list", "admin_knowledge_digests_list"),
+    "/api/admin/knowledge-digests/{digest_id}": ("admin digest show", "admin_knowledge_digest_get"),
 }
 
 
