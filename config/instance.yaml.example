@@ -373,6 +373,19 @@ ai:
 #   # survive — only the bundle bytes go. Set to 0 to retain forever
 #   # (rely on admin Delete). Default 30.
 #   blocked_bundle_ttl_days: 30
+#
+#   # --- Skill linter configuration (optional) ---
+#   # Controls thresholds for the skill-linter advisory system.
+#   # See docs/skill-guidelines.md for the rule catalogue.
+#
+#   # SL002: Maximum body character length before bloat warning. Default 8000.
+#   lint_max_body_chars: 8000
+#
+#   # SL012: Top N recent skills to check for duplicate descriptions. Default 5.
+#   lint_duplicate_top_n: 5
+#
+#   # SL011: Minimum hours between linter audits on the same skill. Default 144 (6 days).
+#   lint_audit_min_interval_hours: 144
 
 # --- Corporate Memory governance (optional) ---
 # Controls how AI-extracted knowledge is reviewed and distributed.
