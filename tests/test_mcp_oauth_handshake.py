@@ -136,6 +136,31 @@ def test_unauthenticated_mcp_returns_401_challenge(seeded_app):
     assert "resource_metadata" in www
 
 
+def test_advertised_connector_url_reaches_mcp_data_plane(seeded_app):
+    """The connector URL users paste is the mount root (``/api/mcp/http``),
+    while the SDK routes the transport at the internal ``/mcp`` sub-path.
+    Without the mount-root rewrite the data plane 404s — which clients
+    surface as "MCP endpoint not found" immediately after a successful
+    OAuth. An unauthenticated POST must reach the SDK's auth layer (401
+    challenge), never the router's 404.
+    """
+    client = seeded_app["client"]
+    for path in (MCP_MOUNT, MCP_MOUNT + "/"):
+        r = client.post(
+            path,
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            headers={"Accept": "application/json, text/event-stream"},
+            follow_redirects=True,
+        )
+        assert r.status_code == 401, f"{path}: expected 401 challenge, got {r.status_code}"
+        www = r.headers.get("www-authenticate", "")
+        assert www.lower().startswith("bearer")
+        # The resource_metadata URL must sit at the origin root — a mount
+        # path leaking into the base URL doubles it and breaks discovery.
+        assert "/.well-known/oauth-protected-resource/api/mcp/http" in www
+        assert "/api/mcp/http/.well-known" not in www, f"{path}: doubled resource_metadata URL: {www}"
+
+
 def _register_client(client) -> dict:
     r = client.post(
         f"{MCP_MOUNT}/register",
@@ -251,6 +276,31 @@ def _run_full_flow(client, admin_token, redirect_uri):
     assert verified is not None, "minted access token must verify"
     assert verified.client_id == client_id
     assert verified.subject  # bound to the authorizing Agnes user
+
+    # 6. the minted token drives a real JSON-RPC call at the ADVERTISED
+    #    connector URL (the mount root, exactly what the user pasted) — the
+    #    post-OAuth step where a routing gap would 404 ("MCP endpoint not
+    #    found"). Requires the session manager, hence the lifespan context.
+    r = client.post(
+        MCP_MOUNT,
+        json={
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "handshake-test", "version": "0"},
+            },
+        },
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json, text/event-stream",
+        },
+        follow_redirects=True,
+    )
+    assert r.status_code == 200, f"initialize at the advertised URL failed: {r.status_code} {r.text[:200]}"
+    assert "serverInfo" in r.text
 
 
 def test_consent_reads_session_from_access_token_cookie(seeded_app):
