@@ -275,6 +275,17 @@ class TestMostPopularSection:
         assert resp.status_code == 200
         assert "mp-popular-section" in resp.text
 
+    def test_search_scope_checkboxes_both_checked_by_default(self, seeded_app, admin_user):
+        """Both 'Search in' scope checkboxes render pre-checked regardless of
+        the active tab, so a search from any tab fans out to curated AND
+        flea by default instead of silently scoping to the current tab."""
+        c = seeded_app["client"]
+        resp = c.get("/marketplace?tab=curated", headers=admin_user)
+        assert resp.status_code == 200
+        body = resp.text
+        assert '<input type="checkbox" id="mp-scope-curated" checked>' in body
+        assert '<input type="checkbox" id="mp-scope-flea" checked>' in body
+
     def test_most_popular_section_visible_with_data(self, seeded_app, admin_user):
         """After seeding usage_plugin_daily, sort=most_used returns items with
         invocations_30d > 0, which the JS uses to un-hide the section."""

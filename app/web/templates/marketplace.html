@@ -44,8 +44,8 @@
       </div>
       <div class="scope">
         <span class="scope-label">Search in:</span>
-        <label><input type="checkbox" id="mp-scope-curated"> Curated</label>
-        <label><input type="checkbox" id="mp-scope-flea"> Flea Market</label>
+        <label><input type="checkbox" id="mp-scope-curated" checked> Curated</label>
+        <label><input type="checkbox" id="mp-scope-flea" checked> Flea Market</label>
       </div>
     </div>
     <img class="mp-hero-cover" src="{{ mp_hero_cover }}"
@@ -725,9 +725,10 @@ function setTab(tab) {
   state.type = null;
   state.sort = 'recent';
   state.page = 1;
-  // Sync scope checkboxes with the active tab (user can manually flip back).
-  document.getElementById('mp-scope-curated').checked = (tab === 'curated');
-  document.getElementById('mp-scope-flea').checked = (tab === 'flea');
+  // Scope checkboxes are NOT re-synced to the active tab: search always
+  // defaults to both sources (see the boot-time init below), and the
+  // scope checkboxes only change from direct user interaction — switching
+  // tabs must never silently narrow an in-progress search.
   document.querySelectorAll('.mp-tabs button').forEach(b => {
     const active = b.dataset.tab === tab;
     b.classList.toggle('is-active', active);
@@ -810,16 +811,9 @@ document.getElementById('mp-scope-flea').addEventListener('change', () => {
   loadFromURL();
   // Restore search input from URL state
   if (state.q) document.getElementById('mp-search').value = state.q;
-  // Sync scope checkboxes with the active tab on first load — only the
-  // active tab's source is searched by default. User can flip the other
-  // checkbox manually to widen the scope.
-  document.getElementById('mp-scope-curated').checked = (state.tab === 'curated');
-  document.getElementById('mp-scope-flea').checked = (state.tab === 'flea');
-  // For tab='my' fall back to Curated checked so a search query still has
-  // a non-empty scope to match against.
-  if (state.tab === 'my') {
-    document.getElementById('mp-scope-curated').checked = true;
-  }
+  // Scope checkboxes start both-checked (markup default) regardless of the
+  // restored tab — search always fans out to all sources unless the user
+  // has manually unchecked one.
   // Apply tab to UI
   document.querySelectorAll('.mp-tabs button').forEach(b => {
     const active = b.dataset.tab === state.tab;
