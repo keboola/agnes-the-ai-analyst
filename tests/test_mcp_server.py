@@ -19,14 +19,17 @@ import pytest
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
+
 def _import_server():
     """Import cli.mcp.server, skipping if mcp is not installed."""
     pytest.importorskip("mcp", reason="mcp package not installed")
     from cli.mcp import server as srv
+
     return srv
 
 
 # ── MCP protocol smoke-test ────────────────────────────────────────────────
+
 
 class TestMCPProtocol:
     def test_server_starts_and_lists_tools(self):
@@ -40,22 +43,25 @@ class TestMCPProtocol:
             cwd=str(Path(__file__).parent.parent),
         )
 
-        init_msg = json.dumps({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "pytest", "version": "0"},
-            },
-        }) + "\n"
+        init_msg = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "pytest", "version": "0"},
+                    },
+                }
+            )
+            + "\n"
+        )
         # MCP protocol requires `notifications/initialized` after the
         # initialize response before the client can issue requests.
-        initialized_notif = json.dumps({
-            "jsonrpc": "2.0", "method": "notifications/initialized", "params": {}
-        }) + "\n"
-        list_msg = json.dumps(
-            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
-        ) + "\n"
+        initialized_notif = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}) + "\n"
+        list_msg = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}) + "\n"
 
         # Send initialize and wait for the response before sending the
         # next messages — avoids a race on Python 3.13 where writing all
@@ -82,7 +88,7 @@ class TestMCPProtocol:
             remaining, _ = proc.communicate()
 
         out = init_line + remaining
-        lines = [l.strip() for l in out.splitlines() if l.strip()]
+        lines = [line.strip() for line in out.splitlines() if line.strip()]
         assert lines, "MCP server produced no output"
 
         tool_names = set()
@@ -96,13 +102,10 @@ class TestMCPProtocol:
                 pass
 
         expected = {"server_info", "catalog", "schema", "describe", "query", "pull"}
-        assert expected.issubset(tool_names), (
-            f"Missing tools: {expected - tool_names}. Got: {tool_names}"
-        )
+        assert expected.issubset(tool_names), f"Missing tools: {expected - tool_names}. Got: {tool_names}"
 
     def test_server_info_in_initialize_response(self):
         """Initialize response must carry serverInfo.name == 'Agnes'."""
-        import time
 
         proc = subprocess.Popen(
             [sys.executable, "-u", "-m", "cli.mcp.server"],
@@ -113,14 +116,21 @@ class TestMCPProtocol:
             cwd=str(Path(__file__).parent.parent),
         )
 
-        init_msg = json.dumps({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "pytest", "version": "0"},
-            },
-        }) + "\n"
+        init_msg = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "pytest", "version": "0"},
+                    },
+                }
+            )
+            + "\n"
+        )
 
         proc.stdin.write(init_msg)
         proc.stdin.flush()
@@ -150,6 +160,7 @@ class TestMCPProtocol:
 
 # ── tool unit tests ────────────────────────────────────────────────────────
 
+
 class TestCatalogTool:
     def test_catalog_returns_tables(self):
         srv = _import_server()
@@ -162,6 +173,7 @@ class TestCatalogTool:
     def test_catalog_raises_on_error(self):
         srv = _import_server()
         from cli.v2_client import V2ClientError
+
         with patch("cli.mcp.server.api_get_json", side_effect=V2ClientError(401, "Unauthorized")):
             with pytest.raises(ValueError, match="catalog"):
                 srv.catalog()
@@ -179,6 +191,7 @@ class TestSchemaTool:
     def test_schema_raises_on_404(self):
         srv = _import_server()
         from cli.v2_client import V2ClientError
+
         with patch("cli.mcp.server.api_get_json", side_effect=V2ClientError(404, "Not found")):
             with pytest.raises(ValueError, match="schema"):
                 srv.schema("nonexistent")
@@ -237,6 +250,7 @@ class TestQueryTool:
     def test_query_raises_on_server_error(self):
         srv = _import_server()
         from cli.v2_client import V2ClientError
+
         with patch("cli.mcp.server.api_post_json", side_effect=V2ClientError(400, "syntax error")):
             with pytest.raises(ValueError, match="query"):
                 srv.query("SELECT broken syntax !!!!")
@@ -251,6 +265,7 @@ class TestQueryLocalTool:
 
     def test_queries_local_duckdb(self, tmp_path):
         import duckdb
+
         srv = _import_server()
 
         # Create a minimal local DuckDB with a test view
@@ -266,11 +281,48 @@ class TestQueryLocalTool:
         assert result["columns"] == ["x"]
         assert result["rows"] == [[42]]
 
+    def test_table_miss_hints_at_query_tool(self, tmp_path):
+        import duckdb
+
+        srv = _import_server()
+
+        db_path = tmp_path / "user" / "duckdb" / "analytics.duckdb"
+        db_path.parent.mkdir(parents=True)
+        with duckdb.connect(str(db_path)) as conn:
+            conn.execute("CREATE TABLE t (x INTEGER)")
+
+        with patch.dict("os.environ", {"AGNES_LOCAL_DIR": str(tmp_path)}):
+            with pytest.raises(ValueError) as exc_info:
+                srv.query_local("SELECT * FROM nope")
+
+        message = str(exc_info.value)
+        assert "query" in message
+        assert "server-side" in message
+
+    def test_non_table_miss_error_reraised_without_hint(self, tmp_path):
+        import duckdb
+
+        srv = _import_server()
+
+        db_path = tmp_path / "user" / "duckdb" / "analytics.duckdb"
+        db_path.parent.mkdir(parents=True)
+        with duckdb.connect(str(db_path)) as conn:
+            conn.execute("CREATE TABLE t (x INTEGER)")
+
+        with patch.dict("os.environ", {"AGNES_LOCAL_DIR": str(tmp_path)}):
+            with pytest.raises(duckdb.Error) as exc_info:
+                srv.query_local("SELECT broken syntax !!!!")
+
+        message = str(exc_info.value)
+        assert "query_mode" not in message
+        assert "server-side" not in message
+
 
 class TestPullTool:
     def test_pull_calls_run_pull(self, tmp_path):
         srv = _import_server()
         from cli.lib.pull import PullResult
+
         mock_result = PullResult(tables_updated=2, parquets_total=5)
 
         with (
@@ -296,6 +348,7 @@ class TestPullTool:
         """
         srv = _import_server()
         from cli.lib.pull import PullResult
+
         mock_result = PullResult(tables_updated=1, parquets_total=3, duration_s=12.345)
 
         with (
