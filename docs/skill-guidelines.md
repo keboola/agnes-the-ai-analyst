@@ -57,15 +57,20 @@ If your skill legitimately needs >8000 characters, the operator can raise the th
 <a id="sl010"></a>
 ### SL010 — craft review
 
-**Fires when:** the LLM reviewer detects signs of sloppy authoring — incomplete sentences, stubs, placeholder text, or orphaned sections.
+**Fires when:** a single holistic LLM pass judges the skill on three axes and finds it wanting on at least one:
 
-**Why it matters:** skills are not drafts; they're published, discoverable assets. Users expect them to be thoughtful, correct, and complete. A skill with "TODO: finish this part" or "need to add examples" signals that the marketplace has lower-than-expected bars.
+- **Trigger clarity** — the description doesn't state *when* to invoke the skill (see "Description states when to use it" above). The finding includes the model's suggested one-sentence rewrite.
+- **Single purpose** — the skill bundles multiple unrelated capabilities instead of solving one clear problem.
+- **Confirmed duplicate** — the model reviewed the lexical near-duplicate candidates (SL012's shortlist) against the skill's actual purpose and confirmed at least one is a genuine, substantive duplicate — not just sharing vocabulary.
+
+**Why it matters:** these are judgment calls a regex or keyword search can't make reliably. SL010 is the substantive layer on top of the mechanical checks (SL002, and the `QC-*` quality-check findings for placeholder text, TODOs, and too-short descriptions/docs).
 
 **How to fix:**
-1. Read the skill description, body, and any references aloud to yourself. Does it flow? Are all sentences complete?
-2. Check that no section ends with "…" or a trailing thought.
-3. Verify all code examples run (or at least look syntactically valid).
-4. Ensure the description is not a placeholder like "Tool for X" or "Skill about Y".
+1. **Trigger clarity:** paste in the suggested rewrite, or write your own sentence naming the trigger condition.
+2. **Single purpose:** split the skill along its distinct capabilities, or narrow the description to the one it's actually for.
+3. **Confirmed duplicate:** follow the SL012 guidance below — extend the existing skill instead of publishing a near-copy, or sharpen the description to make the real distinction obvious.
+
+When the LLM reviewer is unavailable (no configured API key, or the guardrails LLM provider isn't ready), SL010 doesn't run and the linter falls back to the degraded-mode SL011/SL012 heuristics below instead.
 
 <a id="sl011"></a>
 ### SL011 — trigger phrase (degraded)
