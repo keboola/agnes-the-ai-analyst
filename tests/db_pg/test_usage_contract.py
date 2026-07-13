@@ -862,3 +862,68 @@ def test_execute_readonly_select_identical_across_backends(usage_repo):
     )
     assert cols == ["username", "n"]
     assert [(r[0], int(r[1])) for r in rows] == [("alice", 2)]
+
+
+# ---------------------------------------------------------------------------
+# UTC day bucketing (PG-only) — day buckets must be UTC days regardless of the
+# Postgres session TimeZone. DuckDB gets this from the pinned UTC session in
+# src/duckdb_conn.py; on PG every day-grain CAST must pin AT TIME ZONE 'UTC'
+# (see the reports_pg module docstring for the invariant).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def pg_repo_skewed_tz(pg_engine, monkeypatch):
+    """PG repo whose pooled connections run in a session TimeZone whose local
+    date is guaranteed to differ from the UTC date right now."""
+    repo, _ = _make_pg_repo(pg_engine, monkeypatch)
+    # UTC hour >= 12 -> UTC+14 is already tomorrow; else UTC-12 is yesterday.
+    # (POSIX Etc/GMT signs are inverted: Etc/GMT-14 == UTC+14.)
+    tz = "Etc/GMT-14" if datetime.now(timezone.utc).hour >= 12 else "Etc/GMT+12"
+
+    def _set_tz(dbapi_conn, _record):
+        cur = dbapi_conn.cursor()
+        cur.execute(f"SET TIME ZONE '{tz}'")
+        cur.close()
+        # PG's SET is transactional — commit it, or the pool's
+        # reset-on-return rollback reverts the GUC on check-in.
+        dbapi_conn.commit()
+
+    sa.event.listen(repo._engine, "connect", _set_tz)
+    repo._engine.dispose()  # drop pre-listener pooled connections
+    yield repo
+    sa.event.remove(repo._engine, "connect", _set_tz)
+    repo._engine.dispose()
+
+
+def test_pg_day_bucketing_is_utc_regardless_of_session_timezone(pg_repo_skewed_tz):
+    repo = pg_repo_skewed_tz
+    utc_now = datetime.now(timezone.utc)
+    utc_day = utc_now.date()
+
+    # Sanity: the session clock really is on the other side of midnight.
+    with repo._engine.connect() as c:
+        local_today = c.execute(sa.text("SELECT CURRENT_DATE")).scalar_one()
+    assert local_today != utc_day
+
+    _seed_curated_plugin(repo, None, "pg", "myplug")
+    _seed_full_event(
+        repo,
+        None,
+        "pg",
+        event_id="tz-1",
+        occurred_at=utc_now,
+        tool_name="Skill",
+        skill_name="myplug:design",
+    )
+
+    # Producer: the persisted daily fact must carry the UTC day label
+    # (two rows: the skill leaf + the plugin-level rollup, same day).
+    repo.rebuild_rollups(since_day=utc_day - timedelta(days=1))
+    with repo._engine.connect() as c:
+        days = [r[0] for r in c.execute(sa.text("SELECT day FROM usage_marketplace_item_daily")).fetchall()]
+    assert days and set(days) == {utc_day}
+
+    # Read path: day-grain aggregates bucket on UTC days too.
+    dau = repo.summary_dau(utc_day - timedelta(days=1))
+    assert dau.get(utc_day) == 1

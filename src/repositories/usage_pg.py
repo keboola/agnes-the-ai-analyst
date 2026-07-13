@@ -46,9 +46,12 @@ _EVENT_COLS = [
 ]
 
 # Group-by buckets for /telemetry/query — PG dialect.
-# 'day' uses CAST(... AS DATE) which is identical to DuckDB.
+# 'day' pins AT TIME ZONE 'UTC': occurred_at is timestamptz, and a bare
+# CAST(ts AS DATE) buckets in the session TimeZone — day labels would drift
+# on a non-UTC server. DuckDB needs no pin (session TZ pinned to UTC in
+# src/duckdb_conn.py).
 _GROUP_BY_COLUMNS = {
-    "day": ("CAST(occurred_at AS DATE)", "day"),
+    "day": ("CAST((occurred_at AT TIME ZONE 'UTC') AS DATE)", "day"),
     "username": ("username", "username"),
     "tool_name": ("tool_name", "tool_name"),
     "source": ("source", "source"),
@@ -170,10 +173,10 @@ class UsagePgRepository:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
-                    """SELECT CAST(occurred_at AS DATE) AS day,
+                    """SELECT CAST((occurred_at AT TIME ZONE 'UTC') AS DATE) AS day,
                               COUNT(DISTINCT username) AS n
                        FROM usage_events
-                       WHERE CAST(occurred_at AS DATE) >= :start
+                       WHERE CAST((occurred_at AT TIME ZONE 'UTC') AS DATE) >= :start
                        GROUP BY day ORDER BY day"""
                 ),
                 {"start": start_date},
@@ -227,7 +230,7 @@ class UsagePgRepository:
             ).fetchall()
             freq_rows = conn.execute(
                 sa.text(
-                    f"""SELECT CAST(timestamp AS DATE) AS day,
+                    f"""SELECT CAST((timestamp AT TIME ZONE 'UTC') AS DATE) AS day,
                                {table_id_expr} AS table_id,
                                SUM(CASE WHEN action = 'query.remote' THEN 1 ELSE 0 END) AS remote,
                                SUM(CASE WHEN action = 'query.local'  THEN 1 ELSE 0 END) AS local
@@ -756,7 +759,7 @@ class UsagePgRepository:
                 sa.text(
                     """
                     SELECT
-                        CAST(started_at AS DATE) AS day,
+                        CAST((started_at AT TIME ZONE 'UTC') AS DATE) AS day,
                         COALESCE(SUM(input_tokens), 0)          AS input_tokens,
                         COALESCE(SUM(output_tokens), 0)         AS output_tokens,
                         COALESCE(SUM(cache_read_tokens), 0)     AS cache_read,
@@ -931,7 +934,7 @@ class UsagePgRepository:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
-                    f"""SELECT CAST(started_at AS DATE) AS day,
+                    f"""SELECT CAST((started_at AT TIME ZONE 'UTC') AS DATE) AS day,
                                COALESCE(SUM(active_seconds), 0),
                                COALESCE(SUM(wall_seconds), 0),
                                COUNT(*),
@@ -939,7 +942,7 @@ class UsagePgRepository:
                                COALESCE(SUM({self._TOKEN_SUM}), 0),
                                COALESCE(SUM(tool_calls), 0)
                           FROM usage_session_summary
-                          WHERE CAST(started_at AS DATE) >= :sd
+                          WHERE CAST((started_at AT TIME ZONE 'UTC') AS DATE) >= :sd
                           GROUP BY day ORDER BY day"""
                 ),
                 {"sd": start_date},
@@ -960,11 +963,11 @@ class UsagePgRepository:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
-                    """SELECT CAST(occurred_at AS DATE) AS day,
+                    """SELECT CAST((occurred_at AT TIME ZONE 'UTC') AS DATE) AS day,
                               COUNT(DISTINCT COALESCE(user_id, username)),
                               SUM(CASE WHEN skill_name IS NOT NULL THEN 1 ELSE 0 END)
                          FROM usage_events
-                         WHERE CAST(occurred_at AS DATE) >= :sd
+                         WHERE CAST((occurred_at AT TIME ZONE 'UTC') AS DATE) >= :sd
                          GROUP BY day ORDER BY day"""
                 ),
                 {"sd": start_date},
@@ -1045,7 +1048,7 @@ class UsagePgRepository:
                 sa.text(
                     """SELECT COUNT(DISTINCT tool_name),
                               COUNT(DISTINCT skill_name),
-                              COUNT(DISTINCT CAST(occurred_at AS DATE))
+                              COUNT(DISTINCT CAST((occurred_at AT TIME ZONE 'UTC') AS DATE))
                          FROM usage_events
                          WHERE occurred_at >= :since
                            AND (user_id = :uid OR username = :uname)"""
@@ -1082,7 +1085,7 @@ class UsagePgRepository:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
-                    f"""SELECT CAST(started_at AS DATE) AS day,
+                    f"""SELECT CAST((started_at AT TIME ZONE 'UTC') AS DATE) AS day,
                                COALESCE(SUM(active_seconds), 0),
                                COALESCE(SUM(wall_seconds), 0),
                                COUNT(*),
@@ -1090,7 +1093,7 @@ class UsagePgRepository:
                                COALESCE(SUM({self._TOKEN_SUM}), 0),
                                COALESCE(SUM(tool_calls), 0)
                           FROM usage_session_summary
-                          WHERE CAST(started_at AS DATE) >= :sd
+                          WHERE CAST((started_at AT TIME ZONE 'UTC') AS DATE) >= :sd
                             AND (user_id = :uid OR username = :uname)
                           GROUP BY day ORDER BY day"""
                 ),
@@ -1112,10 +1115,10 @@ class UsagePgRepository:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
-                    """SELECT CAST(occurred_at AS DATE) AS day,
+                    """SELECT CAST((occurred_at AT TIME ZONE 'UTC') AS DATE) AS day,
                               SUM(CASE WHEN skill_name IS NOT NULL THEN 1 ELSE 0 END)
                          FROM usage_events
-                         WHERE CAST(occurred_at AS DATE) >= :sd
+                         WHERE CAST((occurred_at AT TIME ZONE 'UTC') AS DATE) >= :sd
                            AND (user_id = :uid OR username = :uname)
                          GROUP BY day ORDER BY day"""
                 ),
@@ -1407,7 +1410,7 @@ class UsagePgRepository:
             sa.text(
                 """
                 SELECT
-                    CAST(occurred_at AS DATE) AS day,
+                    CAST((occurred_at AT TIME ZONE 'UTC') AS DATE) AS day,
                     user_id,
                     is_error,
                     skill_name,
@@ -1415,7 +1418,7 @@ class UsagePgRepository:
                     command_name,
                     event_type
                 FROM usage_events
-                WHERE CAST(occurred_at AS DATE) >= :cutoff
+                WHERE CAST((occurred_at AT TIME ZONE 'UTC') AS DATE) >= :cutoff
                 """
             ),
             {"cutoff": cutoff_day},
@@ -1453,7 +1456,7 @@ class UsagePgRepository:
         one transaction via ``engine.begin()``."""
         with self._engine.begin() as conn:
             if since_day is None:
-                row = conn.execute(sa.text("SELECT MIN(CAST(occurred_at AS DATE)) FROM usage_events")).fetchone()
+                row = conn.execute(sa.text("SELECT MIN(CAST((occurred_at AT TIME ZONE 'UTC') AS DATE)) FROM usage_events")).fetchone()
                 since_day = row[0] if row and row[0] else datetime.now(timezone.utc).date()
 
             curated_plugins, flea_entities, flea_plugins = self._curated_flea_lookup(conn)
@@ -1467,7 +1470,7 @@ class UsagePgRepository:
                     INSERT INTO usage_tool_daily
                         (day, tool_name, source, invocations, error_count, distinct_users, distinct_sessions)
                     SELECT
-                        CAST(occurred_at AS DATE) AS day,
+                        CAST((occurred_at AT TIME ZONE 'UTC') AS DATE) AS day,
                         tool_name,
                         source,
                         COUNT(*) AS invocations,
@@ -1475,7 +1478,7 @@ class UsagePgRepository:
                         COUNT(DISTINCT username) AS distinct_users,
                         COUNT(DISTINCT session_id) AS distinct_sessions
                     FROM usage_events
-                    WHERE CAST(occurred_at AS DATE) >= :since
+                    WHERE CAST((occurred_at AT TIME ZONE 'UTC') AS DATE) >= :since
                       AND tool_name IS NOT NULL
                     GROUP BY day, tool_name, source
                     """
@@ -1488,7 +1491,7 @@ class UsagePgRepository:
                 sa.text(
                     """
                     SELECT
-                        CAST(occurred_at AS DATE) AS day,
+                        CAST((occurred_at AT TIME ZONE 'UTC') AS DATE) AS day,
                         user_id,
                         is_error,
                         skill_name,
@@ -1496,7 +1499,7 @@ class UsagePgRepository:
                         command_name,
                         event_type
                     FROM usage_events
-                    WHERE CAST(occurred_at AS DATE) >= :since
+                    WHERE CAST((occurred_at AT TIME ZONE 'UTC') AS DATE) >= :since
                     """
                 ),
                 {"since": since_day},
