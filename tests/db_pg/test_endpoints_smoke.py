@@ -1401,6 +1401,11 @@ KNOWN_UNTESTED = {
     # tests/test_api_knowledge_artifacts.py (manifest section, 401/404/200/304,
     # RBAC fail-closed).
     "GET /api/knowledge/artifacts/{corpus_id}/download",
+    # K4 maintained digests (#799) — digest markdown content endpoint, RBAC
+    # via require_resource_access(KNOWLEDGE_DIGEST). Behaviour covered in
+    # tests/test_api_knowledge_digests_distribution.py (manifest kind:"digest"
+    # entries, 401/403/404/200, staleness md5 change-token).
+    "GET /api/knowledge/digests/{digest_id}/content",
     "GET /api/collections/{collection_id}",
     "DELETE /api/collections/{collection_id}",
     "POST /api/collections/{collection_id}/files",
