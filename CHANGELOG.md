@@ -46,6 +46,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Schema v89: `knowledge_digests` table (DuckDB `_v88_to_v89` + Alembic
   `0036_knowledge_digests_v89`), repository pair + cross-engine contract test,
   new `ResourceType.KNOWLEDGE_DIGEST`.
+## [0.74.62] - 2026-07-13
+
+### Fixed
+- **Security:** `scope='per_user'` MCP sources no longer fall back to the shared service credential for an *identified* caller who has not set their own credential — such passthrough calls now fail closed (the endpoint returns 403 with an `agnes mcp my-secret set <source>` remedy) instead of silently borrowing the shared credential and exposing whatever it can see. The shared credential remains available only to the caller-less materialize path.
 
 ---
 
