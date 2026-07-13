@@ -16,6 +16,7 @@ Two problems this pins:
    and the call silently fell through to the shared/env path. Both reads now go
    through the factory.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -71,16 +72,19 @@ def test_lookup_resolves_per_user_secret_both_backends(_env):
 
 
 def test_lookup_falls_back_to_shared_both_backends(_env):
-    """No per-user row → shared vault; and scope='shared' → shared vault.
-    Both resolved through the factory on either backend."""
+    """scope='shared' → shared vault; per_user materialize (no caller) → shared;
+    per_user with an identified caller and no row → fail closed (None, never
+    the shared credential). Resolved through the factory on either backend."""
     from connectors.mcp.client import _lookup_secret_for_source
     from src.repositories import shared_secrets_repo
 
     shared_secrets_repo().upsert("src_sh", "shared-token")
 
-    # per_user scope, but this caller has no per-user row → shared fallback.
     per_user = {"id": "src_sh", "scope": "per_user", "auth_secret_env": ""}
-    assert _lookup_secret_for_source(per_user, caller_user_id="nobody") == "shared-token"
+    # Identified caller, no per-user row → fail closed; shared NOT borrowed.
+    assert _lookup_secret_for_source(per_user, caller_user_id="nobody") is None
+    # Materialize path (no caller) → shared fallback preserved.
+    assert _lookup_secret_for_source(per_user, caller_user_id=None) == "shared-token"
 
     # plain shared scope.
     shared = {"id": "src_sh", "scope": "shared", "auth_secret_env": ""}
@@ -94,8 +98,11 @@ def test_admin_delete_secret_clears_shared_vault_both_backends(seeded_app_both):
 
     sid = "src_admin_del"
     mcp_sources_repo().upsert(
-        id=sid, name="probe", transport="http",
-        url="https://example.com/mcp", scope="shared",
+        id=sid,
+        name="probe",
+        transport="http",
+        url="https://example.com/mcp",
+        scope="shared",
     )
     shared_secrets_repo().upsert(sid, "to-clear")
     assert shared_secrets_repo().has(sid) is True
