@@ -13,7 +13,6 @@ All require admin auth.
 from __future__ import annotations
 
 import json as json_lib
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -45,29 +44,38 @@ def _fmt_ts(iso: Optional[str]) -> str:
 @sessions_app.command("list")
 def list_sessions(
     since: str = typer.Option(
-        "7d", "--since",
+        "7d",
+        "--since",
         help="How far back to look (e.g. 1h, 24h, 7d, 30d, or raw minutes)",
     ),
     user: Optional[str] = typer.Option(
-        None, "--user", "-u",
+        None,
+        "--user",
+        "-u",
         help="Filter to a single username (the local-part of the email — same string as in the sessions table)",
     ),
     errors_only: bool = typer.Option(
-        False, "--errors",
+        False,
+        "--errors",
         help="Show only sessions where at least one tool call failed",
     ),
     model: Optional[str] = typer.Option(
-        None, "--model",
+        None,
+        "--model",
         help="Filter by primary model name (e.g. 'claude-sonnet-4-6')",
     ),
     q: Optional[str] = typer.Option(
-        None, "--q",
+        None,
+        "--q",
+        "--query",
+        "-q",
         help="Search session_id or filename",
     ),
     limit: int = typer.Option(50, "--limit", help="Rows per page (1–200)"),
     offset: int = typer.Option(0, "--offset"),
     sort: str = typer.Option(
-        "tool_errors:desc", "--sort",
+        "tool_errors:desc",
+        "--sort",
         help="Sort spec: `<col>:<asc|desc>`. Cols: started_at, tool_calls, tool_errors, active_seconds, username, primary_model",
     ),
     as_json: bool = typer.Option(False, "--json"),
@@ -83,10 +91,14 @@ def list_sessions(
         "offset": offset,
         "sort": sort,
     }
-    if user: params["username"] = user
-    if model: params["model"] = model
-    if errors_only: params["only_errors"] = "true"
-    if q: params["q"] = q
+    if user:
+        params["username"] = user
+    if model:
+        params["model"] = model
+    if errors_only:
+        params["only_errors"] = "true"
+    if q:
+        params["q"] = q
 
     resp = api_get("/api/admin/sessions/list", params=params)
     _handle_error(resp, "sessions list")
@@ -106,13 +118,13 @@ def list_sessions(
     typer.echo(header)
     typer.echo("-" * len(header))
     for r in rows:
-        when    = _fmt_ts(r.get("started_at"))
-        uname   = (r.get("username") or "—")[:20]
-        active  = _fmt_duration(r.get("active_seconds"))
-        tools   = str(r.get("tool_calls") or 0)
-        errs    = str(r.get("tool_errors") or 0)
+        when = _fmt_ts(r.get("started_at"))
+        uname = (r.get("username") or "—")[:20]
+        active = _fmt_duration(r.get("active_seconds"))
+        tools = str(r.get("tool_calls") or 0)
+        errs = str(r.get("tool_errors") or 0)
         model_s = (r.get("primary_model") or "—")[:28]
-        fname   = (r.get("session_file") or "").split("/")[-1][:24]
+        fname = (r.get("session_file") or "").split("/")[-1][:24]
         # Highlight error rows with a leading `!`
         prefix = "! " if (r.get("tool_errors") or 0) > 0 else "  "
         typer.echo(f"{prefix}{when:<15} {uname:<20} {active:>7} {tools:>6} {errs:>5} {model_s:<28} {fname:<24}")
@@ -121,8 +133,10 @@ def list_sessions(
     total = data.get("total", 0)
     shown_lo = offset + 1 if rows else 0
     shown_hi = offset + len(rows)
-    typer.echo(f"Showing {shown_lo}–{shown_hi} of {total}." +
-               (f"  Next page: --offset {data['next_offset']}" if data.get("next_offset") is not None else ""))
+    typer.echo(
+        f"Showing {shown_lo}–{shown_hi} of {total}."
+        + (f"  Next page: --offset {data['next_offset']}" if data.get("next_offset") is not None else "")
+    )
 
 
 @sessions_app.command("show")
@@ -151,10 +165,7 @@ def show_transcript(
         typer.echo(f"# Session: {username}/{session_file}")
         typer.echo(f"# Started:  {summary.get('started_at') or '—'}")
         typer.echo(f"# Active:   {_fmt_duration(summary.get('active_seconds'))}")
-        typer.echo(
-            f"# Tools:    {summary.get('tool_calls') or 0} calls, "
-            f"{summary.get('tool_errors') or 0} errors"
-        )
+        typer.echo(f"# Tools:    {summary.get('tool_calls') or 0} calls, {summary.get('tool_errors') or 0} errors")
         typer.echo(f"# Model:    {summary.get('primary_model') or '—'}")
         typer.echo("")
     else:
@@ -195,7 +206,9 @@ def download(
     username: str = typer.Argument(...),
     session_file: str = typer.Argument(...),
     output: Optional[Path] = typer.Option(
-        None, "--output", "-o",
+        None,
+        "--output",
+        "-o",
         help="Where to write the file. Defaults to ./<session_file> in the current dir.",
     ),
 ):
@@ -229,8 +242,10 @@ def kpis(
 ):
     """Show top-level numbers (sessions, distinct users, error rate)."""
     params = {"since_minutes": _parse_since(since)}
-    if user: params["username"] = user
-    if errors_only: params["only_errors"] = "true"
+    if user:
+        params["username"] = user
+    if errors_only:
+        params["only_errors"] = "true"
     resp = api_get("/api/admin/sessions/kpis", params=params)
     _handle_error(resp, "sessions kpis")
     data = resp.json()

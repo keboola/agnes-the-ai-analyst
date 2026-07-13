@@ -105,7 +105,7 @@ def list_collections(
 @collections_app.command("search")
 def search_collections(
     query: str = typer.Argument(..., help="Search query"),
-    k: int = typer.Option(10, "--k", help="Max results"),
+    k: int = typer.Option(10, "--k", "--limit", help="Max results"),
     collection_id: Optional[str] = typer.Option(None, "--collection", "-c", help="Restrict to one collection id"),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
 ):
