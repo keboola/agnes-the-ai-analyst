@@ -660,5 +660,9 @@ chat:
 #     ATLASSIAN_BASE_URL: https://acme.atlassian.net
 #   connector-gws:
 #     AGNES_GWS_CLIENT_ID: 1234-abcd.apps.googleusercontent.com
-#     AGNES_GWS_PROJECT_ID: "1234"
 #     AGNES_GWS_CLIENT_SECRET_ENV: AGNES_GWS_CLIENT_SECRET  # secret VALUE lives in shell env
+#     # AGNES_GWS_PROJECT_ID is legacy — the bundled connector-gws skill
+#     # ignores it (a non-empty project_id in client_secret.json makes the
+#     # gws CLI send x-goog-user-project, which requires every analyst to
+#     # hold roles/serviceusage.serviceUsageConsumer on the OAuth project).
+#     # Only set it if your custom seed template still consumes it.

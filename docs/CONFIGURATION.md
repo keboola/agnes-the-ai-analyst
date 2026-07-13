@@ -96,7 +96,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 
 | Knob | Env override | `instance.yaml` path | Default | Resolver |
 |------|--------------|----------------------|---------|----------|
-| Shared Google Workspace CLI OAuth client (id/secret/project/insecure-transport) | `AGNES_GWS_CLIENT_ID`, `AGNES_GWS_CLIENT_SECRET`, `AGNES_GWS_PROJECT_ID`, `AGNES_GWS_OAUTHLIB_INSECURE_TRANSPORT` | `instance.gws.{client_id,client_secret,project_id,oauthlib_insecure_transport}` | unset / `1` | `get_gws_oauth_credentials()` |
+| Shared Google Workspace CLI OAuth client (id/secret/project/insecure-transport) | `AGNES_GWS_CLIENT_ID`, `AGNES_GWS_CLIENT_SECRET`, `AGNES_GWS_PROJECT_ID` (legacy — ignored by the bundled `connector-gws` seed; forces a per-analyst `serviceUsageConsumer` IAM grant when consumed), `AGNES_GWS_OAUTHLIB_INSECURE_TRANSPORT` | `instance.gws.{client_id,client_secret,project_id,oauthlib_insecure_transport}` | unset / `1` | `get_gws_oauth_credentials()` |
 | Atlassian Cloud site URL baked into the connector prompt | `AGNES_ATLASSIAN_BASE_URL` | `instance.atlassian.base_url` | `""` (ask user) | `get_atlassian_base_url()` |
 
 ### Data source, auth & structural sections
