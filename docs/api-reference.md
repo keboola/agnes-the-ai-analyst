@@ -920,6 +920,7 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/admin/run-corporate-memory
 - /api/admin/run-jira-consistency-check
 - /api/admin/run-jira-sla-poll
+- /api/admin/run-knowledge-digests
 - /api/admin/run-knowledge-migration
 - /api/admin/run-knowledge-packaging
 - /api/admin/run-reap-stuck-reviews

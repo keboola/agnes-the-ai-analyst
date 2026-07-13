@@ -284,6 +284,11 @@ _EXEMPT: dict[str, str] = {
         "admin/scheduler maintenance op, mirrors the run-corporate-memory "
         "exemption; no analyst CLI/MCP analogue"
     ),
+    "/api/admin/run-knowledge-digests": (
+        "scheduler-driven digest regeneration trigger (K4, #799) — admin/scheduler "
+        "maintenance op, mirrors the run-knowledge-packaging / run-corporate-memory "
+        "exemptions; no analyst CLI/MCP analogue"
+    ),
 }
 
 

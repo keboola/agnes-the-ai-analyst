@@ -118,6 +118,12 @@ _DEFAULTS = {
     # chunks asynchronously, so a 15 min ceiling on artifact staleness
     # matches the corporate-memory cadence class.
     "SCHEDULER_KNOWLEDGE_PACKAGING_INTERVAL": 15 * 60,
+    # K4 (#799) maintained digests: fingerprints each digest's instructions +
+    # source corpora and regenerates via LLM only when the fingerprint
+    # changed (fingerprint-only when idle — cheap; LLM only on change).
+    # Same cadence class as corporate-memory, but a longer default since
+    # digest regeneration is a heavier LLM call than the packaging rebuild.
+    "SCHEDULER_KNOWLEDGE_DIGESTS_INTERVAL": 30 * 60,
 }
 
 
@@ -311,9 +317,22 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
     jirasla = _read_positive_int("SCHEDULER_JIRA_SLA_POLL_INTERVAL")
     jiraconsis = _read_positive_int("SCHEDULER_JIRA_CONSISTENCY_INTERVAL")
     kpkg = _read_positive_int("SCHEDULER_KNOWLEDGE_PACKAGING_INTERVAL")
+    kdig = _read_positive_int("SCHEDULER_KNOWLEDGE_DIGESTS_INTERVAL")
     tick = _read_positive_int("SCHEDULER_TICK_SECONDS")
     smallest = min(
-        refresh, health, scripts, sess, verify, usage, corpmem, bqmeta, usageprune, jirasla, jiraconsis, kpkg
+        refresh,
+        health,
+        scripts,
+        sess,
+        verify,
+        usage,
+        corpmem,
+        bqmeta,
+        usageprune,
+        jirasla,
+        jiraconsis,
+        kpkg,
+        kdig,
     )
     if tick > smallest:
         raise ValueError(
@@ -398,6 +417,11 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # K3 (#798): per-collection knowledge.duckdb artifact rebuild.
         # Fingerprint-only when nothing changed since the last pass.
         ("knowledge-packaging", _seconds_to_schedule(kpkg), "/api/admin/run-knowledge-packaging", "POST", 600),
+        # K4 (#799): maintained-digest regeneration. Fingerprint-only when
+        # idle; LLM call only when a digest's sources or instructions
+        # changed. Longer 900s timeout — same job class as corporate-memory
+        # (an LLM generation, not just a DuckDB rebuild).
+        ("knowledge-digests", _seconds_to_schedule(kdig), "/api/admin/run-knowledge-digests", "POST", 900),
     ]
 
     # Initial Workspace Template nightly auto-sync (#622 Slice 3 PR-B).

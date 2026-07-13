@@ -21,6 +21,7 @@ def test_build_jobs_uses_documented_defaults(monkeypatch):
     assert jobs["marketplaces"] == "daily 03:00"
     assert jobs["bq-metadata-refresh"] == "every 4h"
     assert jobs["knowledge-packaging"] == "every 15m"
+    assert jobs["knowledge-digests"] == "every 30m"
     assert resolved_tick_seconds() == 30
 
 
@@ -42,6 +43,18 @@ def test_build_jobs_honors_knowledge_packaging_env_override(monkeypatch):
     assert endpoint == "/api/admin/run-knowledge-packaging"
     assert method == "POST"
     assert timeout == 600
+
+
+def test_build_jobs_honors_knowledge_digests_env_override(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_KNOWLEDGE_DIGESTS_INTERVAL", "3600")  # 1h
+    from services.scheduler.__main__ import build_jobs
+
+    target = next(j for j in build_jobs() if j[0] == "knowledge-digests")
+    _, schedule, endpoint, method, timeout = target
+    assert schedule == "every 1h"
+    assert endpoint == "/api/admin/run-knowledge-digests"
+    assert method == "POST"
+    assert timeout == 900
 
 
 def test_resolved_startup_grace_default(monkeypatch):
