@@ -831,5 +831,3 @@ def test_v89_knowledge_digests_table(tmp_path):
 
     _v88_to_v89(conn)
     conn.close()
-
-    conn.close()
