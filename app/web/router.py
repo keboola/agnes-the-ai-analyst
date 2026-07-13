@@ -3164,6 +3164,22 @@ async def admin_mcp_tool_grants_page(
     return templates.TemplateResponse(request, "admin_mcp_tool_grants.html", ctx)
 
 
+# ── Maintained digests admin (K4, #799) ──
+#
+# Shell-only route — data + CRUD are fetched client-side against
+# /api/admin/knowledge-digests (app/api/knowledge_digests.py), the same
+# posture as admin_mcp_sources_page above. Read/distribution grants are
+# managed separately on /admin/access (ResourceType.KNOWLEDGE_DIGEST).
+@router.get("/admin/knowledge-digests", response_class=HTMLResponse)
+async def admin_knowledge_digests_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """List page for admin-defined maintained digests."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_knowledge_digests.html", ctx)
+
+
 # Scheduler-driven admin actions audited by app/api/admin.py and
 # app/api/marketplaces.py. Keep in sync with the JOBS list in
 # services/scheduler/__main__.py.
