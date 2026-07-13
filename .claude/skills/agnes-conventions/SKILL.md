@@ -14,5 +14,6 @@ first, then load the one playbook matching your task:
 - `references/web-page.md` — new HTML dashboard page (design-system page shell)
 - `references/repo-parity.md` — new repository / method with DuckDB↔Postgres parity
 - `references/migration.md` — schema migration on both the DuckDB and Alembic ladders
+- `references/command-ux.md` — new/changed CLI command, MCP tool, or search surface (scope model, flag vocabulary, error hints, transport parity)
 
 Each playbook cites `file:line` anchors verified against the current codebase.
