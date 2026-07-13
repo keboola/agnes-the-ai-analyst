@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 88
+SCHEMA_VERSION = 89
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1372,6 +1372,55 @@ CREATE TABLE IF NOT EXISTS corpus_chunks (
     bbox VARCHAR,
     metadata VARCHAR,
     created_at TIMESTAMP DEFAULT current_timestamp
+);
+
+-- v89: skill lint (store guardrails). store_lint_runs tracks each lint pass
+-- (scheduler | admin | publish trigger); store_lint_findings holds the
+-- *current* generation of findings per entity (replace-on-relint, no
+-- history retained here — dismissals below are the audit trail);
+-- store_lint_dismissals is a per-(entity, rule) admin dismissal keyed to the
+-- content_hash it was dismissed against, so a content change auto-resets it.
+CREATE TABLE IF NOT EXISTS store_lint_runs (
+    id               VARCHAR PRIMARY KEY,
+    trigger          VARCHAR NOT NULL,  -- 'scheduler' | 'admin' | 'publish'
+    started_at       TIMESTAMP NOT NULL,
+    finished_at      TIMESTAMP,
+    entities_linted  INTEGER NOT NULL DEFAULT 0,
+    entities_skipped INTEGER NOT NULL DEFAULT 0,
+    findings_count   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS store_lint_findings (
+    id           VARCHAR PRIMARY KEY,
+    run_id       VARCHAR NOT NULL,
+    entity_id    VARCHAR NOT NULL,
+    rule_id      VARCHAR NOT NULL,
+    severity     VARCHAR NOT NULL,
+    message      VARCHAR NOT NULL,
+    evidence     VARCHAR DEFAULT '{}',
+    doc_url      VARCHAR DEFAULT '',
+    content_hash VARCHAR DEFAULT '',
+    created_at   TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_store_lint_findings_entity ON store_lint_findings(entity_id);
+
+CREATE TABLE IF NOT EXISTS store_lint_dismissals (
+    entity_id     VARCHAR NOT NULL,
+    rule_id       VARCHAR NOT NULL,
+    dismissed_by  VARCHAR NOT NULL,
+    dismissed_at  TIMESTAMP NOT NULL,
+    content_hash  VARCHAR NOT NULL,
+    PRIMARY KEY (entity_id, rule_id)
+);
+
+-- Tracks the last lint per entity even when it produced zero findings, so
+-- the unchanged-content skip works for clean skills too (a findings-only
+-- read would return nothing after a clean lint and force a re-lint).
+CREATE TABLE IF NOT EXISTS store_lint_entity_state (
+    entity_id    VARCHAR PRIMARY KEY,
+    content_hash VARCHAR NOT NULL,
+    run_id       VARCHAR NOT NULL,
+    linted_at    TIMESTAMP NOT NULL
 );
 """
 
@@ -5584,6 +5633,69 @@ def _v87_to_v88(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 88")
 
 
+def _v88_to_v89(conn: duckdb.DuckDBPyConnection) -> None:
+    """v88→v89: skill lint (store guardrails) — ``store_lint_runs``,
+    ``store_lint_findings``, ``store_lint_dismissals``,
+    ``store_lint_entity_state``.
+
+    Additive-only; ``_SYSTEM_SCHEMA`` already creates all four tables on
+    fresh installs (no-op ``CREATE IF NOT EXISTS`` here).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS store_lint_runs (
+            id               VARCHAR PRIMARY KEY,
+            trigger          VARCHAR NOT NULL,
+            started_at       TIMESTAMP NOT NULL,
+            finished_at      TIMESTAMP,
+            entities_linted  INTEGER NOT NULL DEFAULT 0,
+            entities_skipped INTEGER NOT NULL DEFAULT 0,
+            findings_count   INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS store_lint_findings (
+            id           VARCHAR PRIMARY KEY,
+            run_id       VARCHAR NOT NULL,
+            entity_id    VARCHAR NOT NULL,
+            rule_id      VARCHAR NOT NULL,
+            severity     VARCHAR NOT NULL,
+            message      VARCHAR NOT NULL,
+            evidence     VARCHAR DEFAULT '{}',
+            doc_url      VARCHAR DEFAULT '',
+            content_hash VARCHAR DEFAULT '',
+            created_at   TIMESTAMP NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_store_lint_findings_entity ON store_lint_findings(entity_id)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS store_lint_dismissals (
+            entity_id    VARCHAR NOT NULL,
+            rule_id      VARCHAR NOT NULL,
+            dismissed_by VARCHAR NOT NULL,
+            dismissed_at TIMESTAMP NOT NULL,
+            content_hash VARCHAR NOT NULL,
+            PRIMARY KEY (entity_id, rule_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS store_lint_entity_state (
+            entity_id    VARCHAR PRIMARY KEY,
+            content_hash VARCHAR NOT NULL,
+            run_id       VARCHAR NOT NULL,
+            linted_at    TIMESTAMP NOT NULL
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 89")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -5946,6 +6058,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # _SYSTEM_SCHEMA already carries the column on fresh installs;
             # the guarded ALTER is a no-op here.
             _v87_to_v88(conn)
+            # v88→v89: skill lint tables (store_lint_runs/findings/dismissals/entity_state).
+            # _SYSTEM_SCHEMA already creates them on fresh installs (no-op
+            # CREATE IF NOT EXISTS here).
+            _v88_to_v89(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -6175,6 +6291,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v86_to_v87(conn)
             if current < 88:
                 _v87_to_v88(conn)
+            if current < 89:
+                _v88_to_v89(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
