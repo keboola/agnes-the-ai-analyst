@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.56] - 2026-07-13
+
 ### Added
 
 - Startup now seeds the six canonical memory domains (`md_finance` … `md_infrastructure`) into the **active** state backend through the repository factory — previously only the DuckDB schema ladder seeded them, so a fresh Postgres-backed instance had no canonical domains at all (Alembic creates the table empty). The new `memory_domains` repo method `ensure_seed` (DuckDB + PG siblings) inserts under the deterministic `md_<slug>` ids and never touches an existing row — admin renames are not overwritten and soft-deleted domains are not resurrected (a soft-deleted row still holds its slug). Covered by cross-engine contract tests and a both-backends lifespan-replay parity test.
