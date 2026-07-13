@@ -145,9 +145,17 @@ def test_home_hero_call_me_when_short_brand_differs(fresh_db, monkeypatch):
         'Acme Data Analyst is your team\'s <span class="accent">AI workspace.</span>'
         " Call me Acme." in body
     )
-    # Body copy uses the short brand, not the full one.
-    assert "Set up Acme on your machine" in body
+    # Body copy uses the short brand, not the full one — one representative
+    # assertion per changed section so a partial revert of any section back
+    # to `instance_brand` fails here (each expected string is NOT a prefix
+    # of its full-brand rendering, so a revert breaks the exact match).
+    assert "Set up Acme on your machine" in body  # install hero
     assert "Set up Acme Data Analyst on your machine" not in body
+    assert "One place to reach Acme's curated data" in body  # hero lede
+    assert "What happens when you launch Acme</h2>" in body  # first-session
+    assert "Talk to Acme &mdash; workspace questions" in body  # terminal menu
+    assert "claude&nbsp;&mdash;&nbsp;Acme</span>" in body  # terminal title bars
+    assert ">Acme workspace</div>" in body  # browse-section eyebrow
 
 
 def test_home_hero_no_call_me_when_short_equals_brand(fresh_db, monkeypatch):

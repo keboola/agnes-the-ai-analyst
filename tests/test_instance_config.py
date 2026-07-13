@@ -226,6 +226,20 @@ class TestInstanceBrandShort:
         assert mod.get_instance_brand_short() == "Foundry AI"
         mod._instance_config = None
 
+    def test_yaml_whitespace_falls_back_to_full_brand(self, tmp_path, monkeypatch):
+        # Same floor for the YAML path: `brand_short: "   "` with no env
+        # override must fall back to the full brand, not render blank.
+        monkeypatch.delenv("AGNES_INSTANCE_BRAND_SHORT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_BRAND", raising=False)
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "instance.yaml").write_text(
+            "instance:\n  name: Acme\n  brand: Foundry AI\n  brand_short: '   '\n"
+        )
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_brand_short() == "Foundry AI"
+        mod._instance_config = None
+
 
 class TestHiddenLoginFeatures:
     """instance.hide_login_features / AGNES_INSTANCE_HIDE_LOGIN_FEATURES —
