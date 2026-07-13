@@ -134,6 +134,49 @@ def test_exists_by_slug_consistent(repo):
     assert repo.exists_by_slug("nope") is False
 
 
+def test_ensure_seed_inserts_deterministic_id_then_noops(repo):
+    """``ensure_seed`` (the lifespan canonical-domain seed) inserts under the
+    caller-supplied deterministic id — unlike ``create``, which generates
+    ``md_<uuid12>`` — and a second call is a no-op on both engines."""
+    inserted = repo.ensure_seed(
+        domain_id="md_probe", slug="probe", name="Probe", icon="🧪", color="#eeeeee"
+    )
+    assert inserted is True
+    row = repo.get_by_slug("probe")
+    assert row is not None
+    assert row["id"] == "md_probe"
+    assert row["name"] == "Probe"
+    assert row["icon"] == "🧪"
+    assert row["color"] == "#eeeeee"
+    assert row["status"] == "prod"
+    assert row["created_by"] == "system:seed"
+
+    again = repo.ensure_seed(
+        domain_id="md_probe", slug="probe", name="Probe", icon="🧪", color="#eeeeee"
+    )
+    assert again is False
+
+
+def test_ensure_seed_never_modifies_existing_row(repo):
+    """Admin customizations survive the boot-time re-seed."""
+    repo.ensure_seed(domain_id="md_probe", slug="probe", name="Probe", icon=None, color=None)
+    repo.update("md_probe", name="Renamed by admin")
+
+    assert repo.ensure_seed(domain_id="md_probe", slug="probe", name="Probe", icon=None, color=None) is False
+    assert repo.get("md_probe")["name"] == "Renamed by admin"
+
+
+def test_ensure_seed_does_not_resurrect_soft_deleted(repo):
+    """An admin-deleted canonical domain stays deleted across reboots — the
+    soft-deleted row still holds its slug, so the seed insert no-ops."""
+    repo.ensure_seed(domain_id="md_probe", slug="probe", name="Probe", icon=None, color=None)
+    repo.delete("md_probe")
+
+    assert repo.ensure_seed(domain_id="md_probe", slug="probe", name="Probe", icon=None, color=None) is False
+    assert repo.get_by_slug("probe") is None
+    assert repo.get("md_probe", include_deleted=True) is not None
+
+
 def test_delete_round_trip(repo):
     """Soft delete hides the row; include_deleted reveals it; restore brings it back."""
     did = repo.create(

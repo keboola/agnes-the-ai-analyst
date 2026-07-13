@@ -133,6 +133,77 @@ def test_ensure_everyone_membership_env_set_noop_on_both_backends(_env, monkeypa
     assert rows == [], f"[{_env}] no membership rows expected, got {rows}"
 
 
+def test_per_connect_duckdb_seed_respects_backend_selection(_env):
+    """Boot-path leak (found by the post-cutover DuckDB canary): with the
+    Postgres state backend active, opening the local ``system.duckdb`` (still
+    used for the deliberately DuckDB-local tables, e.g. ``cli_auth_codes``)
+    must NOT write the Admin/Everyone seed rows into it — those live in
+    Postgres, seeded through the factory in the app lifespan. On the DuckDB
+    backend the per-connect seed keeps working (recovery contract: a deleted
+    system group reappears on the next connect)."""
+    from src.db import close_system_db, get_system_db
+
+    close_system_db()
+    conn = get_system_db()  # reopen → _ensure_schema runs under the active backend
+
+    names = {row[0] for row in conn.execute("SELECT name FROM user_groups WHERE created_by = 'system:seed'").fetchall()}
+    if _env == "pg":
+        assert names == set(), f"[pg] boot seeded the local DuckDB user_groups: {names}"
+    else:
+        assert {"Admin", "Everyone"} <= names, f"[duck] per-connect seed did not run: {names}"
+
+
+def test_canonical_memory_domains_seed_resolves_on_both_backends(_env):
+    """Replay the lifespan's canonical memory-domain seed through the factory.
+    Fresh Postgres instances previously had no canonical domains at all — the
+    DuckDB ladder seed is (by design) skipped there, and Alembic seeds none.
+    On DuckDB the ladder already seeded them, so the replay must no-op and
+    resolve the very same deterministic ``md_<slug>`` rows."""
+    from src.db import _CANONICAL_MEMORY_DOMAINS_SEED
+    from src.repositories import memory_domains_repo
+
+    repo = memory_domains_repo()
+    for did, slug, name, icon, color in _CANONICAL_MEMORY_DOMAINS_SEED:
+        repo.ensure_seed(domain_id=did, slug=slug, name=name, icon=icon, color=color)
+
+    for did, slug, name, _icon, _color in _CANONICAL_MEMORY_DOMAINS_SEED:
+        row = repo.get_by_slug(slug)
+        assert row is not None, f"[{_env}] canonical domain {slug!r} missing after lifespan seed"
+        assert row["id"] == did, f"[{_env}] canonical domain {slug!r} got non-deterministic id {row['id']}"
+        assert row["name"] == name
+
+
+def test_fresh_boot_writes_no_rows_to_local_duckdb_on_pg_backend(_env):
+    """Canary-style pin for the whole boot-seed class: with the Postgres
+    state backend active, creating a FRESH local ``system.duckdb`` (the
+    ``current == 0`` branch of ``_ensure_schema``, which replays the ladder's
+    row seeds — setup_banner, instance_templates, canonical memory_domains,
+    the vscode-mcp oauth client, system groups) must leave every table except
+    ``schema_version`` empty. The DuckDB-local exception ``cli_auth_codes``
+    only ever gains rows at CLI login, never at boot."""
+    if _env != "pg":
+        pytest.skip("PG-only — on the DuckDB backend these seeds are by design")
+    from src.db import close_system_db, get_system_db
+
+    close_system_db()
+    conn = get_system_db()  # fresh DATA_DIR → full fresh-install schema path
+
+    tables = [
+        row[0]
+        for row in conn.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' AND table_type = 'BASE TABLE'"
+        ).fetchall()
+    ]
+    leaked = {}
+    for table in tables:
+        if table == "schema_version":
+            continue
+        count = conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+        if count:
+            leaked[table] = count
+    assert leaked == {}, f"boot wrote rows into the local DuckDB on the PG backend: {leaked}"
+
+
 def test_ensure_system_creates_absent_group_both_backends(_env):
     """The fresh-PG bug was that nothing *creates* the system groups on Postgres
     (Admin/Everyone are protected from deletion + the fixtures pre-seed them, so

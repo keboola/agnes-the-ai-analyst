@@ -87,6 +87,44 @@ class MemoryDomainsPgRepository:
             )
         return domain_id
 
+    def ensure_seed(
+        self,
+        *,
+        domain_id: str,
+        slug: str,
+        name: str,
+        icon: Optional[str] = None,
+        color: Optional[str] = None,
+    ) -> bool:
+        """Idempotently insert a canonical domain under its deterministic id.
+
+        Mirrors the DuckDB sibling: never modifies an existing row — a
+        matching id or slug (including a soft-deleted row, which still
+        holds its slug) makes this a no-op via ``ON CONFLICT DO NOTHING``,
+        so admin edits and deletions survive reboots. Returns True iff a
+        new row was inserted.
+        """
+        with self._engine.begin() as conn:
+            res = conn.execute(
+                sa.text(
+                    """
+                    INSERT INTO memory_domains
+                      (id, slug, name, icon, color, status, created_by)
+                    VALUES
+                      (:id, :slug, :name, :icon, :color, 'prod', 'system:seed')
+                    ON CONFLICT DO NOTHING
+                    """
+                ),
+                {
+                    "id": domain_id,
+                    "slug": slug,
+                    "name": name,
+                    "icon": icon,
+                    "color": color,
+                },
+            )
+        return bool(res.rowcount)
+
     def get(
         self, domain_id: str, *, include_deleted: bool = False
     ) -> Optional[Dict[str, Any]]:

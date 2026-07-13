@@ -11,6 +11,7 @@
 # stdout clean without hiding warnings from any other package.
 import warnings as _warnings
 from src.repositories import (
+    memory_domains_repo,
     user_group_members_repo,
     user_groups_repo,
     users_repo,
@@ -604,6 +605,27 @@ async def lifespan(app):
             _ug_repo.ensure_system(_grp_name, _grp_desc)
     except Exception as e:
         logger.warning("Could not seed system groups: %s", e)
+
+    # Seed the six canonical memory domains into the ACTIVE state backend.
+    # On DuckDB the schema ladder already seeds them (fresh-install branch /
+    # _v51_to_v52), so ensure_seed no-ops; on Postgres nothing else does —
+    # Alembic creates the table empty. ensure_seed never touches an existing
+    # row (a soft-deleted row still holds its slug), so admin renames and
+    # deletions are not overwritten or resurrected on reboot.
+    try:
+        from src.db import _CANONICAL_MEMORY_DOMAINS_SEED
+
+        _md_repo = memory_domains_repo()
+        for _md_id, _md_slug, _md_name, _md_icon, _md_color in _CANONICAL_MEMORY_DOMAINS_SEED:
+            _md_repo.ensure_seed(
+                domain_id=_md_id,
+                slug=_md_slug,
+                name=_md_name,
+                icon=_md_icon,
+                color=_md_color,
+            )
+    except Exception as e:
+        logger.warning("Could not seed canonical memory domains: %s", e)
 
     # Seed (or re-bake) the built-in marketplace from the wheel bundle. Runs
     # after system-groups are ensured so the RBAC seed can look up Admin/Everyone.

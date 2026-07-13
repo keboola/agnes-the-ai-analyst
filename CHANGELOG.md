@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- Startup now seeds the six canonical memory domains (`md_finance` … `md_infrastructure`) into the **active** state backend through the repository factory — previously only the DuckDB schema ladder seeded them, so a fresh Postgres-backed instance had no canonical domains at all (Alembic creates the table empty). The new `memory_domains` repo method `ensure_seed` (DuckDB + PG siblings) inserts under the deterministic `md_<slug>` ids and never touches an existing row — admin renames are not overwritten and soft-deleted domains are not resurrected (a soft-deleted row still holds its slug). Covered by cross-engine contract tests and a both-backends lifespan-replay parity test.
+
+### Fixed
+
+- On a Postgres-backed instance (`database.backend` = `side_car`/`cloud`), app boot no longer writes seed rows into the **local DuckDB** `system.duckdb` — a side-channel write to the inactive backend, caught by a post-cutover leak canary. Two classes fixed: (1) the per-connect `Admin`/`Everyone` system-group seed in `src.db._ensure_schema` ran unconditionally, so a deployment whose state lives entirely in Postgres (where the lifespan seeds the groups through the repository factory) still received two silent `system:seed` rows in the local file on first boot; (2) the fresh-install branch and the reachable migration-ladder steps seeded constant rows locally regardless of backend — the `setup_banner` compat row, the three NULL `instance_templates` keys, the six canonical `memory_domains` (`_v51_to_v52`), the `vscode-mcp` OAuth client (`_v84_to_v85`; owned by Alembic 0032 on PG), and the v86 Everyone backfill (`_v85_to_v86`; Alembic 0033 on PG). All are now skipped when `use_pg()` is active — gated migrations still bump the ladder version so both backends reach the same schema endpoint. DuckDB-backed instances keep every seed, including the recovery contract (a deleted system group reappears on the next connect). Pinned by both-backends parity tests plus a canary-style fresh-boot test asserting zero rows in every table except `schema_version` (`tests/db_pg/test_parity_seed_admin_groups.py`).
+
 ---
 
 ## [0.74.55] - 2026-07-12
