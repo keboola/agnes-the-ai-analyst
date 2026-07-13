@@ -23,8 +23,10 @@ Authentication path
 
 Tools
 -----
-Re-uses every @mcp.tool() defined in mcp_http.py via a shared FastMCP
-instance to avoid duplicating tool definitions.
+Registers the same 24 foundation tools as the SSE server (mcp_http.py) via
+the shared ``app.api.mcp.foundation_tools.register_foundation_tools`` — the
+single source of truth for tool definitions, so the two transports cannot
+drift out of parity again.
 """
 
 from __future__ import annotations
@@ -34,9 +36,7 @@ import logging
 import os
 import re
 from collections.abc import AsyncIterator
-from typing import Any
 
-import httpx
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.fastmcp import FastMCP
@@ -45,6 +45,7 @@ from pydantic import AnyHttpUrl
 from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.api.mcp.foundation_tools import register_foundation_tools
 from app.auth.mcp_oauth import AgnesMCPOAuthProvider
 from app.auth.public_url import mcp_issuer_url, pinned_public_base_url, public_base_url
 
@@ -405,107 +406,9 @@ def _make_streamable_app() -> ASGIApp:
         stateless_http=True,
     )
 
-    # ── tools (mirrors mcp_http.py) ─────────────────────────────────────
-
-    @mcp.tool()
-    async def server_info() -> dict:
-        """Return Agnes server health and your account email.
-
-        Useful as a quick connectivity check at the start of a session.
-        """
-        result: dict[str, Any] = {"authenticated": True}
-        async with httpx.AsyncClient() as c:
-            try:
-                r = await c.get(f"{_BASE}/api/health", timeout=5)
-                if r.status_code == 200:
-                    result["health"] = r.json()
-            except Exception:
-                result["health"] = "unreachable"
-            try:
-                r = await c.get(f"{_BASE}/api/me", headers=_headers(), timeout=5)
-                if r.status_code == 200:
-                    result["user_email"] = r.json().get("email", "")
-            except Exception:
-                pass
-        return result
-
-    @mcp.tool()
-    async def catalog() -> dict:
-        """List all tables available to you (RBAC-filtered).
-
-        Returns a dict with a ``tables`` list.  Each entry has:
-        - ``id``         — use this in schema / describe / query calls
-        - ``name``       — human-readable label
-        - ``query_mode`` — local | remote | materialized
-        - ``sql_flavor`` — duckdb or bigquery
-        - ``rows``       — approximate row count (may be null)
-        """
-        async with httpx.AsyncClient() as c:
-            r = await c.get(f"{_BASE}/api/v2/catalog", headers=_headers(), timeout=30)
-            r.raise_for_status()
-            return r.json()
-
-    @mcp.tool()
-    async def schema(table_id: str) -> dict:
-        """Show column names, types, and SQL dialect hints for a table.
-
-        Args:
-            table_id: Table ID from the catalog.
-        """
-        async with httpx.AsyncClient() as c:
-            r = await c.get(f"{_BASE}/api/v2/schema/{table_id}", headers=_headers(), timeout=30)
-            r.raise_for_status()
-            return r.json()
-
-    @mcp.tool()
-    async def describe(table_id: str, rows: int = 5) -> dict:
-        """Show schema plus sample rows for a table.
-
-        Args:
-            table_id: Table ID from the catalog.
-            rows:     How many sample rows to return (default 5, max 50).
-        """
-        rows = min(max(1, rows), 50)
-        async with httpx.AsyncClient() as c:
-            rs = await c.get(f"{_BASE}/api/v2/schema/{table_id}", headers=_headers(), timeout=30)
-            rs.raise_for_status()
-            rm = await c.get(
-                f"{_BASE}/api/v2/sample/{table_id}",
-                headers=_headers(),
-                params={"n": rows},
-                timeout=30,
-            )
-            rm.raise_for_status()
-        return {"schema": rs.json(), "sample": rm.json()}
-
-    @mcp.tool()
-    async def query(sql: str, limit: int = 1000) -> dict:
-        """Execute a SQL query against Agnes data.
-
-        Args:
-            sql:   SQL statement.
-            limit: Maximum rows to return (default 1000).
-        """
-        async with httpx.AsyncClient() as c:
-            r = await c.post(
-                f"{_BASE}/api/query",
-                json={"sql": sql, "limit": limit},
-                headers=_headers(),
-                timeout=60,
-            )
-            r.raise_for_status()
-            return r.json()
-
-    @mcp.tool()
-    async def documentation_api() -> str:
-        """Return the curated Agnes REST API reference as Markdown."""
-        from pathlib import Path
-
-        md_path = Path(__file__).resolve().parent.parent.parent / "docs" / "api-reference.md"
-        try:
-            return md_path.read_text(encoding="utf-8")
-        except OSError:
-            return "# API reference unavailable\n\nThe source markdown file is missing."
+    # ── tools ─────────────────────────────────────────────────────────────
+    # Shared with the SSE server (mcp_http.py) — see foundation_tools.py.
+    register_foundation_tools(mcp, base_url=_BASE, headers_fn=_headers)
 
     _register_dynamic_tools(mcp)
 
