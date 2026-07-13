@@ -1,7 +1,8 @@
 """SQLAlchemy models for the marketplace + store + flea cluster:
 marketplace_registry, marketplace_plugins, store_entities,
 user_store_installs, user_plugin_optouts, store_submissions,
-store_entity_votes.
+store_entity_votes, store_lint_runs, store_lint_findings,
+store_lint_dismissals, store_lint_entity_state.
 
 Also includes user_curated_subscriptions (from src/repositories/user_curated_subscriptions.py).
 
@@ -254,3 +255,69 @@ class StoreEntityVote(Base):
     )
 
     __table_args__ = (PrimaryKeyConstraint("entity_id", "user_id"),)
+
+
+class StoreLintRun(Base):
+    """v89 skill lint run — one row per lint pass (scheduler | admin | publish
+    trigger). Mirrors DuckDB ``src/db.py`` ``store_lint_runs``."""
+
+    __tablename__ = "store_lint_runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    trigger: Mapped[str] = mapped_column(String, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    entities_linted: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    entities_skipped: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    findings_count: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+
+
+class StoreLintFinding(Base):
+    """v89 skill lint finding — the *current* generation of findings for a
+    store entity (replace-on-relint; no history kept here). Mirrors DuckDB
+    ``src/db.py`` ``store_lint_findings``."""
+
+    __tablename__ = "store_lint_findings"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    entity_id: Mapped[str] = mapped_column(String, nullable=False)
+    rule_id: Mapped[str] = mapped_column(String, nullable=False)
+    severity: Mapped[str] = mapped_column(String, nullable=False)
+    message: Mapped[str] = mapped_column(String, nullable=False)
+    evidence: Mapped[str | None] = mapped_column(String, server_default=text("'{}'"), nullable=True)
+    doc_url: Mapped[str | None] = mapped_column(String, server_default=text("''"), nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String, server_default=text("''"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (Index("idx_store_lint_findings_entity", "entity_id"),)
+
+
+class StoreLintDismissal(Base):
+    """v89 per-(entity, rule) admin dismissal, keyed to the ``content_hash``
+    it was dismissed against — a content change auto-resets it. Mirrors
+    DuckDB ``src/db.py`` ``store_lint_dismissals``."""
+
+    __tablename__ = "store_lint_dismissals"
+
+    entity_id: Mapped[str] = mapped_column(String, nullable=False)
+    rule_id: Mapped[str] = mapped_column(String, nullable=False)
+    dismissed_by: Mapped[str] = mapped_column(String, nullable=False)
+    dismissed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False)
+
+    __table_args__ = (PrimaryKeyConstraint("entity_id", "rule_id"),)
+
+
+class StoreLintEntityState(Base):
+    """v89 last-lint marker per entity, written even when the lint produced
+    zero findings — the unchanged-content skip reads the hash from here, so
+    clean skills skip too. Mirrors DuckDB ``src/db.py``
+    ``store_lint_entity_state``."""
+
+    __tablename__ = "store_lint_entity_state"
+
+    entity_id: Mapped[str] = mapped_column(String, primary_key=True)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False)
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    linted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
