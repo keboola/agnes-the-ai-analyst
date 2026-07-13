@@ -102,7 +102,7 @@ Event-driven: webhooks update parquets incrementally. No `remote` or `materializ
 
 ## Worked examples
 
-**1. Big BigQuery fact table you query weekly:** `query_mode: remote`. SA needs `dataViewer` + `jobUser`. Analyst uses `agnes query --remote` for one-off aggregates and `agnes snapshot create` for cross-week joins.
+**1. Big BigQuery fact table you query weekly:** `query_mode: remote`. SA needs `dataViewer` + `jobUser`. Analyst runs `agnes query` for one-off aggregates (the default `--scope auto` routes remote tables server-side automatically; `--remote` is the explicit shorthand) and `agnes snapshot create` for cross-week joins.
 
 **2. Daily Keboola dimension table:** `query_mode: local`. Synced once a day by the scheduler; analyst's `agnes pull` picks it up.
 
