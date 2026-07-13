@@ -19,7 +19,15 @@ def schema(
     try:
         data = api_get_json(f"/api/v2/schema/{table_id}")
     except V2ClientError as e:
-        typer.echo(f"Error: schema fetch failed: {e}", err=True)
+        if e.status_code == 404:
+            typer.echo(
+                f"Table '{table_id}' not found in the registry.\n"
+                "  - List available tables:  agnes catalog\n"
+                f'  - Search everything:      agnes search "{table_id}"',
+                err=True,
+            )
+        else:
+            typer.echo(f"Error: schema fetch failed: {e}", err=True)
         raise typer.Exit(5 if e.status_code >= 500 else 8 if e.status_code == 403 else 2)
 
     if json:
@@ -32,8 +40,7 @@ def schema(
     typer.echo(f"{'COLUMN':30s}  {'TYPE':15s}  {'NULL':5s}  DESCRIPTION")
     for c in data.get("columns", []):
         typer.echo(
-            f"{c['name']:30s}  {c['type']:15s}  "
-            f"{'YES' if c.get('nullable') else 'NO':5s}  {c.get('description', '')}"
+            f"{c['name']:30s}  {c['type']:15s}  {'YES' if c.get('nullable') else 'NO':5s}  {c.get('description', '')}"
         )
     if data.get("partition_by"):
         typer.echo(f"\nPartition: {data['partition_by']}")
