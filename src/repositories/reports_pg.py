@@ -7,7 +7,9 @@ The one deliberate divergence is UTC day bucketing: a bare ``CAST(ts AS DATE)``
 would first shift to the Postgres session ``TimeZone``, so day labels would
 drift on a non-UTC server. This file pins it with ``CAST((ts AT TIME ZONE
 'UTC') AS DATE)`` — do NOT "simplify" that back to a bare cast; the method-level
-comments guard the same invariant.
+comments guard the same invariant. The same rule applies to window boundaries:
+``CURRENT_DATE`` is session-TimeZone-dependent, so "today" is always spelled
+``CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE)`` here.
 """
 
 from __future__ import annotations
@@ -206,10 +208,11 @@ class ReportsPgRepository:
 
     def invocation_stats(self, source: str) -> Dict[str, dict]:
         """PG mirror of ``ReportsRepository.invocation_stats`` (#728) — same
-        shape and threshold semantics, PG-dialect day arithmetic
-        (``CURRENT_DATE - INTERVAL '7 days'``). ``day`` is a plain ``Date``
-        column on both engines (no timezone bucketing concern here, unlike
-        ``events_daily``/``installs_daily`` above).
+        shape and threshold semantics. ``day`` is a plain ``Date`` column on
+        both engines, but the window boundary must be the UTC "today":
+        PG's ``CURRENT_DATE`` is session-TimeZone-dependent, so the boundary
+        is pinned as ``CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE)``
+        (DuckDB's ``CURRENT_DATE`` is already UTC via the pinned session).
         """
         type_filter = "AND type = 'plugin'" if source == "curated" else "AND parent_plugin = ''"
 
@@ -232,14 +235,14 @@ class ReportsPgRepository:
                     f"""
                     SELECT
                         name,
-                        SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '7 days' THEN count ELSE 0 END) AS inv_recent,
-                        SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '14 days'
-                                  AND day <  CURRENT_DATE - INTERVAL '7 days'
+                        SUM(CASE WHEN day >= CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) - INTERVAL '7 days' THEN count ELSE 0 END) AS inv_recent,
+                        SUM(CASE WHEN day >= CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) - INTERVAL '14 days'
+                                  AND day <  CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) - INTERVAL '7 days'
                                  THEN count ELSE 0 END) AS inv_prior
                     FROM usage_marketplace_item_daily
                     WHERE source = :source
                       {type_filter}
-                      AND day >= CURRENT_DATE - INTERVAL '14 days'
+                      AND day >= CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) - INTERVAL '14 days'
                     GROUP BY name
                     """
                 ),
@@ -264,7 +267,7 @@ class ReportsPgRepository:
                     WHERE source = :source
                       {type_filter}
                       AND name = :name
-                      AND day >= CURRENT_DATE - INTERVAL '30 days'
+                      AND day >= CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) - INTERVAL '30 days'
                     ORDER BY day
                     """
                 ),
@@ -304,16 +307,16 @@ class ReportsPgRepository:
                 sa.text(
                     """
                     SELECT
-                        SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '7 days' THEN count ELSE 0 END) AS inv_recent,
-                        SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '14 days'
-                                  AND day <  CURRENT_DATE - INTERVAL '7 days'
+                        SUM(CASE WHEN day >= CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) - INTERVAL '7 days' THEN count ELSE 0 END) AS inv_recent,
+                        SUM(CASE WHEN day >= CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) - INTERVAL '14 days'
+                                  AND day <  CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) - INTERVAL '7 days'
                                  THEN count ELSE 0 END) AS inv_prior
                     FROM usage_marketplace_item_daily
                     WHERE source = :source
                       AND type = :item_type
                       AND parent_plugin = :parent_plugin
                       AND name = :name
-                      AND day >= CURRENT_DATE - INTERVAL '14 days'
+                      AND day >= CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) - INTERVAL '14 days'
                     """
                 ),
                 {"source": source, "item_type": item_type, "parent_plugin": parent_plugin, "name": name},
@@ -331,7 +334,7 @@ class ReportsPgRepository:
                       AND type = :item_type
                       AND parent_plugin = :parent_plugin
                       AND name = :name
-                      AND day >= CURRENT_DATE - INTERVAL '30 days'
+                      AND day >= CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) - INTERVAL '30 days'
                     ORDER BY day
                     """
                 ),
@@ -371,14 +374,14 @@ class ReportsPgRepository:
                     """
                     SELECT
                         name, type,
-                        SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '7 days' THEN count ELSE 0 END) AS inv_recent,
-                        SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '14 days'
-                                  AND day <  CURRENT_DATE - INTERVAL '7 days'
+                        SUM(CASE WHEN day >= CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) - INTERVAL '7 days' THEN count ELSE 0 END) AS inv_recent,
+                        SUM(CASE WHEN day >= CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) - INTERVAL '14 days'
+                                  AND day <  CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) - INTERVAL '7 days'
                                  THEN count ELSE 0 END) AS inv_prior
                     FROM usage_marketplace_item_daily
                     WHERE source = :source
                       AND parent_plugin = :parent_plugin
-                      AND day >= CURRENT_DATE - INTERVAL '14 days'
+                      AND day >= CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) - INTERVAL '14 days'
                     GROUP BY name, type
                     """
                 ),
