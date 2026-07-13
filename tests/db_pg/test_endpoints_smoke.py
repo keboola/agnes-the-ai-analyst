@@ -1572,6 +1572,10 @@ KNOWN_UNTESTED = {
     "GET /admin/groups",
     "GET /admin/groups/{group_id}",
     "GET /admin/initial-workspace",
+    # Maintained digests admin page (K4, #799) — behaviorally covered in
+    # tests/test_admin_knowledge_digests_page.py (admin 200, analyst 403,
+    # unauthenticated redirect, nav link).
+    "GET /admin/knowledge-digests",
     "GET /admin/marketplaces",
     "GET /admin/mcp-sources",
     "GET /admin/mcp-sources/{source_id}",
