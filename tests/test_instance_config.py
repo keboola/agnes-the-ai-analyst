@@ -1,4 +1,5 @@
 """Tests for instance_config loading."""
+
 import pytest
 
 
@@ -8,6 +9,7 @@ class TestInstanceConfig:
         monkeypatch.setenv("TESTING", "1")
         monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
         from app.instance_config import get_instance_name
+
         name = get_instance_name()
         assert isinstance(name, str)
 
@@ -19,12 +21,11 @@ class TestInstanceConfig:
 
         state_dir = tmp_path / "state"
         state_dir.mkdir(exist_ok=True)
-        (state_dir / "instance.yaml").write_text(
-            "instance:\n  name: Acme Analytics\n  subtitle: Data Team\n"
-        )
+        (state_dir / "instance.yaml").write_text("instance:\n  name: Acme Analytics\n  subtitle: Data Team\n")
 
         import importlib
         import app.instance_config as mod
+
         # Reset cached config to force reload
         mod._instance_config = None
         importlib.reload(mod)
@@ -46,6 +47,7 @@ class TestInstanceBrand:
         monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
         import importlib
         import app.instance_config as mod
+
         mod._instance_config = None
         importlib.reload(mod)
         return mod
@@ -60,9 +62,7 @@ class TestInstanceBrand:
         monkeypatch.delenv("AGNES_INSTANCE_BRAND", raising=False)
         state_dir = tmp_path / "state"
         state_dir.mkdir(exist_ok=True)
-        (state_dir / "instance.yaml").write_text(
-            "instance:\n  name: Acme\n  brand: Foundry AI\n"
-        )
+        (state_dir / "instance.yaml").write_text("instance:\n  name: Acme\n  brand: Foundry AI\n")
         mod = self._reload(tmp_path, monkeypatch)
         assert mod.get_instance_brand() == "Foundry AI"
         mod._instance_config = None
@@ -70,9 +70,7 @@ class TestInstanceBrand:
     def test_brand_env_overrides_yaml(self, tmp_path, monkeypatch):
         state_dir = tmp_path / "state"
         state_dir.mkdir(exist_ok=True)
-        (state_dir / "instance.yaml").write_text(
-            "instance:\n  name: Acme\n  brand: FromYaml\n"
-        )
+        (state_dir / "instance.yaml").write_text("instance:\n  name: Acme\n  brand: FromYaml\n")
         monkeypatch.setenv("AGNES_INSTANCE_BRAND", "FromEnv")
         mod = self._reload(tmp_path, monkeypatch)
         assert mod.get_instance_brand() == "FromEnv"
@@ -129,11 +127,14 @@ class TestInstanceBrand:
         """Brand + workspace_dir substitute into the setup script lines."""
         mod = self._reload(tmp_path, monkeypatch)
         from app.web.setup_instructions import resolve_lines
-        joined = "\n".join(resolve_lines(
-            "agnes.whl",
-            instance_brand="Foundry AI",
-            workspace_dir="FoundryAI",
-        ))
+
+        joined = "\n".join(
+            resolve_lines(
+                "agnes.whl",
+                instance_brand="Foundry AI",
+                workspace_dir="FoundryAI",
+            )
+        )
         assert "Set up the Foundry AI CLI on this machine." in joined
         # Step 2 is the user-centric decision tree (#442); brand +
         # workspace_dir thread through the 2a "pick a workspace folder
@@ -154,6 +155,7 @@ class TestInstanceBrand:
         get the literal 'Agnes' / '~/Desktop/Agnes' rendering."""
         mod = self._reload(tmp_path, monkeypatch)
         from app.web.setup_instructions import resolve_lines
+
         joined = "\n".join(resolve_lines("agnes.whl"))
         assert "Set up the Agnes CLI on this machine." in joined
         # Step 2 is the user-centric decision tree (#442); default path
@@ -253,6 +255,7 @@ class TestHiddenLoginFeatures:
         monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
         import importlib
         import app.instance_config as mod
+
         mod._instance_config = None
         importlib.reload(mod)
         return mod
@@ -327,6 +330,7 @@ class TestInstanceCustomPreamble:
         monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
         import importlib
         import app.instance_config as mod
+
         mod._instance_config = None
         importlib.reload(mod)
         return mod
@@ -351,9 +355,7 @@ class TestInstanceCustomPreamble:
     def test_env_overrides_yaml(self, tmp_path, monkeypatch):
         state_dir = tmp_path / "state"
         state_dir.mkdir(exist_ok=True)
-        (state_dir / "instance.yaml").write_text(
-            "instance:\n  name: Acme\n  custom_preamble: From YAML\n"
-        )
+        (state_dir / "instance.yaml").write_text("instance:\n  name: Acme\n  custom_preamble: From YAML\n")
         monkeypatch.setenv("AGNES_INSTANCE_CUSTOM_PREAMBLE", "From env")
         mod = self._reload(tmp_path, monkeypatch)
         assert mod.get_instance_custom_preamble() == "From env"
@@ -378,6 +380,7 @@ class TestCustomScripts:
         monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
         import importlib
         import app.instance_config as mod
+
         mod._instance_config = None
         importlib.reload(mod)
         return mod
@@ -393,16 +396,19 @@ class TestCustomScripts:
         mod._instance_config = None
 
     def test_valid_entry_normalized(self, tmp_path, monkeypatch):
-        self._write(tmp_path, (
-            "instance:\n"
-            "  name: Acme\n"
-            "  custom_scripts:\n"
-            "    - name: marker-io\n"
-            "      enabled: true\n"
-            "      placement: head_end\n"
-            "      html: |\n"
-            "        <script>window.markerConfig={project:'abc'};</script>\n"
-        ))
+        self._write(
+            tmp_path,
+            (
+                "instance:\n"
+                "  name: Acme\n"
+                "  custom_scripts:\n"
+                "    - name: marker-io\n"
+                "      enabled: true\n"
+                "      placement: head_end\n"
+                "      html: |\n"
+                "        <script>window.markerConfig={project:'abc'};</script>\n"
+            ),
+        )
         mod = self._reload(tmp_path, monkeypatch)
         scripts = mod.get_custom_scripts()
         assert len(scripts) == 1
@@ -414,59 +420,72 @@ class TestCustomScripts:
         mod._instance_config = None
 
     def test_disabled_entry_dropped(self, tmp_path, monkeypatch):
-        self._write(tmp_path, (
-            "instance:\n"
-            "  name: Acme\n"
-            "  custom_scripts:\n"
-            "    - name: off\n"
-            "      enabled: false\n"
-            "      placement: head_end\n"
-            "      html: <script>1</script>\n"
-        ))
+        self._write(
+            tmp_path,
+            (
+                "instance:\n"
+                "  name: Acme\n"
+                "  custom_scripts:\n"
+                "    - name: off\n"
+                "      enabled: false\n"
+                "      placement: head_end\n"
+                "      html: <script>1</script>\n"
+            ),
+        )
         mod = self._reload(tmp_path, monkeypatch)
         assert mod.get_custom_scripts() == []
         mod._instance_config = None
 
     def test_empty_html_dropped(self, tmp_path, monkeypatch):
-        self._write(tmp_path, (
-            "instance:\n"
-            "  name: Acme\n"
-            "  custom_scripts:\n"
-            "    - name: noop\n"
-            "      enabled: true\n"
-            "      placement: head_end\n"
-            "      html: '   '\n"
-        ))
+        self._write(
+            tmp_path,
+            (
+                "instance:\n"
+                "  name: Acme\n"
+                "  custom_scripts:\n"
+                "    - name: noop\n"
+                "      enabled: true\n"
+                "      placement: head_end\n"
+                "      html: '   '\n"
+            ),
+        )
         mod = self._reload(tmp_path, monkeypatch)
         assert mod.get_custom_scripts() == []
         mod._instance_config = None
 
     def test_bad_placement_dropped_with_warning(self, tmp_path, monkeypatch, caplog):
-        self._write(tmp_path, (
-            "instance:\n"
-            "  name: Acme\n"
-            "  custom_scripts:\n"
-            "    - name: typo\n"
-            "      enabled: true\n"
-            "      placement: body_start\n"
-            "      html: <script>1</script>\n"
-        ))
+        self._write(
+            tmp_path,
+            (
+                "instance:\n"
+                "  name: Acme\n"
+                "  custom_scripts:\n"
+                "    - name: typo\n"
+                "      enabled: true\n"
+                "      placement: body_start\n"
+                "      html: <script>1</script>\n"
+            ),
+        )
         mod = self._reload(tmp_path, monkeypatch)
         import logging
+
         with caplog.at_level(logging.WARNING, logger="app.instance_config"):
             assert mod.get_custom_scripts() == []
         assert any("unknown placement" in r.message for r in caplog.records)
         mod._instance_config = None
 
     def test_missing_placement_defaults_to_head_end(self, tmp_path, monkeypatch):
-        self._write(tmp_path, (
-            "instance:\n"
-            "  name: Acme\n"
-            "  custom_scripts:\n"
-            "    - name: defaulting\n"
-            "      enabled: true\n"
-            "      html: <script>x</script>\n"
-        ))
+        self._write(
+            tmp_path,
+            (
+                "instance:\n"
+                "  name: Acme\n"
+                "  custom_scripts:\n"
+                "    - name: defaulting\n"
+                "      enabled: true\n"
+                "      html: <script>x</script>\n"
+            ),
+        )
         mod = self._reload(tmp_path, monkeypatch)
         scripts = mod.get_custom_scripts()
         assert len(scripts) == 1
@@ -474,14 +493,17 @@ class TestCustomScripts:
         mod._instance_config = None
 
     def test_three_placements_all_pass_through(self, tmp_path, monkeypatch):
-        self._write(tmp_path, (
-            "instance:\n"
-            "  name: Acme\n"
-            "  custom_scripts:\n"
-            "    - {name: a, enabled: true, placement: head_start, html: '<script>1</script>'}\n"
-            "    - {name: b, enabled: true, placement: head_end,   html: '<script>2</script>'}\n"
-            "    - {name: c, enabled: true, placement: body_end,   html: '<script>3</script>'}\n"
-        ))
+        self._write(
+            tmp_path,
+            (
+                "instance:\n"
+                "  name: Acme\n"
+                "  custom_scripts:\n"
+                "    - {name: a, enabled: true, placement: head_start, html: '<script>1</script>'}\n"
+                "    - {name: b, enabled: true, placement: head_end,   html: '<script>2</script>'}\n"
+                "    - {name: c, enabled: true, placement: body_end,   html: '<script>3</script>'}\n"
+            ),
+        )
         mod = self._reload(tmp_path, monkeypatch)
         scripts = mod.get_custom_scripts()
         assert [s["placement"] for s in scripts] == ["head_start", "head_end", "body_end"]
@@ -489,59 +511,184 @@ class TestCustomScripts:
         mod._instance_config = None
 
     def test_non_list_value_ignored_with_warning(self, tmp_path, monkeypatch, caplog):
-        self._write(tmp_path, (
-            "instance:\n"
-            "  name: Acme\n"
-            "  custom_scripts: not-a-list\n"
-        ))
+        self._write(tmp_path, ("instance:\n  name: Acme\n  custom_scripts: not-a-list\n"))
         mod = self._reload(tmp_path, monkeypatch)
         import logging
+
         with caplog.at_level(logging.WARNING, logger="app.instance_config"):
             assert mod.get_custom_scripts() == []
         assert any("must be a list" in r.message for r in caplog.records)
         mod._instance_config = None
 
-    @pytest.mark.parametrize("enabled_yaml,expect_dropped", [
-        # Boolean false in every YAML truthy-shape the operator might use.
-        # All of these must drop the entry so the kill switch behaves the
-        # same regardless of whether the operator pasted a quoted block.
-        ("false",   True),
-        ("False",   True),
-        ('"false"', True),  # quoted string — bool("false") == True in Python
-        ('"no"',    True),
-        ('"NO"',    True),
-        ('"off"',   True),
-        ('"0"',     True),
-        ("0",       True),
-        # Boolean true / typical live values must keep the entry alive.
-        ("true",    False),
-        ("True",    False),
-        ('"true"',  False),
-        ('"yes"',   False),
-        ("1",       False),
-    ])
+    @pytest.mark.parametrize(
+        "enabled_yaml,expect_dropped",
+        [
+            # Boolean false in every YAML truthy-shape the operator might use.
+            # All of these must drop the entry so the kill switch behaves the
+            # same regardless of whether the operator pasted a quoted block.
+            ("false", True),
+            ("False", True),
+            ('"false"', True),  # quoted string — bool("false") == True in Python
+            ('"no"', True),
+            ('"NO"', True),
+            ('"off"', True),
+            ('"0"', True),
+            ("0", True),
+            # Boolean true / typical live values must keep the entry alive.
+            ("true", False),
+            ("True", False),
+            ('"true"', False),
+            ('"yes"', False),
+            ("1", False),
+        ],
+    )
     def test_enabled_coercion(self, tmp_path, monkeypatch, enabled_yaml, expect_dropped):
         """Quoted-string + numeric `enabled` values must be coerced the same
         way the operator expects from a Boolean field — the kill switch is
         the whole point of the field, and `bool("false") == True` would
         silently leave the snippet live (review PR #372)."""
-        self._write(tmp_path, (
-            "instance:\n"
-            "  name: Acme\n"
-            "  custom_scripts:\n"
-            f"    - name: probe\n"
-            f"      enabled: {enabled_yaml}\n"
-            "      placement: head_end\n"
-            "      html: <script>1</script>\n"
-        ))
+        self._write(
+            tmp_path,
+            (
+                "instance:\n"
+                "  name: Acme\n"
+                "  custom_scripts:\n"
+                f"    - name: probe\n"
+                f"      enabled: {enabled_yaml}\n"
+                "      placement: head_end\n"
+                "      html: <script>1</script>\n"
+            ),
+        )
         mod = self._reload(tmp_path, monkeypatch)
         scripts = mod.get_custom_scripts()
         if expect_dropped:
-            assert scripts == [], (
-                f"enabled={enabled_yaml!r} should drop the entry but it survived"
-            )
+            assert scripts == [], f"enabled={enabled_yaml!r} should drop the entry but it survived"
         else:
-            assert len(scripts) == 1, (
-                f"enabled={enabled_yaml!r} should keep the entry but it was dropped"
-            )
+            assert len(scripts) == 1, f"enabled={enabled_yaml!r} should keep the entry but it was dropped"
         mod._instance_config = None
+
+
+class TestLintKnobs:
+    """Skill-linter config knobs: lint_max_body_chars, lint_duplicate_top_n,
+    lint_audit_min_interval_hours. Resolution: YAML > default."""
+
+    def _reset_cache(self):
+        import app.instance_config as ic
+
+        ic._instance_config = None
+
+    def test_lint_max_body_chars_default_8000(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        self._reset_cache()
+        from app.instance_config import get_lint_max_body_chars
+
+        assert get_lint_max_body_chars() == 8000
+
+    def test_lint_duplicate_top_n_default_5(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        self._reset_cache()
+        from app.instance_config import get_lint_duplicate_top_n
+
+        assert get_lint_duplicate_top_n() == 5
+
+    def test_lint_audit_min_interval_hours_default_144(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        self._reset_cache()
+        from app.instance_config import get_lint_audit_min_interval_hours
+
+        assert get_lint_audit_min_interval_hours() == 144
+
+    def test_lint_max_body_chars_yaml_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        import yaml
+
+        (state / "instance.yaml").write_text(yaml.dump({"guardrails": {"lint_max_body_chars": 4000}}))
+        self._reset_cache()
+        from app.instance_config import get_lint_max_body_chars
+
+        assert get_lint_max_body_chars() == 4000
+
+    def test_lint_duplicate_top_n_yaml_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        import yaml
+
+        (state / "instance.yaml").write_text(yaml.dump({"guardrails": {"lint_duplicate_top_n": 10}}))
+        self._reset_cache()
+        from app.instance_config import get_lint_duplicate_top_n
+
+        assert get_lint_duplicate_top_n() == 10
+
+    def test_lint_audit_min_interval_hours_yaml_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        import yaml
+
+        (state / "instance.yaml").write_text(yaml.dump({"guardrails": {"lint_audit_min_interval_hours": 72}}))
+        self._reset_cache()
+        from app.instance_config import get_lint_audit_min_interval_hours
+
+        assert get_lint_audit_min_interval_hours() == 72
+
+    def test_lint_string_value_coerced_to_int(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        import yaml
+
+        (state / "instance.yaml").write_text(yaml.dump({"guardrails": {"lint_max_body_chars": "6000"}}))
+        self._reset_cache()
+        from app.instance_config import get_lint_max_body_chars
+
+        assert get_lint_max_body_chars() == 6000
+
+    def test_lint_garbage_value_falls_back_to_default(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        import yaml
+
+        (state / "instance.yaml").write_text(yaml.dump({"guardrails": {"lint_duplicate_top_n": "not-a-number"}}))
+        self._reset_cache()
+        from app.instance_config import get_lint_duplicate_top_n
+
+        assert get_lint_duplicate_top_n() == 5
+
+    def test_lint_zero_or_negative_floored_to_one(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        import yaml
+
+        (state / "instance.yaml").write_text(yaml.dump({"guardrails": {"lint_audit_min_interval_hours": 0}}))
+        self._reset_cache()
+        from app.instance_config import get_lint_audit_min_interval_hours
+
+        assert get_lint_audit_min_interval_hours() == 1
+
+        # Negative also floors to 1
+        (state / "instance.yaml").write_text(yaml.dump({"guardrails": {"lint_audit_min_interval_hours": -50}}))
+        self._reset_cache()
+        assert get_lint_audit_min_interval_hours() == 1
