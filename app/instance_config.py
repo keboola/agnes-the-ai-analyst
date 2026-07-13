@@ -409,6 +409,24 @@ def get_instance_brand() -> str:
     return value or "Agnes"
 
 
+def get_instance_brand_short() -> str:
+    """Short form of the product brand for use mid-sentence in body copy
+    ("Set up {brand_short} on your machine"), where the full
+    :func:`get_instance_brand` value can be unwieldy (e.g. brand
+    "Acme Data Analyst" → short "Acme"). ``/home`` keeps the full brand in
+    the hero title and appends "Call me {brand_short}." when the two differ.
+
+    Resolution: ``AGNES_INSTANCE_BRAND_SHORT`` env > ``instance.brand_short``
+    YAML > :func:`get_instance_brand`. Mirrors :func:`get_instance_brand`
+    shape so Terraform env overrides work.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_BRAND_SHORT")
+    if raw is None:
+        raw = get_value("instance", "brand_short", default="")
+    value = (raw or "").strip()
+    return value or get_instance_brand()
+
+
 def get_instance_logo_svg() -> str:
     """Raw inline ``<svg>`` markup rendered into the header brand slot
     (``_app_header.html``). When non-empty, replaces the text brand in

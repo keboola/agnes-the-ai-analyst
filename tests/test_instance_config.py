@@ -166,6 +166,81 @@ class TestInstanceBrand:
         mod._instance_config = None
 
 
+class TestInstanceBrandShort:
+    """brand_short resolution: env > YAML > full brand. The short form is
+    used mid-sentence in /home body copy; unset it mirrors the full brand
+    so existing deployments render unchanged."""
+
+    def _reload(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        import importlib
+        import app.instance_config as mod
+        mod._instance_config = None
+        importlib.reload(mod)
+        return mod
+
+    def test_defaults_to_full_brand(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AGNES_INSTANCE_BRAND_SHORT", raising=False)
+        monkeypatch.setenv("AGNES_INSTANCE_BRAND", "Acme Data Analyst")
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_brand_short() == "Acme Data Analyst"
+        mod._instance_config = None
+
+    def test_defaults_to_agnes_when_brand_unset(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AGNES_INSTANCE_BRAND_SHORT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_BRAND", raising=False)
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_brand_short() == "Agnes"
+        mod._instance_config = None
+
+    def test_from_yaml(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AGNES_INSTANCE_BRAND_SHORT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_BRAND", raising=False)
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "instance.yaml").write_text(
+            "instance:\n  name: Acme\n  brand: Acme Data Analyst\n  brand_short: Acme\n"
+        )
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_brand_short() == "Acme"
+        mod._instance_config = None
+
+    def test_env_overrides_yaml(self, tmp_path, monkeypatch):
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "instance.yaml").write_text(
+            "instance:\n  name: Acme\n  brand_short: FromYaml\n"
+        )
+        monkeypatch.setenv("AGNES_INSTANCE_BRAND_SHORT", "FromEnv")
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_brand_short() == "FromEnv"
+        mod._instance_config = None
+
+    def test_empty_falls_back_to_full_brand(self, tmp_path, monkeypatch):
+        # Whitespace-only short must not blank out the brand mid-sentence.
+        monkeypatch.setenv("AGNES_INSTANCE_BRAND_SHORT", "   ")
+        monkeypatch.setenv("AGNES_INSTANCE_BRAND", "Foundry AI")
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_brand_short() == "Foundry AI"
+        mod._instance_config = None
+
+    def test_yaml_whitespace_falls_back_to_full_brand(self, tmp_path, monkeypatch):
+        # Same floor for the YAML path: `brand_short: "   "` with no env
+        # override must fall back to the full brand, not render blank.
+        monkeypatch.delenv("AGNES_INSTANCE_BRAND_SHORT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_BRAND", raising=False)
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "instance.yaml").write_text(
+            "instance:\n  name: Acme\n  brand: Foundry AI\n  brand_short: '   '\n"
+        )
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_brand_short() == "Foundry AI"
+        mod._instance_config = None
+
+
 class TestHiddenLoginFeatures:
     """instance.hide_login_features / AGNES_INSTANCE_HIDE_LOGIN_FEATURES —
     stable /login feature-card keys to hide. Resolution: env (comma-string) >
