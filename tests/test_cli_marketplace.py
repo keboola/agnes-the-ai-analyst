@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import re
 
-import pytest
 from typer.testing import CliRunner
 
 from cli.commands.marketplace import marketplace_app
@@ -108,6 +107,7 @@ def test_marketplace_search_no_source_queries_both(monkeypatch):
         return _make_search_mock()(*args, **kwargs)
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(mp_mod, "api_get_json", _mock)
 
     r = runner.invoke(marketplace_app, ["search"])
@@ -127,6 +127,7 @@ def test_marketplace_search_source_curated(monkeypatch):
         return {"items": _CURATED_ITEMS, "total": 1}
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(mp_mod, "api_get_json", _mock)
 
     r = runner.invoke(marketplace_app, ["search", "--source", "curated"])
@@ -143,6 +144,7 @@ def test_marketplace_search_source_flea(monkeypatch):
         return {"items": _FLEA_ITEMS, "total": 1}
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(mp_mod, "api_get_json", _mock)
 
     r = runner.invoke(marketplace_app, ["search", "--source", "flea"])
@@ -153,6 +155,7 @@ def test_marketplace_search_source_flea(monkeypatch):
 
 def test_marketplace_search_json(monkeypatch):
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(mp_mod, "api_get_json", _make_search_mock())
 
     r = runner.invoke(marketplace_app, ["search", "--json"])
@@ -170,6 +173,7 @@ def test_marketplace_search_type_filter(monkeypatch):
         return {"items": [], "total": 0}
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(mp_mod, "api_get_json", _mock)
 
     r = runner.invoke(marketplace_app, ["search", "--type", "skill"])
@@ -185,6 +189,7 @@ def test_marketplace_search_query_passed(monkeypatch):
         return {"items": [], "total": 0}
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(mp_mod, "api_get_json", _mock)
 
     runner.invoke(marketplace_app, ["search", "-q", "pdf"])
@@ -193,11 +198,56 @@ def test_marketplace_search_query_passed(monkeypatch):
 
 def test_marketplace_search_no_results(monkeypatch):
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(mp_mod, "api_get_json", lambda *a, **kw: {"items": [], "total": 0})
 
     r = runner.invoke(marketplace_app, ["search", "-q", "nothing"])
     assert r.exit_code == 0
     assert "No results" in _clean(r.output)
+
+
+def test_marketplace_search_positional_query_passed(monkeypatch):
+    """Positional query text reaches the API as `q`, same as -q/--query."""
+    captured: dict = {}
+
+    def _mock(*args, **kwargs):
+        captured.update(kwargs)
+        return {"items": [], "total": 0}
+
+    import cli.commands.marketplace as mp_mod
+
+    monkeypatch.setattr(mp_mod, "api_get_json", _mock)
+
+    r = runner.invoke(marketplace_app, ["search", "pdf"])
+    assert r.exit_code == 0, r.output
+    assert captured.get("q") == "pdf"
+
+
+def test_marketplace_search_positional_and_option_mismatch_exits_1(monkeypatch):
+    """Conflicting positional query and -q/--query is an error, not a silent pick."""
+    import cli.commands.marketplace as mp_mod
+
+    monkeypatch.setattr(mp_mod, "api_get_json", lambda *a, **kw: {"items": [], "total": 0})
+
+    r = runner.invoke(marketplace_app, ["search", "pdf", "-q", "other"])
+    assert r.exit_code == 1
+
+
+def test_marketplace_search_positional_and_option_same_ok(monkeypatch):
+    """Positional and -q/--query agreeing is fine."""
+    captured: dict = {}
+
+    def _mock(*args, **kwargs):
+        captured.update(kwargs)
+        return {"items": [], "total": 0}
+
+    import cli.commands.marketplace as mp_mod
+
+    monkeypatch.setattr(mp_mod, "api_get_json", _mock)
+
+    r = runner.invoke(marketplace_app, ["search", "pdf", "-q", "pdf"])
+    assert r.exit_code == 0, r.output
+    assert captured.get("q") == "pdf"
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +297,7 @@ def test_marketplace_detail_curated(monkeypatch):
         return _CURATED_DETAIL
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(mp_mod, "api_get_json", _mock)
 
     r = runner.invoke(marketplace_app, ["detail", "foundry-ai/pdf-generator"])
@@ -266,6 +317,7 @@ def test_marketplace_detail_flea(monkeypatch):
         return _FLEA_DETAIL
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(mp_mod, "api_get_json", _mock)
 
     r = runner.invoke(marketplace_app, ["detail", "abc123def456abc1"])
@@ -279,6 +331,7 @@ def test_marketplace_detail_flea(monkeypatch):
 
 def test_marketplace_detail_json(monkeypatch):
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(mp_mod, "api_get_json", lambda *a, **kw: _CURATED_DETAIL)
 
     r = runner.invoke(marketplace_app, ["detail", "--json", "foundry-ai/pdf-generator"])
@@ -291,8 +344,10 @@ def test_marketplace_detail_not_found(monkeypatch):
     from cli.v2_client import V2ClientError
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(
-        mp_mod, "api_get_json",
+        mp_mod,
+        "api_get_json",
         lambda *a, **kw: (_ for _ in ()).throw(V2ClientError(404, {"detail": "not_found"})),
     )
 
@@ -304,8 +359,10 @@ def test_marketplace_detail_forbidden(monkeypatch):
     from cli.v2_client import V2ClientError
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(
-        mp_mod, "api_get_json",
+        mp_mod,
+        "api_get_json",
         lambda *a, **kw: (_ for _ in ()).throw(V2ClientError(403, {"detail": "forbidden"})),
     )
 
@@ -326,6 +383,7 @@ def test_marketplace_add_curated(monkeypatch):
         return {"installed": True}
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(mp_mod, "api_post_json", _post)
 
     r = runner.invoke(marketplace_app, ["add", "foundry-ai/pdf-generator"])
@@ -343,6 +401,7 @@ def test_marketplace_add_flea(monkeypatch):
         return {"entity_id": "abc123def456abc1", "installed": True}
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(mp_mod, "api_post_json", _post)
 
     r = runner.invoke(marketplace_app, ["add", "abc123def456abc1"])
@@ -355,11 +414,11 @@ def test_marketplace_add_system_plugin_409(monkeypatch):
     from cli.v2_client import V2ClientError
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(
-        mp_mod, "api_post_json",
-        lambda *a, **kw: (_ for _ in ()).throw(
-            V2ClientError(409, {"detail": "cannot_unsubscribe_system_plugin"})
-        ),
+        mp_mod,
+        "api_post_json",
+        lambda *a, **kw: (_ for _ in ()).throw(V2ClientError(409, {"detail": "cannot_unsubscribe_system_plugin"})),
     )
 
     r = runner.invoke(marketplace_app, ["add", "foundry-ai/core"])
@@ -371,11 +430,11 @@ def test_marketplace_add_not_approved_409(monkeypatch):
     from cli.v2_client import V2ClientError
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(
-        mp_mod, "api_post_json",
-        lambda *a, **kw: (_ for _ in ()).throw(
-            V2ClientError(409, {"detail": "entity_not_approved"})
-        ),
+        mp_mod,
+        "api_post_json",
+        lambda *a, **kw: (_ for _ in ()).throw(V2ClientError(409, {"detail": "entity_not_approved"})),
     )
 
     r = runner.invoke(marketplace_app, ["add", "abc123def456abc1"])
@@ -396,6 +455,7 @@ def test_marketplace_remove_curated(monkeypatch):
         return {"installed": False}
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(mp_mod, "api_delete", _delete)
 
     r = runner.invoke(marketplace_app, ["remove", "foundry-ai/pdf-generator"])
@@ -413,6 +473,7 @@ def test_marketplace_remove_flea(monkeypatch):
         return {"entity_id": "abc123def456abc1", "installed": False}
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(mp_mod, "api_delete", _delete)
 
     r = runner.invoke(marketplace_app, ["remove", "abc123def456abc1"])
@@ -425,11 +486,11 @@ def test_marketplace_remove_system_plugin_409(monkeypatch):
     from cli.v2_client import V2ClientError
 
     import cli.commands.marketplace as mp_mod
+
     monkeypatch.setattr(
-        mp_mod, "api_delete",
-        lambda *a, **kw: (_ for _ in ()).throw(
-            V2ClientError(409, {"detail": "cannot_unsubscribe_system_plugin"})
-        ),
+        mp_mod,
+        "api_delete",
+        lambda *a, **kw: (_ for _ in ()).throw(V2ClientError(409, {"detail": "cannot_unsubscribe_system_plugin"})),
     )
 
     r = runner.invoke(marketplace_app, ["remove", "foundry-ai/core"])

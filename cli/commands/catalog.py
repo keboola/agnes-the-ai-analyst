@@ -24,7 +24,7 @@ def catalog(
     show: Optional[str] = typer.Option(
         None,
         "--show",
-        help="With --metrics: show details for one metric id (e.g. revenue/mrr).",
+        help="Show details for one metric id (implies --metrics).",
     ),
 ):
     """List tables visible to you (RBAC-filtered).
@@ -34,6 +34,9 @@ def catalog(
     """
     if ctx.invoked_subcommand is not None:
         return
+
+    if show and not metrics:
+        metrics = True
 
     if metrics:
         if show:
@@ -61,10 +64,7 @@ def catalog(
     typer.echo(f"{'ID':30s}  {'SOURCE':10s}  {'MODE':8s}  {'ENTITY':18s}  NAME")
     for t in data.get("tables", []):
         entity = t.get("entity_type") or "-"
-        typer.echo(
-            f"{t['id']:30s}  {t['source_type']:10s}  {t['query_mode']:8s}  "
-            f"{entity:18s}  {t.get('name', '')}"
-        )
+        typer.echo(f"{t['id']:30s}  {t['source_type']:10s}  {t['query_mode']:8s}  {entity:18s}  {t.get('name', '')}")
 
 
 def _list_metrics(as_json: bool, category: Optional[str] = None) -> None:
