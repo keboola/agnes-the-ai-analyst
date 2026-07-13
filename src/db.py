@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 88
+SCHEMA_VERSION = 89
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1372,6 +1372,28 @@ CREATE TABLE IF NOT EXISTS corpus_chunks (
     bbox VARCHAR,
     metadata VARCHAR,
     created_at TIMESTAMP DEFAULT current_timestamp
+);
+
+-- knowledge_digests: v89 (K4, #799). Admin-defined digest documents the
+-- scheduler regenerates via LLM when their source corpora change.
+-- status: pending (never generated) | fresh | stale (sources changed but
+-- regeneration failed/deferred — output_md is the last good generation,
+-- status_reason says why). source_corpus_ids is a JSON array stored as text.
+CREATE TABLE IF NOT EXISTS knowledge_digests (
+    id                 VARCHAR PRIMARY KEY,
+    slug               VARCHAR NOT NULL UNIQUE,
+    title              VARCHAR NOT NULL,
+    instructions       TEXT NOT NULL,
+    source_corpus_ids  VARCHAR,
+    output_md          TEXT,
+    source_fingerprint VARCHAR,
+    generated_at       TIMESTAMP,
+    model              VARCHAR,
+    status             VARCHAR DEFAULT 'pending',
+    status_reason      VARCHAR,
+    created_by         VARCHAR,
+    created_at         TIMESTAMP DEFAULT current_timestamp,
+    updated_at         TIMESTAMP DEFAULT current_timestamp
 );
 """
 
@@ -5584,6 +5606,34 @@ def _v87_to_v88(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 88")
 
 
+def _v88_to_v89(conn: duckdb.DuckDBPyConnection) -> None:
+    """v88→v89: ``knowledge_digests`` — maintained digests (K4, #799).
+
+    Idempotent CREATE TABLE IF NOT EXISTS; fresh installs already get the
+    table from ``_SYSTEM_SCHEMA`` (no-op here). Sequential upgrades from a
+    v88 instance create it now.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS knowledge_digests (
+            id                 VARCHAR PRIMARY KEY,
+            slug               VARCHAR NOT NULL UNIQUE,
+            title              VARCHAR NOT NULL,
+            instructions       TEXT NOT NULL,
+            source_corpus_ids  VARCHAR,
+            output_md          TEXT,
+            source_fingerprint VARCHAR,
+            generated_at       TIMESTAMP,
+            model              VARCHAR,
+            status             VARCHAR DEFAULT 'pending',
+            status_reason      VARCHAR,
+            created_by         VARCHAR,
+            created_at         TIMESTAMP DEFAULT current_timestamp,
+            updated_at         TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 89")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -5946,6 +5996,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # _SYSTEM_SCHEMA already carries the column on fresh installs;
             # the guarded ALTER is a no-op here.
             _v87_to_v88(conn)
+            # v88→v89: knowledge_digests table (K4, #799). _SYSTEM_SCHEMA
+            # already creates it on fresh installs (no-op CREATE IF NOT
+            # EXISTS here).
+            _v88_to_v89(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -6175,6 +6229,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v86_to_v87(conn)
             if current < 88:
                 _v87_to_v88(conn)
+            if current < 89:
+                _v88_to_v89(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
