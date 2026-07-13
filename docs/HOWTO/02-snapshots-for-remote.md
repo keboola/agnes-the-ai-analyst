@@ -6,7 +6,7 @@ This guide explains the safe access pattern.
 
 ## Why snapshots?
 
-- **No local parquet** — `agnes query "SELECT * FROM web_sessions"` on a remote table hits BQ through the server, not a local file.
+- **No local parquet** — `agnes query "SELECT * FROM web_sessions"` on a remote table hits BQ through the server, not a local file. (`agnes query` defaults to `--scope auto`: local first, transparent server-side fallback when the table isn't local — a `[scope]` stderr note tells you it happened. `--remote` is the explicit shorthand for `--scope server`.)
 - **Cost** — a `SELECT *` on a 225M-row table can scan 50+ GB and cost real money.
 - **Latency** — large remote queries are slow; a local snapshot is fast for repeated analysis.
 
@@ -105,3 +105,5 @@ agnes disk-info               # total cache size
   agnes query --remote "SELECT * FROM web_sessions WHERE event_date = DATE '2026-05-01' LIMIT 100"
   ```
   The server enforces a 5 GiB scan cap — you'll get a `remote_scan_too_large` error if the query exceeds it, with a suggestion to use `snapshot create`.
+
+Both examples also work without `--remote` — the default `--scope auto` routes them server-side automatically once the table isn't local. Use the explicit flag when you want to be sure the query never touches (possibly stale) local data.

@@ -24,7 +24,7 @@ Pulling manifest from https://agnes.example.com ...
 Rebuilt local views in analytics.duckdb
 ```
 
-- Tables with `query_mode='remote'` are skipped — they have no local parquet (see guide 02).
+- Tables with `query_mode='remote'` are skipped — they have no local parquet. You can still query them: `agnes query` transparently runs the query server-side when the table isn't local (see guide 02 for the cost-aware options).
 - Run `agnes pull` at the start of each session. The `SessionStart` hook does this automatically if `agnes init` was run.
 
 ## Step 2: Discover available tables
@@ -72,21 +72,21 @@ APAC            1,892,100
 ...
 ```
 
-For longer SQL, use a file:
+For longer SQL, pass a file's content via the named option:
 
 ```bash
-agnes query --file my_analysis.sql
+agnes query --sql "$(cat my_analysis.sql)"
 ```
 
-Or inline with stdin:
+Or via stdin — note the JSON envelope (`{"sql": "..."}`), which survives quoting-heavy SQL:
 
 ```bash
-echo "SELECT COUNT(*) FROM customer_segments WHERE tier = 'Gold'" | agnes query --stdin
+echo '{"sql": "SELECT COUNT(*) FROM customer_segments WHERE tier = '"'"'Gold'"'"'"}' | agnes query --stdin
 ```
 
 ## Tips
 
 - `agnes catalog --json | jq '.[] | select(.query_mode == "local")'` — filter to local tables only.
-- `agnes query` runs against your local DuckDB — no server round-trip, no BQ cost.
+- `agnes query` defaults to `--scope auto`: it runs against your local DuckDB first (no server round-trip, no BQ cost) and only falls back to server-side execution when the table isn't local — a `[scope]` note on stderr tells you when that happened. Force offline-only with `--scope local`; force server-side with `--scope server` (or the `--remote` shorthand).
 - For remote tables (`query_mode='remote'`), see [guide 02: Snapshots for remote tables](02-snapshots-for-remote.md).
 - For canonical metric definitions, run `agnes catalog --metrics` before inventing formulas.
