@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.56] - 2026-07-13
+
 ### Added
 
 - Claude Code setup instructions on both connector pages: the AI Connector page (`/me/ai-connector`) gains a **Claude Code** tab in the setup guide — `claude mcp add --transport http agnes <server>/api/mcp/http`, the restart-before-it-appears note, `/mcp` to authenticate, and an SSE-fallback note for servers that predate the mount-root fix below — and the token page (`/mcp-connect`) gains a **Claude Code** tab with the PAT-in-header one-liner (`claude mcp add --transport sse … --header "Authorization: Bearer <PAT>"`).
