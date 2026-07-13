@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.61] - 2026-07-13
+
 ### Fixed
 
 - Bundled `connector-gws` seed skill no longer writes a non-empty `project_id` into `client_secret.json`. A non-empty value made the `gws` CLI send an `x-goog-user-project` header on every API call, so every analyst except the operator needed `roles/serviceusage.serviceUsageConsumer` on the shared OAuth GCP project and got "Caller does not have required permission to use project …" 403s after a successful OAuth login. The skill now writes `"project_id": ""` (header dropped; quota bills to the OAuth client's own project) and heals existing installs in its precheck — on a `serviceUsageConsumer` failure it blanks the stored `project_id` and retries without re-auth. `AGNES_GWS_PROJECT_ID` is still served by `/api/connectors/params` for operator-customized seed templates, but the bundled skill ignores it and `instance.yaml.example` now marks it legacy.
