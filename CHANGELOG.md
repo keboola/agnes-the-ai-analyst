@@ -15,7 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [0.74.62] - 2026-07-13
 
 ### Fixed
-- **Security:** `scope='per_user'` MCP sources no longer fall back to the shared service credential for an *identified* caller who has not set their own credential — such passthrough calls now fail closed (the endpoint returns 403 with an `agnes mcp my-secret set <source>` remedy) instead of silently borrowing the shared credential and exposing whatever it can see. The shared credential remains available only to the caller-less materialize path.
+- **Security:** `scope='per_user'` MCP sources no longer fall back to the shared service credential for an *identified* caller who has not set their own credential — such passthrough calls now fail closed instead of silently borrowing the shared credential and exposing whatever it can see. This holds across all caller-facing transports: the REST passthrough endpoint returns a 403 with an `agnes mcp my-secret set <source>` remedy, and the SSE and Streamable-HTTP MCP servers (the Cowork remote-MCP path) now thread the per-request caller identity into the forward so their once-registered tool closures resolve the caller's own credential rather than defaulting to shared. The shared credential remains available only to the caller-less materialize path.
 
 ---
 
