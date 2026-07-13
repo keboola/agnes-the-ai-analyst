@@ -14,26 +14,41 @@ import typer
 
 from cli.v2_client import V2ClientError, api_get_json
 
+_SCOPES = ("server", "local")
+
 search_app = typer.Typer(help="Unified search across documents, knowledge, and the catalog.")
 
 
 @search_app.callback(invoke_without_command=True)
 def search(
     query: str = typer.Argument(..., help="Search query"),
-    k: int = typer.Option(10, "--k", help="Max results"),
+    k: int = typer.Option(10, "--k", "--limit", help="Max results"),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
     local: bool = typer.Option(
         False,
         "--local",
         help=(
-            "Search knowledge artifacts pulled by `agnes pull` (offline; "
-            "documents only — knowledge rules are already in .claude/rules/, "
-            "the table catalog needs the server)"
+            "Shorthand for --scope local: search knowledge artifacts pulled by "
+            "`agnes pull` (offline; documents only — knowledge rules are already "
+            "in .claude/rules/, the table catalog needs the server)"
         ),
+    ),
+    scope: str | None = typer.Option(
+        None,
+        "--scope",
+        help="server (documents + knowledge + catalog) | local (offline, documents only)",
     ),
 ):
     """One query across documents, the knowledge base, and the data catalog."""
-    if local:
+    if scope is not None and scope not in _SCOPES:
+        typer.echo(f"Invalid --scope {scope!r} — expected one of {_SCOPES}.", err=True)
+        raise typer.Exit(1)
+    if local and scope == "server":
+        typer.echo("--local conflicts with --scope server.", err=True)
+        raise typer.Exit(1)
+    effective_local = local or scope == "local"
+
+    if effective_local:
         from pathlib import Path as _Path
 
         from cli.config import get_workspace_root
@@ -44,6 +59,7 @@ def search(
             typer.echo("No workspace configured — run `agnes init` (or unset --local).", err=True)
             raise typer.Exit(1)
         body = {"query": query, "results": local_search(query, workspace=_Path(ws), k=k), "source": "local"}
+        typer.echo("offline scope: documents only — knowledge + catalog need the server", err=True)
     else:
         try:
             body = api_get_json("/api/knowledge/search", q=query, k=k)
@@ -54,9 +70,15 @@ def search(
     if as_json:
         typer.echo(json_lib.dumps(body, indent=2, default=str))
         return
+    sources_line = (
+        "sources: documents (local)"
+        if body.get("source") == "local"
+        else "sources: documents + knowledge + catalog (server)"
+    )
     results = body.get("results", [])
     if not results:
         typer.echo("No matches.")
+        typer.echo(sources_line)
         return
     for r in results:
         t = r.get("type")
@@ -68,3 +90,4 @@ def search(
             typer.echo(f"[{r.get('score')}] know {r.get('title')}: {(r.get('snippet') or '')[:110]}")
         else:
             typer.echo(f"[{r.get('score')}] tbl  {r.get('name')} — {r.get('pivot_hint')}")
+    typer.echo(sources_line)
