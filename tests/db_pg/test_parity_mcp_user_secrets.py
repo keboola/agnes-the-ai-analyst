@@ -154,3 +154,20 @@ def test_unknown_source_404(seeded_app_both):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 404, r.text
+
+
+def test_per_user_no_row_fails_closed_both_backends(seeded_app_both):
+    """Cross-engine: on a per_user source, an identified caller with NO
+    per-user row resolves to None (never the shared credential); the
+    caller-less materialize path (caller_user_id=None) still gets shared."""
+    from connectors.mcp.client import _lookup_secret_for_source
+    from src.repositories import shared_secrets_repo
+
+    source_id = _seed_source(scope="per_user")
+    shared_secrets_repo().upsert(source_id, "shared-service-token")
+
+    src = {"id": source_id, "scope": "per_user"}
+    # Identified caller, no per-user row → fail closed, shared NOT borrowed.
+    assert _lookup_secret_for_source(src, caller_user_id="analyst1") is None
+    # Materialize path (no caller) → shared fallback preserved.
+    assert _lookup_secret_for_source(src, caller_user_id=None) == "shared-service-token"
