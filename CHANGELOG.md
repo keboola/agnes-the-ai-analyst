@@ -12,6 +12,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.63] - 2026-07-13
+
+### Fixed
+
+- Store uploads now locate the bundle by its anchor file anywhere in the ZIP instead of assuming the archive root: plugins root at the shallowest `.claude-plugin/plugin.json` (two anchors at the same depth → new `zip_multiple_plugins` error), and macOS archive junk (`__MACOSX/`, AppleDouble `._*`, `.DS_Store`) is skipped during anchor search and excluded from the baked tree. Previously a plugin ZIP created with macOS Finder's "Compress <folder>" (everything under one wrapper directory) pre-filled the upload form fine but then failed the final submit with a misleading "plugin.json missing at root" error — and an AppleDouble `._*.md` mirror could even win the agent-anchor search over the real agent file.
+
+---
+
 ## [0.74.62] - 2026-07-13
 
 ### Added

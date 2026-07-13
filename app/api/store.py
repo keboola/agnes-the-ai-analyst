@@ -29,7 +29,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, Iterator, List, Literal, Optional
 from urllib.parse import urlparse
 
 import duckdb
@@ -821,10 +821,36 @@ def _set_frontmatter_name(text: str, new_name: str) -> str:
     return f"---\n{new_body}\n---" + text[m.end() :]
 
 
+def _is_junk_path(root: Path, p: Path) -> bool:
+    """macOS archive junk — ``__MACOSX/`` mirror trees, AppleDouble ``._*``
+    entries, and ``.DS_Store`` — is never part of the logical bundle. Finder's
+    "Compress" adds all three, and AppleDouble files can even carry text that
+    parses as frontmatter, so every anchor search must skip them."""
+    for part in p.relative_to(root).parts:
+        if part == "__MACOSX" or part == ".DS_Store" or part.startswith("._"):
+            return True
+    return False
+
+
+def _iter_bundle_files(root: Path, pattern: str) -> Iterator[Path]:
+    """Junk-filtered, shallowest-first iteration over ``root.rglob(pattern)``.
+
+    Anchor searches (SKILL.md, agent .md, .claude-plugin/plugin.json) all go
+    through here so the bundle root is discovered wherever the uploader's
+    ZIP tool put it — Finder wraps everything in a top-level folder — and so
+    the shallowest anchor deterministically wins over vendored copies."""
+    candidates = sorted(
+        root.rglob(pattern),
+        key=lambda q: (len(q.relative_to(root).parts), str(q)),
+    )
+    for p in candidates:
+        if p.is_file() and not _is_junk_path(root, p):
+            yield p
+
+
 def _find_skill_md(root: Path) -> Optional[Path]:
-    for p in sorted(root.rglob("SKILL.md")):
-        if p.is_file():
-            return p
+    for p in _iter_bundle_files(root, "SKILL.md"):
+        return p
     return None
 
 
@@ -836,9 +862,7 @@ def _find_agent_md(root: Path) -> Optional[Path]:
     fields as an agent definition, and plugin.json siblings live under
     ``.claude-plugin/``.
     """
-    for p in sorted(root.rglob("*.md")):
-        if not p.is_file():
-            continue
+    for p in _iter_bundle_files(root, "*.md"):
         if p.name.lower() == "skill.md":
             continue
         # Reject anything below a .claude-plugin/ ancestor.
@@ -854,29 +878,53 @@ def _find_agent_md(root: Path) -> Optional[Path]:
     return None
 
 
+def _plugin_json_anchors(root: Path) -> List[Path]:
+    """All ``.claude-plugin/plugin.json`` files in the tree, shallowest first."""
+    return [p for p in _iter_bundle_files(root, "plugin.json") if p.parent.name == ".claude-plugin"]
+
+
 def _find_plugin_json(root: Path) -> Optional[Path]:
-    for p in sorted(root.rglob("plugin.json")):
-        if p.is_file() and p.parent.name == ".claude-plugin":
-            return p
-    return None
+    anchors = _plugin_json_anchors(root)
+    return anchors[0] if anchors else None
+
+
+def _require_plugin_json(root: Path) -> Path:
+    """The single authoritative plugin anchor, or a 422.
+
+    The shallowest ``.claude-plugin/plugin.json`` wins (a plugin may vendor
+    another plugin deeper in its tree); two anchors at the same minimal depth
+    are ambiguous — refuse rather than silently pick one."""
+    anchors = _plugin_json_anchors(root)
+    if not anchors:
+        raise HTTPException(status_code=422, detail="zip_missing_claude_plugin_json")
+    if len(anchors) > 1:
+        depths = [len(p.relative_to(root).parts) for p in anchors[:2]]
+        if depths[0] == depths[1]:
+            raise HTTPException(status_code=422, detail="zip_multiple_plugins")
+    return anchors[0]
 
 
 def _validate_and_extract_metadata(type_: str, extracted_root: Path) -> dict:
     """Return ``{"name": str | None, "description": str | None}`` parsed from
     the ZIP for pre-fill. Raises 422 if the ZIP layout doesn't match ``type``.
 
+    All anchors are discovered ANYWHERE in the extracted tree (shallowest
+    wins, macOS junk skipped) — the bake step roots the bundle at the same
+    anchor, so a Finder-compressed ZIP with a wrapper folder validates and
+    bakes identically to a root-level one.
+
     Cross-type guards reject obvious mismatches so a skill ZIP can't be
     smuggled in as an agent (same frontmatter shape) and a plugin ZIP can't
     masquerade as a skill or agent (plugin trees often contain inner skills
     + agents that share their signatures):
 
-      * skill  → must have SKILL.md and must NOT have a top-level
+      * skill  → must have SKILL.md and must NOT have a
                   .claude-plugin/plugin.json (would be a plugin)
       * agent  → must have a non-SKILL .md with name+description frontmatter
                   outside any .claude-plugin/ folder, must NOT have SKILL.md
                   (would be a skill), and must NOT have .claude-plugin/plugin.json
                   (would be a plugin)
-      * plugin → must have .claude-plugin/plugin.json
+      * plugin → must have exactly one shallowest .claude-plugin/plugin.json
     """
     has_skill_md = _find_skill_md(extracted_root) is not None
     has_plugin_json = _find_plugin_json(extracted_root) is not None
@@ -906,14 +954,9 @@ def _validate_and_extract_metadata(type_: str, extracted_root: Path) -> dict:
         return {"name": fm.get("name"), "description": fm.get("description")}
 
     if type_ == "plugin":
-        if not has_plugin_json:
-            raise HTTPException(
-                status_code=422,
-                detail="zip_missing_claude_plugin_json",
-            )
-        pj = _find_plugin_json(extracted_root)
+        pj = _require_plugin_json(extracted_root)
         try:
-            data = json.loads(pj.read_text(encoding="utf-8"))  # type: ignore[union-attr]
+            data = json.loads(pj.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             raise HTTPException(status_code=422, detail="plugin_json_invalid")
         if not isinstance(data, dict):
@@ -949,7 +992,7 @@ def _bake_plugin_tree(
         target = plugin_dir / "skills" / suffixed
         target.mkdir(parents=True, exist_ok=True)
         for f in skill_root.rglob("*"):
-            if not f.is_file():
+            if not f.is_file() or _is_junk_path(skill_root, f):
                 continue
             rel = f.relative_to(skill_root)
             dest = target / rel
@@ -974,11 +1017,15 @@ def _bake_plugin_tree(
         _write_synth_plugin_json(plugin_dir, suffixed, description)
 
     elif type_ == "plugin":
-        # Mirror the upload as-is, then rewrite plugin.json `name` to suffixed.
-        for f in extracted_root.rglob("*"):
-            if not f.is_file():
+        # Mirror the plugin subtree rooted at the anchor's parent — NOT the
+        # archive root — so wrapper dirs (Finder's "Compress <folder>") and
+        # sibling junk stay out of the bake. Then rewrite plugin.json `name`.
+        pj_src = _require_plugin_json(extracted_root)
+        src_root = pj_src.parent.parent
+        for f in src_root.rglob("*"):
+            if not f.is_file() or _is_junk_path(src_root, f):
                 continue
-            rel = f.relative_to(extracted_root)
+            rel = f.relative_to(src_root)
             dest = plugin_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(f, dest)
