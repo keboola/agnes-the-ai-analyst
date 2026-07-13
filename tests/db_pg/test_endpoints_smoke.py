@@ -1833,6 +1833,12 @@ KNOWN_UNTESTED = {
     # (no new repo methods/migration; state.json lives on disk). Behaviour
     # covered in tests/test_admin_run_endpoints.py::TestRunKnowledgePackaging.
     "POST /api/admin/run-knowledge-packaging",
+    # K4 maintained digests (#799) — scheduler-driven admin maintenance op,
+    # mirrors run-knowledge-packaging / run-corporate-memory. No new repo
+    # methods/migration beyond the existing knowledge_digests contract test
+    # (tests/db_pg/test_knowledge_digests_contract.py). Behaviour covered in
+    # tests/test_admin_run_endpoints.py::TestRunKnowledgeDigests.
+    "POST /api/admin/run-knowledge-digests",
     "POST /api/admin/run-knowledge-migration",
     "POST /api/mcp-connect/token",  # tested in tests/test_mcp_connect.py
     "GET /mcp-connect",  # web UI page tested in tests/test_mcp_connect.py

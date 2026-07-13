@@ -444,6 +444,87 @@ class TestRunKnowledgePackaging:
         assert "RuntimeError" in params_json
 
 
+class TestRunKnowledgeDigests:
+    """POST /api/admin/run-knowledge-digests — scheduler-driven maintained
+    digest regeneration (K4, #799). Mirrors run_knowledge_packaging's audit +
+    error posture exactly."""
+
+    def test_admin_can_trigger_knowledge_digests(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        fake_summary = {
+            "generated": ["arch"],
+            "skipped": ["other"],
+            "stale": [],
+            "errors": [],
+        }
+        with patch(
+            "src.knowledge_digests.run_digest_pass",
+            return_value=fake_summary,
+        ) as m:
+            resp = c.post("/api/admin/run-knowledge-digests", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["details"] == fake_summary
+        m.assert_called_once()
+
+    def test_errors_set_ok_false(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        fake_summary = {
+            "generated": [],
+            "skipped": [],
+            "stale": [{"slug": "arch", "reason": "deferred"}],
+            "errors": [{"slug": "arch", "error": "boom"}],
+        }
+        with patch(
+            "src.knowledge_digests.run_digest_pass",
+            return_value=fake_summary,
+        ):
+            resp = c.post("/api/admin/run-knowledge-digests", headers=_auth(token))
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is False
+
+    def test_non_admin_blocked(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+        resp = c.post("/api/admin/run-knowledge-digests", headers=_auth(token))
+        assert resp.status_code == 403
+
+    def test_unauth_blocked(self, seeded_app):
+        c = seeded_app["client"]
+        resp = c.post("/api/admin/run-knowledge-digests")
+        assert resp.status_code == 401
+
+    def test_unhandled_exception_still_audits(self, seeded_app):
+        """Mirror run_knowledge_packaging: record the failure in audit_log
+        even when run_digest_pass() raises, so /admin/scheduler-runs sees the
+        failure instead of only docker logs."""
+        from src.db import get_system_db
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch(
+            "src.knowledge_digests.run_digest_pass",
+            side_effect=RuntimeError("simulated DuckDB lock"),
+        ):
+            resp = c.post("/api/admin/run-knowledge-digests", headers=_auth(token))
+        assert resp.status_code == 500
+        assert "RuntimeError" in resp.json()["detail"]
+        conn = get_system_db()
+        try:
+            rows = conn.execute(
+                "SELECT params FROM audit_log WHERE action = 'run_knowledge_digests' ORDER BY timestamp DESC LIMIT 1"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert rows, "audit row missing on unhandled exception"
+        params_json = rows[0][0]
+        assert "unhandled_error" in params_json
+        assert "RuntimeError" in params_json
+
+
 class TestRunKnowledgeMigration:
     def test_imports_items_from_json(self, seeded_app):
         data_dir = seeded_app["env"]["data_dir"]
@@ -641,6 +722,23 @@ class TestSchedulerJobsWireUp:
         assert endpoint == "/api/admin/run-knowledge-packaging"
         assert method == "POST"
         assert timeout == 600
+
+    def test_knowledge_digests_endpoint_is_registered(self, monkeypatch):
+        for v in (
+            "SCHEDULER_DATA_REFRESH_INTERVAL",
+            "SCHEDULER_HEALTH_CHECK_INTERVAL",
+            "SCHEDULER_TICK_SECONDS",
+            "SCHEDULER_SCRIPT_RUN_INTERVAL",
+        ):
+            monkeypatch.delenv(v, raising=False)
+        from services.scheduler.__main__ import build_jobs
+
+        target = next(j for j in build_jobs() if j[0] == "knowledge-digests")
+        _, schedule, endpoint, method, timeout = target
+        assert schedule == "every 30m"
+        assert endpoint == "/api/admin/run-knowledge-digests"
+        assert method == "POST"
+        assert timeout == 900
 
     def test_new_jobs_have_offset_cadences(self, monkeypatch):
         """Three jobs in the same family must NOT all fire on the same tick.
