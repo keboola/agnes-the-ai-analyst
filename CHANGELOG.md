@@ -12,6 +12,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.60] - 2026-07-13
+
+### Added
+
+- `agnes query --scope {auto,local,server}` (default `auto`) — runs locally first and transparently falls back to server-side execution when there is no local data yet or the query hits a table that is `query_mode='remote'`/`server_only`; a `[scope]` stderr note says where the query ran. `--remote`/`--local` remain as shorthands for `--scope server`/`--scope local`.
+- Global search box in the web header — one combobox across tables, curated knowledge, and uploaded documents, backed by the existing `GET /api/knowledge/search` endpoint; results are grouped and labeled by origin (table hits deep-link to the catalog drill-down).
+- Consistent search vocabulary across the CLI: `--limit` as an alias for `--k` on `agnes search` and `agnes collections search`; a positional query argument on `agnes marketplace search` (same as `-q/--query`, errors if both are given and differ); `--query`/`-q` aliases for `agnes admin sessions list --q`.
+
+### Changed
+
+- `agnes search` gains an explicit `--scope {server,local}` flag (with validation and a conflict check against `--local`), prints a trailing `sources:` line naming what was searched, and offline (`--local`) runs now warn they cover documents only — knowledge and the table catalog need the server.
+- The streamable-HTTP (OAuth) MCP transport now exposes all 24 foundation tools instead of 6 — both HTTP transports register from a shared `app/api/mcp/foundation_tools.py`, closing the drift where remote OAuth connectors silently lost `knowledge_search`, `collections_*`, `skills`, `chat_skills`, `stack_*`, `store_*`, and the admin tools. A new parity test (`tests/test_mcp_tool_parity.py`) guards every transport against future drift.
+- Marketplace web search spans Curated + Flea Market by default; switching tabs no longer silently narrows the search scope to the active tab's source.
+- `agnes catalog --show <id>` now implies `--metrics` instead of being silently ignored.
+
+### Fixed
+
+- `agnes schema` and `agnes describe` print a targeted hint (`agnes catalog` / `agnes search`) instead of a bare error when a table id is not found (404) in the registry.
+- MCP `query_local` table-miss errors now explain that the table may be `query_mode='remote'`/`server_only` and point to the auto-routing `query` tool (shared hint helper: `cli/query_hints.py`).
+
+### Internal
+
+- Command & search UX standard codified: playbook in `.claude/skills/agnes-conventions/references/command-ux.md`, two new blocking sync-map rows in `CONTRIBUTING.md` (command UX vocabulary/scope model; MCP foundation tools only via the shared registry), and a summary in `CLAUDE.md` project conventions.
+
+---
+
 ## [0.74.59] - 2026-07-13
 
 ### Fixed

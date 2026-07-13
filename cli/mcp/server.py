@@ -35,6 +35,7 @@ from mcp.server.fastmcp import FastMCP
 
 from cli.client import api_get
 from cli.config import get_server_url, get_token
+from cli.query_hints import missing_table, remote_table_hint
 from cli.v2_client import V2ClientError, api_get_json, api_post_json
 from src.duckdb_conn import _open_duckdb
 
@@ -258,6 +259,9 @@ def query(sql: str, limit: int = 1000) -> dict:
     against the server-side DuckDB view.  For ``query_mode=remote``
     (BigQuery) it passes through to BigQuery.
 
+    Routes local/materialized vs remote tables automatically server-side;
+    prefer this tool unless you specifically need offline access.
+
     Args:
         sql:   SQL statement to execute.  Use DuckDB dialect for local /
                materialized tables; BigQuery dialect for remote tables
@@ -287,6 +291,9 @@ def query_local(sql: str, limit: int = 1000) -> dict:
     ``pull()`` has synced data to disk.  Runs entirely offline — no
     server request is made.
 
+    If a table is missing here it may be a ``query_mode='remote'`` or
+    ``server_only`` table — use the ``query`` tool instead.
+
     Args:
         sql:   DuckDB-flavoured SQL.
         limit: Maximum rows to return (default 1000).
@@ -304,9 +311,15 @@ def query_local(sql: str, limit: int = 1000) -> dict:
         # Apply LIMIT at the DuckDB level to protect against accidental
         # full-table scans on large cached parquets.
         wrapped = f"SELECT * FROM ({sql}) AS _q LIMIT {limit}"
-        result = conn.execute(wrapped)
-        columns = [d[0] for d in result.description]
-        rows = result.fetchall()
+        try:
+            result = conn.execute(wrapped)
+            columns = [d[0] for d in result.description]
+            rows = result.fetchall()
+        except Exception as exc:
+            table = missing_table(str(exc))
+            if table:
+                raise ValueError(f"query_local failed: {exc}\n{remote_table_hint(table, surface='mcp')}") from exc
+            raise
 
     return {
         "columns": columns,

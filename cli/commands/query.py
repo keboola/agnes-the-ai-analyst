@@ -10,26 +10,52 @@ from typing import Optional
 
 import typer
 
+from cli.query_hints import missing_table, remote_table_hint
+
 # Default TTL for auto-snapshots created by the --auto-snapshot fallback
 # (#616). Reused if still fresh, rebuilt once elapsed.
 _AUTO_SNAPSHOT_TTL = "24h"
+
+_VALID_SCOPES = ("auto", "local", "server")
+
+
+class _LocalDbMissing(Exception):
+    """Raised by `_run_local` when there's no local DuckDB file yet."""
+
+
+class _LocalTableMiss(Exception):
+    """Raised by `_run_local` when the query failed on an unresolvable
+    table name that might be a `query_mode='remote'` or `server_only`
+    table (i.e. DuckDB's "Table with name X does not exist")."""
+
+    def __init__(self, table: str, original: Exception):
+        super().__init__(str(original))
+        self.table = table
+        self.original = original
 
 
 def query_command(
     sql: Optional[str] = typer.Argument(None, help="SQL query to execute (positional)"),
     sql_opt: Optional[str] = typer.Option(None, "--sql", help="SQL query to execute (named option)"),
-    remote: bool = typer.Option(False, "--remote", help="Execute on server instead of locally"),
+    remote: bool = typer.Option(False, "--remote", help="Shorthand for --scope server"),
+    local_flag: bool = typer.Option(False, "--local", help="Shorthand for --scope local"),
+    scope: Optional[str] = typer.Option(
+        None,
+        "--scope",
+        help="Where to run: auto (local first, fall back to server), local, server [default: auto]",
+    ),
     fmt: str = typer.Option("table", "--format", "-f", help="Output format: table, json, csv"),
     json_flag: bool = typer.Option(False, "--json", help="Shortcut for --format json"),
     limit: int = typer.Option(1000, "--limit", help="Max rows to return"),
-    stdin: bool = typer.Option(False, "--stdin", help="Read SQL from stdin as JSON {\"sql\": \"...\"}"),
+    stdin: bool = typer.Option(False, "--stdin", help='Read SQL from stdin as JSON {"sql": "..."}'),
     auto_snapshot: bool = typer.Option(
-        False, "--auto-snapshot",
+        False,
+        "--auto-snapshot",
         help=(
             "On a remote VIEW query that trips the BigQuery scan cap, "
             "auto-materialize the view as a local snapshot and re-run the "
             "query against it (reuses a fresh snapshot within 24h). "
-            "Requires --remote; no-op for physical-table queries."
+            "Requires --remote/--scope server; no-op for physical-table queries."
         ),
     ),
 ):
@@ -47,12 +73,46 @@ def query_command(
             raise typer.Exit(1)
         fmt = "json"
 
+    if scope is not None and scope not in _VALID_SCOPES:
+        typer.echo(
+            f"Error: --scope must be one of {', '.join(_VALID_SCOPES)} (got {scope!r}).",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # `None` means --scope was not given (defaults to auto). The sentinel —
+    # rather than click's get_parameter_source, whose behavior shifted across
+    # click releases — distinguishes an explicit `--scope local`/`--scope
+    # server` from the default so real conflicts with --remote/--local are
+    # rejected without rejecting the (harmless) default.
+    scope_explicit = scope is not None
+    scope = scope or "auto"
+
+    if remote and local_flag:
+        typer.echo("Error: --remote and --local are mutually exclusive.", err=True)
+        raise typer.Exit(1)
+    if remote and scope_explicit and scope == "local":
+        typer.echo("Error: --remote and --scope local are mutually exclusive.", err=True)
+        raise typer.Exit(1)
+    if local_flag and scope_explicit and scope == "server":
+        typer.echo("Error: --local and --scope server are mutually exclusive.", err=True)
+        raise typer.Exit(1)
+
+    if remote:
+        effective_scope = "server"
+    elif local_flag:
+        effective_scope = "local"
+    else:
+        effective_scope = scope
+
     # Resolve SQL from exactly one of: positional, --sql, or --stdin
-    sources_provided = sum([
-        sql is not None,
-        sql_opt is not None,
-        stdin,
-    ])
+    sources_provided = sum(
+        [
+            sql is not None,
+            sql_opt is not None,
+            stdin,
+        ]
+    )
     if sources_provided == 0:
         typer.echo("Error: provide SQL as a positional argument, --sql option, or --stdin flag.", err=True)
         raise typer.Exit(1)
@@ -73,19 +133,57 @@ def query_command(
     else:
         resolved_sql = sql
 
-    if remote:
+    if effective_scope == "server":
         _query_remote(resolved_sql, fmt, limit, auto_snapshot=auto_snapshot)
-    else:
+    elif effective_scope == "local":
         _query_local(resolved_sql, fmt, limit)
+    else:
+        _query_auto(resolved_sql, fmt, limit, auto_snapshot=auto_snapshot)
 
 
-def _query_local(sql: str, fmt: str, limit: int):
-    """Run query against local DuckDB."""
+def _run_local(sql: str, fmt: str, limit: int):
+    """Execute `sql` against the local DuckDB.
+
+    Raises `_LocalDbMissing` if there's no local DB yet, `_LocalTableMiss`
+    if the failure looks like an unresolvable table name (possibly a
+    `query_mode='remote'` or `server_only` table), or re-raises any other
+    exception unchanged. Callers decide how to present each case.
+    """
     from src.duckdb_conn import _open_duckdb
 
     local_dir = Path(os.environ.get("AGNES_LOCAL_DIR", "."))
     db_path = local_dir / "user" / "duckdb" / "analytics.duckdb"
     if not db_path.exists():
+        raise _LocalDbMissing()
+
+    conn = _open_duckdb(str(db_path), read_only=True)
+    try:
+        result = conn.execute(sql).fetchmany(limit)
+        columns = [desc[0] for desc in conn.description] if conn.description else []
+        _output(columns, result, fmt)
+    except Exception as e:
+        # DuckDB's "Did you mean <similar materialized view>" suggestion is
+        # misleading when the unresolvable identifier is actually a
+        # `query_mode='remote'` table OR a `server_only` table — neither has
+        # a local view by design (#607: server_only rows are kept server-side
+        # and never distributed to the laptop by `agnes pull`). We don't
+        # verify against the remote registry here (this command is
+        # offline-friendly), so callers treat the match as conditional
+        # ("might be") — safe even when the name was just a typo.
+        table = missing_table(str(e))
+        if table:
+            raise _LocalTableMiss(table, e) from e
+        raise
+    finally:
+        conn.close()
+
+
+def _query_local(sql: str, fmt: str, limit: int):
+    """Run query against local DuckDB (`--scope local` behavior): prints
+    today's guidance messages on failure, with no server-side fallback."""
+    try:
+        _run_local(sql, fmt, limit)
+    except _LocalDbMissing:
         # No local data yet. Lead with `--remote` (runs server-side, no
         # download) — the right path in a constrained sandbox where a full
         # `agnes pull` would drag down every granted table. `agnes pull`
@@ -98,40 +196,35 @@ def _query_local(sql: str, fmt: str, limit: int):
             err=True,
         )
         raise typer.Exit(1)
-
-    conn = _open_duckdb(str(db_path), read_only=True)
-    try:
-        result = conn.execute(sql).fetchmany(limit)
-        columns = [desc[0] for desc in conn.description] if conn.description else []
-        _output(columns, result, fmt)
+    except _LocalTableMiss as miss:
+        typer.echo(f"Query error: {miss.original}", err=True)
+        typer.echo("", err=True)
+        typer.echo(remote_table_hint(miss.table, surface="cli"), err=True)
+        raise typer.Exit(1)
     except Exception as e:
         typer.echo(f"Query error: {e}", err=True)
-        # DuckDB's "Did you mean <similar materialized view>" suggestion is
-        # misleading when the unresolvable identifier is actually a
-        # `query_mode='remote'` table OR a `server_only` table — neither has
-        # a local view by design (#607: server_only rows are kept server-side
-        # and never distributed to the laptop by `agnes pull`). Append a
-        # friendly hint pointing the user at `agnes catalog`, `agnes schema`,
-        # and `agnes query --remote`. We don't verify against the remote
-        # registry here (this command is offline-friendly), so the hint is
-        # conditional ("might be") — safe even when the name was just a typo.
-        m = re.search(r"Table with name ([A-Za-z_][A-Za-z0-9_]*) does not exist", str(e))
-        if m:
-            typer.echo("", err=True)
-            typer.echo(
-                f"Note: `{m.group(1)}` might be a `query_mode='remote'` or "
-                "`server_only` table. Local DuckDB only holds views for tables "
-                "`agnes pull` downloads — `remote` ones live on BigQuery, and "
-                "`server_only` ones are kept server-side and not distributed to "
-                "the laptop. Both are queryable server-side:\n"
-                "  - List all registered tables:    agnes catalog\n"
-                "  - Inspect column schema:         agnes schema <name>\n"
-                "  - Run it server-side:            agnes query --remote \"<SQL>\"",
-                err=True,
-            )
         raise typer.Exit(1)
-    finally:
-        conn.close()
+
+
+def _query_auto(sql: str, fmt: str, limit: int, *, auto_snapshot: bool = False):
+    """`--scope auto` (default): run locally first, falling back to
+    server-side execution when there's no local data yet or the query hits
+    an unresolvable table (possibly `remote`/`server_only`). Any other
+    local failure fails exactly like `--scope local` — no fallback."""
+    try:
+        _run_local(sql, fmt, limit)
+    except _LocalDbMissing:
+        typer.echo("[scope] no local data yet — running server-side", err=True)
+        _query_remote(sql, fmt, limit, auto_snapshot=auto_snapshot)
+    except _LocalTableMiss as miss:
+        typer.echo(
+            f"[scope] '{miss.table}' not found locally — running server-side",
+            err=True,
+        )
+        _query_remote(sql, fmt, limit, auto_snapshot=auto_snapshot)
+    except Exception as e:
+        typer.echo(f"Query error: {e}", err=True)
+        raise typer.Exit(1)
 
 
 def _normalize_sql(sql: str) -> str:
@@ -316,8 +409,7 @@ def _query_remote(sql: str, fmt: str, limit: int, *, auto_snapshot: bool = False
         from cli.commands.snapshot import _format_size
 
         typer.echo(
-            f"BigQuery scanned ~{_format_size(data['bytes_scanned'])} "
-            "(dry-run estimate)",
+            f"BigQuery scanned ~{_format_size(data['bytes_scanned'])} (dry-run estimate)",
             err=True,
         )
 

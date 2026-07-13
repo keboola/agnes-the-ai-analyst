@@ -37,6 +37,7 @@ def _parse_id(item_id: str) -> tuple[str, str, str]:
 
 @marketplace_app.command("search")
 def search(
+    query_arg: Optional[str] = typer.Argument(None, help="Search text (same as -q)"),
     query: Optional[str] = typer.Option(None, "-q", "--query", help="Search text"),
     type: Optional[str] = typer.Option(None, "--type", help="skill | agent | plugin"),
     source: Optional[str] = typer.Option(None, "--source", help="curated | flea (default: both)"),
@@ -45,6 +46,11 @@ def search(
     json_out: bool = typer.Option(False, "--json"),
 ):
     """Search Curated and Flea Market; returns only items you have access to."""
+    if query_arg and query and query_arg != query:
+        typer.echo("Conflicting search text: positional argument and -q/--query differ.", err=True)
+        raise typer.Exit(1)
+    query = query_arg or query
+
     tabs = [source] if source else ["curated", "flea"]
     all_items: list = []
     for tab in tabs:
@@ -206,21 +212,15 @@ def scaffold_metadata(
         exists=True,
         file_okay=False,
         dir_okay=True,
-        help="Path to a cloned curated-marketplace repo "
-        "(contains .claude-plugin/marketplace.json).",
+        help="Path to a cloned curated-marketplace repo (contains .claude-plugin/marketplace.json).",
     ),
     check: bool = typer.Option(
         False,
         "--check",
-        help="Exit non-zero if the on-disk file is out of sync. Writes nothing. "
-        "Intended for CI.",
+        help="Exit non-zero if the on-disk file is out of sync. Writes nothing. Intended for CI.",
     ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="Print the would-be file; write nothing."
-    ),
-    json_out: bool = typer.Option(
-        False, "--json", help="With --dry-run, print only the JSON (no report)."
-    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the would-be file; write nothing."),
+    json_out: bool = typer.Option(False, "--json", help="With --dry-run, print only the JSON (no report)."),
 ):
     """Generate / refresh .claude-plugin/marketplace-metadata.json (curator tool).
 
@@ -250,8 +250,7 @@ def scaffold_metadata(
     if check:
         if comparable_view(existing) != comparable_view(doc):
             typer.echo(
-                "marketplace-metadata.json is OUT OF SYNC — run: "
-                f"agnes marketplace scaffold-metadata {path}",
+                f"marketplace-metadata.json is OUT OF SYNC — run: agnes marketplace scaffold-metadata {path}",
                 err=True,
             )
             raise typer.Exit(1)
@@ -277,15 +276,10 @@ def scaffold_metadata(
 
 
 def _print_scaffold_report(report) -> None:
-    typer.echo(
-        f"Plugins: {len(report.plugins)}  "
-        f"Skills: {len(report.skills)}  Agents: {len(report.agents)}"
-    )
+    typer.echo(f"Plugins: {len(report.plugins)}  Skills: {len(report.skills)}  Agents: {len(report.agents)}")
     counts = report.status_counts()
     if counts:
-        typer.echo(
-            "Fields: " + ", ".join(f"{k}={counts[k]}" for k in sorted(counts))
-        )
+        typer.echo("Fields: " + ", ".join(f"{k}={counts[k]}" for k in sorted(counts)))
     for w in report.warnings:
         typer.echo(f"  warning: {w}", err=True)
     if report.orphans:

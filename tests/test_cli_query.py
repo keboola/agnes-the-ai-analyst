@@ -70,8 +70,7 @@ class TestRemoteQuery:
         with patch("cli.client.api_post", return_value=_resp(502, text="bad gateway")):
             result = runner.invoke(app, ["query", "SELECT 1", "--remote"])
         assert result.exit_code != 0, (
-            f"Expected nonzero exit for HTTP 502, got rc={result.exit_code}. "
-            f"Output: {result.output}"
+            f"Expected nonzero exit for HTTP 502, got rc={result.exit_code}. Output: {result.output}"
         )
         assert "HTTP 502" in result.output
 
@@ -148,9 +147,7 @@ class TestRemoteQuery:
             "bytes_scanned": 1_073_741_824,
         }
         with patch("cli.client.api_post", return_value=_resp(200, payload)):
-            result = split_runner.invoke(
-                click_app, ["query", "SELECT id FROM t", "--remote", "--format", "json"]
-            )
+            result = split_runner.invoke(click_app, ["query", "SELECT id FROM t", "--remote", "--format", "json"])
         assert result.exit_code == 0
         # stdout is pure JSON — no notice leaked in.
         parsed = json.loads(result.stdout.strip())
@@ -179,9 +176,11 @@ class TestRemoteQuery:
 
 class TestLocalQuery:
     def test_local_query_no_db(self, tmp_config):
-        """Local query without DuckDB exits with guidance that leads with the
-        no-download `--remote` path (and still mentions `agnes pull`)."""
-        result = runner.invoke(app, ["query", "SELECT 1"])
+        """`--scope local` query without DuckDB exits with guidance that leads
+        with the no-download `--remote` path (and still mentions `agnes
+        pull`). The default `--scope auto` instead falls back to the server
+        (see tests/test_cli_query_scope.py)."""
+        result = runner.invoke(app, ["query", "SELECT 1", "--scope", "local"])
         assert result.exit_code == 1
         out = result.output.lower()
         assert "--remote" in out
@@ -190,6 +189,7 @@ class TestLocalQuery:
     def test_local_query_with_real_db(self, tmp_config):
         """Local query executes against real DuckDB."""
         import duckdb
+
         db_dir = tmp_config / "local" / "user" / "duckdb"
         db_dir.mkdir(parents=True)
         conn = duckdb.connect(str(db_dir / "analytics.duckdb"))
@@ -205,6 +205,7 @@ class TestLocalQuery:
     def test_local_query_csv_format(self, tmp_config):
         """--format csv produces CSV output."""
         import duckdb
+
         db_dir = tmp_config / "local" / "user" / "duckdb"
         db_dir.mkdir(parents=True)
         conn = duckdb.connect(str(db_dir / "analytics.duckdb"))
@@ -221,6 +222,7 @@ class TestLocalQuery:
     def test_local_query_table_format(self, tmp_config):
         """Default table format renders without crash."""
         import duckdb
+
         db_dir = tmp_config / "local" / "user" / "duckdb"
         db_dir.mkdir(parents=True)
         conn = duckdb.connect(str(db_dir / "analytics.duckdb"))
@@ -235,6 +237,7 @@ class TestLocalQuery:
     def test_local_query_limit(self, tmp_config):
         """--limit restricts rows returned."""
         import duckdb
+
         db_dir = tmp_config / "local" / "user" / "duckdb"
         db_dir.mkdir(parents=True)
         conn = duckdb.connect(str(db_dir / "analytics.duckdb"))
@@ -248,19 +251,22 @@ class TestLocalQuery:
         assert len(data) == 5
 
     def test_local_query_sql_error(self, tmp_config):
-        """SQL syntax error exits with error."""
+        """SQL syntax error exits with error (`--scope local`: no fallback)."""
         import duckdb
+
         db_dir = tmp_config / "local" / "user" / "duckdb"
         db_dir.mkdir(parents=True)
         duckdb.connect(str(db_dir / "analytics.duckdb")).close()
 
-        result = runner.invoke(app, ["query", "SELECT * FROM nonexistent_table_xyz"])
+        result = runner.invoke(app, ["query", "SELECT * FROM nonexistent_table_xyz", "--scope", "local"])
         assert result.exit_code == 1
         assert "Query error" in result.output
 
     def test_local_query_missing_table_hints_remote(self, tmp_config):
         """Querying a table absent from local DuckDB surfaces a hint about
-        `query_mode='remote'` tables alongside the original DuckDB error.
+        `query_mode='remote'` tables alongside the original DuckDB error
+        (`--scope local`: no fallback — see test_cli_query_scope.py for the
+        default `--scope auto` fallback behavior).
 
         Reproduces the analyst-session UX gap where DuckDB's nearest-name
         ("Did you mean <other_table>") suggestion sent the user down the
@@ -269,11 +275,12 @@ class TestLocalQuery:
         view.
         """
         import duckdb
+
         db_dir = tmp_config / "local" / "user" / "duckdb"
         db_dir.mkdir(parents=True)
         duckdb.connect(str(db_dir / "analytics.duckdb")).close()
 
-        result = runner.invoke(app, ["query", "DESCRIBE unit_economics"])
+        result = runner.invoke(app, ["query", "DESCRIBE unit_economics", "--scope", "local"])
         assert result.exit_code == 1
         # Original DuckDB diagnostic must remain visible (don't break logging).
         assert "Query error" in result.output
@@ -290,6 +297,7 @@ class TestLocalQuery:
         `Table with name X does not exist` shape.
         """
         import duckdb
+
         db_dir = tmp_config / "local" / "user" / "duckdb"
         db_dir.mkdir(parents=True)
         duckdb.connect(str(db_dir / "analytics.duckdb")).close()

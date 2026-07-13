@@ -75,3 +75,35 @@ def test_search_api_error_exits_nonzero():
     ):
         r = runner.invoke(search_app, ["x"])
     assert r.exit_code == 1
+
+
+def test_search_limit_is_alias_for_k():
+    with patch("cli.commands.search.api_get_json", return_value=_BODY) as m:
+        r = runner.invoke(search_app, ["--limit", "3", "invoices"])
+    assert r.exit_code == 0, r.output
+    m.assert_called_once_with("/api/knowledge/search", q="invoices", k=3)
+
+
+def test_search_server_prints_sources_line():
+    with patch("cli.commands.search.api_get_json", return_value=_BODY):
+        r = runner.invoke(search_app, ["invoices"])
+    assert r.exit_code == 0, r.output
+    assert "sources: documents + knowledge + catalog (server)" in r.output
+
+
+def test_search_no_matches_still_prints_sources_line():
+    with patch("cli.commands.search.api_get_json", return_value={"query": "x", "results": []}):
+        r = runner.invoke(search_app, ["x"])
+    assert r.exit_code == 0
+    assert "No matches." in r.output
+    assert "sources: documents + knowledge + catalog (server)" in r.output
+
+
+def test_search_local_and_explicit_scope_server_conflict_exits_1():
+    r = runner.invoke(search_app, ["--local", "--scope", "server", "invoices"])
+    assert r.exit_code == 1
+
+
+def test_search_invalid_scope_exits_1():
+    r = runner.invoke(search_app, ["--scope", "bogus", "invoices"])
+    assert r.exit_code == 1
