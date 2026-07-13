@@ -2367,6 +2367,22 @@ _SYSTEM_GROUPS_SEED = [
     (SYSTEM_EVERYONE_GROUP, "System: default group every user is implicitly a member of"),
 ]
 
+# Canonical memory-domain seed (the legacy ``VALID_DOMAINS`` six from
+# ``app/api/memory.py``, v15 era). Deterministic ``md_<slug>`` ids —
+# downstream code and tests rely on the naming convention. Seeded by the
+# v52 ladder step below on the DuckDB backend, and by the app lifespan
+# through the repository factory (``memory_domains_repo().ensure_seed``)
+# on the active backend — the PG side has no Alembic seed for these.
+# Tuple shape: (id, slug, name, icon, color).
+_CANONICAL_MEMORY_DOMAINS_SEED = [
+    ("md_finance", "finance", "Finance", "💰", "#dcfce7"),
+    ("md_engineering", "engineering", "Engineering", "⚙️", "#dbeafe"),
+    ("md_product", "product", "Product", "📦", "#fef3c7"),
+    ("md_data", "data", "Data", "📊", "#f3e8ff"),
+    ("md_operations", "operations", "Operations", "🔧", "#fff7ed"),
+    ("md_infrastructure", "infrastructure", "Infrastructure", "🏗️", "#fef2f2"),
+]
+
 
 def _seed_system_groups(conn: duckdb.DuckDBPyConnection) -> None:
     """Idempotently insert/promote the Admin and Everyone system groups.
@@ -2393,6 +2409,23 @@ def _seed_system_groups(conn: duckdb.DuckDBPyConnection) -> None:
                 "UPDATE user_groups SET is_system = TRUE WHERE id = ?",
                 [existing[0]],
             )
+
+
+def _state_backend_is_pg() -> bool:
+    """True when app-state lives in Postgres (``use_pg()``).
+
+    Lazy import — ``src.repositories`` imports this module at its top
+    level, so the dependency must stay function-local. Any failure to
+    probe the backend falls back to False (the DuckDB fresh-install
+    default), so a broken probe never suppresses the seed on a plain
+    DuckDB instance.
+    """
+    try:
+        from src.repositories import use_pg
+
+        return use_pg()
+    except Exception:
+        return False
 
 
 def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
@@ -4218,26 +4251,26 @@ def _v51_to_v52(conn: duckdb.DuckDBPyConnection) -> None:
         """
     )
 
-    # 5) Seed canonical memory_domains from the legacy ``VALID_DOMAINS``
-    # constant in ``app/api/memory.py`` (the v15 hardcoded six). Deterministic
-    # ``md_<slug>`` ids so downstream Phase-2+ refactors can rely on the
-    # naming convention without re-querying. Icons / colors are part of the
-    # canonical seed so the Browse UI renders consistently across instances.
-    canonical_domains = [
-        ("md_finance", "finance", "Finance", "💰", "#dcfce7"),
-        ("md_engineering", "engineering", "Engineering", "⚙️", "#dbeafe"),
-        ("md_product", "product", "Product", "📦", "#fef3c7"),
-        ("md_data", "data", "Data", "📊", "#f3e8ff"),
-        ("md_operations", "operations", "Operations", "🔧", "#fff7ed"),
-        ("md_infrastructure", "infrastructure", "Infrastructure", "🏗️", "#fef2f2"),
-    ]
-    for did, slug, name, icon, color in canonical_domains:
-        conn.execute(
-            "INSERT INTO memory_domains (id, slug, name, icon, color, created_at) "
-            "VALUES (?, ?, ?, ?, ?, current_timestamp) "
-            "ON CONFLICT (slug) DO NOTHING",
-            [did, slug, name, icon, color],
-        )
+    # 5) Seed canonical memory_domains (the module-level
+    # ``_CANONICAL_MEMORY_DOMAINS_SEED`` — shared with the app-lifespan
+    # ensure). Deterministic ``md_<slug>`` ids so downstream Phase-2+
+    # refactors can rely on the naming convention without re-querying.
+    # Icons / colors are part of the canonical seed so the Browse UI
+    # renders consistently across instances.
+    #
+    # Skipped when app-state lives in Postgres — memory_domains is then
+    # read from PG, and seeding here would leak rows into the local DuckDB
+    # (the inactive backend). Only the fresh-install path can hit this
+    # with PG active: the legacy-upgrade branches below predate the PG
+    # backend entirely, so their JOINs against these rows are unaffected.
+    if not _state_backend_is_pg():
+        for did, slug, name, icon, color in _CANONICAL_MEMORY_DOMAINS_SEED:
+            conn.execute(
+                "INSERT INTO memory_domains (id, slug, name, icon, color, created_at) "
+                "VALUES (?, ?, ?, ?, ?, current_timestamp) "
+                "ON CONFLICT (slug) DO NOTHING",
+                [did, slug, name, icon, color],
+            )
 
     # Plus one row per non-canonical ``knowledge_items.domain`` value found
     # in the existing data (defensive — instances may have hand-set domains
@@ -5446,7 +5479,16 @@ def _v84_to_v85(conn: duckdb.DuckDBPyConnection) -> None:
     INSERT OR IGNORE is idempotent — re-running on a DB that already has
     the row (e.g. from a previous manual registration or a re-applied
     migration) is a safe no-op.
+
+    Backend-conditional: when app-state lives in Postgres, the client row
+    is owned by the PG side (Alembic 0032) — seeding it here would leak a
+    row into the local DuckDB (the inactive backend), so only the ladder
+    version is bumped.
     """
+    if _state_backend_is_pg():
+        conn.execute("UPDATE schema_version SET version = 85")
+        return
+
     conn.execute(
         """
         INSERT OR IGNORE INTO oauth_clients
@@ -5482,7 +5524,16 @@ def _v85_to_v86(conn: duckdb.DuckDBPyConnection) -> None:
     and this backfill would inject stray local rows that ``_is_sso_user``
     would then have to distinguish from IdP-owned ones — so it no-ops,
     mirroring the same env-conditional branch in ``_v17_to_v18_finalize``.
+
+    Backend-conditional: when app-state lives in Postgres, the matching
+    backfill runs there via Alembic 0033 — seeding groups/memberships here
+    would write state rows into the local DuckDB (the inactive backend),
+    so only the ladder version is bumped.
     """
+    if _state_backend_is_pg():
+        conn.execute("UPDATE schema_version SET version = 86")
+        return
+
     _seed_system_groups(conn)
 
     if os.environ.get("AGNES_GROUP_EVERYONE_EMAIL", "").strip():
@@ -5716,15 +5767,22 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 "INSERT INTO schema_version (version) VALUES (?)",
                 [SCHEMA_VERSION],
             )
-            # v22 setup_banner row (kept as compat per CLAUDE.md schema notes).
-            conn.execute("INSERT INTO setup_banner (id, content) VALUES (1, NULL) ON CONFLICT (id) DO NOTHING")
-            # v26 instance_templates seed — three canonical keys with NULL
-            # content (operator override absent → render OSS default).
-            for key in ("welcome", "claude_md", "home"):
-                conn.execute(
-                    "INSERT INTO instance_templates (key, content) VALUES (?, NULL) ON CONFLICT (key) DO NOTHING",
-                    [key],
-                )
+            # Row seeds are skipped when app-state lives in Postgres —
+            # these tables are then read from PG (where the repos already
+            # tolerate the rows' absence), and writing them into the local
+            # DuckDB would leak state into the inactive backend (same
+            # contract as the system-groups seed at the bottom of this
+            # function).
+            if not _state_backend_is_pg():
+                # v22 setup_banner row (kept as compat per CLAUDE.md schema notes).
+                conn.execute("INSERT INTO setup_banner (id, content) VALUES (1, NULL) ON CONFLICT (id) DO NOTHING")
+                # v26 instance_templates seed — three canonical keys with NULL
+                # content (operator override absent → render OSS default).
+                for key in ("welcome", "claude_md", "home"):
+                    conn.execute(
+                        "INSERT INTO instance_templates (key, content) VALUES (?, NULL) ON CONFLICT (key) DO NOTHING",
+                        [key],
+                    )
             # v41 audit_log indices: _SYSTEM_SCHEMA omits CREATE INDEX to
             # avoid failures when pre-existing audit_log lacks timestamp
             # (migration tests). Create them here for fresh installs; the
@@ -6162,7 +6220,11 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     #   2. fresh installs: the (current == 0) branch above doesn't need its own
     #      seed — _SYSTEM_SCHEMA created the user_groups table empty.
     # Skip when current > SCHEMA_VERSION (future-version-noop rollback contract).
-    if get_schema_version(conn) <= SCHEMA_VERSION:
+    # Skip when app-state lives in Postgres: the groups are seeded there
+    # through the repository factory (app.main lifespan), and this local file
+    # then only serves the deliberately DuckDB-local tables (cli_auth_codes) —
+    # seeding here would side-channel state writes into the wrong backend.
+    if get_schema_version(conn) <= SCHEMA_VERSION and not _state_backend_is_pg():
         _seed_system_groups(conn)
 
 

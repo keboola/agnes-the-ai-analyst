@@ -60,6 +60,39 @@ class MemoryDomainsRepository:
         )
         return domain_id
 
+    def ensure_seed(
+        self,
+        *,
+        domain_id: str,
+        slug: str,
+        name: str,
+        icon: Optional[str] = None,
+        color: Optional[str] = None,
+    ) -> bool:
+        """Idempotently insert a canonical domain under its deterministic id.
+
+        Startup-seed counterpart of ``create`` (which generates random
+        ``md_<uuid12>`` ids): the app lifespan uses this to guarantee the
+        canonical ``md_<slug>`` rows exist on the active backend. Never
+        modifies an existing row — a matching id or slug (including a
+        soft-deleted row, which still holds its slug) makes this a no-op,
+        so admin edits and deletions survive reboots. Returns True iff a
+        new row was inserted.
+        """
+        before = self.conn.execute(
+            "SELECT 1 FROM memory_domains WHERE id = ? OR slug = ?",
+            [domain_id, slug],
+        ).fetchone()
+        if before:
+            return False
+        self.conn.execute(
+            "INSERT INTO memory_domains (id, slug, name, icon, color, status, created_by) "
+            "VALUES (?, ?, ?, ?, ?, 'prod', 'system:seed') "
+            "ON CONFLICT (slug) DO NOTHING",
+            [domain_id, slug, name, icon, color],
+        )
+        return True
+
     def get(self, domain_id: str, *, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
         # v54: hide soft-deleted rows by default; include_deleted=True is
         # the escape hatch the /restore endpoint uses.
