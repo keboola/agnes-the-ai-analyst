@@ -1055,10 +1055,15 @@ def materialize_query(
                     # materialize call — leaving the other ~3 pool entries
                     # at the 80%-of-host default and re-opening the OOM
                     # window for any analyst query that landed on them.
-                    attached = {r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()}
-                    if "bq" not in attached:
-                        conn.execute(f"ATTACH 'project={bq.projects.data}' AS bq (TYPE bigquery, READ_ONLY)")
-
+                    #
+                    # No ATTACH here (removed): the COPY source is a
+                    # standalone bigquery_query() table function; nothing
+                    # resolves through an attached `bq` catalog (DuckDB-
+                    # flavor bq."ds"."t" refs in admin SQL fail inside the
+                    # jobs API regardless — see _wrap_admin_sql_for_jobs_api).
+                    # ATTACHing the data project cost a full-project
+                    # INFORMATION_SCHEMA catalog scan (multi-GB billed +
+                    # seconds) on every fresh session, for zero benefit.
                     safe_path = _escape_sql_string_literal(str(tmp_path))
                     # The watchdog covers the client-side result download —
                     # the phase the extension's own timeout does not.

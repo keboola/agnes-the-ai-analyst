@@ -67,7 +67,7 @@ def test_execute_interruptible_zero_or_none_disables_watchdog():
 # ---------------------------------------------------------------- retry
 
 
-def _fake_bq(sessions_log: list):
+def _fake_bq(sessions_log: list, executed_sql: list | None = None):
     """BqAccess double whose duckdb_session yields SQL-pattern-matching
     fake connections (same shape as test_bq_materialize_concurrency)."""
     bq = MagicMock()
@@ -83,6 +83,8 @@ def _fake_bq(sessions_log: list):
             return False
 
         def execute(self, sql):
+            if executed_sql is not None:
+                executed_sql.append(sql)
             if sql.startswith("SELECT database_name"):
                 r = MagicMock()
                 r.fetchall.return_value = [("memory",)]
@@ -105,6 +107,28 @@ def _fake_bq(sessions_log: list):
 
     bq.duckdb_session.side_effect = lambda: _Session()
     return bq
+
+
+def test_materialize_does_not_attach_bq_catalog(tmp_path, monkeypatch):
+    """The COPY source is a standalone ``bigquery_query()`` table function
+    — it never resolves anything through an attached ``bq`` catalog.
+    ATTACHing the data project triggers a full-project INFORMATION_SCHEMA
+    catalog scan on the BQ side (multi-GB billed + seconds of latency) on
+    every fresh session, for zero benefit. It must not happen."""
+    sessions: list = []
+    executed: list = []
+    bq = _fake_bq(sessions, executed)
+    monkeypatch.setattr(mod, "_persist_materialized_inner_view", lambda **kw: None)
+
+    materialize_query(
+        table_id="stub_table",
+        sql="SELECT 1",
+        bq=bq,
+        output_dir=str(tmp_path),
+    )
+
+    offenders = [s for s in executed if s.startswith(("ATTACH", "SELECT database_name"))]
+    assert not offenders, f"materialize must not ATTACH the BQ catalog: {offenders}"
 
 
 def test_materialize_retries_once_on_fetch_timeout(tmp_path, monkeypatch):
