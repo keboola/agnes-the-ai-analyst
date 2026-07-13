@@ -77,6 +77,33 @@ class TestAuthMiddleware:
         asyncio.run(middleware(scope, None, None))
         assert reached, "Middleware did not call inner app with valid token"
 
+    def test_sets_current_user_id_during_request(self, seeded_app):
+        """_AuthMiddleware exposes the resolved caller id via _current_user_id
+        for the duration of the request (read by passthrough closures so a
+        per_user source forwards the caller's own credential), and resets it
+        after."""
+        import asyncio
+        from app.api.mcp_http import _AuthMiddleware, _current_user_id
+
+        tok = seeded_app["analyst_token"]
+        seen = {}
+
+        async def _inner_app(scope, receive, send):
+            seen["uid"] = _current_user_id.get()
+
+        middleware = _AuthMiddleware(_inner_app)
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/mcp/sse",
+            "query_string": b"",
+            "headers": [(b"authorization", f"Bearer {tok}".encode())],
+        }
+        asyncio.run(middleware(scope, None, None))
+        assert seen["uid"] == "analyst1"
+        # Reset after the request — no leak into the next context.
+        assert _current_user_id.get() == ""
+
     def test_query_param_token_passes_through(self, seeded_app):
         """?token= fallback also reaches the inner app when valid."""
         import asyncio
