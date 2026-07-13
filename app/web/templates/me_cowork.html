@@ -449,6 +449,7 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
         <div class="cg-picker" role="tablist" aria-label="Choose an agent">
           <button type="button" class="cg-pick-btn is-active" role="tab" aria-selected="true" data-guide="claude-desktop">Claude Desktop</button>
           <button type="button" class="cg-pick-btn" role="tab" aria-selected="false" data-guide="claude-web">Claude.ai</button>
+          <button type="button" class="cg-pick-btn" role="tab" aria-selected="false" data-guide="claude-code">Claude Code</button>
           <button type="button" class="cg-pick-btn" role="tab" aria-selected="false" data-guide="cursor">Cursor</button>
           <button type="button" class="cg-pick-btn" role="tab" aria-selected="false" data-guide="vscode">VS Code / Copilot</button>
           <button type="button" class="cg-pick-btn" role="tab" aria-selected="false" data-guide="chatgpt">ChatGPT</button>
@@ -477,6 +478,35 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
             <li>Complete the browser sign-in and approve the consent screen.</li>
             <li>Enable the connector in a chat to expose the tools to Claude.</li>
           </ol>
+        </div>
+
+        {# Claude Code #}
+        <div class="cg-guide" id="guide-claude-code" role="tabpanel">
+          <h3>Claude Code</h3>
+          <p class="cg-req">Requires the Claude Code CLI, signed in to your Claude account.</p>
+          <p class="cg-sub">1. Add the server</p>
+          <p class="cg-lede">Run this once in a terminal (add <code class="cg-inline-code">--scope user</code> to use it in every project):</p>
+          <div class="cg-code-wrap">
+            <div class="cg-code-head">
+              <span class="cg-code-file">terminal</span>
+              <button type="button" class="btn btn-secondary btn-sm cg-copy" data-copy="#cg-claude-code-cmd">Copy</button>
+            </div>
+            <pre class="cg-code" id="cg-claude-code-cmd">claude mcp add --transport http agnes {{ server_url }}/api/mcp/http</pre>
+          </div>
+          <p class="cg-sub">2. Restart &amp; sign in</p>
+          <ol class="cg-steps">
+            <li><strong>Restart Claude Code</strong> — the server only appears after a restart.</li>
+            <li>Run <code>/mcp</code>, select <code>agnes</code>, and choose <strong>Authenticate</strong> — a browser opens for the {{ instance_brand }} sign-in and consent.</li>
+            <li>Verify by asking Claude to run <code>server_info</code> — it should return your account email.</li>
+          </ol>
+          <div class="cg-note">
+            If the connection fails with <strong>"MCP endpoint not found"</strong> right after a
+            successful sign-in, that is not a wrong URL — older {{ instance_brand }} server
+            releases don't serve the streamable connector at this URL. Remove the server
+            (<code class="cg-inline-code">claude mcp remove agnes</code>) and re-add it over SSE:
+            <code class="cg-inline-code">claude mcp add --transport sse agnes {{ server_url }}/api/mcp/sse</code>,
+            then restart and authenticate the same way.
+          </div>
         </div>
 
         {# Cursor #}
