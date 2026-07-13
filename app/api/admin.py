@@ -4236,6 +4236,52 @@ def run_knowledge_packaging(
     return {"ok": not summary.get("errors"), "details": summary}
 
 
+@router.post("/run-knowledge-digests")
+def run_knowledge_digests(
+    user: dict = Depends(require_admin),
+):
+    """Regenerate maintained digests whose source fingerprint changed.
+
+    Scheduler-driven (K4, #799): fingerprints each digest's instructions +
+    source corpora, regenerates via LLM only when the fingerprint changed
+    (concurrency 1, budget/timeout-capped). Failures keep the previous
+    markdown and mark the digest visibly stale. Mirrors
+    run_knowledge_packaging's audit + error posture.
+    """
+    from src.knowledge_digests import run_digest_pass
+
+    job_error: Optional[Exception] = None
+    summary: dict = {}
+    try:
+        summary = run_digest_pass()
+    except Exception as e:
+        # Mirror run_knowledge_packaging / run_corporate_memory: capture any
+        # unhandled error so audit_log + /admin/scheduler-runs reflect the
+        # failure. Re-raised below after audit.
+        job_error = e
+
+    audit_params: dict = {
+        "generated": len(summary.get("generated", [])),
+        "skipped": len(summary.get("skipped", [])),
+        "stale": len(summary.get("stale", [])),
+        "errors": len(summary.get("errors", [])),
+    }
+    if job_error is not None:
+        audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
+
+    audit_repo().log(
+        user_id=user.get("id"),
+        action="run_knowledge_digests",
+        resource="job:knowledge-digests",
+        params=audit_params,
+    )
+
+    if job_error is not None:
+        raise HTTPException(status_code=500, detail=audit_params["unhandled_error"])
+
+    return {"ok": not summary.get("errors"), "details": summary}
+
+
 @router.post("/run-knowledge-migration")
 def run_knowledge_migration(
     user: dict = Depends(require_admin),
