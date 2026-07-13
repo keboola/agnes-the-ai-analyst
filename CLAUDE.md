@@ -182,6 +182,15 @@ wasteful; for remote-mode tables it can blow up at 225M rows.
 
 ### Choose the right tool
 
+`agnes query` defaults to `--scope auto`: it runs locally when the table is
+synced and transparently falls back to server-side execution when there is no
+local data or the table is `remote`/`server_only` (a `[scope]` stderr note
+says where it ran). `--remote` and `--local` are shorthands for
+`--scope server` / `--scope local`. The rails below are the cost-aware manual
+choices for LARGE remote tables — auto-fallback runs the query server-side
+as-is, so for big BigQuery tables still prefer a filtered snapshot or an
+explicit aggregate.
+
 Tables in `agnes catalog` have a `query_mode`:
 
 - **`local`**: data is on the laptop as parquet (synced via `agnes pull`).
