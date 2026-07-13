@@ -26,7 +26,10 @@ def _zero_fill_daily_series(rows) -> List[Dict]:
     verbatim in ``reports_pg.py`` (only the query feeding it differs).
     """
     by_day = {str(r[0]): int(r[1] or 0) for r in rows}
-    today = _dt.date.today()
+    # UTC, not date.today(): the fact rows are bucketed on UTC days (the
+    # session timezone is pinned in src/duckdb_conn.py), so a local-clock
+    # axis would drop today's bucket whenever local date != UTC date.
+    today = _dt.datetime.now(_dt.timezone.utc).date()
     series = []
     for offset in range(29, -1, -1):
         day_str = (today - _dt.timedelta(days=offset)).isoformat()
