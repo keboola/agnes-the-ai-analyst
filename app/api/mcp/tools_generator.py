@@ -135,14 +135,17 @@ def register_passthrough_tools(
 ) -> List[str]:
     """Register every enabled passthrough tool from ``tool_registry`` on ``mcp_instance``.
 
-    ``caller_id_fn`` resolves the current request's caller user id at tool-call
-    time. Each transport (SSE / Streamable-HTTP) passes its own resolver so
-    the synthesized closures — registered once at startup — can still forward
-    per-request identity into ``call_tool_async``. Without it, a
-    ``scope='per_user'`` source would see ``caller_user_id=None`` (the
-    caller-less materialize signal) and resolve to the shared credential for
-    every authenticated caller. Omit it only where no per-request caller
-    exists.
+    ``caller_id_fn`` resolves the current caller's user id at tool-call time.
+    Each transport passes its own resolver so the synthesized closures —
+    registered once at startup — can still forward caller identity into
+    ``call_tool_async``. Scope differs by transport: Streamable-HTTP resolves
+    per tool-call POST (off ``get_access_token()``), whereas SSE resolves the
+    identity bound when the ``/sse`` connection was opened (the tool executes
+    in that connection's task tree; harmless under the one-token-per-connection
+    usage this serves). Without a resolver, a ``scope='per_user'`` source would
+    see ``caller_user_id=None`` (the caller-less materialize signal) and resolve
+    to the shared credential for every authenticated caller. Omit it only where
+    no caller exists.
 
     Returns the list of exposed tool names that were registered (useful for
     logging and tests).
