@@ -21,6 +21,7 @@ on ``mcp_sources`` decide what the upstream sees. RFC #461 §4 vault +
 per-user credential passthrough is the next step — see
 ``dev_docs/POC-mcp-universal.md`` "Known limitations".
 """
+
 from __future__ import annotations
 
 import logging
@@ -54,6 +55,7 @@ router = APIRouter(prefix="/api/mcp/passthrough", tags=["mcp-passthrough"])
 
 class PassthroughToolDTO(BaseModel):
     """Slimmed-down tool_registry row for the stdio client's tool list."""
+
     tool_id: str
     source_id: str
     source_name: str
@@ -123,9 +125,7 @@ async def list_passthrough_tools(
     has curated and granted to their groups.
     """
     # Index sources once so each tool can resolve its source name cheaply.
-    source_names: Dict[str, str] = {
-        s["id"]: s["name"] for s in mcp_sources_repo().list_all(enabled_only=True)
-    }
+    source_names: Dict[str, str] = {s["id"]: s["name"] for s in mcp_sources_repo().list_all(enabled_only=True)}
     out: List[PassthroughToolDTO] = []
     for tool in _visible_passthrough_tools(user):
         source_name = source_names.get(tool["source_id"])
@@ -182,6 +182,26 @@ async def invoke_passthrough_tool(
     source = sources_repo.get(tool["source_id"])
     if source is None or not source.get("enabled", True):
         raise HTTPException(status_code=409, detail="upstream MCP source missing or disabled")
+
+    # Fail-closed guard for per-user sources: an interactive caller (admin
+    # included — data scoping is per identity) must have their own credential.
+    # Without one the call would connect with no token (see
+    # connectors.mcp.client._lookup_secret_for_source, which returns None for a
+    # per_user source with an identified caller and no row — it does NOT borrow
+    # the shared credential). Refuse here with an actionable message instead of
+    # letting it degrade to an opaque upstream auth error.
+    if (source.get("scope") or "shared").lower() == "per_user":
+        from src.repositories import per_user_secrets_repo
+
+        if not per_user_secrets_repo().get(source["id"], user["id"]):
+            src_label = source.get("name") or source["id"]
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"no personal credential for source {src_label!r}. Run "
+                    f"`agnes mcp my-secret set {src_label}` to connect your own account."
+                ),
+            )
 
     try:
         # Thread the caller's user_id through so sources with
