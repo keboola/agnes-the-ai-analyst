@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.58] - 2026-07-13
+
 ### Changed
 
 - BQ metadata lookups (rows/size via `TABLE_STORAGE` and `__TABLES__`, entity type via `INFORMATION_SCHEMA.TABLES`) now run through the python BigQuery SDK instead of the DuckDB extension: ~0.3 s per call instead of 7–13 s through a pooled extension session, certifi-verified TLS (immune to the extension's intermittent `CURL error 77` class), and the region-scoped `TABLE_STORAGE` job is now pinned to the configured location — previously it could silently return no row and always fall through to the legacy path. The COLUMNS fetch (shared `fetch_bq_columns_full`) stays on the extension.
