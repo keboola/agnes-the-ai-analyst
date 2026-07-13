@@ -27,12 +27,10 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 
 from app.auth.access import require_admin
-from app.auth.dependencies import _get_db
 from src.repositories import (
     audit_repo,
     file_corpora_repo,
@@ -201,7 +199,6 @@ def _serialize_preview(d: Dict[str, Any]) -> Dict[str, Any]:
 @router.get("")
 async def list_knowledge_digests(
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List all digests with a truncated ``output_md`` preview."""
     rows = knowledge_digests_repo().list()
@@ -212,7 +209,6 @@ async def list_knowledge_digests(
 async def create_knowledge_digest(
     payload: CreateKnowledgeDigestRequest,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     _validate_source_corpus_ids(payload.source_corpus_ids)
     repo = knowledge_digests_repo()
@@ -241,7 +237,6 @@ async def create_knowledge_digest(
 async def get_knowledge_digest(
     digest_id: str,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Detail view — full ``output_md`` (list only ships a preview)."""
     d = knowledge_digests_repo().get(digest_id)
@@ -255,7 +250,6 @@ async def update_knowledge_digest(
     digest_id: str,
     payload: UpdateKnowledgeDigestRequest,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = knowledge_digests_repo()
     existing = repo.get(digest_id)
@@ -294,7 +288,6 @@ async def update_knowledge_digest(
 async def delete_knowledge_digest(
     digest_id: str,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = knowledge_digests_repo()
     existing = repo.get(digest_id)
