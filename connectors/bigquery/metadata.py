@@ -36,7 +36,9 @@ import logging
 from app.api._metadata_models import MetadataRequest, TableMetadata
 from app.instance_config import get_value
 from connectors.bigquery.access import (
-    BqAccessError, fetch_bq_columns_full, get_bq_access,
+    BqAccessError,
+    fetch_bq_columns_full,
+    get_bq_access,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,12 +59,7 @@ def fetch(req: MetadataRequest) -> TableMetadata | None:
     entity_type = _fetch_entity_type(bq, req)
     known_columns = [c["name"] for c in columns] if columns else None
 
-    if (
-        rows_size is None
-        and part_clust is None
-        and entity_type is None
-        and not known_columns
-    ):
+    if rows_size is None and part_clust is None and entity_type is None and not known_columns:
         return None
 
     # For VIEW / MATERIALIZED VIEW the __TABLES__ fallback returns
@@ -87,6 +84,25 @@ def fetch(req: MetadataRequest) -> TableMetadata | None:
     )
 
 
+def _run_bq_sql(bq, sql: str, params: list[str], *, location: str | None = None):
+    """Run a BQ-native positional-parameter (``?``) query through the
+    python SDK and return the first row (or ``None``).
+
+    Transport rationale: these metadata lookups used to ride the DuckDB
+    extension (``bigquery_query()`` on a pooled extension session) at
+    7–13 s per call — and the extension's statically linked libcurl
+    intermittently fails new TLS handshakes with ``CURL error 77`` under
+    fd pressure. ``bq.client()`` answers the same SQL in ~0.3 s over the
+    SDK's certifi-verified channel. ``location`` pins the job region for
+    region-scoped INFORMATION_SCHEMA queries.
+    """
+    from google.cloud import bigquery as gbq
+
+    job_config = gbq.QueryJobConfig(query_parameters=[gbq.ScalarQueryParameter(None, "STRING", p) for p in params])
+    result = bq.client().query(sql, job_config=job_config, location=location).result()
+    return next(iter(result), None)
+
+
 def _fetch_entity_type(bq, req: MetadataRequest) -> str | None:
     """Look up ``INFORMATION_SCHEMA.TABLES.table_type`` for the table.
 
@@ -101,19 +117,16 @@ def _fetch_entity_type(bq, req: MetadataRequest) -> str | None:
     """
     try:
         bq_sql = (
-            f"SELECT table_type "
-            f"FROM `{bq.projects.data}.{req.bucket}.INFORMATION_SCHEMA.TABLES` "
-            f"WHERE table_name = ?"
+            f"SELECT table_type FROM `{bq.projects.data}.{req.bucket}.INFORMATION_SCHEMA.TABLES` WHERE table_name = ?"
         )
-        with bq.duckdb_session() as conn:
-            row = conn.execute(
-                "SELECT * FROM bigquery_query(?, ?, ?)",
-                [bq.projects.billing, bq_sql, req.source_table],
-            ).fetchone()
+        row = _run_bq_sql(bq, bq_sql, [req.source_table])
     except Exception as e:
         logger.warning(
             "BQ INFORMATION_SCHEMA.TABLES lookup failed for %s.%s.%s: %s",
-            bq.projects.data, req.bucket, req.source_table, e,
+            bq.projects.data,
+            req.bucket,
+            req.source_table,
+            e,
         )
         return None
     if row is None or row[0] is None:
@@ -171,9 +184,7 @@ def _resolve_bq_location(bq, req: MetadataRequest) -> str | None:
     if cfg_location:
         return cfg_location
     try:
-        ds = bq.client().get_dataset(
-            f"{bq.projects.data}.{req.bucket}"
-        )
+        ds = bq.client().get_dataset(f"{bq.projects.data}.{req.bucket}")
         return ds.location
     except Exception as e:
         logger.warning(
@@ -182,7 +193,9 @@ def _resolve_bq_location(bq, req: MetadataRequest) -> str | None:
             "where the SA lacks bigquery.datasets.get), set "
             "data_source.bigquery.location in /admin/server-config to the "
             "dataset's region (e.g. 'us-central1' or 'EU').",
-            bq.projects.data, req.bucket, e,
+            bq.projects.data,
+            req.bucket,
+            e,
         )
         return None
 
@@ -201,6 +214,7 @@ def _fetch_via_table_storage(bq, req: MetadataRequest, location: str) -> dict | 
     reads both; reporting only active undercounts aged partitioned tables).
     """
     from src.identifier_validation import validate_quoted_identifier
+
     if not validate_quoted_identifier(location, "BQ region"):
         return None
     # `req.bucket` / `req.source_table` are pre-validated by the
@@ -213,15 +227,17 @@ def _fetch_via_table_storage(bq, req: MetadataRequest, location: str) -> dict | 
             f"FROM `{bq.projects.data}.region-{location}.INFORMATION_SCHEMA.TABLE_STORAGE` "
             f"WHERE table_schema = ? AND table_name = ?"
         )
-        with bq.duckdb_session() as conn:
-            row = conn.execute(
-                "SELECT * FROM bigquery_query(?, ?, ?, ?)",
-                [bq.projects.billing, bq_sql, req.bucket, req.source_table],
-            ).fetchone()
+        # `location=` pins the SDK job to the region the region-scoped
+        # INFORMATION_SCHEMA view lives in — without it the job runs in
+        # the API default region and returns nothing.
+        row = _run_bq_sql(bq, bq_sql, [req.bucket, req.source_table], location=location)
     except Exception as e:
         logger.warning(
             "BQ TABLE_STORAGE fetch failed for %s.%s.%s: %s",
-            bq.projects.data, req.bucket, req.source_table, e,
+            bq.projects.data,
+            req.bucket,
+            req.source_table,
+            e,
         )
         return None
     if row is None:
@@ -240,20 +256,15 @@ def _fetch_via_legacy_tables(bq, req: MetadataRequest) -> dict | None:
     # `validate_quoted_identifier` before MetadataRequest construction;
     # safe to interpolate into the backtick-quoted path here.
     try:
-        bq_sql = (
-            f"SELECT row_count, size_bytes "
-            f"FROM `{bq.projects.data}.{req.bucket}.__TABLES__` "
-            f"WHERE table_id = ?"
-        )
-        with bq.duckdb_session() as conn:
-            row = conn.execute(
-                "SELECT * FROM bigquery_query(?, ?, ?)",
-                [bq.projects.billing, bq_sql, req.source_table],
-            ).fetchone()
+        bq_sql = f"SELECT row_count, size_bytes FROM `{bq.projects.data}.{req.bucket}.__TABLES__` WHERE table_id = ?"
+        row = _run_bq_sql(bq, bq_sql, [req.source_table])
     except Exception as e:
         logger.warning(
             "BQ __TABLES__ fetch failed for %s.%s.%s: %s",
-            bq.projects.data, req.bucket, req.source_table, e,
+            bq.projects.data,
+            req.bucket,
+            req.source_table,
+            e,
         )
         return None
     if row is None:
