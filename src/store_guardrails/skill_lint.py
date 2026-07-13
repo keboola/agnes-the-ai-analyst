@@ -1,4 +1,4 @@
-"""Skill linter — composition of quality checks and guardrail rules (SL002, SL011).
+"""Skill linter — composition of quality checks and guardrail rules (SL002, SL010, SL011, SL012).
 
 Provides a fault-tolerant linting engine that never raises. Rules are wrapped
 individually so one rule's error doesn't prevent others from running.
@@ -13,10 +13,11 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
+from src.store_guardrails.craft_review import CraftUnavailable
 from src.store_guardrails.quality_check import check as quality_check
 
 if TYPE_CHECKING:
-    pass  # Candidates and CraftCaller types added in Tasks 3-4
+    from src.store_guardrails.craft_review import CraftCaller
 
 logger = logging.getLogger(__name__)
 
@@ -71,25 +72,26 @@ def lint_skill(
     *,
     plugin_dir: Path | None = None,
     candidates: list[tuple[Any, float]] | None = None,
-    craft: Any | None = None,
+    craft: "CraftCaller | None" = None,
 ) -> LintReport:
-    """Lint a skill for marketplace guidelines (SL002, SL011, composition).
+    """Lint a skill for marketplace guidelines (SL002, SL010, SL011, SL012, composition).
 
     Args:
         entity: dict with keys id?, name, description (may be None), type
         skill_md: skill markdown content
         plugin_dir: baked tree when caller has one; None → synthesize temp tree
         candidates: lexical top-N (Task 3); None → skip dup rules
-        craft: CraftCaller injectable (Task 4); None → degraded mode
+        craft: CraftCaller injectable (Task 4); None, or a failed call, →
+            degraded mode (SL011/SL012 run instead of SL010)
 
     Returns:
-        LintReport with findings, rules_run, llm_used (always False in this task),
-        and content_hash.
+        LintReport with findings, rules_run, llm_used, and content_hash.
 
     Never raises — all rules are wrapped and logged on error.
     """
     findings: list[LintFinding] = []
     rules_run: list[str] = []
+    llm_used = False
 
     content_hash = compute_content_hash(skill_md)
 
@@ -116,8 +118,27 @@ def lint_skill(
     except Exception as e:
         logger.exception("SL002 rule failed: %s", e)
 
+    # --- SL010: holistic LLM craft review ---
+    # `craft` is a CraftCaller (see craft_review.default_craft_caller) —
+    # a 3-arg callable bound to the configured LLM, or None when the
+    # caller passed no craft review (or none is configured). It raises
+    # CraftUnavailable on failure (LLM error, malformed verdict) rather
+    # than returning [] — that distinction lets us fall back to the
+    # degraded-mode SL011/SL012 heuristics on failure instead of treating
+    # a transient outage as "the LLM confirmed this skill is clean".
+    if craft is not None:
+        try:
+            rules_run.append("SL010")
+            craft_findings = craft(entity, skill_md, candidates or [])
+            findings.extend(craft_findings)
+            llm_used = True
+        except CraftUnavailable:
+            logger.warning("SL010 craft review unavailable; falling back to degraded-mode rules")
+        except Exception as e:
+            logger.exception("SL010 craft review raised unexpectedly: %s", e)
+
     # --- SL011: Trigger phrase detection (degraded mode only) ---
-    if craft is None:
+    if not llm_used:
         try:
             rules_run.append("SL011")
             description = entity.get("description") or ""
@@ -143,10 +164,10 @@ def lint_skill(
     # --- SL012: Lexical duplicate recall (degraded mode only) ---
     # `candidates` is the caller's pre-computed lexical top-N (see
     # `src.store_guardrails.lint_corpus.top_candidates`); this rule only
-    # renders it as a finding. When `craft` is available (Task 4), the LLM
+    # renders it as a finding. When SL010 actually ran (llm_used), the LLM
     # duplicate-review rule takes over and this info-level heads-up is
     # redundant, so it's degraded-mode only.
-    if craft is None and candidates:
+    if not llm_used and candidates:
         try:
             rules_run.append("SL012")
             scored = [
@@ -231,6 +252,6 @@ def lint_skill(
     return LintReport(
         findings=findings,
         rules_run=rules_run,
-        llm_used=False,
+        llm_used=llm_used,
         content_hash=content_hash,
     )
