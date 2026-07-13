@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- Claude Code setup instructions on both connector pages: the AI Connector page (`/me/ai-connector`) gains a **Claude Code** tab in the setup guide — `claude mcp add --transport http agnes <server>/api/mcp/http`, the restart-before-it-appears note, `/mcp` to authenticate, and an SSE-fallback note for servers that predate the mount-root fix below — and the token page (`/mcp-connect`) gains a **Claude Code** tab with the PAT-in-header one-liner (`claude mcp add --transport sse … --header "Authorization: Bearer <PAT>"`).
+
+### Fixed
+
+- The streamable MCP connector now actually serves the advertised URL: `POST /api/mcp/http` (with or without trailing slash) previously 404'd because the SDK routes the transport at an internal `/mcp` sub-path and Starlette's Mount doesn't match the bare mount path at all — the slash-less URL fell through to the broader SSE mount. Clients completed OAuth cleanly, then failed on the first JSON-RPC call ("MCP endpoint not found" in Claude Code). A mount-root rewrite plus an exact-path route land both URL spellings on the transport; `/api/mcp/http/mcp` keeps working for back-compat.
+
 ---
 
 ## [0.74.55] - 2026-07-12
