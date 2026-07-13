@@ -79,6 +79,22 @@ def test_search_local_no_workspace_exits_1(tmp_path):
     assert "agnes init" in r.output
 
 
+def test_search_local_prints_offline_scope_warning_and_sources_line(workspace):
+    with patch("cli.config.get_workspace_root", return_value=str(workspace)):
+        r = runner.invoke(search_app, ["--local", "monthly invoices"])
+    assert r.exit_code == 0, r.output
+    assert "offline scope: documents only — knowledge + catalog need the server" in r.output
+    assert "sources: documents (local)" in r.output
+
+
+def test_search_scope_local_equivalent_to_flag(workspace):
+    with patch("cli.config.get_workspace_root", return_value=str(workspace)):
+        r = runner.invoke(search_app, ["--scope", "local", "monthly invoices"])
+    assert r.exit_code == 0, r.output
+    assert "handbook.md" in r.output
+    assert "sources: documents (local)" in r.output
+
+
 # ── MCP: offline fallback ───────────────────────────────────────────────────
 
 
