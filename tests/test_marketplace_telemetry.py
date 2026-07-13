@@ -1,11 +1,9 @@
 """Marketplace popularity stats — invocation rollup + sort + Most Popular."""
+
 from __future__ import annotations
 
 import datetime as dt
 import json
-
-import pytest
-from fastapi.testclient import TestClient
 
 
 # ---------------------------------------------------------------------------
@@ -22,30 +20,37 @@ def _seed_curated(user_id: str, marketplace: str, plugin: str) -> None:
 
     conn = get_system_db()
     try:
-        exists = conn.execute(
-            "SELECT 1 FROM marketplace_registry WHERE id = ?", [marketplace]
-        ).fetchone()
+        exists = conn.execute("SELECT 1 FROM marketplace_registry WHERE id = ?", [marketplace]).fetchone()
         if not exists:
             conn.execute(
-                "INSERT INTO marketplace_registry (id, name, url, registered_at) "
-                "VALUES (?, ?, ?, ?)",
-                [marketplace, marketplace.upper(),
-                 f"https://example.test/{marketplace}.git",
-                 dt.datetime.now(dt.timezone.utc)],
+                "INSERT INTO marketplace_registry (id, name, url, registered_at) VALUES (?, ?, ?, ?)",
+                [
+                    marketplace,
+                    marketplace.upper(),
+                    f"https://example.test/{marketplace}.git",
+                    dt.datetime.now(dt.timezone.utc),
+                ],
             )
         conn.execute(
             "INSERT OR IGNORE INTO marketplace_plugins "
             "(marketplace_id, name, description, version, category, raw, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [marketplace, plugin, "desc", "1.0", None,
-             json.dumps({"name": plugin, "version": "1.0", "description": "desc"}),
-             dt.datetime.now(dt.timezone.utc)],
+            [
+                marketplace,
+                plugin,
+                "desc",
+                "1.0",
+                None,
+                json.dumps({"name": plugin, "version": "1.0", "description": "desc"}),
+                dt.datetime.now(dt.timezone.utc),
+            ],
         )
         gname = f"G-{user_id}-{marketplace}-{plugin}"
         gid = UserGroupsRepository(conn).create(name=gname)["id"]
         UserGroupMembersRepository(conn).add_member(user_id, gid, source="admin")
         ResourceGrantsRepository(conn).create(
-            group_id=gid, resource_type="marketplace_plugin",
+            group_id=gid,
+            resource_type="marketplace_plugin",
             resource_id=f"{marketplace}/{plugin}",
         )
     finally:
@@ -68,6 +73,7 @@ def _seed_rollup(source: str, plugin_name: str, rows: list[tuple]) -> None:
     look up).
     """
     from src.db import get_system_db
+
     today = dt.date.today()
     conn = get_system_db()
     try:
@@ -104,9 +110,7 @@ def _seed_rollup(source: str, plugin_name: str, rows: list[tuple]) -> None:
 
 
 class TestTelemetryDefaults:
-    def test_unified_item_has_telemetry_fields_default_zero(
-        self, seeded_app, admin_user
-    ):
+    def test_unified_item_has_telemetry_fields_default_zero(self, seeded_app, admin_user):
         """Fresh response (no rollups seeded) returns invocations_30d=0, not omitted."""
         c = seeded_app["client"]
         # Seed one plugin so there is at least one item to check
@@ -131,11 +135,15 @@ class TestInvocationsReturned:
         returns the correct invocations_30d sum."""
         _seed_curated("admin1", "test-mp", "test-plug")
         # Days 1, 3, 10 ago — all within 30d window
-        _seed_rollup("curated", "test-plug", [
-            (1, 100, 10),
-            (3, 50, 5),
-            (10, 20, 2),
-        ])
+        _seed_rollup(
+            "curated",
+            "test-plug",
+            [
+                (1, 100, 10),
+                (3, 50, 5),
+                (10, 20, 2),
+            ],
+        )
         c = seeded_app["client"]
         resp = c.get("/api/marketplace/items?tab=curated", headers=admin_user)
         assert resp.status_code == 200
@@ -147,10 +155,14 @@ class TestInvocationsReturned:
     def test_old_rollups_excluded_from_30d_sum(self, seeded_app, admin_user):
         """Rows older than 30 days must NOT appear in invocations_30d."""
         _seed_curated("admin1", "test-mp2", "old-plug")
-        _seed_rollup("curated", "old-plug", [
-            (31, 999, 99),  # outside 30d window
-            (1, 5, 1),      # inside
-        ])
+        _seed_rollup(
+            "curated",
+            "old-plug",
+            [
+                (31, 999, 99),  # outside 30d window
+                (1, 5, 1),  # inside
+            ],
+        )
         c = seeded_app["client"]
         resp = c.get("/api/marketplace/items?tab=curated", headers=admin_user)
         assert resp.status_code == 200
@@ -175,9 +187,7 @@ class TestSortMostUsed:
         assert resp.status_code == 200
         names = [i["name"] for i in resp.json()["items"]]
         # high-plug should come before low-plug
-        assert names.index("high-plug") < names.index("low-plug"), (
-            f"Expected high-plug before low-plug; got {names}"
-        )
+        assert names.index("high-plug") < names.index("low-plug"), f"Expected high-plug before low-plug; got {names}"
 
     def test_sort_recent_preserves_default_order(self, seeded_app, admin_user):
         """sort=recent (default) doesn't break the existing endpoint contract."""
@@ -193,8 +203,7 @@ class TestSortMostUsed:
         )
         assert resp1.status_code == 200
         assert resp2.status_code == 200
-        assert [i["name"] for i in resp1.json()["items"]] == \
-               [i["name"] for i in resp2.json()["items"]]
+        assert [i["name"] for i in resp1.json()["items"]] == [i["name"] for i in resp2.json()["items"]]
 
 
 class TestSortTrending:
@@ -211,21 +220,25 @@ class TestSortTrending:
         )
         assert resp.status_code == 200
         names = [i["name"] for i in resp.json()["items"]]
-        assert "noisy-plug" not in names, (
-            "noisy-plug should be excluded from trending (prior invocations < 3)"
-        )
+        assert "noisy-plug" not in names, "noisy-plug should be excluded from trending (prior invocations < 3)"
 
-    def test_sort_trending_includes_item_with_sufficient_prior(
-        self, seeded_app, admin_user
-    ):
+    def test_sort_trending_includes_item_with_sufficient_prior(self, seeded_app, admin_user):
         """An item with >=3 prior-week invocations must appear in trending sort."""
         _seed_curated("admin1", "trend-mp2", "trend-plug")
         # prior week (8-14 days ago): 12 invocations across 3 days
         # recent week (1-6 days ago): 30 invocations across 3 days
-        _seed_rollup("curated", "trend-plug", [
-            (8, 4, 1), (10, 4, 1), (12, 4, 1),
-            (1, 10, 2), (3, 10, 2), (5, 10, 2),
-        ])
+        _seed_rollup(
+            "curated",
+            "trend-plug",
+            [
+                (8, 4, 1),
+                (10, 4, 1),
+                (12, 4, 1),
+                (1, 10, 2),
+                (3, 10, 2),
+                (5, 10, 2),
+            ],
+        )
 
         c = seeded_app["client"]
         resp = c.get(
@@ -234,9 +247,7 @@ class TestSortTrending:
         )
         assert resp.status_code == 200
         names = [i["name"] for i in resp.json()["items"]]
-        assert "trend-plug" in names, (
-            f"trend-plug should appear in trending sort; got {names}"
-        )
+        assert "trend-plug" in names, f"trend-plug should appear in trending sort; got {names}"
 
 
 class TestMostPopularSection:
@@ -250,9 +261,7 @@ class TestMostPopularSection:
             headers=admin_user,
         )
         assert resp.status_code == 200
-        items_with_inv = [
-            i for i in resp.json()["items"] if i["invocations_30d"] > 0
-        ]
+        items_with_inv = [i for i in resp.json()["items"] if i["invocations_30d"] > 0]
         # No rollups seeded — all zero, JS hides the section
         assert items_with_inv == []
 
@@ -263,6 +272,17 @@ class TestMostPopularSection:
         resp = c.get("/marketplace", headers=admin_user)
         assert resp.status_code == 200
         assert "mp-popular-section" in resp.text
+
+    def test_search_scope_checkboxes_both_checked_by_default(self, seeded_app, admin_user):
+        """Both 'Search in' scope checkboxes render pre-checked regardless of
+        the active tab, so a search from any tab fans out to curated AND
+        flea by default instead of silently scoping to the current tab."""
+        c = seeded_app["client"]
+        resp = c.get("/marketplace?tab=curated", headers=admin_user)
+        assert resp.status_code == 200
+        body = resp.text
+        assert '<input type="checkbox" id="mp-scope-curated" checked>' in body
+        assert '<input type="checkbox" id="mp-scope-flea" checked>' in body
 
     def test_most_popular_section_visible_with_data(self, seeded_app, admin_user):
         """After seeding usage_plugin_daily, sort=most_used returns items with
@@ -276,16 +296,12 @@ class TestMostPopularSection:
             headers=admin_user,
         )
         assert resp.status_code == 200
-        items_with_inv = [
-            i for i in resp.json()["items"] if i["invocations_30d"] > 0
-        ]
+        items_with_inv = [i for i in resp.json()["items"] if i["invocations_30d"] > 0]
         assert len(items_with_inv) >= 1, "Expected at least one item with invocations > 0"
 
 
 class TestDetailTelemetry:
-    def test_detail_endpoint_telemetry_absent_when_no_data(
-        self, seeded_app, admin_user
-    ):
+    def test_detail_endpoint_telemetry_absent_when_no_data(self, seeded_app, admin_user):
         """GET /api/marketplace/curated/{mp}/{plugin} returns telemetry=null when
         no rollup data exists."""
         _seed_curated("admin1", "detail-mp", "detail-plug")
@@ -297,16 +313,18 @@ class TestDetailTelemetry:
         assert resp.status_code == 200
         assert resp.json()["telemetry"] is None
 
-    def test_detail_endpoint_telemetry_present_with_data(
-        self, seeded_app, admin_user
-    ):
+    def test_detail_endpoint_telemetry_present_with_data(self, seeded_app, admin_user):
         """GET /api/marketplace/curated/{mp}/{plugin} returns telemetry dict with
         invocations_30d and 30-entry daily_series when rollup data exists."""
         _seed_curated("admin1", "detail-mp2", "detail-plug2")
-        _seed_rollup("curated", "detail-plug2", [
-            (1, 50, 5),
-            (5, 30, 3),
-        ])
+        _seed_rollup(
+            "curated",
+            "detail-plug2",
+            [
+                (1, 50, 5),
+                (5, 30, 3),
+            ],
+        )
         c = seeded_app["client"]
         resp = c.get(
             "/api/marketplace/curated/detail-mp2/detail-plug2",
@@ -316,7 +334,7 @@ class TestDetailTelemetry:
         tele = resp.json()["telemetry"]
         assert tele is not None
         assert tele["invocations_30d"] == 80  # 50+30
-        assert tele["distinct_users_30d"] == 8   # 5+3
+        assert tele["distinct_users_30d"] == 8  # 5+3
         assert "daily_series" in tele
         assert len(tele["daily_series"]) == 30
         # Each entry has day + invocations
