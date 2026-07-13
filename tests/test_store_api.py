@@ -111,6 +111,34 @@ def _make_agent_zip(
     return buf.getvalue()
 
 
+def _make_finder_plugin_zip(
+    name: str = "my-plugin",
+    wrapper: str = "my-plugin",
+    desc: str = _OK_DESC,
+    body: str = _OK_BODY,
+) -> bytes:
+    """A plugin ZIP the way macOS Finder's "Compress <folder>" produces it:
+    every entry under a single top-level wrapper dir, plus __MACOSX/
+    AppleDouble mirrors and a .DS_Store."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            f"{wrapper}/.claude-plugin/plugin.json",
+            json.dumps({"name": name, "description": desc, "version": "0.1"}),
+        )
+        zf.writestr(
+            f"{wrapper}/skills/dummy/SKILL.md",
+            f"---\nname: dummy\ndescription: {desc}\n---\n\n{body}\n",
+        )
+        zf.writestr(f"{wrapper}/.DS_Store", b"\x00\x01junk")
+        zf.writestr(f"__MACOSX/._{wrapper}", b"\x00\x05\x16\x07junk")
+        zf.writestr(
+            f"__MACOSX/{wrapper}/.claude-plugin/._plugin.json",
+            b"\x00\x05\x16\x07junk",
+        )
+    return buf.getvalue()
+
+
 def _make_skill_file(
     skill_name: str = "code-review",
     desc: str = _OK_DESC,
@@ -118,9 +146,7 @@ def _make_skill_file(
 ) -> bytes:
     """Bytes of a single ``.skill`` file — a lone SKILL.md document. Mirrors
     ``_make_skill_zip`` but without the ZIP wrapper (single-file upload)."""
-    return (
-        f"---\nname: {skill_name}\ndescription: {desc}\n---\n\n{body}\n"
-    ).encode("utf-8")
+    return (f"---\nname: {skill_name}\ndescription: {desc}\n---\n\n{body}\n").encode("utf-8")
 
 
 class TestStoreOwners:
@@ -504,6 +530,160 @@ class TestStoreSkillFileUpload:
         assert body["type"] == "skill"
         assert body["name"] == "from-preview"
         assert body["description"] == "Pulled from frontmatter."
+
+
+class TestStoreAnchorRooting:
+    """The bundle root is located by its anchor file (.claude-plugin/plugin.json,
+    SKILL.md, agent .md) anywhere in the extracted tree — not by assuming the
+    archive root. This is how macOS Finder's "Compress <folder>" ZIPs (single
+    wrapper dir + __MACOSX junk) become uploadable."""
+
+    def test_finder_style_plugin_zip_bakes_at_root(self, web_client, tmp_path):
+        _, cookies = _create_user(web_client, "finder@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("p.zip", _make_finder_plugin_zip("wrapped"), "application/zip")},
+            data={"type": "plugin", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        plugin_dir = tmp_path / "store" / body["id"] / "plugin"
+        # plugin.json lands at the baked-tree root (wrapper dir stripped)…
+        pj = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text())
+        assert pj["name"] == "wrapped-by-finder"
+        assert (plugin_dir / "skills" / "dummy" / "SKILL.md").is_file()
+        # …and no wrapper dir or macOS junk is mirrored into the bake.
+        baked = {str(f.relative_to(plugin_dir)) for f in plugin_dir.rglob("*")}
+        assert not any(p.startswith("wrapped") for p in baked)
+        assert not any("__MACOSX" in p or p.endswith(".DS_Store") for p in baked)
+
+    def test_deeply_nested_plugin_zip_accepted(self, web_client, tmp_path):
+        _, cookies = _create_user(web_client, "nested@x.com")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr(
+                "a/b/plug/.claude-plugin/plugin.json",
+                json.dumps({"name": "deep", "description": _OK_DESC}),
+            )
+            zf.writestr(
+                "a/b/plug/skills/dummy/SKILL.md",
+                f"---\nname: dummy\ndescription: {_OK_DESC}\n---\n\n{_OK_BODY}\n",
+            )
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("p.zip", buf.getvalue(), "application/zip")},
+            data={"type": "plugin", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        plugin_dir = tmp_path / "store" / r.json()["id"] / "plugin"
+        pj = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text())
+        assert pj["name"] == "deep-by-nested"
+
+    def test_preview_finder_style_plugin_zip(self, web_client):
+        _, cookies = _create_user(web_client, "finder-preview@x.com")
+        r = web_client.post(
+            "/api/store/entities/preview",
+            files={"file": ("p.zip", _make_finder_plugin_zip("previewed"), "application/zip")},
+            data={"type": "plugin", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["name"] == "previewed"
+
+    def test_two_plugins_same_depth_422(self, web_client):
+        _, cookies = _create_user(web_client, "twins@x.com")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for sub in ("one", "two"):
+                zf.writestr(
+                    f"{sub}/.claude-plugin/plugin.json",
+                    json.dumps({"name": sub, "description": _OK_DESC}),
+                )
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("p.zip", buf.getvalue(), "application/zip")},
+            data={"type": "plugin", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"] == "zip_multiple_plugins"
+
+    def test_shallowest_plugin_json_wins(self, web_client, tmp_path):
+        """A plugin that vendors another plugin deeper in its tree roots at
+        the shallowest anchor — no ambiguity error."""
+        _, cookies = _create_user(web_client, "shallow@x.com")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr(
+                ".claude-plugin/plugin.json",
+                json.dumps({"name": "outer", "description": _OK_DESC}),
+            )
+            zf.writestr(
+                "vendor/inner/.claude-plugin/plugin.json",
+                json.dumps({"name": "inner", "description": _OK_DESC}),
+            )
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("p.zip", buf.getvalue(), "application/zip")},
+            data={"type": "plugin", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        plugin_dir = tmp_path / "store" / r.json()["id"] / "plugin"
+        pj = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text())
+        assert pj["name"] == "outer-by-shallow"
+
+    def test_finder_style_skill_zip_drops_junk(self, web_client, tmp_path):
+        _, cookies = _create_user(web_client, "finder-skill@x.com")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr(
+                "my-skill/SKILL.md",
+                f"---\nname: my-skill\ndescription: {_OK_DESC}\n---\n\n{_OK_BODY}\n",
+            )
+            zf.writestr("my-skill/.DS_Store", b"\x00junk")
+            zf.writestr("__MACOSX/my-skill/._SKILL.md", b"\x00\x05\x16\x07junk")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", buf.getvalue(), "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        plugin_dir = tmp_path / "store" / r.json()["id"] / "plugin"
+        skill_dir = plugin_dir / "skills" / "my-skill-by-finder-skill"
+        assert (skill_dir / "SKILL.md").is_file()
+        assert not (skill_dir / ".DS_Store").exists()
+
+    def test_appledouble_md_not_picked_as_agent(self, web_client, tmp_path):
+        """__MACOSX AppleDouble mirrors (``._planner.md``) must never win the
+        agent-anchor search over the real markdown file."""
+        _, cookies = _create_user(web_client, "finder-agent@x.com")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr(
+                "planner/planner.md",
+                f"---\nname: planner\ndescription: {_OK_DESC}\n---\n\n{_OK_BODY}\n",
+            )
+            # AppleDouble junk that sorts BEFORE the real file and even
+            # carries parseable frontmatter in its (bogus) text payload.
+            zf.writestr(
+                "__MACOSX/planner/._planner.md",
+                b"---\nname: junk\ndescription: junk desc\n---\nbody",
+            )
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("a.zip", buf.getvalue(), "application/zip")},
+            data={"type": "agent", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["name"] == "planner"
+        plugin_dir = tmp_path / "store" / body["id"] / "plugin"
+        assert (plugin_dir / "agents" / "planner-by-finder-agent.md").is_file()
 
 
 class TestStoreV49Metadata:
