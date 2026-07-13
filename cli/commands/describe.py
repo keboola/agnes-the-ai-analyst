@@ -24,7 +24,15 @@ def describe(
         sch = api_get_json(f"/api/v2/schema/{table_id}")
         sam = api_get_json(f"/api/v2/sample/{table_id}", n=n)
     except V2ClientError as e:
-        typer.echo(f"Error: describe failed: {e}", err=True)
+        if e.status_code == 404:
+            typer.echo(
+                f"Table '{table_id}' not found in the registry.\n"
+                "  - List available tables:  agnes catalog\n"
+                f'  - Search everything:      agnes search "{table_id}"',
+                err=True,
+            )
+        else:
+            typer.echo(f"Error: describe failed: {e}", err=True)
         raise typer.Exit(5 if e.status_code >= 500 else 8 if e.status_code == 403 else 2)
 
     if json:
