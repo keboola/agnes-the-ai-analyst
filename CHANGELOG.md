@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.65] - 2026-07-14
+
 ### Added
 
 - New branding knob `instance_brand_short` (`AGNES_INSTANCE_BRAND_SHORT` env >
