@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-import click
 import typer
 
 from cli.query_hints import missing_table, remote_table_hint
@@ -36,15 +35,14 @@ class _LocalTableMiss(Exception):
 
 
 def query_command(
-    ctx: typer.Context,
     sql: Optional[str] = typer.Argument(None, help="SQL query to execute (positional)"),
     sql_opt: Optional[str] = typer.Option(None, "--sql", help="SQL query to execute (named option)"),
     remote: bool = typer.Option(False, "--remote", help="Shorthand for --scope server"),
     local_flag: bool = typer.Option(False, "--local", help="Shorthand for --scope local"),
-    scope: str = typer.Option(
-        "auto",
+    scope: Optional[str] = typer.Option(
+        None,
         "--scope",
-        help="Where to run: auto (local first, fall back to server), local, server",
+        help="Where to run: auto (local first, fall back to server), local, server [default: auto]",
     ),
     fmt: str = typer.Option("table", "--format", "-f", help="Output format: table, json, csv"),
     json_flag: bool = typer.Option(False, "--json", help="Shortcut for --format json"),
@@ -75,17 +73,20 @@ def query_command(
             raise typer.Exit(1)
         fmt = "json"
 
-    if scope not in _VALID_SCOPES:
+    if scope is not None and scope not in _VALID_SCOPES:
         typer.echo(
             f"Error: --scope must be one of {', '.join(_VALID_SCOPES)} (got {scope!r}).",
             err=True,
         )
         raise typer.Exit(1)
 
-    # --scope defaults to "auto"; distinguish an explicit `--scope local`/
-    # `--scope server` from that default so we can detect real conflicts
-    # with --remote/--local without rejecting the (harmless) default.
-    scope_explicit = ctx.get_parameter_source("scope") == click.core.ParameterSource.COMMANDLINE
+    # `None` means --scope was not given (defaults to auto). The sentinel —
+    # rather than click's get_parameter_source, whose behavior shifted across
+    # click releases — distinguishes an explicit `--scope local`/`--scope
+    # server` from the default so real conflicts with --remote/--local are
+    # rejected without rejecting the (harmless) default.
+    scope_explicit = scope is not None
+    scope = scope or "auto"
 
     if remote and local_flag:
         typer.echo("Error: --remote and --local are mutually exclusive.", err=True)
