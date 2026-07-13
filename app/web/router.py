@@ -29,6 +29,7 @@ from app.instance_config import (
     get_home_route,
     get_home_automode_visibility,
     get_instance_brand,
+    get_instance_brand_short,
     get_workspace_dir_name,
     get_instance_logo_svg,
     get_instance_overview,
@@ -605,13 +606,16 @@ def _build_context(
         "home_route": _resolved_home_route(),
         # Branding: `instance_name` is the deploying org's display name
         # (page titles); `instance_brand` is the product name used in body
-        # copy and CTAs ("Setup {brand}", "{brand} runs SELECT…"); `workspace_dir`
-        # is the filesystem-safe folder name shown in `~/<workspace_dir>` and
-        # baked into the clipboard setup script. All three default to the
-        # Agnes-flavored values out of the box; Terraform can flip them via
-        # env vars (AGNES_INSTANCE_BRAND / AGNES_WORKSPACE_DIR_NAME).
+        # copy and CTAs ("Setup {brand}", "{brand} runs SELECT…");
+        # `instance_brand_short` is the mid-sentence short form (defaults to
+        # the full brand); `workspace_dir` is the filesystem-safe folder name
+        # shown in `~/<workspace_dir>` and baked into the clipboard setup
+        # script. All default to the Agnes-flavored values out of the box;
+        # Terraform can flip them via env vars (AGNES_INSTANCE_BRAND /
+        # AGNES_INSTANCE_BRAND_SHORT / AGNES_WORKSPACE_DIR_NAME).
         "instance_name": get_instance_name(),
         "instance_brand": get_instance_brand(),
+        "instance_brand_short": get_instance_brand_short(),
         "workspace_dir": get_workspace_dir_name(),
         # Active palette — drives `<html data-theme="...">` in
         # base.html so `--ds-*` tokens flip via CSS without
@@ -1874,6 +1878,7 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         "home_route": _resolved_home_route(),
         "instance_name": get_instance_name(),
         "instance_brand": get_instance_brand(),
+        "instance_brand_short": get_instance_brand_short(),
         "workspace_dir": get_workspace_dir_name(),
         "instance_theme": get_instance_theme(),
         "home_automode": {"show": get_home_automode_visibility()},

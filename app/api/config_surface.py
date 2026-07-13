@@ -69,6 +69,15 @@ _KNOB_CATALOGUE: list[dict[str, Any]] = [
         "default": "Agnes",
     },
     {
+        # Default derives from get_instance_brand() at runtime; "Agnes" is the
+        # stock value (same derived-knob caveat as workspace_dir_name).
+        "key": "instance_brand_short",
+        "resolver": "get_instance_brand_short",
+        "env_var": "AGNES_INSTANCE_BRAND_SHORT",
+        "yaml_path": "instance.brand_short",
+        "default": "Agnes",
+    },
+    {
         "key": "instance_logo_svg",
         "resolver": "get_instance_logo_svg",
         "env_var": "AGNES_INSTANCE_LOGO_SVG",

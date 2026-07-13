@@ -71,6 +71,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Deployment display name (page titles, email subjects) | — | `instance.name` | `AI Harness` | `get_instance_name()` |
 | Header subtitle | — | `instance.subtitle` | `""` | `get_instance_subtitle()` |
 | Product brand string (hero copy, CTAs, setup script) | `AGNES_INSTANCE_BRAND` | `instance.brand` | `Agnes` | `get_instance_brand()` |
+| Short brand for mid-sentence body copy; when it differs from the full brand, the `/home` hero appends "Call me {short}." | `AGNES_INSTANCE_BRAND_SHORT` | `instance.brand_short` | derived (= `instance.brand`) | `get_instance_brand_short()` |
 | Inline `<svg>` logo for the header brand slot | `AGNES_INSTANCE_LOGO_SVG` | `instance.logo_svg` | `""` (text brand) | `get_instance_logo_svg()` |
 | UI theme/palette (`blue`/`navy`/`dark`/`auto`) | `AGNES_INSTANCE_THEME` | `instance.theme` | `blue` | `get_instance_theme()` |
 | Analyst workspace folder name (`~/<name>`) | `AGNES_WORKSPACE_DIR_NAME` | `instance.workspace_dir` | derived from brand (non-alphanumerics stripped) | `get_workspace_dir_name()` |
@@ -143,6 +144,7 @@ instance:
   subtitle: "Acme Corp"          # Header subtitle (get_instance_subtitle)
   copyright: "Acme Corp"         # Footer copyright
   brand: "Acme Analyst"          # Product brand string (get_instance_brand)
+  brand_short: "Acme"            # Short brand for body copy (get_instance_brand_short)
   theme: "blue"                  # UI palette (get_instance_theme)
   home_route: "/home"            # Landing after auth (get_home_route)
 ```

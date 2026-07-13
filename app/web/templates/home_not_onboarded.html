@@ -21,18 +21,22 @@
        variables below. Hero structure lives in _home_hero_intro.html. #}
     {% set display_name = (user.name or (user.email or "").split("@")[0] or "there") %}
     {% set hero_eyebrow = "Welcome, " ~ display_name %}
-    {# `instance_brand` is operator-controlled (AGNES_INSTANCE_BRAND env or
-       `instance.brand` YAML) and gets spliced into HTML strings the partial
-       renders with `| safe`. The previous `{% set x = (instance_brand | e) ~ "…<span>…" %}`
-       approach silently broke: `~` concatenation of a Markup with a raw str
+    {# `instance_brand` / `instance_brand_short` are operator-controlled
+       (AGNES_INSTANCE_BRAND[_SHORT] env or `instance.brand[_short]` YAML) and
+       get spliced into HTML strings the partial renders with `| safe`. The
+       previous `{% set x = (instance_brand | e) ~ "…<span>…" %}` approach
+       silently broke: `~` concatenation of a Markup with a raw str
        autoescapes the right operand, so the `<span>` chars came out as
        `&lt;span&gt;` and showed as visible text in the browser. The
        `{% set foo %}…{% endset %}` block form gets autoescape semantics
        right: `{{ instance_brand }}` inside the block is autoescaped just
        like a normal expression, literal HTML stays literal, and the captured
-       value is a Markup the partial's `| safe` filter passes through. #}
-    {% set hero_title_html %}{{ instance_brand }} is your team's <span class="accent">AI workspace.</span>{% endset %}
-    {% set hero_lede_para_1 %}One place to reach {{ instance_brand }}'s curated data, plugins, skills, and shared memory &mdash; so your AI agent stops guessing and starts answering. Curated, versioned, kept current. The system learns from every session and extends coverage so the next question doesn't trip on the same gap.{% endset %}
+       value is a Markup the partial's `| safe` filter passes through.
+       The hero title keeps the FULL brand; when a distinct short brand is
+       configured it introduces itself ("Call me {short}."), and the rest of
+       the page's body copy uses `instance_brand_short`. #}
+    {% set hero_title_html %}{{ instance_brand }} is your team's <span class="accent">AI workspace.</span>{% if instance_brand_short != instance_brand %} Call me {{ instance_brand_short }}.{% endif %}{% endset %}
+    {% set hero_lede_para_1 %}One place to reach {{ instance_brand_short }}'s curated data, plugins, skills, and shared memory &mdash; so your AI agent stops guessing and starts answering. Curated, versioned, kept current. The system learns from every session and extends coverage so the next question doesn't trip on the same gap.{% endset %}
     {% set hero_lede = [
         hero_lede_para_1,
         "Think of it as your <em>AI Chief of Staff</em> &mdash; it lives in a folder on your computer, gives you access to company data and curated skills, and lets you share your own skills and plugins back to the team. You run all your projects inside and it learns from it."
@@ -73,7 +77,7 @@
     {% if not onboarded %}
     <div class="setup-section-header" id="install-hero">
         <div class="eyebrow">First time here</div>
-        <h2 class="setup-heading">Set up {{ instance_brand }} on your machine</h2>
+        <h2 class="setup-heading">Set up {{ instance_brand_short }} on your machine</h2>
         <p class="lead">
             ~15&nbsp;minutes, one time. You'll install one CLI tool, pick a folder, and paste a script we generate for you. After that you have a working AI workspace that knows your team's data. Everything lives in <code>~/Desktop/{{ workspace_dir }}</code> and can be removed in one command.
         </p>
@@ -104,7 +108,7 @@
         <div class="install-block">
             <div class="step-num" aria-hidden="true"><span>1</span></div>
             <div class="label">Install Claude Code on your computer</div>
-            <p class="step-lede">Claude Code is the CLI tool that runs Claude on your machine. {{ instance_brand }} plugs into it. <strong>~3&nbsp;min.</strong></p>
+            <p class="step-lede">Claude Code is the CLI tool that runs Claude on your machine. {{ instance_brand_short }} plugs into it. <strong>~3&nbsp;min.</strong></p>
             <div class="os-tabs" role="tablist" aria-label="Operating system">
                 <button type="button" role="tab" class="os-tab is-active"
                         data-os-tab="unix" aria-selected="true">macOS / Linux</button>
@@ -136,8 +140,8 @@
 
         <div class="install-block">
             <div class="step-num" aria-hidden="true"><span>2</span></div>
-            <div class="label">Pick a folder for {{ instance_brand }}</div>
-            <p class="step-lede">This is where {{ instance_brand }} &mdash; and all your AI projects &mdash; will live. <strong>~1&nbsp;min.</strong></p>
+            <div class="label">Pick a folder for {{ instance_brand_short }}</div>
+            <p class="step-lede">This is where {{ instance_brand_short }} &mdash; and all your AI projects &mdash; will live. <strong>~1&nbsp;min.</strong></p>
 
             <div class="callout-rec">
                 <strong>My recommendation: put it on your Desktop.</strong>
@@ -244,7 +248,7 @@ What can I help you with?
             <div class="step-num" aria-hidden="true"><span>{% if home_automode.show %}5{% else %}4{% endif %}</span></div>
             <div class="label">Get the install script and paste it into Claude</div>
             <p class="step-lede">
-                Click the button below. {{ instance_brand }} generates a one-time install script
+                Click the button below. {{ instance_brand_short }} generates a one-time install script
                 (with a 90-day login token) and copies it to your clipboard. Then paste it into the
                 Claude prompt{% if home_automode.show %} from Step&nbsp;4{% endif %} (<kbd>⌘</kbd>+<kbd>V</kbd> on macOS,
                 <kbd>Ctrl</kbd>+<kbd>V</kbd> on Windows) and hit Enter. The script installs ~20 things
@@ -278,14 +282,14 @@ What can I help you with?
             <div id="setupClaudeError" class="setup-error" role="alert" style="display:none;"></div>
 
             <div class="callout-hint">
-                <strong>You're done when</strong> the script finishes and {{ instance_brand }} auto-detects
+                <strong>You're done when</strong> the script finishes and {{ instance_brand_short }} auto-detects
                 your first <code>agnes pull</code> (~30 seconds after the script ends). This page will
                 update on its own.
             </div>
 
             <div class="callout-rec">
                 <strong>The install bundled a curated security allowlist &mdash; review it before going further.</strong>
-                {{ instance_brand }}'s setup script installed a reviewed <code>~/.claude/settings.local.json</code> for you,
+                {{ instance_brand_short }}'s setup script installed a reviewed <code>~/.claude/settings.local.json</code> for you,
                 with sensible defaults: read freely, run common dev tools, gate destructive ops.
                 <br><br>
                 Open the file (<code>open ~/.claude/settings.local.json</code> on macOS, or in VS Code) and
@@ -347,12 +351,12 @@ What can I help you with?
        language stays consistent across visits. #}
     <section class="first-session" id="first-session">
         <div class="eyebrow">Your first session</div>
-        <h2>What happens when you launch {{ instance_brand }}</h2>
+        <h2>What happens when you launch {{ instance_brand_short }}</h2>
         <p class="lede">A real session, end-to-end. You'll see exactly what appears on screen and what to type at each step. No prior terminal experience needed.</p>
 
         <div class="session-intro">
             <span class="session-intro-icon" aria-hidden="true">&#x1F9ED;</span>
-            <span>The whole loop is <strong>five beats</strong>: launch &rarr; pick a project &rarr; Claude loads its memory &rarr; ask anything &rarr; close when done. Every part of {{ instance_brand }} &mdash; plugins, data packages, skills, shared memory &mdash; quietly does its job inside this loop. You don't have to manage them.</span>
+            <span>The whole loop is <strong>five beats</strong>: launch &rarr; pick a project &rarr; Claude loads its memory &rarr; ask anything &rarr; close when done. Every part of {{ instance_brand_short }} &mdash; plugins, data packages, skills, shared memory &mdash; quietly does its job inside this loop. You don't have to manage them.</span>
         </div>
 
         <div class="session-walk">
@@ -373,15 +377,15 @@ What can I help you with?
             <div class="session-step">
                 <div class="session-num">2</div>
                 <div class="session-content">
-                    <h3>{{ instance_brand }} greets you with today's menu</h3>
+                    <h3>{{ instance_brand_short }} greets you with today's menu</h3>
                     <p>Claude reads your recent activity and shows the five projects you've touched most recently. Your screen looks something like this:</p>
                     <div class="terminal-frame">
-                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
+                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand_short }}</span></div>
                         <div class="terminal-body">2026-05-20
 
 What would you like to do?
 
-  <strong>[1]</strong> Talk to {{ instance_brand }} &mdash; workspace questions, setup, admin
+  <strong>[1]</strong> Talk to {{ instance_brand_short }} &mdash; workspace questions, setup, admin
   <strong>[2]</strong> New project &mdash; scaffold a new project
   <strong>[3]</strong> Switch to recent project:
       a. RevenueAnalysis            <span class="dim">(2 hours ago)</span>
@@ -402,7 +406,7 @@ What would you like to do?
                     <h3>Pick a project &mdash; Claude loads its memory</h3>
                     <p>Type your choice and hit Enter. Claude switches into that project's folder, reads its <code>CLAUDE.md</code> (the project's living briefing doc), checks for new inputs you've dropped in, and tells you the state of play.</p>
                     <div class="terminal-frame">
-                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
+                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand_short }}</span></div>
                         <div class="terminal-body"><span class="prompt">&gt;</span><span class="you">3a</span>
 
 Switched to <strong>RevenueAnalysis</strong> &mdash; quarterly revenue
@@ -427,7 +431,7 @@ Want me to process it into <span class="path">knowledge/</span> now?
                     <h3>Ask anything &mdash; Claude is now scoped to that project</h3>
                     <p>Plain English. No commands to memorise. Claude pulls from the project's files, your registered data packages, installed plugins, and the team's shared memory &mdash; quoting exact sources as it goes.</p>
                     <div class="terminal-frame">
-                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
+                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand_short }}</span></div>
                         <div class="terminal-body"><span class="prompt">&gt;</span><span class="you">what's the latest on the Q1 close? Give me the
   headline numbers and the open risks.</span>
 
@@ -458,9 +462,9 @@ Want me to draft a 1-page brief, or dig into one of these?
                 <div class="session-num">5</div>
                 <div class="session-content">
                     <h3>When you're done, just close &mdash; everything's saved</h3>
-                    <p>Type <code>/exit</code> or close the terminal window. {{ instance_brand }} saves the session, captures any new knowledge into the project's memory, and puts today's project at the top of tomorrow's menu.</p>
+                    <p>Type <code>/exit</code> or close the terminal window. {{ instance_brand_short }} saves the session, captures any new knowledge into the project's memory, and puts today's project at the top of tomorrow's menu.</p>
                     <div class="terminal-frame">
-                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
+                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand_short }}</span></div>
                         <div class="terminal-body"><span class="prompt">&gt;</span><span class="you">/exit</span>
 
 <span class="dim">Session saved &mdash; 12 prompts, 4 files referenced.</span>
@@ -482,7 +486,7 @@ Want me to draft a 1-page brief, or dig into one of these?
         </div>
     </section>
 
-    {# Surfaces — four places to use {{ instance_brand }}. Mirrors the
+    {# Surfaces — four places to use {{ instance_brand_short }}. Mirrors the
        design spec's "Where you can use it" section: VS Code (RECOMMENDED),
        Terminal, Claude Desktop, Cowork (claude.ai). Each card carries
        a short pitch + an uppercase eyebrow (DAILY USE / QUICK ACCESS /
@@ -500,7 +504,7 @@ Want me to draft a 1-page brief, or dig into one of these?
             <article class="surface-card feature">
                 <div class="surface-icon" aria-hidden="true">&#x1F4DD;</div>
                 <h3>VS Code <span class="badge">RECOMMENDED</span></h3>
-                <p class="what">The best place to live in {{ instance_brand }}. Multi-panel layout, built-in file editor, diff viewer, and a terminal Claude runs in &mdash; all in one window. Easier than a bare terminal for most people.</p>
+                <p class="what">The best place to live in {{ instance_brand_short }}. Multi-panel layout, built-in file editor, diff viewer, and a terminal Claude runs in &mdash; all in one window. Easier than a bare terminal for most people.</p>
                 <a href="#" id="vscode-screenshot-trigger" class="vscode-thumb">
                     <img src="/static/img/vscode-layout.png" alt="VS Code with terminal-centric layout"
                          onerror="this.parentElement.classList.add('thumb-empty');this.remove();">
@@ -548,7 +552,7 @@ Want me to draft a 1-page brief, or dig into one of these?
 
 What would you like to do?
 
-  [1] Talk to {{ instance_brand }} &mdash; workspace questions
+  [1] Talk to {{ instance_brand_short }} &mdash; workspace questions
   [2] New project &mdash; scaffold a new project
   [3] Switch to recent project:
       a. RevenueAnalysis (2 hours ago)
@@ -577,7 +581,7 @@ What would you like to do?
             <article class="surface-card">
                 <div class="surface-icon" aria-hidden="true">&#x1F91D;</div>
                 <h3>Cowork (claude.ai)</h3>
-                <p class="what">Claude Cowork &mdash; the collaborative workspace on <a href="https://claude.ai/" target="_blank" rel="noopener">claude.ai</a>. Upload {{ instance_brand }}'s plugins one at a time and use their skills, agents &amp; commands right in Cowork.</p>
+                <p class="what">Claude Cowork &mdash; the collaborative workspace on <a href="https://claude.ai/" target="_blank" rel="noopener">claude.ai</a>. Upload {{ instance_brand_short }}'s plugins one at a time and use their skills, agents &amp; commands right in Cowork.</p>
                 <div class="steps">
                     <strong class="steps-eyebrow">CONNECT IT</strong>
                     <ol>
@@ -605,9 +609,9 @@ What would you like to do?
        Atlassian)"); deep ops live in /setup-advanced. #}
 
     <section class="browse-section" id="look-around">
-        <div class="eyebrow">{{ instance_brand }} workspace</div>
+        <div class="eyebrow">{{ instance_brand_short }} workspace</div>
         <h2>Explore your workspace</h2>
-        <p class="lede">Jump into any part of {{ instance_brand }} &mdash; what your team has registered, what's curated company-wide, and what's shared by your colleagues.</p>
+        <p class="lede">Jump into any part of {{ instance_brand_short }} &mdash; what your team has registered, what's curated company-wide, and what's shared by your colleagues.</p>
 
         <div class="browse-grid what-is look-around-grid">
             <a class="browse-card what-is-item" href="/marketplace">

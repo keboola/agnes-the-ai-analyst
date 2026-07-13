@@ -126,6 +126,67 @@ def test_home_not_onboarded_hero_title_html_escapes_brand(fresh_db, monkeypatch)
     assert "<script>alert(1)</script>EvilCo" not in body
 
 
+def test_home_hero_call_me_when_short_brand_differs(fresh_db, monkeypatch):
+    """When `instance_brand_short` differs from the full brand, the hero
+    title keeps the FULL brand and appends "Call me {short}." — and the
+    rest of the page's body copy switches to the short form."""
+    monkeypatch.setenv("AGNES_INSTANCE_BRAND", "Acme Data Analyst")
+    monkeypatch.setenv("AGNES_INSTANCE_BRAND_SHORT", "Acme")
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, onboarded=False)
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    assert (
+        'Acme Data Analyst is your team\'s <span class="accent">AI workspace.</span>'
+        " Call me Acme." in body
+    )
+    # Body copy uses the short brand, not the full one.
+    assert "Set up Acme on your machine" in body
+    assert "Set up Acme Data Analyst on your machine" not in body
+
+
+def test_home_hero_no_call_me_when_short_equals_brand(fresh_db, monkeypatch):
+    """Default: brand_short mirrors the full brand, so the hero renders
+    exactly as before — no "Call me" sentence."""
+    monkeypatch.setenv("AGNES_INSTANCE_BRAND", "Acme")
+    monkeypatch.delenv("AGNES_INSTANCE_BRAND_SHORT", raising=False)
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, onboarded=False)
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    assert 'Acme is your team\'s <span class="accent">AI workspace.</span>' in body
+    assert "Call me" not in body
+
+
+def test_home_hero_short_brand_is_escaped(fresh_db, monkeypatch):
+    """XSS guard for the short brand: it is operator-controlled and spliced
+    into `hero_title_html` (rendered with `| safe`), so it must be
+    autoescaped exactly like the full brand."""
+    monkeypatch.setenv("AGNES_INSTANCE_BRAND", "Acme Data Analyst")
+    monkeypatch.setenv("AGNES_INSTANCE_BRAND_SHORT", "<script>alert(1)</script>EvilCo")
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, onboarded=False)
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    assert "Call me &lt;script&gt;alert(1)&lt;/script&gt;EvilCo." in body
+    assert "<script>alert(1)</script>EvilCo" not in body
+
+
 def test_home_onboarded_user_sees_nav_hub(fresh_db):
     """A TRUE-onboarded user gets the post-onboarding view: the blue
     install-hero is gone entirely (no welcome banner, no completion

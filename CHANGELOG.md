@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- New branding knob `instance_brand_short` (`AGNES_INSTANCE_BRAND_SHORT` env >
+  `instance.brand_short` YAML > defaults to the full `instance_brand`): the
+  `/home` page body copy now uses the short form mid-sentence, and when it
+  differs from the full brand the hero title introduces it with
+  "Call me {short}." after "… is your team's AI workspace."
+
 ---
 
 ## [0.74.64] - 2026-07-13

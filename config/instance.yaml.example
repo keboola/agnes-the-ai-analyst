@@ -22,6 +22,11 @@ instance:
                                      # rebrand without forking. Distinct from `name` above:
                                      # `name` is the deploying organization, `brand` is the
                                      # product. Env override: AGNES_INSTANCE_BRAND.
+  # brand_short: "Agnes"             # Short form of `brand` used mid-sentence in /home body
+                                     # copy (e.g. brand "Acme Data Analyst" -> short "Acme").
+                                     # When it differs from `brand`, the /home hero appends
+                                     # "Call me <brand_short>." after the title. Defaults to
+                                     # `brand`. Env override: AGNES_INSTANCE_BRAND_SHORT.
   # workspace_dir: "FoundryAI"       # Filesystem-safe folder name for the analyst's local
                                      # workspace (~/<workspace_dir>). When unset, derived from
                                      # `brand` by stripping non-alphanumerics ("Foundry AI" ->
