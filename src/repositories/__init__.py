@@ -98,6 +98,7 @@ __all__ = [
     "user_store_installs_repo",
     "user_curated_subscriptions_repo",
     "store_submissions_repo",
+    "store_lint_repo",
     # Knowledge
     "knowledge_repo",
     # Data packages / memory / recipes / subscriptions
@@ -335,6 +336,10 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
     "store_submissions": {
         DUCKDB: ("src.repositories.store_submissions", "StoreSubmissionsRepository"),
         PG: ("src.repositories.store_submissions_pg", "StoreSubmissionsPgRepository"),
+    },
+    "store_lint": {
+        DUCKDB: ("src.repositories.store_lint", "StoreLintRepository"),
+        PG: ("src.repositories.store_lint_pg", "StoreLintPgRepository"),
     },
     # knowledge
     "knowledge": {
@@ -599,6 +604,10 @@ def user_curated_subscriptions_repo() -> Any:
 
 def store_submissions_repo() -> Any:
     return _build("store_submissions")
+
+
+def store_lint_repo() -> Any:
+    return _build("store_lint")
 
 
 # knowledge
