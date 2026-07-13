@@ -11,6 +11,7 @@ from cli.commands.admin_ask import app as admin_ask_app
 from cli.commands.admin_autodoc import autodoc_tables
 from cli.commands.admin_data_package import admin_data_package_app
 from cli.commands.admin_data_semantics import admin_data_semantics_app
+from cli.commands.admin_digest import admin_digest_app
 from cli.commands.admin_mcp import mcp_app as admin_mcp_app
 from cli.commands.admin_memory_domain import admin_memory_domain_app
 from cli.commands.admin_skills import admin_skills_app
@@ -50,6 +51,7 @@ admin_app.add_typer(
     admin_data_semantics_app, name="data-semantics", help="Generate the workspace data-semantics pack (#469)"
 )
 admin_app.add_typer(admin_memory_domain_app, name="memory-domain", help="Memory Domain CRUD (v49)")
+admin_app.add_typer(admin_digest_app, name="digest", help="Maintained digest CRUD (K4)")
 admin_app.add_typer(admin_db_app, name="db", help="Manage app-state DB backend (DuckDB / Postgres)")
 admin_app.add_typer(admin_mcp_app, name="mcp", help="Universal MCP source + tool admin")
 admin_app.add_typer(
