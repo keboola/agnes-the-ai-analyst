@@ -12,6 +12,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.64] - 2026-07-13
+
+### Fixed
+- Postgres telemetry day bucketing is now pinned to UTC. `occurred_at`/`started_at`/`timestamp` are `timestamptz`, and the usage rollup producer (`rebuild_rollups`), the telemetry day group-by, and the adoption/DAU/token series all bucketed days via a bare `CAST(... AS DATE)` — i.e. in the database session's TimeZone, so day labels drifted on non-UTC servers (DuckDB was unaffected: its session timezone is pinned to UTC). Window/trend boundaries in the reports repository (`CURRENT_DATE`, also session-TZ-dependent on Postgres) are pinned the same way. Guarded by a new contract test that runs the producer under a skewed session TimeZone.
+
+---
+
 ## [0.74.63] - 2026-07-13
 
 ### Fixed
