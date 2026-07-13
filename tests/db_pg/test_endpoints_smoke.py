@@ -1401,6 +1401,11 @@ KNOWN_UNTESTED = {
     # tests/test_api_knowledge_artifacts.py (manifest section, 401/404/200/304,
     # RBAC fail-closed).
     "GET /api/knowledge/artifacts/{corpus_id}/download",
+    # K4 maintained digests (#799) — digest markdown content endpoint, RBAC
+    # via require_resource_access(KNOWLEDGE_DIGEST). Behaviour covered in
+    # tests/test_api_knowledge_digests_distribution.py (manifest kind:"digest"
+    # entries, 401/403/404/200, staleness md5 change-token).
+    "GET /api/knowledge/digests/{digest_id}/content",
     "GET /api/collections/{collection_id}",
     "DELETE /api/collections/{collection_id}",
     "POST /api/collections/{collection_id}/files",
@@ -1567,6 +1572,10 @@ KNOWN_UNTESTED = {
     "GET /admin/groups",
     "GET /admin/groups/{group_id}",
     "GET /admin/initial-workspace",
+    # Maintained digests admin page (K4, #799) — behaviorally covered in
+    # tests/test_admin_knowledge_digests_page.py (admin 200, analyst 403,
+    # unauthenticated redirect, nav link).
+    "GET /admin/knowledge-digests",
     "GET /admin/marketplaces",
     "GET /admin/mcp-sources",
     "GET /admin/mcp-sources/{source_id}",
@@ -1731,6 +1740,15 @@ KNOWN_UNTESTED = {
     "POST /api/admin/memory-domains/{domain_id}/items",
     "POST /api/admin/memory-domains/{domain_id}/restore",
     "PUT /api/admin/memory-domains/{domain_id}",
+    # Maintained digests (K4, #799) — admin CRUD behaviorally covered in
+    # tests/test_api_knowledge_digests.py (401/403 per method, slug/corpus
+    # validation, duplicate slug, PUT/DELETE, resource_grants cleanup); not
+    # duplicated in this PG smoke harness.
+    "GET /api/admin/knowledge-digests",
+    "POST /api/admin/knowledge-digests",
+    "GET /api/admin/knowledge-digests/{digest_id}",
+    "PUT /api/admin/knowledge-digests/{digest_id}",
+    "DELETE /api/admin/knowledge-digests/{digest_id}",
     # Admin news
     "GET /api/admin/news/current",
     "GET /api/admin/news/draft",
@@ -1824,6 +1842,12 @@ KNOWN_UNTESTED = {
     # (no new repo methods/migration; state.json lives on disk). Behaviour
     # covered in tests/test_admin_run_endpoints.py::TestRunKnowledgePackaging.
     "POST /api/admin/run-knowledge-packaging",
+    # K4 maintained digests (#799) — scheduler-driven admin maintenance op,
+    # mirrors run-knowledge-packaging / run-corporate-memory. No new repo
+    # methods/migration beyond the existing knowledge_digests contract test
+    # (tests/db_pg/test_knowledge_digests_contract.py). Behaviour covered in
+    # tests/test_admin_run_endpoints.py::TestRunKnowledgeDigests.
+    "POST /api/admin/run-knowledge-digests",
     "POST /api/admin/run-knowledge-migration",
     "POST /api/mcp-connect/token",  # tested in tests/test_mcp_connect.py
     "GET /mcp-connect",  # web UI page tested in tests/test_mcp_connect.py

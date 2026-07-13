@@ -12,6 +12,28 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.62] - 2026-07-13
+
+### Added
+
+- Maintained digests: admins define digest documents (title + standing
+  instructions + source collections) that the scheduler regenerates with an
+  LLM only when the sources' content fingerprint changes. Failures keep the
+  previous markdown and mark the digest visibly stale (status + reason) —
+  never silent, never half-written. Digests are granted via standard resource
+  grants, listed in the sync manifest, and `agnes pull` delivers them as
+  `.claude/rules/ka_<slug>.md` (staleness banner included) so they are in the
+  agent's context at session start. Admin CRUD via REST +
+  `/admin/knowledge-digests` + `agnes admin digest` + MCP (#799).
+
+### Internal
+
+- Schema v89: `knowledge_digests` table (DuckDB `_v88_to_v89` + Alembic
+  `0036_knowledge_digests_v89`), repository pair + cross-engine contract test,
+  new `ResourceType.KNOWLEDGE_DIGEST`.
+
+---
+
 ## [0.74.61] - 2026-07-13
 
 ### Fixed

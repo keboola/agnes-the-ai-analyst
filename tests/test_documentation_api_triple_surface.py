@@ -59,6 +59,11 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/admin/contributed-skills/{name}": ("admin skill delete", "delete_contributed_skill"),
     # Web chat slash-menu catalog (issue #780).
     "/api/chat/skills": ("chat skills", "chat_skills"),
+    # Maintained digests (K4, #799) — admin CRUD, triple-surface. Surfaces
+    # (CLI `agnes admin digest …` + MCP tools) land in Task 7 — these two
+    # entries are RED until then by design (see the K4 plan's Task 3).
+    "/api/admin/knowledge-digests": ("admin digest list", "admin_knowledge_digests_list"),
+    "/api/admin/knowledge-digests/{digest_id}": ("admin digest show", "admin_knowledge_digest_get"),
 }
 
 
@@ -278,6 +283,17 @@ _EXEMPT: dict[str, str] = {
         "scheduler-driven knowledge-artifact rebuild trigger (K3, #798) — "
         "admin/scheduler maintenance op, mirrors the run-corporate-memory "
         "exemption; no analyst CLI/MCP analogue"
+    ),
+    "/api/admin/run-knowledge-digests": (
+        "scheduler-driven digest regeneration trigger (K4, #799) — admin/scheduler "
+        "maintenance op, mirrors the run-knowledge-packaging / run-corporate-memory "
+        "exemptions; no analyst CLI/MCP analogue"
+    ),
+    "/api/knowledge/digests/{digest_id}/content": (
+        "K4 maintained digests (#799) — digest markdown consumed by `agnes pull` "
+        "(written to .claude/rules/ka_<slug>.md, pruned on de-authorization); "
+        "no interactive CLI/MCP analogue, mirrors the knowledge-artifact "
+        "download and /api/memory/bundle delivery channels"
     ),
 }
 

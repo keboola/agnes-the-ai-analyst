@@ -177,6 +177,14 @@ class TestToolRegistration:
             # Triple-surface with POST /api/store/entities/from-markdown +
             # `agnes store publish-md`.
             "store_publish_markdown",
+            # Maintained digests (K4, #799) — admin CRUD over LLM-regenerated
+            # digest documents. Triple-surface with the
+            # /api/admin/knowledge-digests* REST surface + `agnes admin digest`.
+            "admin_knowledge_digests_list",
+            "admin_knowledge_digest_get",
+            "admin_knowledge_digest_create",
+            "admin_knowledge_digest_update",
+            "admin_knowledge_digest_delete",
         }
 
     def test_no_client_only_tools(self):

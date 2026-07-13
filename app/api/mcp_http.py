@@ -13,13 +13,16 @@ Cowork bundle settings.json points to:
 
 with header  Authorization: Bearer <PAT>  set by Claude Code.
 
-Tools available: the 24 foundation tools registered by
+Tools available: the 29 foundation tools registered by
 ``app/api/mcp/foundation_tools.py`` — server_info, catalog, collections_list,
 collection_get, collections_search, knowledge_search, collections_reingest,
 schema, describe, query, skills, chat_skills, stack_browse, stack_subscribe,
 stack_unsubscribe, store_rate, store_status, store_publish_markdown,
 documentation_api, list_contributed_skills, contribute_skill,
-delete_contributed_skill, admin_config_surface, admin_source_connections_list.
+delete_contributed_skill, admin_config_surface, admin_source_connections_list,
+admin_knowledge_digests_list, admin_knowledge_digest_get,
+admin_knowledge_digest_create, admin_knowledge_digest_update,
+admin_knowledge_digest_delete.
 (query_local and pull require a local analyst filesystem — not available
  in the server context.)
 """
@@ -90,6 +93,8 @@ _FOUNDATION_TOOL_NAMES = register_foundation_tools(mcp, base_url=_BASE, headers_
 for _name in _FOUNDATION_TOOL_NAMES:
     globals()[_name] = mcp._tool_manager.get_tool(_name).fn
 del _name
+
+
 
 
 # ── auth middleware ─────────────────────────────────────────────────────────────
