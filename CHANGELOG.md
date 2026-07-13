@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.60] - 2026-07-13
+
 ### Added
 
 - `agnes query --scope {auto,local,server}` (default `auto`) — runs locally first and transparently falls back to server-side execution when there is no local data yet or the query hits a table that is `query_mode='remote'`/`server_only`; a `[scope]` stderr note says where the query ran. `--remote`/`--local` remain as shorthands for `--scope server`/`--scope local`.
