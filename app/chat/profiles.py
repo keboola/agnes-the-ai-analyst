@@ -179,6 +179,10 @@ _SKILL_AUTHOR = ChatProfile(
         "assuming one specific AI product.\n"
         "- Draft into the builder fields; never claim the skill is published "
         "until the user clicks Publish.\n"
+        "- Run a dry-run before Publish and address any advisory lint findings "
+        "(bloat, weak triggers, likely duplicates) — they never block "
+        "publishing but they improve discoverability. See "
+        "`/docs/skill-guidelines`.\n"
         "- Use the `agnes-skill-authoring` skill for the contract and endpoints.\n"
     ),
     skill_name="agnes-skill-authoring",
