@@ -62,6 +62,23 @@ class StoreLintPgRepository:
             row = conn.execute(sa.text(sql), params).fetchone()
         return self._run_to_dict(row) if row else None
 
+    def last_full_audit_run(self) -> Optional[Dict[str, Any]]:
+        """Most recent full-corpus audit run — ``scheduler`` or ``admin`` only.
+
+        The audit self-guard must ignore per-publish (``trigger='publish'``)
+        runs: those fire on every skill publish, so counting them would let
+        routine publishing perpetually reset the interval and starve the
+        scheduled retro-audit.
+        """
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    f"SELECT {_RUN_COLS} FROM store_lint_runs "
+                    "WHERE trigger IN ('scheduler', 'admin') ORDER BY started_at DESC LIMIT 1"
+                )
+            ).fetchone()
+        return self._run_to_dict(row) if row else None
+
     # -- findings -------------------------------------------------------
 
     def replace_findings(
