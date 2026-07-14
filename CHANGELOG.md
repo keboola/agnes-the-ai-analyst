@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.70] - 2026-07-14
+
 ### Changed
 
 - Chat sandboxes now enforce a VM-level outbound network allowlist (E2B
