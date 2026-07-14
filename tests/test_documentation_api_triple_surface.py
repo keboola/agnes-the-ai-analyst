@@ -200,6 +200,13 @@ _REPORTS_REASON = (
     "CLI/MCP analogue (mirrors the grandfathered /api/admin/adoption dashboard "
     "aggregates)"
 )
+_LINT_ADMIN_REASON = (
+    "Skill-linter admin moderation surface (v89, #687) — findings list, "
+    "manual full-corpus audit trigger, and per-finding dismiss for the "
+    "/admin/store lint dashboard. Advisory-only guardrail tooling for "
+    "instance admins; no analyst CLI/MCP analogue (mirrors the grandfathered "
+    "/api/admin/authoring-suggestions moderation queue)."
+)
 _KNOWLEDGE_MIGRATION_REASON = (
     "one-time retroactive migration trigger (pre-v0.71.60 knowledge.json → DB) — "
     "idempotent admin-only POST, no analyst CLI/MCP analogue; endpoint is "
@@ -313,6 +320,9 @@ _EXEMPT: dict[str, str] = {
         "admin/scheduler maintenance op, mirrors the run-bq-metadata-refresh / "
         "run-knowledge-digests exemptions; no analyst CLI/MCP analogue"
     ),
+    "/api/admin/store/lint-findings": _LINT_ADMIN_REASON,
+    "/api/admin/store/lint-audit": _LINT_ADMIN_REASON,
+    "/api/admin/store/lint-dismiss": _LINT_ADMIN_REASON,
 }
 
 
