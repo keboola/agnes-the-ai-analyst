@@ -73,8 +73,10 @@ async def _forward_with_gates(
         from app.api.mcp_policy import (
             GrantDenied,
             MutatingNotAllowed,
+            PerUserCredentialMissing,
             RateLimited,
             enforce_passthrough_access,
+            enforce_per_user_credential,
         )
         from src.repositories import tool_registry_repo
         from src.repositories.tool_registry import PASSTHROUGH
@@ -85,6 +87,13 @@ async def _forward_with_gates(
         try:
             enforce_passthrough_access(fresh, caller_user_id)
         except (GrantDenied, MutatingNotAllowed, RateLimited) as exc:
+            raise RuntimeError(str(exc)) from exc
+        # Same pre-forward per-user credential guard the REST endpoint runs, so a
+        # per_user source without the caller's own credential fails closed with
+        # an actionable message rather than an opaque upstream auth error.
+        try:
+            enforce_per_user_credential(source, caller_user_id)
+        except PerUserCredentialMissing as exc:
             raise RuntimeError(str(exc)) from exc
         pii = fresh.get("pii_fields")
         pii_fields = pii if isinstance(pii, list) else None

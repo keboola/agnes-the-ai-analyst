@@ -33,8 +33,10 @@ from pydantic import BaseModel
 from app.api.mcp_policy import (
     GrantDenied,
     MutatingNotAllowed,
+    PerUserCredentialMissing,
     RateLimited,
     enforce_passthrough_access,
+    enforce_per_user_credential,
     redact_response,
 )
 from app.auth.access import _user_group_ids, is_user_admin
@@ -174,25 +176,15 @@ async def invoke_passthrough_tool(
     if source is None or not source.get("enabled", True):
         raise HTTPException(status_code=409, detail="upstream MCP source missing or disabled")
 
-    # Fail-closed guard for per-user sources: an interactive caller (admin
-    # included — data scoping is per identity) must have their own credential.
-    # Without one the call would connect with no token (see
-    # connectors.mcp.client._lookup_secret_for_source, which returns None for a
-    # per_user source with an identified caller and no row — it does NOT borrow
-    # the shared credential). Refuse here with an actionable message instead of
-    # letting it degrade to an opaque upstream auth error.
-    if (source.get("scope") or "shared").lower() == "per_user":
-        from src.repositories import per_user_secrets_repo
-
-        if not per_user_secrets_repo().get(source["id"], user["id"]):
-            src_label = source.get("name") or source["id"]
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"no personal credential for source {src_label!r}. Run "
-                    f"`agnes mcp my-secret set {src_label}` to connect your own account."
-                ),
-            )
+    # Fail-closed guard for per-user sources — shared with the SSE / Streamable
+    # transport closures (app/api/mcp/tools_generator) so the pre-forward guard
+    # can't drift: an identified caller on a per_user source must have their own
+    # stored credential, else the forward would connect anonymously and degrade
+    # to an opaque upstream auth error.
+    try:
+        enforce_per_user_credential(source, user["id"])
+    except PerUserCredentialMissing as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     try:
         # Thread the caller's user_id through so sources with

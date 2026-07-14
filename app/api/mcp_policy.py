@@ -101,6 +101,49 @@ def enforce_passthrough_access(tool: Dict[str, Any], caller_user_id: Optional[st
     check_rate_limit(tool_id, caller_user_id or "", tool.get("rate_limit_pm"))
 
 
+class PerUserCredentialMissing(Exception):
+    """Raised when a ``scope='per_user'`` source is invoked by an identified
+    caller who has not stored their own credential.
+
+    ``source_label`` is the human-facing source name (or id) for the remedy
+    message.
+    """
+
+    def __init__(self, source_label: str):
+        self.source_label = source_label
+        super().__init__(
+            f"no personal credential for source {source_label!r}. Run "
+            f"`agnes mcp my-secret set {source_label}` to connect your own account."
+        )
+
+
+def enforce_per_user_credential(source: Dict[str, Any], caller_user_id: Optional[str]) -> None:
+    """Fail closed when a ``per_user`` source lacks the caller's own credential.
+
+    For a ``scope='per_user'`` source an identified caller (admin included —
+    data scoping is per identity) must have their own stored credential;
+    otherwise the forward would connect with no token (see
+    ``connectors.mcp.client._lookup_secret_for_source``, which returns ``None``
+    for a per_user source with an identified caller and no row — it does NOT
+    borrow the shared credential). Refuse here with an actionable message
+    instead of letting it degrade to an opaque upstream auth error.
+
+    Shared by the REST endpoint and the SSE / Streamable-HTTP transport
+    closures so the pre-forward guard can't drift. No-op for shared sources and
+    for the caller-less (materialize) path, which legitimately rides the shared
+    vault. Raises ``PerUserCredentialMissing``.
+    """
+    if (source.get("scope") or "shared").lower() != "per_user":
+        return
+    if not caller_user_id:
+        # Caller-less materialize path — shared vault is the intended source.
+        return
+    from src.repositories import per_user_secrets_repo
+
+    if not per_user_secrets_repo().get(source["id"], caller_user_id):
+        raise PerUserCredentialMissing(source.get("name") or source["id"])
+
+
 # ---------------------------------------------------------------------------
 # PII redaction
 # ---------------------------------------------------------------------------
