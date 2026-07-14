@@ -358,3 +358,20 @@ you don't need; keep the Keep-a-Changelog order.
 At release-cut time `## [Unreleased]` is renamed to `## [X.Y.Z] — YYYY-MM-DD`
 and a fresh empty `## [Unreleased]` is added on top. CI publishes the matching
 `stable-YYYY.MM.N` image tag for the merge commit (see Deploy workflows above).
+
+## Slack release digest (optional)
+
+`.github/workflows/release-digest.yml` posts **one aggregated Slack message a
+day** (cron 04:00 UTC) summarizing every GitHub Release created since the
+previous successful digest run — grouped Added/Changed/Fixed/Removed
+highlights, per-version links, and a link to the full `CHANGELOG.md`. Quiet
+days post nothing; a skipped night is caught up automatically on the next run
+(the window is derived from the workflow's own run history, no stored state).
+
+Opt in by setting the **`SLACK_RELEASE_WEBHOOK`** repository secret to a Slack
+Incoming Webhook URL for the target channel. Without the secret the scheduled
+run is a dry-run (payload printed to the job log only). Manual test:
+`gh workflow run release-digest.yml -f since=2026-01-01T00:00:00Z` — with the
+`since` input you control the window explicitly. The formatter lives in
+`scripts/release_digest.py` (stdlib-only; unit tests in
+`tests/test_release_digest.py`).

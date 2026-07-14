@@ -44,7 +44,7 @@ wheels = [
 
 [[package]]
 name = "agnes-the-ai-analyst"
-version = "0.74.62"
+version = "0.74.67"
 source = { editable = "." }
 dependencies = [
     { name = "a2wsgi" },

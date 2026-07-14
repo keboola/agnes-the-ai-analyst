@@ -12,6 +12,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.67] - 2026-07-14
+
+### Added
+
+- Daily Slack release digest: a scheduled workflow (`release-digest.yml`)
+  posts one aggregated summary of all GitHub Releases since the previous
+  digest — grouped changelog highlights, per-version links, automatic
+  catch-up after skipped runs, silent on quiet days. Opt-in via the
+  `SLACK_RELEASE_WEBHOOK` repository secret; dry-run without it. See
+  `docs/RELEASING.md` → *Slack release digest*.
+
+---
+
 ## [0.74.66] - 2026-07-14
 
 ### Fixed
