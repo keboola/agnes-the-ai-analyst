@@ -78,7 +78,7 @@ async def _forward_with_gates(
             enforce_passthrough_access,
             enforce_per_user_credential,
         )
-        from src.repositories import tool_registry_repo
+        from src.repositories import mcp_sources_repo, tool_registry_repo
         from src.repositories.tool_registry import PASSTHROUGH
 
         fresh = tool_registry_repo().get(tool_id)
@@ -88,6 +88,15 @@ async def _forward_with_gates(
             enforce_passthrough_access(fresh, caller_user_id)
         except (GrantDenied, MutatingNotAllowed, RateLimited) as exc:
             raise RuntimeError(str(exc)) from exc
+        # Re-fetch the source row fresh too (not the one captured at
+        # registration time), so an admin disabling the source or flipping its
+        # scope/credentials takes effect immediately — matching the REST
+        # endpoint, which re-fetches per call. The closure-captured ``source``
+        # is only a fallback for the caller-less unit-test path (tool_id=None).
+        live_source = mcp_sources_repo().get(fresh["source_id"])
+        if live_source is None or not live_source.get("enabled", True):
+            raise RuntimeError(f"upstream MCP source for tool {tool_id!r} missing or disabled")
+        source = live_source
         # Same pre-forward per-user credential guard the REST endpoint runs, so a
         # per_user source without the caller's own credential fails closed with
         # an actionable message rather than an opaque upstream auth error.
