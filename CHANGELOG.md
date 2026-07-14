@@ -12,6 +12,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.71] - 2026-07-14
+
+### Fixed
+
+- PreToolUse hook no longer misreads a `curl`/`wget` flag argument as a bare
+  host. A dotted flag value such as `--output results.example.csv` was
+  matched by the scheme-less host detector and denied even when the real
+  target was allowlisted; the detector now skips the values of value-taking
+  flags (`-o`/`--output`, `-d`/`--data`, `-H`/`--header`, …). Flags whose value
+  *is* (or can carry) the real network destination — `-x`/`--proxy`,
+  `-K`/`--config`, `--resolve`, `--connect-to` — are deliberately kept in
+  host-matching so a request can't tunnel past the allowlist through a proxy,
+  config file, or DNS pin. Safe direction only — an unlisted value-flag at
+  worst over-blocks its value, never lets the real request target through
+  unchecked. (Devin + security review follow-up on #846.)
+
+---
+
 ## [0.74.70] - 2026-07-14
 
 ### Changed

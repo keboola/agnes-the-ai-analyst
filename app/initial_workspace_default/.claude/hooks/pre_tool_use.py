@@ -38,6 +38,74 @@ _ENV_DUMP = ("env", "printenv")
 _ENUM_PREFIXES = ("find /", "ls /home", "ls /etc", "cat /etc/", "cat /proc/")
 
 
+# curl/wget flags that consume the FOLLOWING token as their value (so that
+# token is an argument, never the request target). Skipping their values
+# stops a dotted filename like `--output results.example.csv` from being
+# misread as a bare host and denied. Listing only value-taking flags keeps
+# the failure direction safe: an unlisted value-flag at worst over-blocks
+# (its value re-checked as a host), never under-blocks the real target.
+_VALUE_TAKING_FLAGS = {
+    "-o",
+    "--output",
+    "-O",
+    "--output-document",
+    "-d",
+    "--data",
+    "--data-binary",
+    "--data-raw",
+    "--data-urlencode",
+    "--data-ascii",
+    "-H",
+    "--header",
+    "-A",
+    "--user-agent",
+    "-e",
+    "--referer",
+    "-b",
+    "--cookie",
+    "-c",
+    "--cookie-jar",
+    "-F",
+    "--form",
+    "-u",
+    "--user",
+    "--password",
+    "-T",
+    "--upload-file",
+    "-E",
+    "--cert",
+    "--key",
+    "--cacert",
+    "-w",
+    "--write-out",
+    "-m",
+    "--max-time",
+    "--connect-timeout",
+    "--retry",
+    "--post-data",
+    "--post-file",
+    "-U",
+    "-P",
+    "--directory-prefix",
+}
+# Deliberately NOT skipped — flags whose value IS (or can carry) the real
+# network destination, so the value must keep being host-checked:
+#   -x / --proxy        the proxy value is the actual TCP peer for the request
+#                       (`curl -x evil.com https://api.github.com/…` connects to
+#                       evil.com); skipping it would tunnel an allow-listed
+#                       visible URL through an arbitrary proxy.
+#   -K / --config       a curl config file can contain url=/proxy=/header=
+#                       directives defining the real request; its filename is
+#                       not a host, so host-matching over-blocks (safe) rather
+#                       than blessing an opaque config.
+#   --resolve HOST:PORT:ADDR / --connect-to H1:P1:H2:P2 pin or redirect the
+#                       connection to an arbitrary host/IP; the leading host
+#                       component stays checked.
+# Per this module's own principle (skip only flags whose value is never a host),
+# leaving these out at worst over-blocks — the safe direction.
+# (Devin + security review on #847.)
+
+
 def _hosts_in_command(cmd: str) -> list[str]:
     hosts = []
     # schemed URLs
@@ -49,8 +117,18 @@ def _hosts_in_command(cmd: str) -> list[str]:
     except ValueError:
         toks = cmd.split()
     if toks and toks[0] in ("curl", "wget"):
+        skip_next = False
         for t in toks[1:]:
+            if skip_next:
+                # this token is the value of the preceding value-taking flag
+                skip_next = False
+                continue
             if t.startswith("-"):
+                # `--flag=value` carries its own value; `--flag value` consumes
+                # the next token. `=` form is self-contained, so only arm the
+                # skip for the separate-token form of a known value-taking flag.
+                if t in _VALUE_TAKING_FLAGS:
+                    skip_next = True
                 continue
             cand = t.split("/")[0].split(":")[0]
             if "." in cand and not cand.startswith("http"):
