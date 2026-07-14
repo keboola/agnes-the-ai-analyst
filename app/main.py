@@ -276,6 +276,7 @@ from app.api.stack_views import router as stack_views_router
 from app.api.initial_workspace import router as initial_workspace_router
 from app.api.config_surface import router as config_surface_router
 from app.api.store import router as store_router
+from app.api.store_lint_admin import router as store_lint_admin_router
 from app.api.my_stack import router as my_stack_router
 from app.api.marketplace import router as marketplace_router
 from app.api.welcome import router as welcome_router
@@ -1533,6 +1534,7 @@ def create_app() -> FastAPI:
     app.include_router(initial_workspace_router)
     app.include_router(config_surface_router)
     app.include_router(store_router)
+    app.include_router(store_lint_admin_router)
     app.include_router(my_stack_router)
     app.include_router(marketplace_router)
     app.include_router(welcome_router)
