@@ -229,6 +229,28 @@ class TestAdminLintAudit:
         assert second.json()["skipped"] is True
         assert second.json()["last_run"] is not None
 
+    def test_audit_accepts_bodyless_post(self, web_client):
+        # The scheduler POSTs with no request body — that must be a valid
+        # (defaulted force=false) call, not a 422. Regression for the dead
+        # weekly-audit bug.
+        _, admin_cookies = _make_admin(web_client)
+        r = web_client.post("/api/admin/store/lint-audit", cookies=admin_cookies)
+        assert r.status_code == 200, r.text
+        assert "skipped" in r.json() or "entities_linted" in r.json()
+
+    def test_self_guard_ignores_per_publish_runs(self, web_client):
+        # A skill publish writes a trigger='publish' run. That must NOT satisfy
+        # the audit self-guard — otherwise routine publishing starves the
+        # scheduled retro-audit. A bodyless (non-force) audit right after a
+        # publish must still run.
+        _, owner_cookies = _create_user(web_client, "ivan@x.com")
+        assert _publish(web_client, owner_cookies).status_code == 201
+
+        _, admin_cookies = _make_admin(web_client)
+        r = web_client.post("/api/admin/store/lint-audit", cookies=admin_cookies)
+        assert r.status_code == 200, r.text
+        assert r.json().get("skipped") is not True
+
     def test_audit_force_overrides_self_guard(self, web_client):
         _, admin_cookies = _make_admin(web_client)
 
