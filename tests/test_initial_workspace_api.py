@@ -924,3 +924,55 @@ def test_nav_header_has_initial_workspace_link():
     text = Path("app/web/templates/_app_header.html").read_text(encoding="utf-8")
     assert 'href="/admin/initial-workspace"' in text
     assert "/admin/initial-workspace" in text  # also in the _admin_active set
+
+
+# ---------------------------------------------------------------------------
+# Render dry-run — connector body probe (required → error, optional →
+# warning). The renderer itself stays fail-soft; the dry-run is the
+# operator-facing gate for a seed commit that lost a SKILL.md body.
+# ---------------------------------------------------------------------------
+
+
+def _probe_entry(slug: str, *, required: bool):
+    from src.connectors_manifest import ConnectorEntry
+
+    return ConnectorEntry(
+        slug=slug,
+        display_name=slug,
+        short_summary="s",
+        estimated_minutes=1,
+        required=required,
+    )
+
+
+def test_dry_run_errors_on_required_connector_missing_body(monkeypatch):
+    from app.api import initial_workspace as api
+
+    monkeypatch.setattr(
+        "src.connectors_manifest.load_manifest",
+        lambda: [_probe_entry("connector-req", required=True)],
+    )
+    monkeypatch.setattr(
+        "app.web.setup_instructions._load_connector_body", lambda slug: None
+    )
+    summary = api._compute_render_dry_run()
+    assert summary["ok"] is False
+    assert any(
+        "connector-req" in e and "required" in e for e in summary["errors"]
+    ), summary["errors"]
+
+
+def test_dry_run_warns_on_optional_connector_missing_body(monkeypatch):
+    from app.api import initial_workspace as api
+
+    monkeypatch.setattr(
+        "src.connectors_manifest.load_manifest",
+        lambda: [_probe_entry("connector-opt", required=False)],
+    )
+    monkeypatch.setattr(
+        "app.web.setup_instructions._load_connector_body", lambda slug: None
+    )
+    summary = api._compute_render_dry_run()
+    assert summary["ok"] is True
+    assert summary["errors"] == []
+    assert any("connector-opt" in w for w in summary["warnings"]), summary["warnings"]

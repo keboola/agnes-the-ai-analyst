@@ -651,6 +651,30 @@ def _compute_render_dry_run() -> dict:
         summary["connectors_found"] = len(manifest)
         summary["connectors"] = [e.slug for e in manifest]
 
+        # Body probe — load_manifest() reads only the frontmatter, so an
+        # entry whose SKILL.md body the renderer can't resolve still
+        # parses. The renderer skips such tiles fail-soft (/home never
+        # 500s); this is where the gap surfaces to the operator. A
+        # missing REQUIRED body is an error (the mandatory step silently
+        # loses a tool), a missing optional body just a warning.
+        from app.web.setup_instructions import _load_connector_body
+
+        for entry in manifest:
+            if _load_connector_body(entry.slug) is None:
+                if entry.required:
+                    summary["errors"].append(
+                        f"required connector {entry.slug}: SKILL.md body "
+                        "missing from the synced seed — the mandatory "
+                        "install step cannot render it"
+                    )
+                    summary["ok"] = False
+                else:
+                    summary["warnings"].append(
+                        f"connector {entry.slug}: SKILL.md body missing "
+                        "from the synced seed — its tile will be skipped "
+                        "in the install prompt"
+                    )
+
         # Confirm the renderer can build a complete document end-to-end
         # using the synced content. Failures here catch unicode / format
         # regressions the manifest validator misses.

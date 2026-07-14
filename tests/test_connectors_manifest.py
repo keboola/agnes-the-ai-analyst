@@ -133,6 +133,58 @@ def test_validate_happy_path():
     assert entry.estimated_minutes == 3
 
 
+def test_validate_required_defaults_false():
+    entry = cm._validate("connector-test", _good_block())
+    assert entry is not None
+    assert entry.required is False
+
+
+def test_validate_required_true():
+    entry = cm._validate("connector-test", _good_block(required=True))
+    assert entry is not None
+    assert entry.required is True
+
+
+def test_validate_required_truthy_coerced_not_rejected():
+    """`required` follows the `requires_oauth_app` contract: bool()-coerced,
+    never a reason to reject the entry (fail-soft + §9 forward-compat)."""
+    entry = cm._validate("connector-test", _good_block(required="yes"))
+    assert entry is not None
+    assert entry.required is True
+
+    entry = cm._validate("connector-test", _good_block(required=0))
+    assert entry is not None
+    assert entry.required is False
+
+
+def test_load_manifest_carries_required_flag(fake_bundle):
+    """`required: true` round-trips from frontmatter through load_manifest;
+    the overall sort stays alphabetical by display_name regardless of the
+    flag (required/optional split happens in the renderer, not here)."""
+    _write_skill(
+        fake_bundle,
+        "connector-beta",
+        "name: connector-beta\n"
+        "connector:\n"
+        "  display_name: Beta\n"
+        "  short_summary: Optional tool.\n"
+        "  estimated_minutes: 2",
+    )
+    _write_skill(
+        fake_bundle,
+        "connector-alpha",
+        "name: connector-alpha\n"
+        "connector:\n"
+        "  display_name: Alpha\n"
+        "  short_summary: Mandatory tool.\n"
+        "  estimated_minutes: 1\n"
+        "  required: true",
+    )
+    entries = cm.load_manifest()
+    assert [e.slug for e in entries] == ["connector-alpha", "connector-beta"]
+    assert [e.required for e in entries] == [True, False]
+
+
 def test_validate_missing_connector_block_returns_none():
     assert cm._validate("connector-test", {"name": "x"}) is None
 

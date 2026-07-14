@@ -12,6 +12,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.73] - 2026-07-15
+
+### Added
+
+- Connector SKILL.md frontmatter accepts `required: true` — required
+  connectors render as a separate mandatory "Install required tools" step in
+  the install prompt (no Y/n ask, wizard body inlined, must complete before
+  the optional connector asks; step numbers shift automatically). The default
+  prompt is unchanged when no connector sets the flag. `GET
+  /api/connectors/manifest` exposes the flag (`schema_version` 1 → 2,
+  additive), and the seed-sync render dry-run now reports a missing SKILL.md
+  body as an error for required connectors (warning for optional ones).
+
+---
+
 ## [0.74.72] - 2026-07-15
 
 ### Fixed

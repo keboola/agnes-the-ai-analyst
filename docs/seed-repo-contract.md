@@ -27,8 +27,9 @@ two server-side render paths:
 
 - The **install-prompt** rendered on `/home` (the "paste-into-Claude-Code"
   bootstrap script).
-- The **connector manifest** the install prompt's step 8 lists, plus the
-  per-connector wizard bodies inlined under each tile.
+- The **connector manifest** behind the install prompt's connector steps
+  (mandatory `required: true` installs first, then the optional tiles),
+  plus the per-connector wizard bodies inlined under each tile.
 
 When an Initial Workspace Template is registered, the operator's seed
 beats the bundled snapshot tier-by-tier (the server reads the IWT clone
@@ -107,6 +108,7 @@ connector:
   estimated_minutes: 3                       # REQUIRED — int, clamped to 0..120
   vendor_url: "https://app.vendor.com/setup" # optional — http(s) only, ≤500 chars
   requires_oauth_app: false                  # optional — bool, default false
+  required: false                            # optional — bool, default false; true = mandatory install
 ---
 
 <SKILL.md body — the wizard prose that Claude Code executes when the
@@ -121,6 +123,12 @@ analyst accepts the tile's "Set up <Vendor> now? (Y/n)" ask>
   large values are typo-protection — clamped, not rejected.
 - `vendor_url` MUST start with `http://` or `https://` (anything else,
   including `javascript:`, is silently dropped from the manifest).
+- `required` is `bool()`-coerced (like `requires_oauth_app`) — a truthy
+  value moves the connector out of the optional Y/n tile list into a
+  separate numbered **"Install required tools"** step rendered between
+  diagnose and the optional tiles: no per-tool ask, and the prompt
+  instructs the agent to finish every required tool (verbatim ✅/❌
+  line) before moving on. A bad value never rejects the entry.
 - Invalid blocks (missing required field, wrong type, parse error) skip
   the entire connector entry with an `audit_log` warning. The rest of
   the manifest still renders — one bad seed commit can't take down
@@ -180,6 +188,11 @@ A missing placeholder is rendered literally (no error). This is
 deliberate — a typo in the template surfaces as visible text in the
 generated install prompt rather than a 500 on `/home`.
 
+Note: `{connector_tiles}` covers only the **optional** tile list. The
+mandatory "Install required tools" step (`required: true` entries) is
+native to the server-side Python renderer and does not flow into a
+git-bound `install-prompt/template.md.tmpl`.
+
 ---
 
 ## 6. Tile-block render shape (for `{connector_tiles}`)
@@ -198,8 +211,22 @@ For each manifest entry, the server renders this exact markdown block:
 display_name** (case-insensitive). Two operator edits that rename a
 connector reorder the tiles automatically.
 
-Empty manifest → server omits the entire step 8 block (renderer
-renumbers steps so the install prompt still flows from step 7 → step 9).
+Entries with `required: true` render in their own earlier step
+("Install required tools") with a different per-entry shape — no `Ask:`
+line:
+
+```
+   {letter}) {display_name} — {short_summary}
+      Follow this inline prompt verbatim:
+
+      {SKILL.md body, same indent/substitution rules as above}
+```
+
+The two blocks letter their tiles independently (each starts at `a`,
+alphabetical within its group). Step numbering is dynamic: an absent
+group drops its step and everything after renumbers, so the prompt
+flows contiguously in all four combinations (no connectors at all /
+only optional / only required / both).
 
 ---
 
@@ -224,7 +251,11 @@ operator: red banner in admin UI if render_dry_run.ok = false
 
 The dry-run guarantees a broken seed commit (template parse failure,
 missing connector body, frontmatter regression) surfaces to the
-operator before any analyst hits `/home`.
+operator before any analyst hits `/home`. Severity is split by the
+`required` flag: a missing SKILL.md body is an **error** (blocks the
+"seed is good" claim) for a `required: true` connector and a
+**warning** for an optional one — the renderer itself stays fail-soft
+and just skips the tile either way.
 
 ---
 
@@ -279,10 +310,18 @@ but before a sync — operator never lands a broken commit at all.
 ## 9. Versioning (`schema_version`)
 
 The `connector:` frontmatter block currently has no `schema_version`
-field — there is exactly one schema version (the one documented above).
+field — the schema documented above is the current one.
+
+Version history of the API response `schema_version`:
+
+- **v2 (current)** — adds optional `connector.required` (additive; a
+  seed using it still renders on older binaries, minus the mandatory
+  step).
+- **v1** — the initial schema.
+
 Future schema changes will:
 
-- Bump the API response `schema_version` (currently `1`) on
+- Bump the API response `schema_version` on
   `GET /api/connectors/manifest` and `GET /api/connectors/params`.
 - Add a `schema_version` key to the `connector:` block ONLY when a
   breaking change requires per-entry signaling.

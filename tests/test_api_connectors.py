@@ -79,7 +79,7 @@ def test_manifest_returns_bundled_when_no_iwt(client_with_admin):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["schema_version"] == 1
+    assert body["schema_version"] == 2
     assert body["source"] == "bundled"
     slugs = sorted(c["slug"] for c in body["connectors"])
     assert slugs == [
@@ -92,6 +92,35 @@ def test_manifest_returns_bundled_when_no_iwt(client_with_admin):
     assert asana["display_name"] == "Asana"
     assert asana["estimated_minutes"] > 0
     assert asana["vendor_url"].startswith("https://")
+
+
+def test_manifest_exposes_required_flag(client_with_admin):
+    """Schema v2: every entry carries `required`; the bundled connectors
+    are all optional (pins the OSS default), and a required=True entry
+    round-trips through _entry_to_meta.
+    """
+    client, token = client_with_admin
+    resp = client.get(
+        "/api/connectors/manifest",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert all(c["required"] is False for c in body["connectors"])
+
+    from app.api.connectors import _entry_to_meta
+    from src.connectors_manifest import ConnectorEntry
+
+    meta = _entry_to_meta(
+        ConnectorEntry(
+            slug="connector-x",
+            display_name="X",
+            short_summary="s",
+            estimated_minutes=1,
+            required=True,
+        )
+    )
+    assert meta.required is True
 
 
 def test_params_empty_when_overlay_absent(client_with_admin, monkeypatch):
@@ -113,7 +142,7 @@ def test_params_empty_when_overlay_absent(client_with_admin, monkeypatch):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["schema_version"] == 1
+    assert body["schema_version"] == 2
     assert body["params"] == {}
     assert body["globals"] == {}
 
