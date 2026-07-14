@@ -1,0 +1,129 @@
+"""Route-auth guard (Task 10 of the 2026-07-14 chat-sandbox-secret-broker
+plan, AC-G-route-auth).
+
+The broker routes are ticket-authed rather than session-authed — a novel
+auth mode for this codebase. This guard makes sure that novelty doesn't
+quietly widen into "some /api/* route has no auth at all": it walks the
+FastAPI dependant tree of every live ``/api/*`` route and asserts each one
+carries a recognized auth dependency, or is explicitly named in ``_EXEMPT``
+with a documented reason.
+
+This is a full sweep, not a forward-only ratchet (contrast
+``tests/test_documentation_api_triple_surface.py``) — as of this writing
+only 8 routes are legitimately exempt (health/version probes, webhooks
+verified by HMAC signature outside the Depends chain, and one deliberate
+bootstrap endpoint), so a full sweep stays cheap and actually catches a
+newly-added unauthenticated ``/api/*`` handler instead of only guarding the
+routes this task happened to touch.
+"""
+
+from __future__ import annotations
+
+import os
+
+
+# Public-by-design /api/* endpoints. Each entry documents WHY it carries no
+# FastAPI Depends()-chain auth dependency (webhook HMAC signature verified
+# in the handler body, a liveness/build-info probe, or a manual
+# get_optional_user + explicit 401/redirect check).
+_EXEMPT: dict[str, str] = {
+    "/api/health": "liveness probe — no secrets, must be reachable pre-auth",
+    "/api/version": "build/version info — public, no secrets (app/api/health.py)",
+    "/api/sync/status": (
+        "public sync-in-flight probe used by the host auto-upgrade cron to avoid "
+        "killing a running extractor mid-flight; documented no-auth-by-design in "
+        "app/api/sync.py's sync_status docstring"
+    ),
+    "/api/slack/events": "Slack webhook — authenticated via verify_slack_signature (HMAC), not a session/JWT",
+    "/api/slack/commands": "Slack webhook — authenticated via verify_slack_signature (HMAC), not a session/JWT",
+    "/api/slack/interactivity": "Slack webhook — authenticated via verify_slack_signature (HMAC), not a session/JWT",
+    "/api/auth/exchange-setup-token": (
+        "the one deliberately unauthenticated bootstrap endpoint — exchanges a "
+        "one-time setup token for a PAT; documented in app/api/cowork_bundle.py's "
+        "module docstring as 'no auth required'"
+    ),
+    "/api/initial-workspace.zip": (
+        "uses Depends(get_optional_user) plus a manual 401/redirect check in the "
+        "handler body (not a Depends-chain auth dependency) so an anonymous browser "
+        "hit can redirect to /login instead of only ever raising a raw 401"
+    ),
+}
+
+
+def _live_api_routes():
+    """Return the live (path, route) pairs for every APIRoute under /api/."""
+    os.environ.setdefault("TESTING", "1")
+    from fastapi.routing import APIRoute
+    from app.main import create_app
+
+    app = create_app()
+    return [route for route in app.routes if isinstance(route, APIRoute) and route.path.startswith("/api/")]
+
+
+def _is_authenticated(dependant, recognized_calls, seen=None) -> bool:
+    """Recursively walk a FastAPI dependant tree for a recognized auth dependency.
+
+    ``require_resource_access`` is a dependency *factory* (returns a fresh
+    closure per call site), so it's matched by qualname prefix rather than
+    identity; everything else is matched by direct callable identity.
+    """
+    if seen is None:
+        seen = set()
+    for sub in dependant.dependencies:
+        call = sub.call
+        key = id(call)
+        if key in seen:
+            continue
+        seen.add(key)
+        if call in recognized_calls:
+            return True
+        if getattr(call, "__qualname__", "").startswith("require_resource_access.<locals>"):
+            return True
+        if _is_authenticated(sub, recognized_calls, seen):
+            return True
+    return False
+
+
+def test_all_routes_authenticated():
+    """Every live /api/* route is either auth-gated or explicitly exempted.
+
+    Recognized auth dependencies: ``require_admin``, anything derived from
+    ``require_resource_access`` (incl. its convenience aliases like
+    ``require_chat_access``), ``get_current_user``, ``require_session_token``,
+    and the broker's ``require_broker_ticket`` (opaque short-lived ticket,
+    not a user session — but still a real auth gate, per AC-G-ticket-reuse
+    and AC-G-rbac-fidelity elsewhere in this suite).
+    """
+    from app.api.broker import require_broker_ticket
+    from app.auth.access import require_admin
+    from app.auth.dependencies import get_current_user, require_session_token
+
+    recognized_calls = (require_admin, get_current_user, require_session_token, require_broker_ticket)
+
+    offenders = []
+    for route in _live_api_routes():
+        if route.path in _EXEMPT:
+            continue
+        if not _is_authenticated(route.dependant, recognized_calls):
+            offenders.append(route.path)
+
+    assert not offenders, (
+        f"{len(offenders)} /api/* route(s) without a recognized auth dependency:\n  "
+        + "\n  ".join(sorted(set(offenders)))
+        + "\n\nAdd Depends(require_admin) / Depends(require_resource_access(...)) / "
+        "Depends(get_current_user) / Depends(require_session_token) / "
+        "Depends(require_broker_ticket) to the route, or — only if it is genuinely "
+        "public or authenticated outside the Depends chain (webhook signature, "
+        "liveness probe) — add it to _EXEMPT above with a documented reason."
+    )
+
+
+def test_exempt_has_no_stale_entries():
+    """Every _EXEMPT path must still be a live /api/* route.
+
+    Prevents the exemption list from silently accumulating entries for
+    routes that were renamed or removed (which would otherwise make the
+    guard above quietly weaker than it looks)."""
+    live_paths = {route.path for route in _live_api_routes()}
+    stale = set(_EXEMPT) - live_paths
+    assert not stale, f"_EXEMPT lists path(s) no longer live (remove them): {sorted(stale)}"
