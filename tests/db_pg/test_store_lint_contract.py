@@ -72,6 +72,27 @@ def _finding(rule_id="SL002", severity="warn", message="msg", evidence=None, doc
     }
 
 
+def test_last_full_audit_run_ignores_publish_runs(repo):
+    # A per-publish run must NOT count as the last full audit — otherwise
+    # routine publishing perpetually resets the scheduled-audit interval.
+    sched = repo.start_run("scheduler")
+    repo.finish_run(sched, linted=1, skipped=0, findings=0)
+    repo.start_run("publish")  # newer, but must be ignored by the guard
+
+    full = repo.last_full_audit_run()
+    assert full is not None
+    assert full["id"] == sched
+    assert full["trigger"] == "scheduler"
+
+    # last_run() (any trigger) still sees the publish run — contrast.
+    assert repo.last_run()["trigger"] == "publish"
+
+
+def test_last_full_audit_run_none_when_only_publish_runs(repo):
+    repo.start_run("publish")
+    assert repo.last_full_audit_run() is None
+
+
 def test_run_lifecycle_start_replace_finish_last_run(repo):
     run_id = repo.start_run("scheduler")
     assert run_id
