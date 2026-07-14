@@ -247,9 +247,13 @@ class E2BProvider:
         """Hosts the sandbox VM may reach outbound.
 
         Uses the configured ``chat.egress_allow_out`` allowlist when set;
-        otherwise falls back to the Agnes/broker host (derived from
-        ``agnes_server_url()``) plus loopback, so the sandbox can always
-        reach the server that spawned it even with no explicit config.
+        otherwise falls back to the hosts a chat session legitimately needs:
+        the Agnes host (derived from ``agnes_server_url()``), loopback, and
+        the upstreams the in-sandbox CLIs reach directly — ``api.anthropic.com``
+        (the agent's model calls) and ``api.github.com``. This default mirrors
+        the bundled ``PreToolUse`` hook's ``ALLOWED_HOSTS`` so the VM-level
+        policy and the hook agree. Operators who front Anthropic/Agnes traffic
+        through a host-side broker can tighten this via ``chat.egress_allow_out``.
         """
         if self._egress_allow_out:
             return list(self._egress_allow_out)
@@ -258,7 +262,7 @@ class E2BProvider:
         from app.chat.manager import agnes_server_url
 
         host = urlparse(agnes_server_url()).hostname or "127.0.0.1"
-        return [host, "127.0.0.1"]
+        return [host, "127.0.0.1", "api.anthropic.com", "api.github.com"]
 
     async def spawn(
         self,

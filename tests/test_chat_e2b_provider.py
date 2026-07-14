@@ -485,9 +485,11 @@ def test_spawn_sets_network_allow_out(tmp_path: Path):
     asyncio.run(_run())
 
 
-def test_spawn_defaults_allow_out_to_server_host_and_loopback(tmp_path: Path, monkeypatch):
+def test_spawn_defaults_allow_out_to_server_host_and_upstreams(tmp_path: Path, monkeypatch):
     """When egress_allow_out is unset, the effective allowlist defaults to the
-    Agnes server host (from agnes_server_url()) plus loopback."""
+    Agnes server host (from agnes_server_url()) plus loopback and the upstreams
+    the in-sandbox CLIs reach directly (Anthropic, GitHub) — mirroring the
+    PreToolUse hook's ALLOWED_HOSTS."""
 
     async def _run():
         monkeypatch.setenv("SERVER_URL", "https://agnes.example.com")
@@ -504,6 +506,8 @@ def test_spawn_defaults_allow_out_to_server_host_and_loopback(tmp_path: Path, mo
             assert call_kwargs["network"].get("allow_out") == [
                 "agnes.example.com",
                 "127.0.0.1",
+                "api.anthropic.com",
+                "api.github.com",
             ]
 
     asyncio.run(_run())
