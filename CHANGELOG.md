@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- Marketplace skill/agent detail hero now renders the same name-derived, type-tinted placeholder as the card grid — a skill named `Sales Dashboard` shows a green `SD` tile instead of a generic dark `SK`/`AG` glyph. Completes the #791 rollout (`name-derived, type-tinted placeholder initials`), which had tinted the card grid and the plugin detail hero but missed `marketplace_item_detail.html` (the standalone skill/agent detail page). Both the server-side placeholder and the post-load JS hydration now derive initials from the display name and apply the `--ds-accent-*` per-type tint (skill=green / agent=amber / plugin=blue).
+
 ---
 
 ## [0.74.67] - 2026-07-14
