@@ -31,10 +31,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.api.mcp_policy import (
+    GrantDenied,
     MutatingNotAllowed,
     RateLimited,
-    check_mutating,
-    check_rate_limit,
+    enforce_passthrough_access,
     redact_response,
 )
 from app.auth.access import _user_group_ids, is_user_admin
@@ -153,24 +153,15 @@ async def invoke_passthrough_tool(
     if tool is None or tool.get("mode") != PASSTHROUGH or not tool.get("enabled", True):
         raise HTTPException(status_code=404, detail="passthrough tool not found")
 
-    caller_is_admin = is_user_admin(user["id"])
-    if not caller_is_admin:
-        group_ids = list(_user_group_ids(user["id"]))
-        if not tools_repo.is_granted_to_groups(tool_id, group_ids):
-            raise HTTPException(
-                status_code=403,
-                detail=f"no grant on tool {tool_id!r} for your groups",
-            )
-
-    # Policy gates (RFC #461 §3). Order matters: cheap-and-decisive
-    # mutating gate first, then rate-limit (also cheap), then forward.
-    # PII redaction is applied *after* a successful forward.
+    # Authorization + policy gates (RFC #461 §3), via the one gate stack shared
+    # with the SSE / Streamable-HTTP transport closures (app/api/mcp/
+    # tools_generator) so the interactive-forward paths can't drift: grant →
+    # mutating → rate-limit. PII redaction is applied *after* a successful
+    # forward, below.
     try:
-        check_mutating(tool, is_admin=caller_is_admin)
-    except MutatingNotAllowed as exc:
+        enforce_passthrough_access(tool, user["id"])
+    except (GrantDenied, MutatingNotAllowed) as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    try:
-        check_rate_limit(tool_id, user["id"], tool.get("rate_limit_pm"))
     except RateLimited as exc:
         raise HTTPException(
             status_code=429,

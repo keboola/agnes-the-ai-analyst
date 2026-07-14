@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Security:** the SSE and Streamable-HTTP MCP servers now enforce the same authorization + policy gate on passthrough tool calls as the REST endpoint. Their dynamically-registered passthrough closures previously forwarded straight to the upstream MCP source, bypassing the per-group `tool_grants` visibility check, the `mutating` admin-only gate, and the per-(tool, user) rate limit that `POST /api/mcp/passthrough/tools/{id}/call` enforces — so a caller reaching a passthrough tool over a remote MCP connector was neither grant-checked, mutation-gated, nor rate-limited (the credential leak on these transports was already closed in 0.74.66; this closes the gate bypass deferred there). The gate stack is now extracted into a single `enforce_passthrough_access` helper shared by both the REST endpoint and the transport closures so they can't drift, each transport re-fetches the live registry row per call (grant/mutating/rate-limit/`enabled` changes take effect immediately, no restart), fails closed when the caller identity can't be resolved from the request, and applies the tool's `pii_fields` redaction to the response for full parity with REST.
+
 ---
 
 ## [0.74.68] - 2026-07-14

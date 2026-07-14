@@ -44,11 +44,68 @@ def _safe_ident(name: str) -> bool:
     return bool(_PY_IDENT_RE.match(name)) and not __import__("keyword").iskeyword(name)
 
 
+async def _forward_with_gates(
+    *,
+    source: Dict[str, Any],
+    original_name: str,
+    arguments: Dict[str, Any],
+    caller_user_id: Optional[str],
+    tool_id: Optional[str],
+) -> str:
+    """Gate, forward, and redact a single passthrough call — the transport-side
+    twin of ``app/api/mcp_passthrough.invoke_passthrough_tool``.
+
+    When ``tool_id`` is set (every production registration), this re-fetches the
+    live ``tool_registry`` row and runs the SAME authorization stack the REST
+    endpoint runs — ``enforce_passthrough_access`` (grant → mutating → rate
+    limit) — then applies the tool's ``pii_fields`` redaction to a successful
+    result, so the SSE / Streamable-HTTP transports can't forward what REST
+    would refuse. Re-fetching per call (not trusting the row captured at
+    registration time) means an admin toggling ``mutating`` / ``rate_limit_pm``
+    / grants / ``enabled`` takes effect immediately, matching REST.
+
+    A gate denial surfaces as a ``RuntimeError`` — FastMCP renders it as a tool
+    error to the MCP client. ``tool_id=None`` skips gating entirely; it exists
+    only for the caller-less direct-synthesis unit tests.
+    """
+    pii_fields: Optional[List[str]] = None
+    if tool_id is not None:
+        from app.api.mcp_policy import (
+            GrantDenied,
+            MutatingNotAllowed,
+            RateLimited,
+            enforce_passthrough_access,
+        )
+        from src.repositories import tool_registry_repo
+        from src.repositories.tool_registry import PASSTHROUGH
+
+        fresh = tool_registry_repo().get(tool_id)
+        if fresh is None or fresh.get("mode") != PASSTHROUGH or not fresh.get("enabled", True):
+            raise RuntimeError(f"passthrough tool {tool_id!r} not found or disabled")
+        try:
+            enforce_passthrough_access(fresh, caller_user_id)
+        except (GrantDenied, MutatingNotAllowed, RateLimited) as exc:
+            raise RuntimeError(str(exc)) from exc
+        pii = fresh.get("pii_fields")
+        pii_fields = pii if isinstance(pii, list) else None
+
+    result = await call_tool_async(source, original_name, arguments=arguments, caller_user_id=caller_user_id)
+    if result.is_error:
+        raise RuntimeError(f"upstream tool {original_name!r} returned error: {result.text[:300]}")
+    if pii_fields:
+        from app.api.mcp_policy import redact_response
+
+        text, _ = redact_response(text=result.text, data=result.data, pii_fields=pii_fields)
+        return text
+    return result.text
+
+
 def _make_passthrough_callable(
     source: Dict[str, Any],
     original_name: str,
     input_schema: Optional[Dict[str, Any]],
     caller_id_fn: Optional[Callable[[], Optional[str]]] = None,
+    tool_id: Optional[str] = None,
 ) -> Callable[..., Any]:
     """Build an async callable forwarding to the upstream MCP tool.
 
@@ -61,6 +118,11 @@ def _make_passthrough_callable(
     identifier regex before being inserted into the synthesized source; any
     non-identifier prop name falls back to ``**kwargs`` for that tool. This
     keeps the exec() call free of upstream-controlled syntax.
+
+    ``tool_id`` binds the closure to its ``tool_registry`` row so every call
+    runs the shared RBAC + policy gate (``_forward_with_gates``); it is always
+    set by ``register_passthrough_tools``. Omitting it (unit tests only) skips
+    gating.
     """
     props: Dict[str, Dict[str, Any]] = (input_schema or {}).get("properties") or {}
     required = set((input_schema or {}).get("required") or [])
@@ -77,10 +139,13 @@ def _make_passthrough_callable(
 
         async def _passthrough(**kwargs: Any) -> str:
             caller_user_id = caller_id_fn() if caller_id_fn else None
-            result = await call_tool_async(source, original_name, arguments=kwargs, caller_user_id=caller_user_id)
-            if result.is_error:
-                raise RuntimeError(f"upstream tool {original_name} returned error: {result.text[:300]}")
-            return result.text
+            return await _forward_with_gates(
+                source=source,
+                original_name=original_name,
+                arguments=kwargs,
+                caller_user_id=caller_user_id,
+                tool_id=tool_id,
+            )
 
         _passthrough.__name__ = original_name
         _passthrough.__doc__ = f"Passthrough to upstream MCP tool {original_name!r}."
@@ -107,19 +172,25 @@ def _make_passthrough_callable(
     sig_str = ", ".join(sig_parts)
     arg_dict_items = ", ".join(f'"{n}": {n}' for n in safe_props)
 
+    # ``__forward`` runs the shared gate stack, forwards, and returns the final
+    # (redacted) text — so the synthesized body just assembles the non-None
+    # args and returns what the gate allows.
     src = (
         f"async def _passthrough({sig_str}):\n"
         f"    raw = {{{arg_dict_items}}}\n"
         f"    args = {{k: v for k, v in raw.items() if v is not None}}\n"
-        f"    result = await __forward(args)\n"
-        f"    if result.is_error:\n"
-        f"        raise RuntimeError('upstream returned error: ' + result.text[:300])\n"
-        f"    return result.text\n"
+        f"    return await __forward(args)\n"
     )
 
-    async def _forward(args: Dict[str, Any]):
+    async def _forward(args: Dict[str, Any]) -> str:
         caller_user_id = caller_id_fn() if caller_id_fn else None
-        return await call_tool_async(source, original_name, arguments=args, caller_user_id=caller_user_id)
+        return await _forward_with_gates(
+            source=source,
+            original_name=original_name,
+            arguments=args,
+            caller_user_id=caller_user_id,
+            tool_id=tool_id,
+        )
 
     namespace: Dict[str, Any] = {"__forward": _forward}
     exec(src, namespace)  # noqa: S102 - synthesized source only references vetted idents
@@ -163,7 +234,9 @@ def register_passthrough_tools(
             continue
 
         input_schema = tool.get("input_schema") if isinstance(tool.get("input_schema"), dict) else None
-        fn = _make_passthrough_callable(source, tool["original_name"], input_schema, caller_id_fn)
+        fn = _make_passthrough_callable(
+            source, tool["original_name"], input_schema, caller_id_fn, tool_id=tool["tool_id"]
+        )
         description = tool.get("description") or f"Passthrough to {source['name']}.{tool['original_name']}"
 
         try:
