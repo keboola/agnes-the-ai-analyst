@@ -147,6 +147,76 @@ def test_admin_route_off_admin_prefix_rejected(broker_app, e2e_env):
     assert r.json().get("detail") == "admin_mutations_require_interactive_auth"
 
 
+def test_normalize_broker_path_rejects_smuggling():
+    """Unit: the path canonicalizer accepts server-local absolute paths and
+    rejects every smuggling form the ASGI replay would otherwise honor (§11,
+    RBAC review #849)."""
+    from fastapi import HTTPException
+
+    from app.api.broker import _normalize_broker_path
+
+    # accepted, query preserved
+    assert _normalize_broker_path("/api/me/home-stats") == "/api/me/home-stats"
+    assert _normalize_broker_path("/api/x?a=1&b=2") == "/api/x?a=1&b=2"
+
+    for bad in (
+        "http://evil.example/api/sync/trigger",
+        "https://evil.example/api/sync/trigger",
+        "//evil.example/api/sync/trigger",
+        "http://broker-replay/api/sync/trigger",
+        "\\\\evil.example\\api\\sync\\trigger",
+        "/%2f%2fevil/api/sync/trigger",
+        "relative/no/leading/slash",
+        "",
+    ):
+        with pytest.raises(HTTPException) as ei:
+            _normalize_broker_path(bad)
+        assert ei.value.status_code == 400, bad
+        assert ei.value.detail == "broker_path_must_be_local", bad
+
+
+def test_admin_route_path_smuggling_rejected(broker_app, e2e_env):
+    """A smuggled absolute-URL / protocol-relative / encoded path that the
+    ASGI transport would still dispatch to an admin route (/api/sync/trigger)
+    must NOT bypass the broker's admin gate — proven with an admin-owner
+    ticket, so downstream require_admin would otherwise pass (RBAC review #849).
+    """
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.repositories.user_group_members import UserGroupMembersRepository
+
+    conn = get_system_db()
+    UserRepository(conn).create(id="broker_admin_sm", email="broker_admin_sm@test.com", name="Broker Admin SM")
+    admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()[0]
+    UserGroupMembersRepository(conn).add_member("broker_admin_sm", admin_gid, source="system_seed")
+    conn.close()
+    session = chat_session_repo().create_session(user_email="broker_admin_sm@test.com", surface=Surface.WEB)
+    tok = ticket_repo().mint(session.id, "main")
+
+    smuggled = [
+        "http://evil.example/api/sync/trigger",
+        "//evil.example/api/sync/trigger",
+        "http://broker-replay/api/sync/trigger",
+        "\\\\evil.example\\api\\sync\\trigger",
+        "/%2f%2fevil/api/sync/trigger",
+    ]
+
+    async def _run(p):
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                "/api/broker/agnes-api",
+                headers={"Authorization": f"Bearer {tok}"},
+                json={"method": "POST", "path": p, "body": {}},
+            )
+
+    for p in smuggled:
+        r = asyncio.run(_run(p))
+        # rejected as malformed (400) or admin-gated (403) — never 200-triggered
+        assert r.status_code in (400, 403), f"{p} -> {r.status_code}: {r.text}"
+        body = r.json()
+        assert body.get("status") != "triggered", f"{p} REACHED the admin handler: {r.text}"
+
+
 def test_cosession_ticket_mints_cosession_jwt(broker_app, e2e_env):
     """A co-session's broker replay must mint a co_session JWT (live
     grant-intersection), not resolve to the single stored owner (§11)."""

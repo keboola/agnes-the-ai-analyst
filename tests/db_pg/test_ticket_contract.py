@@ -84,6 +84,33 @@ def test_mint_returns_opaque_token(repo):
     assert len(tok) >= 32
 
 
+def test_mint_stores_hash_not_raw_token(repo):
+    """The persisted ``token`` column holds the sha256 digest, never the raw
+    bearer value — a read of system state yields no usable ticket (RBAC review
+    #849). resolve() still accepts the raw token (hashes on lookup)."""
+    import hashlib
+
+    tok = repo.mint("chat_hash", "main", ttl_seconds=3600)
+    digest = hashlib.sha256(tok.encode()).hexdigest()
+
+    if hasattr(repo, "conn"):  # DuckDB
+        stored = repo.conn.execute(
+            "SELECT token FROM chat_broker_tickets WHERE session_id = ?", ["chat_hash"]
+        ).fetchone()[0]
+    else:  # PG
+        import sqlalchemy as sa
+
+        with repo._engine.connect() as conn:
+            stored = conn.execute(
+                sa.text("SELECT token FROM chat_broker_tickets WHERE session_id = :s"),
+                {"s": "chat_hash"},
+            ).scalar()
+
+    assert stored == digest
+    assert stored != tok
+    assert repo.resolve(tok) is not None
+
+
 def test_mint_resolve_revoke(repo):
     tok = repo.mint("chat_1", "main", ttl_seconds=3600)
     got = repo.resolve(tok)
