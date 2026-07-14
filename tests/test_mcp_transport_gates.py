@@ -218,6 +218,29 @@ def test_per_user_source_without_credential_fails_closed(seeded_app):
     mock.assert_not_called()
 
 
+# ── live source re-fetch (freshness parity with REST) ────────────────────────
+
+
+def test_source_disabled_after_registration_fails_closed(seeded_app):
+    """The closure re-fetches the source row per call, so disabling the source
+    after registration is reflected immediately (no restart) — the upstream is
+    never called, matching the REST endpoint's per-call source fetch."""
+    _seed_tool(tool_id="up.fresh", exposed_name="freshtool", grant_to_analyst=True)
+    fn = _closure("freshtool", caller_id_fn=lambda: "analyst1")
+
+    # Disable the source AFTER the closure was registered.
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id="src_up", name="up", transport="stdio", command="/bin/true", args=[], enabled=False
+    )
+    conn.close()
+
+    with _patch_upstream(text="LEAK") as mock:
+        with pytest.raises(RuntimeError, match="missing or disabled"):
+            asyncio.run(fn())
+    mock.assert_not_called()
+
+
 # ── shared gate unit ─────────────────────────────────────────────────────────
 
 
