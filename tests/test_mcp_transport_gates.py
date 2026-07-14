@@ -178,6 +178,46 @@ def test_pii_redacted_in_closure_output(seeded_app):
     assert "Alice" in out
 
 
+# ── per-user credential fail-closed parity ───────────────────────────────────
+
+
+def test_per_user_source_without_credential_fails_closed(seeded_app):
+    """A granted caller on a scope='per_user' source with NO personal credential
+    is refused with the my-secret remedy, and the upstream is never called —
+    matching the REST endpoint's fail-closed guard."""
+    conn = get_system_db()
+    sources = MCPSourceRepository(conn)
+    tools = ToolRegistryRepository(conn)
+    groups = UserGroupsRepository(conn)
+    members = UserGroupMembersRepository(conn)
+    sources.upsert(
+        id="src_pu",
+        name="pu-up",
+        transport="http",
+        url="https://upstream.example/mcp",
+        auth_method="bearer",
+        scope="per_user",
+    )
+    tools.upsert(
+        tool_id="pu-up.lookup",
+        source_id="src_pu",
+        original_name="lookup",
+        exposed_name="pulookup",
+        mode=PASSTHROUGH,
+        description="per-user, granted, no personal secret",
+    )
+    grp = groups.create(name="pu-grp", description=None)
+    tools.add_grant("pu-up.lookup", grp["id"])
+    members.add_member("analyst1", grp["id"], source="system_seed")
+    conn.close()
+
+    fn = _closure("pulookup", caller_id_fn=lambda: "analyst1")
+    with _patch_upstream(text="LEAK") as mock:
+        with pytest.raises(RuntimeError, match="my-secret"):
+            asyncio.run(fn())
+    mock.assert_not_called()
+
+
 # ── shared gate unit ─────────────────────────────────────────────────────────
 
 
