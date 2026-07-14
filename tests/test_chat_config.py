@@ -82,3 +82,17 @@ def test_unknown_on_detach_normalizes_to_pause(tmp_path):
     p = tmp_path / "instance.yaml"
     p.write_text("chat:\n  enabled: true\n  on_detach: explode\n")
     assert load_chat_config(p).on_detach == "pause"
+
+
+def test_egress_allow_out_parsed(tmp_path: Path):
+    y = tmp_path / "instance.yaml"
+    y.write_text("chat:\n  enabled: true\n  egress_allow_out:\n    - api.github.com\n")
+    cfg = load_chat_config(y)
+    assert cfg.egress_allow_out == ["api.github.com"]
+
+
+def test_egress_allow_out_defaults_empty(tmp_path: Path):
+    y = tmp_path / "instance.yaml"
+    y.write_text("chat:\n  enabled: true\n")
+    cfg = load_chat_config(y)
+    assert cfg.egress_allow_out == []

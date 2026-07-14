@@ -45,6 +45,11 @@ class ChatConfig:
     # ``chat.enabled=true`` and ``provider=e2b``; startup gate refuses
     # otherwise. Operator obtains this from ``e2b template build``.
     e2b_template_id: Optional[str] = None
+    # Hosts/CIDRs the sandbox may reach outbound, enforced at the E2B VM
+    # level via SandboxNetworkOpts.allow_out. Empty = provider computes a
+    # default (broker host + loopback). NEVER include api.anthropic.com
+    # directly once the broker is live — Anthropic traffic goes via the relay.
+    egress_allow_out: list[str] = field(default_factory=list)
     # Per-spawn workspace push cap (Q1, 100 MB default). Files past this
     # cap → WorkspaceTooLarge → user-facing error frame.
     e2b_workspace_max_bytes: int = 100 * 1024 * 1024
@@ -113,6 +118,7 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         tool_calls_per_turn_budget=int(raw.get("tool_calls_per_turn_budget", 50)),
         marketplace_sha_debounce_seconds=int(raw.get("marketplace_sha_debounce_seconds", 5 * 60)),
         e2b_template_id=raw.get("e2b_template_id") or None,
+        egress_allow_out=list(raw.get("egress_allow_out") or []),
         e2b_workspace_max_bytes=int(raw.get("e2b_workspace_max_bytes", 100 * 1024 * 1024)),
         on_detach=_parse_on_detach(raw),
         detach_linger_seconds=int(raw.get("detach_linger_seconds", 60)),
