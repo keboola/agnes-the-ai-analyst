@@ -1,0 +1,87 @@
+{% extends "base_ds.html" %}
+
+{% block title %}Skill Lint — Agnes{% endblock %}
+
+{% block head_extra %}
+<style>
+  .lint-toolbar { display: flex; gap: var(--space-2); align-items: center; margin-bottom: var(--space-4); flex-wrap: wrap; }
+  .lint-runline { color: var(--ds-text-muted); font-size: var(--text-xs); }
+  .lint-list { display: flex; flex-direction: column; gap: var(--space-3); }
+  .lint-card {
+    border: 1px solid var(--ds-border);
+    border-radius: var(--radius-lg);
+    background: var(--ds-surface);
+    padding: var(--space-4);
+  }
+  .lint-head { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); }
+  .lint-entity { font-weight: var(--font-semibold); color: var(--ds-text-primary); }
+  .lint-type {
+    font-size: var(--text-xs); background: var(--ds-surface-dim); color: var(--ds-text-secondary);
+    padding: 2px 8px; border-radius: var(--radius-full);
+  }
+  .lint-rows { display: flex; flex-direction: column; gap: var(--space-2); }
+  .lint-row {
+    display: flex; align-items: flex-start; gap: var(--space-2);
+    padding: var(--space-2) 0; border-top: 1px solid var(--ds-border-light);
+  }
+  .lint-sev {
+    font-size: var(--text-xs); font-weight: var(--font-semibold);
+    padding: 2px 8px; border-radius: var(--radius-full); flex: 0 0 auto;
+  }
+  .lint-sev.warn { background: var(--ds-warning-light, var(--ds-surface-dim)); color: var(--ds-warning-dark, var(--ds-text-primary)); }
+  .lint-sev.info { background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
+  .lint-body { flex: 1; min-width: 0; }
+  .lint-rule { font-family: var(--ds-font-mono); font-size: var(--text-xs); color: var(--ds-text-muted); }
+  .lint-msg { font-size: var(--text-sm); color: var(--ds-text-primary); margin: 2px 0; }
+  .lint-doc { font-size: var(--text-xs); }
+  .lint-empty { color: var(--ds-text-muted); padding: var(--space-6); text-align: center; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container">
+  <h1>Skill Lint</h1>
+  <p style="color: var(--ds-text-secondary);">Advisory craft findings across published skills. Findings never block publication — they flag bloat, weak triggers, and likely duplicates for authors and curators.</p>
+
+  <div class="lint-toolbar">
+    <button class="btn btn-primary" id="lint-audit" type="button">Audit now</button>
+    <a class="btn btn-secondary" href="?include_dismissed={{ 'false' if include_dismissed else 'true' }}">
+      {% if include_dismissed %}Hide dismissed{% else %}Show dismissed{% endif %}
+    </a>
+    <span class="lint-runline">
+      {% if last_run %}Last run: {{ last_run.trigger }} · {{ last_run.entities_linted }} linted · {{ last_run.findings_count }} findings{% else %}No audit has run yet.{% endif %}
+    </span>
+  </div>
+
+  <div class="lint-list" id="lint-list">
+    {% for group in groups %}
+    <div class="lint-card" data-entity="{{ group.entity_id }}">
+      <div class="lint-head">
+        <span class="lint-entity">{{ group.name }}</span>
+        <span class="lint-type">{{ group.type }}</span>
+      </div>
+      <div class="lint-rows">
+        {% for f in group.findings %}
+        <div class="lint-row" data-rule="{{ f.rule_id }}">
+          <span class="lint-sev {{ f.severity }}">{{ f.severity }}</span>
+          <div class="lint-body">
+            <div class="lint-rule">{{ f.rule_id }}</div>
+            <div class="lint-msg">{{ f.message }}</div>
+            {% if f.doc_url %}<a class="lint-doc" href="{{ f.doc_url }}">Guideline →</a>{% endif %}
+          </div>
+          <button class="btn btn-secondary lint-dismiss" type="button"
+                  data-entity="{{ group.entity_id }}" data-rule="{{ f.rule_id }}">Dismiss</button>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% else %}
+    <div class="lint-empty">No advisory findings. Run an audit to check the current store.</div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module" src="/static/js/admin_store_lint.js"></script>
+{% endblock %}

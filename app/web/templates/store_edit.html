@@ -3,6 +3,15 @@
 
 {% block head_extra %}
 <style>
+  .lint-advice { border: 1px solid var(--ds-border); border-radius: var(--radius-lg); background: var(--ds-surface); padding: var(--space-4); margin: var(--space-3) 0; }
+  .lint-advice-head { margin: 0 0 4px 0; font-size: var(--text-base); font-weight: var(--font-semibold); color: var(--ds-text-primary); }
+  .lint-advice-sub { margin: 0 0 var(--space-3) 0; font-size: var(--text-xs); color: var(--ds-text-muted); }
+  .lint-advice-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+  .lint-advice-row { display: flex; align-items: flex-start; gap: var(--space-2); }
+  .lint-advice-sev { flex: 0 0 auto; font-size: var(--text-xs); font-weight: var(--font-semibold); padding: 2px 8px; border-radius: var(--radius-full); background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
+  .lint-advice-msg { flex: 1; font-size: var(--text-sm); color: var(--ds-text-primary); }
+  .lint-advice-doc { font-size: var(--text-xs); white-space: nowrap; }
+
   .edit-back { font-size: 13px; color: var(--text-secondary, #6b7280); text-decoration: none; }
   .edit-back:hover { color: var(--text, #111827); text-decoration: underline; }
 
@@ -105,6 +114,22 @@
       ({{ pending_sub.status }}). Edits are temporarily disabled until
       the verdict lands. The detail page auto-refreshes when it does.
     </div>
+  </div>
+  {% endif %}
+
+  {% if lint_findings %}
+  <div class="lint-advice" aria-label="Advisory lint findings">
+    <h3 class="lint-advice-head">Advisory findings</h3>
+    <p class="lint-advice-sub">Craft suggestions from the skill linter. These never block publication — address them to improve discoverability.</p>
+    <ul class="lint-advice-list">
+      {% for f in lint_findings %}
+      <li class="lint-advice-row">
+        <span class="lint-advice-sev {{ f.severity }}">{{ f.severity }}</span>
+        <span class="lint-advice-msg">{{ f.message }}</span>
+        {% if f.doc_url %}<a class="lint-advice-doc" href="{{ f.doc_url }}">Guideline →</a>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
   </div>
   {% endif %}
 

@@ -3,6 +3,14 @@
 
 {% block head_extra %}
 <style>
+  .upload-lint { border: 1px solid var(--ds-border); border-radius: var(--radius-lg); background: var(--ds-surface); padding: var(--space-4); margin-bottom: var(--space-4); }
+  .upload-lint-head { font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .4px; font-weight: var(--font-semibold); color: var(--ds-text-muted); margin-bottom: var(--space-2); }
+  .upload-lint-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+  .upload-lint-row { display: flex; align-items: flex-start; gap: var(--space-2); }
+  .upload-lint-sev { flex: 0 0 auto; font-size: var(--text-xs); font-weight: var(--font-semibold); padding: 2px 8px; border-radius: var(--radius-full); background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
+  .upload-lint-msg { flex: 1; font-size: var(--text-sm); color: var(--ds-text-primary); }
+  .upload-lint-doc { font-size: var(--text-xs); white-space: nowrap; }
+
   /* Width + gutters come from the canonical `.container` /
      `.container > main` rules in style-custom.css — no per-page override. */
 
@@ -457,6 +465,11 @@
         <p class="card-sub">Pre-filled from the ZIP's frontmatter — change anything you want.
           Name and description are required; everything below is optional.
         </p>
+
+        <div id="upload-lint" class="upload-lint" hidden aria-live="polite">
+          <div class="upload-lint-head">Advisory lint — these don't block publishing</div>
+          <ul class="upload-lint-list" id="upload-lint-list"></ul>
+        </div>
 
         <div id="guidelines-2" class="guidelines">
           <button type="button" class="guidelines-toggle" id="guidelines-toggle-2"
@@ -1172,6 +1185,10 @@ nextBtn.addEventListener('click', async () => {
     updateSyntheticPreview();
     renderComponents(preview.components || []);
     showStep(2);
+    // Advisory lint (skills only) — never blocks; surfaces craft findings
+    // before the real upload. Fire-and-forget: a lint failure just leaves
+    // the panel hidden.
+    if (type === 'skill') { runUploadLint(type); }
   } catch (err) {
     showError(String(err));
   } finally {
@@ -1179,6 +1196,51 @@ nextBtn.addEventListener('click', async () => {
     nextBtn.textContent = 'Next →';
   }
 });
+
+async function runUploadLint(type) {
+  const panel = document.getElementById('upload-lint');
+  const list = document.getElementById('upload-lint-list');
+  if (!panel || !list || !zipFile) return;
+  try {
+    const fd = new FormData();
+    fd.append('file', zipFile);
+    fd.append('type', type);
+    const desc = document.getElementById('description').value;
+    if (desc) fd.append('description', desc);
+    const res = await fetch('/api/store/entities/dryrun', {method: 'POST', body: fd});
+    if (!res.ok) return;
+    const report = (await res.json()).lint;
+    if (!report) return;
+    list.innerHTML = '';
+    const findings = report.findings || [];
+    if (findings.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'upload-lint-msg';
+      li.textContent = 'No advisory findings — looks good.';
+      list.appendChild(li);
+    } else {
+      for (const f of findings) {
+        const li = document.createElement('li');
+        li.className = 'upload-lint-row';
+        const sev = document.createElement('span');
+        sev.className = 'upload-lint-sev';
+        sev.textContent = f.severity;
+        const msg = document.createElement('span');
+        msg.className = 'upload-lint-msg';
+        msg.textContent = f.message;
+        li.appendChild(sev); li.appendChild(msg);
+        if (f.doc_url) {
+          const a = document.createElement('a');
+          a.className = 'upload-lint-doc';
+          a.href = f.doc_url; a.textContent = 'Guideline →';
+          li.appendChild(a);
+        }
+        list.appendChild(li);
+      }
+    }
+    panel.hidden = false;
+  } catch (_) { /* advisory only */ }
+}
 
 backBtn.addEventListener('click', () => showStep(1));
 

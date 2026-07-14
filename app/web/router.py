@@ -50,6 +50,7 @@ from src.repositories import (
     profile_repo,
     recipes_repo,
     store_entities_repo,
+    store_lint_repo,
     store_submissions_repo,
     sync_settings_repo,
     sync_state_repo,
@@ -1896,6 +1897,49 @@ async def me_memory_mining(
     return templates.TemplateResponse(request, "me_memory_mining.html", _chrome_ctx(request, user))
 
 
+@router.get("/admin/store/lint", response_class=HTMLResponse)
+async def store_lint_admin_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Curator view of advisory skill-lint findings (#687).
+
+    Findings are rendered server-side (grouped per entity); the page's JS only
+    drives the "Audit now" and per-row Dismiss mutations against the admin lint
+    API. Dismissed findings are hidden unless ``?include_dismissed=true``.
+    """
+    include_dismissed = request.query_params.get("include_dismissed") == "true"
+    repo = store_lint_repo()
+    findings = repo.all_latest_findings(include_dismissed=include_dismissed)
+    entities = store_entities_repo()
+    groups: list[dict] = []
+    by_entity: dict[str, dict] = {}
+    for f in findings:
+        eid = f["entity_id"]
+        group = by_entity.get(eid)
+        if group is None:
+            ent = entities.get(eid)
+            group = {
+                "entity_id": eid,
+                "name": (ent or {}).get("name") or eid,
+                "type": (ent or {}).get("type") or "skill",
+                "findings": [],
+            }
+            by_entity[eid] = group
+            groups.append(group)
+        group["findings"].append(f)
+    return templates.TemplateResponse(
+        request,
+        "admin_store_lint.html",
+        {
+            **_chrome_ctx(request, user),
+            "groups": groups,
+            "last_run": repo.last_run(),
+            "include_dismissed": include_dismissed,
+        },
+    )
+
+
 @router.get("/admin/studio/suggestions", response_class=HTMLResponse)
 async def studio_suggestions_admin(
     request: Request,
@@ -2290,6 +2334,7 @@ async def store_edit(
         pending_sub=pending_sub,
         title_acronyms=TITLE_ACRONYMS,
         owner_username=entity.get("owner_username") or "",
+        lint_findings=store_lint_repo().latest_findings(entity_id, include_dismissed=False),
     )
     return templates.TemplateResponse(request, "store_edit.html", ctx)
 
