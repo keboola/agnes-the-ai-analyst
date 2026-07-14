@@ -506,6 +506,7 @@ def test_spawn_defaults_allow_out_to_server_host_and_upstreams(tmp_path: Path, m
             assert call_kwargs["network"].get("allow_out") == [
                 "agnes.example.com",
                 "127.0.0.1",
+                "localhost",
                 "api.anthropic.com",
                 "api.github.com",
             ]
