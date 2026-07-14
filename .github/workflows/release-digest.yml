@@ -1,0 +1,59 @@
+name: Release digest
+
+# Daily Slack summary of everything released since the previous digest —
+# one aggregated message instead of a ping per release. Quiet days post
+# nothing. Vendor-neutral: without the SLACK_RELEASE_WEBHOOK secret the
+# job runs as a dry-run (payload to the log only), so forks and installs
+# opt in by setting the secret to their own channel's Incoming Webhook.
+#
+# The "since" window is the start time of the previous successful run of
+# THIS workflow (no stored state): a skipped or failed night is caught up
+# automatically on the next morning's run. First run falls back to 24h.
+
+on:
+  schedule:
+    - cron: "0 4 * * *" # 06:00 CEST / 05:00 CET — releases from the previous day
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Override the window start (ISO-8601 UTC, e.g. 2026-07-13T00:00:00Z)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read # read this workflow's own run history to compute the window
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute window start (previous successful digest run)
+        id: window
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERRIDE: ${{ github.event.inputs.since }}
+        run: |
+          if [ -n "$OVERRIDE" ]; then
+            echo "since=$OVERRIDE" >> "$GITHUB_OUTPUT"
+            echo "Window start (override): $OVERRIDE"
+            exit 0
+          fi
+          # Most recent successful run of this workflow, excluding the current one.
+          SINCE=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release-digest.yml/runs?status=success&per_page=5" \
+            --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID})][0].run_started_at // empty")
+          if [ -z "$SINCE" ]; then
+            SINCE=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+            echo "No previous successful run — defaulting to 24h window."
+          fi
+          echo "since=$SINCE" >> "$GITHUB_OUTPUT"
+          echo "Window start: $SINCE"
+
+      - name: Build and post digest
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SINCE: ${{ steps.window.outputs.since }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_RELEASE_WEBHOOK }}
+        run: python3 scripts/release_digest.py
