@@ -41,13 +41,28 @@ _ENUM_PREFIXES = ("find /", "ls /home", "ls /etc", "cat /etc/", "cat /proc/")
 # curl/wget flags that consume the FOLLOWING token as their value (so that
 # token is an argument, never the request target). Skipping their values
 # stops a dotted filename like `--output results.example.csv` from being
-# misread as a bare host and denied. Listing only value-taking flags keeps
-# the failure direction safe: an unlisted value-flag at worst over-blocks
-# (its value re-checked as a host), never under-blocks the real target.
-_VALUE_TAKING_FLAGS = {
+# misread as a bare host and denied.
+#
+# The sets are PER-TOOL because the same short letter takes a value in one
+# tool but NOT the other, and a wrong "takes a value" entry skips the token
+# after it — which can be the real request target (an egress bypass). E.g.
+# `-c` is curl's `--cookie-jar` (value) but wget's `--continue` (no arg): a
+# shared set made `wget -c evil.com` skip `evil.com` and slip past the
+# allowlist. curl's `-O`/`--remote-name` likewise takes no arg (wget's does).
+# So we pick the set by the invoked tool and only list flags we're confident
+# take a value for THAT tool — the failure direction stays safe: an omitted
+# value-flag at worst over-blocks (its value re-checked as a host), never
+# under-blocks the real target. (Devin + security review on #847/#848.)
+#
+# Deliberately NOT listed for either tool — flags whose value IS (or can carry)
+# the real network destination, so the value must keep being host-checked:
+#   -x / --proxy        the proxy value is the actual TCP peer for the request.
+#   -K / --config       a curl config file can carry url=/proxy=/header=.
+#   --resolve / --connect-to  pin/redirect the connection to an arbitrary peer.
+#   -O                  curl `-O`/`--remote-name` takes NO argument.
+_CURL_VALUE_FLAGS = {
     "-o",
     "--output",
-    "--output-document",
     "-d",
     "--data",
     "--data-binary",
@@ -68,7 +83,6 @@ _VALUE_TAKING_FLAGS = {
     "--form",
     "-u",
     "--user",
-    "--password",
     "-T",
     "--upload-file",
     "-E",
@@ -81,35 +95,53 @@ _VALUE_TAKING_FLAGS = {
     "--max-time",
     "--connect-timeout",
     "--retry",
-    "--post-data",
-    "--post-file",
     "-U",
+    "--proxy-user",
+}
+_WGET_VALUE_FLAGS = {
+    "-O",
+    "--output-document",
+    "-o",
+    "--output-file",
+    "-a",
+    "--append-output",
+    "--header",
+    "-U",
+    "--user-agent",
+    "--referer",
     "-P",
     "--directory-prefix",
+    "-t",
+    "--tries",
+    "-T",
+    "--timeout",
+    "-w",
+    "--wait",
+    "--user",
+    "--password",
+    "--post-data",
+    "--post-file",
+    "-A",
+    "--accept",
+    "-R",
+    "--reject",
+    "-D",
+    "--domains",
+    "-Q",
+    "--quota",
+    "--limit-rate",
+    "-e",
+    "--execute",
+    "--bind-address",
+    "--load-cookies",
+    "--save-cookies",
+    "--http-user",
+    "--http-password",
+    "--certificate",
+    "--private-key",
+    "--ca-certificate",
 }
-# Deliberately NOT skipped — flags whose value IS (or can carry) the real
-# network destination, so the value must keep being host-checked:
-#   -x / --proxy        the proxy value is the actual TCP peer for the request
-#                       (`curl -x evil.com https://api.github.com/…` connects to
-#                       evil.com); skipping it would tunnel an allow-listed
-#                       visible URL through an arbitrary proxy.
-#   -K / --config       a curl config file can contain url=/proxy=/header=
-#                       directives defining the real request; its filename is
-#                       not a host, so host-matching over-blocks (safe) rather
-#                       than blessing an opaque config.
-#   --resolve HOST:PORT:ADDR / --connect-to H1:P1:H2:P2 pin or redirect the
-#                       connection to an arbitrary host/IP; the leading host
-#                       component stays checked.
-#   -O                  curl's `-O`/`--remote-name` takes NO argument (only
-#                       wget's `-O` does); listing it made `curl -O evil.com`
-#                       skip the request target and bypass the check. Excluded
-#                       so the target stays checked. `wget -O <file>` therefore
-#                       re-checks its filename as a host — over-block, safe.
-#                       (`--output-document`, wget's unambiguous long form,
-#                       stays in the skip set.)
-# Per this module's own principle (skip only flags whose value is never a host),
-# leaving these out at worst over-blocks — the safe direction.
-# (Devin + security review on #847.)
+_VALUE_TAKING_FLAGS = {"curl": _CURL_VALUE_FLAGS, "wget": _WGET_VALUE_FLAGS}
 
 
 def _hosts_in_command(cmd: str) -> list[str]:
@@ -123,6 +155,7 @@ def _hosts_in_command(cmd: str) -> list[str]:
     except ValueError:
         toks = cmd.split()
     if toks and toks[0] in ("curl", "wget"):
+        value_flags = _VALUE_TAKING_FLAGS[toks[0]]
         skip_next = False
         for t in toks[1:]:
             if skip_next:
@@ -132,8 +165,9 @@ def _hosts_in_command(cmd: str) -> list[str]:
             if t.startswith("-"):
                 # `--flag=value` carries its own value; `--flag value` consumes
                 # the next token. `=` form is self-contained, so only arm the
-                # skip for the separate-token form of a known value-taking flag.
-                if t in _VALUE_TAKING_FLAGS:
+                # skip for the separate-token form of a value-taking flag OF THE
+                # INVOKED TOOL (the same letter differs between curl and wget).
+                if t in value_flags:
                     skip_next = True
                 continue
             cand = t.split("/")[0].split(":")[0]

