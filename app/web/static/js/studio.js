@@ -110,12 +110,16 @@ async function createEntity() {
         body: JSON.stringify({ ...payload, dry_run: true }),
       });
       renderLint(preview && preview.lint);
-      lintPassed = true;
       result.textContent = "Reviewed — publish when ready.";
-      if (btn) btn.textContent = "Publish anyway";
     } catch (e) {
-      result.textContent = `Check failed: ${e.message}`;
+      // Advisory-only: a failed pre-check must never block publishing. Let the
+      // next click go straight to the real publish rather than re-checking.
+      result.textContent = `Advisory check unavailable — publish anyway. (${e.message})`;
     } finally {
+      // Flip regardless of dry-run outcome so publish is never gated on the
+      // advisory pre-check succeeding.
+      lintPassed = true;
+      if (btn) btn.textContent = "Publish anyway";
       inFlight = false;
     }
     return;
