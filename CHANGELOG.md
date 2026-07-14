@@ -12,6 +12,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.70] - 2026-07-14
+
+### Changed
+
+- **Security:** chat sandboxes now enforce a VM-level outbound network allowlist
+  (E2B `network.allow_out`, set at sandbox-creation time from the Agnes server
+  process — outside the sandboxed agent's write path) rather than relying only
+  on the in-sandbox PreToolUse hook, so an agent (or injected content) can no
+  longer exfiltrate to an arbitrary host even if the hook is disabled or the
+  egress is attempted via a non-Bash tool. Configurable via
+  `chat.egress_allow_out`; defaults to the Agnes host, loopback,
+  `api.anthropic.com`, and `api.github.com`. Note: allowlist entries are
+  hostnames/CIDRs enforced by the E2B network layer; operators relying on this
+  against a DNS-rebinding threat model should confirm E2B enforces the
+  allowlist per-connection rather than resolving once at creation.
+
+### Fixed
+
+- **Security:** the in-sandbox PreToolUse hook (now defense-in-depth behind the
+  VM-level allowlist above) blocks scheme-less egress (`curl evil.com`, which
+  previously bypassed the `https?://`-only regex), environment dumps, and
+  filesystem enumeration; the bundled workspace `CLAUDE.md` gains defensive
+  safety instructions.
+
+---
+
 ## [0.74.69] - 2026-07-14
 
 ### Fixed

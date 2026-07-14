@@ -9,11 +9,11 @@ work end-to-end. The unit tests in ``tests/test_chat_e2b_provider.py``
 exercise the provider against a mocked SDK; this one exercises the
 real SDK and asserts the same protocol.
 """
+
 from __future__ import annotations
 
 import asyncio
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -49,9 +49,7 @@ def test_e2b_spawn_runs_echo_command(tmp_path: Path) -> None:
         )
         try:
             line = await asyncio.wait_for(handle.stdout.readline(), timeout=30)
-            assert b"smoke" in line and b"ok" in line, (
-                f"unexpected stdout from echo: {line!r}"
-            )
+            assert b"smoke" in line and b"ok" in line, f"unexpected stdout from echo: {line!r}"
             rc = await asyncio.wait_for(handle.wait(), timeout=30)
             assert rc == 0, f"echo exited rc={rc}"
         finally:
@@ -77,11 +75,14 @@ def test_e2b_files_write_then_read(tmp_path: Path) -> None:
         ws.mkdir()
         (ws / "marker.txt").write_text("smoke-content")
 
+        # Mirror the production default-deny egress model (INC-01572) rather
+        # than the retired open-egress flag — this smoke test exercises file
+        # upload, not network, so a minimal loopback allowlist suffices.
         sandbox = await AsyncSandbox.create(
             template=template,
             api_key=api_key,
             timeout=120,
-            allow_internet_access=True,
+            network={"allow_out": ["127.0.0.1"]},
         )
         try:
             sent = await upload_workspace(sandbox, ws, max_bytes=1024 * 1024)

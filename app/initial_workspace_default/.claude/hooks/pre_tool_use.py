@@ -10,14 +10,17 @@ Operators with an Initial Workspace Template override take
 responsibility for shipping an equivalent hook (admin UI warns at
 template upload time if absent).
 """
+
 from __future__ import annotations
 
 import json
 import re
+import shlex
 import sys
 
 ALLOWED_HOSTS = {
-    "127.0.0.1", "localhost",
+    "127.0.0.1",
+    "localhost",
     "api.anthropic.com",
     "api.github.com",
 }
@@ -31,6 +34,29 @@ ADMIN_PROMPT_PREFIXES = (
     "agnes admin user",
 )
 
+_ENV_DUMP = ("env", "printenv")
+_ENUM_PREFIXES = ("find /", "ls /home", "ls /etc", "cat /etc/", "cat /proc/")
+
+
+def _hosts_in_command(cmd: str) -> list[str]:
+    hosts = []
+    # schemed URLs
+    for u in re.findall(r"https?://([^/\s'\"]+)", cmd):
+        hosts.append(u.split(":")[0])
+    # bare hosts as curl/wget arguments (scheme-defaulting)
+    try:
+        toks = shlex.split(cmd)
+    except ValueError:
+        toks = cmd.split()
+    if toks and toks[0] in ("curl", "wget"):
+        for t in toks[1:]:
+            if t.startswith("-"):
+                continue
+            cand = t.split("/")[0].split(":")[0]
+            if "." in cand and not cand.startswith("http"):
+                hosts.append(cand)
+    return hosts
+
 
 def _decide(payload: dict) -> dict:
     tool = payload.get("tool_name")
@@ -43,33 +69,41 @@ def _decide(payload: dict) -> dict:
     lower = cmd.strip().lower()
 
     # Destructive ops against persistent workspace dirs
-    if any(p in cmd for p in DESTRUCTIVE_PATHS) and any(
-        lower.startswith(pref) for pref in DESTRUCTIVE_PREFIXES
-    ):
+    if any(p in cmd for p in DESTRUCTIVE_PATHS) and any(lower.startswith(pref) for pref in DESTRUCTIVE_PREFIXES):
         return {
             "permissionDecision": "deny",
-            "permissionDecisionReason":
-                "Refusing to delete from persistent workspace/snapshots or workspace/scripts. "
-                "Use a fresh path or ask the user explicitly.",
+            "permissionDecisionReason": "Refusing to delete from persistent workspace/snapshots or workspace/scripts. "
+            "Use a fresh path or ask the user explicitly.",
         }
 
-    # Outbound network — block hosts outside allowlist
-    for url in re.findall(r"https?://([^/\s'\"]+)", cmd):
-        host = url.split(":")[0]
+    # Env reconnaissance
+    if lower in _ENV_DUMP or lower.startswith("cat /proc/self/environ"):
+        return {
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "Refusing to dump the process environment.",
+        }
+
+    # Filesystem enumeration outside the workspace
+    if any(lower.startswith(p) for p in _ENUM_PREFIXES):
+        return {
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "Refusing to enumerate outside the working directory.",
+        }
+
+    # Outbound network — block hosts outside allowlist (schemed OR scheme-less)
+    for host in _hosts_in_command(cmd):
         if host not in ALLOWED_HOSTS:
             return {
                 "permissionDecision": "deny",
-                "permissionDecisionReason":
-                    f"Outbound network to {host!r} is not in the Agnes egress allowlist. "
-                    "Allowed: " + ", ".join(sorted(ALLOWED_HOSTS)),
+                "permissionDecisionReason": f"Outbound network to {host!r} is not in the Agnes egress allowlist. "
+                "Allowed: " + ", ".join(sorted(ALLOWED_HOSTS)),
             }
 
     # Admin mutations need user confirmation
     if any(lower.startswith(p) for p in ADMIN_PROMPT_PREFIXES):
         return {
             "permissionDecision": "ask",
-            "permissionDecisionReason":
-                "This command mutates the Agnes access-control layer; confirm before running.",
+            "permissionDecisionReason": "This command mutates the Agnes access-control layer; confirm before running.",
         }
 
     return {"permissionDecision": "allow"}
