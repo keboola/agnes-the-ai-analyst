@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.67] - 2026-07-14
+
 ### Added
 
 - Daily Slack release digest: a scheduled workflow (`release-digest.yml`)
