@@ -131,6 +131,8 @@ __all__ = [
     "corpus_chunks_repo",
     # Maintained digests (K4, #799)
     "knowledge_digests_repo",
+    # Chat sandbox secret broker tickets
+    "ticket_repo",
 ]
 
 
@@ -442,6 +444,11 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.knowledge_digests", "KnowledgeDigestsRepository"),
         PG: ("src.repositories.knowledge_digests_pg", "KnowledgeDigestsPgRepository"),
     },
+    # Chat sandbox secret broker tickets
+    "ticket": {
+        DUCKDB: ("src.repositories.ticket_repo", "TicketRepository"),
+        PG: ("src.repositories.ticket_repo_pg", "TicketPgRepository"),
+    },
 }
 
 
@@ -698,3 +705,8 @@ def corpus_chunks_repo() -> Any:
 # Maintained digests (K4, #799)
 def knowledge_digests_repo() -> Any:
     return _build("knowledge_digests")
+
+
+# chat sandbox secret broker tickets
+def ticket_repo() -> Any:
+    return _build("ticket")
