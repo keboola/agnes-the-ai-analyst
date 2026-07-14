@@ -262,7 +262,10 @@ class E2BProvider:
         from app.chat.manager import agnes_server_url
 
         host = urlparse(agnes_server_url()).hostname or "127.0.0.1"
-        return [host, "127.0.0.1", "api.anthropic.com", "api.github.com"]
+        # Include both loopback spellings so the VM policy matches the hook's
+        # ALLOWED_HOSTS (127.0.0.1 + localhost) — a service reached via the
+        # `localhost` name would otherwise pass the hook but be blocked at the VM.
+        return [host, "127.0.0.1", "localhost", "api.anthropic.com", "api.github.com"]
 
     async def spawn(
         self,

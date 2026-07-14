@@ -81,8 +81,11 @@ def test_provider_spawns_sandbox_and_returns_handle(tmp_path: Path):
             assert call_kwargs["api_key"] == "sk-e2b-test"
             assert call_kwargs["envs"]["AGNES_TOKEN"] == "t"
             assert call_kwargs["timeout"] == 1800
-            # Q4: default open egress
-            assert call_kwargs.get("allow_internet_access", True) is True
+            # Egress is default-deny: the sandbox is created with a VM-level
+            # allowlist (network.allow_out), never the retired open-egress
+            # allow_internet_access=True. (INC-01572)
+            assert "allow_internet_access" not in call_kwargs
+            assert "allow_out" in call_kwargs["network"]
 
             # commands.run was called with background=True and the joined argv
             fake_sb.commands.run.assert_called_once()
@@ -506,6 +509,7 @@ def test_spawn_defaults_allow_out_to_server_host_and_upstreams(tmp_path: Path, m
             assert call_kwargs["network"].get("allow_out") == [
                 "agnes.example.com",
                 "127.0.0.1",
+                "localhost",
                 "api.anthropic.com",
                 "api.github.com",
             ]
