@@ -19,7 +19,7 @@ from app.chat.profiles import get_profile
 from app.chat.provider import SandboxHandle, SandboxProvider
 from app.chat.types import ChatSession, SessionState, Surface
 from app.chat.workdir import WorkdirManager
-from src.repositories import usage_repo, users_repo
+from src.repositories import ticket_repo, usage_repo, users_repo
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,18 @@ _PRICE_OUT_PER_MTOK = 15.0
 # every keystroke is wasteful — a 60-second stale window is acceptable
 # given the daily-cap semantics.
 _DAILY_CACHE_TTL_SEC = 60
+
+# Chat sandbox secret broker (2026-07-14 incident hardening): bumped whenever
+# the ticket_push stdin frame contract changes. ChatManager only ever
+# considers a session's runner "known-current-protocol" after it has itself
+# pushed a ticket to it in this process (see ``_known_protocol_sessions`` /
+# ``_push_ticket_frame``) — a session it has no such record for is treated as
+# potentially legacy (pre-broker runner) and force-respawned rather than
+# resumed (AC-G-resume-legacy). This is deliberately process-lifetime state,
+# not a persisted column: it is always empty right after a restart, so a
+# genuine restart always force-respawns rather than risk reconnecting an old
+# runner that cannot make sense of the ticket_push frame.
+RELAY_PROTOCOL_VERSION = 1
 
 
 def agnes_server_url() -> str:
@@ -160,6 +172,11 @@ class ChatManager:
         # map is empty, but the profile is already materialized on disk in the
         # session workdir, so resume still resolves the persona + skill.
         self._session_profiles: dict[str, str] = {}
+        # Chat sandbox secret broker: chat_ids this process has itself pushed
+        # a current-protocol ticket to (see RELAY_PROTOCOL_VERSION /
+        # _push_ticket_frame). Consulted by the resume paths to decide
+        # respawn vs. reconnect (AC-G-resume-legacy).
+        self._known_protocol_sessions: set[str] = set()
 
     def _cached_daily_tokens(self, user_email: str) -> tuple[int, int]:
         """Return (tokens_in, tokens_out) for today, with a 60-second TTL cache.
@@ -401,6 +418,9 @@ class ChatManager:
         )
         self._live[chat_id] = live
         self._repo.set_sandbox_ref(chat_id, sandbox_id=handle.sandbox_id, runner_pid=handle.pid)
+        # Broker: push the session's initial main+mcp tickets before the
+        # session is considered ready to serve messages.
+        await self._push_ticket_frame(live)
         pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
         wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
         live.tasks = [pump_task, wait_task]
@@ -485,7 +505,16 @@ class ChatManager:
         self._repo.set_sandbox_paused_at(live.chat_id, datetime.now(timezone.utc))
 
     async def _resume_live(self, live: "LiveSession") -> None:
-        """Resume a PAUSED in-memory session by reconnecting the sandbox."""
+        """Resume a PAUSED in-memory session by reconnecting the sandbox.
+
+        AC-G-resume-legacy: a session this process has never itself pushed a
+        current-protocol ticket to (``_known_protocol_sessions``) is never
+        reconnected via resume() — an old runner might not understand the
+        ``ticket_push`` stdin frame — so we force a fresh spawn instead.
+        """
+        if live.chat_id not in self._known_protocol_sessions:
+            await self._respawn_fresh(live)
+            return
         session = self._repo.get_session(live.chat_id)
         if session is None or session.sandbox_id is None or session.runner_pid is None:
             await self._respawn_fresh(live)
@@ -506,6 +535,13 @@ class ChatManager:
         live.handle = handle
         live.state = SessionState.ACTIVE
         live.active_since = _t.monotonic()
+        # AC-G-resume-fresh: rotate tickets on every resume — the paused
+        # window may have exceeded their TTL — before any further message is
+        # forwarded. Revoke the old ones FIRST: revoke_session deletes by
+        # session_id, so revoking after the fresh mint would delete the
+        # tickets _push_ticket_frame just pushed.
+        ticket_repo().revoke_session(live.chat_id)
+        await self._push_ticket_frame(live)
         pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
         wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, live.session_dir or Path("/tmp")))
         live.tasks = [pump_task, wait_task]
@@ -517,7 +553,18 @@ class ChatManager:
         """Post-restart resume: no LiveSession in memory, but repo row has refs.
 
         Returns a new LiveSession on success, None on failure (refs cleared).
+
+        AC-G-resume-legacy: ``_known_protocol_sessions`` is always empty right
+        after a process restart, so this branch fires on every genuine
+        restart — deliberately conservative: reconnecting via resume() risks
+        an old runner that predates the ticket_push stdin contract, so we
+        force a fresh spawn (which always starts a current-protocol runner
+        and pushes its own ticket) via the existing _spawn_live path instead
+        of resuming the possibly-legacy process.
         """
+        if session.id not in self._known_protocol_sessions:
+            self._repo.clear_sandbox_ref(session.id)
+            return await self._spawn_live(session)
         import time as _t
 
         try:
@@ -562,6 +609,12 @@ class ChatManager:
         )
         self._live[session.id] = live
         self._repo.set_sandbox_paused_at(session.id, None)
+        # This branch only runs when session.id IS a known-current-protocol
+        # session (the legacy branch above returns early), but the runner's
+        # relay memory does not survive the pause/resume round trip, so it
+        # still needs a fresh ticket before serving messages.
+        ticket_repo().revoke_session(session.id)
+        await self._push_ticket_frame(live)
         pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
         wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
         live.tasks = [pump_task, wait_task]
@@ -586,6 +639,7 @@ class ChatManager:
         live.state = SessionState.ACTIVE
         live.active_since = _t.monotonic()
         self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
+        await self._push_ticket_frame(live)
         await self._broadcast(live, {"type": "ready"})
         # Replay last 3 user turns.
         history = self._repo.list_messages(live.chat_id)[-3:]
@@ -662,21 +716,25 @@ class ChatManager:
             # SR-5: NO seed fallback for co-sessions. A mint failure re-raises
             # and aborts the spawn — never inject a seed token (which carries no
             # co claims and could resolve to admin via the normal user path).
-            token = mint_co_session_jwt(session.id)
+            # The JWT itself is no longer forwarded into the sandbox env (see
+            # below) — it is minted here purely for its validation side
+            # effect (aborting the spawn on a bad co-session); the real
+            # session credential now flows to the runner via the ticket
+            # broker (_push_ticket_frame), never as a raw env var.
+            mint_co_session_jwt(session.id)
         else:
             try:
-                token = mint_session_jwt(session.user_email, session.id)
+                mint_session_jwt(session.user_email, session.id)
             except ValueError:
-                # User not found in DB (e.g. deleted mid-session) — fall back to
-                # the env-seed so the runner at least starts; it will fail auth
-                # on its first API call and surface a clear error to the user.
+                # User not found in DB (e.g. deleted mid-session) — non-fatal:
+                # the spawn still proceeds (the ticket the runner receives
+                # will simply fail to redeem at the broker, surfacing a clear
+                # auth error to the user on first API call).
                 logger.warning(
-                    "_spawn_runner: mint_session_jwt failed for %s; using AGNES_SESSION_JWT_SEED fallback",
+                    "_spawn_runner: mint_session_jwt failed for %s",
                     session.user_email,
                 )
-                token = os.environ.get("AGNES_SESSION_JWT_SEED", "")
         env = {
-            "AGNES_TOKEN": token,
             # The agnes CLI inside the sandbox reads its server URL from
             # AGNES_SERVER (cli/config.py) — the previous AGNES_API had no
             # consumer, so `agnes catalog`/`query`/… silently fell back to
@@ -698,15 +756,14 @@ class ChatManager:
             # per-spawn latency; only useful once the marketplace ships real
             # skill content). See ChatConfig.bootstrap_marketplace.
             "AGNES_BOOTSTRAP_MARKETPLACE": "1" if self._config.bootstrap_marketplace else "",
-            # claude-agent-sdk inside the sandbox spawns the `claude` CLI
-            # binary, which authenticates against Anthropic via this env.
-            # Without it the MCP initialize handshake hangs and the runner
-            # fires "Control request timeout: initialize" within ~60 s.
-            # We forward the host-process key (already startup-gated via
-            # _chat_anthropic_key_ok in app/main.py) — if it's empty here
-            # the gate would have blocked startup, so this is just a
-            # pass-through.
-            "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
+            # No ANTHROPIC_API_KEY / AGNES_TOKEN here (chat sandbox secret
+            # broker hardening, 2026-07-14): the real Anthropic key never
+            # enters the sandbox env. The runner's own ``_start_relay``
+            # starts an in-sandbox loopback relay and points
+            # ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY at it with a fixed dummy
+            # value — the relay is the only thing that ever holds a real
+            # credential, fed in-memory via the ``ticket_push`` stdin frame
+            # this manager pushes after spawn/resume (_push_ticket_frame).
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             # ``session_dir`` is an Agnes-host-side path; it doesn't exist
             # inside the E2B sandbox. claude-agent-sdk's inner ``claude``
@@ -766,6 +823,26 @@ class ChatManager:
                         session.id,
                     )
         return handle
+
+    async def _push_ticket_frame(self, live: "LiveSession") -> None:
+        """Mint fresh main+mcp broker tickets and push them to the sandbox's
+        in-process relay over stdin (chat sandbox secret broker, 2026-07-14).
+
+        Every runner process — freshly spawned or reconnected via
+        ``provider.resume`` — starts with no ticket in its relay's memory, so
+        this must run (under ``_stdin_lock``, like every other stdin write)
+        before any user message is forwarded to it. Marks ``live.chat_id`` as
+        a known-current-protocol session so a later resume never mistakes it
+        for a legacy (pre-broker) runner (AC-G-resume-legacy).
+        """
+        assert live.handle is not None
+        main = ticket_repo().mint(live.chat_id, "main")
+        mcp = ticket_repo().mint(live.chat_id, "mcp")
+        payload = json.dumps({"type": "ticket_push", "main": main, "mcp": mcp}) + "\n"
+        async with live._stdin_lock:
+            live.handle.stdin.write(payload.encode("utf-8"))
+            await live.handle.stdin.drain()
+        self._known_protocol_sessions.add(live.chat_id)
 
     async def _pump_subprocess_to_ws(self, live: LiveSession) -> None:
         assert live.handle is not None
@@ -875,6 +952,7 @@ class ChatManager:
             # Refresh the persisted refs or a later pause/resume cycle would
             # try to reconnect the DEAD sandbox and lose the agent context.
             self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
+            await self._push_ticket_frame(live)
             await self._broadcast(live, {"type": "ready"})
             # Replay last 3 user turns into the new subprocess.
             # SR-11: for co-sessions, skip turns authored by a departed
@@ -1099,6 +1177,7 @@ class ChatManager:
         # Same stale-ref hazard as the crash-respawn path: persist the new
         # sandbox identity for later pause/resume.
         self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
+        await self._push_ticket_frame(live)
         await self._broadcast(live, {"type": "ready"})
         # Replay last 3 user turns skipping departed participants (SR-11).
         history = self._repo.list_messages(live.chat_id)[-3:]
@@ -1163,6 +1242,7 @@ class ChatManager:
         # Spawn-time profile is no longer needed once the session is torn down;
         # drop it so the map doesn't grow unboundedly with studio usage.
         self._session_profiles.pop(chat_id, None)
+        self._known_protocol_sessions.discard(chat_id)
         live = self._live.pop(chat_id, None)
         if live is None:
             return
