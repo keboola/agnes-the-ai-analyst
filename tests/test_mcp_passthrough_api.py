@@ -329,3 +329,52 @@ def test_invoke_rate_limit_returns_429_after_cap(seeded_app):
     assert r.status_code == 429
     assert "Retry-After" in r.headers
     reset_rate_buckets_for_tests()
+
+
+def _seed_per_user_passthrough_tool(analyst_id: str = "analyst1") -> None:
+    """Seed a ``scope='per_user'`` source with one passthrough tool granted to
+    a group ``analyst_id`` belongs to — but store NO per-user secret. Used to
+    exercise the fail-closed guard.
+    """
+    conn = get_system_db()
+    sources = MCPSourceRepository(conn)
+    tools = ToolRegistryRepository(conn)
+    groups = UserGroupsRepository(conn)
+    members = UserGroupMembersRepository(conn)
+
+    sources.upsert(
+        id="src_pu_pt",
+        name="pu-upstream",
+        transport="http",
+        url="https://upstream.example/mcp",
+        auth_method="bearer",
+        scope="per_user",
+    )
+    tools.upsert(
+        tool_id="pu-upstream.lookup",
+        source_id="src_pu_pt",
+        original_name="lookup",
+        exposed_name="lookup",
+        mode=PASSTHROUGH,
+        description="Per-user source, granted but no personal secret.",
+    )
+    grp = groups.create(name="pu-passthrough-grp", description="test grant target")
+    tools.add_grant("pu-upstream.lookup", grp["id"])
+    members.add_member(analyst_id, grp["id"], source="system_seed")
+    conn.close()
+
+
+def test_invoke_per_user_no_secret_returns_403_and_does_not_forward(seeded_app):
+    """Granted caller on a per_user source with NO personal credential → 403
+    with the my-secret remedy, and the upstream connector is never called."""
+    _seed_per_user_passthrough_tool()
+    client = seeded_app["client"]
+    with _patch_upstream_call(text="LEAK") as mock:
+        r = client.post(
+            "/api/mcp/passthrough/tools/pu-upstream.lookup/call",
+            headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+            json={"arguments": {}},
+        )
+    assert r.status_code == 403, r.text
+    assert "my-secret" in r.json()["detail"]
+    mock.assert_not_called()
