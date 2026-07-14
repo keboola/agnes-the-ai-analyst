@@ -12,9 +12,9 @@ whole point — an AI-authored resubmission with a fresh name and
 description but a copy-pasted ``SKILL.md`` body is exactly the case a
 name/description-only search misses and BM25-over-body catches.
 
-In-memory only (``duckdb.connect(":memory:")`` per call): no file-backed
-WAL/checkpoint concerns apply (that hazard, documented in ``src/fts.py``,
-is specific to the persisted ``system.duckdb``). Every failure mode —
+In-memory only (a fresh ``:memory:`` handle via ``_open_duckdb`` per call):
+no file-backed WAL/checkpoint concerns apply (that hazard, documented in
+``src/fts.py``, is specific to the persisted ``system.duckdb``). Every failure mode —
 missing extension, empty corpus, a bad PRAGMA — degrades to an empty
 result. This is best-effort recall feeding an ``info``-severity finding,
 never a hard requirement the linter must satisfy.
@@ -26,6 +26,8 @@ import logging
 from typing import TypedDict
 
 import duckdb
+
+from src.duckdb_conn import _open_duckdb
 
 from src.fts import ensure_fts_loaded
 
@@ -75,7 +77,9 @@ def top_candidates(
 
     conn: duckdb.DuckDBPyConnection | None = None
     try:
-        conn = duckdb.connect(":memory:")
+        # Route through the sanctioned helper (pins the session to UTC) rather
+        # than a bare ``duckdb.connect`` — enforced by the tz regression guard.
+        conn = _open_duckdb(":memory:")
         conn.execute("CREATE TABLE corpus(id VARCHAR, name VARCHAR, description VARCHAR, body VARCHAR)")
         conn.executemany(
             "INSERT INTO corpus VALUES (?, ?, ?, ?)",
