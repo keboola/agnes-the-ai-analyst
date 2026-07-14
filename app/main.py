@@ -961,6 +961,7 @@ async def lifespan(app):
                         app.state.chat_config.max_session_seconds,
                         E2B_SANDBOX_MAX_SECONDS,
                     ),
+                    egress_allow_out=app.state.chat_config.egress_allow_out,
                 )
                 mgr = ChatManager(
                     provider=provider,

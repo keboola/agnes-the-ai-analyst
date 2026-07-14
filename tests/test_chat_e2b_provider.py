@@ -455,6 +455,61 @@ def test_destroy_kills_sandbox_by_id_without_resuming():
 
 
 # ---------------------------------------------------------------------------
+# Task 2: VM-level egress allowlist (network.allow_out)
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_sets_network_allow_out(tmp_path: Path):
+    """spawn() passes network={'allow_out': [...]} and drops the unconditional
+    allow_internet_access=True kwarg."""
+
+    async def _run():
+        fake_sb = _make_fake_sandbox()
+        fake_handle = _make_fake_handle()
+        fake_sb.commands.run = AsyncMock(return_value=fake_handle)
+
+        with patch("app.chat.e2b_provider.AsyncSandbox") as MockSandbox:
+            MockSandbox.create = AsyncMock(return_value=fake_sb)
+            prov = E2BProvider(
+                api_key="k",
+                template_id="t",
+                egress_allow_out=["api.github.com"],
+                upload_runner=False,
+            )
+            await prov.spawn(workdir=tmp_path, env={}, argv=["true"])
+
+            call_kwargs = MockSandbox.create.call_args.kwargs
+            assert call_kwargs["network"].get("allow_out") == ["api.github.com"]
+            assert call_kwargs.get("allow_internet_access") is not True
+
+    asyncio.run(_run())
+
+
+def test_spawn_defaults_allow_out_to_server_host_and_loopback(tmp_path: Path, monkeypatch):
+    """When egress_allow_out is unset, the effective allowlist defaults to the
+    Agnes server host (from agnes_server_url()) plus loopback."""
+
+    async def _run():
+        monkeypatch.setenv("SERVER_URL", "https://agnes.example.com")
+        fake_sb = _make_fake_sandbox()
+        fake_handle = _make_fake_handle()
+        fake_sb.commands.run = AsyncMock(return_value=fake_handle)
+
+        with patch("app.chat.e2b_provider.AsyncSandbox") as MockSandbox:
+            MockSandbox.create = AsyncMock(return_value=fake_sb)
+            prov = E2BProvider(api_key="k", template_id="t", upload_runner=False)
+            await prov.spawn(workdir=tmp_path, env={}, argv=["true"])
+
+            call_kwargs = MockSandbox.create.call_args.kwargs
+            assert call_kwargs["network"].get("allow_out") == [
+                "agnes.example.com",
+                "127.0.0.1",
+            ]
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
 # Gated real-E2B test — skips cleanly without E2B_API_KEY
 # ---------------------------------------------------------------------------
 

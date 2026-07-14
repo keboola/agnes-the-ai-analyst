@@ -235,11 +235,30 @@ class E2BProvider:
         template_id: str,
         sandbox_timeout_seconds: int = 30 * 60,
         upload_runner: bool = True,
+        egress_allow_out: list[str] | None = None,
     ) -> None:
         self._api_key = api_key
         self._template_id = template_id
         self._timeout = sandbox_timeout_seconds
         self._upload_runner = upload_runner
+        self._egress_allow_out = egress_allow_out or []
+
+    def _effective_allow_out(self) -> list[str]:
+        """Hosts the sandbox VM may reach outbound.
+
+        Uses the configured ``chat.egress_allow_out`` allowlist when set;
+        otherwise falls back to the Agnes/broker host (derived from
+        ``agnes_server_url()``) plus loopback, so the sandbox can always
+        reach the server that spawned it even with no explicit config.
+        """
+        if self._egress_allow_out:
+            return list(self._egress_allow_out)
+        from urllib.parse import urlparse
+
+        from app.chat.manager import agnes_server_url
+
+        host = urlparse(agnes_server_url()).hostname or "127.0.0.1"
+        return [host, "127.0.0.1"]
 
     async def spawn(
         self,
@@ -257,17 +276,19 @@ class E2BProvider:
                 "chat.e2b_template_id missing — refusing to spawn chat sandbox",
             )
 
-        # Per Q4: allow_internet_access=True. Egress allowlist lives only
-        # in the PreToolUse hook bundled with the workspace template.
-        # lifecycle on_timeout=pause: if the in-process reaper misses a session
-        # (e.g. a crashed server) E2B pauses the sandbox instead of destroying
-        # it, keeping the process and its memory intact for later resume.
+        # Egress is enforced at the VM level via SandboxNetworkOpts.allow_out
+        # (a plain dict — SandboxNetworkOpts is a TypedDict, so a dict
+        # literal is the runtime value), independent of the in-sandbox
+        # PreToolUse hook. lifecycle on_timeout=pause: if the in-process
+        # reaper misses a session (e.g. a crashed server) E2B pauses the
+        # sandbox instead of destroying it, keeping the process and its
+        # memory intact for later resume.
         sandbox = await AsyncSandbox.create(
             template=self._template_id,
             api_key=self._api_key,
             envs=dict(env),
             timeout=self._timeout,
-            allow_internet_access=True,
+            network={"allow_out": self._effective_allow_out()},
             lifecycle={"on_timeout": "pause"},
         )
 
