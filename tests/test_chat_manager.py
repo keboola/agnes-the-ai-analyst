@@ -1956,3 +1956,43 @@ def test_legacy_runner_force_respawned(tmp_path, monkeypatch):
                 pass
 
     asyncio.run(_run())
+
+
+def test_legacy_resume_destroys_old_sandbox_before_clearing(tmp_path):
+    """Post-restart (legacy) resume must destroy the old paused sandbox BEFORE
+    clearing its ref — clearing first NULLs sandbox_paused_at so the reaper can
+    never reap it, leaking a billable microVM per session per restart (§11)."""
+    import unittest.mock as mock
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path)
+        monkeypatch_workdir(mgr)
+        session = mgr._repo.create_session(user_email="leak@test.com", surface=Surface.WEB)
+        mgr._repo.set_sandbox_ref(session.id, sandbox_id="old-sbx-123", runner_pid=999)
+        row = mgr._repo.get_session(session.id)
+
+        order: list = []
+        orig_destroy = mgr._provider.destroy
+
+        async def _destroy(*, sandbox_id):
+            order.append(("destroy", sandbox_id))
+            return await orig_destroy(sandbox_id=sandbox_id)
+
+        mgr._provider.destroy = _destroy
+        orig_clear = mgr._repo.clear_sandbox_ref
+
+        def _clear(sid):
+            order.append(("clear", sid))
+            return orig_clear(sid)
+
+        mgr._repo.clear_sandbox_ref = _clear
+        mgr._spawn_live = mock.AsyncMock(return_value=mock.MagicMock())
+
+        assert session.id not in mgr._known_protocol_sessions  # legacy path
+        await mgr._resume_from_row(row)
+
+        assert ("destroy", "old-sbx-123") in order, order
+        assert order.index(("destroy", "old-sbx-123")) < order.index(("clear", session.id)), order
+        mgr._spawn_live.assert_awaited_once()
+
+    asyncio.run(_run())

@@ -157,8 +157,15 @@ def _agnes_mcp_servers() -> dict:
     server = os.environ.get("AGNES_SERVER", "").strip()
     if not server:
         return {}
+    # The MCP stdio server must ride the mcp-scoped broker ticket, not the
+    # agent process's main-scoped one. `_start_relay` set this process's
+    # AGNES_SERVER to the relay's `/agnes-api` path (main scope); rewrite it to
+    # `/agnes-mcp` for the MCP subprocess so the relay attaches the mcp ticket
+    # (relay._SCOPE_FOR_PREFIX). Without this, the minted+pushed mcp ticket is
+    # dead and both surfaces share one scope, defeating the split (§11).
+    mcp_server = server.replace("/agnes-api", "/agnes-mcp")
     env = {
-        "AGNES_SERVER": server,
+        "AGNES_SERVER": mcp_server,
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         # ``agnes mcp`` resolves its config dir via ``expanduser("~/.config/
         # agnes")`` (cli/config.py), which needs HOME. The ``claude`` CLI
