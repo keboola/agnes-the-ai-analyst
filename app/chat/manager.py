@@ -549,6 +549,18 @@ class ChatManager:
         live.current_wait = wait_task
         self._repo.set_sandbox_paused_at(live.chat_id, None)
 
+    async def _destroy_old_sandbox(self, session: "ChatSession") -> None:
+        """Best-effort teardown of a session's paused E2B sandbox before its
+        refs are cleared. Never raises — a destroy failure must not block the
+        fresh spawn, but skipping it entirely leaks a billable microVM (§11)."""
+        sandbox_id = getattr(session, "sandbox_id", None)
+        if not sandbox_id:
+            return
+        try:
+            await self._provider.destroy(sandbox_id=sandbox_id)
+        except Exception:
+            logger.warning("failed to destroy old sandbox %s for %s (continuing)", sandbox_id, session.id)
+
     async def _resume_from_row(self, session: "ChatSession") -> Optional["LiveSession"]:
         """Post-restart resume: no LiveSession in memory, but repo row has refs.
 
@@ -563,6 +575,12 @@ class ChatManager:
         of resuming the possibly-legacy process.
         """
         if session.id not in self._known_protocol_sessions:
+            # Force a fresh spawn rather than resume a possibly-legacy runner.
+            # Destroy the old (paused, billable) sandbox BEFORE clearing its
+            # ref — clear_sandbox_ref NULLs sandbox_paused_at, after which the
+            # paused-TTL reaper can never find it, so skipping the destroy here
+            # leaks one E2B microVM per resumable session on every restart (§11).
+            await self._destroy_old_sandbox(session)
             self._repo.clear_sandbox_ref(session.id)
             return await self._spawn_live(session)
         import time as _t
@@ -575,9 +593,10 @@ class ChatManager:
             )
         except Exception:
             logger.warning(
-                "_resume_from_row failed for %s — clearing refs for fresh spawn",
+                "_resume_from_row failed for %s — destroying old sandbox + clearing refs for fresh spawn",
                 session.id,
             )
+            await self._destroy_old_sandbox(session)
             self._repo.clear_sandbox_ref(session.id)
             return None
         # Mirror _spawn_live's workspace selection: co-sessions get the

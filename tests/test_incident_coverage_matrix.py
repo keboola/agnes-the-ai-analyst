@@ -32,6 +32,13 @@ REQUIRED: dict[str, str] = {
     # Broker routes (Task 6) — app-tier, per-PR.
     "AC-G-ticket-reuse": "tests/test_broker_routes.py::test_expired_ticket_401",
     "AC-G-rbac-fidelity": "tests/test_broker_routes.py::test_agnes_api_replay_uses_live_rbac",
+    # §11: admin mutations are gated by the target route's require_admin
+    # dependency, not a path prefix — a require_admin route off /api/admin/
+    # (e.g. /api/sync/trigger) is rejected even for an admin identity.
+    "AC-G-admin": "tests/test_broker_routes.py::test_admin_route_off_admin_prefix_rejected",
+    # §11: a co-session's broker replay mints a co_session JWT (live
+    # grant-intersection), never the single stored owner's identity.
+    "AC-G-cosession": "tests/test_broker_routes.py::test_cosession_ticket_mints_cosession_jwt",
     # Manager spawn-env static guard (Task 9) — unit-tier, per-PR.
     "AC-G-noinject": "tests/test_backend_split_guard.py::test_no_real_secret_in_sandbox_spawn_env",
     # Route-auth guard (Task 10, this task) — app-tier, per-PR.

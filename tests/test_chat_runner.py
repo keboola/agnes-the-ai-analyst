@@ -324,3 +324,14 @@ def test_ticket_push_frame_not_enqueued(monkeypatch):
         assert enqueued["text"] == "hi"
 
     asyncio.run(_run())
+
+
+def test_mcp_server_rides_mcp_scope_url(monkeypatch):
+    """The agnes-mcp stdio subprocess must target the relay's /agnes-mcp path
+    (mcp-scoped ticket), not the agent process's /agnes-api (main scope) — so
+    the minted mcp ticket is actually used, not dead (§11)."""
+    monkeypatch.setenv("AGNES_SERVER", "http://127.0.0.1:5000/agnes-api")
+    from app.chat.runner import _agnes_mcp_servers
+
+    servers = _agnes_mcp_servers()
+    assert servers["agnes"]["env"]["AGNES_SERVER"] == "http://127.0.0.1:5000/agnes-mcp"

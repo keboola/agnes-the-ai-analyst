@@ -10,6 +10,37 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Chat sandbox secret broker.** The real Anthropic key and Agnes token are
+  no longer placed in any chat-sandbox process environment. An in-sandbox
+  loopback relay holds only opaque, short-lived, session-scoped tickets (in
+  memory — never in env or on disk) and forwards to internal broker routes
+  (`/api/broker/{anthropic,agnes-api,agnes-mcp}`) that inject the real
+  credentials server-side. Agnes-API/MCP requests are replayed in-process
+  through the app's own stack, so live per-request RBAC applies. Tickets
+  (`chat_broker_tickets`, schema v90) are minted at spawn, pushed to the runner
+  over stdin, rotated at 50 min, and re-minted on resume. Complements the
+  VM-level egress allowlist (0.74.70): egress stops exfiltration, the broker
+  stops credential theft.
+
+### Changed
+
+- Chat sessions no longer receive the real Anthropic key or Agnes token in
+  their sandbox (or `agnes mcp` subprocess) environment; credentials are
+  brokered. The `agnes mcp` subprocess rides a separate mcp-scoped ticket.
+
+### Internal
+
+- Schema v90: `chat_broker_tickets` table (DuckDB `_v89_to_v90` + Alembic
+  `0037_chat_broker_tickets_v90`), dual-backend `ticket` repository.
+- Broker admin-mutation gate introspects the target route's `require_admin`
+  dependency (not a path prefix), so admin routes off `/api/admin/`
+  (`/api/users/*`, `/auth/admin/tokens/*`, `/api/sync/trigger`, …) are refused
+  regardless of the resolved identity. Co-session tickets resolve via
+  `mint_co_session_jwt` (live grant-intersection). Post-restart resume destroys
+  the old paused sandbox before clearing its ref (no microVM leak).
+
 ---
 
 ## [0.74.73] - 2026-07-15
