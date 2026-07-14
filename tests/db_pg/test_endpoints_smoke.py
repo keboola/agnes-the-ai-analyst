@@ -1423,6 +1423,14 @@ KNOWN_UNTESTED = {
     "POST /api/studio/memory-mining/consent",
     "POST /api/admin/memory-mining/run",
     "GET /me/memory-mining",
+    # Skill-linter admin moderation surface (v89, #687) — findings list,
+    # full-corpus audit, per-finding dismiss. Behaviour covered by
+    # tests/test_store_lint_api.py + tests/test_web_store_lint.py; the audit
+    # runs a corpus lint (LLM/FTS), not a fit for the parameter-free sweep.
+    "GET /admin/store/lint",
+    "GET /api/admin/store/lint-findings",
+    "POST /api/admin/store/lint-audit",
+    "POST /api/admin/store/lint-dismiss",
     # Skill contribution — admin web-form flow + REST/MCP triple-surface
     # (paste a SKILL.md, publish it to the contributed marketplace). Core logic
     # covered by tests/test_skill_contribution.py and

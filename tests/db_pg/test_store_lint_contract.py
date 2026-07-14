@@ -13,8 +13,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import duckdb
 import pytest
+
+from src.duckdb_conn import _open_duckdb
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -23,7 +24,7 @@ def _make_duckdb_repo(tmp_path):
     from src.db import _ensure_schema
     from src.repositories.store_lint import StoreLintRepository
 
-    conn = duckdb.connect(str(tmp_path / "duck.duckdb"))
+    conn = _open_duckdb(str(tmp_path / "duck.duckdb"))
     _ensure_schema(conn)
     return StoreLintRepository(conn), conn
 
