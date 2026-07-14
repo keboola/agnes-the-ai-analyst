@@ -22,10 +22,79 @@ from cli.v2_client import (
     V2ClientError,
     api_get_json,
     api_get_stream,
+    api_post_json,
     api_post_multipart,
 )
 
 admin_store_app = typer.Typer(help="Admin: bulk Store ops (pull / push / info)")
+
+
+@admin_store_app.command("lint-findings")
+def lint_findings(
+    include_dismissed: bool = typer.Option(
+        False, "--include-dismissed", help="Also show findings an admin has dismissed."
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+):
+    """List advisory skill-lint findings across the Store (admin only)."""
+    try:
+        body = api_get_json(
+            "/api/admin/store/lint-findings",
+            include_dismissed=str(include_dismissed).lower(),
+        )
+    except V2ClientError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+    if json_out:
+        typer.echo(json.dumps(body, indent=2))
+        return
+    findings = body.get("findings", [])
+    if not findings:
+        typer.echo("No advisory findings.")
+        return
+    for f in findings:
+        typer.echo(
+            f"{f.get('entity_id', '?')}  [{f.get('severity', '?')}] {f.get('rule_id', '?')}  {f.get('message', '')}"
+        )
+
+
+@admin_store_app.command("lint-audit")
+def lint_audit(
+    force: bool = typer.Option(
+        False, "--force", help="Run even if a recent audit already ran (bypass the interval guard)."
+    ),
+):
+    """Run a full skill-lint audit over published skills now (admin only)."""
+    try:
+        body = api_post_json("/api/admin/store/lint-audit", {"force": force})
+    except V2ClientError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+    if body.get("skipped"):
+        typer.echo("Skipped — a recent audit already ran (use --force to override).")
+        return
+    typer.echo(
+        f"Audited {body.get('entities_linted', 0)} skills, "
+        f"{body.get('entities_skipped', 0)} skipped, "
+        f"{body.get('findings_count', 0)} findings."
+    )
+
+
+@admin_store_app.command("lint-dismiss")
+def lint_dismiss(
+    entity_id: str = typer.Argument(..., help="Store entity id."),
+    rule_id: str = typer.Argument(..., help="Rule id to dismiss (e.g. SL002)."),
+):
+    """Dismiss one advisory finding until the entity's content changes (admin only)."""
+    try:
+        api_post_json(
+            "/api/admin/store/lint-dismiss",
+            {"entity_id": entity_id, "rule_id": rule_id},
+        )
+    except V2ClientError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+    typer.echo(f"Dismissed {rule_id} on {entity_id}.")
 
 
 @admin_store_app.command("pull")
@@ -35,14 +104,17 @@ def pull_bundle(
     owner: Optional[str] = typer.Option(None, "--owner", help="Filter by owner user_id"),
     search: Optional[str] = typer.Option(None, "--search", "-q"),
     out: Path = typer.Option(
-        Path("flea.zip"), "-o", "--out",
+        Path("flea.zip"),
+        "-o",
+        "--out",
         help="Where to save the ZIP (default: ./flea.zip)",
     ),
     unpack: Optional[Path] = typer.Option(
-        None, "--unpack",
+        None,
+        "--unpack",
         help="Instead of saving the ZIP, unpack it into this directory. "
-             "Useful for committing a snapshot to a backup git repo: "
-             "`agnes admin store pull --unpack ./backup/ && cd backup && git add .`",
+        "Useful for committing a snapshot to a backup git repo: "
+        "`agnes admin store pull --unpack ./backup/ && cd backup && git add .`",
     ),
 ):
     """Download the whole Store as a deterministic ZIP.
@@ -117,7 +189,9 @@ def store_info(
     while True:
         try:
             body = api_get_json(
-                "/api/store/entities", limit=page, skip=skip,
+                "/api/store/entities",
+                limit=page,
+                skip=skip,
             )
         except V2ClientError as e:
             typer.echo(str(e), err=True)
@@ -149,16 +223,19 @@ def store_info(
 @admin_store_app.command("push")
 def push_bundle(
     source: Path = typer.Argument(
-        ..., exists=True, readable=True,
+        ...,
+        exists=True,
+        readable=True,
         help="Bundle to upload — either a *.zip file or a directory "
-             "containing manifest.json + entities/. A directory is "
-             "zipped client-side before upload.",
+        "containing manifest.json + entities/. A directory is "
+        "zipped client-side before upload.",
     ),
     mode: str = typer.Option(
-        "merge", "--mode",
+        "merge",
+        "--mode",
         help="merge (default — upsert by entity_id; replace when version "
-             "differs) | replace (overwrite every existing row in the "
-             "bundle) | skip (insert only entities not already present)",
+        "differs) | replace (overwrite every existing row in the "
+        "bundle) | skip (insert only entities not already present)",
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ):
@@ -192,8 +269,7 @@ def push_bundle(
 
         if not yes:
             confirm = typer.confirm(
-                f"Upload bundle from {source} with mode={mode}? "
-                f"This may modify existing Store entities."
+                f"Upload bundle from {source} with mode={mode}? This may modify existing Store entities."
             )
             if not confirm:
                 raise typer.Abort()
@@ -204,7 +280,8 @@ def push_bundle(
         try:
             body = api_post_multipart(
                 "/api/store/import-bundle",
-                files=files, data={"mode": mode},
+                files=files,
+                data={"mode": mode},
             )
         except V2ClientError as e:
             typer.echo(str(e), err=True)

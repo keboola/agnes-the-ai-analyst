@@ -22,6 +22,12 @@ def test_build_jobs_uses_documented_defaults(monkeypatch):
     assert jobs["bq-metadata-refresh"] == "every 4h"
     assert jobs["knowledge-packaging"] == "every 15m"
     assert jobs["knowledge-digests"] == "every 30m"
+    # Weekly skill-lint retro-audit (#687) — Monday 05:00 UTC.
+    assert jobs["store-lint-audit"] == "cron 0 5 * * 1"
+    # It must POST the self-guarded admin audit endpoint.
+    lint_job = next(j for j in build_jobs() if j[0] == "store-lint-audit")
+    assert lint_job[2] == "/api/admin/store/lint-audit"
+    assert lint_job[3] == "POST"
     assert resolved_tick_seconds() == 30
 
 
