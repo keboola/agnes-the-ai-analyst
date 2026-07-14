@@ -416,10 +416,12 @@ ai:
 #   # SL002: Maximum body character length before bloat warning. Default 8000.
 #   lint_max_body_chars: 8000
 #
-#   # SL012: Top N recent skills to check for duplicate descriptions. Default 5.
+#   # Duplicate shortlist size — top N candidate skills fed to SL010's LLM
+#   # confirmation (and the SL012 degraded fallback). Default 5.
 #   lint_duplicate_top_n: 5
 #
-#   # SL011: Minimum hours between linter audits on the same skill. Default 144 (6 days).
+#   # Minimum hours between full-corpus lint audits (the audit self-guard).
+#   # Default 144 (6 days).
 #   lint_audit_min_interval_hours: 144
 
 # --- Corporate Memory governance (optional) ---
