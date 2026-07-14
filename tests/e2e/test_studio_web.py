@@ -114,6 +114,44 @@ def test_builder_creates_entity(video_ctx, domain, texts, selects):
         ctx.close()  # finalizes the .webm
 
 
+def test_skill_builder_shows_advisory_lint_then_publishes(video_ctx):
+    """Draft a skill with an oversized body → the first Publish click runs an
+    advisory dry-run that surfaces an SL002 (bloat) finding; the second click
+    ("Publish anyway") still creates the entity. Proves lint is advisory —
+    findings inform but never block (#687)."""
+    browser, base = video_ctx
+    ctx = browser.new_context(
+        record_video_dir=str(_VIDEO_DIR),
+        record_video_size={"width": 1280, "height": 800},
+        viewport={"width": 1280, "height": 800},
+    )
+    page = ctx.new_page()
+    try:
+        page.goto(f"{base}/admin/studio/skill", wait_until="domcontentloaded")
+        page.wait_for_selector("#studio-create", timeout=15_000)
+        page.fill("#studio-f-name", "e2e-bloated-skill")
+        page.fill(
+            "#studio-f-description",
+            "Use when exercising the skill linter advisory panel end to end.",
+        )
+        # Well over the 8000-char SL002 bloat threshold.
+        page.fill("#studio-f-skill_md", "word " * 2000)
+
+        # First click: advisory dry-run. The lint panel appears with SL002 and
+        # the button flips to "Publish anyway" — publication is NOT blocked.
+        page.click("#studio-create")
+        page.wait_for_selector("#studio-lint:not([hidden])", timeout=15_000)
+        assert "SL002" in page.inner_text("#studio-lint-list")
+        assert "Publish anyway" in page.inner_text("#studio-create")
+
+        # Second click: publishes despite the finding.
+        page.click("#studio-create")
+        page.wait_for_selector("text=Created:", timeout=15_000)
+        assert "Created:" in page.inner_text("#studio-result")
+    finally:
+        ctx.close()  # finalizes the .webm
+
+
 @pytest.mark.real_llm
 @pytest.mark.timeout(300)
 def test_live_agent_assists_in_data_package_builder(video_ctx):
