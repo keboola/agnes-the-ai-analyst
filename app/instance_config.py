@@ -991,7 +991,8 @@ def get_lint_max_body_chars() -> int:
 
 
 def get_lint_duplicate_top_n() -> int:
-    """Top N candidates to check for duplicate skill detection (SL012).
+    """Top N candidate skills the duplicate stage shortlists (feeds SL010's
+    LLM confirmation and the SL012 degraded fallback).
 
     Reads ``guardrails.lint_duplicate_top_n`` (default 5). When linting a
     new skill, the linter compares its description against the top N most
@@ -1006,7 +1007,8 @@ def get_lint_duplicate_top_n() -> int:
 
 
 def get_lint_audit_min_interval_hours() -> int:
-    """Minimum interval in hours between linter audits on a skill (SL011).
+    """Minimum interval in hours between full-corpus lint audits (the
+    ``/api/admin/store/lint-audit`` self-guard; not tied to any single rule).
 
     Reads ``guardrails.lint_audit_min_interval_hours`` (default 144 = 6 days).
     When a skill is updated, the linter may trigger a fresh audit. This

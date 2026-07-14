@@ -59,12 +59,11 @@ async def list_lint_findings(
 def _audit_due(last_run: Optional[Dict[str, Any]], min_interval_hours: int) -> bool:
     """Whether enough time has passed since ``last_run`` to run another audit.
 
-    ``started_at`` comes back as a naive or tz-aware ``datetime`` (DuckDB and
-    Postgres both store a plain ``TIMESTAMP`` column here — no timezone
-    conversion happens on either side) or, defensively, an ISO string.
-    Treat a naive value as already being in UTC (matches how both backends
-    populate the column via ``CURRENT_TIMESTAMP``) rather than assuming the
-    local server timezone.
+    ``started_at`` comes back as a ``datetime`` — naive from DuckDB (plain
+    ``TIMESTAMP``) or tz-aware from Postgres (``TIMESTAMPTZ``) — or,
+    defensively, an ISO string. Treat a naive value as already being in UTC
+    (matches how both backends populate the column via ``CURRENT_TIMESTAMP``)
+    rather than assuming the local server timezone.
     """
     if last_run is None:
         return True
@@ -187,23 +186,31 @@ def _run_full_audit(trigger: str) -> Dict[str, Any]:
 
 @router.post("/lint-audit")
 async def run_lint_audit(
-    body: LintAuditBody,
     request: Request,
+    body: LintAuditBody = LintAuditBody(),
     admin: dict = Depends(require_admin),
 ) -> Dict[str, Any]:
     """Run (or skip) a full-corpus lint audit.
 
+    ``body`` defaults so a body-less POST (the scheduler sends none) is valid
+    rather than 422.
+
     Self-guard: unless ``force``, refuses to re-run within
-    ``get_lint_audit_min_interval_hours()`` of the most recent audit run of
-    ANY trigger, to keep a misconfigured scheduler (or an admin mashing the
-    button) from hammering the LLM craft-review tier.
+    ``get_lint_audit_min_interval_hours()`` of the most recent *full-audit* run
+    (``scheduler``/``admin`` trigger only — per-publish runs are ignored, else
+    routine publishing would perpetually reset the interval), to keep a
+    misconfigured scheduler (or an admin mashing the button) from hammering the
+    LLM craft-review tier.
     """
     repo = store_lint_repo()
-    last = repo.last_run()
+    last = repo.last_full_audit_run()
     if not body.force and not _audit_due(last, get_lint_audit_min_interval_hours()):
         return {"skipped": True, "last_run": last}
 
-    trigger = "scheduler" if request.headers.get("X-Agnes-Scheduler") else "admin"
+    # The scheduler authenticates as the synthetic "scheduler" user; label the
+    # run accordingly so the guard/history distinguishes automated from manual.
+    principal = (admin.get("username") or admin.get("email") or "").lower()
+    trigger = "scheduler" if (request.headers.get("X-Agnes-Scheduler") or principal == "scheduler") else "admin"
     return await run_in_threadpool(_run_full_audit, trigger)
 
 
