@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- Skill linter (v89, #687) surfaced on the Store API: `POST /api/store/entities/from-markdown` accepts `dry_run: true` to preview guardrail + linter findings without publishing; `POST /api/store/entities/dryrun` gains a `lint` block for skill bundles; every skill publish now runs an advisory post-publish lint pass in the background. New admin surface for instance admins: `GET /api/admin/store/lint-findings`, `POST /api/admin/store/lint-audit` (full-corpus re-lint, rate-limited by `guardrails.lint_audit_min_interval_hours` unless `force: true`), and `POST /api/admin/store/lint-dismiss`. Purely advisory — never blocks publication or changes `visibility_status`.
+
 ---
 
 ## [0.74.61] - 2026-07-13
