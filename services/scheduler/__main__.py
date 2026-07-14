@@ -367,6 +367,14 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # to review_error so admin can retry. Cheap (one indexed
         # SELECT + N small UPDATEs); short timeout sufficient.
         ("store-reap-stuck-reviews", "every 15m", "/api/admin/run-reap-stuck-reviews", "POST", 60),
+        # Weekly skill-lint retro-audit (#687). Re-lints published skills,
+        # skipping entities whose content is unchanged since their last lint
+        # (zero LLM cost on a static store). The endpoint self-guards against
+        # restart-refire via a min-interval check on the last scheduler run,
+        # so the effective cadence holds even though scheduler last_run state
+        # is in-memory. Monday 05:00 UTC — off-peak, distinct from the daily
+        # 03:00/04:00 store jobs.
+        ("store-lint-audit", "cron 0 5 * * 1", "/api/admin/store/lint-audit", "POST", 900),
         # BigQuery metadata refresh — keeps ``bq_metadata_cache`` warm so
         # ``GET /api/v2/catalog`` never has to call BQ at request time.
         ("bq-metadata-refresh", _seconds_to_schedule(bqmeta), "/api/admin/run-bq-metadata-refresh", "POST", 1800),

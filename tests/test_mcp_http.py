@@ -177,6 +177,12 @@ class TestToolRegistration:
             # Triple-surface with POST /api/store/entities/from-markdown +
             # `agnes store publish-md`.
             "store_publish_markdown",
+            # Skill-linter admin moderation surface (v89, #687) — findings
+            # list, manual full-corpus audit, per-finding dismiss. Triple-
+            # surface with /api/admin/store/lint-* + `agnes admin store lint-*`.
+            "admin_store_lint_findings",
+            "admin_store_lint_audit",
+            "admin_store_lint_dismiss",
         }
 
     def test_no_client_only_tools(self):

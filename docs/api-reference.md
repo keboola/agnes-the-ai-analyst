@@ -901,6 +901,9 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 
 ### `/api/admin/store` — Marketplace store submissions (admin)
 
+- /api/admin/store/lint-audit
+- /api/admin/store/lint-dismiss
+- /api/admin/store/lint-findings
 - /api/admin/store/submissions
 - /api/admin/store/submissions/{submission_id}
 - /api/admin/store/submissions/{submission_id}/bundle.zip
