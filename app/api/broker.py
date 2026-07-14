@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 from typing import Any, Dict
+from urllib.parse import unquote, urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -77,6 +78,34 @@ def _route_requires_admin(app: Any, method: str, path: str) -> bool:
         if route.path_regex.match(path):
             return require_admin in _dependant_calls(route.dependant)
     return False
+
+
+def _normalize_broker_path(raw: Any) -> str:
+    """Canonicalize an agent-supplied replay path to a server-LOCAL absolute
+    path, or 400.
+
+    The same string is used for BOTH the admin-route gate and the
+    ``httpx.ASGITransport`` replay dispatch — they must never diverge.
+    ASGITransport routes purely on the URL path component and ignores any
+    scheme/authority, so a smuggled absolute URL (``http://x/api/…``) or a
+    protocol-relative path (``//x/api/…``) slips past a literal admin check
+    yet still executes the real handler (RBAC review on #849 reproduced this
+    end-to-end). Reject anything that isn't a plain server-local absolute
+    path; the query string is preserved. Over-blocks at worst — the safe
+    direction. Also rejects backslash and percent-encoded ``//`` smuggling
+    (``%2f%2f`` decodes to a leading ``//``).
+    """
+    parsed = urlsplit(str(raw or ""))
+    if parsed.scheme or parsed.netloc:
+        raise HTTPException(status_code=400, detail="broker_path_must_be_local")
+    path = parsed.path
+    # Check both the literal and percent-decoded forms: the router the replay
+    # ultimately hits decodes the path, so a check on the raw form alone could
+    # diverge from what actually dispatches.
+    for form in (path, unquote(path)):
+        if not form.startswith("/") or form.startswith("//") or "\\" in form:
+            raise HTTPException(status_code=400, detail="broker_path_must_be_local")
+    return f"{path}?{parsed.query}" if parsed.query else path
 
 
 # Anthropic traffic is always forwarded to this pinned host — the sandbox's
@@ -157,14 +186,33 @@ async def _replay(request: Request, row: Dict[str, Any], body: Dict[str, Any]) -
     same app/config/DB the broker itself is running against — no reliance
     on a module-level app singleton.
     """
-    path = str(body.get("path") or "")
     method = str(body.get("method") or "GET").upper()
+
+    # Canonicalize the agent-supplied path FIRST and use the same string for
+    # the admin gate and the dispatch below — an absolute-URL / protocol-relative
+    # path would otherwise defeat the gate while still hitting the real handler
+    # (RBAC review on #849). A smuggling attempt is a probe → audit + 400.
+    try:
+        path = _normalize_broker_path(body.get("path"))
+    except HTTPException:
+        try:
+            audit_repo().log(
+                action="broker_path_rejected",
+                params={"raw_path": str(body.get("path"))[:200], "session_id": row.get("session_id")},
+                result="denied",
+                client_kind="broker",
+            )
+        except Exception:
+            pass
+        raise
+
+    match_path = path.split("?", 1)[0]
 
     # Admin mutations are never brokered — refuse before touching identity,
     # regardless of whether the resolved identity is itself an admin. The
     # `/api/admin/` prefix is a fast-path; route introspection is the real
     # gate and catches admin routes at any path (§11).
-    if path.startswith(_ADMIN_PATH_PREFIX) or _route_requires_admin(request.app, method, path):
+    if match_path.startswith(_ADMIN_PATH_PREFIX) or _route_requires_admin(request.app, method, match_path):
         try:
             audit_repo().log(
                 action="broker_admin_route_rejected",

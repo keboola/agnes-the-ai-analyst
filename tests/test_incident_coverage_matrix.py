@@ -39,6 +39,10 @@ REQUIRED: dict[str, str] = {
     # §11: a co-session's broker replay mints a co_session JWT (live
     # grant-intersection), never the single stored owner's identity.
     "AC-G-cosession": "tests/test_broker_routes.py::test_cosession_ticket_mints_cosession_jwt",
+    # §11 / RBAC review #849: absolute-URL, protocol-relative, backslash and
+    # %2f-encoded path smuggling cannot make the ASGI replay dispatch to an
+    # admin route past the gate — the gate and dispatch share one normalized path.
+    "AC-G-smuggle": "tests/test_broker_routes.py::test_admin_route_path_smuggling_rejected",
     # Manager spawn-env static guard (Task 9) — unit-tier, per-PR.
     "AC-G-noinject": "tests/test_backend_split_guard.py::test_no_real_secret_in_sandbox_spawn_env",
     # Route-auth guard (Task 10, this task) — app-tier, per-PR.

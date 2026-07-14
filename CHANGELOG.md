@@ -40,6 +40,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   regardless of the resolved identity. Co-session tickets resolve via
   `mint_co_session_jwt` (live grant-intersection). Post-restart resume destroys
   the old paused sandbox before clearing its ref (no microVM leak).
+- Broker replay path is canonicalized once and the *same* normalized string
+  feeds both the admin gate and the ASGI dispatch: an absolute-URL,
+  protocol-relative (`//host`), backslash, or `%2f`-encoded path can no longer
+  slip past the gate while still reaching an admin route (the ASGI transport
+  routes on the path component alone). Broker tickets are stored as a sha256
+  digest, not the raw bearer value — a read of system state yields no usable
+  ticket (RBAC review on #849).
 
 ---
 
