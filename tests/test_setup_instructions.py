@@ -933,6 +933,7 @@ def test_step_numbering_with_connectors_step():
     assert steps["marketplace"] == "6"
     assert "mcp_servers" not in steps
     assert steps["diagnose"] == "7"
+    assert steps["required_connectors"] == ""  # none in the default layout
     assert steps["connectors"] == "8"
     assert steps["restart_claude"] == "9"
     assert steps["confirm"] == "10"
@@ -956,6 +957,197 @@ def test_finale_bullets_mention_connector_outcomes():
     assert "Asana, Atlassian (Jira / Confluence), Google Workspace" in joined
     assert "✅" in joined
     assert "❌" in joined
+
+
+# ---------------------------------------------------------------------------
+# Required connectors — `required: true` frontmatter renders a separate
+# mandatory "Install required tools" step (no Y/n ask) between diagnose
+# and the optional tiles; steps renumber around it.
+# ---------------------------------------------------------------------------
+
+
+def _connector_entry(slug: str, name: str, *, required: bool = False):
+    from src.connectors_manifest import ConnectorEntry
+
+    return ConnectorEntry(
+        slug=slug,
+        display_name=name,
+        short_summary=f"{name} summary.",
+        estimated_minutes=1,
+        required=required,
+    )
+
+
+def _fake_bodies(monkeypatch, missing: frozenset[str] = frozenset()):
+    """Serve a deterministic body per slug so these tests don't depend on
+    the bundled seed content; `missing` slugs resolve to None (the
+    missing-body path)."""
+    from app.web import setup_instructions as si
+
+    def fake_load(slug: str):
+        if slug in missing:
+            return None
+        return f"Install {slug} for {{instance_brand}}."
+
+    monkeypatch.setattr(si, "_load_connector_body", fake_load)
+
+
+def test_required_block_mix_layout(monkeypatch):
+    """Mix combo: required entries take step 8 (no asks), optional tiles
+    shift to 9, restart 10, confirm 11; letters restart per block; the
+    inlined body gets the 6-space indent + {instance_brand} substitution.
+    """
+    from app.web.setup_instructions import resolve_lines
+
+    _fake_bodies(monkeypatch)
+    manifest = [
+        _connector_entry("connector-xtool", "XTool", required=True),
+        _connector_entry("connector-ytool", "YTool", required=True),
+        _connector_entry("connector-ztool", "ZTool"),
+    ]
+    joined = "\n".join(
+        resolve_lines(
+            "agnes.whl", connector_manifest=manifest, instance_brand="BrandCo"
+        )
+    )
+
+    req_idx = joined.index(
+        "8) Install required tools (mandatory — run every prompt below now):"
+    )
+    opt_idx = joined.index(
+        "9) Connect the user's tools (last interactive ask before Confirm):"
+    )
+    restart_idx = joined.index("10) Restart Claude Code")
+    confirm_idx = joined.index("11) Confirm:")
+    assert joined.index("7) Run diagnostics:") < req_idx < opt_idx
+    assert opt_idx < restart_idx < confirm_idx
+
+    # Required tools get no ask; the optional tile keeps its ask.
+    assert 'Ask: "Set up XTool now? (Y/n)"' not in joined
+    assert 'Ask: "Set up YTool now? (Y/n)"' not in joined
+    assert 'Ask: "Set up ZTool now? (Y/n)"' in joined
+    assert "do NOT ask the user" in joined
+
+    # Letter sequences are independent per block.
+    assert "   a) XTool" in joined
+    assert "   b) YTool" in joined
+    assert "   a) ZTool" in joined
+
+    # Trailer names the next step; body inlined with brand substituted.
+    assert "Continue to step 9 only after every required tool above has" in joined
+    assert "      Install connector-xtool for BrandCo." in joined
+
+
+def test_required_only_omits_optional_step_and_renumbers(monkeypatch):
+    from app.web.setup_instructions import resolve_lines
+
+    _fake_bodies(monkeypatch)
+    manifest = [_connector_entry("connector-xtool", "XTool", required=True)]
+    joined = "\n".join(resolve_lines("agnes.whl", connector_manifest=manifest))
+
+    assert "8) Install required tools" in joined
+    assert "Connect the user's tools" not in joined
+    assert "9) Restart Claude Code" in joined
+    assert "10) Confirm:" in joined
+    assert "11) Confirm:" not in joined
+    # With no optional step, the trailer points at restart (step 9).
+    assert "Continue to step 9 only after every required tool above has" in joined
+
+
+def test_default_manifest_has_no_required_step():
+    """OSS default: bundled connectors are all optional — the mandatory
+    step and the split finale wording must not appear (byte-identity of
+    the full default prompt is test_install_prompt_snapshot.py's job)."""
+    from src import connectors_manifest as cm
+
+    from app.web.setup_instructions import resolve_lines
+
+    cm.invalidate_cache()
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    assert "Install required tools" not in joined
+    assert "For each optional connector" not in joined
+    assert "For each required connector" not in joined
+
+
+def test_empty_manifest_renumbers_past_both_blocks():
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl", connector_manifest=[]))
+    assert "Install required tools" not in joined
+    assert "Connect the user's tools" not in joined
+    assert "8) Restart Claude Code" in joined
+    assert "9) Confirm:" in joined
+
+
+def test_step_numbers_required_combos():
+    """The four combos of (required, optional) presence — numbering stays
+    contiguous off the single counter."""
+    from app.web.setup_instructions import _step_numbers
+
+    def slots(**kwargs):
+        steps = _step_numbers(**kwargs)
+        return (
+            steps["required_connectors"],
+            steps["connectors"],
+            steps["restart_claude"],
+            steps["confirm"],
+        )
+
+    assert slots(has_connectors=False, has_required_connectors=False) == (
+        "", "", "8", "9",
+    )
+    assert slots(has_connectors=True, has_required_connectors=False) == (
+        "", "8", "9", "10",
+    )
+    assert slots(has_connectors=False, has_required_connectors=True) == (
+        "8", "", "9", "10",
+    )
+    assert slots(has_connectors=True, has_required_connectors=True) == (
+        "8", "9", "10", "11",
+    )
+
+
+def test_required_block_letters_stay_tight_on_missing_body(monkeypatch):
+    """#462 mirror for the required block: a skipped middle body must not
+    leave a letter gap."""
+    from app.web.setup_instructions import resolve_lines
+
+    _fake_bodies(monkeypatch, missing=frozenset({"connector-btool"}))
+    manifest = [
+        _connector_entry("connector-atool", "ATool", required=True),
+        _connector_entry("connector-btool", "BTool", required=True),
+        _connector_entry("connector-ctool", "CTool", required=True),
+    ]
+    joined = "\n".join(resolve_lines("agnes.whl", connector_manifest=manifest))
+
+    assert "   a) ATool" in joined
+    assert "   b) CTool" in joined
+    assert "   b) BTool" not in joined
+    assert "   c) CTool" not in joined
+
+
+def test_finale_bullets_split_required_and_optional(monkeypatch):
+    """Mix: the Confirm summary carries one bullet per group — required
+    first (no "declined" wording; those can't be declined), optional with
+    the legacy declined sentence. Required-only: no "declined" at all."""
+    from app.web.setup_instructions import resolve_lines
+
+    _fake_bodies(monkeypatch)
+    manifest = [
+        _connector_entry("connector-xtool", "XTool", required=True),
+        _connector_entry("connector-ztool", "ZTool"),
+    ]
+    joined = "\n".join(resolve_lines("agnes.whl", connector_manifest=manifest))
+    req_idx = joined.index("For each required connector (XTool):")
+    opt_idx = joined.index("For each optional connector (ZTool):")
+    declined_idx = joined.index("If the user declined")
+    assert req_idx < opt_idx < declined_idx
+
+    manifest = [_connector_entry("connector-xtool", "XTool", required=True)]
+    joined = "\n".join(resolve_lines("agnes.whl", connector_manifest=manifest))
+    assert "For each required connector (XTool):" in joined
+    assert "If the user declined" not in joined
+    assert "say declined" not in joined
 
 
 def test_restart_claude_step_emitted_unconditionally():

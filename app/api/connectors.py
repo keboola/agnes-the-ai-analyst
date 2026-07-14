@@ -42,7 +42,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["connectors"])
 
 
-SCHEMA_VERSION = 1
+# v2: additive `required` field on connector entries (see
+# docs/seed-repo-contract.md §9 — old shapes still parse).
+SCHEMA_VERSION = 2
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +65,7 @@ class ConnectorMeta(BaseModel):
     estimated_minutes: int
     vendor_url: Optional[str] = None
     requires_oauth_app: bool = False
+    required: bool = False
 
 
 class ConnectorsManifestResponse(BaseModel):
@@ -100,6 +103,7 @@ def _entry_to_meta(entry: ConnectorEntry) -> ConnectorMeta:
         estimated_minutes=entry.estimated_minutes,
         vendor_url=entry.vendor_url,
         requires_oauth_app=entry.requires_oauth_app,
+        required=entry.required,
     )
 
 

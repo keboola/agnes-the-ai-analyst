@@ -592,6 +592,77 @@ def _load_connector_body(slug: str) -> Optional[str]:
     return body[end_match.end() :].lstrip("\n")
 
 
+# Tile sub-letters shared by the required + optional connector blocks.
+# Each block letters its own tiles independently (both restart at "a").
+_SUB_LETTERS = "abcdefghijklmnopqrstuvwxyz"
+
+
+def _required_connectors_block(
+    step_num: str,
+    manifest: list["ConnectorEntry"],
+    *,
+    next_step_num: str,
+    instance_brand: str,
+) -> list[str]:
+    """Mandatory-install step for ``required=True`` connectors — rendered
+    between diagnose and the optional Y/n tiles, with NO per-tool ask.
+
+    Same fail-soft body handling as :func:`_connectors_block` (missing
+    SKILL.md body → warn + skip, letters stay tight) so a bad seed commit
+    never 500s ``/home``; the operator-facing guard for a missing
+    REQUIRED body is the seed-sync render dry-run, which reports it as an
+    error. Empty manifest renders no block.
+    """
+    if not manifest:
+        return []
+
+    lines = [
+        "",
+        f"{step_num}) Install required tools (mandatory — run every prompt below now):",
+        "",
+        "   The tools below are required by this instance — do NOT ask the user",
+        "   whether to set them up, and do not skip any. Run each inline prompt",
+        "   now, in order. Every prompt is idempotent and safe to re-run; a tool",
+        "   that is already configured short-circuits with its ✅ line instead of",
+        "   reinstalling.",
+        "",
+    ]
+    letter_idx = 0
+    for entry in manifest:
+        if letter_idx >= len(_SUB_LETTERS):
+            logger.warning(
+                "setup_instructions: more than %d required connectors — "
+                "remaining tiles dropped",
+                len(_SUB_LETTERS),
+            )
+            break
+        body = _load_connector_body(entry.slug)
+        if body is None:
+            logger.warning(
+                "setup_instructions: required connector %s body not found in "
+                "seed — skipped",
+                entry.slug,
+            )
+            continue
+        body = body.replace("{instance_brand}", instance_brand)
+        lines.append(
+            f"   {_SUB_LETTERS[letter_idx]}) {entry.display_name} — {entry.short_summary}"
+        )
+        lines.append("      Follow this inline prompt verbatim:")
+        lines.append("")
+        for body_line in body.split("\n"):
+            lines.append(f"      {body_line}" if body_line else "")
+        lines.append("")
+        letter_idx += 1
+    lines.extend(
+        [
+            f"   Continue to step {next_step_num} only after every required tool above has",
+            "   printed its ✅ line (or surfaced a ❌ that you reported back to the user).",
+        ]
+    )
+    return lines
+
+
 def _connectors_block(
     step_num: str,
     manifest: list["ConnectorEntry"],
@@ -615,6 +686,9 @@ def _connectors_block(
 
     Order: stable, alphabetical by display_name (set in
     ``load_manifest``). Empty manifest renders no block.
+
+    Receives only the optional (non-required) entries; ``required=True``
+    entries render in :func:`_required_connectors_block`.
     """
     if not manifest:
         return []
@@ -635,9 +709,15 @@ def _connectors_block(
     # from the seed we want the letter sequence to stay tight (a, b, c)
     # rather than skip to (a, c, d). The bug was visible to users as
     # "b)" and "c)" with no "a)" in the rendered install prompt.
-    sub_letters = "abcdefghij"
     letter_idx = 0
     for entry in manifest:
+        if letter_idx >= len(_SUB_LETTERS):
+            logger.warning(
+                "setup_instructions: more than %d optional connectors — "
+                "remaining tiles dropped",
+                len(_SUB_LETTERS),
+            )
+            break
         body = _load_connector_body(entry.slug)
         if body is None:
             logger.warning(
@@ -648,7 +728,7 @@ def _connectors_block(
         # Substitute brand placeholder. Atlassian / Asana / GWS bodies all
         # reference {instance_brand} in their token-label hints.
         body = body.replace("{instance_brand}", instance_brand)
-        lines.append(f"   {sub_letters[letter_idx]}) {entry.display_name} — {entry.short_summary}")
+        lines.append(f"   {_SUB_LETTERS[letter_idx]}) {entry.display_name} — {entry.short_summary}")
         lines.append(f'      Ask: "Set up {entry.display_name} now? (Y/n)"')
         lines.append("      If yes (default) — follow this inline prompt verbatim:")
         lines.append("")
@@ -694,6 +774,7 @@ def _finale_lines(
     confirm_step_num: str,
     has_ca: bool,
     manifest: list["ConnectorEntry"],
+    required_manifest: Optional[list["ConnectorEntry"]] = None,
 ) -> list[str]:
     """Final Confirm step. Bullets it asks the assistant to report on must
     only reference earlier steps that were actually emitted, otherwise the
@@ -702,10 +783,15 @@ def _finale_lines(
     the trust block ran (`has_ca`). The marketplace clone bullet is
     unconditional now — preflight + marketplace are always emitted.
 
-    Connector bullet is dynamic: lists the display names from ``manifest``
-    so adding/removing a connector in the seed flows through to the
-    Confirm summary without a code change. Empty manifest → connector
-    bullet omitted entirely (no step 8 connector block was emitted either).
+    Connector bullets are dynamic: they list the display names from
+    ``required_manifest`` (mandatory installs — no "declined" wording,
+    those can't be declined) and ``manifest`` (the optional tiles), so
+    adding/removing a connector in the seed flows through to the Confirm
+    summary without a code change. An empty group omits its bullet (its
+    connector block wasn't emitted either). When no required entries
+    exist, the optional bullet keeps its legacy wording verbatim — the
+    default install prompt must stay byte-identical
+    (tests/test_install_prompt_snapshot.py).
     """
     bullets = [
         "   - `agnes --version` output",
@@ -717,10 +803,18 @@ def _finale_lines(
         "   - Confirmation that `~/.agnes/marketplace/.git/` exists "
         "(the marketplace clone) and that any granted plugins installed",
     ]
+    if required_manifest:
+        required_names = ", ".join(e.display_name for e in required_manifest)
+        bullets.append(
+            f"   - For each required connector ({required_names}): "
+            "the verbatim ✅ or ❌ line that the connector's verify step "
+            "emitted earlier in this session."
+        )
     if manifest:
         connector_names = ", ".join(e.display_name for e in manifest)
+        label = "optional connector" if required_manifest else "connector"
         bullets.append(
-            f"   - For each connector ({connector_names}): "
+            f"   - For each {label} ({connector_names}): "
             "the verbatim ✅ or ❌ line that the connector's verify step "
             "emitted earlier in this session (e.g. `✅ Asana ready — ...` "
             "or `❌ Atlassian setup failed: ...`). If the user declined "
@@ -972,16 +1066,20 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
     return lines
 
 
-def _step_numbers(*, has_connectors: bool = True) -> dict[str, str]:
+def _step_numbers(
+    *, has_connectors: bool = True, has_required_connectors: bool = False
+) -> dict[str, str]:
     """Compute the step numbers for the unified layout.
 
     Returns a dict keyed by logical step name; values are stringified
     1-based step numbers (preserving the existing string-based helper API
     so call sites stay diff-minimal).
 
-    Steps (always emitted): install (1), mkdir/cd (2), init (3),
+    Steps (default layout): install (1), mkdir/cd (2), init (3),
     catalog (4), preflight (5), marketplace (6), diagnose (7),
-    connectors (8), restart_claude (9), confirm (10). Preflight +
+    required_connectors (only when the manifest has ``required=True``
+    entries — takes 8), connectors (8, or 9 after a required step),
+    restart_claude, confirm. Preflight +
     marketplace + connectors + restart_claude are always-on:
       - Marketplace registration is useful even when the operator has
         zero plugin grants (SessionStart hook reconciles future grants
@@ -1000,9 +1098,10 @@ def _step_numbers(*, has_connectors: bool = True) -> dict[str, str]:
     into ``~/.claude/skills/agnes/`` was an opinion question without an
     obvious right answer.
 
-    `has_connectors` is kept as a parameter for future flexibility
-    (default True). When set False, the connectors step is skipped and
-    Confirm shifts down to step 7.
+    `has_connectors` / `has_required_connectors` gate their steps: an
+    absent group drops its number (empty string in the dict) and every
+    later step shifts down — numbering stays contiguous off the single
+    counter.
 
     Step-0 (TLS trust block) sits outside this numbering — it is gated by
     has_ca and has its own "0)" header rendered inside the trust block
@@ -1015,6 +1114,9 @@ def _step_numbers(*, has_connectors: bool = True) -> dict[str, str]:
     n += 1
     diagnose = str(n)
     n += 1
+    required_connectors = str(n) if has_required_connectors else ""
+    if has_required_connectors:
+        n += 1
     connectors = str(n) if has_connectors else ""
     if has_connectors:
         n += 1
@@ -1025,6 +1127,7 @@ def _step_numbers(*, has_connectors: bool = True) -> dict[str, str]:
         "preflight": preflight,
         "marketplace": marketplace,
         "diagnose": diagnose,
+        "required_connectors": required_connectors,
         "connectors": connectors,
         "restart_claude": restart_claude,
         "confirm": confirm,
@@ -1056,9 +1159,11 @@ def resolve_lines(
     Let's Encrypt, emit for self-signed or private corp CA).
 
     `connector_manifest` is a list of validated ConnectorEntry objects
-    sourced from :func:`src.connectors_manifest.load_manifest`. ``None``
-    triggers a fresh manifest load. ``[]`` (empty list) is treated
-    differently from ``None``: it intentionally renders no step 8 block.
+    sourced from :func:`src.connectors_manifest.load_manifest`. Entries
+    with ``required=True`` render as a separate mandatory step (no Y/n
+    ask) before the optional tiles. ``None`` triggers a fresh manifest
+    load. ``[]`` (empty list) is treated differently from ``None``: it
+    intentionally renders no connector blocks.
 
     Fallback: callers pass `"agnes.whl"` when no wheel is present on disk.
     The resulting URL (`/cli/wheel/agnes.whl`) will 404 at download time, but
@@ -1076,14 +1181,20 @@ def resolve_lines(
 
         connector_manifest = load_manifest()
 
-    has_connectors = bool(connector_manifest)
+    required_entries = [e for e in connector_manifest if e.required]
+    optional_entries = [e for e in connector_manifest if not e.required]
+    has_required = bool(required_entries)
+    has_connectors = bool(optional_entries)
     # Step layout. Preflight + marketplace + MCP go BEFORE diagnose;
-    # connectors is the LAST interactive ask before Confirm — once plugins
-    # + MCP + diagnose are settled, the only remaining work is plugging
-    # the user's tools. When manifest is empty (no seed connectors found
-    # at all), the connectors step is skipped and Confirm shifts down a
-    # number — _step_numbers handles the renumbering.
-    steps = _step_numbers(has_connectors=has_connectors)
+    # required connectors (mandatory, no ask) come right after diagnose;
+    # optional connectors are the LAST interactive ask before Confirm —
+    # once plugins + MCP + diagnose are settled, the only remaining work
+    # is plugging the user's tools. An absent group (no required entries,
+    # no optional entries, or an empty manifest) drops its step and the
+    # rest renumber — _step_numbers handles it.
+    steps = _step_numbers(
+        has_connectors=has_connectors, has_required_connectors=has_required
+    )
 
     lines: list[str] = []
     if has_ca:
@@ -1094,13 +1205,23 @@ def resolve_lines(
     lines.extend(_preflight_block(steps["preflight"]))  # 4
     lines.extend(_marketplace_block(names, step_num=steps["marketplace"]))  # 5
     lines.extend(_diagnose_lines(diagnose_num=steps["diagnose"]))  # 6
-    # Connectors are the LAST interactive ask before the restart-claude
-    # cue. Per-connector default-yes — empty/Enter is install, explicit
-    # "no" skips. Empty manifest renders no block (step 8 is dropped).
+    if has_required:
+        lines.extend(
+            _required_connectors_block(
+                steps["required_connectors"],
+                required_entries,
+                next_step_num=steps["connectors"] or steps["restart_claude"],
+                instance_brand=instance_brand,
+            )
+        )
+    # Optional connectors are the LAST interactive ask before the
+    # restart-claude cue. Per-connector default-yes — empty/Enter is
+    # install, explicit "no" skips. No optional entries renders no block
+    # (the step number is dropped).
     lines.extend(
         _connectors_block(
             steps["connectors"],
-            connector_manifest,
+            optional_entries,
             confirm_step_num=steps["confirm"],
             instance_brand=instance_brand,
         )
@@ -1115,7 +1236,8 @@ def resolve_lines(
         _finale_lines(
             confirm_step_num=steps["confirm"],
             has_ca=has_ca,
-            manifest=connector_manifest,
+            manifest=optional_entries,
+            required_manifest=required_entries,
         )
     )
 
