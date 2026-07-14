@@ -43,6 +43,11 @@ logger = logging.getLogger(__name__)
 
 # Per-request token — set by _AuthMiddleware, read by tool handlers.
 _current_token: contextvars.ContextVar[str] = contextvars.ContextVar("_mcp_token", default="")
+# Per-request caller user id — set by _AuthMiddleware (which already resolves
+# the user), read by the passthrough tool closures so a scope='per_user'
+# source forwards under the caller's own credential instead of falling back to
+# the shared one.
+_current_user_id: contextvars.ContextVar[str] = contextvars.ContextVar("_mcp_user_id", default="")
 
 # Internal base URL for self-calls. Stays on HTTP/localhost since the MCP
 # server runs inside the same process/container as Agnes.
@@ -95,8 +100,6 @@ for _name in _FOUNDATION_TOOL_NAMES:
 del _name
 
 
-
-
 # ── auth middleware ─────────────────────────────────────────────────────────────
 
 
@@ -147,10 +150,12 @@ class _AuthMiddleware:
             return
 
         tok = _current_token.set(raw_token)
+        uid = _current_user_id.set(str(user.get("id") or ""))
         try:
             await self.app(scope, receive, send)
         finally:
             _current_token.reset(tok)
+            _current_user_id.reset(uid)
 
 
 async def _send_401(scope: Scope, send: Send) -> None:
@@ -189,7 +194,7 @@ def _register_dynamic_tools() -> None:
         logger.exception("Universal MCP imports unavailable; skipping dynamic tool registration")
         return
     try:
-        names = register_passthrough_tools(mcp)
+        names = register_passthrough_tools(mcp, caller_id_fn=lambda: _current_user_id.get() or None)
         if names:
             logger.info("MCP HTTP: registered %d passthrough tools", len(names))
     except Exception:

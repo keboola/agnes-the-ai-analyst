@@ -100,6 +100,33 @@ def _headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {access.token}"}
 
 
+def _current_caller_id() -> str | None:
+    """Resolve the current request's caller user id from the verified access
+    token, for passthrough tools to forward per-user identity into
+    ``call_tool_async``. Returns None when unresolvable (no token / bad token)
+    — the passthrough then fails closed for a ``scope='per_user'`` source
+    rather than borrowing the shared credential.
+
+    The token here is a standard Agnes session JWT (already signature-verified
+    by the SDK's token verifier before any tool runs), whose ``sub`` claim is
+    the user id. We decode it locally rather than hitting the system DB —
+    ``mcp_streamable`` is intentionally free of raw system-DB callers
+    (backend-split ratchet), and a JWT decode needs no backend.
+    """
+    access = get_access_token()
+    if access is None or not access.token:
+        return None
+    try:
+        from app.auth.jwt import verify_token
+
+        payload = verify_token(access.token) or {}
+    except Exception:
+        logger.exception("Streamable MCP: caller id resolution failed")
+        return None
+    sub = payload.get("sub")
+    return str(sub) if sub else None
+
+
 def _oauth_client_registration_options() -> ClientRegistrationOptions:
     return ClientRegistrationOptions(enabled=True, valid_scopes=["read"], default_scopes=["read"])
 
@@ -437,7 +464,7 @@ def _register_dynamic_tools(mcp: FastMCP) -> None:
         logger.exception("Streamable MCP: dynamic tool imports unavailable")
         return
     try:
-        names = register_passthrough_tools(mcp)
+        names = register_passthrough_tools(mcp, caller_id_fn=_current_caller_id)
         if names:
             logger.info("Streamable MCP: registered %d passthrough tools", len(names))
     except Exception:

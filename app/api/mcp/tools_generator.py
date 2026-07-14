@@ -10,10 +10,9 @@ Materialize-mode tools are NOT registered here — they live as DuckDB tables
 in ``analytics.duckdb`` and are reachable via the existing generic ``query``
 and ``catalog`` tools from @mf's foundation.
 """
+
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -49,6 +48,7 @@ def _make_passthrough_callable(
     source: Dict[str, Any],
     original_name: str,
     input_schema: Optional[Dict[str, Any]],
+    caller_id_fn: Optional[Callable[[], Optional[str]]] = None,
 ) -> Callable[..., Any]:
     """Build an async callable forwarding to the upstream MCP tool.
 
@@ -74,12 +74,12 @@ def _make_passthrough_callable(
     # Routing empty schemas here instead makes FastMCP render a *required*
     # ``kwargs`` field, so the only valid (empty) call 422s.
     if fallback_kwargs:
+
         async def _passthrough(**kwargs: Any) -> str:
-            result = await call_tool_async(source, original_name, arguments=kwargs)
+            caller_user_id = caller_id_fn() if caller_id_fn else None
+            result = await call_tool_async(source, original_name, arguments=kwargs, caller_user_id=caller_user_id)
             if result.is_error:
-                raise RuntimeError(
-                    f"upstream tool {original_name} returned error: {result.text[:300]}"
-                )
+                raise RuntimeError(f"upstream tool {original_name} returned error: {result.text[:300]}")
             return result.text
 
         _passthrough.__name__ = original_name
@@ -118,7 +118,8 @@ def _make_passthrough_callable(
     )
 
     async def _forward(args: Dict[str, Any]):
-        return await call_tool_async(source, original_name, arguments=args)
+        caller_user_id = caller_id_fn() if caller_id_fn else None
+        return await call_tool_async(source, original_name, arguments=args, caller_user_id=caller_user_id)
 
     namespace: Dict[str, Any] = {"__forward": _forward}
     exec(src, namespace)  # noqa: S102 - synthesized source only references vetted idents
@@ -128,8 +129,23 @@ def _make_passthrough_callable(
     return fn
 
 
-def register_passthrough_tools(mcp_instance: FastMCP) -> List[str]:
+def register_passthrough_tools(
+    mcp_instance: FastMCP,
+    caller_id_fn: Optional[Callable[[], Optional[str]]] = None,
+) -> List[str]:
     """Register every enabled passthrough tool from ``tool_registry`` on ``mcp_instance``.
+
+    ``caller_id_fn`` resolves the current caller's user id at tool-call time.
+    Each transport passes its own resolver so the synthesized closures —
+    registered once at startup — can still forward caller identity into
+    ``call_tool_async``. Scope differs by transport: Streamable-HTTP resolves
+    per tool-call POST (off ``get_access_token()``), whereas SSE resolves the
+    identity bound when the ``/sse`` connection was opened (the tool executes
+    in that connection's task tree; harmless under the one-token-per-connection
+    usage this serves). Without a resolver, a ``scope='per_user'`` source would
+    see ``caller_user_id=None`` (the caller-less materialize signal) and resolve
+    to the shared credential for every authenticated caller. Omit it only where
+    no caller exists.
 
     Returns the list of exposed tool names that were registered (useful for
     logging and tests).
@@ -141,12 +157,13 @@ def register_passthrough_tools(mcp_instance: FastMCP) -> List[str]:
     for tool in tools_repo.list_by_mode(PASSTHROUGH, enabled_only=True):
         source = sources_repo.get(tool["source_id"])
         if source is None or not source.get("enabled", True):
-            logger.warning("passthrough %s skipped — source %s missing/disabled",
-                           tool["exposed_name"], tool["source_id"])
+            logger.warning(
+                "passthrough %s skipped — source %s missing/disabled", tool["exposed_name"], tool["source_id"]
+            )
             continue
 
         input_schema = tool.get("input_schema") if isinstance(tool.get("input_schema"), dict) else None
-        fn = _make_passthrough_callable(source, tool["original_name"], input_schema)
+        fn = _make_passthrough_callable(source, tool["original_name"], input_schema, caller_id_fn)
         description = tool.get("description") or f"Passthrough to {source['name']}.{tool['original_name']}"
 
         try:
