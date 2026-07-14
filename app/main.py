@@ -311,6 +311,7 @@ from app.api.chat import router as chat_router
 from app.api.chat_copresence import router as chat_copresence_router
 from app.api.slack import router as slack_router
 from app.api.admin_chat import router as admin_chat_router
+from app.api.broker import router as broker_router
 from app.instance_config import get_slack_transport
 from services.slack_bot.socket_mode_client import (
     SocketModeDispatcher,
@@ -1618,6 +1619,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_copresence_router)
     app.include_router(slack_router)
     app.include_router(admin_chat_router)
+    app.include_router(broker_router)
 
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
     # WSGI → ASGI bridge (dulwich is WSGI-native; FastAPI is ASGI).
