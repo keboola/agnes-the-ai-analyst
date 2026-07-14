@@ -446,8 +446,8 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
     },
     # Chat sandbox secret broker tickets
     "ticket": {
-        DUCKDB: ("src.repositories.ticket_repo", "TicketRepository"),
-        PG: ("src.repositories.ticket_repo_pg", "TicketPgRepository"),
+        DUCKDB: ("src.repositories.ticket", "TicketRepository"),
+        PG: ("src.repositories.ticket_pg", "TicketPgRepository"),
     },
 }
 

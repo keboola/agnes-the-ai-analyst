@@ -30,7 +30,7 @@ def _make_duckdb_repo(tmp_path):
     # green on new files.
     from src.db import _ensure_schema
     from src.duckdb_conn import _open_duckdb
-    from src.repositories.ticket_repo import TicketRepository
+    from src.repositories.ticket import TicketRepository
 
     conn = _open_duckdb(str(tmp_path / "duck.duckdb"))
     _ensure_schema(conn)
@@ -53,7 +53,7 @@ def _make_pg_repo(pg_engine, monkeypatch):
     db_pg.dispose()
     db_pg.get_engine()
 
-    from src.repositories.ticket_repo_pg import TicketPgRepository
+    from src.repositories.ticket_pg import TicketPgRepository
 
     return TicketPgRepository(db_pg.get_engine()), None
 
