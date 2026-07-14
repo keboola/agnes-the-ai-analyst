@@ -128,6 +128,9 @@ See [`STORE_GUARDRAILS.md`](STORE_GUARDRAILS.md) for the pipeline these tune.
 | Min slash-command description chars | `guardrails.min_command_description_chars` | `25` | `get_guardrails_min_command_description_chars()` |
 | Min distinct words in a description | `guardrails.min_distinct_words` | `5` | `get_guardrails_min_distinct_words()` |
 | Min skill/agent body chars | `guardrails.min_body_chars` | `200` | `get_guardrails_min_body_chars()` |
+| Skill-lint bloat threshold (chars) | `guardrails.lint_max_body_chars` | `8000` | `get_lint_max_body_chars()` |
+| Skill-lint duplicate candidate count | `guardrails.lint_duplicate_top_n` | `5` | `get_lint_duplicate_top_n()` |
+| Skill-lint audit min interval (hours) | `guardrails.lint_audit_min_interval_hours` | `144` | `get_lint_audit_min_interval_hours()` |
 
 ---
 
