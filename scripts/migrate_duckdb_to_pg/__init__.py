@@ -73,6 +73,7 @@ MigrationTask = GenericCopyTask
 # (the inspector would need a live connection), so we maintain an explicit
 # map for tables whose PK is NOT a single column named "id".
 _PK_COLUMNS: Dict[str, List[str]] = {
+    "chat_broker_tickets": ["token"],
     "user_group_members": ["user_id", "group_id"],
     "sync_state": ["table_id"],
     "instance_templates": ["key"],
@@ -246,10 +247,7 @@ def reset_target_state_tables(pg_engine: Engine) -> int:
     with pg_engine.begin() as conn:
         existing = set(
             conn.execute(
-                sa.text(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = 'public'"
-                )
+                sa.text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
             ).scalars()
         )
         present = [t for t in tables if t.name in existing]
