@@ -23,6 +23,7 @@ Each helper is independent and pure-ish (rate-limit uses a module-level
 dict guarded by a lock). The invoke endpoint wires them in order:
 mutating → rate-limit → forward → redact response.
 """
+
 from __future__ import annotations
 
 import json
@@ -50,9 +51,97 @@ def check_mutating(tool: Dict[str, Any], *, is_admin: bool) -> None:
         return
     if is_admin:
         return
-    raise MutatingNotAllowed(
-        f"tool {tool.get('tool_id')!r} is marked mutating; non-admin invocations are blocked"
-    )
+    raise MutatingNotAllowed(f"tool {tool.get('tool_id')!r} is marked mutating; non-admin invocations are blocked")
+
+
+# ---------------------------------------------------------------------------
+# Grant gate + combined authorization
+# ---------------------------------------------------------------------------
+
+
+class GrantDenied(Exception):
+    """Raised when the caller's groups have no ``tool_grants`` row for a tool."""
+
+
+def enforce_passthrough_access(tool: Dict[str, Any], caller_user_id: Optional[str]) -> None:
+    """Full authorization gate for a single passthrough invocation.
+
+    The one gate stack shared by the REST endpoint
+    (``app/api/mcp_passthrough.invoke_passthrough_tool``) and the SSE /
+    Streamable-HTTP transport closures (``app/api/mcp/tools_generator``), so the
+    interactive-forward paths can't drift apart. Runs, in order:
+
+    1. **grant** — admin short-circuits; otherwise the caller must be in a group
+       listed in ``tool_grants`` for this tool (``GrantDenied`` on miss);
+    2. **mutating** — a ``mutating`` tool is admin-only (``MutatingNotAllowed``);
+    3. **rate limit** — per-(tool, user) token bucket (``RateLimited``).
+
+    ``caller_user_id`` is ``None`` when the transport could not resolve an
+    identity from the request (absent / invalid token). That is treated as a
+    non-admin caller with no groups, so the grant check **fails closed** — an
+    unauthenticated forward is never allowed.
+
+    Callers map the typed exceptions onto their transport's error surface (REST:
+    403/429 HTTP; MCP transports: a tool error). Backend-aware: resolves RBAC
+    through the repo factory (``tool_registry_repo``) + ``app.auth.access`` so it
+    reads the active state backend (DuckDB or Postgres).
+    """
+    from app.auth.access import _user_group_ids, is_user_admin
+    from src.repositories import tool_registry_repo
+
+    tool_id = tool.get("tool_id")
+    is_admin = bool(caller_user_id) and is_user_admin(caller_user_id)
+    if not is_admin:
+        group_ids = list(_user_group_ids(caller_user_id)) if caller_user_id else []
+        if not tool_registry_repo().is_granted_to_groups(tool_id, group_ids):
+            raise GrantDenied(f"no grant on tool {tool_id!r} for your groups")
+    check_mutating(tool, is_admin=is_admin)
+    # An unresolved caller never reaches here (fails closed on grant above), so
+    # the rate-bucket key always carries a real user id for identified callers.
+    check_rate_limit(tool_id, caller_user_id or "", tool.get("rate_limit_pm"))
+
+
+class PerUserCredentialMissing(Exception):
+    """Raised when a ``scope='per_user'`` source is invoked by an identified
+    caller who has not stored their own credential.
+
+    ``source_label`` is the human-facing source name (or id) for the remedy
+    message.
+    """
+
+    def __init__(self, source_label: str):
+        self.source_label = source_label
+        super().__init__(
+            f"no personal credential for source {source_label!r}. Run "
+            f"`agnes mcp my-secret set {source_label}` to connect your own account."
+        )
+
+
+def enforce_per_user_credential(source: Dict[str, Any], caller_user_id: Optional[str]) -> None:
+    """Fail closed when a ``per_user`` source lacks the caller's own credential.
+
+    For a ``scope='per_user'`` source an identified caller (admin included —
+    data scoping is per identity) must have their own stored credential;
+    otherwise the forward would connect with no token (see
+    ``connectors.mcp.client._lookup_secret_for_source``, which returns ``None``
+    for a per_user source with an identified caller and no row — it does NOT
+    borrow the shared credential). Refuse here with an actionable message
+    instead of letting it degrade to an opaque upstream auth error.
+
+    Shared by the REST endpoint and the SSE / Streamable-HTTP transport
+    closures so the pre-forward guard can't drift. No-op for shared sources and
+    for the caller-less (materialize) path, which legitimately rides the shared
+    vault. Raises ``PerUserCredentialMissing``.
+    """
+    if (source.get("scope") or "shared").lower() != "per_user":
+        return
+    if not caller_user_id:
+        # Caller-less materialize path — shared vault is the intended source.
+        return
+    from src.repositories import per_user_secrets_repo
+
+    if not per_user_secrets_repo().get(source["id"], caller_user_id):
+        raise PerUserCredentialMissing(source.get("name") or source["id"])
 
 
 # ---------------------------------------------------------------------------
@@ -83,10 +172,7 @@ def redact_pii(value: Any, pii_keys: Iterable[str]) -> Any:
 
 def _redact_recursive(value: Any, keys: set) -> Any:
     if isinstance(value, dict):
-        return {
-            k: (REDACTED_TOKEN if k in keys else _redact_recursive(v, keys))
-            for k, v in value.items()
-        }
+        return {k: (REDACTED_TOKEN if k in keys else _redact_recursive(v, keys)) for k, v in value.items()}
     if isinstance(value, list):
         return [_redact_recursive(v, keys) for v in value]
     return value
