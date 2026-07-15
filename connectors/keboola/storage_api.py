@@ -30,6 +30,7 @@ from __future__ import annotations
 import gzip
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -173,6 +174,28 @@ def sweep_orphaned_scratch(
 FILE_TYPE_CSV = "csv"
 FILE_TYPE_PARQUET = "parquet"
 _VALID_FILE_TYPES = {FILE_TYPE_CSV, FILE_TYPE_PARQUET}
+
+# Splits a string into alternating (non-digit, digit) chunks for natural
+# sorting — e.g. "...csv_0_0_2.csv" -> ["...csv_", "0", "_", "0", "_", "2", ".csv"].
+_DIGIT_RUN_RE = re.compile(r"(\d+)")
+
+
+def _slice_sort_key(url: str) -> list:
+    """Natural (numeric-aware) sort key for a sliced-export slice URL.
+
+    Verified live (2026-07-15): a legacy CSV extraction produced a parquet
+    with garbled column names (data values instead of real column names,
+    e.g. `'21630'`, `'false'`) — traced to `_download_sliced` concatenating
+    slices in the manifest's raw `entries` array order, on the unverified
+    assumption that Storage API always returns them already in physical
+    order. Keboola's real slice filenames carry a numeric index (observed:
+    `...csv_0_0_0.csv`, `...csv_0_0_1.csv`, ...); sorting by those numbers
+    — rather than trusting array order or plain string order, which would
+    incorrectly place `_0_0_12` before `_0_0_2` — guarantees the header
+    slice (index 0) downloads first regardless of manifest ordering. A
+    no-op (returns the same order) when the manifest was already correct.
+    """
+    return [int(chunk) if chunk.isdigit() else chunk for chunk in _DIGIT_RUN_RE.split(url)]
 
 
 @dataclass
@@ -670,7 +693,10 @@ class KeboolaStorageClient:
         """Sliced exports: the file detail's `url` points at a JSON manifest
         whose `entries[].url` lists per-slice locations. Download each slice
         and concatenate into `dest_path`. The first slice contains the CSV
-        header (Storage API guarantees stable header positioning).
+        header (Storage API guarantees stable header positioning) — entries
+        are re-sorted by `_slice_sort_key` before download since the
+        manifest's own array order is not independently guaranteed (see
+        that function's docstring).
 
         Per-slice URL forms:
         - signed HTTPS (S3 presigned, Azure SAS) — plain GET works.
@@ -687,6 +713,15 @@ class KeboolaStorageClient:
                 f"sliced manifest had no entries: {str(manifest)[:200]}",
                 body=manifest,
             )
+        sorted_entries = sorted(entries, key=lambda e: _slice_sort_key(e.get("url") or ""))
+        if sorted_entries != entries:
+            logger.warning(
+                "Sliced export manifest entries were not in URL-sorted order "
+                "(%d entries); re-sorted before download so the header slice "
+                "downloads first.",
+                len(entries),
+            )
+        entries = sorted_entries
 
         with tempfile.TemporaryDirectory(
             prefix="kbc-slice-",
