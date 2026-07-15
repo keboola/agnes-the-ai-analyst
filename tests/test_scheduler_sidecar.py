@@ -341,3 +341,23 @@ def test_is_valid_schedule_rejects_bad(bad):
     from src.scheduler import is_valid_schedule
 
     assert is_valid_schedule(bad) is False
+
+
+def test_build_jobs_includes_keboola_semantic_layer_refresh_default(monkeypatch):
+    monkeypatch.delenv("SCHEDULER_KEBOOLA_SEMANTIC_LAYER_REFRESH_INTERVAL", raising=False)
+    from services.scheduler.__main__ import build_jobs
+
+    target = next(j for j in build_jobs() if j[0] == "keboola-semantic-layer-refresh")
+    _, schedule, endpoint, method, timeout = target
+    assert schedule == "every 6h"
+    assert endpoint == "/api/admin/run-keboola-semantic-layer-refresh"
+    assert method == "POST"
+    assert timeout == 900
+
+
+def test_build_jobs_honors_keboola_semantic_layer_refresh_env_override(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_KEBOOLA_SEMANTIC_LAYER_REFRESH_INTERVAL", "3600")  # 1h
+    from services.scheduler.__main__ import build_jobs
+
+    jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+    assert jobs["keboola-semantic-layer-refresh"] == "every 1h"
