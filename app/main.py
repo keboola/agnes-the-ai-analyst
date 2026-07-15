@@ -1062,8 +1062,10 @@ async def lifespan(app):
     # one implicitly (it no-ops when no singleton is held). Postgres-state
     # instances must NOT open the system DuckDB — get_system_db() raises under
     # use_pg(), the startup FTS rebuild is skipped there, and every remaining
-    # opener routes through the repository factory — so on Postgres the loop is
-    # a harmless no-op.
+    # opener routes through the repository factory — so on Postgres the
+    # checkpoint_system_db() arm no-ops, while the same loop still folds the
+    # operational.duckdb WAL (checkpoint_operational_db) once a CLI login /
+    # Slack bind has opened it.
     _checkpoint_interval = _state_checkpoint_interval_s()
     _checkpoint_task = None
     if _checkpoint_interval > 0:
@@ -1099,7 +1101,8 @@ async def lifespan(app):
     # operational.duckdb (CLI-auth / Slack-binding codes) is a separate
     # long-lived DuckDB singleton — CHECKPOINT + close it too so its WAL is
     # folded on graceful shutdown (on Postgres it is the only written DuckDB
-    # file, so the system checkpoint loop never touches it).
+    # file; the checkpoint loop folds it periodically, and this closes it
+    # cleanly on the way out).
     close_operational_db()
 
 
