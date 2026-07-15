@@ -12,6 +12,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.91] - 2026-07-15
+
+### Internal
+
+- **INC-01572 red-team coverage — process-memory leg.** Added
+  `tests/e2e/test_adversarial.py::test_no_real_anthropic_key_in_process_memory`
+  (e2b-tier, `real_llm`): with full in-sandbox code execution (the post-prompt-
+  injection threat model), scans every same-UID process's memory via
+  `/proc/<pid>/mem` after a live completion and asserts the real Anthropic key
+  is absent from ALL process memory — including the runner/relay that proxies
+  the (ticketed) call. Complements `test_no_secret_anywhere` (env/argv/fs) with
+  the strongest attacker vector the suite otherwise left untested. A self-canary
+  is the positive control so a blocked memory read can't pass vacuously. Verified
+  green against a live sandbox (`SCANNED_PIDS=3, CANARY_FOUND=True, no key`).
+
+---
+
 ## [0.74.90] - 2026-07-15
 
 ### Fixed
