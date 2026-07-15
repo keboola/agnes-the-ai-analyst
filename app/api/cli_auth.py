@@ -49,6 +49,23 @@ _CODE_TTL = timedelta(seconds=120)
 _PAT_TTL_DAYS = 90
 
 
+def _cli_auth_repo(conn) -> CliAuthCodeRepository:
+    """Bind the cli-auth-codes repo to the right DuckDB handle.
+
+    ``cli_auth_codes`` is a DuckDB-local operational table (single-use CLI-login
+    exchange codes, ~2-min TTL) with no Postgres mirror. On Postgres the request
+    ``conn`` (from ``_get_db``) is None — the system DuckDB must never be opened
+    there — so fall back to the dedicated ``operational.duckdb`` file, which the
+    same in-process ``/cli-auth/confirm`` and ``/cli-auth/exchange`` handlers
+    share. On DuckDB the caller's system-DB conn is used as-is.
+    """
+    if conn is None:
+        from src.db import get_operational_db
+
+        conn = get_operational_db()
+    return CliAuthCodeRepository(conn)
+
+
 def _validate_loopback(port: int, state: str) -> None:
     """Reject anything that isn't a plausible loopback callback request.
 
@@ -102,7 +119,7 @@ async def confirm(
 
     raw_code = secrets.token_urlsafe(32)
     code_hash = hashlib.sha256(raw_code.encode()).hexdigest()
-    CliAuthCodeRepository(conn).create(
+    _cli_auth_repo(conn).create(
         code_hash=code_hash,
         user_id=user["id"],
         email=user["email"],
@@ -148,7 +165,7 @@ async def exchange(
     if not payload.code:
         raise HTTPException(status_code=400, detail="code is required")
     code_hash = hashlib.sha256(payload.code.encode()).hexdigest()
-    claimed = CliAuthCodeRepository(conn).consume(code_hash)
+    claimed = _cli_auth_repo(conn).consume(code_hash)
     if not claimed:
         # Expired, already used, or never existed — all indistinguishable on
         # purpose so a guesser learns nothing.

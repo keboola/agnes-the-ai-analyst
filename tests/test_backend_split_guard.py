@@ -238,9 +238,12 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     # factory; vestigial get_system_db() scaffolding deleted. Entry removed.
     # app/api/query.py — the bq-metadata VIEW-hint lookup (_view_targets_in)
     # now routes through the factory; no remaining get_system_db caller.
-    "app/api/scripts.py",
+    # app/api/scripts.py — the script-runner tick + background-task audit/status
+    # writes dropped their unused get_system_db() handles (audit_repo() /
+    # notifications_script_repo() are factory-routed). Entry removed.
     "app/api/sync.py",
-    "app/api/upload.py",
+    # app/api/upload.py — the session-upload audit write dropped its unused
+    # get_system_db() handle; audit_repo() is factory-routed. Entry removed.
     # app/api/v2_sample.py — internal-table sampling now routes through
     # connectors.internal.access.sample_internal_rows (use_pg() dispatch).
     # app/auth/access.py — mint_session_jwt migrated off get_system_db() onto
@@ -250,7 +253,8 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     # chat_session_participants_repo()/chat_session_repo() (factory); entry
     # removed as the residual shrank.
     "app/auth/providers/google.py",
-    "app/auth/router.py",
+    # app/auth/router.py — the _audit helper dropped its unused get_system_db()
+    # handle; audit_repo() is factory-routed. Entry removed.
     "app/main.py",
     "app/marketplace_server/git_router.py",
     "app/web/router.py",

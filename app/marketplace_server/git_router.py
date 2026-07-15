@@ -80,9 +80,14 @@ def make_git_wsgi_app() -> Callable:
     def app(environ: dict, start_response: Callable) -> Iterable[bytes]:
         token = token_from_basic_auth(environ.get("HTTP_AUTHORIZATION", ""))
 
+        # resolve_token_to_user / ensure_repo_for_user route through the
+        # repository factory and ignore ``conn``; on Postgres pass None so the
+        # system DuckDB is never opened (forbidden invariant).
+        from src.repositories import use_pg
+
         conn = None
         try:
-            conn = get_system_db()
+            conn = None if use_pg() else get_system_db()
         except Exception:
             logger.exception("get_system_db() failed")
             return _server_error(start_response)

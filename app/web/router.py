@@ -552,7 +552,14 @@ def _build_context(
     #
     # When no conn is supplied (e.g. public pages that don't need a DB round-trip)
     # we fall back to resolve_lines() directly with anonymous/no-plugin context.
-    if conn is not None:
+    #
+    # On Postgres the request conn is None (the system DuckDB must never be
+    # opened), but render_agent_prompt_banner → resolve_prompt routes through
+    # the repository factory with conn=None, so the admin-override path must
+    # still run under use_pg() to stay at parity with DuckDB.
+    from src.repositories import use_pg as _use_pg_banner
+
+    if conn is not None or _use_pg_banner():
         from src.welcome_template import render_agent_prompt_banner
 
         _script_text = render_agent_prompt_banner(conn, user=user, server_url=ctx_server_url)
@@ -701,13 +708,17 @@ async def login_page(request: Request):
         # Only short-circuit to the home route if the dev user is actually
         # seeded. Otherwise a 401 there would bounce back to /login and loop.
         from src.db import get_system_db
+        from src.repositories import use_pg
 
-        conn = get_system_db()
+        # _get_local_dev_user is factory-routed and ignores conn; on Postgres
+        # pass None so the system DuckDB is never opened (forbidden invariant).
+        conn = None if use_pg() else get_system_db()
         try:
             if _get_local_dev_user(conn):
                 return RedirectResponse(url=get_home_route(), status_code=302)
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
         # Fall through to the normal login form so the missing-seed error is visible.
 
     next_path = request.query_params.get("next", "")

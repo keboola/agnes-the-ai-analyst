@@ -134,23 +134,25 @@ def test_ensure_everyone_membership_env_set_noop_on_both_backends(_env, monkeypa
 
 
 def test_per_connect_duckdb_seed_respects_backend_selection(_env):
-    """Boot-path leak (found by the post-cutover DuckDB canary): with the
-    Postgres state backend active, opening the local ``system.duckdb`` (still
-    used for the deliberately DuckDB-local tables, e.g. ``cli_auth_codes``)
-    must NOT write the Admin/Everyone seed rows into it — those live in
-    Postgres, seeded through the factory in the app lifespan. On the DuckDB
-    backend the per-connect seed keeps working (recovery contract: a deleted
-    system group reappears on the next connect)."""
+    """Boot-path leak (found by the post-cutover DuckDB canary): the per-connect
+    ``_seed_system_groups`` must never write Admin/Everyone into a local DuckDB
+    on a Postgres instance. The invariant hardened: on Postgres the system
+    DuckDB must NOT be opened at all, so ``get_system_db()`` raises rather than
+    creating an (empty) file. On the DuckDB backend the per-connect seed keeps
+    working (recovery contract: a deleted system group reappears on the next
+    connect)."""
     from src.db import close_system_db, get_system_db
 
     close_system_db()
-    conn = get_system_db()  # reopen → _ensure_schema runs under the active backend
 
-    names = {row[0] for row in conn.execute("SELECT name FROM user_groups WHERE created_by = 'system:seed'").fetchall()}
     if _env == "pg":
-        assert names == set(), f"[pg] boot seeded the local DuckDB user_groups: {names}"
-    else:
-        assert {"Admin", "Everyone"} <= names, f"[duck] per-connect seed did not run: {names}"
+        with pytest.raises(RuntimeError):
+            get_system_db()  # must refuse to open the system DuckDB on Postgres
+        return
+
+    conn = get_system_db()  # reopen → _ensure_schema runs under the DuckDB backend
+    names = {row[0] for row in conn.execute("SELECT name FROM user_groups WHERE created_by = 'system:seed'").fetchall()}
+    assert {"Admin", "Everyone"} <= names, f"[duck] per-connect seed did not run: {names}"
 
 
 def test_canonical_memory_domains_seed_resolves_on_both_backends(_env):
@@ -173,35 +175,27 @@ def test_canonical_memory_domains_seed_resolves_on_both_backends(_env):
         assert row["name"] == name
 
 
-def test_fresh_boot_writes_no_rows_to_local_duckdb_on_pg_backend(_env):
-    """Canary-style pin for the whole boot-seed class: with the Postgres
-    state backend active, creating a FRESH local ``system.duckdb`` (the
-    ``current == 0`` branch of ``_ensure_schema``, which replays the ladder's
-    row seeds — setup_banner, instance_templates, canonical memory_domains,
-    the vscode-mcp oauth client, system groups) must leave every table except
-    ``schema_version`` empty. The DuckDB-local exception ``cli_auth_codes``
-    only ever gains rows at CLI login, never at boot."""
+def test_fresh_boot_opens_no_system_duckdb_on_pg_backend(_env):
+    """Canary-style pin for the whole boot-seed class: with the Postgres state
+    backend active, the system DuckDB must never be opened — not even the
+    ``state/system.duckdb`` file. The invariant hardened from "opens an empty
+    DuckDB, writes no rows" to "refuses to open at all": ``get_system_db()``
+    raises ``RuntimeError`` on Postgres, and no file is created on disk."""
     if _env != "pg":
-        pytest.skip("PG-only — on the DuckDB backend these seeds are by design")
-    from src.db import close_system_db, get_system_db
+        pytest.skip("PG-only — on the DuckDB backend the system DuckDB is the store")
+    from pathlib import Path
+
+    from src.db import _get_state_dir, close_system_db, get_system_db
 
     close_system_db()
-    conn = get_system_db()  # fresh DATA_DIR → full fresh-install schema path
+    db_file = Path(_get_state_dir()) / "system.duckdb"
 
-    tables = [
-        row[0]
-        for row in conn.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' AND table_type = 'BASE TABLE'"
-        ).fetchall()
-    ]
-    leaked = {}
-    for table in tables:
-        if table == "schema_version":
-            continue
-        count = conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
-        if count:
-            leaked[table] = count
-    assert leaked == {}, f"boot wrote rows into the local DuckDB on the PG backend: {leaked}"
+    with pytest.raises(RuntimeError):
+        get_system_db()
+
+    assert not db_file.exists(), (
+        f"system.duckdb was created on a Postgres instance at {db_file}"
+    )
 
 
 def test_ensure_system_creates_absent_group_both_backends(_env):

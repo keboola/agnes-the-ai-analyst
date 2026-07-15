@@ -2492,17 +2492,23 @@ def _materialize_bigquery_extract() -> Dict[str, Any]:
     from connectors.bigquery import extractor as _bq_extractor
     from src.db import get_system_db
     from src.orchestrator import SyncOrchestrator
+    from src.repositories import use_pg
 
-    fresh_conn = get_system_db()
+    # rebuild_from_registry reads the table registry through the repository
+    # factory when use_pg() (ignoring ``conn``); on Postgres pass None so the
+    # system DuckDB is never opened (forbidden invariant). The analytics
+    # extract.duckdb it writes is a separate DuckDB file on both backends.
+    fresh_conn = None if use_pg() else get_system_db()
     try:
         result = _bq_extractor.rebuild_from_registry(conn=fresh_conn)
         SyncOrchestrator().rebuild()
         return result or {}
     finally:
-        try:
-            fresh_conn.close()
-        except Exception:
-            pass
+        if fresh_conn is not None:
+            try:
+                fresh_conn.close()
+            except Exception:
+                pass
 
 
 def _materialize_bigquery_extract_bg() -> None:
@@ -4058,6 +4064,7 @@ def run_session_processor(
     from services.session_pipeline.runner import run_processor as _run_processor
     from services.session_processors import get_processor, list_processor_names
     from src.db import get_system_db
+    from src.repositories import use_pg
 
     proc = get_processor(processor)
     if proc is None:
@@ -4076,7 +4083,10 @@ def run_session_processor(
             detail=f"Processor '{processor}' is already running",
         )
 
-    job_conn = get_system_db()
+    # run_processor / the processors resolve their state through the repository
+    # factory and ignore ``conn``; on Postgres pass None so the system DuckDB is
+    # never opened (forbidden invariant).
+    job_conn = None if use_pg() else get_system_db()
     stats: dict = {}
     job_error: Optional[Exception] = None
     try:
@@ -4102,10 +4112,11 @@ def run_session_processor(
         # operator's only signal beyond docker logs.
         job_error = e
     finally:
-        try:
-            job_conn.close()
-        except Exception:
-            pass
+        if job_conn is not None:
+            try:
+                job_conn.close()
+            except Exception:
+                pass
         # Always release, even if the runner raised. A leaked lock would
         # wedge the processor permanently until process restart.
         proc_lock.release()

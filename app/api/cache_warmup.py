@@ -175,16 +175,23 @@ def _warm_schema_sync(row: dict) -> None:
     from app.api.v2_schema import build_schema_uncached
     from connectors.bigquery.access import get_bq_access
     from src.db import get_system_db
+    from src.repositories import use_pg
     bq = get_bq_access()
-    build_schema_uncached(get_system_db(), row["id"], bq=bq, row=row)
+    # build_schema_uncached resolves its state through the repository factory
+    # and does not use the passed conn; on Postgres pass None so the system
+    # DuckDB is never opened (forbidden invariant). Warmup only runs on
+    # query_mode='remote' rows, so the internal-table branch is never reached.
+    conn = None if use_pg() else get_system_db()
+    build_schema_uncached(conn, row["id"], bq=bq, row=row)
 
 
 async def warm_one_table(table_id: str) -> None:
     """Single-row re-warm — invoked by `invalidate_for_table` after a
     registry change. Does NOT update WARMUP_STATE (small change shouldn't
     overwrite the last full run's status); just refreshes the caches."""
-    from src.db import get_system_db
-    conn = get_system_db()
+    # table_registry_repo() is factory-routed; no system-DB handle needed here
+    # (the previous get_system_db() open was unused, and opening one on
+    # Postgres is forbidden — would create a stale system.duckdb).
     row = table_registry_repo().get(table_id)
     if not row or row.get("query_mode") != "remote":
         return
