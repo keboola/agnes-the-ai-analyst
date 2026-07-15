@@ -194,6 +194,17 @@ class TestStorageClient:
         assert "secrettoken123" not in str(e.value)
         assert "<redacted-storage-token>" in str(e.value)
 
+    def test_verify_token_calls_tokens_verify(self):
+        sess = MagicMock()
+        sess.get.return_value = _mock_response(200, {"id": "123", "isMasterToken": True})
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+
+        info = c.verify_token()
+
+        assert info["isMasterToken"] is True
+        url = sess.get.call_args.args[0]
+        assert url == "https://kbc/v2/storage/tokens/verify"
+
 
 # ---- discovery: list_buckets / list_tables ---------------------------------
 
