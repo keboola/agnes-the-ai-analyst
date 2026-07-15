@@ -10,6 +10,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Security
+
+- Corporate-memory curator: the LLM prompt that ingests every analyst's
+  untrusted `CLAUDE.local.md` now enforces a trust boundary. The notes are
+  wrapped in `<untrusted_notes>` sentinels (which are neutralized in the note
+  bodies so a note can't forge/close them) and a `system=` trust-boundary
+  prompt rides the model's separate system channel, matching the pattern the
+  store-guardrails path already used. Without this, a note whose body reads as
+  curator instructions could poison the shared, auto-published knowledge base
+  (worm-like cross-user prompt injection / note exfiltration) — an INC-01572
+  class recurrence found by the follow-up audit. Operators on the legacy
+  auto-approve default (no `corporate_memory` governance block) should switch
+  to a `review_queue` to keep a human gate on new items.
+
+### Internal
+
+- `StructuredExtractor.extract_json` gained an optional `system=` trust-boundary
+  argument across all providers (Anthropic already had it; added to the base
+  interface and the OpenAI-compatible provider) so untrusted-content callers
+  can keep rules on the model's system channel.
+
 ---
 
 ## [0.74.75] - 2026-07-15

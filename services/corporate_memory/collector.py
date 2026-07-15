@@ -33,7 +33,12 @@ from typing import Any
 from app.logging_config import setup_logging
 from connectors.llm.exceptions import LLMError
 
-from .prompts import CATALOG_REFRESH_PROMPT, SENSITIVITY_CHECK_PROMPT
+from .prompts import (
+    CATALOG_REFRESH_PROMPT,
+    CATALOG_REFRESH_SYSTEM,
+    SENSITIVITY_CHECK_PROMPT,
+    neutralize_untrusted,
+)
 from .tagger import auto_tag_items
 
 # Fields preserved across re-collections when item already exists
@@ -268,7 +273,10 @@ def _format_user_files(user_files: dict[str, tuple[str, str]]) -> str:
     """
     sections = []
     for username, (content, _) in sorted(user_files.items()):
-        sections.append(f"### User: {username}\n```\n{content.strip()}\n```")
+        # Defang the trust-boundary sentinels so a note body can't forge/close
+        # the <untrusted_notes> wrapper and smuggle curator instructions.
+        safe = neutralize_untrusted(content.strip())
+        sections.append(f"### User: {username}\n```\n{safe}\n```")
 
     return "\n\n".join(sections)
 
@@ -485,6 +493,7 @@ def collect_all(dry_run: bool = False) -> dict:
             max_tokens=8192,
             json_schema=CATALOG_SCHEMA,
             schema_name="catalog_refresh",
+            system=CATALOG_REFRESH_SYSTEM,
         )
         response_items = response_data.get("items", [])
         stats["items_extracted"] = len(response_items)
