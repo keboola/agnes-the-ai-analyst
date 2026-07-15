@@ -9,7 +9,9 @@ import pytest
 
 from connectors.keboola.semantic_layer import (
     MasterTokenRequiredError,
+    compose_sql,
     dataset_lookup_by_table_id,
+    references_foreign_alias,
     require_master_token,
     resolve_table_name,
     table_lookup_from_registry,
@@ -105,3 +107,22 @@ class TestDatasetLookupByTableId:
     def test_skips_items_missing_table_id(self):
         items = [{"type": "semantic-dataset", "id": "d1", "attributes": {"name": "no tableId"}}]
         assert dataset_lookup_by_table_id(items) == {}
+
+
+class TestReferencesForeignAlias:
+    def test_bare_column_reference_is_not_foreign(self):
+        assert references_foreign_alias('SUM("cost_value")') is False
+
+    def test_case_expression_without_alias_is_not_foreign(self):
+        assert references_foreign_alias("COUNT(CASE WHEN \"status\" = 'error' THEN 1 END)") is False
+
+    def test_alias_qualified_column_is_foreign(self):
+        assert references_foreign_alias('ROUND(SUM(TRY_CAST(o."amount" AS DECIMAL(18,2))), 2)') is True
+
+    def test_multiple_foreign_aliases_detected(self):
+        assert references_foreign_alias("CASE WHEN um.metric_id = 'x' THEN SUM(kumv.value) ELSE 0 END") is True
+
+
+class TestComposeSql:
+    def test_composes_select_with_alias_t(self):
+        assert compose_sql('SUM("amount")', "orders") == 'SELECT SUM("amount") FROM "orders" AS t'
