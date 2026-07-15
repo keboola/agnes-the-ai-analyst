@@ -13,12 +13,12 @@ exercising the exact code path under test.
 The 503 test reuses the api_client_chat_disabled / logged_in_user
 fixtures defined in test_chat_api.py.
 """
+
 from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -28,6 +28,7 @@ from tests.test_chat_api import api_client_chat_disabled, logged_in_user  # noqa
 # ---------------------------------------------------------------------------
 # Helpers for test_multi_worker_disables_chat
 # ---------------------------------------------------------------------------
+
 
 def _make_app_with_worker_gate() -> FastAPI:
     """Minimal app whose lifespan runs only the multi-worker / chat-init gate."""
@@ -56,6 +57,7 @@ def _make_app_with_worker_gate() -> FastAPI:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 def test_multi_worker_disables_chat(monkeypatch):
     """UVICORN_WORKERS=2 → chat_manager is None after lifespan startup."""
@@ -125,7 +127,8 @@ def test_chat_accepts_long_jwt_secret(monkeypatch):
     from app.main import _chat_jwt_secret_ok
 
     monkeypatch.setenv(
-        "JWT_SECRET_KEY", "this-is-a-32-char-or-more-secret-key!!",
+        "JWT_SECRET_KEY",
+        "this-is-a-32-char-or-more-secret-key!!",
     )
     monkeypatch.delenv("TESTING", raising=False)
     assert _chat_jwt_secret_ok(ChatConfig(enabled=True)) is True
@@ -174,6 +177,58 @@ def test_chat_anthropic_key_skipped_when_disabled(monkeypatch):
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     assert _chat_anthropic_key_ok(ChatConfig(enabled=False)) is True
+
+
+def _set_wif_env(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_x")
+    monkeypatch.setenv("ANTHROPIC_ORGANIZATION_ID", "00000000-0000-0000-0000-000000000000")
+    monkeypatch.setenv("ANTHROPIC_SERVICE_ACCOUNT_ID", "svac_x")
+    monkeypatch.setenv("ANTHROPIC_IDENTITY_TOKEN", "e.y.z")
+
+
+def test_chat_workload_identity_accepts_without_static_key(monkeypatch):
+    """workload_identity mode: NO static key, but the federation env is set → accepted.
+
+    Regression for Devin #885: the gate previously demanded ANTHROPIC_API_KEY
+    unconditionally, silently disabling chat in keyless mode. Runs with TESTING
+    unset so the real gate logic is exercised.
+    """
+    from app.chat.config import ChatConfig
+    from app.main import _chat_anthropic_key_ok
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("TESTING", raising=False)
+    _set_wif_env(monkeypatch)
+    assert _chat_anthropic_key_ok(ChatConfig(enabled=True, llm_auth="workload_identity")) is True
+
+
+def test_chat_workload_identity_refused_when_federation_env_incomplete(monkeypatch):
+    """workload_identity mode with the federation env missing → refuse loudly."""
+    from app.chat.config import ChatConfig
+    from app.main import _chat_anthropic_key_ok
+
+    for var in (
+        "ANTHROPIC_API_KEY",
+        "TESTING",
+        "ANTHROPIC_FEDERATION_RULE_ID",
+        "ANTHROPIC_ORGANIZATION_ID",
+        "ANTHROPIC_SERVICE_ACCOUNT_ID",
+        "ANTHROPIC_IDENTITY_TOKEN",
+        "ANTHROPIC_IDENTITY_TOKEN_FILE",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    assert _chat_anthropic_key_ok(ChatConfig(enabled=True, llm_auth="workload_identity")) is False
+
+
+def test_secret_status_anthropic_not_required_in_wif_mode():
+    """readiness.secret_status must not flag anthropic_api_key as required in WIF mode."""
+    from app.chat.config import ChatConfig
+    from app.chat.readiness import secret_status
+
+    api_mode = secret_status(ChatConfig(enabled=True, llm_auth="api_key"))
+    wif_mode = secret_status(ChatConfig(enabled=True, llm_auth="workload_identity"))
+    assert api_mode["secrets"]["anthropic_api_key"]["required"] is True
+    assert wif_mode["secrets"]["anthropic_api_key"]["required"] is False
 
 
 # ---------------------------------------------------------------------------

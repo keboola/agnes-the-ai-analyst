@@ -69,6 +69,14 @@ class ChatConfig:
     # (an empty placeholder plugin contributes nothing). Independent of the
     # always-on plugin.json sanitization in the marketplace packager.
     bootstrap_marketplace: bool = False
+    # How the chat broker authenticates to Anthropic. ``api_key`` (default) uses
+    # the static ``ANTHROPIC_API_KEY``. ``workload_identity`` mints a short-lived
+    # token from the workload's own OIDC identity via Anthropic Workload Identity
+    # Federation (``app/auth/wif.py``) — no long-lived key anywhere. Opt-in; the
+    # federation env (ANTHROPIC_FEDERATION_RULE_ID / ORGANIZATION_ID /
+    # SERVICE_ACCOUNT_ID / IDENTITY_TOKEN[_FILE]) must be configured for it. Any
+    # value other than ``workload_identity`` falls back to ``api_key``.
+    llm_auth: str = "api_key"
     slack: "SlackConfig" = field(default_factory=SlackConfig)
 
 
@@ -125,5 +133,6 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         paused_ttl_seconds=int(raw.get("paused_ttl_seconds", 7 * 24 * 3600)),
         e2b_kill_on_ws_disconnect=bool(raw.get("e2b_kill_on_ws_disconnect", True)),
         bootstrap_marketplace=bool(raw.get("bootstrap_marketplace", False)),
+        llm_auth=str((raw.get("llm") or {}).get("auth", "api_key")).strip().lower() or "api_key",
         slack=_parse_slack_config(raw),
     )
