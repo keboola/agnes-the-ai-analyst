@@ -551,13 +551,17 @@ def test_e2b_pause_resume_real():
 
         # Write the echo program inline after spawn by using files API directly
         # (upload_runner=False keeps this test self-contained)
+        from e2b import ALL_TRAFFIC
         from e2b import AsyncSandbox as _RealSandbox
 
+        # Mirror the production default-deny egress model (a loopback-only
+        # allowlist here — this test exercises pause/resume, not network) rather
+        # than the retired open-egress flag, which also 400s on e2b>=2.32.0.
         sandbox = await _RealSandbox.create(
             template="base",
             api_key=_E2B_KEY,
             timeout=600,
-            allow_internet_access=True,
+            network={"allow_out": ["127.0.0.1"], "deny_out": [ALL_TRAFFIC]},
         )
         await sandbox.files.write("/tmp/echo.py", ECHO_PROGRAM)
 
