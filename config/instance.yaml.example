@@ -173,6 +173,22 @@ auth:
   # disabled_providers:            # Hide auth methods from login page
   #   - "email"                    # Disable email magic link (use when Google OAuth is configured)
 
+# --- Security (optional) ---
+# security:
+#   # Hostnames exempt from the private/reserved-network SSRF guard on admin-
+#   # configured URLs. The check lives in the shared validator, so a listed host
+#   # is exempt on EVERY admin URL that routes through it — the marketplace +
+#   # initial-workspace clone URLs (git-cloned server-side), the Keboola
+#   # stack_url, and URL-bearing server-config fields (data_source.keboola.
+#   # stack_url, marketplace.curators_url) — not just clone URLs. By default any
+#   # host resolving to a private/reserved/loopback/link-local address is
+#   # rejected; list an internal host here (e.g. an on-prem GitHub Enterprise on
+#   # a private network) to allow it. Accepts a YAML list ([git.internal,
+#   # ghe.corp]) or a comma-separated string ("git.internal,ghe.corp").
+#   # Empty/unset (default) keeps the guard fail-closed. Env override:
+#   # AGNES_SSRF_ALLOWED_HOSTS.
+#   ssrf_allowed_hosts: []
+
 # --- Theme (optional) ---
 # Customize colors, fonts, and shape to match your brand.
 # All values are optional - defaults provide a clean blue theme.

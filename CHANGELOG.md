@@ -10,6 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- `security.ssrf_allowed_hosts` (env `AGNES_SSRF_ALLOWED_HOSTS`): operator
+  allowlist of hostnames exempt from the private/reserved-network SSRF guard.
+  The check lives in the shared `_validate_url_not_private`, so a listed host is
+  exempt on **every** admin-configured URL that routes through it — marketplace
+  + initial-workspace clone URLs, the Keboola `stack_url`, and URL-bearing
+  server-config fields (`data_source.keboola.stack_url`, `marketplace.curators_url`)
+  — not just clone URLs. The motivating case is registering a marketplace hosted
+  on an internal git server (e.g. an on-prem GitHub Enterprise on a private
+  network). Accepts a YAML list or a comma-separated string; empty by default,
+  so the guard stays fail-closed for every host not listed.
+
 ---
 
 ## [0.74.96] - 2026-07-15
