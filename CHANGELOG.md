@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.90] - 2026-07-15
+
 ### Fixed
 
 - **Chat P0 — CLI data tools and MCP tools returned `HTTP 405` inside chat.**
