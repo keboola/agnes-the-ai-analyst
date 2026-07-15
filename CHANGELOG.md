@@ -26,6 +26,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.92] - 2026-07-15
+
+### Fixed
+
+- Keboola semantic layer importer: metrics whose Keboola SQL fragment carries an embedded `--` comment (e.g. an author note flagging a missing table or an unapplied filter) are now skipped and counted (`skipped_embedded_comment`) instead of silently emitting broken SQL — appending the composed `FROM` clause after such a comment let SQL treat it as part of the comment, dropping the `FROM` clause entirely. Found via live end-to-end verification against a real project.
+
+---
+
 ## [0.74.91] - 2026-07-15
 
 ### Internal

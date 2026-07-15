@@ -93,9 +93,27 @@ def dataset_lookup_by_table_id(dataset_items: list[dict]) -> dict[str, dict]:
 # this importer does not have (relationship support is out of scope for
 # v1) — so any match here means "skip, cannot safely compose."
 _ALIAS_QUALIFIER_RE = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_"])')
-# Single-quoted SQL string literal (handles '' escapes), masked out before the
-# alias scan so dotted enum values like 'in.progress' don't read as an alias.
+# Single-quoted SQL string literal (handles '' escapes).
 _SQL_STRING_LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
+# Double-quoted SQL identifier (handles "" escapes).
+_SQL_IDENTIFIER_RE = re.compile(r'"(?:[^"]|"")*"')
+
+
+def _mask_quoted_regions(expression: str) -> str:
+    """Blank the CONTENT of double-quoted identifiers and single-quoted string
+    literals, keeping the surrounding SQL structure intact, so a dotted enum
+    value (`'in.progress'`), a dotted column name (`"total.amount"`), or a
+    double-hyphen inside a quoted region is not mistaken for an alias qualifier
+    or a line comment.
+
+    Identifiers are masked FIRST: a single quote inside an identifier
+    (e.g. `"col'name"`) would otherwise start a spurious string-literal match
+    that swallows a following real literal and re-exposes its contents (a
+    dotted value or a `--`), causing a valid single-table metric to be skipped.
+    """
+    masked = _SQL_IDENTIFIER_RE.sub('""', expression)
+    masked = _SQL_STRING_LITERAL_RE.sub("''", masked)
+    return masked
 
 
 def references_foreign_alias(expression: str) -> bool:
@@ -104,12 +122,33 @@ def references_foreign_alias(expression: str) -> bool:
     See _ALIAS_QUALIFIER_RE docstring for why this indicates a multi-dataset
     JOIN this importer cannot safely compose in v1.
 
-    String literals are masked first: a dotted value inside a single-quoted
-    literal (e.g. `WHEN "status" = 'in.progress'`) is data, not an alias
-    reference, and must not cause a valid single-table metric to be skipped.
+    Quoted regions are masked first: a dotted value inside a single-quoted
+    literal (`WHEN "status" = 'in.progress'`) or a dotted column name inside a
+    quoted identifier (`"total.amount"`) is data, not an alias reference, and
+    must not cause a valid single-table metric to be skipped.
     """
-    masked = _SQL_STRING_LITERAL_RE.sub("''", expression)
-    return bool(_ALIAS_QUALIFIER_RE.search(masked))
+    return bool(_ALIAS_QUALIFIER_RE.search(_mask_quoted_regions(expression)))
+
+
+def has_embedded_sql_comment(expression: str) -> bool:
+    """True if `expression` contains a `--` SQL line-comment marker outside
+    any quoted literal or identifier.
+
+    Verified live (2026-07-15) against a real project: some real Keboola
+    metric expressions carry a trailing `--` comment as a free-text author
+    note (e.g. flagging a table that doesn't exist in this project, or a
+    WHERE condition the author never actually applied to the formula).
+    Composing `SELECT {expression} FROM "{table}" AS t` naively appends the
+    FROM clause AFTER such an expression — SQL then treats everything from
+    `--` onward (including the appended FROM clause) as part of the
+    comment, silently dropping it and breaking the query. Confirmed live:
+    DuckDB raises a binder error ("FROM clause is missing") rather than
+    returning a wrong number, but the query is still unusable — and the
+    comment text itself often signals the metric is genuinely incomplete
+    for this table. Per this importer's "skip rather than guess" contract,
+    any embedded comment means skip, never strip-and-compose.
+    """
+    return "--" in _mask_quoted_regions(expression)
 
 
 def compose_sql(expression: str, table_name: str) -> str:
@@ -118,9 +157,12 @@ def compose_sql(expression: str, table_name: str) -> str:
     live to never be a full query) and the resolved Agnes table_registry
     view name.
 
-    Callers MUST check `references_foreign_alias(expression)` first and
-    skip the metric if True — this function does not itself guard against
-    that case.
+    Callers MUST check BOTH `references_foreign_alias(expression)` and
+    `has_embedded_sql_comment(expression)` first and skip the metric if
+    either is True — this function does not itself guard against those
+    cases. A foreign-alias reference needs a JOIN this importer can't
+    compose; a trailing `--` comment would swallow the appended FROM clause.
+    `build_metric_row` performs both checks before calling this.
     """
     return f'SELECT {expression} FROM "{table_name}" AS t'
 
@@ -161,9 +203,12 @@ def build_metric_row(
     Returns (row, None) on success, or (None, skip_reason) where
     skip_reason is "missing_name" (the item carries no usable name — the
     metric id/name would otherwise stringify to "None"), "unresolved_table"
-    (the metric's dataset isn't registered in Agnes's table_registry) or
+    (the metric's dataset isn't registered in Agnes's table_registry),
     "foreign_alias_reference" (the expression needs a JOIN this importer
-    can't safely compose — see references_foreign_alias).
+    can't safely compose — see references_foreign_alias), or
+    "embedded_sql_comment" (the expression carries a trailing `--` comment
+    that would swallow the composed FROM clause — see
+    has_embedded_sql_comment).
     """
     attrs = metric_item.get("attributes") or {}
     name = attrs.get("name")
@@ -178,6 +223,9 @@ def build_metric_row(
 
     if references_foreign_alias(expression):
         return None, "foreign_alias_reference"
+
+    if has_embedded_sql_comment(expression):
+        return None, "embedded_sql_comment"
 
     table_name = resolve_table_name(dataset_table_id, table_lookup)
     if table_name is None:
@@ -275,6 +323,7 @@ def sync_semantic_layer(
         "pruned": 0,
         "skipped_unresolved_table": 0,
         "skipped_foreign_alias": 0,
+        "skipped_embedded_comment": 0,
     }
     if not models:
         return empty_result
@@ -301,6 +350,7 @@ def sync_semantic_layer(
     seen_ids: set[str] = set()
     skipped_unresolved_table = 0
     skipped_foreign_alias = 0
+    skipped_embedded_comment = 0
 
     for item in metrics:
         row, skip_reason = build_metric_row(item, table_lookup, dataset_lookup, constraints, model_uuid)
@@ -309,6 +359,8 @@ def sync_semantic_layer(
                 skipped_unresolved_table += 1
             elif skip_reason == "foreign_alias_reference":
                 skipped_foreign_alias += 1
+            elif skip_reason == "embedded_sql_comment":
+                skipped_embedded_comment += 1
             else:
                 logger.warning(
                     "Keboola semantic metric skipped (%s): %r",
@@ -348,4 +400,5 @@ def sync_semantic_layer(
         "pruned": pruned,
         "skipped_unresolved_table": skipped_unresolved_table,
         "skipped_foreign_alias": skipped_foreign_alias,
+        "skipped_embedded_comment": skipped_embedded_comment,
     }
