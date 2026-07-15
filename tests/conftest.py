@@ -137,6 +137,15 @@ def _reset_module_caches():
         _q._quota_singleton = None
     except ImportError:
         pass
+    # Backend-state parse-once cache — process-global, so a test
+    # that reads/writes one overlay would otherwise leave a stale
+    # (BackendState, url) visible to the next test on this xdist worker.
+    try:
+        from src.db_state_machine import reset_backend_state_cache
+
+        reset_backend_state_cache()
+    except ImportError:
+        pass
     try:
         from app.api import v2_catalog as _vc
 

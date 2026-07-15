@@ -1,4 +1,5 @@
 """Unit tests for DB backend state machine."""
+
 from __future__ import annotations
 import pytest
 from src.db_state_machine import (
@@ -35,19 +36,27 @@ def test_allowed_transitions_matrix_is_multi_destination():
     """
     # DUCKDB can target all three other stable backends.
     assert set(allowed_transitions(BackendState.DUCKDB)) == {
-        BackendState.SIDE_CAR, BackendState.CLOUD, BackendState.DUCKDB_QUACK,
+        BackendState.SIDE_CAR,
+        BackendState.CLOUD,
+        BackendState.DUCKDB_QUACK,
     }
     # SIDE_CAR can target all three others — including reverse to DUCKDB.
     assert set(allowed_transitions(BackendState.SIDE_CAR)) == {
-        BackendState.DUCKDB, BackendState.CLOUD, BackendState.DUCKDB_QUACK,
+        BackendState.DUCKDB,
+        BackendState.CLOUD,
+        BackendState.DUCKDB_QUACK,
     }
     # CLOUD can target all three others — including reverse to DUCKDB.
     assert set(allowed_transitions(BackendState.CLOUD)) == {
-        BackendState.DUCKDB, BackendState.SIDE_CAR, BackendState.DUCKDB_QUACK,
+        BackendState.DUCKDB,
+        BackendState.SIDE_CAR,
+        BackendState.DUCKDB_QUACK,
     }
     # DUCKDB_QUACK can target all three others (when runtime support lands).
     assert set(allowed_transitions(BackendState.DUCKDB_QUACK)) == {
-        BackendState.DUCKDB, BackendState.SIDE_CAR, BackendState.CLOUD,
+        BackendState.DUCKDB,
+        BackendState.SIDE_CAR,
+        BackendState.CLOUD,
     }
 
 
@@ -168,9 +177,11 @@ def test_get_database_config_reads_from_state_module(tmp_path, monkeypatch):
     overlay = tmp_path / "instance.yaml"
     monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
     from src.db_state_machine import write_backend_state
+
     write_backend_state(BackendState.CLOUD, url="postgresql://cloud/agnes")
 
     from app.instance_config import get_database_config, reset_database_cache
+
     reset_database_cache()
     config = get_database_config()
     assert config["backend"] == "cloud"
@@ -189,7 +200,7 @@ def test_write_backend_state_preserves_url_when_url_kw_absent(tmp_path, monkeypa
     from src.db_state_machine import BackendState, write_backend_state, read_backend_state
 
     write_backend_state(BackendState.SIDE_CAR, url="postgresql+psycopg://x:y@h/d")
-    write_backend_state(BackendState.SIDE_CAR_IN_PROGRESS)   # no url= kwarg
+    write_backend_state(BackendState.SIDE_CAR_IN_PROGRESS)  # no url= kwarg
 
     state, url = read_backend_state()
     assert state == BackendState.SIDE_CAR_IN_PROGRESS
@@ -202,6 +213,7 @@ def test_write_backend_state_clears_url_when_url_none_explicit(tmp_path, monkeyp
     overlay = tmp_path / "instance.yaml"
     monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
     from src.db_state_machine import BackendState, write_backend_state, read_backend_state
+
     write_backend_state(BackendState.SIDE_CAR, url="postgresql+psycopg://x:y@h/d")
     write_backend_state(BackendState.DUCKDB, url=None)
     state, url = read_backend_state()
@@ -214,15 +226,21 @@ def test_write_backend_state_preserves_other_top_level_keys(tmp_path, monkeypatc
     may have set via /admin/server-config must NOT be lost when
     write_backend_state mutates the database subkey."""
     import yaml
+
     overlay = tmp_path / "instance.yaml"
     monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
     # Pre-seed the overlay with operator-set keys.
-    overlay.write_text(yaml.safe_dump({
-        "logging": {"level": "debug"},
-        "auth": {"providers": ["google", "magic_link"]},
-        "database": {"backend": "duckdb"},
-    }))
+    overlay.write_text(
+        yaml.safe_dump(
+            {
+                "logging": {"level": "debug"},
+                "auth": {"providers": ["google", "magic_link"]},
+                "database": {"backend": "duckdb"},
+            }
+        )
+    )
     from src.db_state_machine import BackendState, write_backend_state
+
     write_backend_state(BackendState.SIDE_CAR, url="postgresql+psycopg://x:y@h/d")
     data = yaml.safe_load(overlay.read_text())
     assert data["logging"]["level"] == "debug"
@@ -231,14 +249,117 @@ def test_write_backend_state_preserves_other_top_level_keys(tmp_path, monkeypatc
     assert data["database"]["url"] == "postgresql+psycopg://x:y@h/d"
 
 
+def test_read_backend_state_is_cached_until_reset(tmp_path, monkeypatch):
+    """read_backend_state is memoized for the process lifetime.
+
+    An out-of-process overlay rewrite (e.g. the migrator subprocess) is NOT
+    observed until the cache is reset — which in production happens because
+    a backend flip restarts the app. reset_backend_state_cache() is the
+    explicit hook that models that boundary.
+    """
+    import yaml as _yaml
+
+    from src.db_state_machine import (
+        BackendState,
+        read_backend_state,
+        reset_backend_state_cache,
+    )
+
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+
+    overlay.write_text(_yaml.safe_dump({"database": {"backend": "duckdb"}}))
+    reset_backend_state_cache()
+    assert read_backend_state()[0] == BackendState.DUCKDB  # parses + caches
+
+    # Rewrite the file directly (bypassing write_backend_state so no
+    # auto-invalidation) — the cached value must still be served.
+    overlay.write_text(_yaml.safe_dump({"database": {"backend": "side_car", "url": "postgresql://x"}}))
+    assert read_backend_state()[0] == BackendState.DUCKDB  # stale, still cached
+
+    reset_backend_state_cache()  # simulate the app-restart boundary
+    state, url = read_backend_state()
+    assert state == BackendState.SIDE_CAR
+    assert url == "postgresql://x"
+
+
+def test_write_backend_state_invalidates_cache(tmp_path, monkeypatch):
+    """A same-process write must be visible to the next read without an
+    explicit reset — write_backend_state invalidates the parse-once cache."""
+    from src.db_state_machine import (
+        BackendState,
+        read_backend_state,
+        write_backend_state,
+    )
+
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+
+    write_backend_state(BackendState.DUCKDB)
+    assert read_backend_state()[0] == BackendState.DUCKDB  # caches duckdb
+
+    write_backend_state(BackendState.SIDE_CAR, url="postgresql://x")
+    assert read_backend_state()[0] == BackendState.SIDE_CAR  # not the stale cache
+
+
+def test_reset_database_cache_clears_stale_backend_state_cache(tmp_path, monkeypatch):
+    """The public app.instance_config.reset_database_cache() wrapper must
+    actually drop the backend-state cache — tests the wrapper's observable
+    behavior directly (rewriting the overlay on disk, not via
+    write_backend_state which already invalidates), so the suite would catch
+    the wrapper regressing back to a no-op."""
+    import yaml as _yaml
+
+    from app.instance_config import get_database_config, reset_database_cache
+
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+
+    overlay.write_text(_yaml.safe_dump({"database": {"backend": "duckdb"}}))
+    assert get_database_config()["backend"] == "duckdb"  # caches duckdb
+
+    overlay.write_text(_yaml.safe_dump({"database": {"backend": "side_car", "url": "postgresql://x"}}))
+    reset_database_cache()
+    assert get_database_config() == {"backend": "side_car", "url": "postgresql://x"}
+
+
+def test_malformed_overlay_fallback_is_not_cached(tmp_path, monkeypatch, caplog):
+    """The yaml.YAMLError branch deliberately does NOT cache its safe
+    fallback, so an operator who repairs a malformed overlay while the
+    process is still alive is observed on the very next read (no restart /
+    explicit reset needed)."""
+    import logging
+
+    import yaml as _yaml
+
+    from src.db_state_machine import BackendState, read_backend_state, reset_backend_state_cache
+
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+    overlay.write_text("database: [")  # malformed
+    reset_backend_state_cache()
+
+    with caplog.at_level(logging.WARNING, logger="src.db_state_machine"):
+        assert read_backend_state() == (BackendState.DUCKDB, None)
+    assert "YAML parse failed" in caplog.text
+
+    # Repair the overlay directly (no reset) — the uncached fallback means
+    # the next read picks up the repaired backend.
+    overlay.write_text(_yaml.safe_dump({"database": {"backend": "side_car", "url": "postgresql://x"}}))
+    assert read_backend_state() == (BackendState.SIDE_CAR, "postgresql://x")
+
+
 def test_write_backend_state_sets_0600(tmp_path, monkeypatch):
     """H2 — instance.yaml carries plaintext PG credentials and must
     be owner-readable only. Catches the case where a non-app user on
     the same host could ``cat`` the overlay and exfiltrate the URL."""
-    import os, stat
+    import os
+    import stat
+
     overlay = tmp_path / "instance.yaml"
     monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
     from src.db_state_machine import BackendState, write_backend_state
+
     write_backend_state(BackendState.SIDE_CAR, url="postgresql+psycopg://agnes:pw@host/agnes")
     mode = stat.S_IMODE(os.stat(overlay).st_mode)
     assert mode == 0o600, f"expected 0600, got {oct(mode)}"

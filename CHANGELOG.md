@@ -23,6 +23,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   network). Accepts a YAML list or a comma-separated string; empty by default,
   so the guard stays fail-closed for every host not listed.
 
+### Fixed
+
+- **`use_pg()` re-parsed the state overlay YAML on every repo access.**
+  Each `*_repo()` factory call ran `use_pg()` → `read_backend_state()` →
+  uncached `yaml.safe_load()` of `$DATA_DIR/state/instance.yaml`, so a single
+  RBAC/catalog request parsed the overlay dozens of times. Pure-Python PyYAML
+  holds the GIL, serializing the single-uvicorn event loop and capping catalog
+  throughput at ~2 req/s per instance (py-spy: ~48% of request CPU in
+  `yaml.safe_load`). `read_backend_state()` now memoizes the parsed overlay for
+  the process lifetime — correct without an mtime guard because a backend flip
+  runs the migrator as a subprocess and restarts the app (fresh process → cold
+  cache). `write_backend_state()` invalidates the cache and a public
+  `reset_backend_state_cache()` (wired into `reset_database_cache()`) is the
+  explicit invalidation hook. `src/db_state_machine.py`.
+
 ---
 
 ## [0.74.96] - 2026-07-15
