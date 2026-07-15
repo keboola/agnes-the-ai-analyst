@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.93] - 2026-07-15
+
 ### Fixed
 
 - Keboola connector data-sync reliability (found via live end-to-end verification against a real project):
