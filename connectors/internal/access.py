@@ -419,16 +419,16 @@ def execute_internal_query(
     # ``pg`` selects that path.
     pg = use_pg()
 
-    # Non-admins are NOT allowed to reference any system.duckdb table
-    # outside the registered agnes_* aliases. The CTE wrapper only
-    # scopes those aliases; a direct FROM on the base table
-    # (`usage_session_summary`, `audit_log`, `users`,
-    # `personal_access_tokens`, etc.) would bypass row-level RBAC and
-    # leak other users' data. Denylist is derived dynamically from
-    # `information_schema.tables` — every table in system.duckdb that
-    # is NOT one of the agnes_* aliases is sensitive. This is
-    # future-proof: new tables added by later migrations are
-    # automatically covered without re-editing this module.
+    # Non-admins are NOT allowed to reference any state table outside the
+    # registered agnes_* aliases. The CTE wrapper only scopes those aliases;
+    # a direct FROM on the base table (`usage_session_summary`, `audit_log`,
+    # `users`, `personal_access_tokens`, etc.) would bypass row-level RBAC and
+    # leak other users' data. The denylist comes from `_state_table_denylist()`,
+    # which is backend-aware — DuckDB `information_schema.tables` on DuckDB,
+    # SQLAlchemy model metadata on Postgres (the system DuckDB is never opened
+    # there) — so every state table that is NOT one of the agnes_* aliases is
+    # sensitive. This is future-proof on both backends: new tables added by
+    # later migrations are automatically covered without re-editing this module.
     #
     # Admin path is unaffected — admins have legitimate need to read
     # raw rows, and the filter clause is empty for them anyway.

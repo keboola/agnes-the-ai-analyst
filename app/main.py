@@ -414,15 +414,19 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
     writes at the mercy of a cross-version WAL replay. CHECKPOINT runs in
     a worker thread — it can block while DuckDB flushes a large WAL.
     """
-    from src.db import checkpoint_system_db
+    from src.db import checkpoint_operational_db, checkpoint_system_db
 
     while True:
         await asyncio.sleep(interval_s)
         try:
             await asyncio.to_thread(checkpoint_system_db)
+            # operational.duckdb is a second long-lived singleton with the same
+            # unbounded-WAL exposure; both accessors no-op when their singleton
+            # isn't open, so this is cheap on every backend.
+            await asyncio.to_thread(checkpoint_operational_db)
         except Exception:
-            # checkpoint_system_db already swallows DB errors; this guards
-            # the loop itself (e.g. to_thread failure) so it never dies.
+            # checkpoint_*_db already swallow DB errors; this guards the loop
+            # itself (e.g. to_thread failure) so it never dies.
             logger.exception("state-checkpoint tick failed; loop continues")
 
 
@@ -1052,13 +1056,13 @@ async def lifespan(app):
     # Periodic system.duckdb CHECKPOINT (#710) — see _state_checkpoint_loop.
     # Started here (worker-only), not create_app(): the uvicorn --reload
     # master must not touch system.duckdb (same reasoning as the seeding
-    # above). Runs on Postgres-state instances too: boot still opens the
-    # DuckDB singleton unconditionally for the DuckDB-only FTS index rebuild
-    # (ensure_knowledge_fts_index above), so the file exists and takes writes
-    # there as well — checkpointing it is cheap and keeps its WAL folded.
-    # (ensure_internal_tables_registered now routes through the repository
-    # factory and no longer forces the DuckDB singleton open on PG-backed
-    # instances.)
+    # above). This applies only when the system DuckDB singleton is actually
+    # open, i.e. on DuckDB-state instances: checkpoint_system_db() never opens
+    # one implicitly (it no-ops when no singleton is held). Postgres-state
+    # instances must NOT open the system DuckDB — get_system_db() raises under
+    # use_pg(), the startup FTS rebuild is skipped there, and every remaining
+    # opener routes through the repository factory — so on Postgres the loop is
+    # a harmless no-op.
     _checkpoint_interval = _state_checkpoint_interval_s()
     _checkpoint_task = None
     if _checkpoint_interval > 0:
@@ -1087,10 +1091,15 @@ async def lifespan(app):
         get_posthog().shutdown()
     except Exception:
         logger.exception("PostHog shutdown failed")
-    from src.db import close_analytics_db, close_system_db
+    from src.db import close_analytics_db, close_operational_db, close_system_db
 
     close_system_db()
     close_analytics_db()
+    # operational.duckdb (CLI-auth / Slack-binding codes) is a separate
+    # long-lived DuckDB singleton — CHECKPOINT + close it too so its WAL is
+    # folded on graceful shutdown (on Postgres it is the only written DuckDB
+    # file, so the system checkpoint loop never touches it).
+    close_operational_db()
 
 
 def _is_truthy_env(name: str) -> bool:

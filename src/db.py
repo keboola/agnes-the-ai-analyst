@@ -6510,3 +6510,56 @@ def close_analytics_db() -> None:
             logger.debug("close_analytics_db: close raised (%s); ignoring", exc)
         _analytics_db_conn = None
         _analytics_db_path = None
+
+
+def checkpoint_operational_db() -> bool:
+    """Best-effort CHECKPOINT of the open operational DB singleton (#710).
+
+    ``operational.duckdb`` is a second long-lived DuckDB singleton (CLI-auth +
+    Slack-binding codes). Like ``get_system_db()`` the app holds the connection
+    for its whole lifetime, so DuckDB defers its automatic checkpoint and the
+    WAL never folds on its own — and on a Postgres-state instance this is the
+    ONLY written DuckDB file, so the system-DB checkpoint loop would otherwise
+    never touch it. Fold its WAL periodically so a non-graceful exit can't leave
+    a dirty WAL (there is no salvage-reopen path for this file).
+
+    Returns True when a CHECKPOINT ran, False when skipped (no open singleton —
+    never opens one implicitly) or when DuckDB refused; refusal is expected
+    under load and simply means the next tick retries. Mirrors
+    ``checkpoint_system_db()``.
+    """
+    with _system_db_lock:
+        if _operational_db_conn is None:
+            return False
+        try:
+            _operational_db_conn.execute("CHECKPOINT")
+            logger.debug("checkpoint_operational_db: CHECKPOINT ok")
+            return True
+        except Exception as exc:
+            logger.warning("checkpoint_operational_db: CHECKPOINT failed (%s); will retry next tick", exc)
+            return False
+
+
+def close_operational_db() -> None:
+    """Close the shared operational DB connection. Called on app shutdown.
+
+    Mirrors ``close_system_db()`` (best-effort CHECKPOINT then close, swallow
+    exceptions) so the ``operational.duckdb`` WAL is flushed into the main file
+    and the file is left clean. Skipping this would leave a populated ``.wal``
+    that the next process must replay on open — and unlike the system DuckDB
+    there is no salvage-reopen recovery path here, so a failed replay would wedge
+    CLI login + Slack binding until the file is deleted.
+    """
+    global _operational_db_conn, _operational_db_path
+    if _operational_db_conn:
+        try:
+            _operational_db_conn.execute("CHECKPOINT")
+            logger.debug("close_operational_db: CHECKPOINT ok")
+        except Exception as exc:
+            logger.warning("close_operational_db: CHECKPOINT failed (%s); proceeding to close", exc)
+        try:
+            _operational_db_conn.close()
+        except Exception as exc:
+            logger.debug("close_operational_db: close raised (%s); ignoring", exc)
+        _operational_db_conn = None
+        _operational_db_path = None
