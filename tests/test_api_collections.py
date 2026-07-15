@@ -148,6 +148,30 @@ class TestCreateCollection:
 
 
 class TestListCollections:
+    def test_list_calls_file_corpora_list_once(self, seeded_app, monkeypatch):
+        """Regression: N+1 collapse — the handler must call
+        ``file_corpora_repo().list()`` exactly once per request (previously
+        called once inside ``_accessible_corpus_ids`` and once more in the
+        handler)."""
+        import app.api.collections as collections_mod
+        from src.repositories import file_corpora_repo as real_file_corpora_repo
+
+        calls = {"n": 0}
+        real_repo = real_file_corpora_repo()
+        real_list = real_repo.list
+
+        def counting_list():
+            calls["n"] += 1
+            return real_list()
+
+        monkeypatch.setattr(real_repo, "list", counting_list)
+        monkeypatch.setattr(collections_mod, "file_corpora_repo", lambda: real_repo)
+
+        c = seeded_app["client"]
+        resp = c.get("/api/collections", headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 200
+        assert calls["n"] == 1, f"expected file_corpora_repo().list() called once, got {calls['n']}"
+
     def test_admin_sees_all_collections(self, seeded_app):
         c = seeded_app["client"]
         c.post(
