@@ -216,6 +216,11 @@ _SOURCE_CONNECTIONS_CRUD_REASON = (
     "reachable via `agnes admin connection add/remove/test`; the list path carries "
     "the triple-surface contract in _COHORT"
 )
+_BROKER_REASON = (
+    "chat sandbox secret broker (2026-07-14 incident hardening) — internal "
+    "sandbox->server routes, ticket-gated (not user auth); the in-sandbox "
+    "loopback relay is the only caller. No analyst CLI/MCP analogue."
+)
 _EXEMPT: dict[str, str] = {
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "
@@ -295,6 +300,14 @@ _EXEMPT: dict[str, str] = {
         "no interactive CLI/MCP analogue, mirrors the knowledge-artifact "
         "download and /api/memory/bundle delivery channels"
     ),
+    # Chat sandbox secret broker (2026-07-14 incident hardening) — internal
+    # sandbox→server routes only, gated by an opaque ticket (not user auth).
+    # No CLI/MCP analogue: these exist purely so the in-sandbox loopback
+    # relay never needs a real credential.
+    "/api/broker/anthropic": _BROKER_REASON,
+    "/api/broker/anthropic/{subpath}": _BROKER_REASON,
+    "/api/broker/agnes-api": _BROKER_REASON,
+    "/api/broker/agnes-mcp": _BROKER_REASON,
 }
 
 

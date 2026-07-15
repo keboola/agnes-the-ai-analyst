@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 89
+SCHEMA_VERSION = 90
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1395,6 +1395,20 @@ CREATE TABLE IF NOT EXISTS knowledge_digests (
     created_at         TIMESTAMP DEFAULT current_timestamp,
     updated_at         TIMESTAMP DEFAULT current_timestamp
 );
+
+-- chat_broker_tickets: v90. Opaque, short-lived tickets minted by the chat
+-- sandbox secret broker (ticket_repo().mint) so a sandboxed chat agent never
+-- holds the real ANTHROPIC_API_KEY / AGNES_TOKEN — only an opaque token the
+-- broker resolves server-side. Indexed on session_id so revoke_session can
+-- invalidate every outstanding ticket for a session in one statement.
+CREATE TABLE IF NOT EXISTS chat_broker_tickets (
+    token       VARCHAR PRIMARY KEY,
+    session_id  VARCHAR NOT NULL,
+    scope       VARCHAR NOT NULL,
+    expires_at  TIMESTAMP NOT NULL,
+    created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+CREATE INDEX IF NOT EXISTS idx_chat_broker_tickets_session_id ON chat_broker_tickets(session_id);
 """
 
 
@@ -5634,6 +5648,30 @@ def _v88_to_v89(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 89")
 
 
+def _v89_to_v90(conn: duckdb.DuckDBPyConnection) -> None:
+    """v89→v90: ``chat_broker_tickets`` — chat sandbox secret broker tickets.
+
+    Opaque, short-lived tickets minted by ``ticket_repo().mint`` so a
+    sandboxed chat agent never holds the real ``ANTHROPIC_API_KEY`` /
+    ``AGNES_TOKEN`` — only an opaque token the broker resolves server-side.
+
+    Idempotent CREATE TABLE/INDEX IF NOT EXISTS; fresh installs already get
+    the table from ``_SYSTEM_SCHEMA`` (no-op here). Sequential upgrades from
+    a v89 instance create it now.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_broker_tickets (
+            token       VARCHAR PRIMARY KEY,
+            session_id  VARCHAR NOT NULL,
+            scope       VARCHAR NOT NULL,
+            expires_at  TIMESTAMP NOT NULL,
+            created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_broker_tickets_session_id ON chat_broker_tickets(session_id)")
+    conn.execute("UPDATE schema_version SET version = 90")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6000,6 +6038,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # already creates it on fresh installs (no-op CREATE IF NOT
             # EXISTS here).
             _v88_to_v89(conn)
+            # v89→v90: chat_broker_tickets table (chat sandbox secret
+            # broker). _SYSTEM_SCHEMA already creates it on fresh installs
+            # (no-op CREATE IF NOT EXISTS here).
+            _v89_to_v90(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -6231,6 +6273,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v87_to_v88(conn)
             if current < 89:
                 _v88_to_v89(conn)
+            if current < 90:
+                _v89_to_v90(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

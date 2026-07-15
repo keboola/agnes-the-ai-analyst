@@ -430,5 +430,8 @@ def mint_co_session_jwt(session_id: str, *, ttl: int = 3600) -> str:
         email="",  # no real identity; resolver never reads this
         expires_delta=timedelta(seconds=ttl),
         typ="co_session",
-        extra_claims={"chat_session_id": session_id},
+        # scope="chat" triggers the per-session BigQuery budget stash
+        # (`_stash_chat_session_id_from_token`), same as the solo path — a
+        # co-session is a chat session and must be capped too. (#849)
+        extra_claims={"scope": "chat", "chat_session_id": session_id},
     )

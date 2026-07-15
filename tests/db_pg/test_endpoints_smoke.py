@@ -1383,6 +1383,16 @@ class TestReportsSmoke:
 # ---------------------------------------------------------------------------
 
 KNOWN_UNTESTED = {
+    # Chat sandbox secret broker (2026-07-14 incident) — internal
+    # sandbox→server routes, ticket-authed, never parameter-free (require a
+    # POST body + a valid broker ticket), so they have no place in this
+    # parameter-free smoke sweep. Behaviour covered in tests/test_broker_routes.py
+    # (app-tier: ticket auth, scope enforcement, admin-path 403, ASGI-replay
+    # RBAC fidelity).
+    "POST /api/broker/anthropic",
+    "POST /api/broker/anthropic/{subpath}",
+    "POST /api/broker/agnes-api",
+    "POST /api/broker/agnes-mcp",
     # Collections (bring-your-files) — behaviorally covered in the dedicated
     # suites tests/test_api_collections.py (CRUD/upload/search/reingest, RBAC fail-closed,
     # SessionPrincipal) and tests/test_web_library.py (/library pages), plus the

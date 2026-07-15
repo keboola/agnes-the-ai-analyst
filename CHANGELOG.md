@@ -12,6 +12,71 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.74] - 2026-07-15
+
+### Added
+
+- **Chat sandbox secret broker.** The real Anthropic key and Agnes token are
+  no longer placed in any chat-sandbox process environment. An in-sandbox
+  loopback relay holds only opaque, short-lived, session-scoped tickets (in
+  memory — never in env or on disk) and forwards to internal broker routes
+  (`/api/broker/{anthropic,agnes-api,agnes-mcp}`) that inject the real
+  credentials server-side. Agnes-API/MCP requests are replayed in-process
+  through the app's own stack, so live per-request RBAC applies. Tickets
+  (`chat_broker_tickets`, schema v90) are minted at spawn, pushed to the runner
+  over stdin, re-minted (old ones revoked) on resume, and revoked on session
+  teardown; each expires at its TTL (default 1h). Complements the VM-level
+  egress allowlist (0.74.70): egress stops exfiltration, the broker stops
+  credential theft.
+
+### Changed
+
+- Chat sessions no longer receive the real Anthropic key or Agnes token in
+  their sandbox (or `agnes mcp` subprocess) environment; credentials are
+  brokered. The `agnes mcp` subprocess rides a separate mcp-scoped ticket.
+
+### Fixed
+
+- Cap FastAPI below 0.137.0. That release regressed `include_router` so it no
+  longer copies the source router's routes into the app (adds zero routes),
+  leaving `create_app()` with no `/api` routes. Harmless in production, but it
+  broke the test suite's fresh app builds — and only on Python 3.13, where the
+  resolver otherwise picks a >=0.137 release. Bisected: 0.136.0 OK, 0.137.0
+  broken. Lift once verified against the new behavior.
+
+### Internal
+
+- Schema v90: `chat_broker_tickets` table (DuckDB `_v89_to_v90` + Alembic
+  `0037_chat_broker_tickets_v90`), dual-backend `ticket` repository.
+- Broker admin-mutation gate introspects the target route's `require_admin`
+  dependency (not a path prefix), so admin routes off `/api/admin/`
+  (`/api/users/*`, `/auth/admin/tokens/*`, `/api/sync/trigger`, …) are refused
+  regardless of the resolved identity. Co-session tickets resolve via
+  `mint_co_session_jwt` (live grant-intersection). Post-restart resume destroys
+  the old paused sandbox before clearing its ref (no microVM leak).
+- Broker replay path is canonicalized into the exact URL the ASGI transport
+  dispatches on (percent-decoded, dot-segments collapsed), and the admin gate
+  reads its path from that *same* URL object — so the gate and the dispatch
+  cannot diverge for any encoding. An absolute-URL, protocol-relative
+  (`//host`), backslash, `%2f`-encoded authority, interior percent-encoding
+  (`/api/sync/tri%67ger`), or dot-segment traversal (`/api/foo/../…`) can no
+  longer read as non-admin to the gate while still reaching an admin handler.
+  Broker tickets are stored as a sha256 digest, not the raw bearer value — a
+  read of system state yields no usable ticket (RBAC review on #849).
+- Broker admin gate is fail-closed over *all* routes matching the method+path
+  (not just the first), so route-registration order can't let a non-admin
+  catch-all shadow a real admin route.
+- Anthropic broker proxy now serves sub-paths (`/api/broker/anthropic/{path}`),
+  so the SDK's `/v1/messages` calls reach it instead of 404ing; the loopback
+  relay forwards the caller's request headers (`Content-Type`,
+  `anthropic-version`, …) upstream — dropping hop-by-hop framing and swapping
+  the dummy credential for the ticket — and forwards the response
+  `Content-Type` back, so the in-sandbox SDK/CLI and the Anthropic API both
+  see well-formed requests/responses; and `kill()` revokes a session's broker
+  tickets at teardown so rows don't linger until TTL (Devin review on #849).
+
+---
+
 ## [0.74.73] - 2026-07-15
 
 ### Added
