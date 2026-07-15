@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.94] - 2026-07-15
+
 ### Fixed
 
 - RBAC N+1 in catalog (`/api/v2/catalog`, `/api/catalog`), sync manifest
