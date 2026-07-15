@@ -117,6 +117,48 @@ def can_access_table(
             conn.close()
 
 
+def get_accessible_ids(
+    user,  # dict | SessionPrincipal
+    resource_type: str,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
+) -> Optional[frozenset]:
+    """Grant-based accessible id set for ``resource_type``. ``None`` means
+    "all" (admin).
+
+    Symmetric to :func:`get_accessible_tables` but generic over any
+    ``resource_grants`` resource_type (RECIPE, COLLECTION, DATA_PACKAGE, …)
+    and grant-model only — this is NOT the stack-gated table model, so it
+    must not be used for ``table`` access (see :func:`can_access_table` /
+    :func:`get_accessible_tables` for that).
+
+    For a ``SessionPrincipal``, returns the intersection id-set for
+    ``resource_type`` (never ``None`` — no admin god-mode for a co-session).
+    """
+    from app.auth.session_principal import SessionPrincipal
+
+    if isinstance(user, SessionPrincipal):
+        return frozenset(user.intersection.get(resource_type, frozenset()))
+
+    user_id = user.get("id")
+    if not user_id:
+        return frozenset()
+
+    should_close = False
+    if conn is None:
+        conn = get_system_db()
+        should_close = True
+    try:
+        from app.auth.access import is_user_admin, _allowed_ids_for_user
+
+        if is_user_admin(user_id, conn):
+            return None  # admin sees everything
+
+        return _allowed_ids_for_user(user_id, resource_type, conn)
+    finally:
+        if should_close:
+            conn.close()
+
+
 def get_accessible_tables(
     user,  # dict | SessionPrincipal
     conn: Optional[duckdb.DuckDBPyConnection] = None,
