@@ -650,14 +650,15 @@ Expected: FAIL — `ImportError: cannot import name 'references_foreign_alias'`
 Append to `connectors/keboola/semantic_layer.py`:
 
 ```python
-# Matches `<alias>."column"` — the only qualified-column shape observed in
-# live Keboola semantic-metric.sql fragments. Verified live (2026-07-15):
-# single-dataset expressions are always bare column references
-# (`SUM("amount")`); an alias-qualified reference only appears when the
-# expression crosses into a JOINed dataset via semantic-relationship data
-# this importer does not have (relationship support is out of scope for
-# v1) — so any match here means "skip, cannot safely compose."
-_ALIAS_QUALIFIER_RE = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*"')
+# Matches `<alias>.` followed by a quoted or unquoted column reference
+# (`o."amount"` or `um.metric_id`) — both shapes appear in live multi-dataset
+# expressions. Verified live (2026-07-15): single-dataset expressions are
+# always bare column references (`SUM("amount")`); an alias-qualified
+# reference only appears when the expression crosses into a JOINed dataset
+# via semantic-relationship data this importer does not have (relationship
+# support is out of scope for v1) — so any match here means "skip, cannot
+# safely compose."
+_ALIAS_QUALIFIER_RE = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_"])')
 
 
 def references_foreign_alias(expression: str) -> bool:
