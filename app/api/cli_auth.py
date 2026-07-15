@@ -56,8 +56,9 @@ def _cli_auth_repo(conn) -> CliAuthCodeRepository:
     exchange codes, ~2-min TTL) with no Postgres mirror. On Postgres the request
     ``conn`` (from ``_get_db``) is None — the system DuckDB must never be opened
     there — so fall back to the dedicated ``operational.duckdb`` file, which the
-    same in-process ``/cli-auth/confirm`` and ``/cli-auth/exchange`` handlers
-    share. On DuckDB the caller's system-DB conn is used as-is.
+    same in-process ``confirm()`` (``POST /cli/auth/start``) and ``exchange()``
+    (``POST /cli/auth/exchange``) handlers share. On DuckDB the caller's
+    system-DB conn is used as-is.
     """
     if conn is None:
         from src.db import get_operational_db
