@@ -21,6 +21,7 @@ SR-12 hardening:
 from __future__ import annotations
 
 import secrets
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -60,8 +61,9 @@ def bind_prompt(public_url: str, code: str) -> str:
     )
 
 
+@contextmanager
 def _binding_conn(conn):
-    """Resolve the DuckDB handle for the ephemeral verification-code tables.
+    """Yield the DuckDB handle for the ephemeral verification-code tables.
 
     The verification-code tables are DuckDB-only operational state with no
     Postgres mirror. On a Postgres instance the caller passes ``conn=None``
@@ -69,12 +71,21 @@ def _binding_conn(conn):
     the system DuckDB must never be opened) — fall back to the dedicated
     ``operational.duckdb`` file. On DuckDB the caller's system-DB connection is
     used as-is, so codes stay where they always were.
+
+    The operational cursor opened on the Postgres path is CLOSED on exit (it has
+    no ``_get_db`` generator ``finally`` to release it); a caller-supplied conn
+    is left untouched for its owner to close.
     """
     if conn is not None:
-        return conn
+        yield conn
+        return
     from src.db import get_operational_db
 
-    return get_operational_db()
+    owned = get_operational_db()
+    try:
+        yield owned
+    finally:
+        owned.close()
 
 
 def _ensure_table(conn: duckdb.DuckDBPyConnection) -> None:
@@ -118,34 +129,34 @@ def issue_verification_code(conn: duckdb.DuckDBPyConnection, *, slack_user_id: s
     - Throttles to _MAX_ISSUE_PER_WINDOW issues per 10-minute window.
     - Logs each issuance for throttle accounting.
     """
-    conn = _binding_conn(conn)
-    _ensure_table(conn)
-    # Throttle check: count recent issuances in the last 10 minutes.
-    recent = conn.execute(
-        "SELECT count(*) FROM slack_binding_issue_log WHERE slack_user_id=? "
-        "AND issued_at > current_timestamp - INTERVAL '10 minutes'",
-        [slack_user_id],
-    ).fetchone()[0]
-    if recent >= _MAX_ISSUE_PER_WINDOW:
-        raise BindingThrottled(slack_user_id)
-    # One active code per user — delete any prior outstanding code.
-    conn.execute("DELETE FROM slack_binding_codes WHERE slack_user_id = ?", [slack_user_id])
-    code = f"{secrets.randbelow(1_000_000):06d}"
-    # Store issued_at as naive UTC from Python (not SQL current_timestamp): the
-    # redeem TTL check compares it against datetime.now(UTC), and DuckDB's
-    # current_timestamp timezone basis is not guaranteed to match Python's, so
-    # mixing the two skewed the TTL by the host's UTC offset. Python-UTC on both
-    # sides keeps the expiry correct on any host.
-    issued_at = datetime.now(timezone.utc).replace(tzinfo=None)
-    conn.execute(
-        "INSERT INTO slack_binding_codes(code, slack_user_id, issued_at, attempts) VALUES (?, ?, ?, 0)",
-        [code, slack_user_id, issued_at],
-    )
-    conn.execute(
-        "INSERT INTO slack_binding_issue_log(slack_user_id, issued_at) VALUES (?, current_timestamp)",
-        [slack_user_id],
-    )
-    return code
+    with _binding_conn(conn) as conn:
+        _ensure_table(conn)
+        # Throttle check: count recent issuances in the last 10 minutes.
+        recent = conn.execute(
+            "SELECT count(*) FROM slack_binding_issue_log WHERE slack_user_id=? "
+            "AND issued_at > current_timestamp - INTERVAL '10 minutes'",
+            [slack_user_id],
+        ).fetchone()[0]
+        if recent >= _MAX_ISSUE_PER_WINDOW:
+            raise BindingThrottled(slack_user_id)
+        # One active code per user — delete any prior outstanding code.
+        conn.execute("DELETE FROM slack_binding_codes WHERE slack_user_id = ?", [slack_user_id])
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        # Store issued_at as naive UTC from Python (not SQL current_timestamp): the
+        # redeem TTL check compares it against datetime.now(UTC), and DuckDB's
+        # current_timestamp timezone basis is not guaranteed to match Python's, so
+        # mixing the two skewed the TTL by the host's UTC offset. Python-UTC on both
+        # sides keeps the expiry correct on any host.
+        issued_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        conn.execute(
+            "INSERT INTO slack_binding_codes(code, slack_user_id, issued_at, attempts) VALUES (?, ?, ?, 0)",
+            [code, slack_user_id, issued_at],
+        )
+        conn.execute(
+            "INSERT INTO slack_binding_issue_log(slack_user_id, issued_at) VALUES (?, current_timestamp)",
+            [slack_user_id],
+        )
+        return code
 
 
 def redeem_verification_code(
@@ -176,69 +187,69 @@ def redeem_verification_code(
     Audit: every successful bind writes to audit_log (best-effort; failure
     is swallowed so a missing audit table never blocks the bind).
     """
-    conn = _binding_conn(conn)
-    _ensure_table(conn)
+    with _binding_conn(conn) as conn:
+        _ensure_table(conn)
 
-    # Per-caller redeem throttle — count FAILED attempts in the sliding window.
-    recent_failures = conn.execute(
-        "SELECT count(*) FROM slack_binding_redeem_log WHERE user_email = ? "
-        "AND attempted_at > current_timestamp - INTERVAL '10 minutes'",
-        [user_email],
-    ).fetchone()[0]
-    if recent_failures >= _MAX_REDEEM_ATTEMPTS:
-        # Locked out — do NOT inspect the code (no probing of code existence).
-        raise BindingThrottled(user_email)
-
-    def _record_failure() -> None:
-        conn.execute(
-            "INSERT INTO slack_binding_redeem_log(user_email, attempted_at) VALUES (?, current_timestamp)",
+        # Per-caller redeem throttle — count FAILED attempts in the sliding window.
+        recent_failures = conn.execute(
+            "SELECT count(*) FROM slack_binding_redeem_log WHERE user_email = ? "
+            "AND attempted_at > current_timestamp - INTERVAL '10 minutes'",
             [user_email],
-        )
+        ).fetchone()[0]
+        if recent_failures >= _MAX_REDEEM_ATTEMPTS:
+            # Locked out — do NOT inspect the code (no probing of code existence).
+            raise BindingThrottled(user_email)
 
-    row = conn.execute(
-        "SELECT slack_user_id, issued_at FROM slack_binding_codes WHERE code = ?",
-        [code],
-    ).fetchone()
-    if not row:
-        # Wrong code — record a failed attempt against this caller's window.
-        _record_failure()
-        return False
-    slack_user_id, issued_at = row
-    # ``issued_at`` was written with SQL ``current_timestamp``, which is naive
-    # UTC. Compare against naive UTC — ``datetime.now()`` is local time, so on a
-    # host whose timezone is not UTC the TTL was skewed by the UTC offset
-    # (codes expired early on UTC+ hosts, never on UTC- hosts).
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    if (now - issued_at).total_seconds() > _CODE_TTL_SECONDS:
+        def _record_failure() -> None:
+            conn.execute(
+                "INSERT INTO slack_binding_redeem_log(user_email, attempted_at) VALUES (?, current_timestamp)",
+                [user_email],
+            )
+
+        row = conn.execute(
+            "SELECT slack_user_id, issued_at FROM slack_binding_codes WHERE code = ?",
+            [code],
+        ).fetchone()
+        if not row:
+            # Wrong code — record a failed attempt against this caller's window.
+            _record_failure()
+            return False
+        slack_user_id, issued_at = row
+        # ``issued_at`` was written with SQL ``current_timestamp``, which is naive
+        # UTC. Compare against naive UTC — ``datetime.now()`` is local time, so on a
+        # host whose timezone is not UTC the TTL was skewed by the UTC offset
+        # (codes expired early on UTC+ hosts, never on UTC- hosts).
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        if (now - issued_at).total_seconds() > _CODE_TTL_SECONDS:
+            conn.execute("DELETE FROM slack_binding_codes WHERE code = ?", [code])
+            _record_failure()
+            return False
+        # Bind: write slack_user_id to the user row through the factory so the
+        # binding lands in the active state backend (Postgres or DuckDB) — a raw
+        # UPDATE on the DuckDB connection never reached the PG-resident users table.
+        from src.repositories import users_repo
+
+        _u = users_repo().get_by_email(user_email)
+        if _u:
+            users_repo().update(id=_u["id"], slack_user_id=slack_user_id)
         conn.execute("DELETE FROM slack_binding_codes WHERE code = ?", [code])
-        _record_failure()
-        return False
-    # Bind: write slack_user_id to the user row through the factory so the
-    # binding lands in the active state backend (Postgres or DuckDB) — a raw
-    # UPDATE on the DuckDB connection never reached the PG-resident users table.
-    from src.repositories import users_repo
+        # Success — clear this caller's failed-attempt history so a future
+        # legitimate re-bind isn't penalised by earlier typos.
+        conn.execute("DELETE FROM slack_binding_redeem_log WHERE user_email = ?", [user_email])
+        # Audit (best-effort — missing audit_log table or factory not initialised
+        # must never block the bind itself). audit_repo() serializes params safely,
+        # so a Slack user id containing JSON metacharacters cannot inject keys.
+        try:
+            from src.repositories import audit_repo
 
-    _u = users_repo().get_by_email(user_email)
-    if _u:
-        users_repo().update(id=_u["id"], slack_user_id=slack_user_id)
-    conn.execute("DELETE FROM slack_binding_codes WHERE code = ?", [code])
-    # Success — clear this caller's failed-attempt history so a future
-    # legitimate re-bind isn't penalised by earlier typos.
-    conn.execute("DELETE FROM slack_binding_redeem_log WHERE user_email = ?", [user_email])
-    # Audit (best-effort — missing audit_log table or factory not initialised
-    # must never block the bind itself). audit_repo() serializes params safely,
-    # so a Slack user id containing JSON metacharacters cannot inject keys.
-    try:
-        from src.repositories import audit_repo
-
-        audit_repo().log(
-            user_id=user_email,
-            action="slack.bind",
-            params={"slack_user_id": slack_user_id, "email": user_email},
-        )
-    except Exception:
-        pass
-    return True
+            audit_repo().log(
+                user_id=user_email,
+                action="slack.bind",
+                params={"slack_user_id": slack_user_id, "email": user_email},
+            )
+        except Exception:
+            pass
+        return True
 
 
 def is_channel_allowlisted(conn: duckdb.DuckDBPyConnection, channel_id: str) -> bool:

@@ -48,6 +48,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   singleton, so its exclusive file lock is not held across the spawn.
 - Startup bootstrap-warning no longer leaks a DuckDB cursor if the user-list
   read raises: the connection close moved into a `try/finally`.
+- CLI-login (`/cli/auth/{start,exchange}`) and Slack identity-binding requests
+  no longer leave the `operational.duckdb` cursor unclosed on a Postgres
+  instance. The `operational.duckdb` fallback in `_cli_auth_repo` /
+  `_binding_conn` is now a context manager that closes the cursor it opens on
+  exit (the request-scoped DuckDB conn is still closed by `_get_db`).
 
 ---
 
