@@ -10,7 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
----
+### Security
+
+- `/api/query` and `/api/v2/scan` (`from_query`) now deny non-admin references
+  to the internal extract-catalog base tables `_meta`, `_remote_attach`, and
+  `_remote_links`. Each source's `extract.duckdb` is ATTACHed as a catalog, so
+  a non-admin could reach those base tables via a catalog-qualified path
+  (`<ungranted_source>.main."_remote_attach"`) — they aren't VIEWs, so they
+  slipped past the master-view-name denylist — leaking cross-source schemas,
+  row counts, and (for remote sources) the upstream URL and `token_env`
+  variable name. These tables are orchestrator-internal and never part of an
+  analyst's query surface. Found by the post-INC-01572 audit (M1). NOTE: the
+  broader cross-source catalog-qualified *row* access (name-collision case) is
+  tracked for a follow-up query-authorization allowlist redesign — this change
+  closes the sensitive metadata/credential-name leak.
 
 ## [0.74.78] - 2026-07-15
 
