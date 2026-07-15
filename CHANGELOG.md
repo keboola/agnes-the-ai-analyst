@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.77] - 2026-07-15
+
 ### Security
 
 ## [0.74.76] - 2026-07-15
