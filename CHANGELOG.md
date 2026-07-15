@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.96] - 2026-07-15
+
 ### Fixed
 
 - Intermittent **"system unavailable"** (503) responses under load. The
