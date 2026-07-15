@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -137,3 +138,64 @@ def merge_constraints(metric_name: str, constraints: list[dict]) -> dict | None:
             for c in matching
         ]
     }
+
+
+def build_metric_row(
+    metric_item: dict,
+    table_lookup: dict[tuple[str, str], str],
+    dataset_lookup: dict[str, dict],
+    constraints: list[dict],
+    model_uuid: str,
+) -> tuple[Optional[dict], Optional[str]]:
+    """Map one semantic-metric item to a metric_definitions row dict.
+
+    Returns (row, None) on success, or (None, skip_reason) where
+    skip_reason is "unresolved_table" (the metric's dataset isn't
+    registered in Agnes's table_registry) or "foreign_alias_reference"
+    (the expression needs a JOIN this importer can't safely compose — see
+    references_foreign_alias).
+    """
+    attrs = metric_item.get("attributes") or {}
+    name = attrs.get("name")
+    expression = attrs.get("sql") or ""
+    dataset_table_id = attrs.get("dataset") or ""
+
+    if references_foreign_alias(expression):
+        return None, "foreign_alias_reference"
+
+    table_name = resolve_table_name(dataset_table_id, table_lookup)
+    if table_name is None:
+        return None, "unresolved_table"
+
+    row: dict[str, Any] = {
+        "id": f"keboola/{model_uuid}/{name}",
+        "name": name,
+        "display_name": name,
+        "category": "keboola",
+        "description": attrs.get("description") or "",
+        "expression": expression,
+        "table_name": table_name,
+        "sql": compose_sql(expression, table_name),
+        "source": "keboola_semantic_layer",
+    }
+
+    dataset_attrs = dataset_lookup.get(dataset_table_id) or {}
+    grain = dataset_attrs.get("grain")
+    if grain:
+        row["grain"] = grain
+    primary_key = dataset_attrs.get("primaryKey") or []
+    if primary_key:
+        row["dimensions"] = list(primary_key)
+    ai_block = dataset_attrs.get("ai") or {}
+    synonyms = ai_block.get("synonyms") or []
+    if synonyms:
+        row["synonyms"] = list(synonyms)
+    notes = list(ai_block.get("hints") or []) + list(ai_block.get("warnings") or [])
+    if notes:
+        row["notes"] = notes
+
+    validation = merge_constraints(name, constraints)
+    if validation is not None:
+        row["validation"] = validation
+
+    return row, None
