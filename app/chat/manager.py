@@ -513,6 +513,22 @@ class ChatManager:
         ``ticket_push`` stdin frame — so we force a fresh spawn instead.
         """
         if live.chat_id not in self._known_protocol_sessions:
+            # Destroy the old (paused, billable) sandbox BEFORE respawning —
+            # _respawn_fresh overwrites sandbox_id via set_sandbox_ref, so
+            # without this the paused microVM is orphaned and leaks until its
+            # absolute TTL (mirror of the _resume_from_row legacy path; Devin
+            # review on #849).
+            session = self._repo.get_session(live.chat_id)
+            if session is not None:
+                await self._destroy_old_sandbox(session)
+                self._repo.clear_sandbox_ref(live.chat_id)
+            # Revoke the paused session's old broker tickets BEFORE _respawn_fresh
+            # mints+pushes new ones — same as the non-legacy resume path below.
+            # revoke_session deletes by session_id, so revoking after the fresh
+            # mint would delete the ticket _respawn_fresh just pushed. Without
+            # this, the old tickets linger (redeemable) until their TTL even
+            # though the old sandbox is gone. (Devin review on #851)
+            ticket_repo().revoke_session(live.chat_id)
             await self._respawn_fresh(live)
             return
         session = self._repo.get_session(live.chat_id)
