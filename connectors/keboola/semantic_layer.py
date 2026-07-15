@@ -41,3 +41,42 @@ def require_master_token(storage_client) -> None:
             "'Failed to create project scope' error regardless of bucket "
             "permissions — use the project's owner token instead."
         )
+
+
+def table_lookup_from_registry(rows: list[dict]) -> dict[tuple[str, str], str]:
+    """Build {(bucket, source_table): agnes_view_name} from table_registry
+    rows (from `table_registry_repo().list_by_source("keboola")`)."""
+    lookup: dict[tuple[str, str], str] = {}
+    for row in rows:
+        bucket = row.get("bucket")
+        source_table = row.get("source_table")
+        name = row.get("name")
+        if bucket and source_table and name:
+            lookup[(bucket, source_table)] = name
+    return lookup
+
+
+def resolve_table_name(table_id: str, lookup: dict[tuple[str, str], str]) -> str | None:
+    """Resolve a Keboola tableId ('bucket.table') to its Agnes
+    table_registry view name, or None if that table isn't registered.
+
+    Bucket ids themselves contain dots (e.g. `in.c-example_source`), so the
+    tableId must be split on the LAST dot to isolate the table name —
+    splitting on the first dot would misparse the bucket.
+    """
+    if "." not in table_id:
+        return None
+    bucket, _, source_table = table_id.rpartition(".")
+    return lookup.get((bucket, source_table))
+
+
+def dataset_lookup_by_table_id(dataset_items: list[dict]) -> dict[str, dict]:
+    """Build {tableId: attributes} from semantic-dataset items, for
+    enriching a metric row with grain/dimensions/synonyms/notes."""
+    result: dict[str, dict] = {}
+    for d in dataset_items:
+        attrs = d.get("attributes") or {}
+        table_id = attrs.get("tableId")
+        if table_id:
+            result[table_id] = attrs
+    return result
