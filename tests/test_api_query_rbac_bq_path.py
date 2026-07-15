@@ -139,3 +139,29 @@ def test_string_literal_matching_bq_path_rejected_403(seeded_app):
     detail = r.json().get("detail", {})
     if isinstance(detail, dict):
         assert detail.get("reason") == "bq_path_not_registered", detail
+
+
+def test_internal_extract_metadata_tables_rejected_for_non_admin(seeded_app):
+    """Audit M1: a non-admin reaching an extract catalog's INTERNAL base
+    tables (_meta / _remote_attach / _remote_links) via a catalog-qualified
+    path bypasses the view-name denylist (base tables aren't VIEWs), leaking
+    cross-source schemas + remote-source URLs / token_env names. Must 403."""
+    from app.auth.jwt import create_access_token
+    from src.db import get_system_db
+    from src.repositories.users import UserRepository
+
+    conn = get_system_db()
+    UserRepository(conn).create(id="m1_user", email="m1@test.com", name="M1")
+    conn.close()
+    tok = create_access_token(user_id="m1_user", email="m1@test.com")  # non-admin → RBAC applies
+
+    client = seeded_app["client"]
+    for sql in (
+        'SELECT * FROM somesrc.main."_remote_attach"',
+        "SELECT url, token_env FROM x.main._remote_attach",
+        'SELECT * FROM y.main."_meta"',
+        'SELECT * FROM z.main."_remote_links"',
+    ):
+        r = client.post("/api/query", headers=_auth(tok), json={"sql": sql})
+        assert r.status_code == 403, f"{sql} -> {r.status_code}: {r.text}"
+        assert "internal extract metadata table" in r.text, r.text
