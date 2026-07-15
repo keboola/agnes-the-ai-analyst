@@ -12,6 +12,7 @@ concerns of its own.
 from __future__ import annotations
 
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -80,3 +81,35 @@ def dataset_lookup_by_table_id(dataset_items: list[dict]) -> dict[str, dict]:
         if table_id:
             result[table_id] = attrs
     return result
+
+
+# Matches `<alias>."column"` or `<alias>.column` — qualified-column shapes
+# observed in live Keboola semantic-metric.sql fragments. Verified live
+# (2026-07-15): single-dataset expressions are always bare column references
+# (`SUM("amount")`); an alias-qualified reference only appears when the
+# expression crosses into a JOINed dataset via semantic-relationship data
+# this importer does not have (relationship support is out of scope for
+# v1) — so any match here means "skip, cannot safely compose."
+_ALIAS_QUALIFIER_RE = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_"])')
+
+
+def references_foreign_alias(expression: str) -> bool:
+    """True if `expression` qualifies any column with an `<alias>.` prefix.
+
+    See _ALIAS_QUALIFIER_RE docstring for why this indicates a multi-dataset
+    JOIN this importer cannot safely compose in v1.
+    """
+    return bool(_ALIAS_QUALIFIER_RE.search(expression))
+
+
+def compose_sql(expression: str, table_name: str) -> str:
+    """Compose a full, runnable metric_definitions.sql from a Keboola
+    semantic-metric.sql fragment (a bare aggregation expression, verified
+    live to never be a full query) and the resolved Agnes table_registry
+    view name.
+
+    Callers MUST check `references_foreign_alias(expression)` first and
+    skip the metric if True — this function does not itself guard against
+    that case.
+    """
+    return f'SELECT {expression} FROM "{table_name}" AS t'
