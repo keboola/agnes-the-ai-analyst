@@ -1353,7 +1353,18 @@ def create_app() -> FastAPI:
         for line in _overlay.read_text().splitlines():
             if "=" in line and not line.startswith("#"):
                 k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
+                # Override, NOT setdefault: the overlay is the admin's
+                # persisted runtime configuration (secrets set via
+                # /api/admin/configure and the chat "configure secrets" UI,
+                # e.g. ANTHROPIC_API_KEY / E2B_API_KEY, marketplace PATs). It
+                # MUST win over an image-baked default of the same name.
+                # With setdefault, a stale baked key already occupying
+                # os.environ shadowed the overlay, so rotating a key via the
+                # UI was silently discarded on the next restart and chat broke
+                # with a 401. This matches persist_overlay_token's own
+                # ``os.environ[k] = v`` write semantics — set once at the UI,
+                # win consistently across restarts.
+                os.environ[k.strip()] = v.strip()
 
     # Load instance config on startup
     try:
