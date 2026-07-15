@@ -14,19 +14,22 @@ BOTH backends.
 
 Discriminator (pre-fix): duck PASS + pg FAIL => the backend-split bug.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
 
 def test_email_verify_consumes_token_on_both_backends(seeded_app_both):
+    from app.auth.token_hash import hash_token
     from src.repositories import users_repo
 
     # Seed a fresh, unexpired magic-link token on the active backend, exactly
-    # as send_magic_link would (reset_token + reset_token_created).
+    # as send_magic_link would (reset_token + reset_token_created) — the token
+    # is hashed at rest (audit M3), so seed the digest of the raw we submit.
     users_repo().update(
         id="admin1",
-        reset_token="magic-tok",
+        reset_token=hash_token("magic-tok"),
         reset_token_created=datetime.now(timezone.utc),
     )
 
@@ -48,6 +51,4 @@ def test_email_verify_consumes_token_on_both_backends(seeded_app_both):
         "/auth/email/verify",
         json={"email": "admin@test.com", "token": "magic-tok"},
     )
-    assert r2.status_code == 401, (
-        f"[{backend}] consumed token verified twice: {r2.text}"
-    )
+    assert r2.status_code == 401, f"[{backend}] consumed token verified twice: {r2.text}"

@@ -13,6 +13,7 @@ from argon2 import PasswordHasher
 
 from app.auth.access import is_user_admin, require_admin
 from app.auth.dependencies import _get_db
+from app.auth.token_hash import hash_token
 from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
 
 from src.repositories import (
@@ -305,7 +306,7 @@ async def create_user(
         token = secrets.token_urlsafe(32)
         repo.update(
             id=user_id,
-            setup_token=token,
+            setup_token=hash_token(token),
             setup_token_created=datetime.now(timezone.utc),
         )
         from app.auth.providers.password import build_setup_url, send_setup_email
@@ -490,7 +491,7 @@ async def reset_password(
     token = secrets.token_urlsafe(32)
     repo.update(
         id=user_id,
-        reset_token=token,
+        reset_token=hash_token(token),
         reset_token_created=datetime.now(timezone.utc),
     )
     _audit(conn, user["id"], "user.reset_password", user_id, {"email": target["email"]})

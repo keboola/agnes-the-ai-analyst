@@ -12,6 +12,7 @@ from pydantic import BaseModel
 import duckdb
 
 from app.auth.jwt import create_access_token, SESSION_COOKIE_MAX_AGE_SECONDS
+from app.auth.token_hash import hash_token
 from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, is_local_dev_mode
 from app.auth.rate_limit import limiter as _rate_limiter
@@ -20,11 +21,14 @@ from app.auth.rate_limit import limiter as _rate_limiter
 from src.repositories import (
     users_repo,
 )
+
+
 def _role_label(user: dict, conn: duckdb.DuckDBPyConnection) -> str:
     """Display label for the response payload only — `admin` if the user is
     in the Admin system group, otherwise `user`. Authorization at runtime
     checks `is_user_admin` directly; this label is purely cosmetic."""
     return "admin" if is_user_admin(user["id"], conn) else "user"
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth/email", tags=["auth"])
@@ -85,7 +89,7 @@ async def send_magic_link(
     token = secrets.token_urlsafe(32)
     repo.update(
         id=user["id"],
-        reset_token=token,
+        reset_token=hash_token(token),
         reset_token_created=datetime.now(timezone.utc),
     )
 
@@ -140,9 +144,7 @@ def _consume_token(email: str, token: str) -> dict:
     consume_id = f"CONSUMED:{secrets.token_hex(16)}"
 
     repo = users_repo()
-    if not repo.consume_reset_token(
-        email=email, token=token, cutoff=cutoff, consume_id=consume_id
-    ):
+    if not repo.consume_reset_token(email=email, token=hash_token(token), cutoff=cutoff, consume_id=consume_id):
         raise HTTPException(status_code=401, detail="Invalid or expired link")
 
     user = repo.get_by_email(email)
@@ -190,10 +192,14 @@ async def verify_magic_link_get(
     # secure=False when DOMAIN is unset so the cookie is actually sent on plain HTTP (dev).
     use_secure = os.environ.get("DOMAIN", "") != ""
     from app.instance_config import get_home_route
+
     response = RedirectResponse(url=get_home_route(), status_code=302)
     response.set_cookie(
-        key="access_token", value=jwt_token,
-        httponly=True, max_age=SESSION_COOKIE_MAX_AGE_SECONDS, samesite="lax",
+        key="access_token",
+        value=jwt_token,
+        httponly=True,
+        max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
+        samesite="lax",
         secure=use_secure,
     )
     return response
@@ -206,6 +212,7 @@ def _send_email(email: str, token: str):
     if sendgrid_key:
         import sendgrid
         from sendgrid.helpers.mail import Mail
+
         sg = sendgrid.SendGridAPIClient(api_key=sendgrid_key)
         message = Mail(
             from_email=os.environ.get("EMAIL_FROM_ADDRESS", "noreply@example.com"),
@@ -220,6 +227,7 @@ def _send_email(email: str, token: str):
     if smtp_host:
         import smtplib
         from email.mime.text import MIMEText
+
         msg = MIMEText(f"Login link: {link}")
         msg["Subject"] = "Login Link"
         msg["From"] = os.environ.get("SMTP_FROM", "noreply@example.com")

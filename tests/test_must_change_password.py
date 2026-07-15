@@ -89,13 +89,17 @@ def _seed_user(
         password_hash=password_hash,
         must_change_password=must_change_password,
     )
+    from app.auth.token_hash import hash_token
+
     updates: dict = {}
+    # Tokens are hashed at rest (audit M3): seed the digest of the raw value
+    # the test will submit.
     if reset_token is not None:
-        updates["reset_token"] = reset_token
+        updates["reset_token"] = hash_token(reset_token)
     if reset_token_created is not None:
         updates["reset_token_created"] = reset_token_created
     if setup_token is not None:
-        updates["setup_token"] = setup_token
+        updates["setup_token"] = hash_token(setup_token)
     if setup_token_created is not None:
         updates["setup_token_created"] = setup_token_created
     if updates:
