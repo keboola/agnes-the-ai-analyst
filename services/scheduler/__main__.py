@@ -97,6 +97,13 @@ _DEFAULTS = {
     # registry, short enough that operator-edited tables show real numbers
     # within an analyst's working day.
     "SCHEDULER_BQ_METADATA_REFRESH_INTERVAL": 4 * 60 * 60,
+    # Keboola semantic layer (Metastore) refresh: walks a Keboola project's
+    # datasets/metrics/constraints and upserts+prunes metric_definitions
+    # rows tagged source='keboola_semantic_layer'. Default 6 h — metrics
+    # change less often than BQ metadata cache entries (4 h default), and
+    # each run does far fewer HTTP calls (a handful of Metastore list
+    # requests vs one BQ metadata fetch per registered table).
+    "SCHEDULER_KEBOOLA_SEMANTIC_LAYER_REFRESH_INTERVAL": 6 * 60 * 60,
     # Pause between scheduler startup and the first tick. Keeps the
     # scheduler from synchronising its "Table never synced, marking as
     # due" burst with the app's own startup cache_warmup. Set to 0 to
@@ -313,6 +320,7 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
     usage = _read_positive_int("SCHEDULER_USAGE_PROCESSOR_INTERVAL")
     corpmem = _read_positive_int("SCHEDULER_CORPORATE_MEMORY_INTERVAL")
     bqmeta = _read_positive_int("SCHEDULER_BQ_METADATA_REFRESH_INTERVAL")
+    kbsl = _read_positive_int("SCHEDULER_KEBOOLA_SEMANTIC_LAYER_REFRESH_INTERVAL")
     usageprune = _read_positive_int("SCHEDULER_USAGE_PRUNE_INTERVAL")
     jirasla = _read_positive_int("SCHEDULER_JIRA_SLA_POLL_INTERVAL")
     jiraconsis = _read_positive_int("SCHEDULER_JIRA_CONSISTENCY_INTERVAL")
@@ -328,6 +336,7 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         usage,
         corpmem,
         bqmeta,
+        kbsl,
         usageprune,
         jirasla,
         jiraconsis,
@@ -389,6 +398,18 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # BigQuery metadata refresh — keeps ``bq_metadata_cache`` warm so
         # ``GET /api/v2/catalog`` never has to call BQ at request time.
         ("bq-metadata-refresh", _seconds_to_schedule(bqmeta), "/api/admin/run-bq-metadata-refresh", "POST", 1800),
+        # Keboola semantic layer refresh — keeps metric_definitions rows
+        # tagged source='keboola_semantic_layer' in sync with the project's
+        # Metastore. Short-circuits (returns an error result, doesn't crash)
+        # when Keboola credentials aren't configured or the token isn't a
+        # master token — see connectors/keboola/semantic_layer.py.
+        (
+            "keboola-semantic-layer-refresh",
+            _seconds_to_schedule(kbsl),
+            "/api/admin/run-keboola-semantic-layer-refresh",
+            "POST",
+            900,
+        ),
         # Usage event retention pruning. Reads USAGE_EVENTS_RETENTION_DAYS
         # on the server side; short-circuits when unset or 0. Runs daily
         # (default 86400s). Rollup tables untouched.
