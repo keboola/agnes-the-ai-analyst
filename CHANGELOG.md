@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- The guided web tour now includes the global header search box ("Search everything") — one step between Memory and the admin menu, explaining the cross-source search (tables + knowledge + documents) and its origin-labeled results.
+
 ---
 
 ## [0.74.79] - 2026-07-15
