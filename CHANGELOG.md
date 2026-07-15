@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- RBAC N+1 in catalog (`/api/v2/catalog`, `/api/catalog`), sync manifest
+  build, knowledge search, web router (chat snapshot, library, table detail),
+  recipes, and collections endpoints — each resolved the caller's accessible
+  set once per request instead of calling `can_access_table`/`can_access` per
+  row (600+ Postgres round-trips collapsed to ~6; 30-40s down to <1s under
+  concurrency, removing a 503-under-load trigger).
+
+### Internal
+
+- Added `src.rbac.get_accessible_ids`, a grant-set helper (DuckDB↔PG parity)
+  used by the RBAC N+1 fixes above.
+
 ---
 
 ## [0.74.90] - 2026-07-15
