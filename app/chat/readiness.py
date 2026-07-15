@@ -42,12 +42,16 @@ def secret_status(chat_config: Any) -> dict:
     enabled = bool(getattr(chat_config, "enabled", False))
     provider = getattr(chat_config, "provider", "e2b") or "e2b"
     e2b_needed = enabled and provider == "e2b"
+    # In workload_identity mode there is intentionally NO static ANTHROPIC_API_KEY
+    # — don't flag it as a missing secret in the admin UI.
+    llm_auth = getattr(chat_config, "llm_auth", "api_key")
+    anthropic_key_needed = enabled and llm_auth != "workload_identity"
 
     jwt_val = os.environ.get(ENV_JWT, "")
     jwt_ok = len(jwt_val.encode()) >= _JWT_MIN_BYTES
 
     secrets = {
-        "anthropic_api_key": {"set": _is_set(ENV_ANTHROPIC), "required": enabled},
+        "anthropic_api_key": {"set": _is_set(ENV_ANTHROPIC), "required": anthropic_key_needed},
         "e2b_api_key": {"set": _is_set(ENV_E2B), "required": e2b_needed},
         "jwt_secret_key": {"set": jwt_ok, "required": enabled},
         "e2b_template_id": {
