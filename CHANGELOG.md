@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.74] - 2026-07-15
+
 ### Added
 
 - **Chat sandbox secret broker.** The real Anthropic key and Agnes token are
