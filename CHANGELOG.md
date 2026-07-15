@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.83] - 2026-07-15
+
 ### Security
 
 - `/api/query` and `/api/v2/scan` (`from_query`) now deny non-admin references
