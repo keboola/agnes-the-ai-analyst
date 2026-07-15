@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.78] - 2026-07-15
+
 ### Fixed
 
 - **Chat sandbox spawn was hard-down** on `e2b>=2.32.0`: the VM egress config
