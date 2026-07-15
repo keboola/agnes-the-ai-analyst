@@ -257,6 +257,42 @@ class TestSyncSemanticLayer:
         assert result["skipped_unresolved_table"] == 1
         assert metric_repo().get("keboola/model-1/orphan") is None
 
+    def test_skips_metric_with_embedded_sql_comment(self, e2e_env):
+        # Regression test for a bug found via live E2E verification
+        # (2026-07-15): a real Keboola metric expression carried a trailing
+        # `--` comment; naively composing `SELECT {expr} FROM ... AS t`
+        # swallowed the FROM clause into the comment and broke the query.
+        from connectors.keboola.semantic_layer import sync_semantic_layer
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+
+        fake_storage = MagicMock()
+        fake_storage.verify_token.return_value = {"isMasterToken": True}
+        fake_metastore = MagicMock()
+        fake_metastore.list_items.side_effect = lambda item_type, model_uuid=None: {
+            "semantic-model": [_model_item()],
+            "semantic-dataset": [],
+            "semantic-metric": [
+                _metric_item(
+                    "commented",
+                    'ROUND("value" * 100, 2) -- FROM other_table (table not in this project)',
+                    "in.c-example_source.orders",
+                )
+            ],
+            "semantic-constraint": [],
+        }[item_type]
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = sync_semantic_layer(keboola_url="https://connection.keboola.com", keboola_token="master-tok")
+
+        assert result["skipped_embedded_comment"] == 1
+        assert result["created_or_updated"] == 0
+        assert metric_repo().get("keboola/model-1/commented") is None
+
     def test_raises_master_token_required(self, e2e_env):
         from connectors.keboola.semantic_layer import MasterTokenRequiredError, sync_semantic_layer
 
