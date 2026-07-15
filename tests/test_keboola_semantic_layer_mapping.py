@@ -12,6 +12,7 @@ from connectors.keboola.semantic_layer import (
     build_metric_row,
     compose_sql,
     dataset_lookup_by_table_id,
+    has_embedded_sql_comment,
     merge_constraints,
     references_foreign_alias,
     require_master_token,
@@ -136,6 +137,11 @@ class TestReferencesForeignAlias:
     def test_dotted_literal_plus_real_alias_still_foreign(self):
         # Masking literals must not hide a genuine alias elsewhere in the expr.
         assert references_foreign_alias('CASE WHEN "s" = \'in.progress\' THEN o."amount" END') is True
+
+    def test_dotted_column_name_in_quoted_identifier_is_not_foreign(self):
+        # A dot inside a quoted identifier ("total.amount") is part of the
+        # column name, not an <alias>. qualifier — must not be skipped.
+        assert references_foreign_alias('SUM("total.amount")') is False
 
 
 class TestComposeSql:
@@ -322,3 +328,60 @@ class TestBuildMetricRow:
 
         assert skip_reason is None
         assert row["validation"]["rules"][0]["name"] == "m_non_negative"
+
+
+class TestHasEmbeddedSqlComment:
+    def test_bare_expression_has_no_comment(self):
+        assert has_embedded_sql_comment('SUM("amount")') is False
+
+    def test_trailing_comment_referencing_missing_table_detected(self):
+        # Verified live (2026-07-15): a real Keboola metric used a trailing
+        # `--` comment to note the metric conceptually needs a table not
+        # present in the project. Naively appending `FROM ... AS t` after
+        # this gets swallowed into the comment, breaking the composed SQL.
+        assert (
+            has_embedded_sql_comment(
+                "ROUND(\"value\" * 100, 2) -- FROM other_table WHERE kpi = 'x' (table not in this project)"
+            )
+            is True
+        )
+
+    def test_trailing_comment_noting_missing_filter_detected(self):
+        assert has_embedded_sql_comment("ROUND(SUM(\"delta\") * 12, 2) -- WHERE action IN ('a', 'b') AND YTD") is True
+
+    def test_double_hyphen_inside_single_quoted_literal_is_not_a_comment(self):
+        assert has_embedded_sql_comment("SUM(CASE WHEN \"status\" = 'in--progress' THEN 1 END)") is False
+
+    def test_double_hyphen_inside_double_quoted_identifier_is_not_a_comment(self):
+        assert has_embedded_sql_comment('SUM("weird--column")') is False
+
+    def test_quote_in_identifier_does_not_expose_literal_double_hyphen(self):
+        # Masking order: a single quote inside an identifier ("col'name") must
+        # not start a spurious string-literal match that re-exposes a `--`
+        # safely inside a following real string literal.
+        assert has_embedded_sql_comment("SUM(\"col'name\", 'value--here')") is False
+
+
+class TestBuildMetricRowSkipsEmbeddedComment:
+    def test_skips_metric_with_embedded_comment(self):
+        table_lookup = {("in.c-example_source", "orders"): "crm_orders"}
+        metric = _metric_item(
+            "m", 'ROUND("value" * 100, 2) -- FROM other_table (table not in this project)', "in.c-example_source.orders"
+        )
+
+        row, skip_reason = build_metric_row(metric, table_lookup, {}, [], "model-1")
+
+        assert row is None
+        assert skip_reason == "embedded_sql_comment"
+
+    def test_embedded_comment_checked_even_when_table_would_resolve(self):
+        # Table resolution succeeding must not short-circuit the comment
+        # check — a metric with both issues must still be skipped for the
+        # comment, not silently composed just because its table is known.
+        table_lookup = {("in.c-example_source", "orders"): "crm_orders"}
+        metric = _metric_item("m", 'SUM("amount") -- note to self', "in.c-example_source.orders")
+
+        row, skip_reason = build_metric_row(metric, table_lookup, {}, [], "model-1")
+
+        assert row is None
+        assert skip_reason == "embedded_sql_comment"
