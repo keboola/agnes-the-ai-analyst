@@ -159,6 +159,69 @@ def test_anthropic_route_accepts_subpath(broker_app):
     assert "/api/broker/anthropic" in paths  # bare path still served
 
 
+def test_anthropic_proxy_uses_generous_read_timeout(broker_app, monkeypatch):
+    """Regression: httpx's 5s default read timeout aborts every real LLM
+    completion with ReadTimeout, leaving the sandbox agent an empty response.
+    The proxy must build its client with a generous read timeout.
+
+    Captures the ``timeout`` passed to ``httpx.AsyncClient`` on the anthropic
+    leg and asserts the read budget is well above the 5s default.
+    """
+    import app.api.broker as broker_mod
+
+    captured: dict = {}
+    real_cls = httpx.AsyncClient
+
+    class _FakeResp:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        content = b"{}"
+
+    class _FakeClient:
+        """Delegates to the real client for the test harness's own
+        transport-backed client; fakes only the broker's outbound anthropic
+        client (constructed with ``timeout=`` and no transport)."""
+
+        def __init__(self, *a, **k):
+            self._real = real_cls(*a, **k) if "transport" in k else None
+            if self._real is None:
+                captured["timeout"] = k.get("timeout")
+
+        async def __aenter__(self):
+            return await self._real.__aenter__() if self._real else self
+
+        async def __aexit__(self, *a):
+            return await self._real.__aexit__(*a) if self._real else False
+
+        async def request(self, *a, **k):
+            if self._real:
+                return await self._real.request(*a, **k)
+            return _FakeResp()
+
+        def __getattr__(self, name):
+            # Proxy any other method (e.g. .post) to the real delegate.
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _FakeClient)
+    tok = ticket_repo().mint("chat_ay", "main", ttl_seconds=60)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                "/api/broker/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {tok}"},
+                content=b'{"model":"x"}',
+            )
+
+    r = asyncio.run(_run())
+    assert r.status_code == 200
+    t = captured["timeout"]
+    assert isinstance(t, httpx.Timeout)
+    # Well above httpx's 5s default read timeout.
+    assert t.read is not None and t.read >= 60.0, t
+
+
 def test_normalize_broker_path_rejects_smuggling():
     """Unit: the path canonicalizer returns the EXACT URL the ASGI dispatch
     routes on (percent-decoded, dot-segments collapsed) and rejects authority

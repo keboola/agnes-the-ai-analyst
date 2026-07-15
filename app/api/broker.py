@@ -131,6 +131,13 @@ def _normalize_broker_path(raw: Any) -> httpx.URL:
 # request never gets to choose where its "anthropic" call actually goes.
 _ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 
+# LLM completions routinely run for tens of seconds to minutes; httpx's 5s
+# default read timeout makes EVERY real completion fail with httpx.ReadTimeout,
+# leaving the sandbox agent with an empty response (chat looks "broken" even
+# though isolation/auth are correct). Use a generous read timeout while keeping
+# connect/write/pool bounded so a dead upstream still fails fast.
+_ANTHROPIC_TIMEOUT = httpx.Timeout(connect=15.0, read=600.0, write=60.0, pool=15.0)
+
 
 async def require_broker_ticket(request: Request) -> Dict[str, Any]:
     """Resolve the bearer ticket on the request. 401s if missing/unknown/expired."""
@@ -310,7 +317,7 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
     }
     headers["x-api-key"] = os.environ.get("ANTHROPIC_API_KEY", "")
     upstream_path = request.url.path[len("/api/broker/anthropic") :] or "/"
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=_ANTHROPIC_TIMEOUT) as client:
         resp = await client.request(
             request.method,
             f"{_ANTHROPIC_BASE_URL}{upstream_path}",
