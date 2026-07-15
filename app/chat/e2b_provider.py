@@ -39,7 +39,7 @@ from typing import Any
 
 # Imported as a module-level name so unit tests can ``patch("app.chat.
 # e2b_provider.AsyncSandbox")``.
-from e2b import AsyncSandbox
+from e2b import ALL_TRAFFIC, AsyncSandbox
 
 logger = logging.getLogger(__name__)
 
@@ -283,19 +283,23 @@ class E2BProvider:
                 "chat.e2b_template_id missing — refusing to spawn chat sandbox",
             )
 
-        # Egress is enforced at the VM level via SandboxNetworkOpts.allow_out
-        # (a plain dict — SandboxNetworkOpts is a TypedDict, so a dict
-        # literal is the runtime value), independent of the in-sandbox
-        # PreToolUse hook. lifecycle on_timeout=pause: if the in-process
-        # reaper misses a session (e.g. a crashed server) E2B pauses the
-        # sandbox instead of destroying it, keeping the process and its
-        # memory intact for later resume.
+        # Egress is enforced at the VM level via the network config, independent
+        # of the in-sandbox PreToolUse hook. `deny_out=[ALL_TRAFFIC]` is
+        # REQUIRED alongside `allow_out`: the E2B API rejects an allow-list with
+        # no matching deny (`400: when specifying allowed domains ... you must
+        # include 'ALL_TRAFFIC' in deny out to block all other traffic`), and
+        # semantically the allow-list only actually blocks anything when
+        # everything else is denied — without it egress was a no-op. (Found by
+        # the live E2E when every spawn 400'd on e2b>=2.32.0.)
+        # lifecycle on_timeout=pause: if the in-process reaper misses a session
+        # (e.g. a crashed server) E2B pauses the sandbox instead of destroying
+        # it, keeping the process + memory intact for later resume.
         sandbox = await AsyncSandbox.create(
             template=self._template_id,
             api_key=self._api_key,
             envs=dict(env),
             timeout=self._timeout,
-            network={"allow_out": self._effective_allow_out()},
+            network={"allow_out": self._effective_allow_out(), "deny_out": [ALL_TRAFFIC]},
             lifecycle={"on_timeout": "pause"},
         )
 

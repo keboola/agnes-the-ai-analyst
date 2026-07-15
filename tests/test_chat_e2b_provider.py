@@ -86,6 +86,13 @@ def test_provider_spawns_sandbox_and_returns_handle(tmp_path: Path):
             # allow_internet_access=True. (INC-01572)
             assert "allow_internet_access" not in call_kwargs
             assert "allow_out" in call_kwargs["network"]
+            # deny_out=[ALL_TRAFFIC] MUST accompany allow_out: the E2B API 400s
+            # an allow-list with no deny, and without it the allowlist blocks
+            # nothing (egress no-op). Every spawn 400'd on e2b>=2.32.0 without
+            # this — caught by live E2E, not unit tests.
+            from e2b import ALL_TRAFFIC
+
+            assert call_kwargs["network"].get("deny_out") == [ALL_TRAFFIC]
 
             # commands.run was called with background=True and the joined argv
             fake_sb.commands.run.assert_called_once()

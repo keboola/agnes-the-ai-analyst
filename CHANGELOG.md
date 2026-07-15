@@ -10,7 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
----
+### Fixed
+
+- **Chat sandbox spawn was hard-down** on `e2b>=2.32.0`: the VM egress config
+  passed `allow_out` without `deny_out`, and the E2B API now rejects that with
+  `400: when specifying allowed domains in allow out, you must include
+  'ALL_TRAFFIC' in deny out to block all other traffic` — so every
+  `AsyncSandbox.create` raised and no chat session could start. Now sets
+  `deny_out=[ALL_TRAFFIC]` alongside the allow-list. This also makes the egress
+  allow-list actually enforce: without a matching deny, the allow-list blocked
+  nothing (egress was effectively a no-op), so this restores the INC-01572
+  Phase-1 VM-level egress control as well as unbreaking spawn. Caught by live
+  end-to-end testing — unit tests mock the E2B API and can't see the contract
+  change.
 
 ## [0.74.77] - 2026-07-15
 
