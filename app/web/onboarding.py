@@ -131,6 +131,19 @@ ONBOARDING_STEPS: tuple[OnboardingStep, ...] = (
         ),
     ),
     OnboardingStep(
+        key="search",
+        icon="🔍",
+        anchor="nav-search",
+        title="Search everything",
+        body="One box that searches across all of it — datasets in the catalog, "
+        "shared knowledge, and uploaded documents. Every result says where it lives.",
+        tips=(
+            "Type a couple of characters — results group into Tables, Knowledge, and Documents.",
+            "Table hits link straight to the catalog detail so you can start querying.",
+            "You only ever see results your account is granted.",
+        ),
+    ),
+    OnboardingStep(
         key="admin",
         icon="⚙️",
         anchor="nav-admin",
