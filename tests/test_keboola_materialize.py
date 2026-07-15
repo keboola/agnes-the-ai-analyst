@@ -15,6 +15,7 @@ default parquet path and the legacy CSV opt-in (via
 """
 
 import hashlib
+import importlib.util
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -654,3 +655,162 @@ def test_consolidation_conn_applies_memory_and_thread_caps():
         assert float(mem.split()[0]) <= 2.0, mem
     finally:
         conn.close()
+
+
+# ---- typed-parquet fix for the native-parquet path (2026-07-15) -----------
+#
+# Verified live: Storage API's Snowflake UNLOAD serves every column as
+# VARCHAR regardless of the source's real type. These tests use a real
+# KeboolaClient (kbcstorage-backed) with __init__ + get_pyarrow_schema
+# monkeypatched. The kbcstorage guard is applied PER-TEST (below), not at
+# module level, so the unrelated tests earlier in this file still run on
+# installs without the [server] extra.
+
+_needs_kbcstorage = pytest.mark.skipif(
+    importlib.util.find_spec("kbcstorage") is None,
+    reason="requires the [server] extra (kbcstorage)",
+)
+
+
+def _write_string_typed_parquet(dest: Path) -> None:
+    """Write a parquet whose columns are ALL string-typed, even the
+    numeric-looking one — same shape Storage API's native parquet export
+    produces for the bug this fix addresses."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    table = pa.table(
+        {"id": pa.array(["1", "2"], type=pa.string()), "amount": pa.array(["100", "250"], type=pa.string())}
+    )
+    pq.write_table(table, dest)
+
+
+@pytest.fixture
+def fake_storage_client_parquet_untyped():
+    """Like fake_storage_client_parquet, but with real string .token/.base
+    (so the isinstance guard in materialize_query's typing fix actually
+    engages) and an all-string-typed parquet output."""
+
+    def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
+        return {
+            "job_id": 100,
+            "file_id": 200,
+            "rows": 2,
+            "file_info": {"id": 200, "url": "https://fake/x", "isSliced": False},
+            "file_type": "parquet",
+        }
+
+    def fake_download(file_info, dest_path):
+        _write_string_typed_parquet(Path(dest_path))
+        return Path(dest_path)
+
+    client = MagicMock()
+    client.prepare_export.side_effect = fake_prepare
+    client.download_file.side_effect = fake_download
+    client.token = "fake-token"
+    client.base = "https://connection.keboola.com/v2/storage"
+    return client
+
+
+@_needs_kbcstorage
+def test_materialize_query_applies_typed_schema_when_available(
+    tmp_path, monkeypatch, fake_storage_client_parquet_untyped
+):
+    """When KeboolaClient.get_pyarrow_schema returns a schema, the
+    materialized parquet's columns must be cast to those types — not left
+    as the all-VARCHAR shape Storage API's native parquet export produces."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from connectors.keboola.client import KeboolaClient
+
+    fake_schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("amount", pa.int64()),
+        ]
+    )
+    monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
+    monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", lambda self, tid: fake_schema)
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    result = kbe.materialize_query(
+        table_id="typed_subset",
+        bucket="in.c-sales",
+        source_table="orders",
+        source_query=None,
+        storage_client=fake_storage_client_parquet_untyped,
+        output_dir=output_dir,
+    )
+
+    table = pq.read_table(output_dir / "typed_subset.parquet")
+    assert table.schema.field("id").type == pa.int64()
+    assert table.schema.field("amount").type == pa.int64()
+    # Correctness, not just typing: a real aggregate over the now-numeric
+    # column must be possible and return the right sum (100 + 250).
+    assert table.column("amount").to_pylist() == [100, 250]
+    assert result["rows"] == 2
+
+
+@_needs_kbcstorage
+def test_materialize_query_keeps_varchar_when_schema_unavailable(
+    tmp_path, monkeypatch, fake_storage_client_parquet_untyped
+):
+    """Metadata API unreachable → graceful fallback to Storage API's native
+    (all-VARCHAR) types, matching the legacy CSV path's existing fallback
+    behavior. Must not raise."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from connectors.keboola.client import KeboolaClient
+
+    def raise_unreachable(self, tid):
+        raise RuntimeError("metadata API unreachable")
+
+    monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
+    monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", raise_unreachable)
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    kbe.materialize_query(
+        table_id="untyped_subset",
+        bucket="in.c-sales",
+        source_table="orders",
+        source_query=None,
+        storage_client=fake_storage_client_parquet_untyped,
+        output_dir=output_dir,
+    )
+
+    table = pq.read_table(output_dir / "untyped_subset.parquet")
+    assert table.schema.field("amount").type == pa.string()
+
+
+@_needs_kbcstorage
+def test_materialize_query_untyped_storage_client_skips_typing_safely(tmp_path, fake_storage_client_parquet):
+    """The pre-existing MagicMock-based fixture (no real .token/.base) must
+    keep working exactly as before this fix — the isinstance guard makes
+    typing a safe no-op rather than attempting a KeboolaClient call with a
+    mock as credentials."""
+    import pyarrow.parquet as pq
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    kbe.materialize_query(
+        table_id="example_subset",
+        bucket="in.c-sales",
+        source_table="orders",
+        source_query=None,
+        storage_client=fake_storage_client_parquet,
+        output_dir=output_dir,
+    )
+
+    # fake_storage_client_parquet's _write_parquet writes an int column via
+    # DuckDB VALUES — already typed, unaffected either way. The real
+    # assertion here is that the call above didn't raise.
+    table = pq.read_table(output_dir / "example_subset.parquet")
+    assert table.num_rows == 2
