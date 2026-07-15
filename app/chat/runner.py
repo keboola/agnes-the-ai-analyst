@@ -28,8 +28,20 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from app.chat.relay import Relay
+if TYPE_CHECKING:  # names for annotations only — no runtime import (see below)
+    from app.chat.relay import Relay
+
+# NOTE: `app.chat.relay` is intentionally NOT imported at module level. This
+# file runs as a standalone script (`python3 /work/runner.py`) inside the E2B
+# sandbox, where the `app` package does not exist until `_install_agnes_cli()`
+# pip-installs the uploaded wheel. A module-level `from app.chat.relay import
+# Relay` crashed the runner at interpreter startup with `ModuleNotFoundError:
+# No module named 'app'` — before the install ever ran — taking chat down
+# end-to-end. `_start_relay()` imports it lazily, after the install. The
+# forward-ref annotation below is a string (PEP 563 / `from __future__ import
+# annotations`) so it needs no import at load time.
 
 # Module-level in-sandbox relay. Populated by ``_start_relay`` in ``amain()``
 # before any CLI/MCP subprocess spawn, and fed fresh tickets pushed by the
@@ -554,6 +566,11 @@ async def _start_relay() -> int:
     brokered requests to.
     """
     global _relay
+    # Lazy import: the `app` package only exists after _install_agnes_cli()
+    # has pip-installed the uploaded wheel, so this MUST run after that step
+    # (see amain()). Importing at module scope crashed the runner at startup.
+    from app.chat.relay import Relay
+
     real_server = os.environ.get("AGNES_SERVER", "").strip()
     _relay = Relay(server_url=real_server)
     port = await _relay.start()
@@ -566,7 +583,7 @@ async def _start_relay() -> int:
 async def amain() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--session-id", required=True)
-    args = parser.parse_args()
+    parser.parse_args()  # validates required --session-id; value read from env
 
     workdir = Path(os.environ.get("AGNES_WORKDIR", os.getcwd()))
 
@@ -581,13 +598,20 @@ async def amain() -> None:
     # in the OS pipe until _stdin_lines() starts reading. Skipped in fake-agent
     # mode (tests) — there is no wheel to install.
     if not fake_agent:
-        # Start the in-sandbox loopback relay and repoint this process's env
-        # at it BEFORE any CLI/MCP subprocess spawn (the CLI install below
-        # spawns pip, not the agent CLIs, but the real agent loop's `claude`
-        # spawn and `_agnes_mcp_servers()`'s `agnes mcp` spawn both come
-        # later and must see the rewritten env).
-        await _start_relay()
+        # Install the agnes CLI wheel FIRST: it ships the `app` package that
+        # _start_relay() imports (`from app.chat.relay import Relay`). Ordering
+        # it after _start_relay crashed the relay import with ModuleNotFoundError
+        # (the `app` package doesn't exist in the sandbox until this install).
+        # Safe to run before the relay: the install is an offline
+        # `pip install --no-deps <uploaded wheel>` — it hits no network and
+        # needs no broker. The relay only has to be up before the AGENT
+        # subprocess spawns (`claude`, `agnes mcp`), which come further below.
         _install_agnes_cli()
+        # Now start the in-sandbox loopback relay and repoint this process's env
+        # at it, before any CLI/MCP agent subprocess spawn — the real agent
+        # loop's `claude` spawn and `_agnes_mcp_servers()`'s `agnes mcp` spawn
+        # must see the rewritten AGNES_SERVER / ANTHROPIC_* env.
+        await _start_relay()
         # Opt-in (AGNES_BOOTSTRAP_MARKETPLACE=1): install the user's marketplace
         # plugins into this project so setting_sources surfaces them. After the
         # CLI install (needs the `agnes` binary); before the reader attaches for
