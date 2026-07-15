@@ -10,7 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
----
+### Fixed
+
+- **Chat sandbox runner crashed at startup**, taking chat down end-to-end. The
+  broker hardening added a module-level `from app.chat.relay import Relay` to
+  `app/chat/runner.py`, but the runner executes as a standalone script inside
+  the E2B sandbox where the `app` package does not exist until
+  `_install_agnes_cli()` pip-installs the uploaded wheel — so the import raised
+  `ModuleNotFoundError: No module named 'app'` at interpreter startup, before
+  the install ran. The relay import is now lazy (inside `_start_relay()`), the
+  annotation is `TYPE_CHECKING`-only, and `amain()` runs `_install_agnes_cli()`
+  before `_start_relay()` (the install is an offline `pip install --no-deps`
+  of the local wheel — no network/broker needed). A guard test rejects any
+  module-level `app.*` import in the runner. Found by live E2E on agnes-dev
+  (the deny_out egress fix let sandboxes spawn, which unmasked this).
 
 ## [0.74.81] - 2026-07-15
 
