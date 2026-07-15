@@ -113,3 +113,27 @@ def compose_sql(expression: str, table_name: str) -> str:
     that case.
     """
     return f'SELECT {expression} FROM "{table_name}" AS t'
+
+
+def merge_constraints(metric_name: str, constraints: list[dict]) -> dict | None:
+    """Build the `validation` JSON for one metric from semantic-constraint
+    items whose `metrics[]` list includes it, or None if none match.
+
+    Constraint attribute shape (`name`, `constraintType`, `rule` — a single
+    SQL-ish string like `'value >= 0'`, `metrics: [...]`, `severity`) per
+    `keboola/cli`'s documented live-verified contract.
+    """
+    matching = [c for c in constraints if metric_name in ((c.get("attributes") or {}).get("metrics") or [])]
+    if not matching:
+        return None
+    return {
+        "rules": [
+            {
+                "name": (c.get("attributes") or {}).get("name"),
+                "constraint_type": (c.get("attributes") or {}).get("constraintType"),
+                "rule": (c.get("attributes") or {}).get("rule"),
+                "severity": (c.get("attributes") or {}).get("severity"),
+            }
+            for c in matching
+        ]
+    }
