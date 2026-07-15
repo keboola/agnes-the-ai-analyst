@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.91] - 2026-07-15
+
 ### Internal
 
 - **INC-01572 red-team coverage — process-memory leg.** Added
