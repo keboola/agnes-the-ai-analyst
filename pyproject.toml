@@ -12,8 +12,14 @@ dependencies = [
     # tables referenced by other tables — broke the test_db migration
     # ladder replay on 1.5.1. CI runs 1.5.2; local devs need it too.
     "duckdb>=1.5.2",
-    # Web framework (FastAPI)
-    "fastapi>=0.115.0",
+    # Web framework (FastAPI). Upper-bounded below 0.137.0: that release
+    # regressed APIRouter.include_router so it no longer copies the source
+    # router's routes into the app (adds zero routes), leaving create_app()
+    # with no /api routes. Empirically bisected: 0.136.0 OK, 0.137.0 broken.
+    # Only surfaces on Python 3.13, where the resolver otherwise picks a
+    # >=0.137 release (0.136.x is the last good line). Lift the cap once the
+    # app is verified against the newer include_router.
+    "fastapi>=0.115.0,<0.137",
     "uvicorn[standard]>=0.32.0",
     "python-multipart>=0.0.31",
     "jinja2>=3.1.0",

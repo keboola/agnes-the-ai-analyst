@@ -32,12 +32,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
-- Cap FastAPI below 0.139.0. That release made `include_router` destructive
-  (it moves the source router's routes into the app rather than copying), so
-  only the first `create_app()` gets routes and later ones build an app with
-  zero `/api` routes. Harmless in production (one `create_app()`), but it broke
-  the test suite's many fresh app builds — and only on Python 3.13, where the
-  resolver otherwise picked 0.139. Lift once verified against the new behavior.
+- Cap FastAPI below 0.137.0. That release regressed `include_router` so it no
+  longer copies the source router's routes into the app (adds zero routes),
+  leaving `create_app()` with no `/api` routes. Harmless in production, but it
+  broke the test suite's fresh app builds — and only on Python 3.13, where the
+  resolver otherwise picks a >=0.137 release. Bisected: 0.136.0 OK, 0.137.0
+  broken. Lift once verified against the new behavior.
 
 ### Internal
 
