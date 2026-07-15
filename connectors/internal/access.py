@@ -487,10 +487,16 @@ def get_schema(system_db_path: str, table_id: str) -> list[dict]:
     """Return the underlying physical schema for an internal table.
 
     Used by ``/api/v2/schema/<id>`` so ``agnes schema <table>`` works
-    against internal sources. Reuses the shared ``system.duckdb``
-    connection — same rationale as ``execute_internal_query``: opening
-    a parallel handle to the same file is process-wide blocked. The
-    information_schema query is read-only and small.
+    against internal sources.
+
+    Backend-aware: on DuckDB the columns come from the shared
+    ``system.duckdb`` handle's ``information_schema`` (same rationale as
+    ``execute_internal_query``: opening a parallel handle to the same file is
+    process-wide blocked). On Postgres the system DuckDB must never be opened
+    (``get_system_db()`` raises there), so the same physical tables are read
+    from Postgres' ``information_schema.columns`` via the SQLAlchemy engine.
+    Both paths return the same ``[{name, type, nullable}]`` shape and are
+    read-only.
 
     ``system_db_path`` is kept in the signature for API symmetry with the
     earlier draft, but is unused — the singleton handle already knows the
@@ -499,6 +505,25 @@ def get_schema(system_db_path: str, table_id: str) -> list[dict]:
     if table_id not in INTERNAL_TABLES_BY_ID:
         return []
     table = INTERNAL_TABLES_BY_ID[table_id]
+    from src.repositories import use_pg
+
+    if use_pg():
+        import sqlalchemy as sa
+
+        from src.db_pg import get_engine
+
+        with get_engine().connect() as pg_conn:
+            rows = pg_conn.execute(
+                sa.text(
+                    "SELECT column_name, data_type, is_nullable "
+                    "FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = :t "
+                    "ORDER BY ordinal_position"
+                ),
+                {"t": table.source_table},
+            ).fetchall()
+        return [{"name": r[0], "type": r[1], "nullable": r[2] == "YES"} for r in rows]
+
     from src.db import get_system_db
 
     cursor = get_system_db().cursor()

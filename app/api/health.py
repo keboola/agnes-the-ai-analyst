@@ -415,9 +415,22 @@ async def health_check_detailed(
     checks = {}
     include_set = {p.strip() for p in include.split(",") if p.strip()}
 
-    # DuckDB state
+    # State-backend connectivity probe. Backend-aware: on Postgres the request
+    # conn (from _get_db) is None — the system DuckDB must never be opened — so
+    # probe the active PG engine instead. A healthy PG instance must report ok
+    # here, not flip the whole check to "unhealthy" on a None.execute().
+    from src.repositories import use_pg
+
     try:
-        conn.execute("SELECT 1").fetchone()
+        if use_pg():
+            import sqlalchemy as sa
+
+            from src.db_pg import get_engine
+
+            with get_engine().connect() as _pg_conn:
+                _pg_conn.execute(sa.text("SELECT 1")).fetchone()
+        else:
+            conn.execute("SELECT 1").fetchone()
         checks["duckdb_state"] = {"status": "ok"}
     except Exception as e:
         checks["duckdb_state"] = {"status": "error", "detail": str(e)}

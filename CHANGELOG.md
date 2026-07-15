@@ -10,6 +10,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- Intermittent **"system unavailable"** (503) responses under load. The
+  auth/RBAC request dependencies (`get_current_user`, `get_optional_user`,
+  `require_session_token`, `require_admin`, `require_resource_access`,
+  `require_broker_ticket`) were `async def` but ran synchronous, blocking
+  state-DB reads directly on the single uvicorn event loop; since auth runs on
+  nearly every request, one slow read could freeze the whole process. They are
+  now plain `def` so FastAPI offloads them to the anyio thread pool.
+- On a Postgres-backed instance the system DuckDB is no longer opened. System
+  state lives in Postgres, but several request/startup paths still opened the
+  local `system.duckdb`, creating a stale file and reading the wrong backend.
+  `get_system_db()` now raises on a Postgres instance and every opener is gated
+  behind the backend selector or routed through the repository factory. The
+  DuckDB-only operational tables with no Postgres mirror (`cli_auth_codes`,
+  Slack identity-binding codes) moved to a dedicated `operational.duckdb`.
+
 ---
 
 ## [0.74.94] - 2026-07-15
