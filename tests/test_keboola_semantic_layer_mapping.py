@@ -9,6 +9,7 @@ import pytest
 
 from connectors.keboola.semantic_layer import (
     MasterTokenRequiredError,
+    build_metric_row,
     compose_sql,
     dataset_lookup_by_table_id,
     merge_constraints,
@@ -200,3 +201,101 @@ class TestMergeConstraints:
         result = merge_constraints("revenue", constraints)
         assert len(result["rules"]) == 2
         assert result["rules"][1]["name"] == "revenue_not_null"
+
+
+def _metric_item(name, sql, dataset, description="", model_uuid="model-1"):
+    return {
+        "type": "semantic-metric",
+        "id": f"id-{name}",
+        "attributes": {
+            "name": name,
+            "sql": sql,
+            "dataset": dataset,
+            "description": description,
+            "modelUUID": model_uuid,
+        },
+    }
+
+
+class TestBuildMetricRow:
+    def test_builds_row_for_simple_metric(self):
+        table_lookup = {("in.c-example_source", "orders"): "crm_orders"}
+        dataset_lookup = {}
+        metric = _metric_item(
+            "total_revenue", 'SUM("amount")', "in.c-example_source.orders", description="Total revenue"
+        )
+
+        row, skip_reason = build_metric_row(metric, table_lookup, dataset_lookup, [], "model-1")
+
+        assert skip_reason is None
+        assert row["id"] == "keboola/model-1/total_revenue"
+        assert row["name"] == "total_revenue"
+        assert row["table_name"] == "crm_orders"
+        assert row["expression"] == 'SUM("amount")'
+        assert row["sql"] == 'SELECT SUM("amount") FROM "crm_orders" AS t'
+        assert row["description"] == "Total revenue"
+        assert row["source"] == "keboola_semantic_layer"
+        assert "validation" not in row
+
+    def test_skips_unresolved_table(self):
+        metric = _metric_item("m", 'SUM("x")', "in.c-unknown.table")
+
+        row, skip_reason = build_metric_row(metric, {}, {}, [], "model-1")
+
+        assert row is None
+        assert skip_reason == "unresolved_table"
+
+    def test_skips_foreign_alias_expression(self):
+        table_lookup = {("in.c-example_source", "orders"): "crm_orders"}
+        metric = _metric_item("m", 'SUM(o."amount")', "in.c-example_source.orders")
+
+        row, skip_reason = build_metric_row(metric, table_lookup, {}, [], "model-1")
+
+        assert row is None
+        assert skip_reason == "foreign_alias_reference"
+
+    def test_enriches_from_dataset_grain_and_ai_block(self):
+        table_lookup = {("in.c-example_source", "orders"): "crm_orders"}
+        dataset_lookup = {
+            "in.c-example_source.orders": {
+                "tableId": "in.c-example_source.orders",
+                "grain": "One row per order",
+                "primaryKey": ["order_id"],
+                "ai": {
+                    "synonyms": ["sales"],
+                    "hints": ["Join via customer_id"],
+                    "warnings": ["Excludes refunds"],
+                },
+            }
+        }
+        metric = _metric_item("m", 'SUM("amount")', "in.c-example_source.orders")
+
+        row, skip_reason = build_metric_row(metric, table_lookup, dataset_lookup, [], "model-1")
+
+        assert skip_reason is None
+        assert row["grain"] == "One row per order"
+        assert row["dimensions"] == ["order_id"]
+        assert row["synonyms"] == ["sales"]
+        assert row["notes"] == ["Join via customer_id", "Excludes refunds"]
+
+    def test_includes_validation_when_constraint_matches(self):
+        table_lookup = {("in.c-example_source", "orders"): "crm_orders"}
+        constraints = [
+            {
+                "type": "semantic-constraint",
+                "id": "c1",
+                "attributes": {
+                    "name": "m_non_negative",
+                    "constraintType": "inequality",
+                    "rule": "value >= 0",
+                    "metrics": ["m"],
+                    "severity": "warning",
+                },
+            },
+        ]
+        metric = _metric_item("m", 'SUM("amount")', "in.c-example_source.orders")
+
+        row, skip_reason = build_metric_row(metric, table_lookup, {}, constraints, "model-1")
+
+        assert skip_reason is None
+        assert row["validation"]["rules"][0]["name"] == "m_non_negative"
