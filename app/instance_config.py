@@ -46,13 +46,18 @@ def get_database_config() -> dict:
 
 
 def reset_database_cache() -> None:
-    """No-op for now — get_database_config reads fresh each call.
+    """Drop the in-process backend-state cache.
 
-    Exposed as a public API so future caching (if added) has a single
-    invalidation point. Called by app/api/db_state.py after a successful
-    backend flip.
+    Clears the parse-once memoization of the ``instance.yaml`` overlay in
+    ``src.db_state_machine``, so the next ``read_backend_state`` /
+    ``use_pg`` re-reads from disk. The single invalidation point called by
+    app/api/db_state.py after a successful backend flip; runtime correctness
+    does not depend on it (a flip restarts the process), but it keeps a
+    same-process caller consistent.
     """
-    pass
+    from src.db_state_machine import reset_backend_state_cache
+
+    reset_backend_state_cache()
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:

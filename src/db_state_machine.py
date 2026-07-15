@@ -165,15 +165,56 @@ def validate_transition(current: BackendState, target: BackendState) -> None:
 _OVERLAY_PATH = Path(os.environ.get("DATA_DIR", "/data")) / "state" / "instance.yaml"
 _LOCK_PATH = Path(os.environ.get("DATA_DIR", "/data")) / "state" / "db-migration.lock"
 
+# Process-lifetime memoization of the parsed overlay.
+#
+# ``read_backend_state()`` runs on EVERY ``*_repo()`` factory access via
+# ``use_pg()`` — a single RBAC/catalog request fans out into dozens of repo
+# calls, each of which was re-reading and re-parsing this small YAML file.
+# Pure-Python PyYAML holds the GIL, so on a single-uvicorn instance the
+# repeated ``yaml.safe_load`` serialized the event loop and capped catalog
+# throughput at ~2 req/s (py-spy: ~48% of request CPU in yaml.safe_load).
+#
+# The backend never changes within one process lifetime: a migration runs
+# the migrator as a host SUBPROCESS and then RESTARTS the app on the new
+# backend (app/api/db_state.py), so a fresh process always reads the new
+# state with a cold cache. That makes a plain parse-once cache correct with
+# no mtime guard — parse the overlay once, hold the result for the life of
+# the process. ``write_backend_state()`` still resets the cache so an
+# in-process write (and every test that writes-then-reads) is observed, and
+# ``reset_backend_state_cache()`` is the explicit invalidation hook.
+_STATE_CACHE: "tuple[BackendState, str | None] | None" = None
+
+
+def reset_backend_state_cache() -> None:
+    """Drop the in-process cache of the parsed overlay state.
+
+    The next :func:`read_backend_state` call re-reads + re-parses the
+    overlay from disk. Runtime correctness does not depend on this (a
+    backend transition restarts the process — see the module note above);
+    it exists for tests that simulate a backend flip in one process and as
+    the single invalidation point wired into
+    ``app.instance_config.reset_database_cache``.
+    """
+    global _STATE_CACHE
+    _STATE_CACHE = None
+
 
 def read_backend_state() -> tuple[BackendState, str | None]:
     """Read current backend + url from instance.yaml overlay.
 
-    Returns (BackendState.DUCKDB, None) when overlay missing or
-    ``database`` key absent — fresh-install default.
+    Memoized for the life of the process; see the module note on
+    ``_STATE_CACHE``. Returns (BackendState.DUCKDB, None) when the overlay
+    is missing or the ``database`` key is absent — the fresh-install default.
     """
+    global _STATE_CACHE
+    cached = _STATE_CACHE
+    if cached is not None:
+        return cached
+
     if not _OVERLAY_PATH.exists():
-        return BackendState.DUCKDB, None
+        result: "tuple[BackendState, str | None]" = (BackendState.DUCKDB, None)
+        _STATE_CACHE = result
+        return result
     try:
         data = yaml.safe_load(_OVERLAY_PATH.read_text()) or {}
     except yaml.YAMLError as e:
@@ -183,6 +224,11 @@ def read_backend_state() -> tuple[BackendState, str | None]:
         # `backend=duckdb` while data was actually on PG. Log at WARNING
         # so the operator + log-shipper notice. The safe-fallback behaviour
         # is preserved — refusing to boot the app is worse than a warning.
+        #
+        # Deliberately NOT cached: a malformed overlay is rare and the
+        # parse is cheap relative to the happy path, and not memoizing the
+        # error means a repaired overlay is picked up on the next read
+        # without waiting for a restart.
         logger.warning(
             "instance.yaml YAML parse failed (path=%s, err=%s); "
             "failing safe to (DUCKDB, None) — investigate the overlay",
@@ -196,7 +242,9 @@ def read_backend_state() -> tuple[BackendState, str | None]:
         state = BackendState(backend_str)
     except ValueError:
         state = BackendState.DUCKDB
-    return state, db.get("url")
+    result = (state, db.get("url"))
+    _STATE_CACHE = result
+    return result
 
 
 def write_backend_state(target: BackendState, *, url: "str | None" = ...) -> None:  # type: ignore[assignment]
@@ -242,6 +290,11 @@ def write_backend_state(target: BackendState, *, url: "str | None" = ...) -> Non
     os.replace(tmp, _OVERLAY_PATH)
     os.chmod(_OVERLAY_PATH, 0o600)
 
+    # Invalidate the parse-once cache so an in-process write is
+    # observed by the next read — most write_backend_state callers are the
+    # migrator, but tests and any same-process flip rely on this.
+    reset_backend_state_cache()
+
 
 class MigrationInProgressError(RuntimeError):
     """A migration is already running; second concurrent attempt rejected."""
@@ -268,9 +321,7 @@ class MigrationLock:
         except BlockingIOError as e:
             os.close(self._fd)
             self._fd = None
-            raise MigrationInProgressError(
-                f"Migration already in progress (lock held at {_LOCK_PATH})"
-            ) from e
+            raise MigrationInProgressError(f"Migration already in progress (lock held at {_LOCK_PATH})") from e
         self.held = True
         return self
 
