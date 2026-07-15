@@ -267,6 +267,16 @@ class TestBuildMetricRow:
         assert row is None
         assert skip_reason == "foreign_alias_reference"
 
+    def test_skips_metric_with_missing_name(self):
+        # A missing/empty name would stringify to "keboola/model-1/None" and
+        # write name=None into metric_repo — guard skips it instead.
+        metric = _metric_item(None, 'SUM("x")', "in.c-example_source.orders")
+
+        row, skip_reason = build_metric_row(metric, {}, {}, [], "model-1")
+
+        assert row is None
+        assert skip_reason == "missing_name"
+
     def test_enriches_from_dataset_grain_and_ai_block(self):
         table_lookup = {("in.c-example_source", "orders"): "crm_orders"}
         dataset_lookup = {

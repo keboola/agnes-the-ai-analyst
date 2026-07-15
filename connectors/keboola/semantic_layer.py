@@ -159,15 +159,22 @@ def build_metric_row(
     """Map one semantic-metric item to a metric_definitions row dict.
 
     Returns (row, None) on success, or (None, skip_reason) where
-    skip_reason is "unresolved_table" (the metric's dataset isn't
-    registered in Agnes's table_registry) or "foreign_alias_reference"
-    (the expression needs a JOIN this importer can't safely compose — see
-    references_foreign_alias).
+    skip_reason is "missing_name" (the item carries no usable name — the
+    metric id/name would otherwise stringify to "None"), "unresolved_table"
+    (the metric's dataset isn't registered in Agnes's table_registry) or
+    "foreign_alias_reference" (the expression needs a JOIN this importer
+    can't safely compose — see references_foreign_alias).
     """
     attrs = metric_item.get("attributes") or {}
     name = attrs.get("name")
     expression = attrs.get("sql") or ""
     dataset_table_id = attrs.get("dataset") or ""
+
+    if not name:
+        # Upstream contract guarantees a name, but a missing/empty one would
+        # produce id "keboola/<model>/None" and name=None into metric_repo —
+        # skip defensively rather than write a malformed row.
+        return None, "missing_name"
 
     if references_foreign_alias(expression):
         return None, "foreign_alias_reference"
@@ -300,8 +307,14 @@ def sync_semantic_layer(
         if row is None:
             if skip_reason == "unresolved_table":
                 skipped_unresolved_table += 1
-            else:
+            elif skip_reason == "foreign_alias_reference":
                 skipped_foreign_alias += 1
+            else:
+                logger.warning(
+                    "Keboola semantic metric skipped (%s): %r",
+                    skip_reason,
+                    (item.get("attributes") or {}).get("name"),
+                )
             continue
         repo.create(**row)
         seen_ids.add(row["id"])
