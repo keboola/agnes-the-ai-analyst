@@ -335,3 +335,27 @@ def test_mcp_server_rides_mcp_scope_url(monkeypatch):
 
     servers = _agnes_mcp_servers()
     assert servers["agnes"]["env"]["AGNES_SERVER"] == "http://127.0.0.1:5000/agnes-mcp"
+
+
+def test_runner_has_no_module_level_app_import():
+    """The runner runs as a standalone script inside the E2B sandbox, where the
+    `app` package does not exist until _install_agnes_cli() pip-installs the
+    uploaded wheel. A module-level `import app.*` (e.g. the broker relay import)
+    crashes the interpreter at startup with ModuleNotFoundError — before the
+    install runs — taking chat down end-to-end (found by live E2E on agnes-dev).
+    Guard: NO top-level `import app.*` / `from app.* import ...` in runner.py.
+    All such imports must be lazy (inside functions, after the install), or
+    TYPE_CHECKING-only for annotations."""
+    import ast
+    from pathlib import Path
+
+    src = Path("app/chat/runner.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    offenders = []
+    for node in tree.body:  # module-level statements only
+        if isinstance(node, ast.Import):
+            offenders += [a.name for a in node.names if a.name.split(".")[0] == "app"]
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").split(".")[0] == "app":
+                offenders.append(node.module)
+    assert not offenders, f"runner.py has module-level app.* imports (must be lazy): {offenders}"
