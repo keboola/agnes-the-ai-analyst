@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- Keboola semantic layer importer: `connectors/keboola/semantic_layer.py` syncs a Keboola project's Metastore (datasets, metrics, constraints) into `metric_definitions` on a schedule (`SCHEDULER_KEBOOLA_SEMANTIC_LAYER_REFRESH_INTERVAL`, default 6h), tagged `source='keboola_semantic_layer'` and upsert+pruned each run. Requires a master (owner) Storage API token. Metrics referencing a JOINed dataset (via an aliased column not in scope for v1) are skipped and counted rather than guessed.
+
 ---
 
 ## [0.74.86] - 2026-07-15
