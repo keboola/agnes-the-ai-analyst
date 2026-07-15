@@ -1400,14 +1400,16 @@ async def library(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Library — the caller's accessible file Collections (bring-your-files)."""
-    from app.auth.access import can_access
+    from src.rbac import get_accessible_ids
     from app.resource_types import ResourceType
 
     is_admin = is_user_admin(user["id"], conn)
+    accessible_ids = get_accessible_ids(user, ResourceType.COLLECTION.value, conn)  # None => admin/all
+    allowed = None if accessible_ids is None else set(accessible_ids)
     cf_repo = corpus_files_repo()
     cards = []
     for col in file_corpora_repo().list():
-        if not is_admin and not can_access(user["id"], ResourceType.COLLECTION.value, col["id"], conn):
+        if not is_admin and allowed is not None and col["id"] not in allowed:
             continue
         files = cf_repo.list_for_corpus(col["id"])
         cards.append({**col, "file_count": len(files)})
@@ -1457,7 +1459,7 @@ async def catalog_table_detail(
     table. Falls back to 403 otherwise — analysts only see tables that
     belong to packages they're granted on.
     """
-    from app.auth.access import can_access
+    from src.rbac import get_accessible_ids
     from app.resource_types import ResourceType
 
     table_repo = table_registry_repo()
@@ -1466,20 +1468,29 @@ async def catalog_table_detail(
         raise HTTPException(status_code=404, detail="table_not_found")
 
     # Find every package that includes this table; gate access on
-    # admin god-mode OR a grant on ANY of those packages.
+    # admin god-mode OR a grant on ANY of those packages. Resolve the
+    # caller's accessible DATA_PACKAGE set ONCE (was a per-package
+    # `can_access` call) and the {package_id -> [table_id, ...]} member
+    # map in one bulk query (was a `list_tables(pkg_id)` call per
+    # package — the worst N+1 in this file).
     pkg_repo = data_packages_repo()
+    member_map = pkg_repo.list_member_ids_bulk()
+    accessible_pkg_ids = get_accessible_ids(user, ResourceType.DATA_PACKAGE.value, conn)  # None => admin/all
+    is_admin = accessible_pkg_ids is None
     parent_packages = []
-    is_admin = is_user_admin(user["id"], conn)
     has_grant = False
     try:
-        # Walk packages (instances are small enough that this is fine).
+        # Walk packages (instances are small enough that this is fine) —
+        # only to preserve name-ordering of `parent_packages` and find the
+        # ones that contain this table; membership itself is now a dict
+        # lookup, not a query.
         for p in pkg_repo.list(limit=10000):
-            mem_ids = {t["id"] for t in pkg_repo.list_tables(p["id"])}
+            mem_ids = member_map.get(p["id"], [])
             if table_id not in mem_ids:
                 continue
             parent_packages.append({"slug": p["slug"], "name": p["name"]})
             if not has_grant and not is_admin:
-                if can_access(user["id"], ResourceType.DATA_PACKAGE.value, p["id"], conn):
+                if p["id"] in accessible_pkg_ids:
                     has_grant = True
     except Exception:
         logger.warning("could not enumerate parent packages for %s", table_id, exc_info=True)
@@ -3751,14 +3762,16 @@ def _chat_capability_snapshot(conn: duckdb.DuckDBPyConnection, user: dict) -> di
     sync, and rendering becomes a single round-trip with no client-side
     fetch races. JSON gets embedded by the template via ``| tojson``.
     """
-    from src.rbac import can_access_table
+    from src.rbac import get_accessible_tables
     from src.marketplace_filter import resolve_allowed_plugins
 
     by_source: dict[str, int] = {}
     try:
         all_tables = table_registry_repo().list_all()
+        accessible_ids = get_accessible_tables(user, conn)  # None => admin/all
+        allowed = None if accessible_ids is None else set(accessible_ids)
         for t in all_tables:
-            if not can_access_table(user, t["id"], conn):
+            if allowed is not None and t["id"] not in allowed:
                 continue
             src = t.get("source_type") or "unknown"
             by_source[src] = by_source.get(src, 0) + 1
