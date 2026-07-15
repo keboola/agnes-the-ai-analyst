@@ -53,7 +53,7 @@ def test_issue_redeem_lookup_round_trip_both_backends(_env):
 
     # Verification codes are DuckDB-only operational state. On DuckDB the conn
     # is the system DB; on Postgres it must be None (the system DuckDB is never
-    # opened there — binding falls back to the dedicated slack_binding.duckdb).
+    # opened there — binding falls back to the dedicated operational.duckdb).
     conn = None if _env == "pg" else get_system_db()
     code = issue_verification_code(conn, slack_user_id="U_PARITY")
 
