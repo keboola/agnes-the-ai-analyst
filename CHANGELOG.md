@@ -12,6 +12,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.89] - 2026-07-15
+
+### Fixed
+
+- **Chat P0 — UI-rotated `ANTHROPIC_API_KEY` / `E2B_API_KEY` silently lost on
+  restart.** The `.env_overlay` boot-load in `create_app` used
+  `os.environ.setdefault`, so any secret the admin set via the "configure
+  secrets" UI (which persists to the overlay) was **discarded on the next
+  restart** whenever a same-named value was already baked into the container
+  env — the stale baked key won and chat failed with a 401 (`API key is
+  invalid`). The overlay is the admin's persisted runtime configuration and now
+  **overrides** the baked env, matching `persist_overlay_token`'s own
+  `os.environ[k] = v` write semantics. Set the key once in the UI; it now wins
+  consistently across restarts.
+
+---
+
 ## [0.74.88] - 2026-07-15
 
 ### Added
