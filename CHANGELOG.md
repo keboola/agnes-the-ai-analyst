@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.82] - 2026-07-15
+
 ### Fixed
 
 - **Chat sandbox runner crashed at startup**, taking chat down end-to-end. The
