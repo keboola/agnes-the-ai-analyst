@@ -222,6 +222,136 @@ def test_anthropic_proxy_uses_generous_read_timeout(broker_app, monkeypatch):
     assert t.read is not None and t.read >= 60.0, t
 
 
+class _HeaderCapturingClient:
+    """Fake httpx.AsyncClient that delegates the harness's transport-backed
+    client to the real one and captures the headers the broker's outbound
+    anthropic client sends. Shared by the auth-mode tests below."""
+
+    _captured: dict = {}
+    _real_cls = httpx.AsyncClient
+
+    def __init__(self, *a, **k):
+        self._real = self._real_cls(*a, **k) if "transport" in k else None
+
+    async def __aenter__(self):
+        return await self._real.__aenter__() if self._real else self
+
+    async def __aexit__(self, *a):
+        return await self._real.__aexit__(*a) if self._real else False
+
+    async def request(self, *a, **k):
+        if self._real:
+            return await self._real.request(*a, **k)
+        _HeaderCapturingClient._captured = dict(k.get("headers") or {})
+
+        class _R:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+            content = b"{}"
+
+        return _R()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _lower_keys(d: dict) -> dict:
+    return {k.lower(): v for k, v in d.items()}
+
+
+def test_anthropic_proxy_api_key_mode_injects_x_api_key(broker_app, monkeypatch):
+    """AC-1: default (api_key) mode is unchanged — inject x-api-key, no Authorization."""
+    import app.api.broker as broker_mod
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static-KEY")
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _HeaderCapturingClient)
+    tok = ticket_repo().mint("chat_apikey", "main", ttl_seconds=60)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                "/api/broker/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {tok}"},
+                content=b'{"model":"x"}',
+            )
+
+    r = asyncio.run(_run())
+    assert r.status_code == 200
+    h = _lower_keys(_HeaderCapturingClient._captured)
+    assert h.get("x-api-key") == "sk-ant-static-KEY"
+    assert "authorization" not in h
+
+
+def test_anthropic_proxy_workload_identity_injects_bearer_not_key(broker_app, monkeypatch):
+    """AC-2: workload_identity mode injects a federated Bearer token + the oauth
+    beta header, and sends NO static x-api-key."""
+    import types
+
+    import app.api.broker as broker_mod
+    import app.auth.wif as wif
+
+    # Flip the app into workload_identity mode (ChatConfig is frozen; a duck-typed
+    # stand-in with the one attribute the broker reads is enough).
+    broker_app.state.chat_config = types.SimpleNamespace(llm_auth="workload_identity")
+    monkeypatch.setattr(wif, "get_federated_access_token", lambda: "sk-ant-oat01-FED")
+    # A static key is present but must be ignored in this mode.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static-SHOULD-NOT-BE-USED")
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _HeaderCapturingClient)
+    tok = ticket_repo().mint("chat_wif", "main", ttl_seconds=60)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                "/api/broker/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {tok}", "anthropic-version": "2023-06-01"},
+                content=b'{"model":"x"}',
+            )
+
+    r = asyncio.run(_run())
+    assert r.status_code == 200
+    h = _lower_keys(_HeaderCapturingClient._captured)
+    assert h.get("authorization") == "Bearer sk-ant-oat01-FED"
+    assert "x-api-key" not in h
+    assert "oauth-2025-04-20" in h.get("anthropic-beta", "")
+    # sanity: the sandbox's SDK header survived
+    assert h.get("anthropic-version") == "2023-06-01"
+
+
+def test_anthropic_proxy_wif_failure_returns_generic_detail(broker_app, monkeypatch):
+    """A WIF exchange failure must NOT echo Anthropic's raw error text (which can
+    carry org/rule/service-account ids) across the sandbox boundary — the caller
+    gets a generic 502, the detail is only in the server-side audit trail."""
+    import types
+
+    import app.auth.wif as wif
+
+    broker_app.state.chat_config = types.SimpleNamespace(llm_auth="workload_identity")
+
+    def _boom():
+        raise wif.WIFAuthError('token exchange failed: HTTP 400 {"error":"invalid_grant","org":"org_SECRET123"}')
+
+    monkeypatch.setattr(wif, "get_federated_access_token", _boom)
+    tok = ticket_repo().mint("chat_wif_fail", "main", ttl_seconds=60)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                "/api/broker/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {tok}"},
+                content=b'{"model":"x"}',
+            )
+
+    r = asyncio.run(_run())
+    assert r.status_code == 502
+    body = r.text
+    assert "org_SECRET123" not in body
+    assert "invalid_grant" not in body
+    assert "workload_identity token exchange failed" in body
+
+
 def test_normalize_broker_path_rejects_smuggling():
     """Unit: the path canonicalizer returns the EXACT URL the ASGI dispatch
     routes on (percent-decoded, dot-segments collapsed) and rejects authority

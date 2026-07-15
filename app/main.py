@@ -118,6 +118,34 @@ def _chat_anthropic_key_ok(chat_config) -> bool:
     # Bypass for TESTING=1 — pytest-driven sessions don't need a real key.
     if os.environ.get("TESTING", "").lower() in ("1", "true"):
         return True
+    # Keyless (workload_identity): there is NO static ANTHROPIC_API_KEY by
+    # design — the broker mints a federated token from the workload's own
+    # identity. Validate the federation env instead so a misconfigured WIF
+    # deployment fails loudly at startup rather than with a runtime 502 on the
+    # first completion.
+    if getattr(chat_config, "llm_auth", "api_key") == "workload_identity":
+        missing = [
+            var
+            for var in (
+                "ANTHROPIC_FEDERATION_RULE_ID",
+                "ANTHROPIC_ORGANIZATION_ID",
+                "ANTHROPIC_SERVICE_ACCOUNT_ID",
+            )
+            if not os.environ.get(var, "").strip()
+        ]
+        if not (
+            os.environ.get("ANTHROPIC_IDENTITY_TOKEN", "").strip()
+            or os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE", "").strip()
+        ):
+            missing.append("ANTHROPIC_IDENTITY_TOKEN|ANTHROPIC_IDENTITY_TOKEN_FILE")
+        if missing:
+            logging.getLogger("app.main").error(
+                "chat.llm.auth=workload_identity requires the federation env to be set "
+                "(missing: %s); refusing to spawn ChatManager",
+                ", ".join(missing),
+            )
+            return False
+        return True
     if os.environ.get("ANTHROPIC_API_KEY", ""):
         return True
     logging.getLogger("app.main").error(

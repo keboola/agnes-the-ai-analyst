@@ -21,6 +21,7 @@ Design notes
   per call <500 input + ~16 output). Result is stripped, quote-trimmed,
   and capped at 60 chars before being persisted.
 """
+
 from __future__ import annotations
 
 import logging
@@ -72,12 +73,18 @@ def _strip_title(raw: str) -> Optional[str]:
     return text
 
 
-def _generate_title_sync(user_message: str, *, api_key: str) -> Optional[str]:
+def _generate_title_sync(
+    user_message: str, *, api_key: Optional[str] = None, auth_token: Optional[str] = None
+) -> Optional[str]:
     """Synchronous Haiku call. Returns the trimmed title or ``None``.
 
     Lives in its own function so :func:`generate_title` can dispatch it
     onto a worker thread without dragging anthropic SDK init into the
     event loop on every call.
+
+    Authenticates with a static ``api_key`` (``x-api-key``) or, in keyless
+    (workload_identity) mode, a short-lived federated ``auth_token``
+    (``Authorization: Bearer`` + the oauth beta header OAuth-style tokens need).
     """
     try:
         import anthropic  # local import keeps test envs without the SDK clean
@@ -85,7 +92,14 @@ def _generate_title_sync(user_message: str, *, api_key: str) -> Optional[str]:
         logger.debug("anthropic SDK missing; skipping auto-title")
         return None
     try:
-        client = anthropic.Anthropic(api_key=api_key, timeout=8.0)
+        if auth_token:
+            client = anthropic.Anthropic(
+                auth_token=auth_token,
+                default_headers={"anthropic-beta": "oauth-2025-04-20"},
+                timeout=8.0,
+            )
+        else:
+            client = anthropic.Anthropic(api_key=api_key, timeout=8.0)
         resp = client.messages.create(
             model=_TITLE_MODEL,
             max_tokens=_TITLE_MAX_TOKENS,
@@ -113,9 +127,19 @@ async def generate_title(user_message: str) -> Optional[str]:
     """
     if not user_message or not user_message.strip():
         return None
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        logger.debug("ANTHROPIC_API_KEY unset; skipping auto-title")
-        return None
     import asyncio
-    return await asyncio.to_thread(_generate_title_sync, user_message, api_key=api_key)
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key:
+        return await asyncio.to_thread(_generate_title_sync, user_message, api_key=api_key)
+    # Keyless (workload_identity): no static key. Mint a short-lived federated
+    # token the same way the broker does. If neither a static key nor a valid
+    # WIF configuration is present, get_federated_access_token raises and we skip.
+    try:
+        from app.auth.wif import get_federated_access_token
+
+        token = await asyncio.to_thread(get_federated_access_token)
+    except Exception as exc:  # noqa: BLE001 — best-effort; missing creds => skip
+        logger.debug("no Anthropic credential (static or WIF) for auto-title: %s", exc)
+        return None
+    return await asyncio.to_thread(_generate_title_sync, user_message, auth_token=token)

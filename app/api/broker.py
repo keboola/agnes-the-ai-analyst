@@ -24,6 +24,7 @@ privileged admin writes, regardless of the resolved identity's own grants.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any, Dict
 from urllib.parse import unquote, urlsplit
@@ -137,6 +138,20 @@ _ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 # though isolation/auth are correct). Use a generous read timeout while keeping
 # connect/write/pool bounded so a dead upstream still fails fast.
 _ANTHROPIC_TIMEOUT = httpx.Timeout(connect=15.0, read=600.0, write=60.0, pool=15.0)
+
+
+def _add_anthropic_beta(headers: Dict[str, str], beta: str) -> None:
+    """Ensure ``beta`` is present in the ``anthropic-beta`` header, appending to
+    any value the in-sandbox SDK already set rather than overwriting it. The
+    header lookup is case-insensitive (the SDK may send ``Anthropic-Beta``)."""
+    for key in list(headers.keys()):
+        if key.lower() == "anthropic-beta":
+            existing = [v.strip() for v in headers[key].split(",") if v.strip()]
+            if beta not in existing:
+                existing.append(beta)
+            headers[key] = ", ".join(existing)
+            return
+    headers["anthropic-beta"] = beta
 
 
 async def require_broker_ticket(request: Request) -> Dict[str, Any]:
@@ -315,7 +330,49 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
         for k, v in request.headers.items()
         if k.lower() not in ("host", "authorization", "content-length", "x-api-key")
     }
-    headers["x-api-key"] = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    # Credential injection is the ONE thing that differs between auth modes; the
+    # sandbox never carries either credential (it's added here, server-side).
+    #   api_key (default)      → x-api-key: <static ANTHROPIC_API_KEY>
+    #   workload_identity      → Authorization: Bearer <short-lived federated
+    #                            token> + the oauth beta header OAuth-style
+    #                            tokens require; NO static key exists.
+    llm_auth = getattr(getattr(request.app.state, "chat_config", None), "llm_auth", "api_key")
+    wif_mode = llm_auth == "workload_identity"
+    if wif_mode:
+        from app.auth.wif import WIFAuthError, get_federated_access_token
+
+        try:
+            # Offload the (synchronous, network-bound, ~10s-timeout) token
+            # exchange so a refresh can't stall the single-worker chat event
+            # loop for the whole app.
+            token = await asyncio.to_thread(get_federated_access_token)
+        except WIFAuthError as exc:
+            # The exchange error can carry up to 200 chars of Anthropic's raw
+            # response body (org/rule/service-account ids on invalid_grant).
+            # Record the full detail in the audit trail (server-side only, like
+            # every other deny path here) and return a GENERIC message to the
+            # sandbox-facing caller — never echo upstream error text across the
+            # isolation boundary.
+            try:
+                audit_repo().log(
+                    action="broker_wif_exchange_failed",
+                    params={"error": str(exc)[:500], "session_id": row.get("session_id")},
+                    result="error",
+                    client_kind="broker",
+                )
+            except Exception:
+                # Audit logging must never break the request path itself.
+                pass
+            raise HTTPException(
+                status_code=502,
+                detail="workload_identity token exchange failed",
+            ) from exc
+        headers["Authorization"] = f"Bearer {token}"
+        _add_anthropic_beta(headers, "oauth-2025-04-20")
+    else:
+        headers["x-api-key"] = os.environ.get("ANTHROPIC_API_KEY", "")
+
     upstream_path = request.url.path[len("/api/broker/anthropic") :] or "/"
     async with httpx.AsyncClient(timeout=_ANTHROPIC_TIMEOUT) as client:
         resp = await client.request(
@@ -325,4 +382,10 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
             headers=headers,
             params=request.query_params,
         )
+    # A 401 in WIF mode means the cached token was revoked before its declared
+    # expiry — drop it so the next request re-mints.
+    if wif_mode and resp.status_code == 401:
+        from app.auth.wif import clear_token_cache
+
+        clear_token_cache()
     return _to_response(resp)
