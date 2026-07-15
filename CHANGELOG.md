@@ -40,13 +40,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   regardless of the resolved identity. Co-session tickets resolve via
   `mint_co_session_jwt` (live grant-intersection). Post-restart resume destroys
   the old paused sandbox before clearing its ref (no microVM leak).
-- Broker replay path is canonicalized once and the *same* normalized string
-  feeds both the admin gate and the ASGI dispatch: an absolute-URL,
-  protocol-relative (`//host`), backslash, or `%2f`-encoded path can no longer
-  slip past the gate while still reaching an admin route (the ASGI transport
-  routes on the path component alone). Broker tickets are stored as a sha256
-  digest, not the raw bearer value — a read of system state yields no usable
-  ticket (RBAC review on #849).
+- Broker replay path is canonicalized into the exact URL the ASGI transport
+  dispatches on (percent-decoded, dot-segments collapsed), and the admin gate
+  reads its path from that *same* URL object — so the gate and the dispatch
+  cannot diverge for any encoding. An absolute-URL, protocol-relative
+  (`//host`), backslash, `%2f`-encoded authority, interior percent-encoding
+  (`/api/sync/tri%67ger`), or dot-segment traversal (`/api/foo/../…`) can no
+  longer read as non-admin to the gate while still reaching an admin handler.
+  Broker tickets are stored as a sha256 digest, not the raw bearer value — a
+  read of system state yields no usable ticket (RBAC review on #849).
+- Broker admin gate is fail-closed over *all* routes matching the method+path
+  (not just the first), so route-registration order can't let a non-admin
+  catch-all shadow a real admin route.
+- Anthropic broker proxy now serves sub-paths (`/api/broker/anthropic/{path}`),
+  so the SDK's `/v1/messages` calls reach it instead of 404ing; the loopback
+  relay forwards the upstream `Content-Type` so the in-sandbox SDK/CLI parse
+  responses correctly; and `kill()` revokes a session's broker tickets at
+  teardown so rows don't linger until TTL (Devin review on #849).
 
 ---
 

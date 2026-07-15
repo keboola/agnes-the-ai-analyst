@@ -147,17 +147,36 @@ def test_admin_route_off_admin_prefix_rejected(broker_app, e2e_env):
     assert r.json().get("detail") == "admin_mutations_require_interactive_auth"
 
 
+def test_anthropic_route_accepts_subpath(broker_app):
+    """The Anthropic proxy must match sub-paths — the SDK appends
+    ``/v1/messages`` to its base URL, so the real request arrives at
+    ``/api/broker/anthropic/v1/messages``. An exact-path-only route 404s every
+    real model call (Devin review on #849)."""
+    from fastapi.routing import APIRoute
+
+    paths = {r.path for r in broker_app.routes if isinstance(r, APIRoute)}
+    assert "/api/broker/anthropic/{subpath:path}" in paths, sorted(p for p in paths if "anthropic" in p)
+    assert "/api/broker/anthropic" in paths  # bare path still served
+
+
 def test_normalize_broker_path_rejects_smuggling():
-    """Unit: the path canonicalizer accepts server-local absolute paths and
-    rejects every smuggling form the ASGI replay would otherwise honor (§11,
-    RBAC review #849)."""
+    """Unit: the path canonicalizer returns the EXACT URL the ASGI dispatch
+    routes on (percent-decoded, dot-segments collapsed) and rejects authority
+    smuggling (§11, RBAC review #849)."""
     from fastapi import HTTPException
 
     from app.api.broker import _normalize_broker_path
 
-    # accepted, query preserved
-    assert _normalize_broker_path("/api/me/home-stats") == "/api/me/home-stats"
-    assert _normalize_broker_path("/api/x?a=1&b=2") == "/api/x?a=1&b=2"
+    # accepted, query preserved; .path is the real dispatch target
+    assert _normalize_broker_path("/api/me/home-stats").path == "/api/me/home-stats"
+    got = _normalize_broker_path("/api/x?a=1&b=2")
+    assert got.path == "/api/x" and got.query == b"a=1&b=2"
+
+    # canonicalization: interior percent-encoding and dot-segment traversal
+    # resolve to the SAME path the gate must guard (both = /api/sync/trigger),
+    # so the gate can no longer be fooled into reading them as non-admin.
+    assert _normalize_broker_path("/api/sync/tri%67ger").path == "/api/sync/trigger"
+    assert _normalize_broker_path("/api/foo/../sync/trigger").path == "/api/sync/trigger"
 
     for bad in (
         "http://evil.example/api/sync/trigger",
@@ -198,6 +217,12 @@ def test_admin_route_path_smuggling_rejected(broker_app, e2e_env):
         "http://broker-replay/api/sync/trigger",
         "\\\\evil.example\\api\\sync\\trigger",
         "/%2f%2fevil/api/sync/trigger",
+        # canonicalization-divergence vectors (RBAC review #849 round 2): the
+        # ASGI transport decodes %67 -> 'g' and collapses '..', so these reach
+        # /api/sync/trigger unless the gate guards the SAME canonical path.
+        "/api/sync/tri%67ger",
+        "/api/foo/../sync/trigger",
+        "/api/sync/%2e%2e/sync/trigger",
     ]
 
     async def _run(p):
@@ -211,8 +236,11 @@ def test_admin_route_path_smuggling_rejected(broker_app, e2e_env):
 
     for p in smuggled:
         r = asyncio.run(_run(p))
-        # rejected as malformed (400) or admin-gated (403) — never 200-triggered
-        assert r.status_code in (400, 403), f"{p} -> {r.status_code}: {r.text}"
+        # Security invariant: the admin-gated handler must NEVER execute under a
+        # smuggled path. Acceptable outcomes: 400 (rejected as authority
+        # smuggling), 403 (canonical path guarded by the admin gate), or a
+        # 404/405 misroute — never a 200 that actually triggers the sync.
+        assert r.status_code != 200, f"{p} -> 200 (admin handler executed): {r.text}"
         body = r.json()
         assert body.get("status") != "triggered", f"{p} REACHED the admin handler: {r.text}"
 

@@ -191,6 +191,22 @@ def test_attach_pumps_tokens_to_ws(manager: ChatManager):
     asyncio.run(_run())
 
 
+def test_kill_revokes_broker_tickets(manager: ChatManager):
+    """kill() revokes the session's broker tickets so no stale rows linger in
+    the DB past teardown (Devin review on #849)."""
+    from src.repositories import ticket_repo
+
+    async def _run():
+        manager._provider.spawn = AsyncMock(return_value=FakeHandle())
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        tok = ticket_repo().mint(s.id, "main")
+        assert ticket_repo().resolve(tok) is not None
+        await manager.kill(s.id, reason="test_done")
+        assert ticket_repo().resolve(tok) is None
+
+    asyncio.run(_run())
+
+
 def test_send_writes_to_stdin(manager: ChatManager):
     async def _run():
         handle = FakeHandle()

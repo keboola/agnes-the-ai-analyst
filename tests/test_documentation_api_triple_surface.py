@@ -305,6 +305,7 @@ _EXEMPT: dict[str, str] = {
     # No CLI/MCP analogue: these exist purely so the in-sandbox loopback
     # relay never needs a real credential.
     "/api/broker/anthropic": _BROKER_REASON,
+    "/api/broker/anthropic/{subpath}": _BROKER_REASON,
     "/api/broker/agnes-api": _BROKER_REASON,
     "/api/broker/agnes-mcp": _BROKER_REASON,
 }

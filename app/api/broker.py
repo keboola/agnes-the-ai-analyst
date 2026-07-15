@@ -68,6 +68,12 @@ def _route_requires_admin(app: Any, method: str, path: str) -> bool:
     Introspects the real route table (not a path prefix), so it catches admin
     mutations at any path — the exact gap the prefix-only check left open.
     A path that matches no route returns False (the replay will 404 harmlessly).
+
+    Fail-closed over ALL matching routes: if *any* route that matches this
+    method+path is admin-gated, the whole request is treated as admin — never
+    just the first match. This removes any dependence on route-registration
+    order (a non-admin catch-all like ``/{full_path:path}`` registered before
+    the real admin route must not shadow the gate) — the safe direction.
     """
     m = method.upper()
     for route in app.routes:
@@ -75,37 +81,50 @@ def _route_requires_admin(app: Any, method: str, path: str) -> bool:
             continue
         if m not in (route.methods or set()):
             continue
-        if route.path_regex.match(path):
-            return require_admin in _dependant_calls(route.dependant)
+        if not route.path_regex.match(path):
+            continue
+        if require_admin in _dependant_calls(route.dependant):
+            return True
     return False
 
 
-def _normalize_broker_path(raw: Any) -> str:
-    """Canonicalize an agent-supplied replay path to a server-LOCAL absolute
-    path, or 400.
+def _normalize_broker_path(raw: Any) -> httpx.URL:
+    """Canonicalize an agent-supplied replay path to the EXACT URL the ASGI
+    dispatch will route on, pinned to the loopback authority, or 400.
 
-    The same string is used for BOTH the admin-route gate and the
-    ``httpx.ASGITransport`` replay dispatch — they must never diverge.
-    ASGITransport routes purely on the URL path component and ignores any
-    scheme/authority, so a smuggled absolute URL (``http://x/api/…``) or a
-    protocol-relative path (``//x/api/…``) slips past a literal admin check
-    yet still executes the real handler (RBAC review on #849 reproduced this
-    end-to-end). Reject anything that isn't a plain server-local absolute
-    path; the query string is preserved. Over-blocks at worst — the safe
-    direction. Also rejects backslash and percent-encoded ``//`` smuggling
-    (``%2f%2f`` decodes to a leading ``//``).
+    The admin-route gate and the ``httpx.ASGITransport`` dispatch must decide
+    on the *same* path — otherwise a string that reads as non-admin to the
+    gate but dispatches to an admin route bypasses the gate (RBAC review on
+    #849 reproduced this end-to-end). ASGITransport routes on ``request.url.path``,
+    which httpx produces by **percent-decoding and collapsing dot-segments** —
+    so a literal check on the raw string diverges from what actually
+    dispatches (``/api/sync/tri%67ger`` and ``/api/foo/../sync/trigger`` both
+    resolve to ``/api/sync/trigger``).
+
+    The fix: reject authority smuggling on the raw input (absolute URL,
+    protocol-relative ``//host``, backslash, percent-encoded ``//``), then
+    build the target ``httpx.URL`` ONCE against the pinned loopback host. The
+    caller reads ``.path`` from this object for the gate **and** dispatches
+    this very object — so the gate and the dispatch cannot diverge for any
+    encoding. Query string is preserved; over-blocks at worst.
     """
     parsed = urlsplit(str(raw or ""))
     if parsed.scheme or parsed.netloc:
         raise HTTPException(status_code=400, detail="broker_path_must_be_local")
     path = parsed.path
-    # Check both the literal and percent-decoded forms: the router the replay
-    # ultimately hits decodes the path, so a check on the raw form alone could
-    # diverge from what actually dispatches.
+    # Reject authority smuggling in both literal and percent-decoded forms
+    # BEFORE canonicalizing (a leading `//` after decode is a protocol-relative
+    # host; backslash is a `/` to some clients).
     for form in (path, unquote(path)):
         if not form.startswith("/") or form.startswith("//") or "\\" in form:
             raise HTTPException(status_code=400, detail="broker_path_must_be_local")
-    return f"{path}?{parsed.query}" if parsed.query else path
+    reconstructed = f"{path}?{parsed.query}" if parsed.query else path
+    target = httpx.URL("http://broker-replay" + reconstructed)
+    # Dot-segment collapse can't produce a leading `//`, but re-validate the
+    # canonical path defensively — it is what the gate and dispatch both use.
+    if not target.path.startswith("/") or target.path.startswith("//"):
+        raise HTTPException(status_code=400, detail="broker_path_must_be_local")
+    return target
 
 
 # Anthropic traffic is always forwarded to this pinned host — the sandbox's
@@ -188,12 +207,13 @@ async def _replay(request: Request, row: Dict[str, Any], body: Dict[str, Any]) -
     """
     method = str(body.get("method") or "GET").upper()
 
-    # Canonicalize the agent-supplied path FIRST and use the same string for
-    # the admin gate and the dispatch below — an absolute-URL / protocol-relative
-    # path would otherwise defeat the gate while still hitting the real handler
-    # (RBAC review on #849). A smuggling attempt is a probe → audit + 400.
+    # Canonicalize the agent-supplied path FIRST into the exact URL the ASGI
+    # dispatch routes on, and read the gate's path from that same object — so
+    # an absolute-URL / protocol-relative / percent-encoded / dot-segment path
+    # can't defeat the gate while still hitting the real handler (RBAC review on
+    # #849). A smuggling attempt is a probe → audit + 400.
     try:
-        path = _normalize_broker_path(body.get("path"))
+        target = _normalize_broker_path(body.get("path"))
     except HTTPException:
         try:
             audit_repo().log(
@@ -206,7 +226,9 @@ async def _replay(request: Request, row: Dict[str, Any], body: Dict[str, Any]) -
             pass
         raise
 
-    match_path = path.split("?", 1)[0]
+    # The gate decides on the SAME canonical path the dispatch will use
+    # (``target.path`` is exactly ``request.url.path`` at replay time).
+    match_path = target.path
 
     # Admin mutations are never brokered — refuse before touching identity,
     # regardless of whether the resolved identity is itself an admin. The
@@ -216,7 +238,7 @@ async def _replay(request: Request, row: Dict[str, Any], body: Dict[str, Any]) -
         try:
             audit_repo().log(
                 action="broker_admin_route_rejected",
-                params={"path": path, "method": method, "session_id": row.get("session_id")},
+                params={"path": match_path, "method": method, "session_id": row.get("session_id")},
                 result="denied",
                 client_kind="broker",
             )
@@ -229,7 +251,7 @@ async def _replay(request: Request, row: Dict[str, Any], body: Dict[str, Any]) -
     async with httpx.AsyncClient(transport=transport, base_url="http://broker-replay") as client:
         return await client.request(
             method,
-            path,
+            target,
             headers={"Authorization": f"Bearer {jwt_token}"},
             json=body.get("body"),
         )
@@ -261,11 +283,19 @@ async def agnes_mcp(request: Request, row: Dict[str, Any] = Depends(require_brok
     return _to_response(resp)
 
 
-@router.post("/anthropic")
+@router.post("/anthropic", name="anthropic_proxy_bare")
+@router.post("/anthropic/{subpath:path}", name="anthropic_proxy_subpath")
 async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(require_broker_ticket)) -> Response:
     """Inject the real Anthropic API key server-side and forward to the
     pinned Anthropic API — the sandbox's dummy key is discarded, and the
-    target host is never taken from the agent-supplied request."""
+    target host is never taken from the agent-supplied request.
+
+    Registered for both the bare path and any sub-path: the Anthropic SDK
+    appends ``/v1/messages`` (etc.) to its base URL, so the real request
+    arrives at ``/api/broker/anthropic/v1/messages``. The sub-path is
+    recomputed from ``request.url.path`` and forwarded to the pinned host —
+    the agent-supplied request still cannot choose the target host (Devin
+    review on #849)."""
     _require_scope(row, "main")
     raw_body = await request.body()
     headers = {

@@ -1262,6 +1262,15 @@ class ChatManager:
         # drop it so the map doesn't grow unboundedly with studio usage.
         self._session_profiles.pop(chat_id, None)
         self._known_protocol_sessions.discard(chat_id)
+        # Revoke any broker tickets for this session so the rows don't linger
+        # in the DB until TTL expiry (the raw values only ever lived in the
+        # now-torn-down sandbox relay's memory, so this is hygiene, not a
+        # security fix). Runs before the early-return so a not-live session
+        # still gets its stale tickets cleared. (Devin review on #849.)
+        try:
+            ticket_repo().revoke_session(chat_id)
+        except Exception:
+            logger.warning("broker ticket revocation failed for %s on kill (non-fatal)", chat_id)
         live = self._live.pop(chat_id, None)
         if live is None:
             return

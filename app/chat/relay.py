@@ -164,6 +164,14 @@ class Relay:
 
         content = resp.content
         writer.write(f"HTTP/1.1 {resp.status_code} {resp.reason_phrase}\r\n".encode())
+        # Forward Content-Type so the in-sandbox SDK/CLI (both httpx-based)
+        # decode the body correctly — without it httpx defaults to
+        # application/octet-stream and JSON parsing can take a wrong path
+        # (Devin review on #849). Content-Length is recomputed from the fully
+        # buffered body; other hop-by-hop headers are deliberately not relayed.
+        ctype = resp.headers.get("content-type")
+        if ctype:
+            writer.write(f"Content-Type: {ctype}\r\n".encode())
         writer.write(f"Content-Length: {len(content)}\r\n\r\n".encode())
         writer.write(content)
         await writer.drain()

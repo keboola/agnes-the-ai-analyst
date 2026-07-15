@@ -51,8 +51,17 @@ _EXEMPT: dict[str, str] = {
 
 
 def _live_api_routes():
-    """Return the live (path, route) pairs for every APIRoute under /api/."""
-    os.environ.setdefault("TESTING", "1")
+    """Return the live (path, route) pairs for every APIRoute under /api/.
+
+    Builds the app under a pinned, canonical env so the route set is
+    deterministic regardless of what a sibling test left in ``os.environ``
+    (some tests raw-mutate ``LOCAL_DEV_MODE`` / ``DEBUG`` / ``TESTING`` and can
+    run earlier on the same xdist worker). Without this the enumeration was
+    order-sensitive under the sharded CI run.
+    """
+    os.environ["TESTING"] = "1"
+    for var in ("LOCAL_DEV_MODE", "DEBUG", "AGNES_E2E"):
+        os.environ.pop(var, None)
     from fastapi.routing import APIRoute
     from app.main import create_app
 

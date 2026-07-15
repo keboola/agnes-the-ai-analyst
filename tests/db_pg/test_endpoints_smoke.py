@@ -1390,6 +1390,7 @@ KNOWN_UNTESTED = {
     # (app-tier: ticket auth, scope enforcement, admin-path 403, ASGI-replay
     # RBAC fidelity).
     "POST /api/broker/anthropic",
+    "POST /api/broker/anthropic/{subpath}",
     "POST /api/broker/agnes-api",
     "POST /api/broker/agnes-mcp",
     # Collections (bring-your-files) — behaviorally covered in the dedicated
