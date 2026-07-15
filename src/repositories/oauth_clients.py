@@ -9,11 +9,28 @@ Stores:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import duckdb
+
+
+def _hash(value: str) -> str:
+    """sha256 of an OAuth authorization code / access / refresh token.
+
+    These are bearer secrets; only the digest is persisted (audit M4). A read
+    of ``system.duckdb`` then yields no usable code/token — in particular no
+    live refresh token, which is a 30-day secret exchangeable for a fresh
+    full-RBAC session JWT. The raw value only ever exists in the client's hands
+    and in-flight; store + lookup both hash, so exchange/refresh still work.
+    (Client secrets are NOT hashed here: the MCP OAuth SDK compares them by
+    equality against the value returned in OAuthClientInformationFull, so
+    hashing them at rest needs an SDK-side verification change — tracked
+    separately.)
+    """
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 class OAuthClientsRepository:
@@ -103,7 +120,7 @@ class OAuthClientsRepository:
                 state       = excluded.state
             """,
             [
-                code,
+                _hash(code),
                 client_id,
                 json.dumps(scopes),
                 code_challenge,
@@ -119,7 +136,7 @@ class OAuthClientsRepository:
     def get_auth_code(self, code: str) -> Optional[dict[str, Any]]:
         row = self.conn.execute(
             "SELECT * FROM oauth_auth_codes WHERE code = ?",
-            [code],
+            [_hash(code)],
         ).fetchone()
         if row is None:
             return None
@@ -132,7 +149,7 @@ class OAuthClientsRepository:
     def delete_auth_code(self, code: str) -> None:
         self.conn.execute(
             "DELETE FROM oauth_auth_codes WHERE code = ?",
-            [code],
+            [_hash(code)],
         )
 
     # ------------------------------------------------------------------
@@ -161,13 +178,13 @@ class OAuthClientsRepository:
                 subject    = excluded.subject,
                 resource   = excluded.resource
             """,
-            [token, client_id, json.dumps(scopes), expires_at, subject, resource, now],
+            [_hash(token), client_id, json.dumps(scopes), expires_at, subject, resource, now],
         )
 
     def get_access_token(self, token: str) -> Optional[dict[str, Any]]:
         row = self.conn.execute(
             "SELECT * FROM oauth_access_tokens WHERE token = ?",
-            [token],
+            [_hash(token)],
         ).fetchone()
         if row is None:
             return None
@@ -180,7 +197,7 @@ class OAuthClientsRepository:
         now = datetime.now(timezone.utc)
         self.conn.execute(
             "UPDATE oauth_access_tokens SET revoked_at = ? WHERE token = ?",
-            [now, token],
+            [now, _hash(token)],
         )
 
     # ------------------------------------------------------------------
@@ -209,13 +226,13 @@ class OAuthClientsRepository:
                 subject    = excluded.subject,
                 resource   = excluded.resource
             """,
-            [token, client_id, json.dumps(scopes), expires_at, subject, resource, now],
+            [_hash(token), client_id, json.dumps(scopes), expires_at, subject, resource, now],
         )
 
     def get_refresh_token(self, token: str) -> Optional[dict[str, Any]]:
         row = self.conn.execute(
             "SELECT * FROM oauth_refresh_tokens WHERE token = ?",
-            [token],
+            [_hash(token)],
         ).fetchone()
         if row is None:
             return None
@@ -228,5 +245,5 @@ class OAuthClientsRepository:
         now = datetime.now(timezone.utc)
         self.conn.execute(
             "UPDATE oauth_refresh_tokens SET revoked_at = ? WHERE token = ?",
-            [now, token],
+            [now, _hash(token)],
         )

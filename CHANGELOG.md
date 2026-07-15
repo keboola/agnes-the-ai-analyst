@@ -10,7 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
----
+### Security
+
+- OAuth 2.1 authorization codes, access tokens, and **refresh tokens** are now
+  hashed (SHA-256) at rest in `oauth_auth_codes` / `oauth_access_tokens` /
+  `oauth_refresh_tokens` (both DuckDB and Postgres repos), instead of stored
+  verbatim. A read of `system.duckdb`/PG previously yielded live refresh
+  tokens — 30-day secrets exchangeable via `grant_type=refresh_token` for a
+  fresh full-RBAC session JWT (audit M4). Hashing happens in the repo layer
+  (store + lookup both hash), so the authorization-code / refresh exchange
+  flows are unchanged; tokens issued before the upgrade are invalidated.
+  NOTE: `client_secret` is deliberately NOT hashed here — the MCP OAuth SDK
+  compares it by equality against the value returned in
+  `OAuthClientInformationFull`, so hashing it at rest needs an SDK-side
+  verification change and is tracked as a follow-up.
 
 ## [0.74.83] - 2026-07-15
 
