@@ -15,6 +15,7 @@ from src.repositories import (
     profile_repo,
     table_registry_repo,
 )
+
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
 
 
@@ -68,9 +69,12 @@ async def list_catalog_tables(
     repo = table_registry_repo()
     all_tables = repo.list_all()
 
-    # Filter by user's accessible tables. ``can_access_table`` has its own
-    # admin shortcut (Admin group → True), so no need to pre-branch here.
-    all_tables = [t for t in all_tables if can_access_table(user, t["id"], conn)]
+    # Resolve the accessible-table set ONCE per request (was: one
+    # ``can_access_table`` call per row — an N+1 that serialized ~8-9
+    # round-trips per table over ~115 tables). ``None`` means admin/all.
+    _accessible_ids = get_accessible_tables(user, conn)
+    _allowed = None if _accessible_ids is None else set(_accessible_ids)
+    all_tables = [t for t in all_tables if _allowed is None or t["id"] in _allowed]
 
     tables = [
         {
@@ -93,6 +97,7 @@ async def get_metric(
 ):
     """Deprecated: use GET /api/metrics/{metric_id} instead."""
     from fastapi.responses import RedirectResponse
+
     metric_id = metric_path.replace(".yml", "")
     return RedirectResponse(url=f"/api/metrics/{metric_id}", status_code=301)
 
