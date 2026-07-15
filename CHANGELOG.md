@@ -12,6 +12,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.88] - 2026-07-15
+
+### Added
+
+- Keboola semantic layer importer: `connectors/keboola/semantic_layer.py` syncs a Keboola project's Metastore (datasets, metrics, constraints) into `metric_definitions` on a schedule (`SCHEDULER_KEBOOLA_SEMANTIC_LAYER_REFRESH_INTERVAL`, default 6h), tagged `source='keboola_semantic_layer'` and upsert+pruned each run. Requires a master (owner) Storage API token. Metrics referencing a JOINed dataset (via an aliased column not in scope for v1) are skipped and counted rather than guessed. A failed Metastore fetch or Storage API master-token preflight (401/5xx/network) aborts with a logged `{status: error}` instead of a 500; an empty upstream metrics response never prunes the entire existing row set (safety valve against upstream filter drift); and foreign-alias detection masks single-quoted string literals so a dotted enum value like `'in.progress'` no longer skips a valid single-table metric.
+
+---
+
 ## [0.74.87] - 2026-07-15
 
 ### Fixed

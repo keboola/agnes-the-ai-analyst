@@ -375,6 +375,14 @@ class KeboolaStorageClient:
         """
         return self._get(f"/tables/{table_id}")
 
+    def verify_token(self) -> dict:
+        """GET /v2/storage/tokens/verify — token metadata including
+        `isMasterToken`, `bucketPermissions`, `owner`. Used by the
+        semantic-layer importer's master-token preflight check (the
+        Metastore API requires a master token; see
+        connectors/keboola/semantic_layer.py:require_master_token)."""
+        return self._get("/tokens/verify")
+
     # ---- discovery: buckets + tables ---------------------------------------
     #
     # Unlike the job/file/export endpoints above (always a JSON object),

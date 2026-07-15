@@ -308,6 +308,11 @@ _EXEMPT: dict[str, str] = {
     "/api/broker/anthropic/{subpath}": _BROKER_REASON,
     "/api/broker/agnes-api": _BROKER_REASON,
     "/api/broker/agnes-mcp": _BROKER_REASON,
+    "/api/admin/run-keboola-semantic-layer-refresh": (
+        "scheduler-driven Keboola semantic layer (Metastore) sync trigger — "
+        "admin/scheduler maintenance op, mirrors the run-bq-metadata-refresh / "
+        "run-knowledge-digests exemptions; no analyst CLI/MCP analogue"
+    ),
 }
 
 
