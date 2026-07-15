@@ -50,6 +50,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import secrets
 import shlex
 import sys
@@ -726,6 +727,115 @@ def test_no_secret_anywhere(docker_e2e_agnes: str) -> None:
             timeout=30,
         )
         assert fs_hits.strip() == "", f"a live broker ticket was found on the sandbox filesystem: {fs_hits!r}"
+
+
+# In-sandbox process-memory scanner. Runs as the sandbox 'user' account (the
+# attacker's post-RCE identity), reads every same-UID process's memory via
+# /proc/<pid>/mem, and emits real-Anthropic-key-length ``sk-ant-…`` candidates
+# plus a self-canary positive control. The real key is never sent INTO the
+# sandbox (that would poison the test); the caller compares what this emits
+# against the real value SERVER-SIDE. The ``{20,}`` length floor deliberately
+# skips the short (<20 char) ``sk-ant-admin01-``/``-api03-``/``-oat01-``/``-sid``
+# prefix *constants* the Anthropic SDK keeps in memory — a real key is ~100+.
+_MEMSCAN_SRC = r"""
+import glob, re
+CANARY = "AGNES_MEMSCAN_CANARY_e7f1a9c4b2d80f36"  # single literal => contiguous in our own memory
+PAT = re.compile(rb"sk-ant-[A-Za-z0-9_-]{20,}")
+scanned = 0; canary = False; cand = set()
+for p in glob.glob("/proc/[0-9]*"):
+    try:
+        maps = open(p + "/maps").read(); mem = open(p + "/mem", "rb")
+    except Exception:
+        continue
+    scanned += 1
+    for line in maps.splitlines():
+        f = line.split()
+        if len(f) < 2 or "r" not in f[1]:
+            continue
+        try:
+            a, b = f[0].split("-"); s = int(a, 16); e = int(b, 16)
+            if e - s > 96 * 1024 * 1024:
+                continue
+            mem.seek(s); chunk = mem.read(e - s)
+        except Exception:
+            continue
+        if CANARY.encode() in chunk:
+            canary = True
+        for m in PAT.findall(chunk):
+            cand.add(m.decode("latin1"))
+    mem.close()
+print("SCANNED_PIDS=%d" % scanned)
+print("CANARY_FOUND=%s" % canary)
+for c in sorted(cand):
+    print("MEMKEY:", c)
+"""
+
+
+@pytest.mark.skipif(not os.environ.get("AGNES_E2E_E2B"), reason="AGNES_E2E_E2B=1 required — needs a real E2B sandbox")
+@pytest.mark.real_llm
+def test_no_real_anthropic_key_in_process_memory(docker_e2e_agnes: str) -> None:
+    """AC-F-nosecret (memory leg) — the real Anthropic key is absent from the
+    MEMORY of every sandbox process, even the runner/relay that actually
+    proxies live completions.
+
+    ``test_no_secret_anywhere`` covers env, argv, and the filesystem. This adds
+    the strongest attacker vector the incident-closure suite otherwise leaves
+    untested: an attacker with in-sandbox code execution (exactly what a prompt
+    injection yields) reading same-UID process memory via ``/proc/<pid>/mem``.
+    The real key never enters the sandbox — it is injected at the broker,
+    server-side — so it must appear in NO process's memory, not even
+    transiently in the relay that forwards the (ticketed) call. Broker tickets
+    MAY sit in the relay's memory; that is the design's single accepted
+    residual (short-lived, hashed at rest, scope- and RBAC-bound, revoked on
+    teardown) and is NOT one of the two incident secrets, so it is not asserted
+    here.
+
+    A self-canary (a unique literal in the scanner's own memory) is the
+    positive control: if it is not found, memory reads were blocked and every
+    negative assertion would pass vacuously, so the test fails instead.
+    """
+    _skip_if_fake_agent_mode()
+    if not _WS_AVAILABLE:
+        pytest.skip("websockets.sync.client unavailable")
+
+    admin = bootstrap_admin(docker_e2e_agnes, email=E2E_USER_EMAIL, password=E2E_USER_PASSWORD)
+    session = admin.create_chat_session(surface="web")
+    chat_id = session["id"]
+    ws_url = admin.ws_url_for(session)
+
+    # A real completion must flow through the relay so that, if the key were
+    # ever going to transit the sandbox, it would be resident during the scan.
+    with ws_connect(ws_url, open_timeout=30) as ws:
+        pump_until(ws, predicate=lambda f: f.get("type") in ("ready", "runner_ready"), timeout_per_frame=60)
+        ws.send(json.dumps({"type": "user_msg", "text": "Say hello in one short sentence."}))
+        pump_until(ws, predicate=lambda f: f.get("type") == "assistant_message", timeout_per_frame=120)
+
+    sandbox_id, runner_pid = _sandbox_refs(chat_id)
+    real_key = os.environ["ANTHROPIC_API_KEY"]
+
+    # Positive control (env leg): the dummy placeholder must be present, proving
+    # we located the right runner pid before trusting any memory-absence result.
+    _, environ_runner, _ = _run_in_sandbox(sandbox_id, f"cat /proc/{runner_pid}/environ | tr '\\0' '\\n'")
+    assert "sk-dummy-broker" in environ_runner, "runner env missing dummy key — wrong pid or _start_relay didn't run"
+
+    write_cmd = "cat > /tmp/memscan.py << 'PYEOF'\n" + _MEMSCAN_SRC + "\nPYEOF\n"
+    _run_in_sandbox(sandbox_id, write_cmd, timeout=15)
+    _, scan_out, scan_err = _run_in_sandbox(sandbox_id, "python3 /tmp/memscan.py", timeout=90)
+
+    # Positive control (memory leg): the scanner must have actually read memory.
+    assert "CANARY_FOUND=True" in scan_out, (
+        f"memory scanner could not find its own canary — /proc/*/mem reads were "
+        f"blocked, so absence below would be vacuous. out={scan_out!r} err={scan_err!r}"
+    )
+    m = re.search(r"SCANNED_PIDS=(\d+)", scan_out)
+    assert m and int(m.group(1)) >= 1, f"scanner scanned no processes: {scan_out!r}"
+
+    memkeys = [ln[len("MEMKEY: ") :] for ln in scan_out.splitlines() if ln.startswith("MEMKEY: ")]
+    # S1: the real Anthropic key must be nowhere in any process's memory.
+    assert real_key not in scan_out, "real Anthropic key value found in sandbox process memory"
+    assert not any(k == real_key for k in memkeys), (
+        f"a real-key-length sk-ant-* string in memory equals the real key: {memkeys!r}"
+    )
 
 
 @pytest.mark.skipif(not os.environ.get("AGNES_E2E_E2B"), reason="AGNES_E2E_E2B=1 required — needs a real E2B sandbox")
