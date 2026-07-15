@@ -25,17 +25,20 @@ def setup_db(tmp_path, monkeypatch):
     UserRepository(conn).create(id="admin1", email="admin@test.com", name="Admin")
     UserRepository(conn).create(id="user1", email="user@test.com", name="User")
 
-    admin_gid = conn.execute(
-        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
-    ).fetchone()[0]
+    admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()[0]
     UserGroupMembersRepository(conn).add_member("admin1", admin_gid, source="system_seed")
 
     # Custom group + grant: user1 ∈ analysts, analysts can see "orders"
     analysts = UserGroupsRepository(conn).create(
-        name="analysts", description="test group", created_by="test",
+        name="analysts",
+        description="test group",
+        created_by="test",
     )
     UserGroupMembersRepository(conn).add_member(
-        "user1", analysts["id"], source="admin", added_by="test",
+        "user1",
+        analysts["id"],
+        source="admin",
+        added_by="test",
     )
     conn.execute(
         "INSERT INTO table_registry (id, name) VALUES (?, ?)",
@@ -50,10 +53,14 @@ def setup_db(tmp_path, monkeypatch):
     # user's stack automatically. Per-table grants on resource_grants are
     # no longer consulted for analyst visibility.
     from src.repositories.data_packages import DataPackagesRepository
+
     pkgs = DataPackagesRepository(conn)
     pkg_id = pkgs.create(
-        name="orders-pkg", slug="orders-pkg",
-        description=None, icon=None, color=None,
+        name="orders-pkg",
+        slug="orders-pkg",
+        description=None,
+        icon=None,
+        color=None,
         created_by="test",
     )
     pkgs.add_table(pkg_id, "orders", added_by="test")
@@ -75,6 +82,7 @@ class TestCanAccessTable:
     def test_admin_sees_every_table(self, setup_db):
         from src.db import get_system_db
         from src.rbac import can_access_table
+
         conn = get_system_db()
         try:
             admin = {"id": "admin1"}
@@ -88,6 +96,7 @@ class TestCanAccessTable:
     def test_non_admin_sees_only_granted_tables(self, setup_db):
         from src.db import get_system_db
         from src.rbac import can_access_table
+
         conn = get_system_db()
         try:
             user = {"id": "user1"}
@@ -105,6 +114,7 @@ class TestCanAccessTable:
         registering a fresh table and asserting denial."""
         from src.db import get_system_db
         from src.rbac import can_access_table
+
         conn = get_system_db()
         try:
             conn.execute(
@@ -119,6 +129,7 @@ class TestCanAccessTable:
     def test_unknown_user_id_denied(self, setup_db):
         from src.db import get_system_db
         from src.rbac import can_access_table
+
         conn = get_system_db()
         try:
             assert can_access_table({"id": "ghost"}, "orders", conn) is False
@@ -134,6 +145,7 @@ class TestGetAccessibleTables:
     def test_admin_returns_none(self, setup_db):
         from src.db import get_system_db
         from src.rbac import get_accessible_tables
+
         conn = get_system_db()
         try:
             assert get_accessible_tables({"id": "admin1"}, conn) is None
@@ -144,6 +156,7 @@ class TestGetAccessibleTables:
         from src.db import get_system_db
         from src.rbac import get_accessible_tables
         from connectors.internal.access import INTERNAL_TABLES
+
         conn = get_system_db()
         try:
             tables = get_accessible_tables({"id": "user1"}, conn)
@@ -162,23 +175,95 @@ class TestGetAccessibleTables:
         from src.repositories.users import UserRepository
         from src.rbac import get_accessible_tables
         from connectors.internal.access import INTERNAL_TABLES
+
         conn = get_system_db()
         try:
             UserRepository(conn).create(id="loner", email="loner@test.com", name="L")
             # Membership in Everyone alone (no grants on it). The user still
             # gets the agnes_* internal tables (row-level RBAC handles the
             # actual security), but no granted tables.
-            everyone = conn.execute(
-                "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_EVERYONE_GROUP]
-            ).fetchone()
+            everyone = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_EVERYONE_GROUP]).fetchone()
             if everyone:
                 UserGroupMembersRepository(conn).add_member(
-                    "loner", everyone[0], source="system_seed",
+                    "loner",
+                    everyone[0],
+                    source="system_seed",
                 )
             internal_ids = {t.registry_id for t in INTERNAL_TABLES}
             assert set(get_accessible_tables({"id": "loner"}, conn)) == internal_ids
         finally:
             conn.close()
+
+
+class TestGetAccessibleIds:
+    """``get_accessible_ids`` — generic grant-based id set for any
+    resource_type. Admin → None; non-admin → frozenset of granted ids;
+    SessionPrincipal → intersection membership (never None)."""
+
+    def test_admin_returns_none(self, setup_db):
+        from src.db import get_system_db
+        from src.rbac import get_accessible_ids
+
+        conn = get_system_db()
+        try:
+            assert get_accessible_ids({"id": "admin1"}, "recipe", conn) is None
+        finally:
+            conn.close()
+
+    def test_non_admin_returns_granted_ids(self, setup_db):
+        from src.db import get_system_db
+        from src.rbac import get_accessible_ids
+
+        conn = get_system_db()
+        try:
+            analysts_id = conn.execute("SELECT id FROM user_groups WHERE name = 'analysts'").fetchone()[0]
+            conn.execute(
+                """INSERT INTO resource_grants
+                   (id, group_id, resource_type, resource_id)
+                   VALUES (?, ?, 'recipe', 'recipe-1')""",
+                [str(uuid.uuid4()), analysts_id],
+            )
+            ids = get_accessible_ids({"id": "user1"}, "recipe", conn)
+            assert ids == frozenset({"recipe-1"})
+        finally:
+            conn.close()
+
+    def test_no_grant_returns_empty_frozenset(self, setup_db):
+        from src.db import get_system_db
+        from src.rbac import get_accessible_ids
+
+        conn = get_system_db()
+        try:
+            ids = get_accessible_ids({"id": "user1"}, "recipe", conn)
+            assert ids == frozenset()
+        finally:
+            conn.close()
+
+    def test_unknown_user_id_returns_empty_frozenset(self, setup_db):
+        from src.db import get_system_db
+        from src.rbac import get_accessible_ids
+
+        conn = get_system_db()
+        try:
+            assert get_accessible_ids({"id": "ghost"}, "recipe", conn) == frozenset()
+            assert get_accessible_ids({}, "recipe", conn) == frozenset()
+        finally:
+            conn.close()
+
+    def test_session_principal_returns_intersection(self, setup_db):
+        from src.rbac import get_accessible_ids
+        from app.auth.session_principal import SessionPrincipal
+
+        principal = SessionPrincipal(
+            session_id="s1",
+            participant_user_ids=["analyst1"],
+            participant_emails=["analyst@test.com"],
+            intersection={"recipe": frozenset({"recipe-a", "recipe-b"})},
+        )
+        assert get_accessible_ids(principal, "recipe") == frozenset({"recipe-a", "recipe-b"})
+        # No admin god-mode, no personal stack — resource_type absent from
+        # the intersection yields empty, never None.
+        assert get_accessible_ids(principal, "collection") == frozenset()
 
 
 class TestHasExplicitGrant:
@@ -191,6 +276,7 @@ class TestHasExplicitGrant:
     def test_admin_without_grant_is_false_while_can_access_is_true(self, setup_db):
         from src.db import get_system_db
         from app.auth.access import can_access, has_explicit_grant
+
         conn = get_system_db()
         try:
             # No chat grant exists anywhere in the seeded DB.
@@ -206,11 +292,10 @@ class TestHasExplicitGrant:
     def test_member_of_granted_group_is_true(self, setup_db):
         from src.db import get_system_db
         from app.auth.access import has_explicit_grant
+
         conn = get_system_db()
         try:
-            analysts_id = conn.execute(
-                "SELECT id FROM user_groups WHERE name = 'analysts'"
-            ).fetchone()[0]
+            analysts_id = conn.execute("SELECT id FROM user_groups WHERE name = 'analysts'").fetchone()[0]
             conn.execute(
                 """INSERT INTO resource_grants
                    (id, group_id, resource_type, resource_id)
