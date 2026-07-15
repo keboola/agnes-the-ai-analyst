@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.79] - 2026-07-15
+
 ### Security
 
 - Curated-marketplace file serving: two path/RBAC gaps from the post-INC-01572
