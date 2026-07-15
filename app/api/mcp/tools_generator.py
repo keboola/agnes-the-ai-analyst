@@ -14,7 +14,7 @@ and ``catalog`` tools from @mf's foundation.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from mcp.server.fastmcp import FastMCP
 
@@ -279,3 +279,82 @@ def register_passthrough_tools(
     if registered:
         logger.info("registered %d passthrough MCP tools: %s", len(registered), ", ".join(registered))
     return registered
+
+
+def _allowed_passthrough_names(caller_user_id: Optional[str]) -> set[str]:
+    """Exposed names of the passthrough tools ``caller_user_id`` may see —
+    admin sees all enabled passthrough tools, everyone else the intersection
+    of ``tool_grants`` with their groups, an unresolved caller sees none. This
+    mirrors ``app/api/mcp_passthrough.py::_visible_passthrough_tools`` (the REST
+    listing) so the transports and REST agree on visibility.
+    """
+    from app.auth.access import _user_group_ids, is_user_admin
+
+    if not caller_user_id:
+        return set()
+    repo = tool_registry_repo()
+    if is_user_admin(caller_user_id):
+        return {t["exposed_name"] for t in repo.list_by_mode(PASSTHROUGH, enabled_only=True)}
+    group_ids = list(_user_group_ids(caller_user_id))
+    return {t["exposed_name"] for t in repo.list_passthrough_for_groups(group_ids)}
+
+
+def install_grant_filtered_list_tools(
+    mcp_instance: FastMCP,
+    caller_id_fn: Optional[Callable[[], Optional[str]]] = None,
+    passthrough_names: Optional[Iterable[str]] = None,
+) -> Callable[[], Any]:
+    """Replace the FastMCP ``tools/list`` handler with one that hides
+    passthrough tools the current caller has no grant on.
+
+    The transports register every enabled passthrough tool once at startup, so
+    by default ``tools/list`` advertises all of them to any authenticated
+    caller — leaking tool names / descriptions / input schemas regardless of
+    ``tool_grants`` (invocation is already gated by ``enforce_passthrough_policy``;
+    this closes the *visibility* gap so the SSE / Streamable listing matches the
+    REST ``_visible_passthrough_tools`` intersection). Foundation tools are
+    never passthrough-mode, so they always remain visible.
+
+    The passthrough universe is fixed at install time — pass ``passthrough_names``
+    (the ``register_passthrough_tools`` return value) so we don't re-query the
+    registry on every ``tools/list``. This is also what makes the request-time
+    path genuinely fail closed: the set of names to potentially hide is already
+    known, so a runtime error resolving the caller's grants collapses ``allowed``
+    to the empty set and the *entire* known universe is dropped (never the
+    unfiltered list). If ``passthrough_names`` is omitted we snapshot it once
+    here at install time.
+
+    Re-registering on the low-level server replaces the handler
+    (``request_handlers[ListToolsRequest] = handler``); call this AFTER
+    ``register_passthrough_tools`` so the base handler already exists.
+    """
+    base_list_tools = mcp_instance.list_tools
+
+    if passthrough_names is not None:
+        universe = set(passthrough_names)
+    else:
+        try:
+            universe = {t["exposed_name"] for t in tool_registry_repo().list_by_mode(PASSTHROUGH, enabled_only=True)}
+        except Exception:
+            # Can't determine the universe at install time → nothing to hide
+            # yet, but log loudly: this is a security-visibility control.
+            logger.exception("could not snapshot passthrough universe; tools/list filter disabled")
+            universe = set()
+
+    async def _filtered_list_tools():
+        all_tools = await base_list_tools()
+        if not universe:
+            return all_tools
+        try:
+            caller_user_id = caller_id_fn() if caller_id_fn else None
+            allowed = _allowed_passthrough_names(caller_user_id)
+        except Exception:
+            # Never let a filtering error expose the unfiltered list — fail
+            # closed by dropping every passthrough tool in the known universe,
+            # keeping foundation tools (which are never in the universe).
+            logger.exception("passthrough tools/list filtering failed; hiding all passthrough tools")
+            allowed = set()
+        return [t for t in all_tools if t.name not in universe or t.name in allowed]
+
+    mcp_instance._mcp_server.list_tools()(_filtered_list_tools)
+    return _filtered_list_tools
