@@ -10,7 +10,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
----
+### Security
+
+- Marketplace and initial-workspace clone URLs are now run through
+  `_validate_url_not_private` (DNS-resolve + reject private/reserved/loopback/
+  link-local hosts), matching the guard the other admin URL fields already use.
+  These URLs are `git clone`d server-side on the nightly sync, so an
+  admin-registered `https://169.254.169.254/…` or internal host was a
+  server-side SSRF / internal port-probe vector (admin-gated → defense in
+  depth). Found by the post-INC-01572 audit (L2).
 
 ## [0.74.80] - 2026-07-15
 

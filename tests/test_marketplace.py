@@ -588,6 +588,19 @@ def test_api_rejects_bad_slug_and_non_https(seeded_app):
     )
     assert r.status_code == 400
 
+    # SSRF: https but pointing at a private/reserved host — the clone runs
+    # server-side, so these must be rejected (audit L2). Chosen so the check
+    # short-circuits without an external DNS lookup: `localhost` is a literal
+    # deny, and a link-local IP needs no resolution.
+    for bad_url in ("https://localhost/x.git", "https://169.254.169.254/x.git"):
+        r = client.post(
+            "/api/marketplaces",
+            headers=token_headers,
+            json={"name": "X", "slug": "ssrf", "url": bad_url, **curator},
+        )
+        assert r.status_code == 400, f"{bad_url} -> {r.status_code}: {r.text}"
+        assert "private or reserved" in r.text, r.text
+
 
 def test_api_rejects_ref_and_branch_together(seeded_app):
     client = seeded_app["client"]

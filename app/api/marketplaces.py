@@ -287,6 +287,12 @@ async def create_marketplace(
         )
     if not (payload.url or "").strip().lower().startswith("https://"):
         raise HTTPException(status_code=400, detail="url must start with https://")
+    # SSRF guard (audit L2): this URL is git-cloned server-side on the nightly
+    # sync, so reject hosts that resolve to a private/reserved network — the
+    # same check the other URL-bearing admin fields already run.
+    from app.api.admin import _validate_url_not_private
+
+    _validate_url_not_private(payload.url.strip(), field_name="url")
     if not (payload.name or "").strip():
         raise HTTPException(status_code=400, detail="name is required")
 
@@ -381,6 +387,9 @@ async def update_marketplace(
         url = payload.url.strip()
         if not url.lower().startswith("https://"):
             raise HTTPException(status_code=400, detail="url must start with https://")
+        from app.api.admin import _validate_url_not_private
+
+        _validate_url_not_private(url, field_name="url")  # SSRF guard (audit L2)
         updated["url"] = url
         changed["url"] = url
     if payload.branch is not None:
