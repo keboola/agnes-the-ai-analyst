@@ -20,7 +20,7 @@ from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
 from src.audit_helpers import client_kind_from_user
-from src.rbac import can_access_table
+from src.rbac import get_accessible_tables
 from src.scheduler import filter_due_tables, is_table_due
 
 from src.repositories import (
@@ -1383,16 +1383,21 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     # `query_mode=local`, causing the CLI to try downloading remote tables.
     registry_by_name = {t["name"]: t for t in table_repo.list_all()}
 
-    # Filter by user's accessible tables. `can_access_table` has its own
-    # admin shortcut (Admin group → True). Lookup translates name→id first
-    # because `s["table_id"]` is sourced from `_meta.table_name` = registry
-    # `name` while `can_access_table` keys on registry `id`; when id != name
-    # an id-keyed call would miss.
+    # Filter by user's accessible tables. `get_accessible_tables` resolves the
+    # caller's accessible id set ONCE (None => admin/all) instead of the old
+    # per-row `can_access_table` call — same admin shortcut and stack-gated
+    # semantics, collapsed from an N+1 to a single resolution + in-memory
+    # membership test (FAI-132). Lookup translates name→id first because
+    # `s["table_id"]` is sourced from `_meta.table_name` = registry `name`
+    # while the accessible-id set keys on registry `id`; when id != name an
+    # id-keyed call would miss.
     def _id_for(state):
         reg = registry_by_name.get(state["table_id"])
         return reg["id"] if reg else state["table_id"]
 
-    all_states = [s for s in all_states if can_access_table(user, _id_for(s), conn)]
+    _accessible_ids = get_accessible_tables(user, conn)
+    _allowed = None if _accessible_ids is None else set(_accessible_ids)
+    all_states = [s for s in all_states if _allowed is None or _id_for(s) in _allowed]
 
     data_dir = _get_data_dir()
     tables = {}
