@@ -90,8 +90,14 @@ def can_access_table(
     if not user_id:
         return False
 
+    # On Postgres never open the system DuckDB — the RBAC helpers below
+    # (is_user_admin / StackResolver / data_packages_repo) route through the
+    # repository factory when ``conn`` is None (see their use_pg() guards), so
+    # a raw system-DB handle is both unnecessary and forbidden on PG.
+    from src.repositories import use_pg
+
     should_close = False
-    if conn is None:
+    if conn is None and not use_pg():
         conn = get_system_db()
         should_close = True
     try:
@@ -143,8 +149,13 @@ def get_accessible_ids(
     if not user_id:
         return frozenset()
 
+    # On Postgres never open the system DuckDB — see can_access_table above;
+    # is_user_admin / _allowed_ids_for_user route through the repository factory
+    # when conn is None.
+    from src.repositories import use_pg
+
     should_close = False
-    if conn is None:
+    if conn is None and not use_pg():
         conn = get_system_db()
         should_close = True
     try:
@@ -191,8 +202,12 @@ def get_accessible_tables(
     if not user_id:
         return []
 
+    # On Postgres never open the system DuckDB — see can_access_table above;
+    # all reads below route through the repository factory when conn is None.
+    from src.repositories import use_pg
+
     should_close = False
-    if conn is None:
+    if conn is None and not use_pg():
         conn = get_system_db()
         should_close = True
     try:

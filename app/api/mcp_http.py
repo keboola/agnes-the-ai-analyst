@@ -134,12 +134,17 @@ class _AuthMiddleware:
         try:
             from app.auth.pat_resolver import resolve_token_to_user
             from src.db import get_system_db
+            from src.repositories import use_pg
 
-            conn = get_system_db()
+            # resolve_token_to_user routes through the repository factory and
+            # ignores ``conn``; on Postgres pass None so the system DuckDB is
+            # never opened (forbidden invariant).
+            conn = None if use_pg() else get_system_db()
             try:
                 user, reason = resolve_token_to_user(conn, raw_token)
             finally:
-                conn.close()
+                if conn is not None:
+                    conn.close()
         except Exception:
             logger.exception("MCP auth error")
             await _send_401(scope, send)

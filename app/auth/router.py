@@ -49,18 +49,20 @@ class BootstrapRequest(BaseModel):
 
 
 def _audit(user_id: str, action: str, result: str | None = None) -> None:
-    """Fire-and-forget audit log entry. Swallows all errors."""
-    try:
-        from src.db import get_system_db
+    """Fire-and-forget audit log entry. Swallows all errors.
 
-        audit_conn = get_system_db()
+    ``audit_repo()`` is factory-routed (DuckDB or Postgres per ``use_pg()``)
+    and opens its own backend connection, so no system-DuckDB handle is needed
+    here — opening one would create a stale ``state/system.duckdb`` on a
+    Postgres instance (and is a hard error once the invariant is enforced).
+    """
+    try:
         audit_repo().log(
             user_id=user_id,
             action=action,
             resource="auth",
             result=result,
         )
-        audit_conn.close()
     except Exception:
         pass  # Audit failure must not block auth
 

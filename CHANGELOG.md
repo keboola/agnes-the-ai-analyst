@@ -27,6 +27,58 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.96] - 2026-07-15
+
+### Fixed
+
+- Intermittent **"system unavailable"** (503) responses under load. The
+  auth/RBAC request dependencies (`get_current_user`, `get_optional_user`,
+  `require_session_token`, `require_admin`, `require_resource_access`,
+  `require_broker_ticket`) were `async def` but ran synchronous, blocking
+  state-DB reads directly on the single uvicorn event loop; since auth runs on
+  nearly every request, one slow read could freeze the whole process. They are
+  now plain `def` so FastAPI offloads them to the anyio thread pool.
+- On a Postgres-backed instance the system DuckDB is no longer opened. System
+  state lives in Postgres, but several request/startup paths still opened the
+  local `system.duckdb`, creating a stale file and reading the wrong backend.
+  `get_system_db()` now raises on a Postgres instance and every opener is gated
+  behind the backend selector or routed through the repository factory. The
+  DuckDB-only operational tables with no Postgres mirror (`cli_auth_codes`,
+  Slack identity-binding codes) moved to a dedicated `operational.duckdb`.
+- Unauthenticated pages (`/login`, `/first-time-setup`, `/login/password`) no
+  longer render the admin install-prompt override on a Postgres instance. The
+  setup-prompt branch keyed off `use_pg()` alone, so on Postgres — where a
+  supplied request conn is always `None` — anonymous pages entered the
+  DB-backed override path instead of the anonymous default (a divergence from
+  DuckDB). `_build_context` now distinguishes "caller omitted conn" from
+  "caller supplied conn", so anonymous pages get the default on both backends.
+- `agnes admin metrics {import,export,validate}`, `agnes admin metadata-apply`,
+  and `agnes admin break-glass-grant-admin` no longer crash on a Postgres
+  instance. Each opened a vestigial system-DuckDB connection (never used — the
+  work routes through the repository factory), which hard-raised once
+  `get_system_db()` began rejecting Postgres. The call is now gated behind
+  `not use_pg()`.
+- `close_singleton_connections()` (run before a migrator subprocess spawns to
+  release DuckDB file locks) now also closes the new `operational.duckdb`
+  singleton, so its exclusive file lock is not held across the spawn.
+- Startup bootstrap-warning no longer leaks a DuckDB cursor if the user-list
+  read raises: the connection close moved into a `try/finally`.
+- CLI-login (`/cli/auth/{start,exchange}`) and Slack identity-binding requests
+  no longer leave the `operational.duckdb` cursor unclosed on a Postgres
+  instance. The `operational.duckdb` fallback in `_cli_auth_repo` /
+  `_binding_conn` is now a context manager that closes the cursor it opens on
+  exit (the request-scoped DuckDB conn is still closed by `_get_db`).
+- Schema cache warmup (`_warm_schema_sync`) no longer opens a system-DuckDB
+  cursor per warmed table. `build_schema_uncached` never uses the passed conn
+  on the remote path warmup takes, so the handle was leaked (unclosed) on every
+  table on DuckDB; it now passes `None`, matching `warm_one_table`.
+- Non-admin internal-table queries no longer leak a DuckDB cursor. The
+  backend-aware `_state_table_denylist()` opened a `get_system_db()` cursor on
+  the DuckDB path without closing it; it now stores and closes it in a
+  `try/finally`, matching the sibling `get_schema()`.
+
+---
+
 ## [0.74.95] - 2026-07-15
 
 ### Added

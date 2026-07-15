@@ -12,6 +12,7 @@ import typer
 from src.repositories import (
     metric_repo,
     table_registry_repo,
+    use_pg,
 )
 admin_metrics_app = typer.Typer(help="Admin: metric definition management")
 
@@ -28,13 +29,16 @@ def import_metrics(
         typer.echo(f"Path not found: {path}", err=True)
         raise typer.Exit(1)
 
-    conn = get_system_db()
+    # Repo work routes through the factory (PG or DuckDB); the system DuckDB
+    # must never be opened on a Postgres instance (get_system_db raises there).
+    conn = None if use_pg() else get_system_db()
     try:
         repo = metric_repo()
         count = repo.import_from_yaml(import_path)
         typer.echo(f"Imported {count} metric(s) from {path}")
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 @admin_metrics_app.command("export")
@@ -44,13 +48,16 @@ def export_metrics(
     """Export metric definitions from DuckDB to YAML files (direct, no API)."""
     from src.db import get_system_db
 
-    conn = get_system_db()
+    # Repo work routes through the factory (PG or DuckDB); the system DuckDB
+    # must never be opened on a Postgres instance (get_system_db raises there).
+    conn = None if use_pg() else get_system_db()
     try:
         repo = metric_repo()
         count = repo.export_to_yaml(output_dir)
         typer.echo(f"Exported {count} metric(s) to {output_dir}")
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 @admin_metrics_app.command("validate")
@@ -58,7 +65,9 @@ def validate_metrics():
     """Check each metric's table reference against registered tables (direct, no API)."""
     from src.db import get_system_db
 
-    conn = get_system_db()
+    # Repo work routes through the factory (PG or DuckDB); the system DuckDB
+    # must never be opened on a Postgres instance (get_system_db raises there).
+    conn = None if use_pg() else get_system_db()
     try:
         metrics_r = metric_repo()
         registry_repo = table_registry_repo()
@@ -86,4 +95,5 @@ def validate_metrics():
         if warn_count > 0:
             raise typer.Exit(1)
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
