@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.95] - 2026-07-15
+
 ### Added
 
 - **Keyless chat LLM auth via Workload Identity Federation (opt-in).** A new
