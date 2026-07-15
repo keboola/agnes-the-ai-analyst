@@ -5,12 +5,19 @@ Mirrors ``src/repositories/oauth_clients.py``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
+
+
+def _hash(value: str) -> str:
+    """sha256 of an OAuth auth code / access / refresh token — only the digest
+    is persisted (audit M4). Mirrors ``src/repositories/oauth_clients.py``."""
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 class OAuthClientsPgRepository:
@@ -112,7 +119,7 @@ class OAuthClientsPgRepository:
                     """
                 ),
                 {
-                    "code": code,
+                    "code": _hash(code),
                     "client_id": client_id,
                     "scopes": json.dumps(scopes),
                     "code_challenge": code_challenge,
@@ -130,7 +137,7 @@ class OAuthClientsPgRepository:
             row = (
                 conn.execute(
                     sa.text("SELECT * FROM oauth_auth_codes WHERE code = :c"),
-                    {"c": code},
+                    {"c": _hash(code)},
                 )
                 .mappings()
                 .first()
@@ -146,7 +153,7 @@ class OAuthClientsPgRepository:
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text("DELETE FROM oauth_auth_codes WHERE code = :c"),
-                {"c": code},
+                {"c": _hash(code)},
             )
 
     # ------------------------------------------------------------------
@@ -179,7 +186,7 @@ class OAuthClientsPgRepository:
                     """
                 ),
                 {
-                    "token": token,
+                    "token": _hash(token),
                     "client_id": client_id,
                     "scopes": json.dumps(scopes),
                     "expires_at": expires_at,
@@ -194,7 +201,7 @@ class OAuthClientsPgRepository:
             row = (
                 conn.execute(
                     sa.text("SELECT * FROM oauth_access_tokens WHERE token = :t"),
-                    {"t": token},
+                    {"t": _hash(token)},
                 )
                 .mappings()
                 .first()
@@ -210,7 +217,7 @@ class OAuthClientsPgRepository:
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text("UPDATE oauth_access_tokens SET revoked_at = :now WHERE token = :t"),
-                {"now": now, "t": token},
+                {"now": now, "t": _hash(token)},
             )
 
     # ------------------------------------------------------------------
@@ -243,7 +250,7 @@ class OAuthClientsPgRepository:
                     """
                 ),
                 {
-                    "token": token,
+                    "token": _hash(token),
                     "client_id": client_id,
                     "scopes": json.dumps(scopes),
                     "expires_at": expires_at,
@@ -258,7 +265,7 @@ class OAuthClientsPgRepository:
             row = (
                 conn.execute(
                     sa.text("SELECT * FROM oauth_refresh_tokens WHERE token = :t"),
-                    {"t": token},
+                    {"t": _hash(token)},
                 )
                 .mappings()
                 .first()
@@ -274,5 +281,5 @@ class OAuthClientsPgRepository:
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text("UPDATE oauth_refresh_tokens SET revoked_at = :now WHERE token = :t"),
-                {"now": now, "t": token},
+                {"now": now, "t": _hash(token)},
             )
