@@ -10,7 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
----
+### Security
+
+- Curated-marketplace file serving: two path/RBAC gaps from the post-INC-01572
+  audit are closed. (M2) `curated_doc` authorized on `{marketplace_id}/{plugin_name}`
+  but served a repo-root-relative path, so a grant to one plugin could read a
+  sibling plugin's docs in the same marketplace — the served file is now
+  required to live under the granted plugin's `plugins/{plugin_name}/` subtree
+  (marketplace-shared paths outside any `plugins/<x>/` stay accessible). (L1)
+  `marketplace_id` / `plugin_name` path params were used verbatim to build the
+  served root, so a `..` escaped the marketplaces dir (and `_safe_join`
+  re-anchored on the escaped root), letting a login-only caller read image
+  files elsewhere under `DATA_DIR`; the segments are now validated as strict
+  slugs (`..`, `/`, `\` rejected) on the asset, doc, and mirrored endpoints.
 
 ## [0.74.76] - 2026-07-15
 
