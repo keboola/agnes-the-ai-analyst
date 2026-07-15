@@ -157,9 +157,12 @@ def compose_sql(expression: str, table_name: str) -> str:
     live to never be a full query) and the resolved Agnes table_registry
     view name.
 
-    Callers MUST check `references_foreign_alias(expression)` first and
-    skip the metric if True — this function does not itself guard against
-    that case.
+    Callers MUST check BOTH `references_foreign_alias(expression)` and
+    `has_embedded_sql_comment(expression)` first and skip the metric if
+    either is True — this function does not itself guard against those
+    cases. A foreign-alias reference needs a JOIN this importer can't
+    compose; a trailing `--` comment would swallow the appended FROM clause.
+    `build_metric_row` performs both checks before calling this.
     """
     return f'SELECT {expression} FROM "{table_name}" AS t'
 
