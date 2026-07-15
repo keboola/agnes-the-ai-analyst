@@ -1299,7 +1299,7 @@ git commit -m "Add sync_semantic_layer orchestrator with upsert+prune"
 
 **Interfaces:**
 - Consumes: `connectors.keboola.semantic_layer.sync_semantic_layer` (Task 7); `app.auth.access.require_admin` (existing).
-- Produces: `POST /api/admin/run-keboola-semantic-layer-refresh` endpoint, `router` (FastAPI `APIRouter`).
+- Produces: `POST /api/admin/run-keboola-semantic-layer-refresh` endpoint, `router` (FastAPI `APIRouter`), module-level `_refresh_lock` (`asyncio.Lock`) and `_refresh_state` (dict) — single-flight guard mirroring `app/api/bq_metadata_refresh.py`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1307,6 +1307,7 @@ git commit -m "Add sync_semantic_layer orchestrator with upsert+prune"
 # tests/test_keboola_semantic_layer_refresh_endpoint.py
 """End-to-end tests for POST /api/admin/run-keboola-semantic-layer-refresh."""
 
+import asyncio
 from unittest.mock import patch
 
 
@@ -1323,7 +1324,14 @@ def test_run_refresh_returns_sync_result(seeded_app):
             headers={"Authorization": f"Bearer {token}"},
         )
     assert r.status_code == 200, r.text
-    assert r.json() == fake_result
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["created_or_updated"] == 3
+    assert body["pruned"] == 0
+    assert body["skipped_unresolved_table"] == 1
+    assert body["skipped_foreign_alias"] == 0
+    assert body["run_id"]
+    assert body["started_at"]
 
 
 def test_run_refresh_maps_master_token_error_to_400(seeded_app):
@@ -1347,6 +1355,26 @@ def test_run_refresh_requires_admin(seeded_app):
     c = seeded_app["client"]
     r = c.post("/api/admin/run-keboola-semantic-layer-refresh")
     assert r.status_code == 401
+
+
+def test_run_refresh_returns_409_when_already_running(seeded_app):
+    from app.api import keboola_semantic_layer_refresh as endpoint_module
+
+    async def _acquire():
+        await endpoint_module._refresh_lock.acquire()
+
+    asyncio.run(_acquire())
+    try:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        r = c.post(
+            "/api/admin/run-keboola-semantic-layer-refresh",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 409
+        assert r.json()["detail"]["reason"] == "already_running"
+    finally:
+        endpoint_module._refresh_lock.release()
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1366,11 +1394,20 @@ scheduler container (auth: shared scheduler token resolves to a synthetic
 admin user, same mechanism as app/api/bq_metadata_refresh.py) on the
 SCHEDULER_KEBOOLA_SEMANTIC_LAYER_REFRESH_INTERVAL cadence. Also callable by
 a real admin on demand.
+
+Single-flight guarded (mirrors app/api/bq_metadata_refresh.py): a second
+concurrent call while a sync is in flight gets 409 already_running instead
+of racing a second Metastore fetch + upsert/prune pass against the same
+metric_definitions rows.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import uuid
+from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -1383,6 +1420,9 @@ from connectors.keboola.semantic_layer import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+_refresh_lock = asyncio.Lock()
+_refresh_state: dict[str, Any] = {"run_id": None, "started_at": None}
+
 
 @router.post("/api/admin/run-keboola-semantic-layer-refresh")
 async def run_keboola_semantic_layer_refresh(
@@ -1392,18 +1432,37 @@ async def run_keboola_semantic_layer_refresh(
     metric_definitions. See connectors/keboola/semantic_layer.py for the
     mapping/prune logic.
     """
-    try:
-        result = sync_semantic_layer()
-    except MasterTokenRequiredError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    if _refresh_lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "already_running",
+                "run_id": _refresh_state.get("run_id"),
+                "started_at": _refresh_state.get("started_at"),
+                "hint": "A refresh is already in flight; this caller is a no-op.",
+            },
+        )
+
+    async with _refresh_lock:
+        run_id = uuid.uuid4().hex[:8]
+        started_at = datetime.now(timezone.utc).isoformat()
+        _refresh_state["run_id"] = run_id
+        _refresh_state["started_at"] = started_at
+        try:
+            result = await asyncio.to_thread(sync_semantic_layer)
+        except MasterTokenRequiredError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        finally:
+            _refresh_state["run_id"] = None
+            _refresh_state["started_at"] = None
 
     logger.info(
-        "keboola semantic layer refresh: status=%s created_or_updated=%s "
+        "keboola semantic layer refresh: run_id=%s status=%s created_or_updated=%s "
         "pruned=%s skipped_unresolved_table=%s skipped_foreign_alias=%s",
-        result.get("status"), result.get("created_or_updated"), result.get("pruned"),
+        run_id, result.get("status"), result.get("created_or_updated"), result.get("pruned"),
         result.get("skipped_unresolved_table"), result.get("skipped_foreign_alias"),
     )
-    return result
+    return {**result, "run_id": run_id, "started_at": started_at}
 ```
 
 Modify `app/main.py`: add the import next to line 297 (`from app.api.bq_metadata_refresh import router as bq_metadata_refresh_router`):
@@ -1421,7 +1480,7 @@ app.include_router(keboola_semantic_layer_refresh_router)
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/test_keboola_semantic_layer_refresh_endpoint.py -v`
-Expected: PASS (3 tests)
+Expected: PASS (4 tests)
 
 - [ ] **Step 5: Commit**
 
