@@ -615,6 +615,22 @@ chat:
   rate_messages_per_hour: 100
   tool_calls_per_turn_budget: 50
   marketplace_sha_debounce_seconds: 300
+  # How the chat broker authenticates to Anthropic:
+  #   api_key           (default) — use the static ANTHROPIC_API_KEY.
+  #   workload_identity           — keyless: mint a short-lived token from the
+  #                                 workload's own OIDC identity via Anthropic
+  #                                 Workload Identity Federation. No long-lived
+  #                                 key anywhere. Requires the federation env to
+  #                                 be set (ANTHROPIC_FEDERATION_RULE_ID,
+  #                                 ANTHROPIC_ORGANIZATION_ID,
+  #                                 ANTHROPIC_SERVICE_ACCOUNT_ID, and
+  #                                 ANTHROPIC_IDENTITY_TOKEN or
+  #                                 ANTHROPIC_IDENTITY_TOKEN_FILE) and that
+  #                                 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN be
+  #                                 unset. See docs/superpowers/specs/2026-07-15-
+  #                                 keyless-llm-auth-design.md.
+  # llm:
+  #   auth: api_key
 
 
 # --- Initial Workspace Template (optional) ---

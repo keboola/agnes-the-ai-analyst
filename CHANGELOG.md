@@ -10,6 +10,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Keyless chat LLM auth via Workload Identity Federation (opt-in).** A new
+  `chat.llm.auth` setting (`api_key` default | `workload_identity`) lets the
+  chat broker authenticate to Anthropic with a **short-lived token minted from
+  the workload's own OIDC identity** instead of a static `ANTHROPIC_API_KEY` —
+  no long-lived key anywhere. In `workload_identity` mode the broker's Anthropic
+  proxy injects `Authorization: Bearer <federated token>` (+ the oauth beta
+  header) instead of `x-api-key`; the token is minted via Anthropic's native WIF
+  exchange (`app/auth/wif.py`, `POST /v1/oauth/token`, RFC 7523 jwt-bearer),
+  cached and refreshed, reading the standard `ANTHROPIC_FEDERATION_*` /
+  `ANTHROPIC_IDENTITY_TOKEN[_FILE]` env. Default stays `api_key`, so existing
+  installs are unaffected. The sandbox still never holds any credential
+  (INC-01572 preserved — there is no long-lived key to leak, even server-side).
+  Operator setup (federation rule + identity-token source) is deployment config;
+  design in `docs/superpowers/specs/2026-07-15-keyless-llm-auth-design.md`.
+
 ---
 
 ## [0.74.94] - 2026-07-15

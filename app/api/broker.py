@@ -139,6 +139,20 @@ _ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 _ANTHROPIC_TIMEOUT = httpx.Timeout(connect=15.0, read=600.0, write=60.0, pool=15.0)
 
 
+def _add_anthropic_beta(headers: Dict[str, str], beta: str) -> None:
+    """Ensure ``beta`` is present in the ``anthropic-beta`` header, appending to
+    any value the in-sandbox SDK already set rather than overwriting it. The
+    header lookup is case-insensitive (the SDK may send ``Anthropic-Beta``)."""
+    for key in list(headers.keys()):
+        if key.lower() == "anthropic-beta":
+            existing = [v.strip() for v in headers[key].split(",") if v.strip()]
+            if beta not in existing:
+                existing.append(beta)
+            headers[key] = ", ".join(existing)
+            return
+    headers["anthropic-beta"] = beta
+
+
 async def require_broker_ticket(request: Request) -> Dict[str, Any]:
     """Resolve the bearer ticket on the request. 401s if missing/unknown/expired."""
     auth = request.headers.get("authorization", "")
@@ -315,7 +329,29 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
         for k, v in request.headers.items()
         if k.lower() not in ("host", "authorization", "content-length", "x-api-key")
     }
-    headers["x-api-key"] = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    # Credential injection is the ONE thing that differs between auth modes; the
+    # sandbox never carries either credential (it's added here, server-side).
+    #   api_key (default)      → x-api-key: <static ANTHROPIC_API_KEY>
+    #   workload_identity      → Authorization: Bearer <short-lived federated
+    #                            token> + the oauth beta header OAuth-style
+    #                            tokens require; NO static key exists.
+    llm_auth = getattr(getattr(request.app.state, "chat_config", None), "llm_auth", "api_key")
+    wif_mode = llm_auth == "workload_identity"
+    if wif_mode:
+        from app.auth.wif import WIFAuthError, get_federated_access_token
+
+        try:
+            token = get_federated_access_token()
+        except WIFAuthError as exc:
+            # Fail with a clear, non-leaking diagnostic rather than a 401 the
+            # agent would surface as a confusing "API key is invalid".
+            raise HTTPException(status_code=502, detail=f"workload_identity token exchange failed: {exc}") from exc
+        headers["Authorization"] = f"Bearer {token}"
+        _add_anthropic_beta(headers, "oauth-2025-04-20")
+    else:
+        headers["x-api-key"] = os.environ.get("ANTHROPIC_API_KEY", "")
+
     upstream_path = request.url.path[len("/api/broker/anthropic") :] or "/"
     async with httpx.AsyncClient(timeout=_ANTHROPIC_TIMEOUT) as client:
         resp = await client.request(
@@ -325,4 +361,10 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
             headers=headers,
             params=request.query_params,
         )
+    # A 401 in WIF mode means the cached token was revoked before its declared
+    # expiry — drop it so the next request re-mints.
+    if wif_mode and resp.status_code == 401:
+        from app.auth.wif import clear_token_cache
+
+        clear_token_cache()
     return _to_response(resp)
