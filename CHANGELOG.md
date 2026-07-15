@@ -26,6 +26,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   behind the backend selector or routed through the repository factory. The
   DuckDB-only operational tables with no Postgres mirror (`cli_auth_codes`,
   Slack identity-binding codes) moved to a dedicated `operational.duckdb`.
+- Unauthenticated pages (`/login`, `/first-time-setup`, `/login/password`) no
+  longer render the admin install-prompt override on a Postgres instance. The
+  setup-prompt branch keyed off `use_pg()` alone, so on Postgres — where a
+  supplied request conn is always `None` — anonymous pages entered the
+  DB-backed override path instead of the anonymous default (a divergence from
+  DuckDB). `_build_context` now distinguishes "caller omitted conn" from
+  "caller supplied conn", so anonymous pages get the default on both backends.
 
 ---
 
