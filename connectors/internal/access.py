@@ -257,9 +257,16 @@ def _state_table_denylist() -> list[str]:
         return list(Base.metadata.tables.keys())
     from src.db import get_system_db
 
-    rows = get_system_db().execute(
-        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
-    ).fetchall()
+    # get_system_db() returns a fresh cursor on the shared singleton — store it
+    # and close it in a finally so a non-admin internal query doesn't leak one
+    # handle per call (matches the sibling get_schema() below).
+    cursor = get_system_db()
+    try:
+        rows = cursor.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+        ).fetchall()
+    finally:
+        cursor.close()
     return [name for (name,) in rows if name is not None]
 
 

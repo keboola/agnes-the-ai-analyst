@@ -57,6 +57,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   cursor per warmed table. `build_schema_uncached` never uses the passed conn
   on the remote path warmup takes, so the handle was leaked (unclosed) on every
   table on DuckDB; it now passes `None`, matching `warm_one_table`.
+- Non-admin internal-table queries no longer leak a DuckDB cursor. The
+  backend-aware `_state_table_denylist()` opened a `get_system_db()` cursor on
+  the DuckDB path without closing it; it now stores and closes it in a
+  `try/finally`, matching the sibling `get_schema()`.
 
 ---
 
