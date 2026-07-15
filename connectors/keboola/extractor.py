@@ -254,6 +254,60 @@ def materialize_query(
                 _open_consolidation_conn().execute(
                     f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{tmp_parquet}' (FORMAT PARQUET)"
                 ).close()
+            else:
+                # Typed-parquet fix for the native-parquet path (verified
+                # live, 2026-07-15): Storage API's Snowflake UNLOAD serves
+                # every column as VARCHAR regardless of the source's real
+                # type — a genuinely numeric column (e.g. a revenue metric
+                # aggregated over it) came back as a DuckDB VARCHAR,
+                # requiring callers to TRY_CAST before aggregating. The
+                # legacy CSV extraction path (_extract_via_legacy) already
+                # fixes the equivalent problem via
+                # KeboolaClient.get_pyarrow_schema() + apply_schema_to_table
+                # (parquet_io.py, the "v27 typed-parquet fix") — that
+                # mechanism operates on a generic pyarrow.Table with no
+                # CSV-specific coupling, so it's reused here rather than
+                # reimplemented. `storage_client.base` always has the form
+                # `<url>/v2/storage` (see KeboolaStorageClient.__init__),
+                # so stripping that known suffix recovers the plain
+                # Keboola URL without depending on the keboola_url/token
+                # kwargs being set — sync.py's preferred call shape passes
+                # a pre-built storage_client and may leave those unset.
+                #
+                # `isinstance(..., str)` guards against a test double /
+                # unusual caller whose `.token`/`.base` aren't real strings
+                # (e.g. a MagicMock, which is truthy but not a str) — skip
+                # typing rather than attempt a KeboolaClient call with
+                # garbage credentials. Real `KeboolaStorageClient` instances
+                # always have string `.token`/`.base`, so this is a no-op
+                # in production.
+                pyarrow_schema = None
+                if isinstance(getattr(storage_client, "token", None), str) and isinstance(
+                    getattr(storage_client, "base", None), str
+                ):
+                    from connectors.keboola.client import KeboolaClient
+                    from connectors.keboola.parquet_io import apply_schema_to_table
+
+                    try:
+                        metadata_client = KeboolaClient(
+                            token=storage_client.token,
+                            url=storage_client.base.removesuffix("/v2/storage"),
+                        )
+                        pyarrow_schema = metadata_client.get_pyarrow_schema(full_table_id)
+                    except Exception as e:
+                        logger.warning(
+                            "Keboola schema unavailable for %s (%s); materialized parquet "
+                            "keeps Storage API's native (often all-VARCHAR) types",
+                            full_table_id,
+                            e,
+                        )
+                        pyarrow_schema = None
+
+                if pyarrow_schema is not None:
+                    import pyarrow.parquet as pq
+
+                    typed_table = apply_schema_to_table(pq.read_table(tmp_parquet), pyarrow_schema)
+                    pq.write_table(typed_table, tmp_parquet, compression="snappy")
         else:
             # Legacy CSV path. Kept for the explicit `{"file_type":"csv"}`
             # opt-in. Slower (CSV parse + parquet rewrite) and

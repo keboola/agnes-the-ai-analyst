@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- Keboola connector data-sync reliability (found via live end-to-end verification against a real project):
+  - Legacy CSV extraction (`query_mode='local'` fallback path) no longer trusts a sliced export manifest's raw `entries` array order when concatenating slices — entries are now re-sorted by a natural (numeric-aware) key parsed from each slice's URL before download, so an out-of-order manifest can no longer land a data slice ahead of the header slice and corrupt the resulting parquet's column names.
+  - Materialized (`query_mode='materialized'`) native-parquet sync now applies the same Keboola-metadata-derived PyArrow schema the legacy CSV path already used (the "v27 typed-parquet fix"), instead of leaving every column string-typed the way Storage API's native Snowflake UNLOAD export serves them.
+
 ---
 
 ## [0.74.91] - 2026-07-15
