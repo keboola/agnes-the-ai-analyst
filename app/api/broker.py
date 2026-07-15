@@ -24,6 +24,7 @@ privileged admin writes, regardless of the resolved identity's own grants.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any, Dict
 from urllib.parse import unquote, urlsplit
@@ -342,11 +343,31 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
         from app.auth.wif import WIFAuthError, get_federated_access_token
 
         try:
-            token = get_federated_access_token()
+            # Offload the (synchronous, network-bound, ~10s-timeout) token
+            # exchange so a refresh can't stall the single-worker chat event
+            # loop for the whole app.
+            token = await asyncio.to_thread(get_federated_access_token)
         except WIFAuthError as exc:
-            # Fail with a clear, non-leaking diagnostic rather than a 401 the
-            # agent would surface as a confusing "API key is invalid".
-            raise HTTPException(status_code=502, detail=f"workload_identity token exchange failed: {exc}") from exc
+            # The exchange error can carry up to 200 chars of Anthropic's raw
+            # response body (org/rule/service-account ids on invalid_grant).
+            # Record the full detail in the audit trail (server-side only, like
+            # every other deny path here) and return a GENERIC message to the
+            # sandbox-facing caller — never echo upstream error text across the
+            # isolation boundary.
+            try:
+                audit_repo().log(
+                    action="broker_wif_exchange_failed",
+                    params={"error": str(exc)[:500], "session_id": row.get("session_id")},
+                    result="error",
+                    client_kind="broker",
+                )
+            except Exception:
+                # Audit logging must never break the request path itself.
+                pass
+            raise HTTPException(
+                status_code=502,
+                detail="workload_identity token exchange failed",
+            ) from exc
         headers["Authorization"] = f"Bearer {token}"
         _add_anthropic_beta(headers, "oauth-2025-04-20")
     else:

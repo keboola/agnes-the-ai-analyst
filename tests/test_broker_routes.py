@@ -319,6 +319,39 @@ def test_anthropic_proxy_workload_identity_injects_bearer_not_key(broker_app, mo
     assert h.get("anthropic-version") == "2023-06-01"
 
 
+def test_anthropic_proxy_wif_failure_returns_generic_detail(broker_app, monkeypatch):
+    """A WIF exchange failure must NOT echo Anthropic's raw error text (which can
+    carry org/rule/service-account ids) across the sandbox boundary — the caller
+    gets a generic 502, the detail is only in the server-side audit trail."""
+    import types
+
+    import app.auth.wif as wif
+
+    broker_app.state.chat_config = types.SimpleNamespace(llm_auth="workload_identity")
+
+    def _boom():
+        raise wif.WIFAuthError('token exchange failed: HTTP 400 {"error":"invalid_grant","org":"org_SECRET123"}')
+
+    monkeypatch.setattr(wif, "get_federated_access_token", _boom)
+    tok = ticket_repo().mint("chat_wif_fail", "main", ttl_seconds=60)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                "/api/broker/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {tok}"},
+                content=b'{"model":"x"}',
+            )
+
+    r = asyncio.run(_run())
+    assert r.status_code == 502
+    body = r.text
+    assert "org_SECRET123" not in body
+    assert "invalid_grant" not in body
+    assert "workload_identity token exchange failed" in body
+
+
 def test_normalize_broker_path_rejects_smuggling():
     """Unit: the path canonicalizer returns the EXACT URL the ASGI dispatch
     routes on (percent-decoded, dot-segments collapsed) and rejects authority
