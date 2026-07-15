@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- `security.ssrf_allowed_hosts` (env `AGNES_SSRF_ALLOWED_HOSTS`): operator
+  allowlist of hostnames exempt from the private/reserved-network SSRF guard on
+  admin-registered git clone URLs (curated marketplace + initial-workspace
+  template). Lets a deployment register a marketplace hosted on an internal git
+  server (e.g. an on-prem GitHub Enterprise on a private network) without
+  weakening the guard for every other host. Accepts a YAML list or a
+  comma-separated string; empty by default, so the guard stays fail-closed.
+
 ---
 
 ## [0.74.96] - 2026-07-15

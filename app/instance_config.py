@@ -517,6 +517,39 @@ def get_hidden_login_features() -> frozenset[str]:
     return frozenset(token.strip().lower() for token in tokens if token.strip())
 
 
+def get_ssrf_allowed_hosts() -> frozenset[str]:
+    """Deployer-trusted hostnames exempt from the private/reserved-network
+    SSRF guard on admin-registered git clone URLs (marketplace +
+    initial-workspace).
+
+    Some organizations host their git behind an internal GitHub Enterprise /
+    GitLab on a private network — a legitimate clone target that
+    ``app.api.admin._validate_url_not_private`` would otherwise reject because
+    the hostname resolves to an RFC-1918 / reserved address. Listing the host
+    here is an explicit operator opt-in: the clone URL is already admin-gated,
+    so this is a deployment-level trust decision, not a user-facing one.
+
+    Empty default keeps the OSS distribution fail-closed and vendor-neutral —
+    the concrete internal host is set in deployment config, outside this repo.
+
+    Resolution: ``AGNES_SSRF_ALLOWED_HOSTS`` env (comma-separated) >
+    ``security.ssrf_allowed_hosts`` in instance.yaml (a YAML list *or* a
+    comma-separated string) > empty. Hostnames are split on commas, stripped,
+    and lowercased. Mirrors :func:`get_hidden_login_features` in accepting
+    either form.
+    """
+    raw = os.environ.get("AGNES_SSRF_ALLOWED_HOSTS")
+    if raw is None:
+        raw = get_value("security", "ssrf_allowed_hosts", default="")
+    if isinstance(raw, (list, tuple)):
+        tokens: list[str] = []
+        for item in raw:
+            tokens.extend(str(item).split(","))
+    else:
+        tokens = str(raw or "").split(",")
+    return frozenset(token.strip().lower() for token in tokens if token.strip())
+
+
 def get_instance_custom_preamble() -> str:
     """Operator-authored preamble injected at the TOP of the `agnes init`
     install prompt (above ``Set up the {instance_brand} CLI…``). Empty/unset

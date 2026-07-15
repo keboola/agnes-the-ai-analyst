@@ -92,6 +92,15 @@ def _validate_url_not_private(url: str, field_name: str = "url") -> None:
     if not host:
         raise HTTPException(status_code=400, detail=f"Invalid {field_name}: missing hostname")
 
+    # Deployer-trusted internal hosts (e.g. an on-prem GitHub Enterprise on a
+    # private network) opt out of the private/reserved-network rejection. The
+    # allowlist is operator-set and empty by default, so the OSS ships
+    # fail-closed. See app.instance_config.get_ssrf_allowed_hosts.
+    from app.instance_config import get_ssrf_allowed_hosts
+
+    if host.lower() in get_ssrf_allowed_hosts():
+        return
+
     # Reject well-known dangerous hostnames before DNS resolution
     if host.lower() in ("localhost", "localhost.localdomain"):
         raise HTTPException(
