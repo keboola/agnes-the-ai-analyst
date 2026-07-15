@@ -218,9 +218,12 @@ def sync_semantic_layer(
     token (see require_master_token) — this is a configuration error the
     caller should surface loudly, not swallow into the returned dict.
     """
+
+    import requests
+
     from app.datasource_secrets import datasource_secret
     from connectors.keboola.storage_api import KeboolaStorageClient
-    from connectors.keboola.metastore_client import MetastoreClient
+    from connectors.keboola.metastore_client import MetastoreApiError, MetastoreClient
     from src.repositories import table_registry_repo, metric_repo
 
     url = keboola_url or os.environ.get("KEBOOLA_STACK_URL", "")
@@ -233,7 +236,16 @@ def sync_semantic_layer(
 
     metastore = MetastoreClient(url=url, token=token)
 
-    models = metastore.list_items("semantic-model")
+    # A Metastore outage / 401 / 5xx must abort the whole run with a logged,
+    # structured error — never propagate as an unhandled 500 and never reach
+    # the prune loop (which would delete against an empty seen_ids). Mirrors
+    # the defensive fetch-wrapping in app/api/bq_metadata_refresh.py.
+    try:
+        models = metastore.list_items("semantic-model")
+    except (MetastoreApiError, requests.RequestException) as e:
+        logger.error("Keboola Metastore fetch failed (semantic-model): %s", e)
+        return {"status": "error", "error": f"Metastore fetch failed: {e}"}
+
     empty_result = {
         "status": "ok",
         "created_or_updated": 0,
@@ -251,9 +263,13 @@ def sync_semantic_layer(
         )
     model_uuid = models[0]["id"]
 
-    datasets = metastore.list_items("semantic-dataset", model_uuid)
-    metrics = metastore.list_items("semantic-metric", model_uuid)
-    constraints = metastore.list_items("semantic-constraint", model_uuid)
+    try:
+        datasets = metastore.list_items("semantic-dataset", model_uuid)
+        metrics = metastore.list_items("semantic-metric", model_uuid)
+        constraints = metastore.list_items("semantic-constraint", model_uuid)
+    except (MetastoreApiError, requests.RequestException) as e:
+        logger.error("Keboola Metastore fetch failed (model %s): %s", model_uuid, e)
+        return {"status": "error", "error": f"Metastore fetch failed: {e}"}
 
     table_lookup = table_lookup_from_registry(table_registry_repo().list_by_source("keboola"))
     dataset_lookup = dataset_lookup_by_table_id(datasets)
@@ -276,10 +292,26 @@ def sync_semantic_layer(
 
     existing = [m for m in repo.list() if m.get("source") == "keboola_semantic_layer"]
     pruned = 0
-    for m in existing:
-        if m["id"] not in seen_ids:
-            repo.delete(m["id"])
-            pruned += 1
+    if not seen_ids and existing:
+        # Safety valve: the fetch succeeded (HTTP 200) but produced zero
+        # usable metrics while we already hold keboola_semantic_layer rows.
+        # Pruning here would wipe *every* imported business-metric
+        # definition in one pass. A successful-but-empty/wrong-shaped
+        # Metastore response (e.g. the client-side modelUUID filter drifting
+        # on an upstream schema change) is the likely cause, not a genuine
+        # "all metrics deleted upstream". Mirror the `if not models` guard —
+        # skip the prune and log loudly rather than silently delete.
+        logger.warning(
+            "Keboola semantic layer: upstream returned zero usable metrics "
+            "while %d existing rows are present; skipping prune to avoid a "
+            "full wipe. Existing rows retained.",
+            len(existing),
+        )
+    else:
+        for m in existing:
+            if m["id"] not in seen_ids:
+                repo.delete(m["id"])
+                pruned += 1
 
     return {
         "status": "ok",
