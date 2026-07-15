@@ -302,6 +302,53 @@ def test_write_backend_state_invalidates_cache(tmp_path, monkeypatch):
     assert read_backend_state()[0] == BackendState.SIDE_CAR  # not the stale cache
 
 
+def test_reset_database_cache_clears_stale_backend_state_cache(tmp_path, monkeypatch):
+    """The public app.instance_config.reset_database_cache() wrapper must
+    actually drop the backend-state cache — tests the wrapper's observable
+    behavior directly (rewriting the overlay on disk, not via
+    write_backend_state which already invalidates), so the suite would catch
+    the wrapper regressing back to a no-op."""
+    import yaml as _yaml
+
+    from app.instance_config import get_database_config, reset_database_cache
+
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+
+    overlay.write_text(_yaml.safe_dump({"database": {"backend": "duckdb"}}))
+    assert get_database_config()["backend"] == "duckdb"  # caches duckdb
+
+    overlay.write_text(_yaml.safe_dump({"database": {"backend": "side_car", "url": "postgresql://x"}}))
+    reset_database_cache()
+    assert get_database_config() == {"backend": "side_car", "url": "postgresql://x"}
+
+
+def test_malformed_overlay_fallback_is_not_cached(tmp_path, monkeypatch, caplog):
+    """The yaml.YAMLError branch deliberately does NOT cache its safe
+    fallback, so an operator who repairs a malformed overlay while the
+    process is still alive is observed on the very next read (no restart /
+    explicit reset needed)."""
+    import logging
+
+    import yaml as _yaml
+
+    from src.db_state_machine import BackendState, read_backend_state, reset_backend_state_cache
+
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+    overlay.write_text("database: [")  # malformed
+    reset_backend_state_cache()
+
+    with caplog.at_level(logging.WARNING, logger="src.db_state_machine"):
+        assert read_backend_state() == (BackendState.DUCKDB, None)
+    assert "YAML parse failed" in caplog.text
+
+    # Repair the overlay directly (no reset) — the uncached fallback means
+    # the next read picks up the repaired backend.
+    overlay.write_text(_yaml.safe_dump({"database": {"backend": "side_car", "url": "postgresql://x"}}))
+    assert read_backend_state() == (BackendState.SIDE_CAR, "postgresql://x")
+
+
 def test_write_backend_state_sets_0600(tmp_path, monkeypatch):
     """H2 — instance.yaml carries plaintext PG credentials and must
     be owner-readable only. Catches the case where a non-app user on

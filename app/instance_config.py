@@ -50,10 +50,10 @@ def reset_database_cache() -> None:
 
     Clears the parse-once memoization of the ``instance.yaml`` overlay in
     ``src.db_state_machine``, so the next ``read_backend_state`` /
-    ``use_pg`` re-reads from disk. The single invalidation point called by
-    app/api/db_state.py after a successful backend flip; runtime correctness
-    does not depend on it (a flip restarts the process), but it keeps a
-    same-process caller consistent.
+    ``use_pg`` re-reads from disk. Production backend flips restart the app,
+    so runtime correctness gets a fresh process; same-process writes are
+    already invalidated inside ``write_backend_state``. This public hook
+    exists for tests and any other manual same-process caller.
     """
     from src.db_state_machine import reset_backend_state_cache
 
