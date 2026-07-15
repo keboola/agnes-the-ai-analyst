@@ -174,15 +174,15 @@ def _warm_schema_sync(row: dict) -> None:
     """Trigger schema cache populate via build_schema_uncached."""
     from app.api.v2_schema import build_schema_uncached
     from connectors.bigquery.access import get_bq_access
-    from src.db import get_system_db
-    from src.repositories import use_pg
     bq = get_bq_access()
     # build_schema_uncached resolves its state through the repository factory
-    # and does not use the passed conn; on Postgres pass None so the system
-    # DuckDB is never opened (forbidden invariant). Warmup only runs on
-    # query_mode='remote' rows, so the internal-table branch is never reached.
-    conn = None if use_pg() else get_system_db()
-    build_schema_uncached(conn, row["id"], bq=bq, row=row)
+    # and does not use the passed conn; warmup only runs on query_mode='remote'
+    # rows, so the internal-table branch (which derives its own system_db_path)
+    # is never reached. Pass None — opening a system-DuckDB cursor here just
+    # leaked one handle per warmed table on DuckDB (never closed), and opening
+    # one on Postgres is forbidden. Mirrors warm_one_table, which already
+    # dropped its unused get_system_db() open.
+    build_schema_uncached(None, row["id"], bq=bq, row=row)
 
 
 async def warm_one_table(table_id: str) -> None:

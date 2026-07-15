@@ -53,6 +53,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   instance. The `operational.duckdb` fallback in `_cli_auth_repo` /
   `_binding_conn` is now a context manager that closes the cursor it opens on
   exit (the request-scoped DuckDB conn is still closed by `_get_db`).
+- Schema cache warmup (`_warm_schema_sync`) no longer opens a system-DuckDB
+  cursor per warmed table. `build_schema_uncached` never uses the passed conn
+  on the remote path warmup takes, so the handle was leaked (unclosed) on every
+  table on DuckDB; it now passes `None`, matching `warm_one_table`.
 
 ---
 
