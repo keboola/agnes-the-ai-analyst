@@ -14,9 +14,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import subprocess
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -55,18 +55,24 @@ def git_env(e2e_env, monkeypatch):
         (d / "CLAUDE.md").write_text(f"# {plug}\n", encoding="utf-8")
         (d / ".claude-plugin").mkdir()
         (d / ".claude-plugin" / "plugin.json").write_text(
-            json.dumps({"name": plug, "version": "1.0"}), encoding="utf-8",
+            json.dumps({"name": plug, "version": "1.0"}),
+            encoding="utf-8",
         )
 
     conn = get_system_db()
     try:
         t = datetime.now(timezone.utc)
         conn.execute(
-            "INSERT INTO marketplace_registry (id, name, url, registered_at) "
-            "VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
+            "INSERT INTO marketplace_registry (id, name, url, registered_at) VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
             [
-                "mkt-a", "Market A", "https://example.test/a.git", t,
-                "mkt-b", "Market B", "https://example.test/b.git", t,
+                "mkt-a",
+                "Market A",
+                "https://example.test/a.git",
+                t,
+                "mkt-b",
+                "Market B",
+                "https://example.test/b.git",
+                t,
             ],
         )
         for slug, name, ver in [
@@ -113,6 +119,7 @@ def git_env(e2e_env, monkeypatch):
         from src.repositories.user_curated_subscriptions import (
             UserCuratedSubscriptionsRepository,
         )
+
         subs = UserCuratedSubscriptionsRepository(conn)
         subs.subscribe("admin1", "mkt-a", "plug-x")
         subs.subscribe("admin1", "mkt-b", "plug-y")
@@ -127,10 +134,15 @@ def git_env(e2e_env, monkeypatch):
         ]:
             tid = str(uuid.uuid4())
             jwt = create_access_token(
-                uid, email, token_id=tid, typ="pat",
+                uid,
+                email,
+                token_id=tid,
+                typ="pat",
             )
             token_repo.create(
-                id=tid, user_id=uid, name=f"{uid}-pat",
+                id=tid,
+                user_id=uid,
+                name=f"{uid}-pat",
                 token_hash=hashlib.sha256(jwt.encode()).hexdigest(),
                 prefix=tid.replace("-", "")[:8],
                 expires_at=None,
@@ -142,6 +154,7 @@ def git_env(e2e_env, monkeypatch):
     app = create_app()
     client = TestClient(app)
     return {
+        "app": app,
         "client": client,
         "admin_pat": pats["admin1"],
         "analyst_pat": pats["analyst1"],
@@ -198,6 +211,7 @@ class TestGitSmartHttp:
         assert len(entries) == 1
         # Name is the 16-hex ETag + a packaging-format version suffix + ".git"
         import re
+
         assert re.fullmatch(r"[0-9a-f]{16}\.v\d+\.git", entries[0].name), entries[0].name
 
     def test_admin_and_analyst_get_different_repos(self, git_env):
@@ -291,9 +305,7 @@ class TestGitSmartHttp:
             # dulwich tree.items() yields TreeEntry tuples (path, mode, sha)
             cp_entry = next(e for e in tree.items() if e.path == b".claude-plugin")
             cp_subtree = repo[cp_entry.sha]
-            manifest_entry = next(
-                e for e in cp_subtree.items() if e.path == b"marketplace.json"
-            )
+            manifest_entry = next(e for e in cp_subtree.items() if e.path == b"marketplace.json")
             manifest = json.loads(repo[manifest_entry.sha].data.decode("utf-8"))
         finally:
             repo.close()
@@ -302,3 +314,97 @@ class TestGitSmartHttp:
         assert names == {"plug-x", "plug-y"}
         sources = {p["source"] for p in manifest["plugins"]}
         assert sources == {"./plugins/mkt-a-plug-x", "./plugins/mkt-b-plug-y"}
+
+
+@pytest.fixture
+def git_live_server(git_env):
+    """Run `git_env`'s app on a real TCP socket via uvicorn in a background
+    thread, so a real `git` CLI subprocess can clone/fetch against it.
+
+    This is the behavior-preserving-refactor check: the endpoint now shells
+    out to `git http-backend` as a CGI subprocess instead of dulwich's
+    pure-Python WSGI handler, and the only way to prove the CGI env-var
+    wiring (GIT_PROJECT_ROOT/PATH_INFO/Status: header parsing) is correct is
+    to have an actual `git` client — not TestClient — speak the protocol.
+    """
+    import socket
+    import threading
+
+    import uvicorn
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    config = uvicorn.Config(git_env["app"], host="127.0.0.1", port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        import time
+
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(0.05)
+        else:
+            raise RuntimeError("live uvicorn server did not start in time")
+
+        yield {**git_env, "port": port}
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+class TestGitRealClient:
+    """End-to-end: an actual `git` CLI subprocess against the live server,
+    proving the `git http-backend` CGI subprocess wiring is correct — not
+    just that TestClient gets a 200."""
+
+    def test_git_ls_remote_lists_main(self, git_live_server, tmp_path):
+        url = f"http://x:{git_live_server['admin_pat']}@127.0.0.1:{git_live_server['port']}/marketplace.git/"
+        result = subprocess.run(
+            ["git", "ls-remote", url],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "refs/heads/main" in result.stdout
+
+    def test_git_ls_remote_bad_pat_fails(self, git_live_server):
+        url = f"http://x:not-a-real-token@127.0.0.1:{git_live_server['port']}/marketplace.git/"
+        result = subprocess.run(
+            ["git", "ls-remote", url],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode != 0
+
+    def test_git_clone_serves_matching_content(self, git_live_server, tmp_path):
+        """Clone over the real git protocol and verify the served tree
+        matches what the bare-repo-introspection test above expects —
+        content parity between the old dulwich path and the new
+        `git http-backend` subprocess path."""
+        url = f"http://x:{git_live_server['admin_pat']}@127.0.0.1:{git_live_server['port']}/marketplace.git/"
+        dest = tmp_path / "clone"
+        result = subprocess.run(
+            ["git", "clone", url, str(dest)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+
+        manifest_path = dest / ".claude-plugin" / "marketplace.json"
+        assert manifest_path.is_file()
+        manifest = json.loads(manifest_path.read_text())
+        names = {p["name"] for p in manifest["plugins"]}
+        assert names == {"plug-x", "plug-y"}
+        sources = {p["source"] for p in manifest["plugins"]}
+        assert sources == {"./plugins/mkt-a-plug-x", "./plugins/mkt-b-plug-y"}
+
+        assert (dest / "plugins" / "mkt-a-plug-x" / "CLAUDE.md").is_file()
+        assert (dest / "plugins" / "mkt-b-plug-y" / "CLAUDE.md").is_file()
