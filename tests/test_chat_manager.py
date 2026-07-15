@@ -1956,9 +1956,11 @@ def test_legacy_runner_force_respawned(tmp_path, monkeypatch):
         await asyncio.sleep(0.15)
 
         assert len(provider.spawned) == 2, "legacy session must be force-respawned, not resumed"
-        # provider.resume() was never invoked — the old parked sandbox is
-        # still sitting there, unclaimed.
-        assert provider.paused, "resume() must not have been called on the legacy sandbox"
+        # provider.resume() was never invoked (fresh spawn instead), AND the old
+        # paused sandbox is destroyed rather than orphaned — resuming a legacy
+        # session must not leak a billable microVM (Devin review on #849).
+        assert len(provider.destroyed) == 1, "the old paused sandbox must be destroyed on legacy respawn"
+        assert not provider.paused, "no paused sandbox may be left orphaned after a legacy respawn"
         live = mgr._live.get(s.id)
         assert live is not None and live.state == SessionState.ACTIVE
         assert s.id in mgr._known_protocol_sessions, "the fresh spawn must record the new protocol marker"
