@@ -1847,6 +1847,11 @@ KNOWN_UNTESTED = {
     "POST /api/admin/run-corporate-memory",
     "POST /api/admin/run-jira-consistency-check",
     "POST /api/admin/run-jira-sla-poll",
+    # Keboola semantic layer (Metastore) sync — scheduler-driven admin
+    # maintenance op, mirrors run-bq-metadata-refresh. No dual-backend
+    # contract test needed (no new repo methods/migration). Behaviour
+    # covered in tests/test_keboola_semantic_layer_refresh_endpoint.py.
+    "POST /api/admin/run-keboola-semantic-layer-refresh",
     # K3 local knowledge packaging (#798) — scheduler-driven admin maintenance
     # op, mirrors run-corporate-memory. No dual-backend contract test needed
     # (no new repo methods/migration; state.json lives on disk). Behaviour
