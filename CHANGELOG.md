@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- `/marketplace.git/*` smart-HTTP serving now shells out to the real `git http-backend` CLI binary as a subprocess (CGI protocol) instead of dulwich's pure-Python `HTTPGitApplication` bridged over WSGI. Under a single-process deployment (required — DuckDB allows only one writer per file, so `--workers` can't be used), dulwich's CPU-heavy pack generation held the GIL for seconds even while "offloaded" to a thread pool, starving the event loop and stalling health checks and other requests during large git-marketplace fetches. The real subprocess fully releases the GIL during pack generation. Repo building/caching (`git_backend.py`) and auth (`resolve_token_to_user`) are unchanged.
+
 ---
 
 ## [0.74.94] - 2026-07-15

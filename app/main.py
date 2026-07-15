@@ -306,7 +306,7 @@ from app.api.admin_reports import router as admin_reports_router
 from app.api.admin_adoption import router as admin_adoption_router
 from app.api.db_state import router as db_state_router
 from app.marketplace_server.router import router as marketplace_server_router
-from app.marketplace_server.git_router import make_git_wsgi_app
+from app.marketplace_server.git_router import router as marketplace_git_router
 from app.web.router import router as web_router
 from app.api.chat import router as chat_router
 from app.api.chat_copresence import router as chat_copresence_router
@@ -1635,10 +1635,10 @@ def create_app() -> FastAPI:
     app.include_router(broker_router)
 
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
-    # WSGI → ASGI bridge (dulwich is WSGI-native; FastAPI is ASGI).
-    from a2wsgi import WSGIMiddleware
-
-    app.mount("/marketplace.git", WSGIMiddleware(make_git_wsgi_app()))
+    # Native ASGI route that shells out to the real `git http-backend` CLI
+    # binary (CGI protocol) — see app/marketplace_server/git_router.py for
+    # why this replaced the dulwich/WSGI bridge.
+    app.include_router(marketplace_git_router)
 
     # Authenticated Swagger / ReDoc / OpenAPI JSON — requires a valid session
     # so the full admin API surface is not visible to unauthenticated callers.
