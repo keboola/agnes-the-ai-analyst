@@ -421,3 +421,32 @@ def test_list_tools_unresolved_caller_sees_no_passthrough(seeded_app):
     names = _list_names(None)
     assert "lookup" not in names
     assert "private" not in names
+
+def test_list_tools_fails_closed_when_grant_lookup_errors(seeded_app, monkeypatch):
+    """If the grant lookup raises (e.g. DB unreachable), tools/list must fail
+    CLOSED — show only foundation tools, never leak passthrough names. The
+    fallback must not re-hit the DB (which is what failed). (Devin review #864)"""
+    import asyncio
+
+    from mcp.server.fastmcp import FastMCP
+
+    from app.api.mcp import tools_generator
+    from app.api.mcp.tools_generator import (
+        install_grant_filtered_list_tools,
+        register_passthrough_tools,
+    )
+
+    _seed_two_tools_two_groups()
+    mcp = FastMCP("Test", instructions="t")
+    register_passthrough_tools(mcp)
+    filtered = install_grant_filtered_list_tools(mcp, caller_id_fn=lambda: "analyst1")
+
+    # Simulate the whole registry layer being down at list time.
+    def _boom(*a, **k):
+        raise RuntimeError("db unreachable")
+
+    monkeypatch.setattr(tools_generator, "tool_registry_repo", _boom)
+    names = {t.name for t in asyncio.run(filtered())}
+    # No passthrough tool leaks — not even the one analyst1 is granted.
+    assert "lookup" not in names
+    assert "private" not in names

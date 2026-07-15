@@ -320,6 +320,10 @@ def install_grant_filtered_list_tools(
     """
     base_list_tools = mcp_instance.list_tools
 
+    from app.api.mcp.foundation_tools import FOUNDATION_TOOL_NAMES
+
+    _foundation = set(FOUNDATION_TOOL_NAMES)
+
     async def _filtered_list_tools():
         all_tools = await base_list_tools()
         try:
@@ -331,16 +335,15 @@ def install_grant_filtered_list_tools(
             caller_user_id = caller_id_fn() if caller_id_fn else None
             allowed = _allowed_passthrough_names(caller_user_id)
         except Exception:
-            # Never let a filtering error expose the unfiltered list — fail
-            # closed by dropping every passthrough tool, keep foundation tools.
-            logger.exception("passthrough tools/list filtering failed; hiding all passthrough tools")
-            try:
-                passthrough_universe = {
-                    t["exposed_name"] for t in tool_registry_repo().list_by_mode(PASSTHROUGH, enabled_only=True)
-                }
-            except Exception:
-                return all_tools
-            allowed = set()
+            # Fail CLOSED — an error here (e.g. the DB is unreachable) must never
+            # expose the unfiltered list. We can't enumerate the passthrough
+            # universe without the DB, so fall back to the STATIC foundation
+            # allowlist: show only known-foundation tools, hide everything else
+            # (every passthrough tool). Foundation names are a compile-time
+            # constant, so this needs no DB and can't itself fail open.
+            # (Devin review on #864.)
+            logger.exception("passthrough tools/list filtering failed; showing foundation tools only")
+            return [t for t in all_tools if t.name in _foundation]
         return [t for t in all_tools if t.name not in passthrough_universe or t.name in allowed]
 
     mcp_instance._mcp_server.list_tools()(_filtered_list_tools)
