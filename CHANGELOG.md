@@ -20,9 +20,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   credentials server-side. Agnes-API/MCP requests are replayed in-process
   through the app's own stack, so live per-request RBAC applies. Tickets
   (`chat_broker_tickets`, schema v90) are minted at spawn, pushed to the runner
-  over stdin, rotated at 50 min, and re-minted on resume. Complements the
-  VM-level egress allowlist (0.74.70): egress stops exfiltration, the broker
-  stops credential theft.
+  over stdin, re-minted (old ones revoked) on resume, and revoked on session
+  teardown; each expires at its TTL (default 1h). Complements the VM-level
+  egress allowlist (0.74.70): egress stops exfiltration, the broker stops
+  credential theft.
 
 ### Changed
 

@@ -189,10 +189,15 @@ def _mint_identity_jwt(session_id: str) -> str:
     user = users_repo().get_by_email(session.user_email)
     if user is None:
         raise HTTPException(status_code=401, detail="ticket_user_not_found")
+    # scope="chat" is what makes `_stash_chat_session_id_from_token` stash the
+    # chat_session_id that `execute_query`'s per-session BigQuery budget keys
+    # off — it ignores the claim without that scope. The pre-broker solo token
+    # (`mint_session_jwt`) carried it; keep it so the scan-budget cap still
+    # applies to brokered solo sessions. (security review on #849)
     return create_access_token(
         user_id=user["id"],
         email=user["email"],
-        extra_claims={"chat_session_id": session_id},
+        extra_claims={"scope": "chat", "chat_session_id": session_id},
     )
 
 

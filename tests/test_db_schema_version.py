@@ -831,3 +831,19 @@ def test_v89_knowledge_digests_table(tmp_path):
 
     _v88_to_v89(conn)
     conn.close()
+
+def test_v90_chat_broker_tickets_table(tmp_path):
+    """v90 (#849): chat_broker_tickets exists on fresh installs, the ladder is
+    idempotent, and schema_version lands at SCHEMA_VERSION."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('chat_broker_tickets')").fetchall()}
+    assert {"token", "session_id", "scope", "expires_at", "created_at"} <= cols
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    # idempotency — re-running the step must not raise
+    from src.db import _v89_to_v90
+
+    _v89_to_v90(conn)
+    conn.close()

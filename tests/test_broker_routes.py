@@ -269,3 +269,9 @@ def test_cosession_ticket_mints_cosession_jwt(broker_app, e2e_env):
     # the co-session JWT carries no real user identity (synthetic sub), only the session
     assert co_payload.get("sub") == f"session:{co.id}"
     assert co_payload.get("chat_session_id") == co.id
+    # BOTH broker mints must carry scope="chat" so the per-session BigQuery
+    # scan-budget stash (`_stash_chat_session_id_from_token`) fires — it ignores
+    # the chat_session_id claim without that scope, silently disabling the cap
+    # for brokered chat traffic (security review on #849).
+    assert solo_payload.get("scope") == "chat"
+    assert co_payload.get("scope") == "chat"
