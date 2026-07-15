@@ -237,15 +237,38 @@ def _strip_sql_noise(sql: str) -> str:
 _INTERNAL_ALIAS_NAMES: frozenset[str] = frozenset(t.registry_id.lower() for t in INTERNAL_TABLES)
 
 
-def _sensitive_table_reference(stripped_sql: str, conn) -> str | None:
-    """Return the first non-allowlisted system.duckdb table name that
-    appears in ``stripped_sql``, or None if clean.
+def _state_table_denylist() -> list[str]:
+    """Backend-aware set of state-table names a non-admin internal query must
+    not reference directly (everything except the ``agnes_*`` aliases).
 
-    Allowlist = the registered ``agnes_*`` internal-table IDs. The
-    denylist is derived dynamically from ``information_schema.tables``
-    in the system.duckdb main schema, so adding a new sensitive table
-    in a future migration is automatically covered without re-editing
-    this module.
+    On DuckDB the names come from ``information_schema.tables`` in the
+    system.duckdb main schema. On Postgres the system DuckDB must never be
+    opened, so the names come from the SQLAlchemy model metadata (the Alembic
+    source of truth) — the same tables live in PG. Adding a new sensitive
+    table in a future migration is automatically covered on both backends
+    without re-editing this module.
+    """
+    from src.repositories import use_pg
+
+    if use_pg():
+        import src.models  # noqa: F401 — registers every model on Base.metadata
+        from src.db_pg import Base
+
+        return list(Base.metadata.tables.keys())
+    from src.db import get_system_db
+
+    rows = get_system_db().execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+    ).fetchall()
+    return [name for (name,) in rows if name is not None]
+
+
+def _sensitive_table_reference(stripped_sql: str, table_names) -> str | None:
+    """Return the first non-allowlisted state table name that appears in
+    ``stripped_sql``, or None if clean.
+
+    Allowlist = the registered ``agnes_*`` internal-table IDs. ``table_names``
+    is the backend-aware denylist (see :func:`_state_table_denylist`).
 
     ``stripped_sql`` MUST already have string literals and comments
     stripped (see ``_strip_sql_noise``). Identifier scan is
@@ -253,8 +276,7 @@ def _sensitive_table_reference(stripped_sql: str, conn) -> str | None:
     double-quoted (`"users"`) forms both match because the bare name
     still sits between word boundaries.
     """
-    rows = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'").fetchall()
-    for (name,) in rows:
+    for name in table_names:
         if name is None:
             continue
         if name.lower() in _INTERNAL_ALIAS_NAMES:
@@ -412,7 +434,8 @@ def execute_internal_query(
     # raw rows, and the filter clause is empty for them anyway.
     if not is_admin:
         stripped = _strip_sql_noise(sql)
-        sensitive = _sensitive_table_reference(stripped, get_system_db())
+        # Backend-aware denylist — never opens the system DuckDB on Postgres.
+        sensitive = _sensitive_table_reference(stripped, _state_table_denylist())
         if sensitive is not None:
             raise InternalAccessError(
                 f"non-admin SQL cannot reference table {sensitive!r}; query one of the agnes_* aliases instead"

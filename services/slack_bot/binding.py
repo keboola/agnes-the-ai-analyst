@@ -60,6 +60,23 @@ def bind_prompt(public_url: str, code: str) -> str:
     )
 
 
+def _binding_conn(conn):
+    """Resolve the DuckDB handle for the ephemeral verification-code tables.
+
+    The verification-code tables are DuckDB-only operational state with no
+    Postgres mirror. On a Postgres instance the caller passes ``conn=None``
+    (the request-scoped ``_get_db`` / ``chat_repo._conn`` is None there, since
+    the system DuckDB must never be opened) — fall back to the dedicated
+    ``operational.duckdb`` file. On DuckDB the caller's system-DB connection is
+    used as-is, so codes stay where they always were.
+    """
+    if conn is not None:
+        return conn
+    from src.db import get_operational_db
+
+    return get_operational_db()
+
+
 def _ensure_table(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS slack_binding_codes ("
@@ -101,6 +118,7 @@ def issue_verification_code(conn: duckdb.DuckDBPyConnection, *, slack_user_id: s
     - Throttles to _MAX_ISSUE_PER_WINDOW issues per 10-minute window.
     - Logs each issuance for throttle accounting.
     """
+    conn = _binding_conn(conn)
     _ensure_table(conn)
     # Throttle check: count recent issuances in the last 10 minutes.
     recent = conn.execute(
@@ -158,6 +176,7 @@ def redeem_verification_code(
     Audit: every successful bind writes to audit_log (best-effort; failure
     is swallowed so a missing audit table never blocks the bind).
     """
+    conn = _binding_conn(conn)
     _ensure_table(conn)
 
     # Per-caller redeem throttle — count FAILED attempts in the sliding window.

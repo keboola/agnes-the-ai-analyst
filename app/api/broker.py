@@ -139,8 +139,13 @@ _ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 _ANTHROPIC_TIMEOUT = httpx.Timeout(connect=15.0, read=600.0, write=60.0, pool=15.0)
 
 
-async def require_broker_ticket(request: Request) -> Dict[str, Any]:
-    """Resolve the bearer ticket on the request. 401s if missing/unknown/expired."""
+def require_broker_ticket(request: Request) -> Dict[str, Any]:
+    """Resolve the bearer ticket on the request. 401s if missing/unknown/expired.
+
+    Plain ``def`` (not ``async def``) so FastAPI offloads it to the anyio
+    thread pool — the body does a synchronous ``ticket_repo().resolve`` DB
+    read that must not run on the single uvicorn event loop (Tier 1, PR #188).
+    """
     auth = request.headers.get("authorization", "")
     token = auth[7:] if auth.lower().startswith("bearer ") else ""
     if not token:

@@ -97,10 +97,16 @@ async def google_callback(request: Request):
         # Find or create user, sync Workspace group memberships into
         # user_group_members.
         from src.db import get_system_db
+        from src.repositories import use_pg
         from app.auth.group_sync import apply_user_groups
         import uuid
 
-        conn = get_system_db()
+        # On Postgres the system state lives in PG; opening the system DuckDB
+        # here would create a stale ``state/system.duckdb`` (and is a hard error
+        # once the invariant is enforced). ``apply_user_groups`` and the repo
+        # calls below all route through the factory under ``use_pg()`` and
+        # ignore ``conn``, so ``None`` is safe on PG.
+        conn = None if use_pg() else get_system_db()
         try:
             repo = users_repo()
             user = repo.get_by_email(email)
@@ -157,7 +163,8 @@ async def google_callback(request: Request):
             if sync_result.denied:
                 return RedirectResponse(url="/login?error=not_in_allowed_group")
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
         # Issue JWT — identity-only, authorization derives from
         # user_group_members at request time (see app.auth.access).

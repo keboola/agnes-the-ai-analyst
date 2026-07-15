@@ -12,9 +12,12 @@ failed and ``/agnes`` looped on "bind your identity first". v71 formalizes the
 column and routes the binding read/write through ``users_repo()``.
 
 The transient verification-code tables stay DuckDB-only by design (ephemeral
-operational state), so issue/redeem still take a DuckDB ``conn`` — these tests
-pass ``get_system_db()`` for that, while the user + binding live in whichever
-state backend is active.
+operational state), so issue/redeem still take a DuckDB ``conn`` — while the
+user + binding live in whichever state backend is active. On DuckDB that conn
+is the system DB; on Postgres the system DuckDB must never be opened, so the
+caller passes ``None`` (mirroring ``chat_repo._conn`` / ``_get_db`` on PG) and
+``binding`` falls back to the dedicated ``operational.duckdb`` file. These
+tests replicate that per-backend conn source.
 """
 from __future__ import annotations
 
@@ -48,8 +51,10 @@ def test_issue_redeem_lookup_round_trip_both_backends(_env):
     # The analyst account lives in the active state backend (PG on [pg]).
     users_repo().create(id="u_slack", email="slack@example.com", name="Slacker")
 
-    # Verification codes are DuckDB-only operational state → DuckDB conn.
-    conn = get_system_db()
+    # Verification codes are DuckDB-only operational state. On DuckDB the conn
+    # is the system DB; on Postgres it must be None (the system DuckDB is never
+    # opened there — binding falls back to the dedicated slack_binding.duckdb).
+    conn = None if _env == "pg" else get_system_db()
     code = issue_verification_code(conn, slack_user_id="U_PARITY")
 
     # Before redeem, the Slack id resolves to nobody.
@@ -74,7 +79,7 @@ def test_redeem_wrong_code_does_not_bind_both_backends(_env):
     from src.repositories import users_repo
 
     users_repo().create(id="u_nb", email="nb@example.com", name="NB")
-    conn = get_system_db()
+    conn = None if _env == "pg" else get_system_db()
 
     ok = redeem_verification_code(conn, user_email="nb@example.com", code="000000")
     assert ok is False

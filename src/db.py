@@ -1775,7 +1775,26 @@ def get_system_db() -> duckdb.DuckDBPyConnection:
     Uses a single shared connection per DATA_DIR to avoid DuckDB lock
     conflicts between the main app and background tasks. Returns a cursor
     so callers can safely close() it without closing the underlying connection.
+
+    HARD INVARIANT: on a Postgres instance (``use_pg()``) the system state
+    lives in Postgres, not the system DuckDB — opening it would create a stale
+    ``state/system.duckdb`` file and read/write the wrong backend. This raises
+    ``RuntimeError`` there. Safe because the only sanctioned callers gate on
+    ``not use_pg()``: the DUCKDB arm of the repository factory
+    (``src/repositories/__init__.py``), the ``else`` branch in
+    ``connectors/internal/access.py``, and all CLI / scripts / tests. Every
+    request/startup opener has been moved behind a ``use_pg()`` guard or
+    rerouted through the repository factory.
     """
+    from src.repositories import use_pg
+
+    if use_pg():
+        raise RuntimeError(
+            "system DuckDB must not be opened on a Postgres instance — "
+            "route system-state reads through the src.repositories factory "
+            "(use_pg() is true)"
+        )
+
     global _system_db_conn, _system_db_path
     db_path = str(_get_state_dir() / "system.duckdb")
 
@@ -1798,6 +1817,65 @@ def get_system_db() -> duckdb.DuckDBPyConnection:
             _system_db_path = db_path
             _ensure_schema(_system_db_conn)
         return _maybe_instrument(_system_db_conn.cursor(), "system")
+
+
+_operational_db_conn: duckdb.DuckDBPyConnection | None = None
+_operational_db_path: str | None = None
+
+# DuckDB-local operational tables that are deliberately NOT part of the
+# dual-backend repository layer — transient state with a short TTL and no
+# Postgres mirror. They live in the dedicated operational DuckDB (never the
+# system DuckDB, which must not be opened on a Postgres instance).
+_OPERATIONAL_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS cli_auth_codes (
+    code_hash   VARCHAR PRIMARY KEY,
+    user_id     VARCHAR NOT NULL,
+    email       VARCHAR NOT NULL,
+    created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    expires_at  TIMESTAMP NOT NULL,
+    consumed_at TIMESTAMP
+);
+"""
+
+
+def get_operational_db() -> duckdb.DuckDBPyConnection:
+    """Get a connection to the ephemeral DuckDB-local operational DB.
+
+    Some operational tables are transient state with a short TTL and NO
+    Postgres mirror — deliberately DuckDB-only on both backends:
+
+      * ``cli_auth_codes`` — single-use browser-loopback CLI-login exchange
+        codes (``app/api/cli_auth.py``), ~2-minute TTL.
+      * ``slack_binding_codes`` / ``slack_binding_issue_log`` /
+        ``slack_binding_redeem_log`` — Slack identity-binding verification
+        codes (``services/slack_bot/binding.py``), ~10-minute TTL, created
+        lazily by that module's ``_ensure_table``.
+
+    These cannot live in the system DuckDB, which must never be opened on a
+    Postgres instance (``get_system_db()`` raises there). They get their own
+    file at ``{DATA_DIR}/state/operational.duckdb``. This accessor is
+    backend-agnostic (valid on DuckDB and Postgres alike). Cursor-per-call on a
+    shared singleton, mirroring ``get_system_db()`` so callers can ``.close()``
+    without dropping the underlying connection.
+    """
+    global _operational_db_conn, _operational_db_path
+    db_path = str(_get_state_dir() / "operational.duckdb")
+
+    with _system_db_lock:
+        if _operational_db_conn is None or _operational_db_path != db_path:
+            if _operational_db_conn is not None:
+                try:
+                    _operational_db_conn.close()
+                except Exception:
+                    pass
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            _operational_db_conn = _open_duckdb(db_path)
+            _apply_memory_caps(
+                _operational_db_conn, _SYSTEM_DB_MEMORY_LIMIT, label="get_operational_db"
+            )
+            _operational_db_conn.execute(_OPERATIONAL_SCHEMA_DDL)
+            _operational_db_path = db_path
+        return _maybe_instrument(_operational_db_conn.cursor(), "operational")
 
 
 def get_analytics_db() -> duckdb.DuckDBPyConnection:
