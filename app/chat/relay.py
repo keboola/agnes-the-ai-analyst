@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 from typing import Optional
 
@@ -35,6 +36,17 @@ _SCOPE_FOR_PREFIX = {
     "/agnes-api": "main",
     "/agnes-mcp": "mcp",
 }
+
+# Prefixes whose broker route replays a ``{method, path, body}`` envelope
+# in-process under the ticket's resolved identity (live RBAC). The in-sandbox
+# CLI / MCP server make NATIVE REST calls (GET/POST/… to a real path), and the
+# relay always POSTs to the broker, so the native method + target path must be
+# carried in the envelope — otherwise the call arrives as
+# ``POST /api/broker/agnes-api/<subpath>`` and 405s (the broker only serves the
+# exact ``/agnes-api`` + ``/agnes-mcp`` envelope routes). ``/anthropic`` is NOT
+# here: it is a transparent external proxy that forwards the raw body + SDK
+# headers to the pinned Anthropic host at the native subpath.
+_ENVELOPE_PREFIXES = frozenset({"/agnes-api", "/agnes-mcp"})
 
 # The `/anthropic` leg proxies LLM completions that routinely run for tens of
 # seconds to minutes. httpx's 5s default read timeout would abort every real
@@ -99,13 +111,22 @@ class Relay:
     )
 
     async def _forward(
-        self, path: str, body: bytes, inbound_headers: Optional[dict[str, str]] = None
+        self,
+        path: str,
+        body: bytes,
+        inbound_headers: Optional[dict[str, str]] = None,
+        method: str = "POST",
     ) -> httpx.Response:
         """Forward an inbound loopback request to the real broker route.
 
-        Preserves the caller's headers (minus hop-by-hop framing and the
-        dummy credential, which is replaced by the ticket) so the broker's
-        Anthropic proxy can pass ``Content-Type``/``anthropic-version`` on to
+        For ``/agnes-api`` and ``/agnes-mcp`` the broker replays a
+        ``{method, path, body}`` envelope under the ticket's resolved identity,
+        so the native HTTP ``method`` and target sub-path (with query string)
+        are wrapped into that envelope and POSTed to the exact broker route.
+        For ``/anthropic`` (transparent external proxy) the caller's headers
+        (minus hop-by-hop framing and the dummy credential, which is replaced
+        by the ticket) and raw body pass through to the native sub-path so the
+        broker can hand ``Content-Type``/``anthropic-version`` to
         ``api.anthropic.com``. Raises ``RuntimeError`` if the relay is not
         armed or holds no ticket for the requested path's scope — callers must
         never fall back to an unauthenticated or stale-ticket request.
@@ -116,13 +137,31 @@ class Relay:
         if not ticket:
             raise RuntimeError(f"relay has no ticket for the scope of path {path!r}")
 
-        headers = {k: v for k, v in (inbound_headers or {}).items() if k.lower() not in self._DROP_INBOUND_HEADERS}
-        headers["Authorization"] = f"Bearer {ticket}"
-
-        url = f"{self._server_url}/api/broker{path}"
+        prefix = "/" + path.lstrip("/").split("/", 1)[0]
         owns_client = self._client is None
         client = self._client or httpx.AsyncClient(timeout=_OUTBOUND_TIMEOUT)
         try:
+            if prefix in _ENVELOPE_PREFIXES:
+                # Carry the native method + sub-path (+ query) + JSON body in
+                # the envelope the broker's replay expects; POST to the exact
+                # /agnes-api or /agnes-mcp route (never the native sub-path,
+                # which 405s).
+                subpath = path[len(prefix) :] or "/"
+                parsed: object | None = None
+                if body:
+                    try:
+                        parsed = json.loads(body)
+                    except (ValueError, UnicodeDecodeError):
+                        parsed = None
+                envelope = {"method": method.upper(), "path": subpath, "body": parsed}
+                url = f"{self._server_url}/api/broker{prefix}"
+                headers = {"Authorization": f"Bearer {ticket}"}
+                return await client.post(url, json=envelope, headers=headers)
+
+            # Transparent proxy (``/anthropic``): raw body + SDK headers.
+            headers = {k: v for k, v in (inbound_headers or {}).items() if k.lower() not in self._DROP_INBOUND_HEADERS}
+            headers["Authorization"] = f"Bearer {ticket}"
+            url = f"{self._server_url}/api/broker{path}"
             return await client.post(url, content=body, headers=headers)
         finally:
             if owns_client:
@@ -157,7 +196,7 @@ class Relay:
         if not request_line:
             return
         try:
-            _method, path, _version = request_line.decode("latin-1").strip().split(" ", 2)
+            method, path, _version = request_line.decode("latin-1").strip().split(" ", 2)
         except ValueError:
             writer.write(b"HTTP/1.1 400 Bad Request\r\n\r\n")
             await writer.drain()
@@ -175,7 +214,7 @@ class Relay:
         body = await reader.readexactly(length) if length else b""
 
         try:
-            resp = await self._forward(path, body, headers)
+            resp = await self._forward(path, body, headers, method=method)
         except RuntimeError as exc:
             payload = str(exc).encode()
             writer.write(f"HTTP/1.1 503 Service Unavailable\r\nContent-Length: {len(payload)}\r\n\r\n".encode())

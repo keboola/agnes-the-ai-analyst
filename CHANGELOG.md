@@ -10,6 +10,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Chat P0 — CLI data tools and MCP tools returned `HTTP 405` inside chat.**
+  The in-sandbox relay forwarded `/agnes-api` and `/agnes-mcp` requests to the
+  broker verbatim — native method + sub-path in the URL — but the broker's
+  replay routes only serve the exact `/agnes-api` / `/agnes-mcp` paths and
+  expect a `{method, path, body}` JSON envelope (the native HTTP method is lost
+  because the relay always POSTs). So every `agnes catalog`/`query`/… CLI call
+  and every Agnes MCP tool call arrived as `POST /api/broker/agnes-api/<subpath>`
+  and 405'd, leaving the chat agent unable to read any data. The relay now
+  wraps `/agnes-api` and `/agnes-mcp` calls into the envelope the broker
+  expects (carrying the native method, sub-path with query string, and parsed
+  JSON body); `/anthropic` stays a transparent external proxy. Unit tests
+  encoded only the envelope path, so this integration gap was invisible until
+  live E2E.
+
 ---
 
 ## [0.74.87] - 2026-07-15

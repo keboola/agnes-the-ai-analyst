@@ -10,11 +10,88 @@ behavior before any ticket has been pushed.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 
 import pytest
 
 from app.chat.relay import Relay
+
+
+class _CapturingClient:
+    """Records the last post(url, json=..., content=..., headers=...) call."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def post(self, url, json=None, content=None, headers=None):
+        self.calls.append({"url": url, "json": json, "content": content, "headers": headers})
+
+        class _Resp:
+            status_code = 200
+            content = b"{}"
+            reason_phrase = "OK"
+            headers: dict = {}
+
+        return _Resp()
+
+
+def test_relay_wraps_agnes_api_native_call_into_envelope():
+    """The broker's /agnes-api route replays a {method, path, body} envelope.
+    The in-sandbox CLI makes NATIVE REST calls (e.g. GET /api/v2/catalog) and
+    the relay always POSTs to the broker, so the native method + target path
+    (with query string) MUST be carried in the envelope — otherwise the call
+    arrives as POST /api/broker/agnes-api/<subpath> and 405s."""
+
+    async def _run():
+        r = Relay(server_url="http://agnes:8000")
+        r.set_tickets(main="TOKMAIN", mcp="TOKMCP")
+        fake = _CapturingClient()
+        r._client = fake
+        await r._forward("/agnes-api/api/v2/catalog?refresh=0", b"", {"x": "y"}, method="GET")
+        return fake.calls[-1]
+
+    call = asyncio.run(_run())
+    # Envelope POSTed to the EXACT broker route, not the native subpath.
+    assert call["url"] == "http://agnes:8000/api/broker/agnes-api"
+    assert call["json"] == {"method": "GET", "path": "/api/v2/catalog?refresh=0", "body": None}
+    assert call["headers"]["Authorization"] == "Bearer TOKMAIN"
+
+
+def test_relay_wraps_agnes_mcp_post_body_into_envelope():
+    async def _run():
+        r = Relay(server_url="http://agnes:8000")
+        r.set_tickets(main="TOKMAIN", mcp="TOKMCP")
+        fake = _CapturingClient()
+        r._client = fake
+        await r._forward("/agnes-mcp/api/query", json.dumps({"sql": "SELECT 1"}).encode(), {}, method="POST")
+        return fake.calls[-1]
+
+    call = asyncio.run(_run())
+    assert call["url"] == "http://agnes:8000/api/broker/agnes-mcp"
+    assert call["json"] == {"method": "POST", "path": "/api/query", "body": {"sql": "SELECT 1"}}
+    assert call["headers"]["Authorization"] == "Bearer TOKMCP"  # mcp scope ticket
+
+
+def test_relay_anthropic_stays_transparent_not_enveloped():
+    """The /anthropic leg is a transparent external proxy — it must NOT be
+    wrapped in an envelope; the raw body + SDK headers pass through to the
+    broker's Anthropic proxy at the native subpath."""
+
+    async def _run():
+        r = Relay(server_url="http://agnes:8000")
+        r.set_tickets(main="TOKMAIN", mcp="TOKMCP")
+        fake = _CapturingClient()
+        r._client = fake
+        await r._forward(
+            "/anthropic/v1/messages", b'{"model":"x"}', {"content-type": "application/json"}, method="POST"
+        )
+        return fake.calls[-1]
+
+    call = asyncio.run(_run())
+    assert call["url"] == "http://agnes:8000/api/broker/anthropic/v1/messages"
+    assert call["json"] is None  # raw content, not an envelope
+    assert call["content"] == b'{"model":"x"}'
 
 
 def test_relay_holds_tickets_in_memory_only():
