@@ -99,6 +99,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   backend-aware `_state_table_denylist()` opened a `get_system_db()` cursor on
   the DuckDB path without closing it; it now stores and closes it in a
   `try/finally`, matching the sibling `get_schema()`.
+- **Keyless chat auth: admin "test connection" + operator docs.** Follow-up to
+  the workload-identity LLM auth (0.74.95): the admin `POST
+  /api/admin/chat/secrets/test` probe now works in `workload_identity` mode —
+  it mints a federated token and runs a 1-token completion
+  (`readiness.test_wif_credentials`), the keyless analog of the static-key test,
+  so operators aren't left with only a runtime error as feedback. Adds
+  [`docs/chat-keyless-auth.md`](docs/chat-keyless-auth.md) — the operator setup
+  guide (federation rule, env, config switch, verification, troubleshooting).
 
 ---
 

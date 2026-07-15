@@ -6,6 +6,8 @@ failure modes — all with the network mocked, so no real federation rule needed
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 import app.auth.wif as wif
@@ -161,3 +163,72 @@ def test_missing_access_token_in_response_raises(monkeypatch):
     )
     with pytest.raises(wif.WIFAuthError, match="missing access_token"):
         wif.get_federated_access_token()
+
+
+# --- test_wif_credentials (admin "test connection" probe for WIF mode) --------
+
+
+class _FakeMessages:
+    def __init__(self, exc=None):
+        self._exc = exc
+
+    def create(self, **_k):
+        if self._exc is not None:
+            raise self._exc
+        return object()
+
+
+class _FakeAnthropic:
+    exc = None
+
+    def __init__(self, **_k):
+        self.messages = _FakeMessages(_FakeAnthropic.exc)
+
+
+def test_wif_credentials_ok(monkeypatch):
+    import anthropic
+
+    import app.auth.wif as w
+    from app.chat.readiness import test_wif_credentials
+
+    monkeypatch.setattr(w, "get_federated_access_token", lambda: "sk-ant-oat01-OK")
+    _FakeAnthropic.exc = None
+    monkeypatch.setattr(anthropic, "Anthropic", _FakeAnthropic)
+
+    r = asyncio.run(test_wif_credentials())
+    assert r["ok"] is True
+
+
+def test_wif_credentials_exchange_failure(monkeypatch):
+    import app.auth.wif as w
+    from app.chat.readiness import test_wif_credentials
+
+    def _boom():
+        raise w.WIFAuthError("no ANTHROPIC_IDENTITY_TOKEN set")
+
+    monkeypatch.setattr(w, "get_federated_access_token", _boom)
+    r = asyncio.run(test_wif_credentials())
+    assert r["ok"] is False
+    assert "exchange failed" in r["detail"]
+
+
+def test_wif_credentials_token_minted_but_api_rejects(monkeypatch):
+    import anthropic
+
+    import app.auth.wif as w
+    from app.chat.readiness import test_wif_credentials
+
+    monkeypatch.setattr(w, "get_federated_access_token", lambda: "sk-ant-oat01-SCOPED")
+    cleared = {"n": 0}
+    monkeypatch.setattr(w, "clear_token_cache", lambda: cleared.__setitem__("n", cleared["n"] + 1))
+
+    class _AuthErr(Exception):
+        status_code = 403
+
+    _FakeAnthropic.exc = _AuthErr("forbidden")
+    monkeypatch.setattr(anthropic, "Anthropic", _FakeAnthropic)
+
+    r = asyncio.run(test_wif_credentials())
+    assert r["ok"] is False
+    assert "API call failed" in r["detail"]
+    assert cleared["n"] == 1  # bad token dropped from cache
