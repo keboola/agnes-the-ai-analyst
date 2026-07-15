@@ -33,6 +33,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   DB-backed override path instead of the anonymous default (a divergence from
   DuckDB). `_build_context` now distinguishes "caller omitted conn" from
   "caller supplied conn", so anonymous pages get the default on both backends.
+- `agnes admin metrics {import,export,validate}`, `agnes admin metadata-apply`,
+  and `agnes admin break-glass-grant-admin` no longer crash on a Postgres
+  instance. Each opened a vestigial system-DuckDB connection (never used — the
+  work routes through the repository factory), which hard-raised once
+  `get_system_db()` began rejecting Postgres. The call is now gated behind
+  `not use_pg()`.
 
 ---
 
