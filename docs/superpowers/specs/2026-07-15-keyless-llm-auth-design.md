@@ -31,8 +31,12 @@ Federation (WIF)**. The static-key mode stays the default; keyless is opt-in.
 ## Verified capability (the key finding)
 
 Anthropic's **first-party API supports Workload Identity Federation natively —
-GA, no beta header, no third-party platform required.** The official client
-auto-detects WIF when these are set and no static credential outranks them:
+GA, no third-party platform (Vertex/Bedrock) required.** (The WIF *feature* is
+GA; the short-lived OAuth-style token it mints still travels with the
+`anthropic-beta: oauth-2025-04-20` request header — see "The broker change"
+below. "No beta" refers to enrollment/platform, not the per-request header.)
+The official client auto-detects WIF when these are set and no static
+credential outranks them:
 
 - `ANTHROPIC_FEDERATION_RULE_ID`
 - `ANTHROPIC_ORGANIZATION_ID`
