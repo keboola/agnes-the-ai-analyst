@@ -10,14 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.75] - 2026-07-15
+
 ### Fixed
 
 - Chat sandbox: the in-memory legacy-resume path (`_resume_live`) now destroys
-  the old paused sandbox before force-respawning, mirroring the post-restart
-  path (`_resume_from_row`). Without it, resuming a session this process never
+  the old paused sandbox **and revokes its broker tickets** before
+  force-respawning, mirroring the post-restart path (`_resume_from_row`) and
+  the non-legacy resume. Without it, resuming a session this process never
   pushed a current-protocol ticket to overwrote `sandbox_id` via a fresh spawn
-  and orphaned the paused E2B microVM until its absolute TTL — a billing leak
-  (Devin review follow-up on #849).
+  and orphaned the paused E2B microVM until its absolute TTL — a billing leak —
+  while the old session's tickets stayed redeemable for the rest of their TTL
+  (Devin review follow-ups on #849/#851).
 
 ---
 
