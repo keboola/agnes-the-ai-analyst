@@ -1961,6 +1961,9 @@ def test_legacy_runner_force_respawned(tmp_path, monkeypatch):
         # session must not leak a billable microVM (Devin review on #849).
         assert len(provider.destroyed) == 1, "the old paused sandbox must be destroyed on legacy respawn"
         assert not provider.paused, "no paused sandbox may be left orphaned after a legacy respawn"
+        # The paused session's old broker tickets must be revoked on the legacy
+        # respawn, not left redeemable until TTL (Devin review on #851).
+        assert s.id in fake_tickets.revoked, "old broker tickets must be revoked on legacy respawn"
         live = mgr._live.get(s.id)
         assert live is not None and live.state == SessionState.ACTIVE
         assert s.id in mgr._known_protocol_sessions, "the fresh spawn must record the new protocol marker"
