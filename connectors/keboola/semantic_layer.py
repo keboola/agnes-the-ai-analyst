@@ -93,6 +93,9 @@ def dataset_lookup_by_table_id(dataset_items: list[dict]) -> dict[str, dict]:
 # this importer does not have (relationship support is out of scope for
 # v1) — so any match here means "skip, cannot safely compose."
 _ALIAS_QUALIFIER_RE = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_"])')
+# Single-quoted SQL string literal (handles '' escapes), masked out before the
+# alias scan so dotted enum values like 'in.progress' don't read as an alias.
+_SQL_STRING_LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
 
 
 def references_foreign_alias(expression: str) -> bool:
@@ -100,8 +103,13 @@ def references_foreign_alias(expression: str) -> bool:
 
     See _ALIAS_QUALIFIER_RE docstring for why this indicates a multi-dataset
     JOIN this importer cannot safely compose in v1.
+
+    String literals are masked first: a dotted value inside a single-quoted
+    literal (e.g. `WHEN "status" = 'in.progress'`) is data, not an alias
+    reference, and must not cause a valid single-table metric to be skipped.
     """
-    return bool(_ALIAS_QUALIFIER_RE.search(expression))
+    masked = _SQL_STRING_LITERAL_RE.sub("''", expression)
+    return bool(_ALIAS_QUALIFIER_RE.search(masked))
 
 
 def compose_sql(expression: str, table_name: str) -> str:
@@ -222,7 +230,7 @@ def sync_semantic_layer(
     import requests
 
     from app.datasource_secrets import datasource_secret
-    from connectors.keboola.storage_api import KeboolaStorageClient
+    from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
     from connectors.keboola.metastore_client import MetastoreApiError, MetastoreClient
     from src.repositories import table_registry_repo, metric_repo
 
@@ -232,7 +240,15 @@ def sync_semantic_layer(
         return {"status": "error", "error": "Keboola credentials not configured"}
 
     storage_client = KeboolaStorageClient(url=url, token=token)
-    require_master_token(storage_client)
+    # A Storage API outage during the master-token preflight must abort with a
+    # structured error, not an unhandled 500 — same defense the Metastore
+    # fetch below gets. MasterTokenRequiredError is intentionally NOT caught:
+    # it is a configuration error the endpoint surfaces as a 400.
+    try:
+        require_master_token(storage_client)
+    except (StorageApiError, requests.RequestException) as e:
+        logger.error("Keboola Storage API preflight (verify_token) failed: %s", e)
+        return {"status": "error", "error": f"Storage API preflight failed: {e}"}
 
     metastore = MetastoreClient(url=url, token=token)
 

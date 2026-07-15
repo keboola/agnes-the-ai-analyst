@@ -124,6 +124,19 @@ class TestReferencesForeignAlias:
     def test_multiple_foreign_aliases_detected(self):
         assert references_foreign_alias("CASE WHEN um.metric_id = 'x' THEN SUM(kumv.value) ELSE 0 END") is True
 
+    def test_dotted_string_literal_is_not_foreign(self):
+        # A dotted value inside a single-quoted literal is data, not an alias
+        # reference — must not flag a valid single-table metric as foreign.
+        assert references_foreign_alias("COUNT(CASE WHEN \"status\" = 'in.progress' THEN 1 END)") is False
+        assert (
+            references_foreign_alias("SUM(CASE WHEN \"type\" IN ('order.created', 'payment.failed') THEN 1 END)")
+            is False
+        )
+
+    def test_dotted_literal_plus_real_alias_still_foreign(self):
+        # Masking literals must not hide a genuine alias elsewhere in the expr.
+        assert references_foreign_alias('CASE WHEN "s" = \'in.progress\' THEN o."amount" END') is True
+
 
 class TestComposeSql:
     def test_composes_select_with_alias_t(self):

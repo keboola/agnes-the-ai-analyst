@@ -171,6 +171,26 @@ class TestSyncSemanticLayer:
         assert result["status"] == "error"
         assert "Metastore fetch failed" in result["error"]
 
+    def test_storage_preflight_error_returns_error_shape(self, e2e_env):
+        """A Storage API outage during the master-token preflight aborts with a
+        structured error, not an unhandled 500. MasterTokenRequiredError still
+        propagates (config error → 400 at the endpoint)."""
+        from connectors.keboola.semantic_layer import sync_semantic_layer
+        from connectors.keboola.storage_api import StorageApiError
+
+        fake_storage = MagicMock()
+        fake_storage.verify_token.side_effect = StorageApiError("Storage 503")
+        fake_metastore = MagicMock()
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = sync_semantic_layer(keboola_url="https://connection.keboola.com", keboola_token="master-tok")
+
+        assert result["status"] == "error"
+        assert "Storage API preflight failed" in result["error"]
+
     def test_empty_metrics_does_not_wipe_existing_rows(self, e2e_env):
         """A successful-but-empty metrics response (model still present) must
         NOT prune every previously-imported keboola_semantic_layer row — the
