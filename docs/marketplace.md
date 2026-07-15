@@ -43,7 +43,9 @@ gated by PAT auth and filtered per caller:
 - `GET /marketplace.zip` — deterministic ZIP download with `ETag` /
   `If-None-Match` (304 when content unchanged). Consumed by a client-side
   SessionStart hook.
-- `GET /marketplace.git/*` — git smart-HTTP (dulwich via a2wsgi). Registered in
+- `GET /marketplace.git/*` — git smart-HTTP, served by the real `git
+  http-backend` CLI run as a CGI subprocess (dulwich only builds the on-disk
+  bare repo; see `app/marketplace_server/git_router.py`). Registered in
   Claude Code once, then Claude Code owns the clone/fetch cycle.
 
 **Auth:** ZIP uses `Authorization: Bearer <PAT>`. Git uses HTTP Basic where the
