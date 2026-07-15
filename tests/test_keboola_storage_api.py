@@ -25,6 +25,7 @@ from connectors.keboola.storage_api import (
     ExportFilter,
     KeboolaStorageClient,
     StorageApiError,
+    _slice_sort_key,
     get_temp_root,
     sweep_orphaned_scratch,
 )
@@ -427,6 +428,97 @@ class TestDownloadFile:
         )
 
         assert dest.read_bytes() == b"col\na\nb\n"
+
+    def test_sliced_concat_reorders_out_of_order_manifest(self, tmp_path):
+        # Regression test (2026-07-15): a real garbled-header parquet was
+        # traced to _download_sliced trusting the manifest's raw `entries`
+        # array order. This manifest lists slice 1 BEFORE slice 0 (Keboola's
+        # real numbered-filename convention, e.g. `export_0_0_0.csv`) — the
+        # client must still download and concatenate the header slice
+        # (index 0) first.
+        sess = MagicMock()
+
+        manifest_resp = MagicMock()
+        manifest_resp.json.return_value = {
+            "entries": [
+                {"url": "https://signed/export_0_0_1.csv"},
+                {"url": "https://signed/export_0_0_0.csv"},
+            ]
+        }
+        manifest_resp.raise_for_status = MagicMock()
+
+        slice0 = MagicMock()
+        slice0.__enter__ = MagicMock(return_value=slice0)
+        slice0.__exit__ = MagicMock(return_value=False)
+        slice0.iter_content.return_value = [b"col\n", b"a\n"]
+        slice0.raise_for_status = MagicMock()
+
+        slice1 = MagicMock()
+        slice1.__enter__ = MagicMock(return_value=slice1)
+        slice1.__exit__ = MagicMock(return_value=False)
+        slice1.iter_content.return_value = [b"b\n"]
+        slice1.raise_for_status = MagicMock()
+
+        # side_effect is the actual call order the client makes: manifest
+        # first, then whichever slice URL it requests first. After the fix
+        # that must be export_0_0_0.csv (the header slice) despite it being
+        # SECOND in the manifest's entries array.
+        sess.get.side_effect = [manifest_resp, slice0, slice1]
+
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        dest = tmp_path / "out.csv"
+        c.download_file(
+            {
+                "url": "https://signed/manifest.json",
+                "name": "sliced",
+                "isSliced": True,
+            },
+            dest,
+        )
+
+        assert dest.read_bytes() == b"col\na\nb\n"
+        requested_urls = [call.args[0] for call in sess.get.call_args_list]
+        assert requested_urls == [
+            "https://signed/manifest.json",
+            "https://signed/export_0_0_0.csv",
+            "https://signed/export_0_0_1.csv",
+        ]
+
+
+class TestSliceSortKey:
+    def test_single_digit_slices_sort_numerically(self):
+        urls = ["https://x/export_0_0_1.csv", "https://x/export_0_0_0.csv"]
+        assert sorted(urls, key=_slice_sort_key) == [
+            "https://x/export_0_0_0.csv",
+            "https://x/export_0_0_1.csv",
+        ]
+
+    def test_multi_digit_slices_sort_numerically_not_lexicographically(self):
+        # Plain string sort would put "_0_0_12" before "_0_0_2" (lexical
+        # "1" < "2"); natural sort must order them numerically.
+        urls = ["https://x/export_0_0_12.csv", "https://x/export_0_0_2.csv"]
+        assert sorted(urls, key=_slice_sort_key) == [
+            "https://x/export_0_0_2.csv",
+            "https://x/export_0_0_12.csv",
+        ]
+
+    def test_already_sorted_input_is_a_no_op(self):
+        urls = ["https://x/export_0_0_0.csv", "https://x/export_0_0_1.csv"]
+        assert sorted(urls, key=_slice_sort_key) == urls
+
+    def test_presigned_query_string_digits_do_not_perturb_order(self):
+        # Real S3/Azure signed URLs carry digit-heavy query strings
+        # (signatures, expiry epochs) that vary per slice. Only the path's
+        # slice index must drive the sort — the header slice (index 0) must
+        # come first even when the query string of a later slice sorts lower.
+        urls = [
+            "https://s3.example.com/b/export_0_0_1.csv?X-Amz-Expires=3600&X-Amz-Signature=000aaa",
+            "https://s3.example.com/b/export_0_0_0.csv?X-Amz-Expires=3600&X-Amz-Signature=999zzz",
+        ]
+        assert sorted(urls, key=_slice_sort_key) == [
+            "https://s3.example.com/b/export_0_0_0.csv?X-Amz-Expires=3600&X-Amz-Signature=999zzz",
+            "https://s3.example.com/b/export_0_0_1.csv?X-Amz-Expires=3600&X-Amz-Signature=000aaa",
+        ]
 
 
 # ---- _gs_to_https / _azure_to_https URL rewriting --------------------------
