@@ -339,6 +339,11 @@ async def admin_post(
             status_code=422,
             detail="url must be https://",
         )
+    # SSRF guard (audit L2): the URL is git-cloned server-side, so reject hosts
+    # resolving to a private/reserved network, like the other admin URL fields.
+    from app.api.admin import _validate_url_not_private
+
+    _validate_url_not_private(url, field_name="url")
 
     patch: dict[str, Any] = {
         "url": url,
