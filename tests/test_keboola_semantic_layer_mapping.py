@@ -11,6 +11,7 @@ from connectors.keboola.semantic_layer import (
     MasterTokenRequiredError,
     compose_sql,
     dataset_lookup_by_table_id,
+    merge_constraints,
     references_foreign_alias,
     require_master_token,
     resolve_table_name,
@@ -126,3 +127,76 @@ class TestReferencesForeignAlias:
 class TestComposeSql:
     def test_composes_select_with_alias_t(self):
         assert compose_sql('SUM("amount")', "orders") == 'SELECT SUM("amount") FROM "orders" AS t'
+
+
+class TestMergeConstraints:
+    def test_returns_none_when_no_constraint_references_metric(self):
+        constraints = [
+            {
+                "type": "semantic-constraint",
+                "id": "c1",
+                "attributes": {
+                    "name": "positive",
+                    "constraintType": "inequality",
+                    "rule": "value >= 0",
+                    "metrics": ["other_metric"],
+                    "severity": "warning",
+                },
+            },
+        ]
+        assert merge_constraints("revenue", constraints) is None
+
+    def test_merges_single_matching_constraint(self):
+        constraints = [
+            {
+                "type": "semantic-constraint",
+                "id": "c1",
+                "attributes": {
+                    "name": "revenue_non_negative",
+                    "constraintType": "inequality",
+                    "rule": "value >= 0",
+                    "metrics": ["revenue"],
+                    "severity": "warning",
+                },
+            },
+        ]
+        result = merge_constraints("revenue", constraints)
+        assert result == {
+            "rules": [
+                {
+                    "name": "revenue_non_negative",
+                    "constraint_type": "inequality",
+                    "rule": "value >= 0",
+                    "severity": "warning",
+                },
+            ]
+        }
+
+    def test_merges_multiple_matching_constraints(self):
+        constraints = [
+            {
+                "type": "semantic-constraint",
+                "id": "c1",
+                "attributes": {
+                    "name": "revenue_non_negative",
+                    "constraintType": "inequality",
+                    "rule": "value >= 0",
+                    "metrics": ["revenue"],
+                    "severity": "warning",
+                },
+            },
+            {
+                "type": "semantic-constraint",
+                "id": "c2",
+                "attributes": {
+                    "name": "revenue_not_null",
+                    "constraintType": "equality",
+                    "rule": "value IS NOT NULL",
+                    "metrics": ["revenue", "other"],
+                    "severity": "critical",
+                },
+            },
+        ]
+        result = merge_constraints("revenue", constraints)
+        assert len(result["rules"]) == 2
+        assert result["rules"][1]["name"] == "revenue_not_null"
