@@ -69,12 +69,14 @@ async def run_keboola_semantic_layer_refresh(
 
     logger.info(
         "keboola semantic layer refresh: run_id=%s status=%s created_or_updated=%s "
-        "pruned=%s skipped_unresolved_table=%s skipped_foreign_alias=%s",
+        "pruned=%s skipped_unresolved_table=%s skipped_foreign_alias=%s "
+        "skipped_embedded_comment=%s",
         run_id,
         result.get("status"),
         result.get("created_or_updated"),
         result.get("pruned"),
         result.get("skipped_unresolved_table"),
         result.get("skipped_foreign_alias"),
+        result.get("skipped_embedded_comment"),
     )
     return {**result, "run_id": run_id, "started_at": started_at}
