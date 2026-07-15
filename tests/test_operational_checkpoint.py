@@ -88,3 +88,23 @@ def test_checkpoint_failure_is_nonfatal(operational_db, monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         assert db_mod.checkpoint_operational_db() is False
     assert any("CHECKPOINT" in r.message for r in caplog.records)
+
+
+def test_close_singleton_connections_releases_operational(operational_db):
+    """The migrator-spawn lock-release must also drop the operational singleton.
+
+    ``close_singleton_connections()`` runs right before a migrator subprocess is
+    launched to release every exclusive DuckDB file lock. The operational
+    singleton is a third long-lived DuckDB file, so it must be closed too —
+    otherwise its lock is held across the spawn.
+    """
+    conn, _tmp_path = operational_db
+    import src.db as db_mod
+    from src.db import close_singleton_connections
+
+    _insert_code(conn, "singleton-close")
+    assert db_mod._operational_db_conn is not None
+
+    close_singleton_connections()
+
+    assert db_mod._operational_db_conn is None

@@ -1923,7 +1923,7 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
 
 
 def close_singleton_connections() -> None:
-    """Close both shared DuckDB connections so a subprocess can take the lock.
+    """Close the shared DuckDB connections so a subprocess can take the lock.
 
     Called from the DB-backend state-machine migrator-spawn path
     (`app.api.db_state.start_migration`) right before launching the migrator
@@ -1936,7 +1936,7 @@ def close_singleton_connections() -> None:
     flipped the backend to Postgres, the app process will be recreated by
     the host applier and these globals never need to re-open.
     """
-    global _system_db_conn, _analytics_db_conn
+    global _system_db_conn, _analytics_db_conn, _operational_db_conn
     with _system_db_lock:
         if _system_db_conn is not None:
             try:
@@ -1944,6 +1944,16 @@ def close_singleton_connections() -> None:
             except Exception:
                 pass
             _system_db_conn = None
+        # The operational DuckDB (cli_auth_codes / Slack binding codes) is a
+        # third long-lived singleton, guarded by the same _system_db_lock. On a
+        # Postgres instance it is the ONLY written DuckDB file, so its exclusive
+        # file lock must also be released before a migrator subprocess spawns.
+        if _operational_db_conn is not None:
+            try:
+                _operational_db_conn.close()
+            except Exception:
+                pass
+            _operational_db_conn = None
     with _analytics_db_lock:
         if _analytics_db_conn is not None:
             try:

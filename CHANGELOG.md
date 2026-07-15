@@ -39,6 +39,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   work routes through the repository factory), which hard-raised once
   `get_system_db()` began rejecting Postgres. The call is now gated behind
   `not use_pg()`.
+- `close_singleton_connections()` (run before a migrator subprocess spawns to
+  release DuckDB file locks) now also closes the new `operational.duckdb`
+  singleton, so its exclusive file lock is not held across the spawn.
+- Startup bootstrap-warning no longer leaks a DuckDB cursor if the user-list
+  read raises: the connection close moved into a `try/finally`.
 
 ---
 

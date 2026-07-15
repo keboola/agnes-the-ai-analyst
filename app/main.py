@@ -789,16 +789,18 @@ async def lifespan(app):
             # users_repo() is factory-routed and ignores ``conn``; on Postgres
             # pass None so the system DuckDB is never opened (forbidden).
             conn = None if use_pg() else get_system_db()
-            repo = users_repo()
-            all_users = repo.list_all()
-            has_password = any(u.get("password_hash") for u in all_users)
-            if not has_password:
-                logger.warning(
-                    "No user has a password set — /auth/bootstrap is reachable. "
-                    "Claim the seed admin (or set SEED_ADMIN_PASSWORD) to close this window."
-                )
-            if conn is not None:
-                conn.close()
+            try:
+                repo = users_repo()
+                all_users = repo.list_all()
+                has_password = any(u.get("password_hash") for u in all_users)
+                if not has_password:
+                    logger.warning(
+                        "No user has a password set — /auth/bootstrap is reachable. "
+                        "Claim the seed admin (or set SEED_ADMIN_PASSWORD) to close this window."
+                    )
+            finally:
+                if conn is not None:
+                    conn.close()
         except Exception:
             pass  # never block startup on a logging convenience
 
