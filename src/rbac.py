@@ -149,8 +149,13 @@ def get_accessible_ids(
     if not user_id:
         return frozenset()
 
+    # On Postgres never open the system DuckDB — see can_access_table above;
+    # is_user_admin / _allowed_ids_for_user route through the repository factory
+    # when conn is None.
+    from src.repositories import use_pg
+
     should_close = False
-    if conn is None:
+    if conn is None and not use_pg():
         conn = get_system_db()
         should_close = True
     try:
