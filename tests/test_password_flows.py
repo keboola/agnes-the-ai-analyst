@@ -44,18 +44,22 @@ def _seed_user(
     from src.db import get_system_db
     from src.repositories.users import UserRepository
 
+    from app.auth.token_hash import hash_token
+
     uid = str(uuid.uuid4())
     conn = get_system_db()
     try:
         repo = UserRepository(conn)
         repo.create(id=uid, email=email, name=email.split("@")[0], password_hash=password_hash)
         updates: dict = {}
+        # Tokens are stored hashed at rest (audit M3); the caller passes the raw
+        # value it will later submit, so seed its digest to mirror the mint path.
         if setup_token is not None:
-            updates["setup_token"] = setup_token
+            updates["setup_token"] = hash_token(setup_token)
         if setup_token_created is not None:
             updates["setup_token_created"] = setup_token_created
         if reset_token is not None:
-            updates["reset_token"] = reset_token
+            updates["reset_token"] = hash_token(reset_token)
         if reset_token_created is not None:
             updates["reset_token_created"] = reset_token_created
         if updates:
@@ -150,6 +154,10 @@ class TestResetRequest:
         assert "Check your email" in resp.text
         u = _get_user("forgot@test.com")
         assert u["reset_token"]  # token was stored
+        # audit M3: what's persisted is the sha256 digest, never a raw
+        # token_urlsafe value — a DB read must not yield a usable reset token.
+        stored = u["reset_token"]
+        assert len(stored) == 64 and all(c in "0123456789abcdef" for c in stored), stored
 
     def test_unknown_email_same_response(self, app_client, fresh_db):
         # Anti-enumeration: should not reveal whether email is registered.
