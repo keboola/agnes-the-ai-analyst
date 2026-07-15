@@ -7,6 +7,7 @@ Cover:
 * invoke: admin can call any; analyst gets 403 without grant, 404 on
   unknown tool, 502 on upstream-call failure.
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
@@ -15,7 +16,7 @@ import pytest
 
 pytest.importorskip("mcp", reason="mcp SDK not installed")
 
-from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+from src.db import get_system_db
 from src.repositories.mcp_sources import MCPSourceRepository
 from src.repositories.tool_registry import (
     MATERIALIZE,
@@ -308,6 +309,7 @@ def _seed_rate_limited_tool(*, analyst_id: str = "analyst1", cap: int = 2) -> No
 
 def test_invoke_rate_limit_returns_429_after_cap(seeded_app):
     from app.api.mcp_policy import reset_rate_buckets_for_tests
+
     reset_rate_buckets_for_tests()
     _seed_rate_limited_tool(cap=2)
     client = seeded_app["client"]
@@ -378,3 +380,76 @@ def test_invoke_per_user_no_secret_returns_403_and_does_not_forward(seeded_app):
     assert r.status_code == 403, r.text
     assert "my-secret" in r.json()["detail"]
     mock.assert_not_called()
+
+
+def _list_names(caller_id, seed_analyst="analyst1"):
+    """Register the seeded passthrough tools on a bare FastMCP, install the
+    grant filter with a fixed caller, and return the tool names tools/list
+    would advertise to that caller."""
+    import asyncio
+
+    from mcp.server.fastmcp import FastMCP
+
+    from app.api.mcp.tools_generator import (
+        install_grant_filtered_list_tools,
+        register_passthrough_tools,
+    )
+
+    mcp = FastMCP("Test", instructions="t")
+    register_passthrough_tools(mcp)
+    filtered = install_grant_filtered_list_tools(mcp, caller_id_fn=lambda: caller_id)
+    tools = asyncio.run(filtered())
+    return {t.name for t in tools}
+
+
+def test_list_tools_hides_ungranted_passthrough_for_analyst(seeded_app):
+    """tools/list on the transports shows a non-admin only the passthrough
+    tools their groups are granted — matching the REST listing's visibility."""
+    _seed_two_tools_two_groups()  # analyst1 granted 'lookup', not 'private'
+    names = _list_names("analyst1")
+    assert "lookup" in names
+    assert "private" not in names
+
+
+def test_list_tools_admin_sees_all_passthrough(seeded_app):
+    _seed_two_tools_two_groups()
+    names = _list_names("admin1")
+    assert {"lookup", "private"} <= names
+
+
+def test_list_tools_unresolved_caller_sees_no_passthrough(seeded_app):
+    """No resolvable caller identity → fail closed: no passthrough tools listed."""
+    _seed_two_tools_two_groups()
+    names = _list_names(None)
+    assert "lookup" not in names
+    assert "private" not in names
+
+
+def test_list_tools_fails_closed_when_grant_resolution_raises(seeded_app):
+    """If resolving the caller's grants blows up at request time (e.g. the
+    registry/DB is unreachable), the filter must hide the ENTIRE known
+    passthrough universe rather than fall through to the unfiltered list —
+    the leak this control exists to prevent."""
+    import asyncio
+    from unittest.mock import patch
+
+    from mcp.server.fastmcp import FastMCP
+
+    from app.api.mcp.tools_generator import (
+        install_grant_filtered_list_tools,
+        register_passthrough_tools,
+    )
+
+    _seed_two_tools_two_groups()
+    mcp = FastMCP("Test", instructions="t")
+    registered = register_passthrough_tools(mcp)
+    assert {"lookup", "private"} <= set(registered)  # universe is non-empty
+    # Even an admin caller: the grant lookup itself raises.
+    filtered = install_grant_filtered_list_tools(mcp, caller_id_fn=lambda: "admin1", passthrough_names=registered)
+    with patch(
+        "app.api.mcp.tools_generator._allowed_passthrough_names",
+        side_effect=RuntimeError("DB unavailable"),
+    ):
+        names = {t.name for t in asyncio.run(filtered())}
+    assert "lookup" not in names
+    assert "private" not in names
