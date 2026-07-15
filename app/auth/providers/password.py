@@ -16,6 +16,7 @@ from argon2.exceptions import VerifyMismatchError
 from app.auth.jwt import create_access_token, SESSION_COOKIE_MAX_AGE_SECONDS
 from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, is_local_dev_mode
+from app.auth.token_hash import hash_token
 from app.auth.rate_limit import limiter as _rate_limiter
 
 
@@ -279,7 +280,7 @@ async def password_login_web(
         reset_tok = secrets.token_urlsafe(32)
         users_repo().update(
             id=user["id"],
-            reset_token=reset_tok,
+            reset_token=hash_token(reset_tok),
             reset_token_created=datetime.now(timezone.utc),
         )
         return RedirectResponse(
@@ -320,7 +321,7 @@ async def password_setup(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if user.get("setup_token") != request_body.token:
+    if user.get("setup_token") != hash_token(request_body.token):
         raise HTTPException(status_code=400, detail="Invalid setup token")
     if not _token_is_fresh(user.get("setup_token_created"), SETUP_TOKEN_TTL):
         raise HTTPException(status_code=400, detail="Setup token has expired")
@@ -388,7 +389,7 @@ async def reset_request(
             token = secrets.token_urlsafe(32)
             repo.update(
                 id=user["id"],
-                reset_token=token,
+                reset_token=hash_token(token),
                 reset_token_created=datetime.now(timezone.utc),
             )
             send_reset_email(request, email, token)
@@ -440,7 +441,7 @@ async def reset_confirm(
     # failed on Postgres deployments — the token was written to PG by the factory
     # but the CAS read DuckDB, so every reset / forced-rotation login 'expired'.)
     try:
-        won = repo.consume_reset_token(email=email, token=token, cutoff=cutoff, consume_id=consume_id)
+        won = repo.consume_reset_token(email=email, token=hash_token(token), cutoff=cutoff, consume_id=consume_id)
     except Exception as exc:
         err = str(exc).lower()
         if "conflict" in err or "transaction" in err:
@@ -515,7 +516,7 @@ async def setup_request(
             token = secrets.token_urlsafe(32)
             repo.update(
                 id=user["id"],
-                setup_token=token,
+                setup_token=hash_token(token),
                 setup_token_created=datetime.now(timezone.utc),
             )
             send_setup_email(request, email, token)
@@ -557,7 +558,7 @@ async def setup_confirm(
 
     repo = users_repo()
     user = repo.get_by_email(email)
-    if not user or user.get("setup_token") != token:
+    if not user or user.get("setup_token") != hash_token(token):
         return _render_setup_form(request, email=email, token=token, name=name, error="Invalid or expired setup link.")
     if not _token_is_fresh(user.get("setup_token_created"), SETUP_TOKEN_TTL):
         return _render_setup_form(

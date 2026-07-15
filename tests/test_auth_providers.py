@@ -1,8 +1,10 @@
 """Tests for auth providers — password, email magic link, google OAuth."""
 
-import os
 import pytest
 from fastapi.testclient import TestClient
+
+# Reset/setup/magic-link tokens are hashed at rest (audit M3); seed digests.
+from app.auth.token_hash import hash_token
 
 
 @pytest.fixture
@@ -19,19 +21,21 @@ def client(tmp_path, monkeypatch):
     # User with password
     try:
         from argon2 import PasswordHasher
+
         ph = PasswordHasher()
         pw_hash = ph.hash("testpass123")
     except ImportError:
         import hashlib
+
         pw_hash = hashlib.sha256(b"testpass123").hexdigest()
 
     ur.create(id="pw1", email="pw@test.com", name="PW User", password_hash=pw_hash)
     # User with setup token (and fresh created timestamp so the JSON /setup
     # endpoint's TTL check accepts it)
     from datetime import datetime, timezone
+
     ur.create(id="setup1", email="setup@test.com", name="Setup User")
-    ur.update(id="setup1", setup_token="setup-token-123",
-              setup_token_created=datetime.now(timezone.utc))
+    ur.update(id="setup1", setup_token=hash_token("setup-token-123"), setup_token_created=datetime.now(timezone.utc))
     # User for magic link
     ur.create(id="ml1", email="ml@test.com", name="ML User")
     conn.close()
@@ -85,35 +89,57 @@ class TestTokenEndpoint:
 
 class TestPasswordAuth:
     def test_login_success(self, client):
-        resp = client.post("/auth/password/login", json={
-            "email": "pw@test.com", "password": "testpass123",
-        })
+        resp = client.post(
+            "/auth/password/login",
+            json={
+                "email": "pw@test.com",
+                "password": "testpass123",
+            },
+        )
         assert resp.status_code == 200
         assert "access_token" in resp.json()
 
     def test_login_wrong_password(self, client):
-        resp = client.post("/auth/password/login", json={
-            "email": "pw@test.com", "password": "wrongpass",
-        })
+        resp = client.post(
+            "/auth/password/login",
+            json={
+                "email": "pw@test.com",
+                "password": "wrongpass",
+            },
+        )
         assert resp.status_code == 401
 
     def test_login_unknown_user(self, client):
-        resp = client.post("/auth/password/login", json={
-            "email": "unknown@test.com", "password": "test",
-        })
+        resp = client.post(
+            "/auth/password/login",
+            json={
+                "email": "unknown@test.com",
+                "password": "test",
+            },
+        )
         assert resp.status_code == 401
 
     def test_setup_password(self, client):
-        resp = client.post("/auth/password/setup", json={
-            "email": "setup@test.com", "token": "setup-token-123", "password": "newpass456",
-        })
+        resp = client.post(
+            "/auth/password/setup",
+            json={
+                "email": "setup@test.com",
+                "token": "setup-token-123",
+                "password": "newpass456",
+            },
+        )
         assert resp.status_code == 200
         assert "access_token" in resp.json()
 
     def test_setup_wrong_token(self, client):
-        resp = client.post("/auth/password/setup", json={
-            "email": "setup@test.com", "token": "wrong-token", "password": "newpass",
-        })
+        resp = client.post(
+            "/auth/password/setup",
+            json={
+                "email": "setup@test.com",
+                "token": "wrong-token",
+                "password": "newpass",
+            },
+        )
         assert resp.status_code == 400
 
 
@@ -130,9 +156,13 @@ class TestEmailAuth:
         assert "If this email" in resp.json()["message"]
 
     def test_verify_invalid_token(self, client):
-        resp = client.post("/auth/email/verify", json={
-            "email": "ml@test.com", "token": "invalid",
-        })
+        resp = client.post(
+            "/auth/email/verify",
+            json={
+                "email": "ml@test.com",
+                "token": "invalid",
+            },
+        )
         assert resp.status_code == 401
 
     def test_concurrent_verify_only_one_wins(self, client):
@@ -147,7 +177,8 @@ class TestEmailAuth:
         repo.create(id="ml-user-1", email="concurrent@test.com", name="Test")
         token = "tok_concurrent_test_12345"
         from datetime import datetime, timezone
-        repo.update(id="ml-user-1", reset_token=token, reset_token_created=datetime.now(timezone.utc))
+
+        repo.update(id="ml-user-1", reset_token=hash_token(token), reset_token_created=datetime.now(timezone.utc))
         conn.close()
 
         results = []
@@ -155,9 +186,13 @@ class TestEmailAuth:
 
         def verify():
             barrier.wait()  # ensure both threads hit the endpoint simultaneously
-            resp = client.post("/auth/email/verify", json={
-                "email": "concurrent@test.com", "token": token,
-            })
+            resp = client.post(
+                "/auth/email/verify",
+                json={
+                    "email": "concurrent@test.com",
+                    "token": token,
+                },
+            )
             results.append(resp.status_code)
 
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -181,7 +216,9 @@ class TestGoogleOAuth:
         assert "error" in resp.headers.get("location", "")
 
 
-@pytest.mark.skip(reason="v12: _fetch_google_groups removed; group sync now uses ADC via app.auth.group_sync.fetch_user_groups. Rewrite for the new module.")
+@pytest.mark.skip(
+    reason="v12: _fetch_google_groups removed; group sync now uses ADC via app.auth.group_sync.fetch_user_groups. Rewrite for the new module."
+)
 class TestGoogleGroupsFetch:
     """Unit tests for _fetch_google_groups — the helper must be tolerant of
     every realistic failure mode (non-Workspace tenants return 403, expired
@@ -190,7 +227,6 @@ class TestGoogleGroupsFetch:
     def test_parses_groups_from_success_response(self, monkeypatch):
         import asyncio
         from app.auth.providers import google as gp
-
 
         # searchTransitiveGroups returns {"memberships": [...]}, not {"groups": [...]}.
         # Each item carries the group identity in groupKey.id + displayName,
@@ -213,16 +249,20 @@ class TestGoogleGroupsFetch:
         class _Resp:
             status_code = 200
             text = ""
+
             def json(self):
                 return fake_payload
 
         class _FakeClient:
             def __init__(self, *a, **kw):
                 pass
+
             async def __aenter__(self):
                 return self
+
             async def __aexit__(self, *a):
                 return False
+
             async def get(self, url, params=None, headers=None):
                 return _Resp()
 
@@ -244,9 +284,15 @@ class TestGoogleGroupsFetch:
             text = "Cloud Identity API has not been enabled"
 
         class _FakeClient:
-            def __init__(self, *a, **kw): pass
-            async def __aenter__(self): return self
-            async def __aexit__(self, *a): return False
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
             async def get(self, url, params=None, headers=None):
                 return _Resp()
 
@@ -261,9 +307,15 @@ class TestGoogleGroupsFetch:
         from app.auth.providers import google as gp
 
         class _FakeClient:
-            def __init__(self, *a, **kw): pass
-            async def __aenter__(self): return self
-            async def __aexit__(self, *a): return False
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
             async def get(self, *a, **kw):
                 raise RuntimeError("boom")
 
@@ -280,20 +332,22 @@ class TestLocalDevGroupsParser:
 
     def test_returns_empty_when_unset(self, monkeypatch):
         from app.auth.dependencies import get_local_dev_groups
+
         monkeypatch.delenv("LOCAL_DEV_GROUPS", raising=False)
         assert get_local_dev_groups() == []
 
     def test_returns_empty_when_blank(self, monkeypatch):
         from app.auth.dependencies import get_local_dev_groups
+
         monkeypatch.setenv("LOCAL_DEV_GROUPS", "   ")
         assert get_local_dev_groups() == []
 
     def test_parses_valid_json_array(self, monkeypatch):
         from app.auth.dependencies import get_local_dev_groups
+
         monkeypatch.setenv(
             "LOCAL_DEV_GROUPS",
-            '[{"id":"eng@x.com","name":"Engineering"},'
-            '{"id":"admins@x.com","name":"Admins"}]',
+            '[{"id":"eng@x.com","name":"Engineering"},{"id":"admins@x.com","name":"Admins"}]',
         )
         assert get_local_dev_groups() == [
             {"id": "eng@x.com", "name": "Engineering"},
@@ -302,6 +356,7 @@ class TestLocalDevGroupsParser:
 
     def test_defaults_name_to_id(self, monkeypatch):
         from app.auth.dependencies import get_local_dev_groups
+
         monkeypatch.setenv("LOCAL_DEV_GROUPS", '[{"id":"eng@x.com"}]')
         assert get_local_dev_groups() == [{"id": "eng@x.com", "name": "eng@x.com"}]
 
@@ -309,6 +364,7 @@ class TestLocalDevGroupsParser:
         """Forward-compat: unknown fields like roles/labels survive parsing
         so future group-aware code can be exercised in dev without parser changes."""
         from app.auth.dependencies import get_local_dev_groups
+
         monkeypatch.setenv(
             "LOCAL_DEV_GROUPS",
             '[{"id":"eng@x.com","name":"Eng","roles":["MEMBER","OWNER"]}]',
@@ -320,11 +376,13 @@ class TestLocalDevGroupsParser:
 
     def test_returns_empty_on_invalid_json(self, monkeypatch):
         from app.auth.dependencies import get_local_dev_groups
+
         monkeypatch.setenv("LOCAL_DEV_GROUPS", "not-json,foo")
         assert get_local_dev_groups() == []
 
     def test_returns_empty_on_non_list(self, monkeypatch):
         from app.auth.dependencies import get_local_dev_groups
+
         monkeypatch.setenv("LOCAL_DEV_GROUPS", '{"id":"eng@x.com"}')
         assert get_local_dev_groups() == []
 
@@ -332,6 +390,7 @@ class TestLocalDevGroupsParser:
         """Bad items are dropped, valid siblings survive — partial config
         still produces something useful instead of nuking the whole list."""
         from app.auth.dependencies import get_local_dev_groups
+
         monkeypatch.setenv(
             "LOCAL_DEV_GROUPS",
             '[{"name":"no-id"},{"id":"eng@x.com","name":"Eng"},"string-not-object"]',
@@ -339,7 +398,9 @@ class TestLocalDevGroupsParser:
         assert get_local_dev_groups() == [{"id": "eng@x.com", "name": "Eng"}]
 
 
-@pytest.mark.skip(reason="v12: session.google_groups + /me/profile group rendering removed; profile now reads user_group_members. Rewrite to assert membership rows instead.")
+@pytest.mark.skip(
+    reason="v12: session.google_groups + /me/profile group rendering removed; profile now reads user_group_members. Rewrite to assert membership rows instead."
+)
 class TestLocalDevGroupsInjection:
     """End-to-end: with LOCAL_DEV_MODE=1 + LOCAL_DEV_GROUPS, the seeded dev
     user's session.google_groups gets populated on first authenticated request
@@ -357,6 +418,7 @@ class TestLocalDevGroupsInjection:
             '[{"id":"local-dev-engineers@example.com","name":"Local Dev Engineers"}]',
         )
         from app.main import create_app
+
         return TestClient(create_app())
 
     def test_dev_user_sees_mocked_groups_on_profile(self, dev_client):
@@ -367,14 +429,13 @@ class TestLocalDevGroupsInjection:
         assert "Local Dev Engineers" in body
         assert "No Google groups available" not in body
 
-    def test_empty_LOCAL_DEV_GROUPS_falls_back_to_empty_state(
-        self, tmp_path, monkeypatch
-    ):
+    def test_empty_LOCAL_DEV_GROUPS_falls_back_to_empty_state(self, tmp_path, monkeypatch):
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
         monkeypatch.setenv("LOCAL_DEV_MODE", "1")
         monkeypatch.delenv("LOCAL_DEV_GROUPS", raising=False)
         from app.main import create_app
+
         client = TestClient(create_app())
         resp = client.get("/me/profile")
         assert resp.status_code == 200
@@ -387,6 +448,7 @@ class TestLocalDevGroupsStartupValidation:
 
     def _capture_startup_logs(self, tmp_path, monkeypatch, caplog, env_value):
         import logging
+
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
         monkeypatch.setenv("LOCAL_DEV_MODE", "1")
@@ -395,13 +457,16 @@ class TestLocalDevGroupsStartupValidation:
         else:
             monkeypatch.setenv("LOCAL_DEV_GROUPS", env_value)
         from app.main import create_app
+
         with caplog.at_level(logging.WARNING, logger="app.main"):
             create_app()
         return caplog.text
 
     def test_logs_count_and_ids_on_valid_input(self, tmp_path, monkeypatch, caplog):
         text = self._capture_startup_logs(
-            tmp_path, monkeypatch, caplog,
+            tmp_path,
+            monkeypatch,
+            caplog,
             '[{"id":"a@x.com","name":"A"},{"id":"b@x.com","name":"B"}]',
         )
         assert "mocking 2 group(s)" in text
@@ -410,7 +475,10 @@ class TestLocalDevGroupsStartupValidation:
 
     def test_warns_when_set_but_malformed(self, tmp_path, monkeypatch, caplog):
         text = self._capture_startup_logs(
-            tmp_path, monkeypatch, caplog, "not-valid-json",
+            tmp_path,
+            monkeypatch,
+            caplog,
+            "not-valid-json",
         )
         assert "produced no valid groups" in text
 
@@ -440,7 +508,9 @@ class TestCookieAuth:
         assert resp.status_code != 401
 
 
-@pytest.mark.skip(reason="v12: callback writes user_group_members instead of users.groups JSON. Rewrite assertions for the new schema.")
+@pytest.mark.skip(
+    reason="v12: callback writes user_group_members instead of users.groups JSON. Rewrite assertions for the new schema."
+)
 class TestGoogleCallbackGroupSync:
     """Google OAuth callback populates users.groups from Workspace.
 
@@ -484,6 +554,7 @@ class TestGoogleCallbackGroupSync:
         # google_callback because it does `from app.auth.group_sync import fetch_user_groups`
         # inside the function body, so patching the source module is enough.
         import app.auth.group_sync as gs_mod
+
         monkeypatch.setattr(
             gs_mod,
             "fetch_user_groups",
@@ -538,9 +609,8 @@ class TestGoogleCallbackGroupSync:
 
         # Swap the mock to return a single, different group on the next call
         import app.auth.group_sync as gs_mod
-        monkeypatch.setattr(
-            gs_mod, "fetch_user_groups", lambda email: ["grp_c@groupon.com"]
-        )
+
+        monkeypatch.setattr(gs_mod, "fetch_user_groups", lambda email: ["grp_c@groupon.com"])
 
         c.get("/auth/google/callback?code=x&state=y")
 
@@ -563,6 +633,7 @@ class TestGoogleCallbackGroupSync:
             raise RuntimeError("Google API is down")
 
         import app.auth.group_sync as gs_mod
+
         monkeypatch.setattr(gs_mod, "fetch_user_groups", raise_boom)
 
         resp = c.get("/auth/google/callback?code=x&state=y")
@@ -585,7 +656,7 @@ class TestGoogleCallbackGroupSync:
 
     def test_callback_empty_groups_does_not_overwrite_existing(self, google_app, monkeypatch):
         """fetch_user_groups returning [] means 'no data' — don't wipe existing
-           groups on a transient failure masked as empty."""
+        groups on a transient failure masked as empty."""
         c = google_app["client"]
         _json = google_app["json"]
 
@@ -594,6 +665,7 @@ class TestGoogleCallbackGroupSync:
 
         # Second login: Google returns empty
         import app.auth.group_sync as gs_mod
+
         monkeypatch.setattr(gs_mod, "fetch_user_groups", lambda email: [])
         c.get("/auth/google/callback?code=x&state=y")
 
@@ -626,12 +698,16 @@ class TestEmailMagicLinkTTL:
         repo.create(id="expired-user", email="expired@test.com", name="Expired")
         # Set token with old timestamp (beyond 1-hour TTL)
         old_time = datetime.now(timezone.utc) - timedelta(hours=2)
-        repo.update(id="expired-user", reset_token="expired-token-123", reset_token_created=old_time)
+        repo.update(id="expired-user", reset_token=hash_token("expired-token-123"), reset_token_created=old_time)
         conn.close()
 
-        resp = client.post("/auth/email/verify", json={
-            "email": "expired@test.com", "token": "expired-token-123",
-        })
+        resp = client.post(
+            "/auth/email/verify",
+            json={
+                "email": "expired@test.com",
+                "token": "expired-token-123",
+            },
+        )
         assert resp.status_code == 401
 
     def test_token_reuse_prevented(self, client):
@@ -644,19 +720,27 @@ class TestEmailMagicLinkTTL:
         repo = UserRepository(conn)
         repo.create(id="reuse-user", email="reuse@test.com", name="Reuse")
         token = "reusable-token-456"
-        repo.update(id="reuse-user", reset_token=token, reset_token_created=datetime.now(timezone.utc))
+        repo.update(id="reuse-user", reset_token=hash_token(token), reset_token_created=datetime.now(timezone.utc))
         conn.close()
 
         # First use should succeed
-        resp1 = client.post("/auth/email/verify", json={
-            "email": "reuse@test.com", "token": token,
-        })
+        resp1 = client.post(
+            "/auth/email/verify",
+            json={
+                "email": "reuse@test.com",
+                "token": token,
+            },
+        )
         assert resp1.status_code == 200
 
         # Second use must fail
-        resp2 = client.post("/auth/email/verify", json={
-            "email": "reuse@test.com", "token": token,
-        })
+        resp2 = client.post(
+            "/auth/email/verify",
+            json={
+                "email": "reuse@test.com",
+                "token": token,
+            },
+        )
         assert resp2.status_code == 401
 
     def test_invalid_signature_token_rejected(self, client):
@@ -668,16 +752,24 @@ class TestEmailMagicLinkTTL:
         conn = get_system_db()
         repo = UserRepository(conn)
         repo.create(id="sig-user", email="sig@test.com", name="Sig")
-        repo.update(id="sig-user", reset_token="real-token-789", reset_token_created=datetime.now(timezone.utc))
+        repo.update(
+            id="sig-user", reset_token=hash_token("real-token-789"), reset_token_created=datetime.now(timezone.utc)
+        )
         conn.close()
 
-        resp = client.post("/auth/email/verify", json={
-            "email": "sig@test.com", "token": "wrong-token-xyz",
-        })
+        resp = client.post(
+            "/auth/email/verify",
+            json={
+                "email": "sig@test.com",
+                "token": "wrong-token-xyz",
+            },
+        )
         assert resp.status_code == 401
 
 
-@pytest.mark.skip(reason="Authlib OAuth internals require complex async mock; group sync is tested via unit tests and integration. Full E2E OAuth flow needs real Google credentials or dedicated mock infrastructure.")
+@pytest.mark.skip(
+    reason="Authlib OAuth internals require complex async mock; group sync is tested via unit tests and integration. Full E2E OAuth flow needs real Google credentials or dedicated mock infrastructure."
+)
 class TestGoogleOAuthFullFlow:
     """Tests for Google OAuth callback with mocked token exchange and group sync.
 

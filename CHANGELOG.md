@@ -12,6 +12,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.77] - 2026-07-15
+
+### Security
+
 ## [0.74.76] - 2026-07-15
 
 ### Security
@@ -38,6 +42,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ---
 
 ## [0.74.75] - 2026-07-15
+- Password-reset, account-setup, and email magic-link tokens are now hashed
+  (SHA-256) at rest instead of stored verbatim in the `users` table, matching
+  the hash-at-rest standard already used for PATs and setup/broker tokens.
+  Previously anyone who could read `system.duckdb` (a backup, a snapshot, an
+  objectViewer on the state bucket) could replay a live one-time token for
+  account takeover. The raw token now exists only in the emailed link; the DB
+  holds only the digest, and the incoming token is hashed before comparison.
+  In-place in the existing columns — no schema change; outstanding (short-TTL)
+  tokens issued before the upgrade are invalidated and must be re-requested.
+  Found by the post-INC-01572 audit (M3).
 
 ### Fixed
 
