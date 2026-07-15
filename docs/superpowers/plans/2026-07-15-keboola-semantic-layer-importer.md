@@ -1004,7 +1004,17 @@ git commit -m "Add metric row builder for Keboola semantic layer importer"
 # tests/test_keboola_semantic_layer_sync.py
 """sync_semantic_layer() orchestrator — mocked MetastoreClient/StorageClient,
 real test DuckDB via the e2e_env fixture (same pattern as
-tests/test_bq_metadata_refresh_endpoint.py)."""
+tests/test_bq_metadata_refresh_endpoint.py).
+
+Patches target the SOURCE modules (connectors.keboola.storage_api.KeboolaStorageClient,
+connectors.keboola.metastore_client.MetastoreClient), not
+connectors.keboola.semantic_layer — sync_semantic_layer() imports both
+classes locally inside the function body (same lazy-import rationale as
+connectors/keboola/extractor.py and app/api/bq_metadata_refresh.py's
+refresh_one()), so there is no module-level name in semantic_layer.py to
+patch. tests/test_bq_metadata_refresh_endpoint.py's
+`patch("connectors.bigquery.metadata.fetch", ...)` is the precedent this
+mirrors."""
 
 from __future__ import annotations
 
@@ -1056,8 +1066,8 @@ class TestSyncSemanticLayer:
             "semantic-constraint": [],
         }[item_type]
 
-        with patch("connectors.keboola.semantic_layer.KeboolaStorageClient", return_value=fake_storage), \
-             patch("connectors.keboola.semantic_layer.MetastoreClient", return_value=fake_metastore):
+        with patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage), \
+             patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore):
             result = sync_semantic_layer(keboola_url="https://connection.keboola.com", keboola_token="master-tok")
 
         assert result["status"] == "ok"
@@ -1090,8 +1100,8 @@ class TestSyncSemanticLayer:
             ],
             "semantic-constraint": [],
         }[item_type]
-        with patch("connectors.keboola.semantic_layer.KeboolaStorageClient", return_value=fake_storage), \
-             patch("connectors.keboola.semantic_layer.MetastoreClient", return_value=fake_metastore):
+        with patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage), \
+             patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore):
             sync_semantic_layer(keboola_url="https://connection.keboola.com", keboola_token="master-tok")
         assert metric_repo().get("keboola/model-1/a") is not None
         assert metric_repo().get("keboola/model-1/b") is not None
@@ -1103,8 +1113,8 @@ class TestSyncSemanticLayer:
             "semantic-metric": [_metric_item("a", 'SUM("amount")', "in.c-example_source.orders")],
             "semantic-constraint": [],
         }[item_type]
-        with patch("connectors.keboola.semantic_layer.KeboolaStorageClient", return_value=fake_storage), \
-             patch("connectors.keboola.semantic_layer.MetastoreClient", return_value=fake_metastore):
+        with patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage), \
+             patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore):
             result = sync_semantic_layer(keboola_url="https://connection.keboola.com", keboola_token="master-tok")
 
         assert result["pruned"] == 1
@@ -1129,8 +1139,8 @@ class TestSyncSemanticLayer:
             "semantic-metric": [], "semantic-constraint": [],
         }[item_type]
 
-        with patch("connectors.keboola.semantic_layer.KeboolaStorageClient", return_value=fake_storage), \
-             patch("connectors.keboola.semantic_layer.MetastoreClient", return_value=fake_metastore):
+        with patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage), \
+             patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore):
             result = sync_semantic_layer(keboola_url="https://connection.keboola.com", keboola_token="master-tok")
 
         assert result["pruned"] == 0
@@ -1149,8 +1159,8 @@ class TestSyncSemanticLayer:
             "semantic-constraint": [],
         }[item_type]
 
-        with patch("connectors.keboola.semantic_layer.KeboolaStorageClient", return_value=fake_storage), \
-             patch("connectors.keboola.semantic_layer.MetastoreClient", return_value=fake_metastore):
+        with patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage), \
+             patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore):
             result = sync_semantic_layer(keboola_url="https://connection.keboola.com", keboola_token="master-tok")
 
         assert result["skipped_unresolved_table"] == 1
@@ -1162,7 +1172,7 @@ class TestSyncSemanticLayer:
         fake_storage = MagicMock()
         fake_storage.verify_token.return_value = {"isMasterToken": False}
 
-        with patch("connectors.keboola.semantic_layer.KeboolaStorageClient", return_value=fake_storage):
+        with patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage):
             with pytest.raises(MasterTokenRequiredError):
                 sync_semantic_layer(keboola_url="https://connection.keboola.com", keboola_token="regular-tok")
 
