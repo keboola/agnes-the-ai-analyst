@@ -1601,7 +1601,10 @@ def _build_per_domain_markdown(slug: str, user: dict, conn: duckdb.DuckDBPyConne
 
 
 @router.get("/bundle")
-async def get_bundle(
+# Plain ``def`` → FastAPI offloads to the anyio thread pool; body is sync
+# DuckDB knowledge reads that must not run on the event loop (Tier 2 of the
+# PR #188 event-loop unblocking).
+def get_bundle(
     domain: Optional[str] = None,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),

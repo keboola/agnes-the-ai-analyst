@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- Moved several read/serve endpoints (catalog listing, data download, home page, memory bundle, marketplace items) to synchronous handlers so FastAPI runs them in the thread pool instead of on the event loop, and offloaded the session/artifact upload file move via `run_in_threadpool` — one slow local/filesystem-I/O request no longer stalls every other request (Tier 2 of the PR #188 event-loop unblocking).
+
 ---
 
 ## [0.74.77] - 2026-07-15

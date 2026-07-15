@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
@@ -86,7 +87,7 @@ async def upload_session(
     tmp, size = await _stream_to_temp(file)
     try:
         tmp.close()
-        shutil.move(tmp.name, str(target))
+        await run_in_threadpool(shutil.move, tmp.name, str(target))
     except Exception:
         Path(tmp.name).unlink(missing_ok=True)
         raise
@@ -127,7 +128,7 @@ async def upload_artifact(
     tmp, size = await _stream_to_temp(file)
     try:
         tmp.close()
-        shutil.move(tmp.name, str(target))
+        await run_in_threadpool(shutil.move, tmp.name, str(target))
     except Exception:
         Path(tmp.name).unlink(missing_ok=True)
         raise

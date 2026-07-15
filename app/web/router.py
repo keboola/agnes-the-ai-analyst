@@ -873,7 +873,10 @@ async def dashboard(
 
 
 @router.get("/home", response_class=HTMLResponse)
-async def home_page(
+# Plain ``def`` → FastAPI offloads to the anyio thread pool; body is sync
+# DuckDB aggregates + marketplace/store resolution that must not run on the
+# event loop (Tier 2 of the PR #188 event-loop unblocking).
+def home_page(
     request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),

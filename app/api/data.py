@@ -85,7 +85,10 @@ async def check_access(
 
 
 @router.get("/{table_id}/download")
-async def download_table(
+# Plain ``def`` → FastAPI offloads to the anyio thread pool; body is sync
+# filesystem (rglob/stat over the extracts tree) + DuckDB that must not run
+# on the event loop (Tier 2 of the PR #188 event-loop unblocking).
+def download_table(
     table_id: str,
     request: Request,
     user: dict = Depends(get_current_user),

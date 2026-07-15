@@ -736,7 +736,10 @@ def _apply_sort(
 
 
 @router.get("/items", response_model=ItemListResponse)
-async def list_items(
+# Plain ``def`` → FastAPI offloads to the anyio thread pool; body is sync
+# filesystem (per-plugin stat over the marketplace tree) + DB that must not
+# run on the event loop (Tier 2 of the PR #188 event-loop unblocking).
+def list_items(
     tab: Literal["curated", "flea", "my"] = Query("curated"),
     q: Optional[str] = Query(None),
     category: Optional[str] = Query(None),

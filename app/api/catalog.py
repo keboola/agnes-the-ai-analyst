@@ -60,7 +60,10 @@ async def get_table_profile(
 
 
 @router.get("/tables", response_model=CatalogTablesResponse)
-async def list_catalog_tables(
+# Plain ``def`` → FastAPI offloads to the anyio thread pool; body is sync
+# DuckDB + per-table RBAC filtering that must not run on the event loop
+# (Tier 2 of the PR #188 event-loop unblocking; cf. v2_catalog.py / query.py).
+def list_catalog_tables(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
