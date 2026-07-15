@@ -1474,12 +1474,17 @@ async def catalog_table_detail(
     # map in one bulk query (was a `list_tables(pkg_id)` call per
     # package — the worst N+1 in this file).
     pkg_repo = data_packages_repo()
-    member_map = pkg_repo.list_member_ids_bulk()
     accessible_pkg_ids = get_accessible_ids(user, ResourceType.DATA_PACKAGE.value, conn)  # None => admin/all
     is_admin = accessible_pkg_ids is None
     parent_packages = []
     has_grant = False
     try:
+        # Bulk {package_id -> [table_id, ...]} membership map in one query
+        # (was a `list_tables(pkg_id)` call per package). Kept INSIDE the
+        # try/except so a bulk-query failure degrades gracefully (logged +
+        # fail-closed below) instead of 500ing the route — same contract as
+        # the per-package lookup it replaced.
+        member_map = pkg_repo.list_member_ids_bulk()
         # Walk packages (instances are small enough that this is fine) —
         # only to preserve name-ordering of `parent_packages` and find the
         # ones that contain this table; membership itself is now a dict

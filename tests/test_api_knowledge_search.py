@@ -153,3 +153,45 @@ def test_analyst_with_table_grant_sees_table_hit(seeded_app):
     assert resp.status_code == 200, resp.text
     table_hits = [h for h in resp.json()["results"] if h["type"] == "table"]
     assert any(h["table_id"] == "ks_widgets_granted" for h in table_hits)
+
+
+def test_knowledge_search_resolves_accessible_tables_once(seeded_app, monkeypatch):
+    """N+1 regression guard (FAI-132 review): ``/api/knowledge/search`` must
+    resolve the caller's accessible table set with a SINGLE
+    ``get_accessible_tables`` call, not one ``can_access_table`` per
+    registered table. Without this guard a regression back to the per-row
+    loop would still pass the behavioral tests above.
+    """
+    from src.db import get_system_db
+    from src.repositories import table_registry_repo
+
+    conn = get_system_db()
+    for n in range(3):
+        table_registry_repo().register(
+            id=f"ks_once_{n}",
+            name=f"ks_once_{n}",
+            description=f"widget catalog number {n}",
+            source_type="keboola",
+            query_mode="materialized",
+        )
+    conn.close()
+
+    import app.api.knowledge_search as ks_module
+
+    calls = {"get_accessible_tables": 0}
+    real = ks_module.get_accessible_tables
+
+    def _counting(*args, **kwargs):
+        calls["get_accessible_tables"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ks_module, "get_accessible_tables", _counting)
+
+    c = seeded_app["client"]
+    resp = c.get(
+        "/api/knowledge/search",
+        params={"q": "widget catalog number"},
+        headers=_auth(seeded_app["analyst_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    assert calls["get_accessible_tables"] == 1

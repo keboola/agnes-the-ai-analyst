@@ -137,3 +137,32 @@ class TestCatalogTableDetail:
         assert resp.status_code == 200
         assert "Pkg Alpha" in resp.text
         assert "Pkg Beta" in resp.text
+
+    def test_bulk_member_lookup_failure_degrades_not_500(self, seeded_app, monkeypatch):
+        """F2 (review): if the bulk membership query raises, the route must
+        degrade via the existing logged fail-closed path — 403 for a
+        non-admin, 200 for admin — never a 500. The bulk call was moved
+        back inside the parent-package try/except so a query failure can't
+        bypass the final authorization check."""
+        from src.repositories.data_packages import DataPackagesRepository
+
+        def _boom(self, *args, **kwargs):
+            raise RuntimeError("bulk membership query exploded")
+
+        monkeypatch.setattr(DataPackagesRepository, "list_member_ids_bulk", _boom)
+
+        table_id = f"t-{uuid.uuid4().hex[:8]}"
+        _make_table(table_id, "Degrade Table")
+        pkg_id = _make_pkg(f"degrade-pkg-{uuid.uuid4().hex[:8]}", "Degrade Pkg")
+        _add_table_to_pkg(pkg_id, table_id)
+        _grant_pkg("Everyone", pkg_id, requirement="available", users=["analyst1"])
+        c = seeded_app["client"]
+
+        # Non-admin: bulk failure → fail-closed 403 (not 500).
+        resp = c.get(f"/catalog/t/{table_id}", headers=_auth(seeded_app["analyst_token"]))
+        assert resp.status_code == 403
+
+        # Admin: god-mode is resolved before the try, so a bulk failure
+        # still renders (degraded, empty parent_packages) → 200 (not 500).
+        resp = c.get(f"/catalog/t/{table_id}", headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 200
