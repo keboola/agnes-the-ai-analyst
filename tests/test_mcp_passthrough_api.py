@@ -378,3 +378,46 @@ def test_invoke_per_user_no_secret_returns_403_and_does_not_forward(seeded_app):
     assert r.status_code == 403, r.text
     assert "my-secret" in r.json()["detail"]
     mock.assert_not_called()
+
+
+def _list_names(caller_id, seed_analyst="analyst1"):
+    """Register the seeded passthrough tools on a bare FastMCP, install the
+    grant filter with a fixed caller, and return the tool names tools/list
+    would advertise to that caller."""
+    import asyncio
+
+    from mcp.server.fastmcp import FastMCP
+
+    from app.api.mcp.tools_generator import (
+        install_grant_filtered_list_tools,
+        register_passthrough_tools,
+    )
+
+    mcp = FastMCP("Test", instructions="t")
+    register_passthrough_tools(mcp)
+    filtered = install_grant_filtered_list_tools(mcp, caller_id_fn=lambda: caller_id)
+    tools = asyncio.run(filtered())
+    return {t.name for t in tools}
+
+
+def test_list_tools_hides_ungranted_passthrough_for_analyst(seeded_app):
+    """tools/list on the transports shows a non-admin only the passthrough
+    tools their groups are granted — matching the REST listing's visibility."""
+    _seed_two_tools_two_groups()  # analyst1 granted 'lookup', not 'private'
+    names = _list_names("analyst1")
+    assert "lookup" in names
+    assert "private" not in names
+
+
+def test_list_tools_admin_sees_all_passthrough(seeded_app):
+    _seed_two_tools_two_groups()
+    names = _list_names("admin1")
+    assert {"lookup", "private"} <= names
+
+
+def test_list_tools_unresolved_caller_sees_no_passthrough(seeded_app):
+    """No resolvable caller identity → fail closed: no passthrough tools listed."""
+    _seed_two_tools_two_groups()
+    names = _list_names(None)
+    assert "lookup" not in names
+    assert "private" not in names

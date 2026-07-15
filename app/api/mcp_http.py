@@ -189,16 +189,26 @@ def _register_dynamic_tools() -> None:
     cowork MCP server still comes up with the static tools.
     """
     try:
-        from app.api.mcp.tools_generator import register_passthrough_tools
+        from app.api.mcp.tools_generator import (
+            install_grant_filtered_list_tools,
+            register_passthrough_tools,
+        )
     except Exception:  # pragma: no cover - import-time defensive
         logger.exception("Universal MCP imports unavailable; skipping dynamic tool registration")
         return
+    _caller_id = lambda: _current_user_id.get() or None  # noqa: E731
     try:
-        names = register_passthrough_tools(mcp, caller_id_fn=lambda: _current_user_id.get() or None)
+        names = register_passthrough_tools(mcp, caller_id_fn=_caller_id)
         if names:
             logger.info("MCP HTTP: registered %d passthrough tools", len(names))
     except Exception:
         logger.exception("Universal MCP passthrough registration failed")
+    # Hide passthrough tools the caller isn't granted from tools/list (their
+    # invocation is already gated; this matches the REST listing's visibility).
+    try:
+        install_grant_filtered_list_tools(mcp, caller_id_fn=_caller_id)
+    except Exception:
+        logger.exception("MCP HTTP: grant-filtered tools/list install failed")
 
 
 # ── factory ────────────────────────────────────────────────────────────────────

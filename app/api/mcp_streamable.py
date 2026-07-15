@@ -459,7 +459,10 @@ def _make_streamable_app() -> ASGIApp:
 def _register_dynamic_tools(mcp: FastMCP) -> None:
     """Best-effort registration of passthrough tools from tool_registry."""
     try:
-        from app.api.mcp.tools_generator import register_passthrough_tools
+        from app.api.mcp.tools_generator import (
+            install_grant_filtered_list_tools,
+            register_passthrough_tools,
+        )
     except Exception:
         logger.exception("Streamable MCP: dynamic tool imports unavailable")
         return
@@ -469,3 +472,9 @@ def _register_dynamic_tools(mcp: FastMCP) -> None:
             logger.info("Streamable MCP: registered %d passthrough tools", len(names))
     except Exception:
         logger.exception("Streamable MCP: passthrough tool registration failed")
+    # Hide passthrough tools the caller isn't granted from tools/list (their
+    # invocation is already gated; this matches the REST listing's visibility).
+    try:
+        install_grant_filtered_list_tools(mcp, caller_id_fn=_current_caller_id)
+    except Exception:
+        logger.exception("Streamable MCP: grant-filtered tools/list install failed")
