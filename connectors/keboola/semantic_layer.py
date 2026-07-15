@@ -12,6 +12,7 @@ concerns of its own.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any, Optional
 
@@ -199,3 +200,91 @@ def build_metric_row(
         row["validation"] = validation
 
     return row, None
+
+
+def sync_semantic_layer(
+    keboola_url: Optional[str] = None,
+    keboola_token: Optional[str] = None,
+) -> dict:
+    """Fetch a Keboola project's semantic layer (Metastore) and upsert it
+    into Agnes's metric_definitions table, pruning stale
+    'keboola_semantic_layer'-sourced rows that no longer exist upstream.
+
+    Credentials default to the standard Keboola env-var/vault resolution
+    (KEBOOLA_STACK_URL + KEBOOLA_STORAGE_TOKEN via datasource_secret) — same
+    hierarchy connectors/keboola/metadata.py uses.
+
+    Raises MasterTokenRequiredError if the configured token is not a master
+    token (see require_master_token) — this is a configuration error the
+    caller should surface loudly, not swallow into the returned dict.
+    """
+    from app.datasource_secrets import datasource_secret
+    from connectors.keboola.storage_api import KeboolaStorageClient
+    from connectors.keboola.metastore_client import MetastoreClient
+    from src.repositories import table_registry_repo, metric_repo
+
+    url = keboola_url or os.environ.get("KEBOOLA_STACK_URL", "")
+    token = keboola_token or datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
+    if not url or not token:
+        return {"status": "error", "error": "Keboola credentials not configured"}
+
+    storage_client = KeboolaStorageClient(url=url, token=token)
+    require_master_token(storage_client)
+
+    metastore = MetastoreClient(url=url, token=token)
+
+    models = metastore.list_items("semantic-model")
+    empty_result = {
+        "status": "ok",
+        "created_or_updated": 0,
+        "pruned": 0,
+        "skipped_unresolved_table": 0,
+        "skipped_foreign_alias": 0,
+    }
+    if not models:
+        return empty_result
+    if len(models) > 1:
+        logger.warning(
+            "Keboola project has %d semantic models; using the first (%s)",
+            len(models),
+            (models[0].get("attributes") or {}).get("name"),
+        )
+    model_uuid = models[0]["id"]
+
+    datasets = metastore.list_items("semantic-dataset", model_uuid)
+    metrics = metastore.list_items("semantic-metric", model_uuid)
+    constraints = metastore.list_items("semantic-constraint", model_uuid)
+
+    table_lookup = table_lookup_from_registry(table_registry_repo().list_by_source("keboola"))
+    dataset_lookup = dataset_lookup_by_table_id(datasets)
+
+    repo = metric_repo()
+    seen_ids: set[str] = set()
+    skipped_unresolved_table = 0
+    skipped_foreign_alias = 0
+
+    for item in metrics:
+        row, skip_reason = build_metric_row(item, table_lookup, dataset_lookup, constraints, model_uuid)
+        if row is None:
+            if skip_reason == "unresolved_table":
+                skipped_unresolved_table += 1
+            else:
+                skipped_foreign_alias += 1
+            continue
+        repo.create(**row)
+        seen_ids.add(row["id"])
+
+    existing = [m for m in repo.list() if m.get("source") == "keboola_semantic_layer"]
+    pruned = 0
+    for m in existing:
+        if m["id"] not in seen_ids:
+            repo.delete(m["id"])
+            pruned += 1
+
+    return {
+        "status": "ok",
+        "created_or_updated": len(seen_ids),
+        "pruned": pruned,
+        "skipped_unresolved_table": skipped_unresolved_table,
+        "skipped_foreign_alias": skipped_foreign_alias,
+    }
