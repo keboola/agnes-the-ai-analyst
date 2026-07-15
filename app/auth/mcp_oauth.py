@@ -240,7 +240,12 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
         if row["expires_at"] < time.time():
             return None
         return AuthorizationCode(
-            code=row["code"],
+            # Carry the RAW code the caller passed, NOT row["code"] (the stored
+            # SHA-256 digest, audit M4): the SDK passes this value straight back
+            # into delete_auth_code(), which hashes again — using the digest
+            # here would double-hash (sha256(sha256(raw))) and the delete would
+            # silently no-op, breaking one-time-use enforcement (Devin #863).
+            code=authorization_code,
             scopes=row["scopes"],
             expires_at=row["expires_at"],
             client_id=row["client_id"],
@@ -332,7 +337,11 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
         if exp is not None and exp < int(time.time()):
             return None
         return RefreshToken(
-            token=row["token"],
+            # RAW token, not row["token"] (the stored digest): the SDK passes it
+            # back into get_refresh_token()/revoke_refresh_token() which hash
+            # again — the digest would double-hash and rotation/revoke would
+            # silently no-op (audit M4 / Devin #863).
+            token=refresh_token,
             client_id=row["client_id"],
             scopes=row["scopes"],
             expires_at=row.get("expires_at"),
@@ -416,7 +425,10 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
         if exp is not None and exp < int(time.time()):
             return None
         return AccessToken(
-            token=row["token"],
+            # RAW token, not row["token"] (the stored digest): the SDK passes it
+            # back into revoke_access_token() which hashes again (audit M4 /
+            # Devin #863).
+            token=token,
             client_id=row["client_id"],
             scopes=row["scopes"],
             expires_at=row.get("expires_at"),
