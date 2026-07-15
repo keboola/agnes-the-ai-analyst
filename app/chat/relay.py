@@ -81,12 +81,26 @@ class Relay:
             return self._mcp_ticket
         return None
 
-    async def _forward(self, path: str, body: bytes) -> httpx.Response:
+    # Headers never forwarded upstream: hop-by-hop framing (recomputed by
+    # httpx) plus the caller's credentials, which the relay REPLACES with the
+    # ticket. Everything else the in-sandbox SDK set (Content-Type,
+    # anthropic-version, …) must reach the broker or the Anthropic API rejects
+    # the call (Devin review on #849).
+    _DROP_INBOUND_HEADERS = frozenset(
+        {"host", "content-length", "connection", "transfer-encoding", "authorization", "x-api-key"}
+    )
+
+    async def _forward(
+        self, path: str, body: bytes, inbound_headers: Optional[dict[str, str]] = None
+    ) -> httpx.Response:
         """Forward an inbound loopback request to the real broker route.
 
-        Raises ``RuntimeError`` if the relay is not armed or holds no ticket
-        for the requested path's scope — callers must never fall back to an
-        unauthenticated or stale-ticket request.
+        Preserves the caller's headers (minus hop-by-hop framing and the
+        dummy credential, which is replaced by the ticket) so the broker's
+        Anthropic proxy can pass ``Content-Type``/``anthropic-version`` on to
+        ``api.anthropic.com``. Raises ``RuntimeError`` if the relay is not
+        armed or holds no ticket for the requested path's scope — callers must
+        never fall back to an unauthenticated or stale-ticket request.
         """
         if not self._armed:
             raise RuntimeError("relay not armed: no tickets pushed since last resume")
@@ -94,15 +108,14 @@ class Relay:
         if not ticket:
             raise RuntimeError(f"relay has no ticket for the scope of path {path!r}")
 
+        headers = {k: v for k, v in (inbound_headers or {}).items() if k.lower() not in self._DROP_INBOUND_HEADERS}
+        headers["Authorization"] = f"Bearer {ticket}"
+
         url = f"{self._server_url}/api/broker{path}"
         owns_client = self._client is None
         client = self._client or httpx.AsyncClient()
         try:
-            return await client.post(
-                url,
-                content=body,
-                headers={"Authorization": f"Bearer {ticket}"},
-            )
+            return await client.post(url, content=body, headers=headers)
         finally:
             if owns_client:
                 await client.aclose()
@@ -154,7 +167,7 @@ class Relay:
         body = await reader.readexactly(length) if length else b""
 
         try:
-            resp = await self._forward(path, body)
+            resp = await self._forward(path, body, headers)
         except RuntimeError as exc:
             payload = str(exc).encode()
             writer.write(f"HTTP/1.1 503 Service Unavailable\r\nContent-Length: {len(payload)}\r\n\r\n".encode())

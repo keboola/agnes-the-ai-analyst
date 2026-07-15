@@ -58,3 +58,51 @@ def test_relay_refuses_wrong_scope_ticket():
             await r._forward("/agnes-api", b"{}")
 
     asyncio.run(_run())
+
+
+def test_relay_forwards_sdk_headers_and_swaps_credential():
+    """The relay must forward the caller's headers (Content-Type,
+    anthropic-version, …) so the broker's Anthropic proxy can pass them to
+    api.anthropic.com, while dropping hop-by-hop framing and REPLACING the
+    dummy credential with the real ticket (Devin review on #849)."""
+    captured: dict = {}
+
+    class _FakeResp:
+        status_code = 200
+        content = b"{}"
+        reason_phrase = "OK"
+        headers: dict = {}
+
+    class _FakeClient:
+        async def post(self, url, content=None, headers=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            return _FakeResp()
+
+    async def _run() -> None:
+        r = Relay(server_url="http://agnes:8000")
+        r.set_tickets(main="TOKMAIN", mcp="TOKMCP")
+        r._client = _FakeClient()
+        inbound = {
+            "content-type": "application/json",
+            "anthropic-version": "2023-06-01",
+            "authorization": "Bearer dummy-sandbox-key",
+            "x-api-key": "dummy-sandbox-key",
+            "host": "127.0.0.1",
+            "content-length": "2",
+        }
+        await r._forward("/anthropic/v1/messages", b"{}", inbound)
+
+    asyncio.run(_run())
+    h = captured["headers"]
+    lower = {k.lower() for k in h}
+    # SDK headers survive
+    assert h["content-type"] == "application/json"
+    assert h["anthropic-version"] == "2023-06-01"
+    # ticket replaces the dummy credential; the dummy never leaks upward
+    assert h["Authorization"] == "Bearer TOKMAIN"
+    assert "dummy-sandbox-key" not in " ".join(h.values())
+    # hop-by-hop framing + the caller's dummy x-api-key are dropped
+    assert "host" not in lower
+    assert "content-length" not in lower
+    assert "x-api-key" not in lower

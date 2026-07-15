@@ -30,6 +30,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   their sandbox (or `agnes mcp` subprocess) environment; credentials are
   brokered. The `agnes mcp` subprocess rides a separate mcp-scoped ticket.
 
+### Fixed
+
+- Cap FastAPI below 0.139.0. That release made `include_router` destructive
+  (it moves the source router's routes into the app rather than copying), so
+  only the first `create_app()` gets routes and later ones build an app with
+  zero `/api` routes. Harmless in production (one `create_app()`), but it broke
+  the test suite's many fresh app builds — and only on Python 3.13, where the
+  resolver otherwise picked 0.139. Lift once verified against the new behavior.
+
 ### Internal
 
 - Schema v90: `chat_broker_tickets` table (DuckDB `_v89_to_v90` + Alembic
@@ -54,9 +63,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   catch-all shadow a real admin route.
 - Anthropic broker proxy now serves sub-paths (`/api/broker/anthropic/{path}`),
   so the SDK's `/v1/messages` calls reach it instead of 404ing; the loopback
-  relay forwards the upstream `Content-Type` so the in-sandbox SDK/CLI parse
-  responses correctly; and `kill()` revokes a session's broker tickets at
-  teardown so rows don't linger until TTL (Devin review on #849).
+  relay forwards the caller's request headers (`Content-Type`,
+  `anthropic-version`, …) upstream — dropping hop-by-hop framing and swapping
+  the dummy credential for the ticket — and forwards the response
+  `Content-Type` back, so the in-sandbox SDK/CLI and the Anthropic API both
+  see well-formed requests/responses; and `kill()` revokes a session's broker
+  tickets at teardown so rows don't linger until TTL (Devin review on #849).
 
 ---
 
