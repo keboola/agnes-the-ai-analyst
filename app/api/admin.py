@@ -93,9 +93,13 @@ def _validate_url_not_private(url: str, field_name: str = "url") -> None:
         raise HTTPException(status_code=400, detail=f"Invalid {field_name}: missing hostname")
 
     # Deployer-trusted internal hosts (e.g. an on-prem GitHub Enterprise on a
-    # private network) opt out of the private/reserved-network rejection. The
-    # allowlist is operator-set and empty by default, so the OSS ships
-    # fail-closed. See app.instance_config.get_ssrf_allowed_hosts.
+    # private network) opt out of the private/reserved-network rejection. This
+    # is the shared validator, so a listed host is exempt on EVERY SSRF-guarded
+    # admin URL that reaches here — clone URLs (marketplace + initial-workspace),
+    # the Keboola stack_url, and the _validate_urls_in_patch config fields — not
+    # just marketplace clones. The allowlist is operator-set and empty by
+    # default, so the OSS ships fail-closed. See
+    # app.instance_config.get_ssrf_allowed_hosts.
     from app.instance_config import get_ssrf_allowed_hosts
 
     if host.lower() in get_ssrf_allowed_hosts():

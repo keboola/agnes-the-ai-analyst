@@ -109,7 +109,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Inbound Slack transport (`http`/`socket`) | `SLACK_TRANSPORT` | `chat.slack.transport` | `http` | `get_slack_transport()` |
 | Allowed login email domains | — | `auth.allowed_domain` | `[]` | `get_allowed_domains()` |
 | Full auth block | — | `auth` | `{}` | `get_auth_config()` |
-| SSRF allowlist — hostnames exempt from the private/reserved-network guard on admin-registered git clone URLs (curated marketplace + initial-workspace template); use for an internal git host on a private network (e.g. on-prem GitHub Enterprise). List or comma-string. Empty = guard fail-closed. | `AGNES_SSRF_ALLOWED_HOSTS` | `security.ssrf_allowed_hosts` | `""` (fail-closed) | `get_ssrf_allowed_hosts()` |
+| SSRF allowlist — hostnames exempt from the private/reserved-network guard on **all** admin URLs routed through the shared validator (marketplace + initial-workspace clone URLs, Keboola `stack_url`, server-config URL fields), not just clone URLs; use for an internal git host on a private network (e.g. on-prem GitHub Enterprise). List or comma-string. Empty = guard fail-closed. | `AGNES_SSRF_ALLOWED_HOSTS` | `security.ssrf_allowed_hosts` | `""` (fail-closed) | `get_ssrf_allowed_hosts()` |
 | Dataset registry | — | `datasets` | `{}` | `get_datasets()` |
 | Corporate Memory block | — | `corporate_memory` | `{}` | `get_corporate_memory_config()` |
 
