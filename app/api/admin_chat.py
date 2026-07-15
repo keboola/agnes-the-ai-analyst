@@ -1,4 +1,5 @@
 """Admin observability for chat sessions."""
+
 from __future__ import annotations
 
 import asyncio
@@ -20,6 +21,7 @@ from app.chat.readiness import (
     secret_status,
     test_anthropic_key,
     test_e2b_key,
+    test_wif_credentials,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,7 @@ async def list_active(request: Request, admin: dict = Depends(require_admin)):
     accept = request.headers.get("accept", "")
     if "text/html" in accept and "application/json" not in accept:
         from app.web.router import templates as _templates, _build_context as _build_ctx
+
         ctx = _build_ctx(request, user=admin)
         return _templates.TemplateResponse(request, "admin_chat.html", ctx)
     mgr = getattr(request.app.state, "chat_manager", None)
@@ -77,15 +80,17 @@ async def list_active(request: Request, admin: dict = Depends(require_admin)):
         return {"sessions": [], "warning": "chat_disabled"}
     sessions = []
     for live in mgr.list_live():
-        sessions.append({
-            "id": live.chat_id,
-            "user_email": live.user_email,
-            "state": live.state.value,
-            "pid": live.handle.pid if live.handle else None,
-            "started_at": live.started_at.isoformat(),
-            "last_activity": live.last_activity.isoformat(),
-            "crash_count": live.crash_count,
-        })
+        sessions.append(
+            {
+                "id": live.chat_id,
+                "user_email": live.user_email,
+                "state": live.state.value,
+                "pid": live.handle.pid if live.handle else None,
+                "started_at": live.started_at.isoformat(),
+                "last_activity": live.last_activity.isoformat(),
+                "crash_count": live.crash_count,
+            }
+        )
     return {"sessions": sessions}
 
 
@@ -159,10 +164,21 @@ async def set_chat_secrets(
 
 @router.post("/secrets/test")
 async def test_chat_secrets(request: Request, _admin: dict = Depends(require_admin)):
-    """Live-probe the currently-configured keys. Per-key ``{ok, detail}``."""
+    """Live-probe the currently-configured credentials. Per-key ``{ok, detail}``.
+
+    The ``anthropic_api_key`` slot probes whatever the LLM auth mode actually
+    uses: the static key in ``api_key`` mode, or the workload-identity federation
+    (mint a token + confirm the API accepts it) in ``workload_identity`` mode —
+    so the admin "test connection" surface works in both modes.
+    """
+    llm_auth = getattr(getattr(request.app.state, "chat_config", None), "llm_auth", "api_key")
+    if llm_auth == "workload_identity":
+        anthropic_probe = await test_wif_credentials()
+    else:
+        anthropic_probe = await test_anthropic_key()
     return {
         "e2b_api_key": await test_e2b_key(),
-        "anthropic_api_key": await test_anthropic_key(),
+        "anthropic_api_key": anthropic_probe,
     }
 
 
@@ -193,6 +209,7 @@ async def admin_debug(
     # bq_bytes — process-local accumulator inside app/api/query.py.
     try:
         from app.api.query import _per_session_bq_bytes
+
         bq_bytes = int(_per_session_bq_bytes.get(chat_id, 0))
     except Exception:
         bq_bytes = 0
@@ -268,10 +285,7 @@ async def admin_tail(ws: WebSocket, chat_id: str, ticket: str = ""):
         await ws.send_json({"type": "no_log", "reason": "chat_data_dir_not_configured"})
         await ws.close()
         return
-    log_path = (
-        Path(chat_data_dir) / "users" / s.user_email /
-        "sessions" / chat_id / "run.log"
-    )
+    log_path = Path(chat_data_dir) / "users" / s.user_email / "sessions" / chat_id / "run.log"
     if not log_path.exists():
         await ws.send_json({"type": "no_log"})
         await ws.close()
