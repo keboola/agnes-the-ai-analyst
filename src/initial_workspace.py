@@ -313,8 +313,11 @@ def build_zip(conn=None, *, user=None, server_url=None) -> bytes:
     logged and drops the overlay (pure clone) — never raw template syntax.
     Without ``user`` (the cloud-chat workdir fetch, which re-renders
     ``CLAUDE.md`` itself via ``render_claude_md``) the override ships
-    verbatim. ``conn=None`` (defensive callers, tests,
-    ``delete_template_dir`` path) skips the overlay → pure clone.
+    verbatim. On DuckDB, ``conn=None`` (defensive callers, tests,
+    ``delete_template_dir`` path) skips the overlay → pure clone. On Postgres
+    the overlay is resolved via the repository factory even with ``conn=None``
+    (the system DuckDB must never be opened on PG), so a PG caller still gets
+    the admin override.
 
     Returns the zip bytes. Caller computes ``ETag`` from the bytes (or
     from ``last_commit_sha`` for a cheaper stable identifier).
@@ -323,7 +326,13 @@ def build_zip(conn=None, *, user=None, server_url=None) -> bytes:
     validate_template_tree(target)
 
     workspace_overlay: Optional[str] = None
-    if conn is not None:
+    # On Postgres the overlay is resolved through the repository factory
+    # (resolve_prompt / build_claude_md_context both honor use_pg() with
+    # conn=None), so the overlay must run even though no system-DuckDB conn is
+    # passed — opening one on PG is forbidden. On DuckDB a conn is required.
+    from src.repositories import use_pg as _use_pg
+
+    if conn is not None or _use_pg():
         try:
             content, mode = resolve_prompt("workspace", conn)
             if mode == "editor" and content is not None:

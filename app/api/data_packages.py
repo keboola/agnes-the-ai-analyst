@@ -341,6 +341,12 @@ def _serialize(pkg: Dict[str, Any], conn: Optional[duckdb.DuckDBPyConnection] = 
     ``conn`` is optional only so legacy callers that don't need the
     v56 ``badges`` field can call ``_serialize(pkg)``; pass the conn
     in to opt into badge derivation.
+
+    On Postgres the request ``conn`` (from ``_get_db``) is ``None`` — the
+    system DuckDB must never be opened there — but ``_badges_for`` resolves
+    its RBAC lookups through the repository factory and ignores ``conn``, so
+    badge derivation must still run under ``use_pg()`` to keep the ``badges``
+    field at parity with DuckDB.
     """
     out = {
         "id": pkg["id"],
@@ -368,7 +374,9 @@ def _serialize(pkg: Dict[str, Any], conn: Optional[duckdb.DuckDBPyConnection] = 
         "created_at": pkg["created_at"].isoformat() if pkg.get("created_at") else None,
         "updated_at": pkg["updated_at"].isoformat() if pkg.get("updated_at") else None,
     }
-    if conn is not None:
+    from src.repositories import use_pg
+
+    if conn is not None or use_pg():
         out["badges"] = _badges_for(pkg, conn)
     return out
 

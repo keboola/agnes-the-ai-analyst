@@ -15,7 +15,6 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.db import get_system_db
 from src.scheduler import is_valid_schedule, is_table_due
 
 from src.repositories import (
@@ -188,7 +187,9 @@ async def run_due_scripts(
         )
     scripts_run_count = len(claimed)
     try:
-        _audit_conn = get_system_db()
+        # audit_repo() is factory-routed (honors use_pg()) and opens its own
+        # backend connection — no system-DB handle needed here, and opening one
+        # on Postgres is forbidden (would create a stale system.duckdb).
         audit_repo().log(
             user_id=user.get("id"),
             action="script_runner.tick",
@@ -196,7 +197,6 @@ async def run_due_scripts(
             result="success",
             client_kind="scheduler",
         )
-        _audit_conn.close()
     except Exception:
         logger.exception("audit_log write failed for script_runner.tick; continuing")
     return {"claimed": claimed, "count": scripts_run_count}
@@ -214,20 +214,17 @@ def _run_claimed_script(script_id: str, source: str, name: str) -> None:
     success. Any exception still writes 'failure' and re-raises so the BG
     handler surfaces the traceback in logs.
     """
-    # Fresh connection for the background task — the request-scoped conn
-    # was returned to FastAPI by the time this fires.
-    bg_conn = get_system_db()
+    # notifications_script_repo() is factory-routed (honors use_pg()) and opens
+    # its own backend connection — no system-DB handle needed here, and opening
+    # one on Postgres is forbidden (would create a stale system.duckdb).
+    bg_repo = notifications_script_repo()
     try:
-        bg_repo = notifications_script_repo()
-        try:
-            result = _execute_script(source, name)
-            status = "success" if result.get("exit_code", 1) == 0 else "failure"
-            bg_repo.record_run_result(script_id, status=status)
-        except Exception:
-            bg_repo.record_run_result(script_id, status="failure")
-            raise
-    finally:
-        bg_conn.close()
+        result = _execute_script(source, name)
+        status = "success" if result.get("exit_code", 1) == 0 else "failure"
+        bg_repo.record_run_result(script_id, status=status)
+    except Exception:
+        bg_repo.record_run_result(script_id, status="failure")
+        raise
 
 
 def _validate_script_source(source: str) -> None:

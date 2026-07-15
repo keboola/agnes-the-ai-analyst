@@ -296,7 +296,7 @@ def can_access_session(
 # ---------------------------------------------------------------------------
 
 
-async def require_admin(
+def require_admin(
     user=Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -309,6 +309,10 @@ async def require_admin(
 
     A ``SessionPrincipal`` (co-session runner token) is HARD-DENIED before
     any ``is_user_admin`` check — co-sessions never hold admin authority.
+
+    Plain ``def`` (not ``async def``) so FastAPI offloads it to the anyio
+    thread pool — the body is a sync ``is_user_admin`` RBAC read that must
+    not run on the event loop (Tier 1, PR #188).
     """
     if isinstance(user, SessionPrincipal):
         raise HTTPException(
@@ -345,7 +349,11 @@ def require_resource_access(
     they failed against.
     """
 
-    async def dep(
+    # Plain ``def`` (not ``async def``) so FastAPI offloads the returned
+    # dependency to the anyio thread pool — its body is a sync RBAC read
+    # (``can_access`` / ``can_access_session``) that must not run on the
+    # event loop (Tier 1, PR #188).
+    def dep(
         request: Request,
         user=Depends(get_current_user),
         conn: duckdb.DuckDBPyConnection = Depends(_get_db),

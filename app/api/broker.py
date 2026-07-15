@@ -154,8 +154,13 @@ def _add_anthropic_beta(headers: Dict[str, str], beta: str) -> None:
     headers["anthropic-beta"] = beta
 
 
-async def require_broker_ticket(request: Request) -> Dict[str, Any]:
-    """Resolve the bearer ticket on the request. 401s if missing/unknown/expired."""
+def require_broker_ticket(request: Request) -> Dict[str, Any]:
+    """Resolve the bearer ticket on the request. 401s if missing/unknown/expired.
+
+    Plain ``def`` (not ``async def``) so FastAPI offloads it to the anyio
+    thread pool — the body does a synchronous ``ticket_repo().resolve`` DB
+    read that must not run on the single uvicorn event loop (Tier 1, PR #188).
+    """
     auth = request.headers.get("authorization", "")
     token = auth[7:] if auth.lower().startswith("bearer ") else ""
     if not token:

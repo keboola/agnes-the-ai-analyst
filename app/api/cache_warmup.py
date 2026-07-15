@@ -174,17 +174,24 @@ def _warm_schema_sync(row: dict) -> None:
     """Trigger schema cache populate via build_schema_uncached."""
     from app.api.v2_schema import build_schema_uncached
     from connectors.bigquery.access import get_bq_access
-    from src.db import get_system_db
     bq = get_bq_access()
-    build_schema_uncached(get_system_db(), row["id"], bq=bq, row=row)
+    # build_schema_uncached resolves its state through the repository factory
+    # and does not use the passed conn; warmup only runs on query_mode='remote'
+    # rows, so the internal-table branch (which derives its own system_db_path)
+    # is never reached. Pass None — opening a system-DuckDB cursor here just
+    # leaked one handle per warmed table on DuckDB (never closed), and opening
+    # one on Postgres is forbidden. Mirrors warm_one_table, which already
+    # dropped its unused get_system_db() open.
+    build_schema_uncached(None, row["id"], bq=bq, row=row)
 
 
 async def warm_one_table(table_id: str) -> None:
     """Single-row re-warm — invoked by `invalidate_for_table` after a
     registry change. Does NOT update WARMUP_STATE (small change shouldn't
     overwrite the last full run's status); just refreshes the caches."""
-    from src.db import get_system_db
-    conn = get_system_db()
+    # table_registry_repo() is factory-routed; no system-DB handle needed here
+    # (the previous get_system_db() open was unused, and opening one on
+    # Postgres is forbidden — would create a stale system.duckdb).
     row = table_registry_repo().get(table_id)
     if not row or row.get("query_mode") != "remote":
         return

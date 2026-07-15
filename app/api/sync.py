@@ -620,13 +620,18 @@ def _run_sync(
                 logger.info("No tables registered — running auto-discovery from Keboola")
                 try:
                     from app.api.admin import _discover_and_register_tables
+                    from src.repositories import use_pg
 
-                    auto_conn = get_system_db()
+                    # _discover_and_register_tables routes through the repository
+                    # factory and ignores ``conn``; on Postgres pass None so the
+                    # system DuckDB is never opened (forbidden invariant).
+                    auto_conn = None if use_pg() else get_system_db()
                     try:
                         result = _discover_and_register_tables(auto_conn, "auto-discovery")
                         logger.info("Auto-discovered %d tables, skipped %d", result["registered"], result["skipped"])
                     finally:
-                        auto_conn.close()
+                        if auto_conn is not None:
+                            auto_conn.close()
                     # Re-read table configs after auto-registration
                     table_configs = table_registry_repo().list_local(effective_source_type)
                 except Exception as e:
@@ -927,9 +932,13 @@ sys.exit(compute_exit_code(result, len(configs)))
         try:
             from connectors.bigquery.access import get_bq_access
             from src.db import get_system_db as _get_system_db
+            from src.repositories import use_pg
 
             bq_access = get_bq_access()  # sentinel if no BQ project; OK
-            mat_conn = _get_system_db()
+            # _run_materialized_pass routes through the repository factory and
+            # ignores ``conn``; on Postgres pass None so the system DuckDB is
+            # never opened (forbidden invariant).
+            mat_conn = None if use_pg() else _get_system_db()
             try:
                 mat_summary = _run_materialized_pass(
                     mat_conn,
@@ -938,7 +947,8 @@ sys.exit(compute_exit_code(result, len(configs)))
                     source_type=source_type_filter,
                 )
             finally:
-                mat_conn.close()
+                if mat_conn is not None:
+                    mat_conn.close()
             skipped_count = len(mat_summary["skipped"])
             in_flight_count = sum(1 for s in mat_summary["skipped"] if s.get("reason") == "in_flight")
             print(

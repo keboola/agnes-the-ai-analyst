@@ -15,7 +15,6 @@ from pydantic import BaseModel
 from app.auth.dependencies import get_current_user
 from app.utils import get_data_dir as _get_data_dir
 from src.audit_helpers import client_kind_from_user
-from src.db import get_system_db
 
 from src.repositories import (
     audit_repo,
@@ -91,7 +90,9 @@ async def upload_session(
         Path(tmp.name).unlink(missing_ok=True)
         raise
 
-    conn = get_system_db()
+    # audit_repo() is factory-routed (honors use_pg()) and opens its own
+    # backend connection — no system-DB handle needed here, and opening one on
+    # a Postgres instance is forbidden (would create a stale system.duckdb).
     try:
         audit_repo().log(
             user_id=user_id,
@@ -102,8 +103,6 @@ async def upload_session(
         )
     except Exception:
         logger.exception("audit_log write failed for session.upload; continuing")
-    finally:
-        conn.close()
 
     return {"status": "ok", "filename": filename, "size": size}
 
