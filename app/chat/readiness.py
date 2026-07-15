@@ -12,6 +12,7 @@ to admins **without leaking values** (presence only), and offers live
 "does the key actually work" probes — a present-but-invalid key otherwise
 only fails at the first sandbox spawn, deep inside a user's chat.
 """
+
 from __future__ import annotations
 
 import os
@@ -88,6 +89,12 @@ async def test_e2b_key(api_key: Optional[str] = None, *, timeout: float = 8.0) -
     Uses ``AsyncSandbox.list`` (lists running sandboxes) — it hits the E2B
     API and authenticates without spinning up a microVM. Returns
     ``{ok, detail}``. Falls back to the env key when ``api_key`` is omitted.
+
+    Note: on the modern e2b SDK ``AsyncSandbox.list`` is NOT a coroutine — it
+    synchronously returns an ``AsyncSandboxPaginator``; the authenticated round
+    trip happens when its first page is awaited. Awaiting ``list`` itself
+    raises ``TypeError: object AsyncSandboxPaginator can't be used in 'await'
+    expression``, so we await ``next_items()`` instead.
     """
     key = (api_key or os.environ.get(ENV_E2B, "")).strip()
     if not key:
@@ -95,7 +102,8 @@ async def test_e2b_key(api_key: Optional[str] = None, *, timeout: float = 8.0) -
     try:
         from e2b import AsyncSandbox
 
-        await AsyncSandbox.list(api_key=key, request_timeout=timeout)
+        paginator = AsyncSandbox.list(api_key=key, request_timeout=timeout)
+        await paginator.next_items()
     except Exception as exc:  # noqa: BLE001 — classify, never raise to the admin
         return {"ok": False, "detail": _classify(exc)}
     return {"ok": True, "detail": "E2B API key valid"}

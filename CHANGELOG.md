@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Chat readiness probe:** the admin "test E2B connection" diagnostic
+  (`app/chat/readiness.py:test_e2b_key`) crashed with `TypeError: object
+  AsyncSandboxPaginator can't be used in 'await' expression` on the modern e2b
+  SDK. `AsyncSandbox.list()` is a synchronous factory returning an
+  `AsyncSandboxPaginator`, not a coroutine — the authenticated round trip
+  happens when the first page is awaited. The probe now awaits
+  `paginator.next_items()` instead of the factory. The test fakes previously
+  mocked `list` as a coroutine, which masked the bug; they now mirror the real
+  SDK contract (sync `list()` → non-awaitable paginator → async
+  `next_items()`), so a regression to `await list(...)` re-triggers the
+  production `TypeError` in CI.
+
 ---
 
 ## [0.74.85] - 2026-07-15

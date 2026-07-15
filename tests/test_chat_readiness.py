@@ -94,12 +94,30 @@ def test_test_e2b_key_missing(monkeypatch):
     assert "not set" in r["detail"]
 
 
+# On the modern e2b SDK ``AsyncSandbox.list`` is a *synchronous* factory that
+# returns an ``AsyncSandboxPaginator``; the authenticated round trip happens
+# when the first page is awaited via ``next_items()``. These fakes mirror that
+# contract exactly — a coroutine-returning ``list`` (the previous fake) hid the
+# real ``TypeError: object AsyncSandboxPaginator can't be used in 'await'``.
+
+
+class _FakePaginator:
+    def __init__(self, *, items=None, error=None):
+        self._items = items or []
+        self._error = error
+
+    async def next_items(self, *a, **k):
+        if self._error is not None:
+            raise self._error
+        return self._items
+
+
 def test_test_e2b_key_valid(monkeypatch):
     import asyncio
     import e2b
 
-    async def _fake_list(*a, **k):
-        return []
+    def _fake_list(*a, **k):  # sync factory, NOT a coroutine
+        return _FakePaginator(items=[])
 
     monkeypatch.setattr(e2b.AsyncSandbox, "list", staticmethod(_fake_list))
     r = asyncio.run(readiness.test_e2b_key(api_key="e2b_good"))
@@ -113,13 +131,16 @@ def test_test_e2b_key_auth_failure_classified(monkeypatch):
     class _AuthErr(Exception):
         status_code = 401
 
-    async def _fake_list(*a, **k):
-        raise _AuthErr("unauthorized")
+    def _fake_list(*a, **k):  # error surfaces from the awaited first page
+        return _FakePaginator(error=_AuthErr("unauthorized"))
 
     monkeypatch.setattr(e2b.AsyncSandbox, "list", staticmethod(_fake_list))
     r = asyncio.run(readiness.test_e2b_key(api_key="e2b_bad"))
     assert r["ok"] is False
     assert "authentication failed" in r["detail"]
+    # Guard: _FakePaginator is deliberately NOT awaitable, so if the impl ever
+    # reverts to ``await AsyncSandbox.list(...)`` the valid-key test above fails
+    # with the exact production TypeError instead of passing silently.
 
 
 # ---------------------------------------------------------------------------
