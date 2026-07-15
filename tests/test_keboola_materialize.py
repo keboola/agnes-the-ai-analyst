@@ -15,6 +15,7 @@ default parquet path and the legacy CSV opt-in (via
 """
 
 import hashlib
+import importlib.util
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -661,11 +662,14 @@ def test_consolidation_conn_applies_memory_and_thread_caps():
 # Verified live: Storage API's Snowflake UNLOAD serves every column as
 # VARCHAR regardless of the source's real type. These tests use a real
 # KeboolaClient (kbcstorage-backed) with __init__ + get_pyarrow_schema
-# monkeypatched — pytest.importorskip keeps the whole file collectible on
-# installs without the [server] extra (mirrors
-# tests/test_keboola_extractor_typed.py's guard).
+# monkeypatched. The kbcstorage guard is applied PER-TEST (below), not at
+# module level, so the unrelated tests earlier in this file still run on
+# installs without the [server] extra.
 
-pytest.importorskip("kbcstorage")
+_needs_kbcstorage = pytest.mark.skipif(
+    importlib.util.find_spec("kbcstorage") is None,
+    reason="requires the [server] extra (kbcstorage)",
+)
 
 
 def _write_string_typed_parquet(dest: Path) -> None:
@@ -709,6 +713,7 @@ def fake_storage_client_parquet_untyped():
     return client
 
 
+@_needs_kbcstorage
 def test_materialize_query_applies_typed_schema_when_available(
     tmp_path, monkeypatch, fake_storage_client_parquet_untyped
 ):
@@ -750,6 +755,7 @@ def test_materialize_query_applies_typed_schema_when_available(
     assert result["rows"] == 2
 
 
+@_needs_kbcstorage
 def test_materialize_query_keeps_varchar_when_schema_unavailable(
     tmp_path, monkeypatch, fake_storage_client_parquet_untyped
 ):
@@ -783,6 +789,7 @@ def test_materialize_query_keeps_varchar_when_schema_unavailable(
     assert table.schema.field("amount").type == pa.string()
 
 
+@_needs_kbcstorage
 def test_materialize_query_untyped_storage_client_skips_typing_safely(tmp_path, fake_storage_client_parquet):
     """The pre-existing MagicMock-based fixture (no real .token/.base) must
     keep working exactly as before this fix — the isinstance guard makes

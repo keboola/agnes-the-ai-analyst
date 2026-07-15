@@ -304,10 +304,34 @@ def materialize_query(
                         pyarrow_schema = None
 
                 if pyarrow_schema is not None:
+                    # Memory tradeoff: this retype reads the whole consolidated
+                    # parquet into one pyarrow.Table and rewrites it, so peak
+                    # memory scales with the materialized result size — unlike
+                    # the streaming DuckDB consolidation above. It mirrors the
+                    # legacy CSV path's established v27 mechanism; a streaming
+                    # DuckDB retype would be preferable for very large
+                    # materialized tables (future perf work).
                     import pyarrow.parquet as pq
 
-                    typed_table = apply_schema_to_table(pq.read_table(tmp_parquet), pyarrow_schema)
-                    pq.write_table(typed_table, tmp_parquet, compression="snappy")
+                    # Retype into a sibling temp then atomically replace, and
+                    # degrade gracefully: a failure in this local read/rewrite
+                    # (I/O error, or an unexpected apply_schema_to_table failure)
+                    # must not turn an otherwise-successful materialize into a
+                    # hard failure — keep the native (untyped) parquet, matching
+                    # the schema-fetch fallback above.
+                    typed_tmp = f"{tmp_parquet}.typed"
+                    try:
+                        typed_table = apply_schema_to_table(pq.read_table(tmp_parquet), pyarrow_schema)
+                        pq.write_table(typed_table, typed_tmp, compression="snappy")
+                        os.replace(typed_tmp, tmp_parquet)
+                    except Exception as e:
+                        logger.warning(
+                            "Keboola typed-parquet retype failed for %s (%s); keeping native (untyped) parquet",
+                            full_table_id,
+                            e,
+                        )
+                        if os.path.exists(typed_tmp):
+                            os.remove(typed_tmp)
         else:
             # Legacy CSV path. Kept for the explicit `{"file_type":"csv"}`
             # opt-in. Slower (CSV parse + parquet rewrite) and

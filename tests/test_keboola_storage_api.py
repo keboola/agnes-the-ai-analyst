@@ -506,6 +506,20 @@ class TestSliceSortKey:
         urls = ["https://x/export_0_0_0.csv", "https://x/export_0_0_1.csv"]
         assert sorted(urls, key=_slice_sort_key) == urls
 
+    def test_presigned_query_string_digits_do_not_perturb_order(self):
+        # Real S3/Azure signed URLs carry digit-heavy query strings
+        # (signatures, expiry epochs) that vary per slice. Only the path's
+        # slice index must drive the sort — the header slice (index 0) must
+        # come first even when the query string of a later slice sorts lower.
+        urls = [
+            "https://s3.example.com/b/export_0_0_1.csv?X-Amz-Expires=3600&X-Amz-Signature=000aaa",
+            "https://s3.example.com/b/export_0_0_0.csv?X-Amz-Expires=3600&X-Amz-Signature=999zzz",
+        ]
+        assert sorted(urls, key=_slice_sort_key) == [
+            "https://s3.example.com/b/export_0_0_0.csv?X-Amz-Expires=3600&X-Amz-Signature=999zzz",
+            "https://s3.example.com/b/export_0_0_1.csv?X-Amz-Expires=3600&X-Amz-Signature=000aaa",
+        ]
+
 
 # ---- _gs_to_https / _azure_to_https URL rewriting --------------------------
 

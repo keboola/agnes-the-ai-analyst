@@ -34,6 +34,7 @@ import re
 import shutil
 import tempfile
 import time
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Optional
@@ -194,8 +195,14 @@ def _slice_sort_key(url: str) -> list:
     incorrectly place `_0_0_12` before `_0_0_2` — guarantees the header
     slice (index 0) downloads first regardless of manifest ordering. A
     no-op (returns the same order) when the manifest was already correct.
+
+    Only the URL PATH is keyed on: signed-URL query strings (S3
+    `?X-Amz-Signature=...`, Azure SAS) carry their own digit runs that vary
+    per slice and would otherwise perturb the sort, so they are dropped
+    before splitting — the slice index lives in the path, never the query.
     """
-    return [int(chunk) if chunk.isdigit() else chunk for chunk in _DIGIT_RUN_RE.split(url)]
+    path = urlsplit(url).path
+    return [int(chunk) if chunk.isdigit() else chunk for chunk in _DIGIT_RUN_RE.split(path)]
 
 
 @dataclass
