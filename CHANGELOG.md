@@ -12,6 +12,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.87] - 2026-07-15
+
+### Fixed
+
+- **Chat P0 — LLM completions timed out, agent returned empty responses.** Both
+  httpx clients on the sandbox→server→Anthropic path (the in-sandbox relay's
+  outbound client and the broker's `/anthropic` proxy client) were constructed
+  with httpx's 5-second default read timeout. Real Claude completions routinely
+  run for tens of seconds to minutes, so every one aborted with
+  `httpx.ReadTimeout` — the broker leg first, then (once that was fixed) the
+  relay leg waiting on the broker — leaving the sandbox agent with an empty
+  assistant message even though auth and credential isolation were correct.
+  Both clients now use a generous read timeout (`read=600s`) while keeping
+  connect/write/pool bounded so a dead upstream still fails fast. Regression
+  tests assert each client is built with a read timeout well above the 5s
+  default.
+
+---
+
 ## [0.74.86] - 2026-07-15
 
 ### Fixed

@@ -106,3 +106,37 @@ def test_relay_forwards_sdk_headers_and_swaps_credential():
     assert "host" not in lower
     assert "content-length" not in lower
     assert "x-api-key" not in lower
+
+
+def test_relay_outbound_client_has_generous_read_timeout():
+    """Regression: the relay's outbound httpx client proxies LLM completions
+    on the `/anthropic` leg. httpx's 5s default read timeout would abort every
+    real completion (the sandbox-side twin of the broker's timeout bug), so
+    ``start()`` must build the client with a generous read timeout."""
+    import httpx
+
+    captured: dict = {}
+
+    orig = httpx.AsyncClient
+
+    def _spy(*a, **k):
+        captured["timeout"] = k.get("timeout")
+        return orig(*a, **k)
+
+    async def _run() -> None:
+        r = Relay(server_url="http://agnes:8000")
+        import app.chat.relay as relay_mod
+
+        real = relay_mod.httpx.AsyncClient
+        relay_mod.httpx.AsyncClient = _spy  # type: ignore[assignment]
+        try:
+            port = await r.start(port_hint=0)
+            assert port > 0
+        finally:
+            relay_mod.httpx.AsyncClient = real  # type: ignore[assignment]
+            await r.stop()
+
+    asyncio.run(_run())
+    t = captured["timeout"]
+    assert isinstance(t, httpx.Timeout)
+    assert t.read is not None and t.read >= 60.0, t

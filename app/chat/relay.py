@@ -36,6 +36,14 @@ _SCOPE_FOR_PREFIX = {
     "/agnes-mcp": "mcp",
 }
 
+# The `/anthropic` leg proxies LLM completions that routinely run for tens of
+# seconds to minutes. httpx's 5s default read timeout would abort every real
+# completion here — the sandbox-side twin of the same bug on the broker's
+# outbound client — so the relay's outbound client gets a generous read timeout
+# while keeping connect/write/pool bounded. Fast `/agnes-api` and `/agnes-mcp`
+# calls still return promptly; the long read timeout only permits slow ones.
+_OUTBOUND_TIMEOUT = httpx.Timeout(connect=15.0, read=600.0, write=60.0, pool=15.0)
+
 
 class Relay:
     """In-sandbox HTTP forwarder that never persists real credentials.
@@ -113,7 +121,7 @@ class Relay:
 
         url = f"{self._server_url}/api/broker{path}"
         owns_client = self._client is None
-        client = self._client or httpx.AsyncClient()
+        client = self._client or httpx.AsyncClient(timeout=_OUTBOUND_TIMEOUT)
         try:
             return await client.post(url, content=body, headers=headers)
         finally:
@@ -127,7 +135,7 @@ class Relay:
         parser — no new dependency for the listener side; the outbound leg
         to the Agnes server uses ``httpx`` (already a project dependency).
         """
-        self._client = httpx.AsyncClient()
+        self._client = httpx.AsyncClient(timeout=_OUTBOUND_TIMEOUT)
 
         async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             try:
