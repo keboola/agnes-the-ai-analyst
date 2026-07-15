@@ -9,7 +9,7 @@ import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
-from src.rbac import can_access_table
+from src.rbac import can_access_table, get_accessible_tables
 
 from src.repositories import (
     profile_repo,
