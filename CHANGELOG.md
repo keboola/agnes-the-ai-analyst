@@ -12,6 +12,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [0.74.83] - 2026-07-15
+
+### Fixed
+- **Security:** the SSE and Streamable-HTTP MCP servers now filter `tools/list` by the caller's grants, closing the visibility residual left by the invocation-gating fix. Their passthrough tool closures are registered once at startup, so `tools/list` previously advertised every enabled passthrough tool's name, description, and input schema to any authenticated caller regardless of `tool_grants` (invocation was already denied, but the tool's existence and shape leaked). A grant-filtered `tools/list` handler now hides passthrough tools the caller has no grant on — admin sees all, others see the `tool_grants` intersection, an unresolved caller sees none — matching the REST `_visible_passthrough_tools` listing. Foundation tools are always visible; a filtering error fails closed (hides all passthrough tools) rather than leaking the unfiltered list.
+
+---
+
 ## [0.74.82] - 2026-07-15
 
 ### Fixed
