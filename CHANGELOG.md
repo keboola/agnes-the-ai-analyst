@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+---
+
+## [0.74.84] - 2026-07-15
+
 ### Security
 
 - OAuth 2.1 authorization codes, access tokens, and **refresh tokens** are now
