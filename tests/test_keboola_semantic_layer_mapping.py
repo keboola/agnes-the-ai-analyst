@@ -138,6 +138,11 @@ class TestReferencesForeignAlias:
         # Masking literals must not hide a genuine alias elsewhere in the expr.
         assert references_foreign_alias('CASE WHEN "s" = \'in.progress\' THEN o."amount" END') is True
 
+    def test_dotted_column_name_in_quoted_identifier_is_not_foreign(self):
+        # A dot inside a quoted identifier ("total.amount") is part of the
+        # column name, not an <alias>. qualifier — must not be skipped.
+        assert references_foreign_alias('SUM("total.amount")') is False
+
 
 class TestComposeSql:
     def test_composes_select_with_alias_t(self):
@@ -349,6 +354,12 @@ class TestHasEmbeddedSqlComment:
 
     def test_double_hyphen_inside_double_quoted_identifier_is_not_a_comment(self):
         assert has_embedded_sql_comment('SUM("weird--column")') is False
+
+    def test_quote_in_identifier_does_not_expose_literal_double_hyphen(self):
+        # Masking order: a single quote inside an identifier ("col'name") must
+        # not start a spurious string-literal match that re-exposes a `--`
+        # safely inside a following real string literal.
+        assert has_embedded_sql_comment("SUM(\"col'name\", 'value--here')") is False
 
 
 class TestBuildMetricRowSkipsEmbeddedComment:

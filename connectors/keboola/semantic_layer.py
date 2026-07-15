@@ -93,13 +93,27 @@ def dataset_lookup_by_table_id(dataset_items: list[dict]) -> dict[str, dict]:
 # this importer does not have (relationship support is out of scope for
 # v1) — so any match here means "skip, cannot safely compose."
 _ALIAS_QUALIFIER_RE = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_"])')
-# Single-quoted SQL string literal (handles '' escapes), masked out before the
-# alias scan so dotted enum values like 'in.progress' don't read as an alias.
+# Single-quoted SQL string literal (handles '' escapes).
 _SQL_STRING_LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
-# Double-quoted SQL identifier (handles "" escapes), masked out alongside
-# string literals before the comment scan below so a column name containing
-# a literal double-hyphen isn't misdetected as a line comment.
+# Double-quoted SQL identifier (handles "" escapes).
 _SQL_IDENTIFIER_RE = re.compile(r'"(?:[^"]|"")*"')
+
+
+def _mask_quoted_regions(expression: str) -> str:
+    """Blank the CONTENT of double-quoted identifiers and single-quoted string
+    literals, keeping the surrounding SQL structure intact, so a dotted enum
+    value (`'in.progress'`), a dotted column name (`"total.amount"`), or a
+    double-hyphen inside a quoted region is not mistaken for an alias qualifier
+    or a line comment.
+
+    Identifiers are masked FIRST: a single quote inside an identifier
+    (e.g. `"col'name"`) would otherwise start a spurious string-literal match
+    that swallows a following real literal and re-exposes its contents (a
+    dotted value or a `--`), causing a valid single-table metric to be skipped.
+    """
+    masked = _SQL_IDENTIFIER_RE.sub('""', expression)
+    masked = _SQL_STRING_LITERAL_RE.sub("''", masked)
+    return masked
 
 
 def references_foreign_alias(expression: str) -> bool:
@@ -108,12 +122,12 @@ def references_foreign_alias(expression: str) -> bool:
     See _ALIAS_QUALIFIER_RE docstring for why this indicates a multi-dataset
     JOIN this importer cannot safely compose in v1.
 
-    String literals are masked first: a dotted value inside a single-quoted
-    literal (e.g. `WHEN "status" = 'in.progress'`) is data, not an alias
-    reference, and must not cause a valid single-table metric to be skipped.
+    Quoted regions are masked first: a dotted value inside a single-quoted
+    literal (`WHEN "status" = 'in.progress'`) or a dotted column name inside a
+    quoted identifier (`"total.amount"`) is data, not an alias reference, and
+    must not cause a valid single-table metric to be skipped.
     """
-    masked = _SQL_STRING_LITERAL_RE.sub("''", expression)
-    return bool(_ALIAS_QUALIFIER_RE.search(masked))
+    return bool(_ALIAS_QUALIFIER_RE.search(_mask_quoted_regions(expression)))
 
 
 def has_embedded_sql_comment(expression: str) -> bool:
@@ -134,9 +148,7 @@ def has_embedded_sql_comment(expression: str) -> bool:
     for this table. Per this importer's "skip rather than guess" contract,
     any embedded comment means skip, never strip-and-compose.
     """
-    masked = _SQL_STRING_LITERAL_RE.sub("''", expression)
-    masked = _SQL_IDENTIFIER_RE.sub('""', masked)
-    return "--" in masked
+    return "--" in _mask_quoted_regions(expression)
 
 
 def compose_sql(expression: str, table_name: str) -> str:
