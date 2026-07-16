@@ -408,3 +408,48 @@ class TestGitRealClient:
 
         assert (dest / "plugins" / "mkt-a-plug-x" / "CLAUDE.md").is_file()
         assert (dest / "plugins" / "mkt-b-plug-y" / "CLAUDE.md").is_file()
+
+
+class TestRunGitHttpBackendStderrDrain:
+    """`_run_git_http_backend` must drain stderr concurrently with stdout.
+
+    Regression test for the classic subprocess pipe deadlock: if a child
+    writes enough to stderr to fill its OS pipe buffer (~64KB on Linux)
+    before the parent reads it, the child blocks on that `write()` — and
+    since it's blocked, it never finishes producing stdout either, so a
+    parent that only reads stderr *after* stdout EOF / process exit hangs
+    forever. `asyncio.wait_for` below turns a regression into a fast
+    failure instead of a hung test process.
+    """
+
+    def test_large_stderr_does_not_deadlock(self, monkeypatch):
+        import asyncio
+        import sys
+
+        from app.marketplace_server import git_router
+
+        # A child that writes well past the ~64KB pipe buffer to stderr
+        # *before* writing anything to stdout — if stderr isn't drained
+        # concurrently, the parent's stdout read blocks forever waiting for
+        # a child that is itself blocked writing to a full stderr pipe.
+        stub = (
+            "import sys\n"
+            "sys.stderr.write('E' * (10 * 1024 * 1024))\n"
+            "sys.stderr.flush()\n"
+            "sys.stdout.buffer.write(b'Status: 200 OK\\r\\n\\r\\nbody')\n"
+            "sys.stdout.flush()\n"
+        )
+        monkeypatch.setattr(
+            git_router,
+            "_GIT_HTTP_BACKEND",
+            (sys.executable, "-c", stub),
+        )
+
+        async def run():
+            status, headers, stream = await git_router._run_git_http_backend(env={}, body=b"")
+            chunks = [chunk async for chunk in stream]
+            return status, headers, b"".join(chunks)
+
+        status, _headers, body = asyncio.run(asyncio.wait_for(run(), timeout=10))
+        assert status == 200
+        assert body == b"body"
