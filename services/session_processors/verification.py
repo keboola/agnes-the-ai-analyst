@@ -45,10 +45,11 @@ logger = logging.getLogger(__name__)
 # TimeBudgetExceeded instead of returning. Per the SessionProcessor contract
 # (services/session_pipeline/contract.py), a raise means the runner does NOT
 # mark the session processed, so it is picked up again on the next scheduler
-# tick (cadence_minutes=15) — items already created before the budget hit are
-# already persisted and idempotent (repo.create() hash-collides on retry and
-# takes the cheap "record evidence, skip contradiction check" path), so a
-# retry only pays the LLM cost for the items that didn't get a chance to run.
+# tick (cadence_minutes=15) — items already created before the budget hit
+# hash-collide on retry (repo.create() takes the cheap "duplicate" path) and
+# the duplicate branch skips re-recording evidence for a (item_id,
+# source_user, source_ref) it already has, so a retry only pays the LLM cost
+# for the items that didn't get a chance to run.
 _TIME_BUDGET_SECONDS = 180
 
 
@@ -105,14 +106,26 @@ class VerificationProcessor:
             item_id = _generate_id(v["title"], v["content"])
             existing = repo.get_by_id(item_id)
             if existing:
-                # Hash collision on (title, content) → another analyst
-                # produced the same fact. ADR Decision 3 expects multiple
-                # evidence rows to accumulate (one per distinct
-                # verification event), so we still persist the new
-                # evidence row even though we skip the create+contradiction
-                # path. Without this, the second analyst's user_quote and
-                # detection_type are silently dropped and the
-                # "additional verifiers" boost cannot accumulate.
+                # Hash collision on (title, content) → either another
+                # analyst produced the same fact (ADR Decision 3 expects a
+                # new evidence row per distinct verification event), or this
+                # is the same session being retried after a prior
+                # TimeBudgetExceeded and this item was already created +
+                # given evidence on an earlier tick. Distinguish the two by
+                # (source_user, source_ref): a retry re-processes the exact
+                # same session_id for the exact same user, so skip it —
+                # otherwise every retry tick appends another duplicate
+                # evidence row for the same single confirmation event.
+                already_recorded = any(
+                    ev.get("source_user") == username and ev.get("source_ref") == session_id
+                    for ev in repo.list_evidence(item_id)
+                )
+                if already_recorded:
+                    logger.info(
+                        "Evidence already recorded for %s on this session (retry) — skipping",
+                        item_id,
+                    )
+                    continue
                 logger.info(
                     "Duplicate item — recording evidence on existing: %s",
                     item_id,

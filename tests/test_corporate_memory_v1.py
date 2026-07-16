@@ -1489,6 +1489,74 @@ class TestVerificationProcessorTimeBudget:
         assert stats["errors"] == 1
         conn.close()
 
+    def test_retry_does_not_duplicate_evidence_for_already_processed_items(self, tmp_path, monkeypatch):
+        """A session retried after TimeBudgetExceeded re-extracts the same
+        verifications on the next tick. Items already created on the first
+        tick must not get a second evidence row appended for the same
+        (source_user, source_ref) — that would silently inflate the
+        confirmation signal every retry."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        import services.session_processors.verification as verification_module
+        from services.verification_detector.detector import _generate_id
+
+        repo = KnowledgeRepository(conn)
+
+        verification_response = {
+            "verifications": [
+                {
+                    "detection_type": "correction",
+                    "title": "Fact 0",
+                    "content": "Content 0",
+                    "user_quote": "quote 0",
+                    "domain": "finance",
+                    "entities": ["entity0"],
+                },
+                {
+                    "detection_type": "correction",
+                    "title": "Fact 1",
+                    "content": "Content 1",
+                    "user_quote": "quote 1",
+                    "domain": "finance",
+                    "entities": ["entity1"],
+                },
+            ]
+        }
+        extractor = MagicMock()
+        extractor.extract_json.return_value = verification_response
+
+        session_dir = tmp_path / "user_sessions" / "alice"
+        session_dir.mkdir(parents=True)
+        session_path = session_dir / "s.jsonl"
+        session_path.write_text(json.dumps({"role": "user", "content": "quote 0"}) + "\n")
+
+        processor = verification_module.VerificationProcessor(extractor)
+
+        # First tick: budget blows after item 0 is fully created — item 1
+        # never starts.
+        monkeypatch.setattr(
+            verification_module.time,
+            "monotonic",
+            MagicMock(side_effect=[0.0, 0.0, verification_module._TIME_BUDGET_SECONDS + 1]),
+        )
+        with pytest.raises(verification_module.TimeBudgetExceeded):
+            processor.process_session(session_path, "alice", "alice/s.jsonl", conn)
+
+        item0_id = _generate_id("Fact 0", "Content 0")
+        assert len(repo.list_evidence(item0_id)) == 1
+
+        # Second tick (retry): budget doesn't blow this time, both items are
+        # re-extracted. Item 0 hash-collides (already exists) — it must not
+        # get a second evidence row. Item 1 is genuinely new.
+        monkeypatch.setattr(verification_module.time, "monotonic", MagicMock(return_value=0.0))
+        result = processor.process_session(session_path, "alice", "alice/s.jsonl", conn)
+
+        assert len(repo.list_evidence(item0_id)) == 1
+        item1_id = _generate_id("Fact 1", "Content 1")
+        assert len(repo.list_evidence(item1_id)) == 1
+        assert result.items_count == 1
+        conn.close()
+
 
 class TestBatchContradictionSchemaStrictValid:
     """Guard BATCH_CONTRADICTION_SCHEMA against the enum+union-type schema rejection regression.
