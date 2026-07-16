@@ -54,7 +54,7 @@ All intervals are in seconds. Set in `.env` or compose environment.
 | `SCHEDULER_CORPORATE_MEMORY_INTERVAL` | 1020 | Memory orchestrator |
 | `SCHEDULER_SESSION_COLLECTOR_INTERVAL` | 600 | Pulls JSONLs from per-user SSH paths |
 | `SCHEDULER_USAGE_PRUNE_INTERVAL` | 86400 | Daily retention prune of old events |
-| `SESSION_PROCESSOR_MAX_PER_RUN` | 50 | App-side (not scheduler-side) cap on how many sessions a single `/api/admin/run-session-processor` invocation processes; the rest defer to the next tick. Bounds worst-case CPU/wall-clock of a burst of session closures landing in one tick. `""`/`0`/negative disables the cap. |
+| `SESSION_PROCESSOR_MAX_PER_RUN` | 50 | App-side (not scheduler-side) cap on how many sessions a single `/api/admin/run-session-processor` invocation processes; the rest defer to the next tick. Bounds worst-case CPU/wall-clock of a burst of session closures landing in one tick. Applied to `verification` (the LLM-driven processor this protects) and any future processor by default; the `usage` processor is exempt — pure local jsonl parsing + repository writes, no network I/O, so capping it would only throttle telemetry throughput (e.g. draining a bulk backfill slowly) with no safety benefit. `""`/`0`/negative disables the cap entirely. |
 
 All scheduler tasks call back into the app over HTTP (`SCHEDULER_API_TOKEN` in environment) so the app remains the sole writer to `system.duckdb`.
 

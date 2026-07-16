@@ -4127,10 +4127,19 @@ def run_session_processor(
     # factory and ignore ``conn``; on Postgres pass None so the system DuckDB is
     # never opened (forbidden invariant).
     job_conn = None if use_pg() else get_system_db()
+    # The cap exists to bound wall-clock/CPU from processors that make
+    # synchronous, blocking LLM calls per session (verification). "usage" is
+    # pure local jsonl parsing + repository writes — no network I/O — so
+    # capping it too just throttles telemetry-extraction throughput for no
+    # safety benefit (Devin Review, PR #894: a bulk backfill/onboarding wave
+    # would otherwise drain at cap-size-per-tick instead of clearing in one
+    # run). Default-capped for any other/future processor (safe-by-default);
+    # explicitly exempt "usage" since it's verified cheap.
+    session_processor_cap = None if processor == "usage" else _session_processor_max_per_run()
     stats: dict = {}
     job_error: Optional[Exception] = None
     try:
-        stats = _run_processor(job_conn, proc, max_sessions_per_run=_session_processor_max_per_run())
+        stats = _run_processor(job_conn, proc, max_sessions_per_run=session_processor_cap)
         # Rebuild daily rollups after a successful usage run so the
         # marketplace / admin dashboards see fresh aggregates. Backend-aware
         # (#728 — the free-function DuckDB-only producer left rollups

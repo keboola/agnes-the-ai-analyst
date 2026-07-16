@@ -13,6 +13,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 - **`agnes auth import-token` no longer fails a valid PAT when server-side verification is merely slow or transiently erroring.** The verification call (against `/api/catalog/tables`) hard-exited on any `5xx` and used a hard-coded 15s timeout, so a momentarily loaded or flapping endpoint turned a structurally-valid token into a failed install. Now only a definitive rejection (`401`) aborts; a `5xx` or a read timeout warns and proceeds to save the token (it already decoded locally and was not rejected — same posture as `--skip-verify`), while a genuine connection failure (bad URL / server down) still aborts. The timeout is configurable via `AGNES_VERIFY_TIMEOUT` (seconds; falls back to the 15s default on an unset, non-numeric, or non-positive value). `cli/commands/auth.py`.
+
 ### Added
 
 - `SESSION_PROCESSOR_MAX_PER_RUN` (default 50) caps how many sessions a
@@ -24,7 +25,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `capped` field reporting how many sessions were deferred. Complements the
   per-session time budget added for the verification processor in 0.74.97 —
   this caps how many *sessions* a run touches, that caps how long *one*
-  session's item loop can run.
+  session's item loop can run. Applied to `verification` (and any future
+  processor) by default; `usage` is exempt — pure local jsonl parsing +
+  repository writes with no LLM/network calls, so capping it would only
+  throttle telemetry throughput (e.g. draining a bulk backfill slowly)
+  without any wall-clock/CPU safety benefit.
 - `SCHEDULER_VERIFICATION_SCHEDULE` lets an operator pin the LLM-heavy
   verification session-processor to a fixed off-peak time (e.g.
   `"daily 04:15"`) instead of firing every N minutes/hours — useful when

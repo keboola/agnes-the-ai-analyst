@@ -152,8 +152,49 @@ class TestRunSessionProcessor:
 
     def test_passes_configured_cap_to_run_processor(self, seeded_app, monkeypatch):
         """The endpoint must thread SESSION_PROCESSOR_MAX_PER_RUN through to
-        run_processor(max_sessions_per_run=...) so a burst of session
-        closures can't run unboundedly in one request."""
+        run_processor(max_sessions_per_run=...) for the LLM-driven verification
+        processor, so a burst of session closures can't run unboundedly in one
+        request."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        from services.session_processors import _build_registry
+
+        _build_registry.cache_clear()
+        monkeypatch.setenv("SESSION_PROCESSOR_MAX_PER_RUN", "7")
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        fake_stats = {
+            "processor": "verification",
+            "scanned": 0,
+            "processed": 0,
+            "skipped": 0,
+            "capped": 0,
+            "errors": 0,
+            "items_extracted": 0,
+            "errors_detail": [],
+        }
+        with (
+            patch(
+                "services.session_pipeline.runner.run_processor",
+                return_value=fake_stats,
+            ) as m,
+            patch("connectors.llm.factory.AnthropicExtractor"),
+        ):
+            resp = c.post(
+                "/api/admin/run-session-processor?processor=verification",
+                headers=_auth(token),
+            )
+        assert resp.status_code == 200, resp.text
+        m.assert_called_once()
+        _, kwargs = m.call_args
+        assert kwargs["max_sessions_per_run"] == 7
+
+    def test_usage_processor_is_never_capped(self, seeded_app, monkeypatch):
+        """usage does pure local jsonl parsing + repository writes — no LLM/
+        network calls — so it's exempt from SESSION_PROCESSOR_MAX_PER_RUN
+        (Devin Review, PR #894): capping it too would just throttle telemetry
+        throughput (e.g. draining a bulk backfill at cap-size-per-tick)
+        without any wall-clock/CPU safety benefit."""
         from services.session_processors import _build_registry
 
         _build_registry.cache_clear()
@@ -182,7 +223,7 @@ class TestRunSessionProcessor:
         assert resp.status_code == 200, resp.text
         m.assert_called_once()
         _, kwargs = m.call_args
-        assert kwargs["max_sessions_per_run"] == 7
+        assert kwargs["max_sessions_per_run"] is None
 
     def test_capped_count_surfaced_in_audit_details(self, seeded_app):
         from services.session_processors import _build_registry
