@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agnes pull` stack_sync no longer aborts on a path-unsafe manifest table name** (e.g. an internal table's spaced display name "Agnes audit log" surfacing in a data package). Defense on both sides: the manifest now falls back to the path-safe registry id when a table's name would fail the CLI's path-segment validation (`app/api/sync.py::_table_manifest_entry` — this side also heals already-installed CLIs), and the CLI degrades a path-unsafe table/package/domain name to a per-item sync error instead of failing the whole stack_sync stage (`cli/lib/pull_sync.py`). The stack_sync table skip now also covers `query_mode='internal'` and `server_only` tables (#607), which have no downloadable parquet.
+
 ## [0.74.99] - 2026-07-16
 
 ### Added

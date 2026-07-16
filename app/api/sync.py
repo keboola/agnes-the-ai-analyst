@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -1093,6 +1094,10 @@ sys.exit(compute_exit_code(result, len(configs)))
 
 # ---- Manifest ----
 
+# Mirrors the CLI's ``_SAFE_SEGMENT_RE`` (cli/lib/pull_sync.py) — names the
+# manifest sends become on-disk path segments on the analyst side.
+_PATH_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
 
 def _table_manifest_entry(state: dict, reg: dict) -> dict:
     """Shape one ``sync_state`` row + registry metadata into the per-table
@@ -1104,6 +1109,15 @@ def _table_manifest_entry(state: dict, reg: dict) -> dict:
     not blow up on a partially-consistent snapshot.
     """
     name = state.get("table_id") or reg.get("name") or reg.get("id") or ""
+    # The CLI uses ``name`` as an on-disk path segment and hard-rejects
+    # anything outside [A-Za-z0-9_.-] ("unsafe path segment"). Registry
+    # display names may contain spaces (e.g. internal tables' "Agnes audit
+    # log") — fall back to the path-safe registry id so one such table
+    # doesn't abort the analyst's whole stack_sync stage.
+    if name and not _PATH_SAFE_SEGMENT_RE.match(name):
+        reg_id = reg.get("id") or ""
+        if reg_id and _PATH_SAFE_SEGMENT_RE.match(reg_id):
+            name = reg_id
     return {
         "id": reg.get("id") or name,
         "name": name,

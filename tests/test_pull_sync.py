@@ -324,6 +324,105 @@ class TestSyncDataPackages:
         assert len(server.fetch_calls) == 1
         assert report.added + report.updated + report.removed == 0
 
+    def test_unsafe_table_name_degrades_to_per_table_error(self, server, local_dir):
+        """A table whose name fails the path-safety check (e.g. an internal
+        table's display name with spaces) must NOT abort the whole
+        stack_sync stage — it degrades to a per-table error while the
+        remaining tables sync normally."""
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        pkg = {
+            "slug": "agnes-internal",
+            "tables": [_table("agnes_audit", "Agnes audit log"), _table("t1", "orders")],
+        }
+        state, report = sync_data_packages(
+            server_packages=[pkg],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        # The good table synced.
+        assert report.added == 1
+        assert (local_data / "agnes-internal" / "orders.parquet").exists()
+        # The bad name is a reported error, not an exception.
+        assert len(report.errors) == 1
+        assert "unsafe path segment" in report.errors[0]["error"]
+        assert report.errors[0]["name"] == "Agnes audit log"
+
+    def test_unsafe_package_slug_degrades_to_error(self, server, local_dir):
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        bad_pkg = {"slug": "bad slug", "tables": [_table("t1", "orders")]}
+        good_pkg = {"slug": "sales", "tables": [_table("t2", "customers")]}
+        state, report = sync_data_packages(
+            server_packages=[bad_pkg, good_pkg],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        assert report.added == 1
+        assert (local_data / "sales" / "customers.parquet").exists()
+        assert len(report.errors) == 1
+        assert report.errors[0]["package"] == "bad slug"
+
+    def test_internal_mode_tables_skipped(self, server, local_dir):
+        """query_mode='internal' tables live server-side only (no parquet)
+        — the pull must skip them like remote-mode tables."""
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        pkg = {
+            "slug": "agnes-internal",
+            "tables": [_table("agnes_audit", "agnes_audit", query_mode="internal")],
+        }
+        state, report = sync_data_packages(
+            server_packages=[pkg],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        assert report.added == 0
+        assert report.errors == []
+        assert server.fetch_calls == []
+
+    def test_server_only_tables_skipped(self, server, local_dir):
+        """server_only tables (#607) stay server-side — no parquet download."""
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        t = _table("t_srv", "srv_tbl")
+        t["server_only"] = True
+        pkg = {"slug": "pkg", "tables": [t]}
+        state, report = sync_data_packages(
+            server_packages=[pkg],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        assert report.added == 0
+        assert report.errors == []
+        assert server.fetch_calls == []
+
+
+class TestSyncDirectTablesUnsafeNames:
+    def test_unsafe_name_degrades_to_per_table_error(self, server, local_dir):
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        tables = [_table("agnes_audit", "Agnes audit log"), _table("t1", "orders")]
+        state, report = sync_direct_tables(
+            server_tables=tables,
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        assert report.added == 1
+        assert "orders" in state
+        assert len(report.errors) == 1
+        assert "unsafe path segment" in report.errors[0]["error"]
+
 
 # ---------------------------------------------------------------------------
 # Sync — memory domains
@@ -377,6 +476,19 @@ class TestSyncMemoryDomains:
         )
         assert report.updated == 1
         assert len(server.bundle_calls) == 2
+
+    def test_unsafe_domain_slug_degrades_to_error(self, server, local_dir):
+        mem = local_dir / "memory"
+        state, report = sync_memory_domains(
+            server_domains=[{"slug": "bad slug", "md5": "h"}, {"slug": "ok", "md5": "h"}],
+            local_memory_dir=mem,
+            prev_state={},
+            bundle_fetcher=server.make_bundle_fetcher(),
+        )
+        assert report.added == 1
+        assert (mem / "ok" / "bundle.md").exists()
+        assert len(report.errors) == 1
+        assert "unsafe path segment" in report.errors[0]["error"]
 
     def test_remove_unlinks_bundle(self, server, local_dir):
         mem = local_dir / "memory"

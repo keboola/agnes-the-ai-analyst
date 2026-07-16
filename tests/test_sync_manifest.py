@@ -187,6 +187,59 @@ def test_manifest_filters_by_accessible_tables_for_analyst(tmp_path, monkeypatch
         conn.close()
 
 
+def test_manifest_package_table_name_is_path_safe(tmp_path, monkeypatch):
+    """A packaged table with no sync_state falls back to the registry
+    display name — when that contains path-unsafe characters (spaces, like
+    the internal tables' \"Agnes audit log\"), the manifest must send the
+    path-safe registry id instead, or the CLI's stack_sync stage aborts
+    with \"unsafe path segment\"."""
+    db_module = _reload_db_module(monkeypatch, tmp_path)
+
+    from src.repositories.table_registry import TableRegistryRepository
+    from src.repositories.data_packages import DataPackagesRepository
+    from app.api.sync import _build_manifest_for_user
+
+    conn = db_module.get_system_db()
+    try:
+        _ensure_admin1(conn)
+        TableRegistryRepository(conn).register(
+            id="agnes_audit",
+            name="Agnes audit log",
+            source_type="internal",
+            bucket="internal",
+            source_table="agnes_audit",
+            query_mode="internal",
+        )
+        pkg_repo = DataPackagesRepository(conn)
+        pkg_id = pkg_repo.create(
+            name="Agnes Internal",
+            slug="agnes-internal",
+            description=None,
+            icon=None,
+            color=None,
+            created_by="test",
+        )
+        pkg_repo.add_table(pkg_id, "agnes_audit", added_by="test")
+        conn.execute(
+            "INSERT INTO resource_grants(id, group_id, resource_type, resource_id, "
+            "requirement, assigned_at, assigned_by) "
+            "SELECT 'grant-internal-pkg', id, 'data_package', ?, 'required', "
+            "CURRENT_TIMESTAMP, 'test' FROM user_groups WHERE name = 'Admin'",
+            [pkg_id],
+        )
+        admin = {"id": "admin1", "email": "a@x.com"}
+        manifest = _build_manifest_for_user(conn, admin)
+        pkgs = {p["slug"]: p for p in manifest.get("data_packages") or []}
+        assert "agnes-internal" in pkgs
+        for t in pkgs["agnes-internal"]["tables"]:
+            # Path-safe: no spaces or separators — the CLI's _SAFE_SEGMENT_RE.
+            assert " " not in t["name"], f"unsafe manifest table name: {t['name']!r}"
+            assert t["name"] == "agnes_audit"
+            assert t["query_mode"] == "internal"
+    finally:
+        conn.close()
+
+
 def test_manifest_defaults_query_mode_local_for_unregistered_state(tmp_path, monkeypatch):
     """Sync state without a corresponding registry row must default query_mode='local'.
 

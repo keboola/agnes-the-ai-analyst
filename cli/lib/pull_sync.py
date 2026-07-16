@@ -96,6 +96,31 @@ def _safe_segment(name: str) -> str:
     return name
 
 
+def _safe_name_map(
+    items: List[dict],
+    key: str,
+    report: "TypeReport",
+    label: str,
+    extra: Optional[dict] = None,
+) -> Dict[str, dict]:
+    """Build ``{_safe_segment(item[key]): item}``, degrading a path-unsafe
+    value to a per-item report error instead of aborting the whole stage
+    (one bad manifest name must not kill every package's sync)."""
+    out: Dict[str, dict] = {}
+    for item in items:
+        raw = item.get(key)
+        if not raw:
+            continue
+        try:
+            out[_safe_segment(raw)] = item
+        except ValueError as exc:
+            entry = {label: raw, "error": str(exc)}
+            if extra:
+                entry.update(extra)
+            report.errors.append(entry)
+    return out
+
+
 def _shared_path(local_data_dir: Path, table_id: str) -> Path:
     return local_data_dir / _SHARED_DIRNAME / f"{_safe_segment(table_id)}.parquet"
 
@@ -248,9 +273,14 @@ def _server_table_url(t: dict) -> str:
 
 
 def _server_table_skip(t: dict) -> bool:
-    """Remote-mode tables have no parquet — skip them in the per-type
-    sync (the master DuckDB ATTACH still resolves them on demand)."""
-    return (t.get("query_mode") or "").lower() == "remote"
+    """Remote- and internal-mode tables have no downloadable parquet — skip
+    them in the per-type sync (remote tables resolve via the master DuckDB
+    ATTACH on demand; internal tables are queried server-side only). Same
+    for ``server_only`` tables (#607 — kept fresh server-side, never
+    distributed)."""
+    if t.get("server_only"):
+        return True
+    return (t.get("query_mode") or "").lower() in ("remote", "internal")
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +383,7 @@ def sync_direct_tables(
     """
     report = TypeReport()
     new_state: Dict[str, Any] = {}
-    server_names = {_safe_segment(t["name"]): t for t in server_tables if t.get("name")}
+    server_names = _safe_name_map(server_tables, "name", report, "name")
     prev_names = set(prev_state.keys())
 
     direct_dir = local_data_dir / _DIRECT_DIRNAME
@@ -419,16 +449,16 @@ def sync_data_packages(
     report = TypeReport()
     new_state: Dict[str, Dict[str, Any]] = {}
 
-    server_by_slug = {_safe_segment(p["slug"]): p for p in server_packages if p.get("slug")}
+    server_by_slug = _safe_name_map(server_packages, "slug", report, "package")
     prev_slugs = set(prev_state.keys())
 
     for slug, pkg in server_by_slug.items():
         pkg_dir = local_data_dir / slug
         prev_pkg = prev_state.get(slug) or {}
         server_tables = pkg.get("tables") or []
-        server_table_by_name = {
-            _safe_segment(t["name"]): t for t in server_tables if t.get("name")
-        }
+        server_table_by_name = _safe_name_map(
+            server_tables, "name", report, "name", extra={"package": slug}
+        )
         new_pkg_state: Dict[str, Any] = {}
 
         for name, table in server_table_by_name.items():
@@ -521,7 +551,7 @@ def sync_memory_domains(
     report = TypeReport()
     new_state: Dict[str, Any] = {}
 
-    server_by_slug = {_safe_segment(d["slug"]): d for d in server_domains if d.get("slug")}
+    server_by_slug = _safe_name_map(server_domains, "slug", report, "slug")
     prev_slugs = set(prev_state.keys())
 
     for slug, dom in server_by_slug.items():
