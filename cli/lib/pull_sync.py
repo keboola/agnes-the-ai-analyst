@@ -115,6 +115,13 @@ def _safe_segment_map(items: Iterable[dict], key: str, kind: str) -> Dict[str, d
 
     A single poison row must not abort the whole type's sync: sanitize what we
     can, log + drop what we can't, so the rest of the manifest still syncs.
+
+    Since sanitization is many-to-one (``"Sales 2024"`` and ``"Sales/2024"``
+    both fold to ``Sales_2024``), two distinct labels can claim the same
+    segment. They would map to the same on-disk path anyway, so a collision is
+    resolved deterministically — first occurrence wins, later ones are logged
+    and skipped rather than silently overwriting (which would drop a table and,
+    on the next delete pass, unlink its parquet).
     """
     out: Dict[str, dict] = {}
     for it in items:
@@ -122,9 +129,17 @@ def _safe_segment_map(items: Iterable[dict], key: str, kind: str) -> Dict[str, d
         if not raw:
             continue
         try:
-            out[_safe_segment(raw)] = it
+            seg = _safe_segment(raw)
         except ValueError:
             logger.warning("pull: skipping %s with unsafe %s %r", kind, key, raw)
+            continue
+        if seg in out:
+            logger.warning(
+                "pull: skipping %s %r — its path segment %r collides with %r",
+                kind, raw, seg, out[seg].get(key),
+            )
+            continue
+        out[seg] = it
     return out
 
 
