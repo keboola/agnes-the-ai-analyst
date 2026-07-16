@@ -207,10 +207,17 @@ async def run_lint_audit(
     if not body.force and not _audit_due(last, get_lint_audit_min_interval_hours()):
         return {"skipped": True, "last_run": last}
 
-    # The scheduler authenticates as the synthetic "scheduler" user; label the
-    # run accordingly so the guard/history distinguishes automated from manual.
-    principal = (admin.get("username") or admin.get("email") or "").lower()
-    trigger = "scheduler" if (request.headers.get("X-Agnes-Scheduler") or principal == "scheduler") else "admin"
+    # Label automated vs manual runs. The scheduler sidecar sends only
+    # `Authorization: Bearer $SCHEDULER_API_TOKEN` (no custom header — see
+    # services/scheduler/__main__.py::_call_api), which the app resolves to the
+    # synthetic scheduler user, so the principal's email is the reliable
+    # signal. The header check stays as an override for other callers.
+    from app.auth.scheduler_token import SCHEDULER_USER_EMAIL
+
+    is_scheduler = bool(request.headers.get("X-Agnes-Scheduler")) or (
+        (admin.get("email") or "").strip().lower() == SCHEDULER_USER_EMAIL
+    )
+    trigger = "scheduler" if is_scheduler else "admin"
     return await run_in_threadpool(_run_full_audit, trigger)
 
 
