@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.74.103] - 2026-07-16
+
+### Fixed
+
+- **Fresh Postgres-backend deployments can boot compose from scratch.** On a brand-new `data` volume the `data-migrate` one-shot in `docker-compose.postgres.yml` found no `system.duckdb` to migrate from, exited 2, and wedged the boot — `app` and `scheduler` gate on it via `service_completed_successfully`. The compose command now passes a new `--missing-source-ok` flag: `python -m scripts.migrate_duckdb_to_pg` treats the missing source as "nothing to migrate" (logged no-op, exit 0), so a fresh deployment proceeds straight to the alembic-seeded PG. Operator-driven runs WITHOUT the flag keep exiting 2 — during a real cutover a missing `system.duckdb` means a mis-mounted volume, not a fresh install — and the flag is rejected in combination with `--reset-target`. Covered by a static compose contract test plus a docker-gated e2e that boots the real overlay chain on fresh volumes (`pytest tests/test_e2e_docker_postgres_fresh.py -m docker`).
+
 ## [0.74.102] - 2026-07-16
 
 ### Fixed
