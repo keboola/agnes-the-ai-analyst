@@ -10,10 +10,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 from typing import Optional
 
-import duckdb
 
 from app.auth.access import require_admin
-from app.auth.dependencies import _get_db
 from src.scheduler import is_valid_schedule, is_table_due
 
 from src.repositories import (
@@ -63,7 +61,6 @@ class ScriptResponse(BaseModel):
 @router.get("")
 async def list_scripts(
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List deployed scripts. Admin-only."""
     repo = notifications_script_repo()
@@ -75,7 +72,6 @@ async def list_scripts(
 async def deploy_script(
     request: DeployScriptRequest,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Deploy a Python script to be run on the server (optionally on schedule). Admin-only.
 
@@ -106,7 +102,6 @@ async def deploy_script(
 async def run_deployed_script(
     script_id: str,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Run a deployed script by ID. Admin-only."""
     repo = notifications_script_repo()
@@ -131,7 +126,6 @@ async def run_adhoc_script(
 async def undeploy_script(
     script_id: str,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = notifications_script_repo()
     if not repo.get(script_id):
@@ -143,7 +137,6 @@ async def undeploy_script(
 async def run_due_scripts(
     background_tasks: BackgroundTasks,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Run every deployed script whose ``schedule`` says it is due.
 

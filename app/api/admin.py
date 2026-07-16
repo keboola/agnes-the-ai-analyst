@@ -4068,7 +4068,6 @@ def run_session_collector(
 def run_session_processor(
     processor: str = Query(..., description="Processor name (e.g. 'verification', 'usage')"),
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Trigger one session-pipeline processor against /data/user_sessions/*.
 
