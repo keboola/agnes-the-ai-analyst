@@ -315,6 +315,49 @@ class TestGitSmartHttp:
         sources = {p["source"] for p in manifest["plugins"]}
         assert sources == {"./plugins/mkt-a-plug-x", "./plugins/mkt-b-plug-y"}
 
+    def test_auth_and_repo_build_run_off_the_event_loop(self, git_env, monkeypatch):
+        """resolve_token_to_user / ensure_repo_for_user must run in a worker
+        thread via run_in_threadpool, not directly on the event loop —
+        otherwise every git fetch blocks concurrent requests (health checks
+        included), the exact regression this endpoint exists to avoid, just
+        moved one call earlier than the subprocess step.
+
+        `token_from_basic_auth` is a pure sync function that intentionally
+        still runs directly on the coroutine (it's a µs-scale string parse,
+        not worth offloading) — its thread ident is the event-loop thread's
+        ident, used here as the baseline to compare against.
+        """
+        import threading
+
+        from app.marketplace_server import git_router
+
+        captured: dict[str, int] = {}
+
+        real_token_from_basic_auth = git_router.token_from_basic_auth
+        real_resolve_token_to_user = git_router.resolve_token_to_user
+
+        def spy_token_from_basic_auth(auth_header):
+            captured["event_loop_thread"] = threading.get_ident()
+            return real_token_from_basic_auth(auth_header)
+
+        def spy_resolve_token_to_user(conn, token):
+            captured["resolve_thread"] = threading.get_ident()
+            return real_resolve_token_to_user(conn, token)
+
+        monkeypatch.setattr(git_router, "token_from_basic_auth", spy_token_from_basic_auth)
+        monkeypatch.setattr(git_router, "resolve_token_to_user", spy_resolve_token_to_user)
+
+        c = git_env["client"]
+        resp = c.get(
+            "/marketplace.git/info/refs?service=git-upload-pack",
+            headers={"Authorization": _basic("x", git_env["admin_pat"])},
+        )
+        assert resp.status_code == 200
+        assert "event_loop_thread" in captured and "resolve_thread" in captured
+        assert captured["resolve_thread"] != captured["event_loop_thread"], (
+            "resolve_token_to_user ran on the event-loop thread — it must be offloaded via run_in_threadpool"
+        )
+
 
 @pytest.fixture
 def git_live_server(git_env):
