@@ -1,4 +1,5 @@
 """CLI entry point: ``python -m scripts.migrate_duckdb_to_pg``."""
+
 from __future__ import annotations
 
 import argparse
@@ -41,8 +42,26 @@ def main() -> int:
             "one-shot — it re-runs every boot and would wipe live data."
         ),
     )
+    parser.add_argument(
+        "--missing-source-ok",
+        action="store_true",
+        help=(
+            "Exit 0 when the source DuckDB file does not exist (fresh "
+            "deployment — nothing to migrate). Passed by the docker-compose "
+            "data-migrate one-shot so a brand-new data volume can boot: "
+            "app/scheduler gate on this service exiting 0. Default is exit 2 "
+            "so operator-driven runs fail loudly on a missing or mis-mounted "
+            "source. Incompatible with --reset-target."
+        ),
+    )
     parser.add_argument("--verbose", action="store_true", help="DEBUG-level logging")
     args = parser.parse_args()
+
+    if args.missing_source_ok and args.reset_target:
+        # --reset-target asserts a one-time cutover, which requires an
+        # existing source; tolerating a missing one would let a mis-mounted
+        # volume "succeed" as an empty copy after truncating the target.
+        parser.error("--missing-source-ok cannot be combined with --reset-target")
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -58,6 +77,18 @@ def main() -> int:
             return 2
         duckdb_path = Path(data_dir) / "state" / "system.duckdb"
     if not duckdb_path.is_file():
+        if args.missing_source_ok:
+            # Fresh deployment: alembic has already created the PG schema
+            # (the compose `migrate` one-shot runs first) and there is no
+            # DuckDB state to copy. Exit 0 so app/scheduler can boot — but
+            # loudly, so an operator who EXPECTED an existing source spots a
+            # mis-mounted data volume in the logs.
+            print(
+                f"source DuckDB not found: {duckdb_path} — nothing to migrate "
+                "(fresh deployment). If you expected an existing "
+                "system.duckdb, check the /data volume mount."
+            )
+            return 0
         print(f"DuckDB file not found: {duckdb_path}", file=sys.stderr)
         return 2
 
@@ -82,10 +113,7 @@ def main() -> int:
     # checksum_match key; the default-True on .get() previously masked
     # them. Treat the explicit error key as the authoritative failure
     # signal. Both predicates must hold for exit 0.
-    return (
-        0 if all("error" not in r and r.get("checksum_match", True) for r in reports)
-        else 1
-    )
+    return 0 if all("error" not in r and r.get("checksum_match", True) for r in reports) else 1
 
 
 if __name__ == "__main__":
