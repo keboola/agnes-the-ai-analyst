@@ -685,3 +685,23 @@ class TestSyncSanitizesTableNames:
         assert report.added == 1
         assert (local_data / "mixed" / "orders.parquet").exists()
         assert set(state["mixed"]) == {"orders"}
+
+    def test_colliding_sanitized_names_keep_first_and_skip_second(self, server, local_dir):
+        """Two distinct display names that fold to the same segment must not
+        silently overwrite each other — first wins, the rest are skipped."""
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        pkg = {
+            "slug": "sales",
+            "tables": [_table("t_a", "Sales 2024"), _table("t_b", "Sales/2024")],
+        }
+        state, report = sync_data_packages(
+            server_packages=[pkg], local_data_dir=local_data,
+            prev_state={}, fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+        )
+        # Only one table synced to the shared segment; no crash, no double-write.
+        assert report.added == 1
+        assert set(state["sales"]) == {"Sales_2024"}
+        assert (local_data / "sales" / "Sales_2024.parquet").exists()
+        # First occurrence wins deterministically.
+        assert state["sales"]["Sales_2024"]["table_id"] == "t_a"
