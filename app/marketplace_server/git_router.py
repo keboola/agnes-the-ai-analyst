@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import AsyncIterator, Optional
 
 from fastapi import APIRouter, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
 from app.auth.pat_resolver import resolve_token_to_user
@@ -273,17 +274,28 @@ async def _marketplace_git(path: str, request: Request):
         logger.exception("get_system_db() failed")
         return _server_error()
 
-    try:
+    def _resolve_and_build_repo():
+        """Sync — auth (DB read) + repo build (DB read + disk hashing, and
+        on a cache miss a full dulwich repo build). Run via
+        `run_in_threadpool` so this CPU/IO-heavy work never lands on the
+        shared event loop: previously it ran inside `a2wsgi.WSGIMiddleware`'s
+        own thread-pool offload, so moving it back onto the loop here would
+        silently reintroduce the exact health-check-stalling regression this
+        change set out to fix — just one call earlier in the request.
+        """
         # Git channel doesn't need the reason — just auth yes/no.
         user, _reason = resolve_token_to_user(conn, token)
         if not user:
-            return _unauthorized()
-
+            return None, None
         try:
             repo_path = git_backend.ensure_repo_for_user(conn, user)
         except Exception:
             logger.exception("Failed to build repo for user %r", user.get("email") or user.get("id"))
-            return _server_error()
+            return user, None
+        return user, repo_path
+
+    try:
+        user, repo_path = await run_in_threadpool(_resolve_and_build_repo)
     finally:
         # DB touchpoints (resolve_token_to_user, ensure_repo_for_user) are
         # both done — close before spawning the subprocess, which only reads
@@ -294,6 +306,11 @@ async def _marketplace_git(path: str, request: Request):
                 conn.close()
             except Exception:
                 pass
+
+    if user is None:
+        return _unauthorized()
+    if repo_path is None:
+        return _server_error()
 
     body = await request.body()
     remote_user = user.get("email") or user.get("id")
