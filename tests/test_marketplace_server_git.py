@@ -453,3 +453,93 @@ class TestRunGitHttpBackendStderrDrain:
         status, _headers, body = asyncio.run(asyncio.wait_for(run(), timeout=10))
         assert status == 200
         assert body == b"body"
+
+
+class TestBuildCgiEnvContentLength:
+    """CONTENT_LENGTH must reflect the buffered body actually sent to the
+    subprocess's stdin, not the client's Content-Length header — a chunked
+    request (no Content-Length header at all) would otherwise leave
+    CONTENT_LENGTH unset and git http-backend reads a zero-length body."""
+
+    def test_content_length_uses_buffered_body_length_not_header(self):
+        from pathlib import Path
+        from unittest.mock import Mock
+
+        from app.marketplace_server.git_router import _build_cgi_env
+
+        request = Mock()
+        request.method = "POST"
+        request.url.query = ""
+        # No Content-Length header at all (simulates chunked transfer).
+        request.headers = {"content-type": "application/x-git-upload-pack-request"}
+
+        env = _build_cgi_env(
+            request,
+            path="git-upload-pack",
+            repo_path=Path("/tmp/does-not-matter"),
+            remote_user=None,
+            body_length=12345,
+        )
+        assert env["CONTENT_LENGTH"] == "12345"
+
+    def test_content_length_ignores_mismatched_header(self):
+        """Even when a (possibly stale/wrong) header is present, the actual
+        buffered length wins — that's what's really written to stdin."""
+        from pathlib import Path
+        from unittest.mock import Mock
+
+        from app.marketplace_server.git_router import _build_cgi_env
+
+        request = Mock()
+        request.method = "POST"
+        request.url.query = ""
+        request.headers = {"content-length": "1"}
+
+        env = _build_cgi_env(
+            request,
+            path="git-upload-pack",
+            repo_path=Path("/tmp/does-not-matter"),
+            remote_user=None,
+            body_length=999,
+        )
+        assert env["CONTENT_LENGTH"] == "999"
+
+
+class TestRunGitHttpBackendKillsOnClientDisconnect:
+    """A client disconnecting mid-stream must not leak the `git http-backend`
+    subprocess. `StreamingResponse` signals this by calling `aclose()` on the
+    body generator, raising `GeneratorExit` at the `yield` — the generator's
+    `finally` must kill a still-running child rather than wait indefinitely
+    for pack output nobody will read anymore."""
+
+    def test_early_aclose_kills_still_running_child(self, monkeypatch):
+        import asyncio
+        import sys
+
+        from app.marketplace_server import git_router
+
+        # A child that emits CGI headers + a first stdout chunk, then sleeps
+        # "indefinitely" (well past the test timeout) before it would ever
+        # produce more output or exit on its own — models a large pack
+        # transfer interrupted by a client disconnect.
+        stub = (
+            "import sys, time\n"
+            "sys.stdout.buffer.write(b'Status: 200 OK\\r\\n\\r\\nfirst-chunk')\n"
+            "sys.stdout.flush()\n"
+            "time.sleep(60)\n"
+        )
+        monkeypatch.setattr(
+            git_router,
+            "_GIT_HTTP_BACKEND",
+            (sys.executable, "-c", stub),
+        )
+
+        async def run():
+            _status, _headers, stream = await git_router._run_git_http_backend(env={}, body=b"")
+            agen = stream.__aiter__()
+            first_chunk = await agen.__anext__()
+            assert first_chunk == b"first-chunk"
+            # Simulate StreamingResponse's early disconnect cleanup.
+            await agen.aclose()
+
+        asyncio.run(asyncio.wait_for(run(), timeout=10))
