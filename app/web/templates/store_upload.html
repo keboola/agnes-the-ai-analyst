@@ -1207,6 +1207,10 @@ async function runUploadLint(type) {
     fd.append('type', type);
     const desc = document.getElementById('description').value;
     if (desc) fd.append('description', desc);
+    // lint_only: this panel renders advisory findings only, so skip the
+    // endpoint's paid LLM security review — its verdict would be discarded
+    // here and the real publish schedules the review anyway.
+    fd.append('lint_only', 'true');
     const res = await fetch('/api/store/entities/dryrun', {method: 'POST', body: fd});
     if (!res.ok) return;
     const report = (await res.json()).lint;
