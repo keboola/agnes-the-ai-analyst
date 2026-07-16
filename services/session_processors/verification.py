@@ -9,6 +9,7 @@ regression contract.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 import duckdb
@@ -31,6 +32,31 @@ from src.repositories import (
 
 
 logger = logging.getLogger(__name__)
+
+# Wall-clock budget (seconds) for the per-verification-item loop in
+# process_session(). Incident 2026-07-15: a session with dozens of
+# verification items ran contradiction_module.detect_and_record() (an inline
+# LLM call) for each one, sequentially, inside a single sync admin-endpoint
+# call — over an hour holding a FastAPI threadpool worker + the system DB
+# connection, starving every other request behind the reverse-proxy's 5s
+# upstream timeout (app-wide 503s).
+#
+# Once the budget is exceeded mid-session, process_session() raises
+# TimeBudgetExceeded instead of returning. Per the SessionProcessor contract
+# (services/session_pipeline/contract.py), a raise means the runner does NOT
+# mark the session processed, so it is picked up again on the next scheduler
+# tick (cadence_minutes=15) — items already created before the budget hit are
+# already persisted and idempotent (repo.create() hash-collides on retry and
+# takes the cheap "record evidence, skip contradiction check" path), so a
+# retry only pays the LLM cost for the items that didn't get a chance to run.
+_TIME_BUDGET_SECONDS = 180
+
+
+class TimeBudgetExceeded(Exception):
+    """process_session() ran out of its wall-clock budget partway through a
+    session's verification items. The session is intentionally left
+    unprocessed so the remaining items are retried on the next scheduler
+    tick — see _TIME_BUDGET_SECONDS above."""
 
 
 class VerificationProcessor:
@@ -59,7 +85,23 @@ class VerificationProcessor:
         verifications = extract_verifications(self.extractor, username, session_id, turns)
 
         items_created = 0
-        for v in verifications:
+        loop_start = time.monotonic()
+        for idx, v in enumerate(verifications):
+            if time.monotonic() - loop_start > _TIME_BUDGET_SECONDS:
+                logger.warning(
+                    "Verification processor exceeded %ds budget on %s after %d/%d "
+                    "items (%d created) — stopping early, remaining items retried "
+                    "on next scheduler tick",
+                    _TIME_BUDGET_SECONDS,
+                    session_key,
+                    idx,
+                    len(verifications),
+                    items_created,
+                )
+                raise TimeBudgetExceeded(
+                    f"time budget exceeded on {session_key} after {idx}/{len(verifications)} items"
+                )
+
             item_id = _generate_id(v["title"], v["content"])
             existing = repo.get_by_id(item_id)
             if existing:

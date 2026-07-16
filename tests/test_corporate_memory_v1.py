@@ -1378,6 +1378,118 @@ class TestDetectorWiresContradictionDetection:
         conn.close()
 
 
+class TestVerificationProcessorTimeBudget:
+    """Prod incident 2026-07-15: a single process_session() call looped over
+    dozens of verification items, each doing an inline LLM contradiction
+    check, for over an hour — starving the FastAPI threadpool and causing
+    app-wide 503s. process_session() must bound its own wall-clock time and
+    hand remaining items back to the next scheduler tick rather than run
+    unbounded."""
+
+    def test_stops_early_and_leaves_session_unprocessed(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.session_pipeline.lib import compute_file_hash
+        from src.repositories.session_processor_state import SessionProcessorStateRepository
+        import services.session_processors.verification as verification_module
+
+        repo = KnowledgeRepository(conn)
+
+        # Three verifications in one session. Each creates a distinct item and
+        # (since no pre-existing same-domain items exist) skips the
+        # contradiction LLM call — find_and_judge() short-circuits on an
+        # empty candidate list, so extract_verifications is the only LLM call
+        # we need to stub.
+        verification_response = {
+            "verifications": [
+                {
+                    "detection_type": "correction",
+                    "title": f"Fact {i}",
+                    "content": f"Content {i}",
+                    "user_quote": f"quote {i}",
+                    "domain": "finance",
+                    "entities": [f"entity{i}"],
+                }
+                for i in range(3)
+            ]
+        }
+        extractor = MagicMock()
+        extractor.extract_json.return_value = verification_response
+
+        session_dir = tmp_path / "user_sessions" / "alice"
+        session_dir.mkdir(parents=True)
+        session_path = session_dir / "s.jsonl"
+        session_path.write_text(json.dumps({"role": "user", "content": "quote 0"}) + "\n")
+
+        # monotonic() sequence: [start, check-item0 (still under budget),
+        # check-item1 (budget blown)] — item0 gets fully processed, item1/2
+        # never start.
+        monkeypatch.setattr(
+            verification_module.time,
+            "monotonic",
+            MagicMock(side_effect=[0.0, 0.0, verification_module._TIME_BUDGET_SECONDS + 1]),
+        )
+
+        processor = verification_module.VerificationProcessor(extractor)
+        with pytest.raises(verification_module.TimeBudgetExceeded):
+            processor.process_session(session_path, "alice", "alice/s.jsonl", conn)
+
+        # Only the first item was persisted — proof the loop actually stopped
+        # rather than raising before doing any work.
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        assert items[0]["title"] == "Fact 0"
+
+        # The runner must see this as "not processed" so the session stays
+        # eligible for pickup on the next scheduler tick — no state row.
+        state_repo = SessionProcessorStateRepository(conn)
+        h = compute_file_hash(session_path)
+        assert state_repo.is_processed("verification", "alice/s.jsonl", h) is False
+        conn.close()
+
+    def test_runner_retries_session_after_budget_exceeded(self, tmp_path, monkeypatch):
+        """End-to-end through run_processor(): a budget-exceeded session is
+        counted as an error this tick (not silently dropped) and remains a
+        scan candidate on the next tick."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        import services.session_processors.verification as verification_module
+        from services.session_pipeline.runner import run_processor
+
+        verification_response = {
+            "verifications": [
+                {
+                    "detection_type": "correction",
+                    "title": f"Fact {i}",
+                    "content": f"Content {i}",
+                    "user_quote": f"quote {i}",
+                    "domain": "finance",
+                    "entities": [f"entity{i}"],
+                }
+                for i in range(2)
+            ]
+        }
+        extractor = MagicMock()
+        extractor.extract_json.return_value = verification_response
+
+        session_dir = tmp_path / "user_sessions" / "alice"
+        session_dir.mkdir(parents=True)
+        (session_dir / "s.jsonl").write_text(json.dumps({"role": "user", "content": "quote 0"}) + "\n")
+
+        monkeypatch.setattr(
+            verification_module.time,
+            "monotonic",
+            MagicMock(side_effect=[0.0, 0.0, verification_module._TIME_BUDGET_SECONDS + 1]),
+        )
+
+        processor = verification_module.VerificationProcessor(extractor)
+        stats = run_processor(conn, processor, session_data_dir=tmp_path / "user_sessions")
+
+        assert stats["scanned"] == 1
+        assert stats["processed"] == 0
+        assert stats["errors"] == 1
+        conn.close()
+
+
 class TestBatchContradictionSchemaStrictValid:
     """Guard BATCH_CONTRADICTION_SCHEMA against the enum+union-type schema rejection regression.
 

@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Verification session processor no longer runs unbounded, starving the app under load.** `VerificationProcessor.process_session()` looped over every extracted verification item in a session with no cap, running one inline (blocking) LLM contradiction check per item; a single scheduled run against a session with dozens of items could run for over an hour inside a synchronous admin endpoint, exhausting the FastAPI threadpool and causing app-wide 503s on unrelated endpoints. `process_session()` now enforces a wall-clock time budget (180s) on its item loop: once exceeded it raises instead of returning, so — per the existing `SessionProcessor` contract — the session is left unprocessed and its remaining items are picked up on the next scheduler tick (cadence stays 15 minutes) rather than the run monopolizing the process indefinitely.
+
 ---
 
 ## [0.74.95] - 2026-07-15
