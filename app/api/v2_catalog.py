@@ -89,6 +89,13 @@ def _fetch_hint(table_id: str, source_type: str, server_only: bool = False) -> s
         return "server-only — not synced locally; query via `agnes query --remote`"
     if source_type == "bigquery":
         return f"agnes snapshot create {table_id} --select <cols> --where '<BQ predicate>' --limit <N>"
+    if source_type == "internal":
+        # Internal tables live in the server state backend and reach the
+        # analyst laptop only after the scheduled usage export lands in the
+        # pull manifest — on a fresh workspace there is NO local view yet, so
+        # "already local" would misroute a client straight into a failing
+        # local query (#898). `agnes query` auto-routes server-side either way.
+        return "query via `agnes query` (auto-routes server-side; local after the usage export + `agnes pull`)"
     return "already local — query directly via `agnes query`"
 
 

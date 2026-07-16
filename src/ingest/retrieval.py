@@ -39,7 +39,7 @@ import math
 import re
 from typing import Any, Dict, List, Optional
 
-from src.ingest.embeddings import embed_query
+from src.ingest.embeddings import embed_query, embedding_available
 from src.repositories import corpus_chunks_repo, corpus_files_repo
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -51,6 +51,18 @@ _MIN_FILES_FOR_MEDIUM = 3  # fewer distinct files than this → always "low"
 _MIN_FILES_FOR_HIGH = 6  # fewer distinct files than this → capped at "medium"
 _HIGH_MARGIN = 0.2  # top-vs-runner-up normalized-score gap required for "high"
 _LOW_MARGIN = 0.05  # below this gap, ranking is effectively a toss-up → "low"
+
+
+def retrieval_mode() -> str:
+    """``"hybrid"`` when semantic scoring is active, else ``"lexical_only"``.
+
+    Surfaces the silent lexical-only degradation (no ``agnes[embeddings]``
+    extra installed → ``embed_query`` returns None → pure lexical ranking)
+    as a response-level label. API/MCP search responses carry it as
+    ``retrieval`` so a client can tell hybrid results from degraded ones
+    without reading server logs (#898).
+    """
+    return "hybrid" if embedding_available() else "lexical_only"
 
 
 def _tokenize(text: str) -> List[str]:

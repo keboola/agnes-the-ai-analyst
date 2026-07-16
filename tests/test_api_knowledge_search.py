@@ -41,6 +41,31 @@ def test_admin_gets_typed_results_shape(seeded_app):
     assert any(h["filename"] == "billing.md" for h in chunk_hits)
 
 
+def test_response_carries_retrieval_mode(seeded_app, monkeypatch):
+    """#898: the unified search response labels the chunk engine's mode so
+    clients can tell hybrid results from the lexical-only degradation."""
+    import src.ingest.retrieval as retrieval
+
+    monkeypatch.setattr(retrieval, "embedding_available", lambda: False)
+    c = seeded_app["client"]
+    resp = c.get(
+        "/api/knowledge/search",
+        params={"q": "anything"},
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["retrieval"] == "lexical_only"
+
+    monkeypatch.setattr(retrieval, "embedding_available", lambda: True)
+    resp = c.get(
+        "/api/knowledge/search",
+        params={"q": "anything"},
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["retrieval"] == "hybrid"
+
+
 def test_analyst_without_grants_sees_no_chunks(seeded_app):
     c = seeded_app["client"]
     admin = seeded_app["admin_token"]
