@@ -212,6 +212,12 @@ class TestToolRegistration:
             "admin_knowledge_digest_create",
             "admin_knowledge_digest_update",
             "admin_knowledge_digest_delete",
+            # Skill-linter admin moderation surface (v89, #687) — findings
+            # list, manual full-corpus audit, per-finding dismiss. Triple-
+            # surface with /api/admin/store/lint-* + `agnes admin store lint-*`.
+            "admin_store_lint_findings",
+            "admin_store_lint_audit",
+            "admin_store_lint_dismiss",
         }
 
     def test_no_client_only_tools(self):

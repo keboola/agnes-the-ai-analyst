@@ -64,6 +64,11 @@ _COHORT: dict[str, tuple[str, str]] = {
     # entries are RED until then by design (see the K4 plan's Task 3).
     "/api/admin/knowledge-digests": ("admin digest list", "admin_knowledge_digests_list"),
     "/api/admin/knowledge-digests/{digest_id}": ("admin digest show", "admin_knowledge_digest_get"),
+    # Skill-linter admin moderation surface (v89, #687): findings list,
+    # manual full-corpus audit, per-finding dismiss.
+    "/api/admin/store/lint-findings": ("admin store lint-findings", "admin_store_lint_findings"),
+    "/api/admin/store/lint-audit": ("admin store lint-audit", "admin_store_lint_audit"),
+    "/api/admin/store/lint-dismiss": ("admin store lint-dismiss", "admin_store_lint_dismiss"),
 }
 
 

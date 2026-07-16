@@ -43,8 +43,52 @@ function collectPayload() {
   return payload;
 }
 
+// Guards double-submit and tracks the lint gate for lintable domains: the
+// first click runs an advisory dry-run and flips the button to "Publish
+// anyway"; the second click publishes for real. Findings never block.
+let inFlight = false;
+let lintPassed = false;
+
+function renderLint(report) {
+  const panel = $("studio-lint");
+  const list = $("studio-lint-list");
+  if (!panel || !list) return;
+  list.innerHTML = "";
+  const findings = (report && report.findings) || [];
+  if (findings.length === 0) {
+    const li = document.createElement("li");
+    li.className = "st-lint-clean";
+    li.textContent = "No advisory findings — looks good.";
+    list.appendChild(li);
+  } else {
+    for (const f of findings) {
+      const li = document.createElement("li");
+      li.className = "st-lint-row";
+      const sev = document.createElement("span");
+      sev.className = "st-lint-sev";
+      sev.textContent = f.severity;
+      const msg = document.createElement("span");
+      msg.className = "st-lint-msg";
+      msg.textContent = f.message;
+      li.appendChild(sev);
+      li.appendChild(msg);
+      if (f.doc_url) {
+        const a = document.createElement("a");
+        a.className = "st-lint-doc";
+        a.href = f.doc_url;
+        a.textContent = "Guideline →";
+        li.appendChild(a);
+      }
+      list.appendChild(li);
+    }
+  }
+  panel.hidden = false;
+}
+
 async function createEntity() {
   const result = $("studio-result");
+  const btn = $("studio-create");
+  if (inFlight) return;
   const payload = collectPayload();
   if (!payload.name && !payload.slug) {
     result.textContent = "Fill in the required fields.";
@@ -54,6 +98,34 @@ async function createEntity() {
   // review pipeline) publish directly for everyone; otherwise non-admins
   // go to the moderation queue.
   if (!CFG.isAdmin && !CFG.submitDirect) return submitSuggestion(payload);
+
+  // Lintable domains (skill): first click = advisory dry-run, second =
+  // publish. The dry-run never blocks; it just surfaces findings.
+  if (CFG.lintable && !lintPassed) {
+    inFlight = true;
+    result.textContent = "Checking…";
+    try {
+      const preview = await api(CFG.endpoint, {
+        method: "POST",
+        body: JSON.stringify({ ...payload, dry_run: true }),
+      });
+      renderLint(preview && preview.lint);
+      result.textContent = "Reviewed — publish when ready.";
+    } catch (e) {
+      // Advisory-only: a failed pre-check must never block publishing. Let the
+      // next click go straight to the real publish rather than re-checking.
+      result.textContent = `Advisory check unavailable — publish anyway. (${e.message})`;
+    } finally {
+      // Flip regardless of dry-run outcome so publish is never gated on the
+      // advisory pre-check succeeding.
+      lintPassed = true;
+      if (btn) btn.textContent = "Publish anyway";
+      inFlight = false;
+    }
+    return;
+  }
+
+  inFlight = true;
   result.textContent = "Creating…";
   try {
     const created = await api(CFG.endpoint, {
@@ -68,6 +140,8 @@ async function createEntity() {
     if (window.appToast) window.appToast(`Created: ${id}`);
   } catch (e) {
     result.textContent = `Failed: ${e.message}`;
+  } finally {
+    inFlight = false;
   }
 }
 
