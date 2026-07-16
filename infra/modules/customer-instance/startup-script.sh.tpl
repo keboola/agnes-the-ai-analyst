@@ -353,6 +353,8 @@ DOMAIN=$DOMAIN
 AGNES_TAG=$EFFECTIVE_AGNES_TAG
 AGNES_APP_MEM_LIMIT=${app_mem_limit}
 AGNES_SCHEDULER_MEM_LIMIT=${scheduler_mem_limit}
+AGNES_APP_CPUS=${app_cpus}
+AGNES_SCHEDULER_CPUS=${scheduler_cpus}
 %{ if home_route != "" ~}
 AGNES_HOME_ROUTE=${home_route}
 %{ endif ~}
