@@ -642,148 +642,151 @@ async def lifespan(app):
 
         ensure_pg_at_head()
 
-    # Seed default source connections from env/yaml on first boot
-    # (spec 2026-06-12 §3.4). MUST run after ensure_pg_at_head(): on a
-    # Postgres backend the source_connections table is created by Alembic
-    # 0026, which ensure_pg_at_head() applies — seeding earlier hits a
-    # missing table, gets swallowed by the try/except, and silently no-ops
-    # until the next restart (Devin Review on #671). DuckDB is unaffected
-    # (get_system_db lazily runs _ensure_schema). One-time; registry rules after.
-    try:
-        from app.connections_seed import seed_default_connections
+    from src.db_pg import seed_lease
 
-        seed_default_connections()
-    except Exception:
-        logger.exception("source-connection seed failed; continuing")
-
-    # Seed the Admin/Everyone system groups into the ACTIVE state backend.
-    # On DuckDB this duplicates src.db._seed_system_groups (idempotent), but
-    # that runs ONLY on a DuckDB connect — nothing seeds these groups on a
-    # Postgres instance, so without this a fresh PG deploy has no Admin group
-    # (require_admin can never pass) and no Everyone group (Everyone-scoped
-    # grants like Required onboarding never surface). ensure_system is
-    # idempotent and routes through the factory, so it is correct on either
-    # backend.
-    try:
-        from src.db import _SYSTEM_GROUPS_SEED
-
-        _ug_repo = user_groups_repo()
-        for _grp_name, _grp_desc in _SYSTEM_GROUPS_SEED:
-            _ug_repo.ensure_system(_grp_name, _grp_desc)
-    except Exception as e:
-        logger.warning("Could not seed system groups: %s", e)
-
-    # Seed the six canonical memory domains into the ACTIVE state backend.
-    # On DuckDB the schema ladder already seeds them (fresh-install branch /
-    # _v51_to_v52), so ensure_seed no-ops; on Postgres nothing else does —
-    # Alembic creates the table empty. ensure_seed never touches an existing
-    # row (a soft-deleted row still holds its slug), so admin renames and
-    # deletions are not overwritten or resurrected on reboot.
-    try:
-        from src.db import _CANONICAL_MEMORY_DOMAINS_SEED
-
-        _md_repo = memory_domains_repo()
-        for _md_id, _md_slug, _md_name, _md_icon, _md_color in _CANONICAL_MEMORY_DOMAINS_SEED:
-            _md_repo.ensure_seed(
-                domain_id=_md_id,
-                slug=_md_slug,
-                name=_md_name,
-                icon=_md_icon,
-                color=_md_color,
-            )
-    except Exception as e:
-        logger.warning("Could not seed canonical memory domains: %s", e)
-
-    # Seed (or re-bake) the built-in marketplace from the wheel bundle. Runs
-    # after system-groups are ensured so the RBAC seed can look up Admin/Everyone.
-    # Non-fatal: a missing bundle dir only means the plugin cache is empty.
-    try:
-        from src.marketplace import seed_builtin_marketplace
-
-        seed_builtin_marketplace()
-    except Exception as e:
-        logger.warning("Could not seed built-in marketplace: %s", e)
-
-    # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
-    # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
-    # without going through bootstrap; never overwritten if already set.
-    # The Admin/Everyone user_groups were ensured just above (factory →
-    # active backend), so this hook only has to handle membership for the
-    # seed admin — looking the groups up through the factory too, so it gets
-    # the active backend's group ids (a raw DuckDB read returned a DuckDB-only
-    # group id that does not exist on a Postgres instance).
-    # Lives in lifespan (worker-only), NOT create_app(): the latter runs
-    # in the uvicorn --reload master too, and duckdb >=1.5 holds an
-    # exclusive per-process file lock on system.duckdb that would then
-    # block the worker.
-    from app.auth.dependencies import is_local_dev_mode, get_local_dev_email
-
-    seed_email = os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None)
-    if seed_email:
+    with seed_lease():
+        # Seed default source connections from env/yaml on first boot
+        # (spec 2026-06-12 §3.4). MUST run after ensure_pg_at_head(): on a
+        # Postgres backend the source_connections table is created by Alembic
+        # 0026, which ensure_pg_at_head() applies — seeding earlier hits a
+        # missing table, gets swallowed by the try/except, and silently no-ops
+        # until the next restart (Devin Review on #671). DuckDB is unaffected
+        # (get_system_db lazily runs _ensure_schema). One-time; registry rules after.
         try:
-            from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
+            from app.connections_seed import seed_default_connections
 
-            repo = users_repo()
-            groups_repo = user_groups_repo()
-            members_repo = user_group_members_repo()
-            seed_password = os.environ.get("SEED_ADMIN_PASSWORD") or None
-            password_hash = None
-            if seed_password:
-                from argon2 import PasswordHasher
+            seed_default_connections()
+        except Exception:
+            logger.exception("source-connection seed failed; continuing")
 
-                password_hash = PasswordHasher().hash(seed_password)
-            existing = repo.get_by_email(seed_email)
-            if not existing:
-                import uuid
+        # Seed the Admin/Everyone system groups into the ACTIVE state backend.
+        # On DuckDB this duplicates src.db._seed_system_groups (idempotent), but
+        # that runs ONLY on a DuckDB connect — nothing seeds these groups on a
+        # Postgres instance, so without this a fresh PG deploy has no Admin group
+        # (require_admin can never pass) and no Everyone group (Everyone-scoped
+        # grants like Required onboarding never surface). ensure_system is
+        # idempotent and routes through the factory, so it is correct on either
+        # backend.
+        try:
+            from src.db import _SYSTEM_GROUPS_SEED
 
-                user_id = str(uuid.uuid4())
-                repo.create(
-                    id=user_id,
-                    email=seed_email,
-                    name="Admin",
-                    password_hash=password_hash,
-                    # A seeded password is communicated in plaintext (emailed by
-                    # the cloud control-plane, or shared by an operator), so force
-                    # a change on first sign-in. SSO-only seed admins (no
-                    # password) have nothing to rotate and stay unflagged.
-                    must_change_password=bool(password_hash),
-                )
-                logger.info("Seeded admin user: %s (password=%s)", seed_email, "yes" if password_hash else "no")
-            else:
-                user_id = existing["id"]
-                if password_hash and not existing.get("password_hash"):
-                    # Only fires for a still-password-less seed admin, so a user
-                    # who already rotated (has a hash) is never re-flagged on a
-                    # restart. The seeded password must still be changed.
-                    repo.update(id=user_id, password_hash=password_hash, must_change_password=True)
-                    logger.info("Set password on existing seed admin: %s", seed_email)
-            # Make sure the seed admin is actually in the Admin group — this
-            # is what gives them admin access in v12. Idempotent. Look the
-            # group up through the factory so we get the ACTIVE backend's id
-            # (raw DuckDB read returned a DuckDB group id absent from Postgres).
-            admin_group = groups_repo.get_by_name(SYSTEM_ADMIN_GROUP)
-            if admin_group:
-                members_repo.add_member(
-                    user_id=user_id,
-                    group_id=admin_group["id"],
-                    source="system_seed",
-                    added_by="app.main:seed_admin",
-                )
-            # Also seed Everyone membership — Everyone-scoped grants are the
-            # canonical "every-user-sees-this" pattern (Required onboarding,
-            # default reference packages). The seed admin not being in
-            # Everyone meant their own Required grants didn't surface on
-            # /catalog as Required for them, which read as a bug.
-            everyone_group = groups_repo.get_by_name(SYSTEM_EVERYONE_GROUP)
-            if everyone_group:
-                members_repo.add_member(
-                    user_id=user_id,
-                    group_id=everyone_group["id"],
-                    source="system_seed",
-                    added_by="app.main:seed_admin",
+            _ug_repo = user_groups_repo()
+            for _grp_name, _grp_desc in _SYSTEM_GROUPS_SEED:
+                _ug_repo.ensure_system(_grp_name, _grp_desc)
+        except Exception as e:
+            logger.warning("Could not seed system groups: %s", e)
+
+        # Seed the six canonical memory domains into the ACTIVE state backend.
+        # On DuckDB the schema ladder already seeds them (fresh-install branch /
+        # _v51_to_v52), so ensure_seed no-ops; on Postgres nothing else does —
+        # Alembic creates the table empty. ensure_seed never touches an existing
+        # row (a soft-deleted row still holds its slug), so admin renames and
+        # deletions are not overwritten or resurrected on reboot.
+        try:
+            from src.db import _CANONICAL_MEMORY_DOMAINS_SEED
+
+            _md_repo = memory_domains_repo()
+            for _md_id, _md_slug, _md_name, _md_icon, _md_color in _CANONICAL_MEMORY_DOMAINS_SEED:
+                _md_repo.ensure_seed(
+                    domain_id=_md_id,
+                    slug=_md_slug,
+                    name=_md_name,
+                    icon=_md_icon,
+                    color=_md_color,
                 )
         except Exception as e:
-            logger.warning(f"Could not seed admin: {e}")
+            logger.warning("Could not seed canonical memory domains: %s", e)
+
+        # Seed (or re-bake) the built-in marketplace from the wheel bundle. Runs
+        # after system-groups are ensured so the RBAC seed can look up Admin/Everyone.
+        # Non-fatal: a missing bundle dir only means the plugin cache is empty.
+        try:
+            from src.marketplace import seed_builtin_marketplace
+
+            seed_builtin_marketplace()
+        except Exception as e:
+            logger.warning("Could not seed built-in marketplace: %s", e)
+
+        # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
+        # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
+        # without going through bootstrap; never overwritten if already set.
+        # The Admin/Everyone user_groups were ensured just above (factory →
+        # active backend), so this hook only has to handle membership for the
+        # seed admin — looking the groups up through the factory too, so it gets
+        # the active backend's group ids (a raw DuckDB read returned a DuckDB-only
+        # group id that does not exist on a Postgres instance).
+        # Lives in lifespan (worker-only), NOT create_app(): the latter runs
+        # in the uvicorn --reload master too, and duckdb >=1.5 holds an
+        # exclusive per-process file lock on system.duckdb that would then
+        # block the worker.
+        from app.auth.dependencies import is_local_dev_mode, get_local_dev_email
+
+        seed_email = os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None)
+        if seed_email:
+            try:
+                from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
+
+                repo = users_repo()
+                groups_repo = user_groups_repo()
+                members_repo = user_group_members_repo()
+                seed_password = os.environ.get("SEED_ADMIN_PASSWORD") or None
+                password_hash = None
+                if seed_password:
+                    from argon2 import PasswordHasher
+
+                    password_hash = PasswordHasher().hash(seed_password)
+                existing = repo.get_by_email(seed_email)
+                if not existing:
+                    import uuid
+
+                    user_id = str(uuid.uuid4())
+                    repo.create(
+                        id=user_id,
+                        email=seed_email,
+                        name="Admin",
+                        password_hash=password_hash,
+                        # A seeded password is communicated in plaintext (emailed by
+                        # the cloud control-plane, or shared by an operator), so force
+                        # a change on first sign-in. SSO-only seed admins (no
+                        # password) have nothing to rotate and stay unflagged.
+                        must_change_password=bool(password_hash),
+                    )
+                    logger.info("Seeded admin user: %s (password=%s)", seed_email, "yes" if password_hash else "no")
+                else:
+                    user_id = existing["id"]
+                    if password_hash and not existing.get("password_hash"):
+                        # Only fires for a still-password-less seed admin, so a user
+                        # who already rotated (has a hash) is never re-flagged on a
+                        # restart. The seeded password must still be changed.
+                        repo.update(id=user_id, password_hash=password_hash, must_change_password=True)
+                        logger.info("Set password on existing seed admin: %s", seed_email)
+                # Make sure the seed admin is actually in the Admin group — this
+                # is what gives them admin access in v12. Idempotent. Look the
+                # group up through the factory so we get the ACTIVE backend's id
+                # (raw DuckDB read returned a DuckDB group id absent from Postgres).
+                admin_group = groups_repo.get_by_name(SYSTEM_ADMIN_GROUP)
+                if admin_group:
+                    members_repo.add_member(
+                        user_id=user_id,
+                        group_id=admin_group["id"],
+                        source="system_seed",
+                        added_by="app.main:seed_admin",
+                    )
+                # Also seed Everyone membership — Everyone-scoped grants are the
+                # canonical "every-user-sees-this" pattern (Required onboarding,
+                # default reference packages). The seed admin not being in
+                # Everyone meant their own Required grants didn't surface on
+                # /catalog as Required for them, which read as a bug.
+                everyone_group = groups_repo.get_by_name(SYSTEM_EVERYONE_GROUP)
+                if everyone_group:
+                    members_repo.add_member(
+                        user_id=user_id,
+                        group_id=everyone_group["id"],
+                        source="system_seed",
+                        added_by="app.main:seed_admin",
+                    )
+            except Exception as e:
+                logger.warning(f"Could not seed admin: {e}")
 
     # Seed the synthetic scheduler user when SCHEDULER_API_TOKEN is configured,
     # so the very first cron tick after a fresh deploy already has a valid
