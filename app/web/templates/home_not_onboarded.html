@@ -227,7 +227,7 @@
             <div class="label">Launch Claude with auto-approve on</div>
             <p class="step-lede">The next step pastes a setup script that runs ~20 shell commands. Launching Claude in <strong>auto mode</strong> lets its safety classifier auto-approve the safe ones (file edits and safe Bash), so the script runs mostly unattended — you may still get a prompt on a riskier command.</p>
             <div class="install-cmd">
-                <span class="multiline" id="install-cmd-claude-auto">claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)"</span>
+                <span class="multiline" id="install-cmd-claude-auto">claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)"</span>
                 <button class="copy-btn" data-copy-target="install-cmd-claude-auto">Copy</button>
             </div>
             <div class="install-note">
