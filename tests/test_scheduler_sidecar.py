@@ -209,6 +209,65 @@ def test_seconds_to_schedule_rounds_up_not_down(seconds, expected):
     )
 
 
+# ── Verification-detector off-peak schedule override ──
+
+
+def _verify_env_clean(monkeypatch):
+    monkeypatch.delenv("SCHEDULER_VERIFICATION_SCHEDULE", raising=False)
+
+
+def test_verification_schedule_defaults_to_interval_derived(monkeypatch):
+    _verify_env_clean(monkeypatch)
+    from services.scheduler.__main__ import _verification_schedule
+
+    assert _verification_schedule(3600) == "every 1h"
+    assert _verification_schedule(900) == "every 15m"
+
+
+def test_verification_schedule_env_override(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_VERIFICATION_SCHEDULE", "daily 04:15")
+    from services.scheduler.__main__ import _verification_schedule
+
+    assert _verification_schedule(3600) == "daily 04:15"
+
+
+def test_verification_schedule_garbage_override_falls_back(monkeypatch):
+    """A typo in the override must not crash build_jobs() nor silently
+    produce an unparseable schedule — fall back to the interval-derived one."""
+    monkeypatch.setenv("SCHEDULER_VERIFICATION_SCHEDULE", "not-a-schedule")
+    from services.scheduler.__main__ import _verification_schedule
+
+    assert _verification_schedule(3600) == "every 1h"
+
+
+def test_build_jobs_verification_uses_override(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_VERIFICATION_SCHEDULE", "daily 04:15")
+    from services.scheduler.__main__ import build_jobs
+
+    target = next(j for j in build_jobs() if j[0] == "session-processor:verification")
+    assert target[1] == "daily 04:15"
+    assert target[2] == "/api/admin/run-session-processor?processor=verification"
+
+
+def test_build_jobs_verification_default_unaffected_by_unset_override(monkeypatch):
+    _verify_env_clean(monkeypatch)
+    from services.scheduler.__main__ import build_jobs
+
+    target = next(j for j in build_jobs() if j[0] == "session-processor:verification")
+    # Default SCHEDULER_VERIFICATION_DETECTOR_INTERVAL is 15m.
+    assert target[1] == "every 15m"
+
+
+def test_build_jobs_tick_guard_ignores_daily_verification_schedule(monkeypatch):
+    """A `daily …` verification override must not trip the tick<=smallest-
+    interval guard — same treatment as the initial-workspace daily job."""
+    monkeypatch.setenv("SCHEDULER_VERIFICATION_SCHEDULE", "daily 04:15")
+    from services.scheduler.__main__ import build_jobs
+
+    jobs = build_jobs()  # must not raise
+    assert any(j[0] == "session-processor:verification" for j in jobs)
+
+
 # ── Initial Workspace Template nightly auto-sync (#622 Slice 3 PR-B) ──
 
 

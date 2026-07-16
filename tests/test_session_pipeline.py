@@ -570,6 +570,71 @@ class TestRunProcessor:
         conn.close()
 
 
+class TestRunProcessorMaxSessionsPerRun:
+    """max_sessions_per_run bounds a single run's worst-case duration/CPU
+    cost by deferring the remainder to the next scheduler tick, rather than
+    processing an unbounded burst of unprocessed sessions in one request."""
+
+    def test_caps_candidates_and_reports_deferred_count(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        _seed_session(sessions, "alice", "a.jsonl")
+        _seed_session(sessions, "bob", "b.jsonl")
+        _seed_session(sessions, "carol", "c.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+
+        stats = run_processor(conn, proc, session_data_dir=sessions, max_sessions_per_run=2)
+        assert stats["scanned"] == 3  # true total, regardless of the cap
+        assert stats["processed"] == 2
+        assert stats["capped"] == 1
+        assert len(proc.calls) == 2
+        conn.close()
+
+    def test_deferred_sessions_are_picked_up_on_next_call(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        _seed_session(sessions, "alice", "a.jsonl")
+        _seed_session(sessions, "bob", "b.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+
+        stats1 = run_processor(conn, proc, session_data_dir=sessions, max_sessions_per_run=1)
+        assert stats1["processed"] == 1
+        assert stats1["capped"] == 1
+
+        stats2 = run_processor(conn, proc, session_data_dir=sessions, max_sessions_per_run=1)
+        assert stats2["processed"] == 1
+        assert stats2["capped"] == 0
+        assert sorted(proc.calls) == ["alice/a.jsonl", "bob/b.jsonl"]
+        conn.close()
+
+    def test_none_means_unbounded_default_behavior(self, tmp_path, monkeypatch):
+        """No cap (the default when unset) preserves pre-existing behavior —
+        every candidate is processed in one call."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        for i in range(5):
+            _seed_session(sessions, f"user{i}", "s.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+        stats = run_processor(conn, proc, session_data_dir=sessions)
+        assert stats["processed"] == 5
+        assert stats["capped"] == 0
+        conn.close()
+
+    def test_cap_larger_than_candidates_is_a_no_op(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        _seed_session(sessions, "alice", "a.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+        stats = run_processor(conn, proc, session_data_dir=sessions, max_sessions_per_run=50)
+        assert stats["processed"] == 1
+        assert stats["capped"] == 0
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # v29 migration — verification rows preserved, old table dropped
 # ---------------------------------------------------------------------------

@@ -150,6 +150,68 @@ class TestRunSessionProcessor:
         assert resp.json()["ok"] is True
         m.assert_called_once()
 
+    def test_passes_configured_cap_to_run_processor(self, seeded_app, monkeypatch):
+        """The endpoint must thread SESSION_PROCESSOR_MAX_PER_RUN through to
+        run_processor(max_sessions_per_run=...) so a burst of session
+        closures can't run unboundedly in one request."""
+        from services.session_processors import _build_registry
+
+        _build_registry.cache_clear()
+        monkeypatch.setenv("SESSION_PROCESSOR_MAX_PER_RUN", "7")
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        fake_stats = {
+            "processor": "usage",
+            "scanned": 0,
+            "processed": 0,
+            "skipped": 0,
+            "capped": 0,
+            "errors": 0,
+            "items_extracted": 0,
+            "errors_detail": [],
+        }
+        with patch(
+            "services.session_pipeline.runner.run_processor",
+            return_value=fake_stats,
+        ) as m:
+            resp = c.post(
+                "/api/admin/run-session-processor?processor=usage",
+                headers=_auth(token),
+            )
+        assert resp.status_code == 200, resp.text
+        m.assert_called_once()
+        _, kwargs = m.call_args
+        assert kwargs["max_sessions_per_run"] == 7
+
+    def test_capped_count_surfaced_in_audit_details(self, seeded_app):
+        from services.session_processors import _build_registry
+
+        _build_registry.cache_clear()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        fake_stats = {
+            "processor": "usage",
+            "scanned": 12,
+            "processed": 7,
+            "skipped": 0,
+            "capped": 5,
+            "errors": 0,
+            "items_extracted": 3,
+            "errors_detail": [],
+        }
+        with patch(
+            "services.session_pipeline.runner.run_processor",
+            return_value=fake_stats,
+        ):
+            resp = c.post(
+                "/api/admin/run-session-processor?processor=usage",
+                headers=_auth(token),
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["details"]["capped"] == 5
+
     def test_unknown_processor_returns_400(self, seeded_app):
         from services.session_processors import _build_registry
 
@@ -981,3 +1043,39 @@ class TestRunJiraConsistencyCheck:
         token = seeded_app["analyst_token"]
         resp = c.post("/api/admin/run-jira-consistency-check", headers=_auth(token))
         assert resp.status_code == 403
+
+
+class TestSessionProcessorMaxPerRun:
+    """Unit coverage for the SESSION_PROCESSOR_MAX_PER_RUN env resolver."""
+
+    def test_default_is_50(self, monkeypatch):
+        monkeypatch.delenv("SESSION_PROCESSOR_MAX_PER_RUN", raising=False)
+        from app.api.admin import _session_processor_max_per_run
+
+        assert _session_processor_max_per_run() == 50
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setenv("SESSION_PROCESSOR_MAX_PER_RUN", "10")
+        from app.api.admin import _session_processor_max_per_run
+
+        assert _session_processor_max_per_run() == 10
+
+    def test_empty_string_disables_cap(self, monkeypatch):
+        monkeypatch.setenv("SESSION_PROCESSOR_MAX_PER_RUN", "")
+        from app.api.admin import _session_processor_max_per_run
+
+        assert _session_processor_max_per_run() is None
+
+    def test_non_integer_disables_cap_without_raising(self, monkeypatch):
+        monkeypatch.setenv("SESSION_PROCESSOR_MAX_PER_RUN", "not-a-number")
+        from app.api.admin import _session_processor_max_per_run
+
+        assert _session_processor_max_per_run() is None
+
+    def test_zero_or_negative_disables_cap(self, monkeypatch):
+        from app.api.admin import _session_processor_max_per_run
+
+        monkeypatch.setenv("SESSION_PROCESSOR_MAX_PER_RUN", "0")
+        assert _session_processor_max_per_run() is None
+        monkeypatch.setenv("SESSION_PROCESSOR_MAX_PER_RUN", "-5")
+        assert _session_processor_max_per_run() is None
