@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.74.99] - 2026-07-16
+
+### Added
+
+- Container CPU caps in `docker-compose.yml` are now env-overridable, mirroring the existing `AGNES_APP_MEM_LIMIT` pattern: `cpus: ${AGNES_APP_CPUS:-2.0}` (app) and `${AGNES_SCHEDULER_CPUS:-1.0}` (scheduler), settable per deployment in `.env` instead of editing the compose file (live edits are lost on VM recreate). The `customer-instance` Terraform module grows matching `app_cpus` / `scheduler_cpus` instance attributes (defaults unchanged) that flow into `/opt/agnes/.env` via the startup script.
+
 ## [0.74.98] - 2026-07-16
 
 ### Fixed

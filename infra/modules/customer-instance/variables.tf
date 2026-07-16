@@ -53,6 +53,12 @@ variable "prod_instance" {
     # mid-WAL-write).
     app_mem_limit       = optional(string, "4g")
     scheduler_mem_limit = optional(string, "2g")
+    # Container CPU caps written to /opt/agnes/.env and read by
+    # docker-compose.yml (cpus: $${AGNES_APP_CPUS:-2.0}). Raise app_cpus on
+    # hosts with more cores (e.g. "3.0" on a 4-core VM) for headroom under
+    # concurrent load; keep app_cpus + scheduler_cpus <= host cores.
+    app_cpus       = optional(string, "2.0")
+    scheduler_cpus = optional(string, "1.0")
   })
 }
 
@@ -88,6 +94,8 @@ variable "dev_instances" {
     # See prod_instance for the rationale; same defaults.
     app_mem_limit       = optional(string, "4g")
     scheduler_mem_limit = optional(string, "2g")
+    app_cpus            = optional(string, "2.0")
+    scheduler_cpus      = optional(string, "1.0")
   }))
   default = []
 }

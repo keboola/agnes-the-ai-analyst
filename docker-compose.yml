@@ -60,7 +60,10 @@ services:
     # env_file, e.g. AGNES_APP_MEM_LIMIT=10g in .env.
     mem_limit: ${AGNES_APP_MEM_LIMIT:-4g}
     mem_reservation: 1g
-    cpus: 2.0
+    # CPU cap. Like mem_limit, override per deployment via the env_file
+    # (e.g. AGNES_APP_CPUS=3.0 in .env on a 4-core host) instead of editing
+    # this file — live edits are lost when the VM is recreated from infra.
+    cpus: ${AGNES_APP_CPUS:-2.0}
     # Default 10s is too short for graceful uvicorn shutdown — under load,
     # in-flight requests + DuckDB CHECKPOINT (see lifespan in app/main.py)
     # need more headroom. SIGKILL mid-WAL-write produces a corrupt
@@ -123,7 +126,7 @@ services:
     # Default 2g; override via AGNES_SCHEDULER_MEM_LIMIT in .env. See the
     # app service's mem_limit note for the cgroup / per-connection rationale.
     mem_limit: ${AGNES_SCHEDULER_MEM_LIMIT:-2g}
-    cpus: 1.0
+    cpus: ${AGNES_SCHEDULER_CPUS:-1.0}
     # Match app service — scheduler holds DuckDB connections too; same
     # WAL-corruption risk on SIGKILL during recreate.
     stop_grace_period: 60s
