@@ -286,6 +286,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   and being granted correctly. Users who already installed either plugin
   pick the skill up on the next `agnes refresh-marketplace` (or session
   start).
+### Added
+
+- Process roles (`AGNES_ROLE=api|gateway|worker|all`) with startup guards for
+  multi-process topologies, `/healthz` + `/readyz` LB probes (write-canary with
+  hysteresis), lease-guarded startup seeds, and an experimental m-tier
+  role-split compose profile (`docker-compose.mtier.yml`).
 
 ## [0.74.100] - 2026-07-16
 
