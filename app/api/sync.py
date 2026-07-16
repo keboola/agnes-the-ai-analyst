@@ -1567,7 +1567,7 @@ class PullConfirmRequest(BaseModel):
 
 
 @router.post("/pull-confirm")
-async def pull_confirm(
+def pull_confirm(
     payload: PullConfirmRequest,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -1607,7 +1607,7 @@ async def pull_confirm(
 
 
 @router.get("/status")
-async def sync_status():
+def sync_status():
     """Whether a sync is currently in flight on this app process.
 
     Public (no auth) — used by the host-side ``agnes-auto-upgrade.sh``
@@ -1636,7 +1636,7 @@ async def sync_status():
 
 
 @router.post("/trigger")
-async def trigger_sync(
+def trigger_sync(
     background_tasks: BackgroundTasks,
     body: Optional[Any] = Body(None),
     source: Optional[str] = Query(
@@ -1768,7 +1768,7 @@ class SyncSettingsUpdate(BaseModel):
 
 
 @router.get("/settings")
-async def get_sync_settings(
+def get_sync_settings(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -1784,7 +1784,7 @@ async def get_sync_settings(
 
 
 @router.post("/settings")
-async def update_sync_settings(
+def update_sync_settings(
     request: SyncSettingsUpdate,
     user=Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -1824,7 +1824,7 @@ class TableSubscriptionUpdate(BaseModel):
 
 
 @router.get("/table-subscriptions")
-async def get_table_subscriptions(
+def get_table_subscriptions(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -1835,7 +1835,7 @@ async def get_table_subscriptions(
 
 
 @router.post("/table-subscriptions")
-async def update_table_subscriptions(
+def update_table_subscriptions(
     request: TableSubscriptionUpdate,
     user=Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
