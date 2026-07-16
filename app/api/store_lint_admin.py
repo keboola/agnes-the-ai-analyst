@@ -123,7 +123,20 @@ def _run_full_audit(trigger: str) -> Dict[str, Any]:
         )
     except Exception:
         logger.exception("lint audit: failed to list published skills")
-        items = []
+        # Deliberately do NOT finish_run here: an audit that never got a
+        # corpus to lint must not count as "we just audited", or the
+        # self-guard would suppress retries for the whole min-interval
+        # (default 6 days) after one transient failure. Leaving the run
+        # unfinished keeps it out of last_full_audit_run(), so the next
+        # scheduled attempt runs normally.
+        return {
+            "run_id": run_id,
+            "trigger": trigger,
+            "error": "failed_to_list_skills",
+            "entities_linted": 0,
+            "entities_skipped": 0,
+            "findings_count": 0,
+        }
 
     for item in items:
         entity_id = item.get("id")
