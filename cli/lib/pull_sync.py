@@ -134,11 +134,18 @@ def _safe_segment_map(items: Iterable[dict], key: str, kind: str) -> Dict[str, d
             logger.warning("pull: skipping %s with unsafe %s %r", kind, key, raw)
             continue
         if seg in out:
+            # Deterministic tiebreak independent of manifest row order: the
+            # lexicographically smaller raw label wins, so the survivor never
+            # flips run-to-run even if the server reorders colliding rows.
+            kept = out[seg].get(key)
+            winner, loser = (raw, kept) if str(raw) < str(kept) else (kept, raw)
             logger.warning(
-                "pull: skipping %s %r — its path segment %r collides with %r",
-                kind, raw, seg, out[seg].get(key),
+                "pull: %s %r skipped — path segment %r collides with %r (keeping %r)",
+                kind, loser, seg, winner, winner,
             )
-            continue
+            if winner == kept:
+                continue
+            # new row wins the tiebreak → fall through and overwrite
         out[seg] = it
     return out
 
