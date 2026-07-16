@@ -88,6 +88,10 @@ _DEFAULTS = {
     # (single env var → both, so an operator changing the cadence moves
     # both). Name retained post session-pipeline refactor for operator
     # compatibility — existing docker-compose env files keep working.
+    # SCHEDULER_VERIFICATION_SCHEDULE (see _verification_schedule()) can
+    # override the interval-derived cadence with a fixed schedule string
+    # (e.g. "daily 04:15") — when set, bump this interval to match the real
+    # cadence too, so the health-check grace window stays calibrated.
     "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL": 15 * 60,
     "SCHEDULER_USAGE_PROCESSOR_INTERVAL": 10 * 60,
     "SCHEDULER_CORPORATE_MEMORY_INTERVAL": 17 * 60,
@@ -258,6 +262,44 @@ def _iw_sync_schedule() -> Optional[str]:
     return _IW_SYNC_SCHEDULE_DEFAULT
 
 
+def _verification_schedule(verify_seconds: int) -> str:
+    """Resolve the verification-detector processor's cadence.
+
+    Read order:
+      1. ``SCHEDULER_VERIFICATION_SCHEDULE`` env override (validated via
+         ``is_valid_schedule``) — e.g. ``"daily 04:15"`` to pin the LLM-heavy
+         verification pass to a fixed off-peak time instead of firing every
+         N minutes/hours. Useful on instances where daytime CPU contention
+         with request-serving matters more than near-real-time verification
+         freshness.
+      2. Interval-derived ``"every Nm"``/``"every Nh"`` from
+         ``SCHEDULER_VERIFICATION_DETECTOR_INTERVAL`` (existing default
+         behavior, unchanged for instances that don't set the override).
+
+    An invalid override falls back to the interval-derived schedule rather
+    than crashing the scheduler on a typo.
+
+    IMPORTANT: the health check's staleness grace window
+    (``app/api/health.py::_verification_detector_grace_seconds``) reads
+    ``SCHEDULER_VERIFICATION_DETECTOR_INTERVAL`` directly and independently
+    of this override — an operator who pins a daily schedule here should
+    also set ``SCHEDULER_VERIFICATION_DETECTOR_INTERVAL=86400`` so the grace
+    window (2x the cadence) stays calibrated to the real ~24h gap between
+    runs instead of false-positiving a "stuck pipeline" warning every day.
+    """
+    from src.scheduler import is_valid_schedule
+
+    raw = os.environ.get("SCHEDULER_VERIFICATION_SCHEDULE", "").strip()
+    if raw:
+        if is_valid_schedule(raw):
+            return raw
+        logger.warning(
+            "scheduler: invalid SCHEDULER_VERIFICATION_SCHEDULE %r — falling back to interval-derived schedule",
+            raw,
+        )
+    return _seconds_to_schedule(verify_seconds)
+
+
 def resolved_tick_seconds() -> int:
     """Read + validate SCHEDULER_TICK_SECONDS in isolation (test helper)."""
     return _read_positive_int("SCHEDULER_TICK_SECONDS")
@@ -368,7 +410,7 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # in services/session_processors/__init__.py registry.
         (
             "session-processor:verification",
-            _seconds_to_schedule(verify),
+            _verification_schedule(verify),
             "/api/admin/run-session-processor?processor=verification",
             "POST",
             900,
