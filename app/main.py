@@ -30,6 +30,7 @@ except ImportError:
     )
 
 import asyncio
+import contextlib
 import logging
 import math
 from contextlib import asynccontextmanager
@@ -463,6 +464,13 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
 
 @asynccontextmanager
 async def lifespan(app):
+    # Refuse to boot an unsafe multi-process topology (role split or
+    # UVICORN_WORKERS>1) before any DB/backend is touched — spec §3.2.
+    # No-op in default all-in-one, single-worker mode.
+    from app.startup_guards import validate_deployment
+
+    validate_deployment()
+
     # Fail-closed: refuse to serve with a weak/absent JWT signing key in
     # production. Cheap, runs before any request is accepted.
     from app.auth.jwt import validate_jwt_secret_or_raise
@@ -1106,6 +1114,12 @@ async def lifespan(app):
     else:
         logger.info("Periodic state-DB CHECKPOINT disabled (AGNES_STATE_CHECKPOINT_INTERVAL_S=0)")
 
+    # Background write-canary for /readyz — see app.api.health_probes. Same
+    # worker-only placement/lifecycle as the checkpoint task above.
+    from app.api.health_probes import canary_loop
+
+    _canary_task = asyncio.create_task(canary_loop(), name="readiness-canary")
+
     async with streamable_session_manager_lifespan(app):
         yield
     if _checkpoint_task is not None:
@@ -1114,6 +1128,9 @@ async def lifespan(app):
             await _checkpoint_task
         except (asyncio.CancelledError, Exception):
             pass  # shutdown path — close_system_db() below does the final CHECKPOINT
+    _canary_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await _canary_task
     _socket_disp = getattr(app.state, "slack_socket_dispatcher", None)
     if _socket_disp is not None:
         try:
@@ -1567,6 +1584,10 @@ def create_app() -> FastAPI:
     app.include_router(password_auth_router)
     app.include_router(email_auth_router)  # Always register, check availability per-request
     app.include_router(health_router)
+
+    from app.api import health_probes
+
+    app.include_router(health_probes.router)  # /healthz + /readyz, unauthenticated LB probes
     app.include_router(sync_router)
     app.include_router(data_router)
     app.include_router(query_router)
