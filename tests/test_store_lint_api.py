@@ -229,6 +229,23 @@ class TestAdminLintAudit:
         assert second.json()["skipped"] is True
         assert second.json()["last_run"] is not None
 
+    def test_scheduler_token_audit_is_labeled_scheduler(self, web_client, monkeypatch):
+        # The scheduler sidecar authenticates with SCHEDULER_API_TOKEN and sends
+        # NO custom header, so the run's trigger label depends entirely on
+        # resolving the synthetic scheduler principal. Pin it: a bodyless POST
+        # with that token must record trigger='scheduler', not 'admin'.
+        token = "scheduler-shared-secret-token-min-len-32chars"
+        monkeypatch.setenv("SCHEDULER_API_TOKEN", token)
+
+        r = web_client.post(
+            "/api/admin/store/lint-audit",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body.get("skipped") is not True
+        assert body["trigger"] == "scheduler"
+
     def test_audit_accepts_bodyless_post(self, web_client):
         # The scheduler POSTs with no request body — that must be a valid
         # (defaulted force=false) call, not a 422. Regression for the dead
