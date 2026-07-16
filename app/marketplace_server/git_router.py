@@ -169,6 +169,25 @@ async def _read_cgi_headers(stdout: asyncio.StreamReader) -> bytes:
     return header_bytes
 
 
+async def _drain_stderr(stderr: asyncio.StreamReader, chunks: list[bytes]) -> None:
+    """Read `stderr` to EOF concurrently with stdout, buffering chunks.
+
+    `git http-backend`'s stdout and stderr are two independent OS pipes with
+    their own (~64KB on Linux) kernel buffers. If we only read stderr after
+    the process exits (or after stdout hits EOF), a child that writes enough
+    to stderr to fill its pipe blocks on that `write()` — and since it's
+    blocked, it never produces more stdout either, so a sequential
+    stdout-then-stderr reader deadlocks forever. Draining both streams
+    concurrently (this coroutine running alongside the stdout read loop)
+    avoids that.
+    """
+    while True:
+        chunk = await stderr.read(65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+
+
 async def _run_git_http_backend(env: dict, body: bytes) -> tuple[int, list[tuple[str, str]], AsyncIterator[bytes]]:
     """Run `git http-backend` as a subprocess, feed it *body* on stdin, and
     return (status_code, headers, body_stream). The GIL is not held by the
@@ -186,11 +205,17 @@ async def _run_git_http_backend(env: dict, body: bytes) -> tuple[int, list[tuple
     proc.stdin.write(body)
     proc.stdin.close()
 
+    # Start draining stderr immediately, concurrently with everything below —
+    # see `_drain_stderr` for why this must not happen sequentially after
+    # stdout EOF / process exit.
+    stderr_chunks: list[bytes] = []
+    stderr_task = asyncio.ensure_future(_drain_stderr(proc.stderr, stderr_chunks))
+
     header_block = await _read_cgi_headers(proc.stdout)
     status_code, headers = _parse_cgi_status(header_block)
 
     async def body_stream() -> AsyncIterator[bytes]:
-        assert proc.stdout is not None and proc.stderr is not None
+        assert proc.stdout is not None
         try:
             while True:
                 chunk = await proc.stdout.read(65536)
@@ -199,8 +224,9 @@ async def _run_git_http_backend(env: dict, body: bytes) -> tuple[int, list[tuple
                 yield chunk
         finally:
             await proc.wait()
+            await stderr_task
             if proc.returncode not in (0, None):
-                stderr = await proc.stderr.read()
+                stderr = b"".join(stderr_chunks)
                 logger.error(
                     "git http-backend exited %s: %s",
                     proc.returncode,
