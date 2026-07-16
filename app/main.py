@@ -379,7 +379,12 @@ async def _start_slack_socket_transport(app) -> None:
     """If chat.slack.transport=socket, start one Socket Mode WS behind
     fail-closed gates. On any miss -> log + leave Slack HTTP-only; never
     crash and never start a dead WS. Stashed on app.state for shutdown."""
+    from app.roles import Role, role_enabled
+
     app.state.slack_socket_dispatcher = None
+    if not role_enabled(Role.GATEWAY):
+        logger.info("slack socket mode: skipped (not a gateway-role process)")
+        return
     if get_slack_transport() != "socket":
         return
     from services.slack_bot.secrets import slack_secret
@@ -551,9 +556,11 @@ async def lifespan(app):
     except Exception as e:
         logger.warning("failed to bump anyio thread pool capacity: %s", e)
 
+    from app.roles import Role, role_enabled
     from app.api.cache_warmup import maybe_schedule_startup_warmup
 
-    maybe_schedule_startup_warmup()
+    if role_enabled(Role.WORKER):
+        maybe_schedule_startup_warmup()
 
     # Sweep stale materialize parquet locks left behind by previous runs
     # that were SIGKILL'd mid-materialize. Lazy reclaim at next acquire
@@ -581,7 +588,8 @@ async def lifespan(app):
         logger.exception("internal data-source seed failed; continuing")
 
     # Baked-data images (no scheduler) need master views built at boot.
-    _maybe_rebuild_on_boot()
+    if role_enabled(Role.WORKER):
+        _maybe_rebuild_on_boot()
 
     # Rebuild the FTS BM25 index over knowledge_items at boot (issue #121).
     # The migration to schema v47 already does this on first upgrade, but
@@ -941,7 +949,10 @@ async def lifespan(app):
                 return b""
 
         if app.state.chat_config.enabled:
-            if app.state.chat_config.provider != "e2b":
+            if not role_enabled(Role.GATEWAY):
+                logger.info("chat: disabled in this process (role split; gateway role owns chat)")
+                app.state.chat_manager = None
+            elif app.state.chat_config.provider != "e2b":
                 logger.error(
                     "chat.provider=%r is not supported — only 'e2b' is "
                     "accepted in production (per Q7 owner decision, "
