@@ -39,7 +39,7 @@ import math
 import re
 from typing import Any, Dict, List, Optional
 
-from src.ingest.embeddings import embed_query, embedding_available
+from src.ingest.embeddings import embed_query, embedding_capability
 from src.repositories import corpus_chunks_repo, corpus_files_repo
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -60,9 +60,11 @@ def retrieval_mode() -> str:
     extra installed → ``embed_query`` returns None → pure lexical ranking)
     as a response-level label. API/MCP search responses carry it as
     ``retrieval`` so a client can tell hybrid results from degraded ones
-    without reading server logs (#898).
+    without reading server logs (#898). Uses ``embedding_capability`` — a
+    probe that never loads the model — so labeling a response can't force
+    an expensive model init on requests where no ranking ran.
     """
-    return "hybrid" if embedding_available() else "lexical_only"
+    return "hybrid" if embedding_capability() else "lexical_only"
 
 
 def _tokenize(text: str) -> List[str]:

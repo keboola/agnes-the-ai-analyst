@@ -46,7 +46,7 @@ def test_response_carries_retrieval_mode(seeded_app, monkeypatch):
     clients can tell hybrid results from the lexical-only degradation."""
     import src.ingest.retrieval as retrieval
 
-    monkeypatch.setattr(retrieval, "embedding_available", lambda: False)
+    monkeypatch.setattr(retrieval, "embedding_capability", lambda: False)
     c = seeded_app["client"]
     resp = c.get(
         "/api/knowledge/search",
@@ -56,7 +56,7 @@ def test_response_carries_retrieval_mode(seeded_app, monkeypatch):
     assert resp.status_code == 200, resp.text
     assert resp.json()["retrieval"] == "lexical_only"
 
-    monkeypatch.setattr(retrieval, "embedding_available", lambda: True)
+    monkeypatch.setattr(retrieval, "embedding_capability", lambda: True)
     resp = c.get(
         "/api/knowledge/search",
         params={"q": "anything"},

@@ -590,7 +590,7 @@ class TestSearch:
         read server logs."""
         import src.ingest.retrieval as retrieval
 
-        monkeypatch.setattr(retrieval, "embedding_available", lambda: False)
+        monkeypatch.setattr(retrieval, "embedding_capability", lambda: False)
         c = seeded_app["client"]
         self._seed_corpus_with_chunk(seeded_app, "Degraded", "the magic keyword appears here", grant=True)
         resp = c.get(
@@ -606,7 +606,7 @@ class TestSearch:
         ranking as hybrid."""
         import src.ingest.retrieval as retrieval
 
-        monkeypatch.setattr(retrieval, "embedding_available", lambda: True)
+        monkeypatch.setattr(retrieval, "embedding_capability", lambda: True)
         # Keep ranking deterministic without a real model — the label reflects
         # capability; the blend handles a None query vector as lexical scores.
         monkeypatch.setattr(retrieval, "embed_query", lambda _q: None)
