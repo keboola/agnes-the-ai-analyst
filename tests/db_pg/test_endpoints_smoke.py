@@ -122,6 +122,35 @@ class TestHealthSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Health probes (LB liveness/readiness — unauthenticated, app/api/health_probes.py)
+# ---------------------------------------------------------------------------
+
+
+class TestHealthProbesSmoke:
+    COVERED_ROUTES = {
+        "GET /healthz",
+        "GET /readyz",
+    }
+
+    def test_healthz(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/healthz")
+        assert r.status_code == 200
+        assert r.json() == {"status": "alive"}
+
+    def test_readyz(self, seeded_app_both):
+        # The write-canary runs on a background timer, not per request, so a
+        # fresh app either hasn't run it yet (ReadinessState defaults to
+        # ready) or has recorded canary results already — either way the
+        # only valid outcomes are 200 (ready) or 503 (not ready).
+        r = seeded_app_both["client"].get("/readyz")
+        assert r.status_code in (200, 503), r.text
+        body = r.json()
+        assert body["status"] in ("ready", "not_ready")
+        assert "failed_checks" in body
+        assert "canary_ready" in body
+
+
+# ---------------------------------------------------------------------------
 # Me
 # ---------------------------------------------------------------------------
 
