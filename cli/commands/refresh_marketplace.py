@@ -42,7 +42,7 @@ import typer
 
 from cli.config import get_server_url, get_token
 from cli.error_render import render_error
-from cli.lib.marketplace import CLONE_DIR, MARKETPLACE_NAME
+from cli.lib.marketplace import CLONE_DIR, MARKETPLACE_NAME, configured_marketplace_host
 
 
 refresh_marketplace_app = typer.Typer(help="Reconcile the workspace plugins with the user's current Agnes stack.")
@@ -85,24 +85,11 @@ def _git_env(token: Optional[str] = None) -> dict[str, str]:
     return env
 
 
-def _configured_marketplace_host() -> Optional[str]:
-    """host[:port] the marketplace SHOULD be served from, or None.
-
-    Mirrors `_bootstrap_clone`'s URL resolution order (AGNES_MARKETPLACE_URL
-    env override, then the configured server URL) but deliberately does NOT
-    fall back to `get_server_url()`'s localhost default — the stale-origin
-    guard below must only fire when the expected host is explicitly known,
-    never against an implicit default on an unconfigured machine.
-    """
-    base = os.environ.get("AGNES_MARKETPLACE_URL", "").strip()
-    if not base:
-        from cli.config import load_config
-
-        base = os.environ.get("AGNES_SERVER") or load_config().get("server") or ""
-    parsed = urlparse(base)
-    if not parsed.scheme or not parsed.hostname:
-        return None
-    return parsed.netloc.split("@", 1)[-1]
+# Promoted to `cli.lib.marketplace.configured_marketplace_host` so `agnes init`
+# can derive the same host without importing a private symbol. Kept as a
+# module-level alias for existing callers (e.g. `_origin_host_mismatch`) and
+# tests that reference the private name.
+_configured_marketplace_host = configured_marketplace_host
 
 
 def _origin_url() -> Optional[str]:

@@ -37,6 +37,24 @@ def projects_root() -> Path:
     return Path.home() / ".claude" / "projects"
 
 
+def user_settings_path() -> Path:
+    """User-scope ``settings.json`` that Claude Code actually reads.
+
+    Mirrors :func:`projects_root`: honors ``CLAUDE_CONFIG_DIR`` when set,
+    otherwise ``~/.claude``. Uses ``pathlib`` throughout so it resolves
+    correctly on both Windows (``%USERPROFILE%\\.claude``) and macOS/Linux
+    (``$HOME/.claude``).
+
+    The Claude Code auto-mode classifier reads its ``autoMode`` config ONLY
+    from this user-scope file (and managed settings) — never from a project
+    ``.claude/settings.json`` — so anything that needs to steer the classifier
+    must target this path.
+    """
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR")
+    base = Path(cfg) if cfg else Path.home() / ".claude"
+    return base / "settings.json"
+
+
 def encode_workspace(workspace_root: str | Path) -> str:
     """Encode a workspace path to its Claude Code projects-dir folder name.
 
