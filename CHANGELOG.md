@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.74.104] - 2026-07-16
+
 ### Added
 
 - **Admin hub page (`GET /admin`)** — a settings-style landing page that indexes
