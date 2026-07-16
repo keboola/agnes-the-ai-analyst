@@ -37,6 +37,7 @@ from app.instance_config import (
     get_hidden_login_features,
     get_instance_custom_preamble,
     get_instance_theme,
+    get_ui_layout,
     get_custom_scripts,
 )
 from src.repositories import (
@@ -648,6 +649,11 @@ def _build_context(
         # "navy" = darker opt-in palette. Admin toggles via
         # /admin/server-config.
         "instance_theme": get_instance_theme(),
+        # Structural chrome layout — "topnav" (default, horizontal
+        # _app_header bar) or "rail" (fixed left sidebar,
+        # _app_rail.html). Independent of the color theme so existing
+        # instances keep their exact chrome.
+        "ui_layout": get_ui_layout(),
         # Whether /home renders the "Step 3 — turn on auto-accept mode"
         # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0
         # for cautious rollouts; same content stays on /setup-advanced.
@@ -1926,6 +1932,7 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         "instance_brand_short": get_instance_brand_short(),
         "workspace_dir": get_workspace_dir_name(),
         "instance_theme": get_instance_theme(),
+        "ui_layout": get_ui_layout(),
         "home_automode": {"show": get_home_automode_visibility()},
         "custom_scripts": get_custom_scripts(),
     }

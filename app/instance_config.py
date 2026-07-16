@@ -317,6 +317,12 @@ def get_instance_theme() -> str:
       - ``auto``   — light by default, flips to the ``dark`` palette
                      when the user's OS prefers dark (resolved
                      client-side in ``_theme_resolve.html``).
+      - ``paper``  — prototype-derived light look (issue #896): warm
+                     paper canvas, white panels, emerald accent,
+                     pill CTAs; see ``[data-theme="paper"]`` in
+                     ``design-tokens.css``. Pairs with the ``rail``
+                     UI layout (see :func:`get_ui_layout`) but works
+                     with the classic top-nav too.
 
     Resolution: ``AGNES_INSTANCE_THEME`` env var
     (Terraform-friendly) > ``instance.theme`` in instance.yaml >
@@ -329,8 +335,37 @@ def get_instance_theme() -> str:
     if not isinstance(raw, str):
         return "blue"
     value = raw.strip().lower()
-    if value not in ("navy", "blue", "dark", "auto"):
+    if value not in ("navy", "blue", "dark", "auto", "paper"):
         return "blue"
+    return value
+
+
+def get_ui_layout() -> str:
+    """Structural chrome layout for web pages — independent of the
+    color theme so existing instances keep their exact chrome.
+
+    Values:
+      - ``topnav`` — current default: horizontal ``_app_header.html``
+                     bar above the page container. Existing instances
+                     see zero change.
+      - ``rail``   — fixed left sidebar navigation
+                     (``_app_rail.html``): logo, primary destinations,
+                     admin section, user menu at the bottom. The
+                     content shell gains ``body.layout-rail`` and a
+                     left padding equal to the rail width.
+
+    Resolution: ``AGNES_UI_LAYOUT`` env var > ``instance.ui_layout``
+    in instance.yaml > default ``"topnav"``. Unrecognised values fall
+    back to ``"topnav"`` so a typo doesn't strip the navigation.
+    """
+    raw = os.environ.get("AGNES_UI_LAYOUT")
+    if raw is None:
+        raw = get_value("instance", "ui_layout", default="topnav")
+    if not isinstance(raw, str):
+        return "topnav"
+    value = raw.strip().lower()
+    if value not in ("topnav", "rail"):
+        return "topnav"
     return value
 
 

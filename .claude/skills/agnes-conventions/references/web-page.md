@@ -42,6 +42,13 @@ async def my_page(request: Request, user: dict = Depends(require_admin),
 
 Real pattern: `app/web/router.py` `admin_users_page` (~`:2409`).
 
+## Visual standard
+
+Read `references/design-system.md` before styling anything — tokens
+(`--ds-*`), theme switch (`paper`), chrome layouts (topnav/rail), and
+the accent vocabularies (brand vs kind vs assistant vs status) are
+binding for all UI work.
+
 ## CSS rules (enforced by `tests/test_design_system_contract.py`)
 
 Use canonical classes (`.btn`, `.btn-primary`, `.search-input`, `.data-table`,

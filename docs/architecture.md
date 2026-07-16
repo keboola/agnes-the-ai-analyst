@@ -334,10 +334,14 @@ in `app/main.py` (catch-all). Route handlers live in `app/web/router.py` and ret
 **Base-template hierarchy (the design-system page shell — #367 / #482).** Every page
 `{% extends %}` one of three bases:
 
-- **`base_ds.html` — the canonical base.** Loads the four stylesheets in the required
-  order (`style-custom` → `design-tokens` → `components` → `stack_card`), sets
-  `<html data-theme="{{ instance_theme | default('blue') }}">` + the favicon, renders the
-  production nav (`_app_header.html`), the canonical `.container` shell, the operator
+- **`base_ds.html` — the canonical base.** Loads the stylesheets in the required
+  order (`style-custom` → `design-tokens` → `components` → `stack_card` → the
+  attribute-scoped `rail`/`paper-skin` sheets), sets
+  `<html data-theme="{{ instance_theme | default('blue') }}"
+  data-ui-layout="{{ ui_layout | default('topnav') }}">` + the favicon, renders the
+  production nav (`_app_header.html`, or `_app_rail.html` when the instance opts into
+  the `rail` chrome via `instance.ui_layout` / `AGNES_UI_LAYOUT`), the canonical
+  `.container` shell, the operator
   `custom_scripts` placements (`head_start` / `head_end` / `body_end`), and the global JS
   (`_app_scripts.html` — undo toast, modal-Esc, command palette, admin shortcuts). It
   **auto-imports `_components.html` as `ds`**, so pages call `{{ ds.button(…) }}` without

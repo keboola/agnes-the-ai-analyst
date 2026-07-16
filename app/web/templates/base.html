@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="{{ instance_theme | default('blue') }}">
+<html lang="en" data-theme="{{ instance_theme | default('blue') }}" data-ui-layout="{{ ui_layout | default('topnav') }}">
 <head>
     {# HTML5 requires <meta charset> within the first 1024 bytes; any
        operator-injected snippet must come AFTER charset + viewport to
@@ -32,6 +32,11 @@
     {# Shared stack card styles — drives /catalog + /memory Browse/My Stack
        cards (matches marketplace.html .mp-card visual language). #}
     <link rel="stylesheet" href="{{ static_url('css/stack_card.css') }}">
+    {# Rail chrome (ui_layout=rail) + paper component skin
+       (data-theme=paper) — attribute-scoped, inert for default
+       topnav/blue instances. Mirrors base_ds.html. #}
+    <link rel="stylesheet" href="{{ static_url('css/rail.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/paper-skin.css') }}">
     {# Walking-guide / product-tour overlay styles (inert until tour.js
        un-hides the overlay). Markup + engine in _tour.html. #}
     <link rel="stylesheet" href="{{ static_url('css/tour.css') }}">
@@ -48,7 +53,11 @@
     {% endfor %}
 </head>
 <body {% block body_attrs %}{% endblock %}>
+    {% if (ui_layout | default('topnav')) == 'rail' %}
+    {% include '_app_rail.html' %}
+    {% else %}
     {% include '_app_header.html' %}
+    {% endif %}
 
     {# `layout` block: pages opt out of the narrow .container wrap by overriding
        this entire block (e.g. dashboard.html renders its own full-width <main

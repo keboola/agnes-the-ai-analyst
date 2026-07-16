@@ -73,7 +73,8 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Product brand string (hero copy, CTAs, setup script) | `AGNES_INSTANCE_BRAND` | `instance.brand` | `Agnes` | `get_instance_brand()` |
 | Short brand for mid-sentence body copy; when it differs from the full brand, the `/home` hero appends "Call me {short}." | `AGNES_INSTANCE_BRAND_SHORT` | `instance.brand_short` | derived (= `instance.brand`) | `get_instance_brand_short()` |
 | Inline `<svg>` logo for the header brand slot | `AGNES_INSTANCE_LOGO_SVG` | `instance.logo_svg` | `""` (text brand) | `get_instance_logo_svg()` |
-| UI theme/palette (`blue`/`navy`/`dark`/`auto`) | `AGNES_INSTANCE_THEME` | `instance.theme` | `blue` | `get_instance_theme()` |
+| UI theme/palette (`blue`/`navy`/`dark`/`auto`/`paper`) | `AGNES_INSTANCE_THEME` | `instance.theme` | `blue` | `get_instance_theme()` |
+| Chrome layout (`topnav` = horizontal header, `rail` = fixed left sidebar) | `AGNES_UI_LAYOUT` | `instance.ui_layout` | `topnav` | `get_ui_layout()` |
 | Analyst workspace folder name (`~/<name>`) | `AGNES_WORKSPACE_DIR_NAME` | `instance.workspace_dir` | derived from brand (non-alphanumerics stripped) | `get_workspace_dir_name()` |
 | Operator-injected HTML/JS blocks (analytics, widgets) | — | `instance.custom_scripts` | `[]` | `get_custom_scripts()` |
 | Hide individual `/login` feature cards (keys: `data`, `marketplace`, `mcp`, `memory`, `anywhere`; list or comma-string) | `AGNES_INSTANCE_HIDE_LOGIN_FEATURES` | `instance.hide_login_features` | `""` (nothing hidden) | `get_hidden_login_features()` |
@@ -149,7 +150,8 @@ instance:
   copyright: "Acme Corp"         # Footer copyright
   brand: "Acme Analyst"          # Product brand string (get_instance_brand)
   brand_short: "Acme"            # Short brand for body copy (get_instance_brand_short)
-  theme: "blue"                  # UI palette (get_instance_theme)
+  theme: "blue"                  # UI palette (get_instance_theme); "paper" = prototype-derived light look
+  ui_layout: "topnav"            # Chrome layout (get_ui_layout); "rail" = fixed left sidebar
   home_route: "/home"            # Landing after auth (get_home_route)
 ```
 

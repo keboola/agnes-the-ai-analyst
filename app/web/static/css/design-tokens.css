@@ -193,6 +193,175 @@
     --ds-text-link:     var(--ds-primary);
 }
 
+/* ─── Categorical "kind" vocabulary + assistant accent ─────────────
+   Shared across all themes (append-only). Introduced by the paper
+   redesign but declared globally so any theme can consume them:
+
+   - --ds-kind-*: categorical colors for entity kinds (data package,
+     plugin, memory, library, recipe). Drawn from a decorative sticker
+     palette, deepened where needed to clear 4.5:1 text contrast on
+     their -soft tints. NEVER use the brand primary for category tags —
+     categories must not be mistakable for the one brand action color.
+   - --ds-agnes-*: ONE dedicated accent for "the assistant said /
+     suggests this" surfaces (chat suggestion cards, inline
+     recommendations). Never reused for structural UI, so an
+     assistant-authored surface always reads as the assistant speaking
+     rather than as another button or status color.
+   - --ds-motion-* / --ds-ease-*: shared motion vocabulary so page and
+     panel transitions feel identical everywhere. Honor
+     prefers-reduced-motion at the consumer site.
+   - --ds-radius-pill: marketing-style pill radius, reserved for the
+     one prominent CTA per context — never on inputs. */
+:root {
+    --ds-kind-data: #185a57;
+    --ds-kind-data-soft: #e1f3f1;
+    --ds-kind-plugin: #391c57;
+    --ds-kind-plugin-soft: #f2e9fb;
+    --ds-kind-memory: #523410;
+    --ds-kind-memory-soft: #f3e7dc;
+    --ds-kind-library: #0a5aa8;
+    --ds-kind-library-soft: #e9eff6;
+    --ds-kind-recipe: #9c1264;
+    --ds-kind-recipe-soft: #fbe6f1;
+
+    --ds-agnes: #047857;
+    --ds-agnes-soft: #ecfdf5;
+    --ds-agnes-line: #a7f3d0;
+
+    --ds-motion-fast: .16s;
+    --ds-motion-med: .24s;
+    --ds-motion-slow: .32s;
+    --ds-ease-standard: cubic-bezier(.2, .7, .2, 1);
+    --ds-ease-enter: cubic-bezier(.22, .9, .22, 1);
+
+    --ds-radius-pill: 9999px;
+}
+
+/* ─── Theme: paper ─────────────────────────────────────────────────
+   Activated by `<html data-theme="paper">`. The prototype-derived
+   look (issue #896): warm paper canvas, white panels, one confident
+   emerald accent, Inter-first type with tight negative tracking on
+   headlines, pill CTAs, hairline slate borders, calm shadows.
+
+   Like the dark theme below, this overrides BOTH token families —
+   the `--ds-*` set and the legacy `--primary`/`--background` family
+   in style-custom.css — so legacy pages and DS pages flip together.
+   Instances that don't opt in (default `blue`) are untouched; the
+   whole look is one `AGNES_INSTANCE_THEME=paper` switch.
+
+   Contrast notes (WCAG AA on #ffffff / #f3f6fa):
+     --ds-text-primary  #0f172a → 15.5:1 ✓
+     --ds-text-secondary #475569 → 7.4:1 ✓
+     --ds-text-muted    #64748b → 4.8:1 ✓
+     --ds-primary-dark  #059669 → 3.2:1 (large text / fills only;
+                                  body-copy accents use --ds-agnes) */
+:root[data-theme="paper"] {
+    /* Brand — emerald. Hover darkens (see .btn skin in
+       paper-skin.css); soft tint + hairline for selected states. */
+    --ds-primary: #10b981;
+    --ds-primary-dark: #059669;
+    --ds-primary-light: #ecfdf5;
+    --ds-brand-accent: #a7f3d0;
+
+    /* Surfaces — page canvas is a cool paper grey; panels are white.
+       The dim variant is the inset/wash surface (table headers,
+       segmented controls, code chips). */
+    --ds-bg: #f3f6fa;
+    --ds-surface: #ffffff;
+    --ds-surface-dim: #f5f7fb;
+    --ds-border: #e2e8f0;
+    --ds-border-light: #edf2f8;
+
+    /* Text — slate ink hierarchy. */
+    --ds-text-primary: #0f172a;
+    --ds-text-secondary: #475569;
+    --ds-text-muted: #64748b;
+    --ds-text-disabled: #cbd5e1;
+
+    /* Hero — the `--ds-hero-*` family stays DARK under paper: /home's
+       install hero and /dashboard's setup CTA embed terminal mockups
+       and dozens of white-ink rules, and the prototype language keeps
+       exactly one dark "night" moment + dark terminal chrome anyway.
+       Paper re-tints it from navy to the warm near-black of the
+       terminal chrome. Content-page heroes (.page-header--hero,
+       .stack-hero) get their LIGHT paper-card treatment explicitly in
+       paper-skin.css instead of through these tokens. */
+    --ds-hero-bg: #1f1e1c;
+    --ds-hero-bg-deep: #141312;
+    --ds-hero-ink: #f4f3f1;
+    --ds-hero-shadow: rgba(0, 0, 0, 0.18);
+    --ds-hero-eyebrow: #a7f3d0;
+    --ds-hero-cta-bg: #10b981;
+    --ds-hero-cta-fg: #ffffff;
+    --ds-hero-cta-bg-hover: #059669;
+    --ds-hero-cta-fg-hover: #ffffff;
+
+    /* Code/terminal chrome — warm near-black, deliberately NOT a
+       brand color, so instructional code blocks stay quiet. */
+    --ds-code-bg: #1c1b1a;
+    --ds-code-ink: #e8e6e3;
+    --ds-code-yellow: #ffd866;
+
+    /* Status vocabularies — teal-leaning success, amber warn,
+       red danger; info keeps the cool indigo family. */
+    --ds-info-bg: #eef3ff;
+    --ds-info-ink: #1c3994;
+    --ds-info-line: #4f7cf2;
+    --ds-warn-bg: #fff7e8;
+    --ds-warn-ink: #a16207;
+    --ds-warn-line: #f6dfb4;
+    --ds-accent-warn-bg: #fff7e8;
+    --ds-accent-warn-ink: #a16207;
+    --ds-accent-warn-line: #f6dfb4;
+    --ds-accent-success-bg: #e6f6f4;
+    --ds-accent-success-ink: #0f766e;
+    --ds-accent-success-line: #b7e3de;
+    --ds-accent-danger-bg: #feecec;
+    --ds-accent-danger-ink: #dc2626;
+    --ds-accent-danger-line: #fca5a5;
+
+    /* Shadows — calm, cool-tinted; cards lift on hover instead of
+       resting heavy. */
+    --ds-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+    --ds-shadow-md: 0 8px 20px rgba(0, 0, 0, 0.06);
+    --ds-shadow-lg: 0 12px 34px rgba(37, 99, 235, 0.08);
+
+    /* Typography — Inter-first. Falls back to the system stack when
+       Inter isn't installed; operators can serve it via the theme
+       `font_url` override. */
+    --ds-font: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+    /* Legacy compat shims — flip the style-custom.css family so the
+       header, footer, and not-yet-migrated pages re-skin together
+       (same pattern as the dark theme). */
+    --primary: #10b981;
+    --primary-dark: #059669;
+    --primary-light: rgba(16, 185, 129, 0.1);
+    --brand-accent: #a7f3d0;
+    --hero-bg: #ffffff;
+    --hero-ink: #111827;
+    --background: var(--ds-bg);
+    --surface: var(--ds-surface);
+    --surface-dim: var(--ds-surface-dim);
+    --border: var(--ds-border);
+    --border-light: var(--ds-border-light);
+    --text-primary: var(--ds-text-primary);
+    --text-secondary: var(--ds-text-secondary);
+    --text-muted: var(--ds-text-muted);
+    --text-disabled: var(--ds-text-disabled);
+    --font-primary: var(--ds-font);
+    --info-bg: var(--ds-info-bg);
+    --info-ink: var(--ds-info-ink);
+    --info-line: var(--ds-info-line);
+    --warn-bg: var(--ds-warn-bg);
+    --warn-ink: var(--ds-warn-ink);
+    --warn-line: var(--ds-warn-line);
+    --shadow-sm: var(--ds-shadow-sm);
+    --shadow-md: var(--ds-shadow-md);
+    --shadow-card: 0 1px 3px 0 rgba(15, 23, 42, 0.05), 0 1px 2px -1px rgba(15, 23, 42, 0.04);
+    --shadow-elevated: var(--ds-shadow-lg);
+}
+
 /* ─── Theme: dark + blue variant ──────────────────────────────────
    Activated by `<html data-theme="dark" data-theme-variant="blue">`.
    Stamped by _theme_resolve.html when the user's light-mode brand is

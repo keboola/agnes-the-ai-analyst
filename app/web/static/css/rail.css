@@ -1,0 +1,281 @@
+/* Left-rail navigation chrome — the `rail` ui_layout.
+ *
+ * Markup in app/web/templates/_app_rail.html; activated by
+ * `html[data-ui-layout="rail"]` (stamped by base_ds.html from
+ * instance.ui_layout / AGNES_UI_LAYOUT). Loaded globally but inert
+ * under the default `topnav` layout — every rule is scoped to the
+ * activation attribute, so topnav instances render byte-identically.
+ *
+ * All colors/typography come from `--ds-*` tokens so the rail works
+ * under any palette theme (paper, blue, navy, dark). Widths and
+ * paddings mirror the issue-#896 prototype (240px rail, 9px item
+ * radius, soft active tint).
+ */
+
+html[data-ui-layout="rail"] body {
+    padding-left: 240px;
+}
+
+html[data-ui-layout="rail"] .rail {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 240px;
+    background: var(--ds-surface);
+    border-right: 1px solid var(--ds-border);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 16px 12px;
+    z-index: 40;
+    overflow-y: auto;
+    font-family: var(--ds-font);
+}
+
+html[data-ui-layout="rail"] .rail-logo {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 6px 8px 18px;
+    color: var(--ds-text-primary);
+    text-decoration: none;
+}
+
+html[data-ui-layout="rail"] .rail-logo svg {
+    height: 28px;
+    width: auto;
+}
+
+html[data-ui-layout="rail"] .rail-logo-txt {
+    font-size: 18px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    line-height: 1;
+}
+
+html[data-ui-layout="rail"] .rail-newchat {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    border: 1px solid var(--ds-border);
+    background: var(--ds-surface);
+    color: var(--ds-text-primary);
+    font-weight: 600;
+    font-size: 13.5px;
+    padding: 9px 12px;
+    border-radius: 9px;
+    margin-bottom: 8px;
+    text-decoration: none;
+}
+
+html[data-ui-layout="rail"] .rail-newchat:hover {
+    background: var(--ds-surface-dim);
+    border-color: var(--ds-text-muted);
+}
+
+html[data-ui-layout="rail"] .rail-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+html[data-ui-layout="rail"] .rail-i {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 9px 11px;
+    border-radius: 9px;
+    cursor: pointer;
+    color: var(--ds-text-secondary);
+    font-weight: 500;
+    font-size: 14px;
+    text-decoration: none;
+    border: none;
+    background: none;
+    width: 100%;
+    text-align: left;
+}
+
+html[data-ui-layout="rail"] .rail-i svg {
+    flex-shrink: 0;
+}
+
+html[data-ui-layout="rail"] .rail-i:hover {
+    background: var(--ds-surface-dim);
+    color: var(--ds-text-primary);
+}
+
+html[data-ui-layout="rail"] .rail-i.on {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    font-weight: 600;
+}
+
+html[data-ui-layout="rail"] .rail-i:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* Global search adapts the header combobox to the rail column. */
+html[data-ui-layout="rail"] .rail-search {
+    margin: 10px 0 4px;
+    position: relative;
+}
+
+html[data-ui-layout="rail"] .rail-search .app-header-search-input {
+    width: 100%;
+}
+
+/* Admin section — <details> with the same grouped links as the
+   header dropdown, rendered inline in the rail column. */
+html[data-ui-layout="rail"] .rail-admin {
+    margin-top: 10px;
+    border-top: 1px solid var(--ds-border);
+    padding-top: 10px;
+}
+
+html[data-ui-layout="rail"] .rail-admin-summary {
+    list-style: none;
+}
+
+html[data-ui-layout="rail"] .rail-admin-summary::-webkit-details-marker {
+    display: none;
+}
+
+html[data-ui-layout="rail"] .rail-admin-groups {
+    padding: 4px 0 0 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+html[data-ui-layout="rail"] .rail-admin-groups .app-nav-menu-section {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+    padding: 8px 10px 4px;
+    cursor: pointer;
+}
+
+html[data-ui-layout="rail"] .rail-admin-groups .app-nav-menu-item {
+    display: block;
+    padding: 6px 10px;
+    border-radius: 7px;
+    font-size: 13px;
+    color: var(--ds-text-secondary);
+    text-decoration: none;
+}
+
+html[data-ui-layout="rail"] .rail-admin-groups .app-nav-menu-item:hover {
+    background: var(--ds-surface-dim);
+    color: var(--ds-text-primary);
+}
+
+html[data-ui-layout="rail"] .rail-admin-groups .app-nav-menu-item.is-active {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    font-weight: 600;
+}
+
+/* Footer — tour launcher + user row pinned to the bottom. */
+html[data-ui-layout="rail"] .rail-foot {
+    margin-top: auto;
+    padding-top: 14px;
+    border-top: 1px solid var(--ds-border);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+html[data-ui-layout="rail"] .rail-user-menu {
+    position: relative;
+}
+
+html[data-ui-layout="rail"] .rail-user {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 7px 8px;
+    border-radius: 9px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    text-align: left;
+}
+
+html[data-ui-layout="rail"] .rail-user:hover {
+    background: var(--ds-surface-dim);
+}
+
+html[data-ui-layout="rail"] .rail-user-txt {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.25;
+    font-size: 13px;
+    min-width: 0;
+}
+
+html[data-ui-layout="rail"] .rail-user-txt b {
+    font-weight: 600;
+    color: var(--ds-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+html[data-ui-layout="rail"] .rail-user-role {
+    font-size: 11px;
+    color: var(--ds-text-muted);
+}
+
+/* User pop-up opens UP from the bottom row instead of down from the
+   header — same panel classes, repositioned. */
+html[data-ui-layout="rail"] .rail-user-menu .app-user-menu-panel {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    right: auto;
+    top: auto;
+    width: 224px;
+    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.14);
+}
+
+/* Small screens: the fixed column becomes a normal top block so
+   content isn't squeezed — same breakpoint as the prototype. */
+@media (max-width: 760px) {
+    html[data-ui-layout="rail"] body {
+        padding-left: 0;
+    }
+
+    html[data-ui-layout="rail"] .rail {
+        position: static;
+        width: auto;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        border-right: none;
+        border-bottom: 1px solid var(--ds-border);
+    }
+
+    html[data-ui-layout="rail"] .rail-nav {
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+
+    html[data-ui-layout="rail"] .rail-foot {
+        margin: 0;
+        border: none;
+        padding: 0;
+        flex-direction: row;
+    }
+
+    html[data-ui-layout="rail"] .rail-user-menu .app-user-menu-panel {
+        bottom: auto;
+        top: calc(100% + 8px);
+    }
+}

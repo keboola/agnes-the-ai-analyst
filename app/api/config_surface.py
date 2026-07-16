@@ -92,6 +92,13 @@ _KNOB_CATALOGUE: list[dict[str, Any]] = [
         "default": "blue",
     },
     {
+        "key": "ui_layout",
+        "resolver": "get_ui_layout",
+        "env_var": "AGNES_UI_LAYOUT",
+        "yaml_path": "instance.ui_layout",
+        "default": "topnav",
+    },
+    {
         "key": "workspace_dir_name",
         "resolver": "get_workspace_dir_name",
         "env_var": "AGNES_WORKSPACE_DIR_NAME",

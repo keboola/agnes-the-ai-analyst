@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **Paper theme + rail layout (opt-in, #896)**: new `paper` UI theme (`AGNES_INSTANCE_THEME=paper` / `instance.theme`) implementing the prototype look from issue #896 — paper canvas, white panels, emerald accent, pill CTAs, light content-page heroes — and a new `rail` chrome layout (`AGNES_UI_LAYOUT=rail` / `instance.ui_layout`) replacing the top nav with a fixed left sidebar (`_app_rail.html`). Both default off: instances that don't opt in render exactly as before (guarded by `tests/test_ui_layout_theme.py`). Design-system additions: categorical `--ds-kind-*` palette, assistant `--ds-agnes-*` accent, motion tokens, and an agent-facing visual standard at `.claude/skills/agnes-conventions/references/design-system.md`.
+
 ## [0.74.103] - 2026-07-16
 
 ### Fixed

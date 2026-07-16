@@ -12,6 +12,7 @@ first, then load the one playbook matching your task:
 - `references/connector.md` — new data-source connector (the `extract.duckdb` contract)
 - `references/endpoint-rbac.md` — new REST endpoint + the correct RBAC gate
 - `references/web-page.md` — new HTML dashboard page (design-system page shell)
+- `references/design-system.md` — visual standard for ANY UI work: `--ds-*` tokens, theme switch (`paper` etc.), chrome layouts (topnav/rail), accent vocabularies, scoping rules
 - `references/repo-parity.md` — new repository / method with DuckDB↔Postgres parity
 - `references/migration.md` — schema migration on both the DuckDB and Alembic ladders
 - `references/command-ux.md` — new/changed CLI command, MCP tool, or search surface (scope model, flag vocabulary, error hints, transport parity)

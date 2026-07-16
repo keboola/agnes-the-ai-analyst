@@ -1,0 +1,291 @@
+/* Paper component skin — shape/typography layer of the `paper` theme.
+ *
+ * The palette lives in design-tokens.css (`:root[data-theme="paper"]`);
+ * this sheet carries the parts of the issue-#896 prototype look that
+ * are NOT expressible as color tokens: pill CTAs, hover-lift cards,
+ * badge-pill tags, tight negative tracking on headlines, calm inputs.
+ *
+ * Every rule is scoped to `[data-theme="paper"]`, so the sheet is
+ * inert for blue/navy/dark instances — loading it globally changes
+ * nothing unless the instance opts into the paper theme.
+ *
+ * Vocabulary rules (mirrors the prototype's own comments):
+ *   - `.btn-primary`/`.btn-secondary` are the ONE prominent pill CTA
+ *     per context; dense per-row actions keep the tight 8px radius.
+ *   - Inputs/selects are NEVER pill-shaped.
+ *   - Category tags use the `--ds-kind-*` sticker palette, never the
+ *     brand primary, so categories can't be mistaken for actions.
+ */
+
+/* ── Type — heavy headline, calm body ─────────────────────────── */
+[data-theme="paper"] body {
+    font-family: var(--ds-font);
+    -webkit-font-smoothing: antialiased;
+}
+
+[data-theme="paper"] h1 {
+    font-weight: 700;
+    letter-spacing: -0.6px;
+}
+
+[data-theme="paper"] h2 {
+    font-weight: 600;
+    letter-spacing: -0.15px;
+}
+
+/* ── Buttons — pill CTAs, quiet secondaries ───────────────────── */
+[data-theme="paper"] .btn {
+    border-radius: var(--ds-radius-pill);
+    font-weight: 500;
+}
+
+[data-theme="paper"] .btn-primary {
+    background: var(--ds-primary);
+    border-color: var(--ds-primary);
+    color: #ffffff;
+}
+
+[data-theme="paper"] .btn-primary:hover {
+    background: var(--ds-primary-dark);
+    border-color: var(--ds-primary-dark);
+}
+
+[data-theme="paper"] .btn-secondary,
+[data-theme="paper"] .btn-ghost {
+    background: var(--ds-surface);
+    border-color: var(--ds-border);
+    color: var(--ds-text-primary);
+}
+
+[data-theme="paper"] .btn-secondary:hover,
+[data-theme="paper"] .btn-ghost:hover {
+    background: var(--ds-surface-dim);
+}
+
+/* ── Inputs — tight corners, hairline borders, emerald focus ──── */
+[data-theme="paper"] input[type="text"],
+[data-theme="paper"] input[type="search"],
+[data-theme="paper"] input[type="email"],
+[data-theme="paper"] input[type="password"],
+[data-theme="paper"] input[type="url"],
+[data-theme="paper"] input[type="number"],
+[data-theme="paper"] textarea,
+[data-theme="paper"] select {
+    border-radius: 12px;
+    border-color: var(--ds-border);
+    background: var(--ds-surface);
+    color: var(--ds-text-primary);
+}
+
+[data-theme="paper"] input:focus-visible,
+[data-theme="paper"] textarea:focus-visible,
+[data-theme="paper"] select:focus-visible {
+    border-color: var(--ds-primary);
+}
+
+/* ── Cards — hairline border, hover lift ──────────────────────── */
+[data-theme="paper"] .ds-card,
+[data-theme="paper"] .stack-card,
+[data-theme="paper"] .card {
+    border-radius: 12px;
+    border: 1px solid var(--ds-border);
+    box-shadow: none;
+    transition: border-color var(--ds-motion-fast) var(--ds-ease-standard),
+        transform var(--ds-motion-fast) var(--ds-ease-standard),
+        box-shadow var(--ds-motion-fast) var(--ds-ease-standard);
+}
+
+[data-theme="paper"] .ds-card:hover,
+[data-theme="paper"] .stack-card:hover,
+[data-theme="paper"] .card:hover {
+    border-color: var(--ds-border);
+    transform: translateY(-2px);
+    box-shadow: var(--ds-shadow-md);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    [data-theme="paper"] .ds-card,
+    [data-theme="paper"] .stack-card,
+    [data-theme="paper"] .card {
+        transition: none;
+    }
+
+    [data-theme="paper"] .ds-card:hover,
+    [data-theme="paper"] .stack-card:hover,
+    [data-theme="paper"] .card:hover {
+        transform: none;
+    }
+}
+
+/* ── Badges & filter pills — fully rounded category language ──── */
+[data-theme="paper"] .badge,
+[data-theme="paper"] .filter-pill,
+[data-theme="paper"] .tag {
+    border-radius: var(--ds-radius-pill);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+[data-theme="paper"] .filter-pill.is-active,
+[data-theme="paper"] .filter-pill.on {
+    background: var(--ds-primary-light);
+    border-color: var(--ds-brand-accent);
+    color: var(--ds-primary-dark);
+}
+
+/* Categorical kind tags — sticker palette, never the brand color. */
+[data-theme="paper"] .tag-kind-data {
+    background: var(--ds-kind-data-soft);
+    color: var(--ds-kind-data);
+}
+
+[data-theme="paper"] .tag-kind-plugin {
+    background: var(--ds-kind-plugin-soft);
+    color: var(--ds-kind-plugin);
+}
+
+[data-theme="paper"] .tag-kind-memory {
+    background: var(--ds-kind-memory-soft);
+    color: var(--ds-kind-memory);
+}
+
+[data-theme="paper"] .tag-kind-library {
+    background: var(--ds-kind-library-soft);
+    color: var(--ds-kind-library);
+}
+
+[data-theme="paper"] .tag-kind-recipe {
+    background: var(--ds-kind-recipe-soft);
+    color: var(--ds-kind-recipe);
+}
+
+/* ── Assistant voice — surfaces where the agent speaks ────────── */
+[data-theme="paper"] .agnes-card,
+[data-theme="paper"] .callout-agnes {
+    background: var(--ds-agnes-soft);
+    border: 1px solid var(--ds-agnes-line);
+    border-radius: 12px;
+    color: var(--ds-text-primary);
+}
+
+[data-theme="paper"] .agnes-card b,
+[data-theme="paper"] .callout-agnes b {
+    color: var(--ds-agnes);
+}
+
+/* ── Hero — the light paper hero card ──────────────────────────────
+   The canonical `.page-header--hero` assumes a dark gradient and
+   hardcodes white ink (style-custom.css). Paper flips the hero to a
+   light card, so every white-ink rule needs a dark-ink counterpart
+   here — title/subtitle/links/actions plus the marketplace hero's
+   translucent-white search-scope controls. */
+[data-theme="paper"] .page-header--hero {
+    background: linear-gradient(180deg, var(--ds-surface) 0%, #f7faff 100%);
+    color: var(--ds-text-primary);
+    border: 1px solid var(--ds-border);
+    border-radius: 16px;
+    box-shadow: var(--ds-shadow-lg);
+}
+
+[data-theme="paper"] .page-header--hero .page-header__title {
+    color: var(--ds-text-primary);
+    font-weight: 700;
+    letter-spacing: -0.6px;
+}
+
+[data-theme="paper"] .page-header--hero .page-header__eyebrow {
+    color: var(--ds-primary-dark);
+}
+
+[data-theme="paper"] .page-header--hero .page-header__subtitle {
+    color: var(--ds-text-secondary);
+}
+
+[data-theme="paper"] .page-header--hero .page-header__actions a,
+[data-theme="paper"] .page-header--hero .page-header__actions button {
+    color: var(--ds-text-primary);
+}
+
+[data-theme="paper"] .page-header--hero a {
+    color: var(--ds-primary-dark);
+}
+
+[data-theme="paper"] .page-header--hero a:hover {
+    color: var(--ds-primary);
+}
+
+/* Catalog/memory `.stack-hero` — same dark-hero assumption as
+   `.page-header--hero`; flip its white ink to the paper hierarchy. */
+[data-theme="paper"] .stack-hero {
+    background: linear-gradient(180deg, var(--ds-surface) 0%, #f7faff 100%);
+    color: var(--ds-text-primary);
+    border: 1px solid var(--ds-border);
+    border-radius: 16px;
+    box-shadow: var(--ds-shadow-lg);
+}
+
+[data-theme="paper"] .stack-hero h1 {
+    color: var(--ds-text-primary);
+}
+
+[data-theme="paper"] .stack-hero .eyebrow {
+    color: var(--ds-primary-dark);
+}
+
+[data-theme="paper"] .stack-hero .sub {
+    color: var(--ds-text-secondary);
+}
+
+[data-theme="paper"] .stack-hero__search-row {
+    border: 1px solid var(--ds-border);
+    box-shadow: var(--ds-shadow-sm);
+}
+
+[data-theme="paper"] .stack-hero__status-row {
+    color: var(--ds-text-secondary);
+}
+
+[data-theme="paper"] .stack-hero__status-row input[type="checkbox"] {
+    accent-color: var(--ds-primary);
+}
+
+[data-theme="paper"] .stack-hero__status-label {
+    color: var(--ds-text-muted);
+}
+
+/* Marketplace hero search-scope row — translucent-white chrome on
+   the dark hero becomes slate ink on paper. */
+[data-theme="paper"] .mp-hero .scope-label {
+    color: var(--ds-text-muted);
+}
+
+[data-theme="paper"] .mp-hero .scope label {
+    color: var(--ds-text-primary);
+}
+
+[data-theme="paper"] .mp-hero .scope label:hover {
+    background: var(--ds-surface-dim);
+}
+
+[data-theme="paper"] .mp-hero .scope input[type="checkbox"] {
+    accent-color: var(--ds-primary);
+}
+
+/* ── Tables — quiet chrome, wash header ───────────────────────── */
+[data-theme="paper"] .data-table th {
+    background: var(--ds-surface-dim);
+    color: var(--ds-text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+[data-theme="paper"] .data-table td {
+    border-color: var(--ds-border-light);
+}
+
+/* ── Toasts — dark pill, bottom-center (prototype confirmation) ─ */
+[data-theme="paper"] .toast {
+    border-radius: var(--ds-radius-pill);
+}

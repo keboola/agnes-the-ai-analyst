@@ -35,7 +35,7 @@
     scripts           inline page scripts (last in <body>)
 #}
 <!DOCTYPE html>
-<html lang="en" data-theme="{{ instance_theme | default('blue') }}">
+<html lang="en" data-theme="{{ instance_theme | default('blue') }}" data-ui-layout="{{ ui_layout | default('topnav') }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -61,6 +61,12 @@
     <link rel="stylesheet" href="{{ static_url('css/design-tokens.css') }}">
     <link rel="stylesheet" href="{{ static_url('css/components.css') }}">
     <link rel="stylesheet" href="{{ static_url('css/stack_card.css') }}">
+    {# Rail chrome (ui_layout=rail) + paper component skin
+       (data-theme=paper). Both sheets are scoped to their activation
+       attribute on <html>, so default topnav/blue instances load them
+       inert with zero visual change. #}
+    <link rel="stylesheet" href="{{ static_url('css/rail.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/paper-skin.css') }}">
     {# Walking-guide / product-tour overlay styles (inert until tour.js
        un-hides the overlay). Markup + engine in _tour.html. #}
     <link rel="stylesheet" href="{{ static_url('css/tour.css') }}">
@@ -80,10 +86,18 @@
        directly: {{ ds.button(...) }}, {% call ds.panel(...) %}…{% endcall %} #}
     {% import '_components.html' as ds %}
 
-    {# Production nav. Once `primary_nav` macro adoption is complete
-       this include is replaced by `{{ ds.primary_nav(...) }}` in
-       `_app_header.html` itself; pages don't need to change. #}
+    {# Production nav — structural chrome switch (instance.ui_layout /
+       AGNES_UI_LAYOUT). "topnav" (default) renders the horizontal
+       header exactly as before; "rail" renders the fixed left sidebar.
+       Instances that don't opt in see byte-identical chrome. #}
+    {% if (ui_layout | default('topnav')) == 'rail' %}
+    {% include '_app_rail.html' %}
+    {% else %}
+    {# Once `primary_nav` macro adoption is complete this include is
+       replaced by `{{ ds.primary_nav(...) }}` in `_app_header.html`
+       itself; pages don't need to change. #}
     {% include '_app_header.html' %}
+    {% endif %}
 
     {# Hero block — full-width, sits OUTSIDE the .container so hero
        gradients can bleed to the viewport edges. Most pages leave it
