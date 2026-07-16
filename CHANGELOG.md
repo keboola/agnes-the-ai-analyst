@@ -37,6 +37,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   cache). `write_backend_state()` invalidates the cache and a public
   `reset_backend_state_cache()` (wired into `reset_database_cache()`) is the
   explicit invalidation hook. `src/db_state_machine.py`.
+- `/api/catalog/tables`, `/api/welcome`, and `/api/sync/manifest` were `async
+  def` handlers doing purely blocking synchronous DB/FS work directly on the
+  event loop of the single uvicorn worker — one slow request froze every
+  concurrent request. Converted to plain `def` so FastAPI offloads them to
+  the thread pool, matching `/api/v2/catalog`. No payload change.
 
 ---
 

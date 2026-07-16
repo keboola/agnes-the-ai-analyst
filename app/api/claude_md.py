@@ -127,7 +127,7 @@ class TemplatePreviewRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/api/welcome", response_model=ClaudeMdResponse)
-async def get_welcome(
+def get_welcome(
     request: Request,
     server_url: Optional[str] = Query(None, description="Server URL used in rendered CLAUDE.md"),
     user: dict = Depends(get_current_user),

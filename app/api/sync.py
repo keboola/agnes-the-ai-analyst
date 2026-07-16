@@ -1492,7 +1492,7 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
 
 
 @router.get("/manifest")
-async def sync_manifest(
+def sync_manifest(
     user=Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):

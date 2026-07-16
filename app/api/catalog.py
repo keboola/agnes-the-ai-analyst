@@ -61,7 +61,7 @@ async def get_table_profile(
 
 
 @router.get("/tables", response_model=CatalogTablesResponse)
-async def list_catalog_tables(
+def list_catalog_tables(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
