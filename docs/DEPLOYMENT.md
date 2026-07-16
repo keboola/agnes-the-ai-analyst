@@ -220,6 +220,23 @@ status. The endpoint requires admin auth (the sidecar's
 | TLS | Caddy + corp cert, auto-rotated from URL | Caddy + corp cert, manual or user-scripted rotation |
 | Best for | Multi-tenant SaaS, production | Single-instance self-host, learning |
 
+## Multi-process (role split)
+
+`AGNES_ROLE` (env or `instance.yaml::deployment.role`) selects which planes a
+process serves: `api`, `gateway`, `worker`, or `all` (default — today's
+single-process behavior, no new requirements).
+
+Any multi-process topology (role split, or `UVICORN_WORKERS > 1`) must set:
+
+- `DATABASE_URL` (or `database.backend`) — Postgres app-state,
+- `JWT_SECRET_KEY` and `SESSION_SECRET` — explicit shared secrets,
+- `coordination.backend: redis` — shared coordination (see the m-tier profile).
+
+The app refuses to start otherwise, naming what is missing. Probes:
+`/healthz` (liveness), `/readyz` (readiness — background write-canary with
+hysteresis; point LB health checks here). `/api/health` is unchanged.
+Try it: `./scripts/dev/mtier-smoke.sh`.
+
 ## Cloud-chat host requirements
 
 Agnes can serve a zero-install web chat and Slack DM bot at `/chat`. The
