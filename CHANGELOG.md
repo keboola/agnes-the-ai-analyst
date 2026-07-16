@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agnes pull` no longer aborts when a table's display name contains spaces or punctuation.** The stack sync used a table/package/domain label verbatim as an on-disk path segment; a display name like `Agnes audit log` failed the strict path-segment guard with `unsafe path segment: 'Agnes audit log'` and, because the check ran inside the server-map comprehension (before the per-table `try/except`), aborted the entire sync so `sync_state.json` was never written. Path segments are now sanitized (unsafe runs → `_`, already-safe names preserved verbatim), a genuinely un-nameable row is logged and skipped instead of raising, and the pre-existing `.`/`..` traversal pass-through is closed.
+
 ## [0.74.102] - 2026-07-16
 
 ### Fixed
