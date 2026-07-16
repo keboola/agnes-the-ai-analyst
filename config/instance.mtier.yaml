@@ -1,0 +1,26 @@
+# Minimal static instance config for the m-tier compose harness
+# (docker-compose.mtier.yml). Mounted read-only over /app/config/instance.yaml
+# in the role-split services (api1, api2, gateway, worker) so the multi-process
+# startup guard (app/startup_guards.py) sees coordination.backend=redis.
+#
+# Not a template for real deployments — literal secrets here are throwaway
+# values scoped to the local smoke-test topology. Real instances copy
+# config/instance.yaml.example instead.
+config_version: 1
+
+instance:
+  name: "M-Tier Smoke"
+
+auth:
+  allowed_domain: "example.com"
+  webapp_secret_key: "mtier-smoke-webapp-secret"
+
+server:
+  host: "0.0.0.0"
+  hostname: "localhost"
+
+# WS C lands the real coordination backend; the multi-process guard just
+# checks this key is "redis" today. The redis service in
+# docker-compose.mtier.yml is the placeholder target.
+coordination:
+  backend: redis
