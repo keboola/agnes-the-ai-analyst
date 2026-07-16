@@ -149,6 +149,17 @@ class TestHealthProbesSmoke:
         assert "failed_checks" in body
         assert "canary_ready" in body
 
+    def test_canary_write_path(self, seeded_app_both):
+        # /readyz's 200-or-503 assertion above tolerates a permanently failing
+        # canary, so it can't catch a broken write path on its own. Call the
+        # canary directly against the active backend (DuckDB or Postgres, per
+        # seeded_app_both) to assert the write genuinely succeeds — otherwise
+        # a regression here would ship a /readyz that's always 503 in prod
+        # while this suite stays green.
+        from app.api.health_probes import _write_canary
+
+        assert _write_canary() is True
+
 
 # ---------------------------------------------------------------------------
 # Me
