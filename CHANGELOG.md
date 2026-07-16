@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- Built-in marketplace plugins (`agnes-analyst`, `agnes-operator`) now ship
+  their `SKILL.md` at the canonical `plugins/<name>/skills/<name>/SKILL.md`
+  path instead of the plugin root. At the root the file was discovered by
+  nothing: Claude Code loaded no skill from the installed plugin, and
+  `list_inner_skills()` returned `[]`, so both plugins contributed zero
+  skills to the marketplace listing and the served feed despite installing
+  and being granted correctly. Users who already installed either plugin
+  pick the skill up on the next `agnes refresh-marketplace` (or session
+  start).
+
 ## [0.74.100] - 2026-07-16
 
 ### Added
