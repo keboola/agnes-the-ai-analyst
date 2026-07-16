@@ -110,6 +110,20 @@ def run_processor(
     behind them. ``scanned`` always reflects the true total found;
     ``capped`` reports how many were left un-visited when the budget ran
     out, so operators can see a forming backlog before it becomes one.
+
+    A *failed* attempt still counts against the budget (unlike a free
+    ``is_processed`` skip) — deliberately: a session that raises can still
+    have burned real wall-clock/LLM cost before failing, so exempting
+    errors would reopen the unbounded-tick-duration problem this cap
+    exists to close. The accepted tradeoff (Devin Review, PR #894): a large
+    cluster of persistently-failing sessions sorted ahead of healthy ones
+    could consume the whole per-tick budget indefinitely, deferring the
+    healthy sessions behind them. This is an extension of the same
+    "no max_retries / dead letter" limitation already documented in the
+    module docstring above (a poison session already retries forever,
+    capped or not) rather than a new failure mode introduced by capping —
+    revisit together if it bites in practice (e.g. a separate error quota
+    or least-recently-attempted ordering).
     """
     effective_dir = session_data_dir if session_data_dir is not None else DEFAULT_SESSION_DATA_DIR
 
