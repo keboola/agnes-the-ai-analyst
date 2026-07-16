@@ -1,54 +1,74 @@
-{# Shared modern header — used by base.html and dashboard.html.
-   Styles live in app/web/static/style-custom.css under the .app-* prefix. #}
+{# Shared modern header — used by base.html and base_ds.html.
+   Styles live in app/web/static/style-custom.css under the .app-* prefix.
+
+   Single-row layout (one horizontal band, ~56px):
+     [logo] [primary nav ····] ⟨spacer⟩ [search] [Admin*] [help] [user]
+   Primary nav sits left as the product spine; search / Admin / help / user
+   are right-aligned utilities. Lower-priority nav items collapse into a
+   "More" overflow menu when the row runs out of room — the priority-plus
+   logic is in app/web/static/app.js (progressive enhancement: without JS
+   every link stays visible and wraps).
+
+   Admin (*) is a FIRST-CLASS header entry, shown only to admins. It opens a
+   multi-column mega-menu (all admin domains visible at once) whose header
+   links to the full /admin hub page. It is deliberately NOT inside the user
+   avatar menu — instance administration is "the instance", not "me". The
+   backend still gates every /admin/* route via require_admin (see
+   app/web/router.py), so this is a visibility/IA choice only; non-admins who
+   deep-link get a 403 from the route handler. #}
 {% if session.user %}
+{% set _path = request.url.path %}
+{% set _home = home_route or '/dashboard' %}
+{% set _is_admin_path = _path.startswith('/admin') %}
 <header class="app-header">
-    <div class="app-header-left">
-        <a class="app-header-logo" href="/" aria-label="Home">
-            {% if config.LOGO_SVG %}{{ config.LOGO_SVG | safe }}{% else %}{{ config.INSTANCE_NAME or 'Data Analyst Portal' }}{% endif %}
-        </a>
-        {% if config.INSTANCE_SUBTITLE %}<span class="app-header-subtitle">{{ config.INSTANCE_SUBTITLE }}</span>{% endif %}
-    </div>
-    <div class="app-header-right">
-        {% set _path = request.url.path %}
-        {% set _home = home_route or '/dashboard' %}
-        {# Primary nav: Home → Marketplace → Data Packages → Curated Memory.
-           Activity Center moved into the Admin dropdown — its content
-           is per-team adoption analytics that only admins consume in
-           practice (the route still allows any authed user for
-           direct deep-links). The "Home" link points at the
-           operator-resolved `home_route` (defaults to /dashboard for
-           OSS; customer instances flip to /home via env / yaml).
-           Setup local agent + My Stack used to live in the nav too;
-           Setup is reached from /home's install flow and My Stack
-           lives inside /marketplace as a tab. #}
+    <a class="app-header-logo" href="/" aria-label="Home">
+        {% if config.LOGO_SVG %}{{ config.LOGO_SVG | safe }}{% else %}{{ config.INSTANCE_NAME or 'Data Analyst Portal' }}{% endif %}
+    </a>
+    {% if config.INSTANCE_SUBTITLE %}<span class="app-header-subtitle">{{ config.INSTANCE_SUBTITLE }}</span>{% endif %}
+
+    {# ── Primary navigation ─────────────────────────────────────────── #}
+    <nav class="app-header-nav" id="primaryNav" aria-label="Primary">
+        {# The "Home" link points at the operator-resolved `home_route`
+           (defaults to /dashboard for OSS; customer instances flip to /home
+           via env / yaml). #}
         <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}" data-tour="nav-home">{% if _home == '/dashboard' %}Dashboard{% else %}Home{% endif %}</a>
         {# Cloud chat entry — shown only when chat is enabled AND one of the
-           viewer's groups holds an explicit chat grant (``can_chat`` from
-           _build_context, via has_explicit_grant). Default-deny: with no grant
-           NOBODY sees it — not even admins, who can still reach /chat by URL
-           (god-mode on the route guard). Gated server-side, so this is just
-           UX — no trap. #}
+           viewer's groups holds an explicit chat grant (``can_chat``).
+           Default-deny; gated server-side, so this is just UX. #}
         {% if can_chat %}
         <a class="app-nav-link {% if _path == '/chat' or _path.startswith('/chat/') %}is-active{% endif %}" href="/chat" data-tour="nav-chat">Chat</a>
         {% endif %}
         <a class="app-nav-link {% if _path == '/marketplace' or _path.startswith('/marketplace/') %}is-active{% endif %}" href="/marketplace" data-tour="nav-marketplace">Marketplace</a>
         <a class="app-nav-link {% if _path.startswith('/catalog') %}is-active{% endif %}" href="/catalog" data-tour="nav-catalog">Data Packages</a>
         <a class="app-nav-link {% if _path.startswith('/library') %}is-active{% endif %}" href="/library" data-tour="nav-library">Library</a>
-        {# Curated Memory is the analyst-facing read surface for shared
-           organizational knowledge — not admin-gated (the route runs on
-           get_current_user, same as the /api/memory/* endpoints), so it
-           sits in the primary nav next to Data Packages, visible to all
-           authenticated users. The admin review queue is separate:
-           /admin/corporate-memory, in the Admin dropdown below. #}
+        {# Curated Memory — analyst-facing read surface for shared org
+           knowledge; not admin-gated, so it sits in the primary nav. #}
         <a class="app-nav-link {% if _path == '/corporate-memory' %}is-active{% endif %}" href="/corporate-memory" data-tour="nav-memory">Memory</a>
 
+        {# Overflow menu — populated by the priority-plus logic in app.js when
+           the nav can't fit on one line. Hidden while empty; lowest-priority
+           links (Memory first, then back toward Dashboard) move in here before
+           anything is shrunk or clipped. #}
+        <div class="app-nav-menu app-nav-more" id="navMore" hidden>
+            <button type="button" class="app-nav-link app-nav-menu-trigger" id="navMoreTrigger"
+                    aria-haspopup="menu" aria-expanded="false" aria-controls="navMorePanel">
+                More
+                <svg class="app-nav-menu-chevron" width="10" height="10" viewBox="0 0 12 12" aria-hidden="true">
+                    <path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
+            <div class="app-nav-menu-panel app-nav-more-panel" id="navMorePanel" role="menu" hidden></div>
+        </div>
+    </nav>
+
+    {# ── Right-aligned utilities: search / Admin / help / user ───────── #}
+    <div class="app-header-actions">
         {# Global search — one box across tables, curated knowledge, and
            uploaded documents (GET /api/knowledge/search, see
-           app/web/static/js/global_search.js). Sits right of the primary
-           nav links, before the Admin dropdown / user area, so it reads as
-           part of the primary navigation rather than a page-local widget.
-           Not a hotkey target — Cmd/Ctrl-K is already the chat/admin
-           command palette (see the inline script below). #}
+           app/web/static/js/global_search.js). Collapses to an icon button on
+           narrow widths (see `.app-header-search` in style-custom.css) so the
+           single row never wraps. Not a hotkey target — Cmd/Ctrl-K is the
+           chat/admin palette. #}
         <div class="app-header-search" id="globalSearchWrap">
             <input type="search"
                    id="global-search"
@@ -69,116 +89,79 @@
                  hidden></div>
         </div>
 
-        {# Admin menu: admin-only. Backend gates the routes via
-           require_admin (see app/web/router.py for /admin/*, including
-           /admin/corporate-memory), so hiding the links is purely a
-           visibility tidy-up — non-admins who deep-link still get a 403
-           from the route handler. #}
+        {# ── Admin — first-class, admin-only. Trigger opens a multi-column
+           mega-menu; the panel header links to the /admin hub for the full
+           settings-style surface. The trigger reuses `.app-nav-link` so it
+           matches the primary nav visually, and carries `is-active` while on
+           any /admin/* page. ── #}
         {% if session.user.is_admin %}
-        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/datasource-credentials') or _path.startswith('/admin/data-sources') or _path.startswith('/admin/prompts') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/initial-workspace') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/mcp-sources') or _path.startswith('/admin/mcp-tools') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/admin/adoption') or _path.startswith('/admin/activity') or _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') or _path.startswith('/admin/sessions') or _path.startswith('/admin/chat') or _path.startswith('/admin/corporate-memory') or _path.startswith('/admin/knowledge-digests') or _path.startswith('/admin/sync') or _path.startswith('/admin/news') or _path.startswith('/documentation') %}
-        <div class="app-nav-menu" id="adminNavMenu">
+        <div class="app-nav-menu app-admin-menu" id="adminMenu">
             <button type="button"
-                    class="app-nav-link app-nav-menu-trigger {% if _admin_active %}is-active{% endif %}"
-                    id="adminNavTrigger"
-                    data-tour="nav-admin"
-                    aria-haspopup="menu" aria-expanded="false" aria-controls="adminNavPanel">
+                    class="app-nav-link app-nav-menu-trigger app-admin-menu-trigger {% if _is_admin_path %}is-active{% endif %}"
+                    id="adminMenuTrigger" data-tour="nav-admin"
+                    aria-haspopup="menu" aria-expanded="false" aria-controls="adminMenuPanel">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                </svg>
                 Admin
                 <svg class="app-nav-menu-chevron" width="10" height="10" viewBox="0 0 12 12" aria-hidden="true">
                     <path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
             </button>
-            {# Admin dropdown is grouped into four named sections so admins
-               doing different jobs (debugging activity vs. managing users
-               vs. curating marketplaces) can land on the right page
-               without re-reading the full menu. Section headers are
-               non-clickable, set off by `.app-nav-menu-section` styling
-               (small caps, muted). Items keep the existing
-               `.app-nav-menu-item` look + active state. #}
-            <div class="app-nav-menu-panel" id="adminNavPanel" role="menu" hidden>
-                {# Each section is a native <details data-section=...> so
-                   collapse state is keyboard-navigable + accessible. A
-                   small inline JS at the end of body persists/restores
-                   per-section open state in localStorage under
-                   `agnes-admin-nav-<section>-collapsed`. #}
-                <details class="app-nav-menu-group" data-section="activity-center" open>
-                    <summary class="app-nav-menu-section">Activity Center</summary>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/adoption') %}is-active{% endif %}" role="menuitem" href="/admin/adoption">Adoption</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/activity') %}is-active{% endif %}" role="menuitem" href="/admin/activity">Audit log</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') %}is-active{% endif %}" role="menuitem" href="/admin/telemetry">Telemetry</a>
-                    {# Two session-shaped surfaces live side by side and were
-                       previously easy to conflate: /admin/sessions shows the
-                       Claude Code session files analysts upload via `agnes
-                       push`, while /admin/chat is the live cloud-chat session
-                       dashboard (previously reachable only by typing the URL —
-                       it had no nav entry at all). Distinct labels keep an
-                       admin hunting for chat activity off the wrong page. #}
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/sessions') %}is-active{% endif %}" role="menuitem" href="/admin/sessions">Analyst sessions</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/chat') %}is-active{% endif %}" role="menuitem" href="/admin/chat">Chat sessions</a>
-                </details>
+            <div class="app-nav-menu-panel app-admin-menu-panel" id="adminMenuPanel" role="menu" hidden>
+                <div class="app-admin-menu-head">
+                    <span class="app-admin-menu-title">Admin</span>
+                    <a class="app-admin-menu-hub {% if _path == '/admin' %}is-active{% endif %}" role="menuitem" href="/admin">Open admin hub →</a>
+                </div>
+                <div class="app-admin-menu-grid">
+                    <section class="app-admin-menu-col">
+                        <div class="app-admin-menu-section">Activity Center</div>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/adoption') %}is-active{% endif %}" role="menuitem" href="/admin/adoption">Adoption</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/activity') %}is-active{% endif %}" role="menuitem" href="/admin/activity">Audit log</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') %}is-active{% endif %}" role="menuitem" href="/admin/telemetry">Telemetry</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/sessions') %}is-active{% endif %}" role="menuitem" href="/admin/sessions">Analyst sessions</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/chat') %}is-active{% endif %}" role="menuitem" href="/admin/chat">Chat sessions</a>
+                    </section>
 
-                <details class="app-nav-menu-group" data-section="users-access" open>
-                    <summary class="app-nav-menu-section">Users &amp; Access</summary>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/users') %}is-active{% endif %}" role="menuitem" href="/admin/users">Users</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/groups') %}is-active{% endif %}" role="menuitem" href="/admin/groups">Groups</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/access') %}is-active{% endif %}" role="menuitem" href="/admin/access">Resource access</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" role="menuitem" href="/admin/tokens">Tokens</a>
-                </details>
+                    <section class="app-admin-menu-col">
+                        <div class="app-admin-menu-section">Users &amp; Access</div>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/users') %}is-active{% endif %}" role="menuitem" href="/admin/users">Users</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/groups') %}is-active{% endif %}" role="menuitem" href="/admin/groups">Groups</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/access') %}is-active{% endif %}" role="menuitem" href="/admin/access">Resource access</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" role="menuitem" href="/admin/tokens">Tokens</a>
+                    </section>
 
-                <details class="app-nav-menu-group" data-section="data-packages" open>
-                    <summary class="app-nav-menu-section">Data Packages</summary>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/tables') %}is-active{% endif %}" role="menuitem" href="/admin/tables">Tables</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/sync') %}is-active{% endif %}" role="menuitem" href="/admin/sync">Sync</a>
-                </details>
+                    <section class="app-admin-menu-col">
+                        <div class="app-admin-menu-section">Data Packages</div>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/tables') %}is-active{% endif %}" role="menuitem" href="/admin/tables">Tables</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/sync') %}is-active{% endif %}" role="menuitem" href="/admin/sync">Sync</a>
+                        <div class="app-admin-menu-section">Sources</div>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/data-sources') %}is-active{% endif %}" role="menuitem" href="/admin/data-sources">Data sources</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/mcp-sources') or _path.startswith('/admin/mcp-tools') %}is-active{% endif %}" role="menuitem" href="/admin/mcp-sources">MCP sources</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/datasource-credentials') %}is-active{% endif %}" role="menuitem" href="/admin/datasource-credentials">Instance secrets</a>
+                    </section>
 
-                {# "Sources" separates the two kinds of admin-registered
-                   connection an instance can have — a first-time admin
-                   otherwise reads "MCP sources" and assumes that's also
-                   where you add data (#755). Each link carries a one-line
-                   explainer so the distinction is legible without reading
-                   the docs. #}
-                <details class="app-nav-menu-group" data-section="sources" open>
-                    <summary class="app-nav-menu-section">Sources</summary>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/data-sources') %}is-active{% endif %}" role="menuitem" href="/admin/data-sources">
-                        Data sources
-                        <span class="app-nav-menu-item-desc">Keboola/BigQuery projects Agnes pulls tables from</span>
-                    </a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/mcp-sources') or _path.startswith('/admin/mcp-tools') %}is-active{% endif %}" role="menuitem" href="/admin/mcp-sources">
-                        MCP sources
-                        <span class="app-nav-menu-item-desc">MCP servers whose tools Agnes calls at runtime</span>
-                    </a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/datasource-credentials') %}is-active{% endif %}" role="menuitem" href="/admin/datasource-credentials">
-                        Instance secrets
-                        <span class="app-nav-menu-item-desc">Vault-backed BigQuery / Google Workspace credentials</span>
-                    </a>
-                </details>
+                    <section class="app-admin-menu-col">
+                        <div class="app-admin-menu-section">Agent Experience</div>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" role="menuitem" href="/admin/marketplaces">Curated Marketplaces</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/initial-workspace') %}is-active{% endif %}" role="menuitem" href="/admin/initial-workspace">Initial Workspace</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/news') %}is-active{% endif %}" role="menuitem" href="/admin/news">News</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/admin/corporate-memory">Curated memory reviews</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/knowledge-digests') %}is-active{% endif %}" role="menuitem" href="/admin/knowledge-digests">Maintained digests</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/prompts') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/prompts">Prompts</a>
+                    </section>
 
-                {# "Agent Experience" groups everything the admin curates
-                   for what an analyst's AI agent sees / can do. #}
-                <details class="app-nav-menu-group" data-section="agent-experience" open>
-                    <summary class="app-nav-menu-section">Agent Experience</summary>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" role="menuitem" href="/admin/marketplaces">Curated Marketplaces</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/initial-workspace') %}is-active{% endif %}" role="menuitem" href="/admin/initial-workspace">Initial Workspace</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/news') %}is-active{% endif %}" role="menuitem" href="/admin/news">News</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/admin/corporate-memory">Curated memory reviews</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/knowledge-digests') %}is-active{% endif %}" role="menuitem" href="/admin/knowledge-digests">Maintained digests</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/prompts') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/prompts">Prompts</a>
-                </details>
-
-                <details class="app-nav-menu-group" data-section="documentation" open>
-                    <summary class="app-nav-menu-section">Documentation</summary>
-                    <a class="app-nav-menu-item {% if _path.startswith('/documentation') %}is-active{% endif %}" role="menuitem" href="/documentation/api">API Guide</a>
-                    <a class="app-nav-menu-item" role="menuitem" href="/docs">Interactive API (Swagger)</a>
-                    <a class="app-nav-menu-item" role="menuitem" href="/redoc">API Reference (ReDoc)</a>
-                </details>
-
-                <details class="app-nav-menu-group" data-section="server" open>
-                    <summary class="app-nav-menu-section">Server</summary>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/server-config') %}is-active{% endif %}" role="menuitem" href="/admin/server-config">Instance settings</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/database') %}is-active{% endif %}" role="menuitem" href="/admin/database">Database backend</a>
-                    {# /admin/scheduler-runs collapsed into /admin/activity as
-                       a `source=scheduler` filter — old route 308-redirects. #}
-                </details>
+                    <section class="app-admin-menu-col">
+                        <div class="app-admin-menu-section">Server</div>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/server-config') %}is-active{% endif %}" role="menuitem" href="/admin/server-config">Instance settings</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/database') %}is-active{% endif %}" role="menuitem" href="/admin/database">Database backend</a>
+                        <div class="app-admin-menu-section">Documentation</div>
+                        <a class="app-nav-menu-item {% if _path.startswith('/documentation') %}is-active{% endif %}" role="menuitem" href="/documentation/api">API Guide</a>
+                        <a class="app-nav-menu-item" role="menuitem" href="/docs">Interactive API (Swagger)</a>
+                        <a class="app-nav-menu-item" role="menuitem" href="/redoc">API Reference (ReDoc)</a>
+                    </section>
+                </div>
             </div>
         </div>
         {% endif %}
@@ -207,6 +190,8 @@
                     <path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
             </button>
+            {# Personal account menu — "me" only. Instance administration lives
+               in the Admin mega-menu / /admin hub, not here. #}
             <div class="app-user-menu-panel" id="userMenuPanel" role="menu" hidden>
                 <div class="app-user-menu-header">
                     <div class="app-user-menu-email">{{ session.user.email }}</div>
@@ -217,6 +202,8 @@
                 <a class="app-user-menu-item {% if _path == '/me/profile' %}is-active{% endif %}" role="menuitem" href="/me/profile">Profile</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/ai-connector') or _path.startswith('/me/cowork') or _path.startswith('/me/mcp') %}is-active{% endif %}" role="menuitem" href="/me/ai-connector">AI Connector</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
+
+                <div class="app-user-menu-sep" role="separator"></div>
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>
                 {# Appearance — Light / Dark / System. Drives window.__agnesTheme
                    (defined pre-paint in _theme_resolve.html); wired in app.js.

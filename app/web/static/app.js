@@ -43,6 +43,77 @@
         });
     }
 
+    // Priority-plus navigation — keeps the primary nav on a single row and
+    // moves the lowest-priority links (from the end: Memory first, back toward
+    // Dashboard) into a "More" overflow menu when they'd otherwise overflow,
+    // BEFORE anything shrinks or clips. Progressive enhancement: without this
+    // the nav simply wraps (CSS fallback). Markup: #primaryNav > a.app-nav-link
+    // items + a trailing #navMore (button #navMoreTrigger, panel #navMorePanel).
+    function initPriorityNav() {
+        var nav = document.getElementById("primaryNav");
+        var more = document.getElementById("navMore");
+        var panel = document.getElementById("navMorePanel");
+        var trigger = document.getElementById("navMoreTrigger");
+        if (!nav || !more || !panel || !trigger) return;
+
+        // Managed links in priority order (DOM order; last = lowest priority).
+        var items = Array.prototype.slice.call(
+            nav.querySelectorAll(":scope > a.app-nav-link")
+        );
+        if (!items.length) return;
+
+        nav.classList.add("is-priority");   // CSS: single measured row, no wrap
+
+        function reflectActive() {
+            // Keep the selected state visible when the active page's link is
+            // tucked inside the overflow menu.
+            trigger.classList.toggle(
+                "is-active", panel.querySelector(".is-active") != null
+            );
+        }
+
+        var laying = false;   // re-entrancy guard (layout mutates the DOM, which
+                              // can re-trigger the ResizeObserver below).
+        function layout() {
+            if (laying) return;
+            laying = true;
+
+            // 1. Reset — every managed link back inline, just before #navMore.
+            items.forEach(function (a) { nav.insertBefore(a, more); });
+            more.hidden = true;
+
+            // 2. Fits as-is? Done.
+            if (nav.scrollWidth <= nav.clientWidth) {
+                reflectActive();
+                laying = false;
+                return;
+            }
+
+            // 3. Reveal More (it consumes row width) and move items from the
+            //    end into the panel until the inline row fits.
+            more.hidden = false;
+            var i = items.length - 1;
+            while (i >= 0 && nav.scrollWidth > nav.clientWidth) {
+                panel.insertBefore(items[i], panel.firstChild);
+                i--;
+            }
+            if (!panel.children.length) more.hidden = true;
+            reflectActive();
+            laying = false;
+        }
+
+        // Re-run whenever the header's width changes. ResizeObserver fires
+        // reliably (unlike a resize+rAF path in backgrounded tabs) and also
+        // catches container-driven width changes that aren't window resizes.
+        var host = nav.closest(".app-header") || nav;
+        if (typeof ResizeObserver !== "undefined") {
+            new ResizeObserver(function () { layout(); }).observe(host);
+        } else {
+            window.addEventListener("resize", layout);
+        }
+        layout();
+    }
+
     // Toast helper — paired with .toast / .toast-container CSS in style-custom.css.
     // Usage: window.appToast({kind: "success", msg: "Saved", timeout: 4000})
     function ensureToastContainer() {
@@ -125,7 +196,11 @@
     // Auto-wire the dropdowns + theme toggle shipped from _app_header.html.
     function init() {
         wireDropdown("userMenuTrigger", "userMenuPanel");
-        wireDropdown("adminNavTrigger", "adminNavPanel");
+        // Admin is a first-class header entry (mega-menu), no longer buried in
+        // the user menu. The primary nav carries a "More" overflow menu.
+        wireDropdown("adminMenuTrigger", "adminMenuPanel");
+        wireDropdown("navMoreTrigger", "navMorePanel");
+        initPriorityNav();
         wireThemeToggle();
     }
     if (document.readyState === "loading") {

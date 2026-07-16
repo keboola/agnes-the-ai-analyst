@@ -10,6 +10,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Admin hub page (`GET /admin`)** — a settings-style landing page that indexes
+  every `/admin` surface grouped by domain (Activity Center, Users & Access,
+  Data Packages, Sources, Agent Experience, Server, Documentation). It's the
+  scalable home for administration as the surface grows, and the header's Admin
+  menu links to it. Gated by `require_admin` like every other `/admin` route.
+
+### Changed
+
+- **Redesigned the app header into a single compact row** (~57px) at all
+  desktop/laptop widths: product name, primary navigation, then global search,
+  Admin, help, and user profile on one line. When the navigation runs out of
+  room the lowest-priority items collapse into a **"More" overflow menu**
+  (priority-plus, in `app.js`) before anything shrinks or clips; only on mobile
+  (<640px) does it intentionally wrap to two rows. Header height is now a single
+  `--app-header-height` token so sticky sub-toolbars offset off it instead of
+  hard-coded pixels.
+- **Admin is now a first-class header entry for admins** — its own trigger that
+  opens a multi-column **mega-menu** (every admin domain visible at once, versus
+  the previous one-at-a-time accordion) with a link to the new `/admin` hub. It
+  is no longer buried in the user-profile dropdown, which is slimmed back to
+  personal items (Profile, AI Connector, My activity, Logout, Theme). All routes
+  and permissions are unchanged — every `/admin/*` route is still gated by
+  `require_admin`; this is a discoverability/IA change only.
+
 ---
 
 ## [0.74.67] - 2026-07-14

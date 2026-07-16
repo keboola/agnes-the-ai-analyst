@@ -96,7 +96,7 @@
   /* main content column */
   .cfg-main { }
   /* ensure sections don't hide under the sticky app header on scroll */
-  .cfg-section { scroll-margin-top: 80px; }
+  .cfg-section { scroll-margin-top: calc(var(--app-header-height) + var(--space-4)); }
   .cfg-banner {
     padding: 12px 16px; border-radius: 8px;
     background: #fffbeb; border: 1px solid #fcd34d; color: #92400e;
@@ -104,7 +104,7 @@
     /* Sticky just below the app header so save confirmations / errors are
        always visible regardless of scroll position. z-index stays below
        modals (1000+) but above section content. */
-    position: sticky; top: 72px; z-index: 90;
+    position: sticky; top: calc(var(--app-header-height) + var(--space-2)); z-index: 90;
     box-shadow: 0 2px 8px rgba(0,0,0,0.08);
   }
   .cfg-banner.is-visible { display: block; }
