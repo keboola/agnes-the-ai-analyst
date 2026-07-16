@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agnes auth import-token` no longer fails a valid PAT when server-side verification is merely slow or transiently erroring.** The verification call (against `/api/catalog/tables`) hard-exited on any `5xx` and used a hard-coded 15s timeout, so a momentarily loaded or flapping endpoint turned a structurally-valid token into a failed install. Now only a definitive rejection (`401`) aborts; a `5xx` or a read timeout warns and proceeds to save the token (it already decoded locally and was not rejected — same posture as `--skip-verify`), while a genuine connection failure (bad URL / server down) still aborts. The timeout is configurable via `AGNES_VERIFY_TIMEOUT` (seconds; falls back to the 15s default on an unset, non-numeric, or non-positive value). `cli/commands/auth.py`.
+
 ## [0.74.97] - 2026-07-16
 
 ### Added
