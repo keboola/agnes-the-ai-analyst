@@ -117,8 +117,14 @@ def _generate_title_sync(
     return _strip_title("".join(parts))
 
 
-async def generate_title(user_message: str) -> Optional[str]:
+async def generate_title(user_message: str, *, llm_auth: str = "api_key") -> Optional[str]:
     """Ask Haiku for a short title for a conversation. Best-effort.
+
+    ``llm_auth`` mirrors the broker's decision (``chat_config.llm_auth``,
+    ``app/api/broker.py``) rather than only checking for a static key's
+    presence — otherwise a stale ``ANTHROPIC_API_KEY`` left set in
+    ``workload_identity`` mode would silently authenticate auto-title with
+    the wrong credential while the broker correctly uses WIF.
 
     Returns the cleaned title string, or ``None`` if the API key is
     missing, the SDK isn't installed, the call fails, or the reply is
@@ -129,12 +135,14 @@ async def generate_title(user_message: str) -> Optional[str]:
         return None
     import asyncio
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if api_key:
-        return await asyncio.to_thread(_generate_title_sync, user_message, api_key=api_key)
-    # Keyless (workload_identity): no static key. Mint a short-lived federated
-    # token the same way the broker does. If neither a static key nor a valid
-    # WIF configuration is present, get_federated_access_token raises and we skip.
+    if llm_auth != "workload_identity":
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if api_key:
+            return await asyncio.to_thread(_generate_title_sync, user_message, api_key=api_key)
+    # Keyless (workload_identity), or no static key configured: mint a
+    # short-lived federated token the same way the broker does. If neither a
+    # static key nor a valid WIF configuration is present,
+    # get_federated_access_token raises and we skip.
     try:
         from app.auth.wif import get_federated_access_token
 
