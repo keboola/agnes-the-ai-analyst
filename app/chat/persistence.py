@@ -91,7 +91,11 @@ class ChatRepository:
     never branch on backend.
     """
 
-    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+    def __init__(self, conn: Optional[duckdb.DuckDBPyConnection]) -> None:
+        # ``conn`` may be None when the active backend is Postgres — every
+        # method below checks the matching ``self._X_pg is not None`` guard
+        # first and never falls through to ``self._conn`` on that path
+        # (callers must not construct this repo with conn=None on DuckDB).
         self._conn = conn
         # Postgres delegates — populated only when the active backend is PG.
         self._sessions_pg = None

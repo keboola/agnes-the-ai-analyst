@@ -231,16 +231,23 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "app/api/admin.py",
     # app/api/bq_metadata_refresh.py — vestigial conn params removed; the file
     # is fully factory-routed (bq_metadata_cache_repo / table_registry_repo).
-    "app/api/cache_warmup.py",
+    # app/api/cache_warmup.py — _warm_schema_sync and warm_one_table's dead
+    # get_system_db() calls removed (build_schema_uncached doesn't read
+    # `conn`); entry removed.
     "app/api/health.py",
-    "app/api/mcp_http.py",
+    # app/api/mcp_http.py — _AuthMiddleware.__call__ migrated off
+    # get_system_db() (resolve_token_to_user's conn arg is dead); entry
+    # removed.
     # app/api/mcp_streamable.py — passthrough registration migrated to the
     # factory; vestigial get_system_db() scaffolding deleted. Entry removed.
     # app/api/query.py — the bq-metadata VIEW-hint lookup (_view_targets_in)
     # now routes through the factory; no remaining get_system_db caller.
-    "app/api/scripts.py",
+    # app/api/scripts.py — run_due_scripts / _run_claimed_script's dead
+    # get_system_db() connections removed (both only ever used
+    # factory-routed repos); entry removed.
     "app/api/sync.py",
-    "app/api/upload.py",
+    # app/api/upload.py — upload_session's dead get_system_db() (only
+    # audit_repo().log was in scope) removed; entry removed.
     # app/api/v2_sample.py — internal-table sampling now routes through
     # connectors.internal.access.sample_internal_rows (use_pg() dispatch).
     # app/auth/access.py — mint_session_jwt migrated off get_system_db() onto
@@ -249,24 +256,68 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     # app/auth/pat_resolver.py — co-session resolution now routes through
     # chat_session_participants_repo()/chat_session_repo() (factory); entry
     # removed as the residual shrank.
-    "app/auth/providers/google.py",
-    "app/auth/router.py",
+    # app/auth/providers/google.py — google_callback's get_system_db() removed;
+    # apply_user_groups(conn=None) is the sanctioned dead-conn pattern already
+    # used by app/auth/access.py. Entry removed.
+    # app/auth/router.py — _audit's dead get_system_db() removed
+    # (audit_repo().log was already the real write); entry removed.
     "app/main.py",
-    "app/marketplace_server/git_router.py",
-    "app/web/router.py",
-    "cli/commands/admin.py",
+    # app/marketplace_server/git_router.py — make_git_wsgi_app's
+    # get_system_db() removed; resolve_token_to_user/ensure_repo_for_user
+    # both route through the factory with conn=None. Entry removed.
+    # app/web/router.py — login_page's LOCAL_DEV_MODE shortcut migrated to
+    # _get_local_dev_user(None) (already factory-routed, conn retained only
+    # for signature stability); entry removed.
+    # cli/commands/admin.py — metadata_apply / break_glass_grant_admin's dead
+    # get_system_db() connections removed (column_metadata_repo() /
+    # users_repo() / user_groups_repo() / user_group_members_repo() already
+    # did the real work); stale "DuckDB direct" docstrings corrected to
+    # describe the active-backend factory. Entry removed.
     # cli/commands/admin_data_semantics.py — migrated to factory getters
     # (see the matching note in _GRANDFATHERED_DIRECT_INSTANTIATION); removed.
-    "cli/commands/admin_metrics.py",
-    "services/verification_detector/__main__.py",
-    "src/rbac.py",
+    # cli/commands/admin_metrics.py — import/export/validate's dead
+    # get_system_db() connections removed (metric_repo() / table_registry_repo()
+    # already did the real work); stale "(direct, no API)" docstrings reworded
+    # to describe the active-backend factory. Entry removed.
+    # services/verification_detector/__main__.py — CLI shim's dead
+    # get_system_db() removed; run_processor() no longer accepts a conn
+    # (see the run_processor/process_session note below). Entry removed.
+    # src/rbac.py — can_access_table / get_accessible_ids / get_accessible_tables
+    # dropped their `if conn is None: conn = get_system_db()` fallbacks; every
+    # downstream consumer (is_user_admin, StackResolver, _allowed_ids_for_user)
+    # already handles conn=None by routing through the factory. Entry removed.
     # surfaced when "connectors" joined SCAN_DIRS — see the matching note in
-    # _GRANDFATHERED_DIRECT_INSTANTIATION. internal/access.py is verified
-    # use_pg()-gated (data reads materialize PG rows into ephemeral DuckDB).
+    # _GRANDFATHERED_DIRECT_INSTANTIATION. internal/access.py's remaining
+    # get_system_db() calls are all legitimate: sample_internal_rows (line
+    # ~195) and execute_internal_query (line ~441) are the `not use_pg()`
+    # DuckDB branches of an already-gated split; get_schema (line ~504) got
+    # the matching `use_pg()` branch added (queried the DuckDB-only
+    # information_schema unconditionally before, returning an empty schema
+    # for internal tables on a PG-backed instance — see
+    # tests/db_pg/test_parity_internal_schema.py). execute_internal_query's
+    # non-admin denylist check (line ~414) is INTENTIONALLY left ungated on
+    # use_pg() — DuckDB self-migrates its full schema on every connect
+    # regardless of the active backend, so system.duckdb always holds the
+    # same table names as a schema-shape (not data) reference; gating it on
+    # PG was tried and reverted during this cleanup because it let a
+    # CTE-shadow query skip the denylist on Postgres (caught by
+    # tests/db_pg/test_parity_internal_query.py::test_cte_shadow_cannot_escape_rbac_both_backends).
     # bigquery/extractor.py — migrated to the factory; entry removed.
     "connectors/internal/access.py",
     "connectors/keboola/extractor.py",
 }
+
+# ---------------------------------------------------------------------------
+# session-pipeline note (Tier 4 item #22 of the 2026-07 backend-split cleanup):
+# `run_processor()` / `SessionProcessor.process_session()` no longer accept a
+# `conn` parameter at all (it was dead in every implementation —
+# UsageProcessor, VerificationProcessor, and the runner's own body already
+# routed every read/write through the src.repositories factory). Grepped
+# every caller and every Protocol implementation (production code + test
+# fakes) before removing it. This is not itself a get_system_db() site, but
+# is the reason app/api/admin.py's run_session_processor and
+# services/verification_detector/__main__.py dropped their entries above.
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------

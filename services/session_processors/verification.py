@@ -11,8 +11,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import duckdb
-
 from connectors.llm import StructuredExtractor
 from connectors.llm.exceptions import LLMError
 from services.corporate_memory import contradiction as contradiction_module
@@ -45,7 +43,6 @@ class VerificationProcessor:
         session_path: Path,
         username: str,
         session_key: str,
-        conn: duckdb.DuckDBPyConnection,
         **kwargs: object,
     ) -> ProcessorResult:
         repo = knowledge_repo()

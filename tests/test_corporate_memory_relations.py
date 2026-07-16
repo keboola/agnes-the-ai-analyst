@@ -20,6 +20,7 @@ from services.verification_detector.duplicates import (
 def _fresh_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     import src.db as db_module
+
     db_module._system_db_conn = None
     db_module._system_db_path = None
     return db_module.get_system_db()
@@ -34,7 +35,8 @@ class TestSchemaV17:
     def test_fresh_install_has_relations_table(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         tables = {
-            row[0] for row in conn.execute(
+            row[0]
+            for row in conn.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
             ).fetchall()
         }
@@ -47,6 +49,7 @@ class TestSchemaV17:
         schema has moved on (v18 dropped stranded google memberships)."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.db import SCHEMA_VERSION, get_schema_version
+
         assert get_schema_version(conn) == SCHEMA_VERSION
         assert SCHEMA_VERSION >= 17, "knowledge_item_relations was added at v17"
         conn.close()
@@ -54,14 +57,20 @@ class TestSchemaV17:
     def test_relations_table_columns(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         cols = {
-            row[0] for row in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'knowledge_item_relations'"
+            row[0]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'knowledge_item_relations'"
             ).fetchall()
         }
         expected = {
-            "item_a_id", "item_b_id", "relation_type", "score",
-            "resolved", "resolved_by", "resolved_at", "resolution",
+            "item_a_id",
+            "item_b_id",
+            "relation_type",
+            "score",
+            "resolved",
+            "resolved_by",
+            "resolved_at",
+            "resolution",
             "created_at",
         }
         assert expected.issubset(cols), f"missing: {expected - cols}"
@@ -147,8 +156,10 @@ class TestFindDuplicateCandidatesByEntities:
         self._seed(repo, "kv_old", ["A", "B", "C"])
         # 1 shared entity → below MIN_ENTITY_OVERLAP=2 → no match
         cands = repo.find_duplicate_candidates_by_entities(
-            new_item_id="kv_new", entities=["A", "X", "Y"],
-            domain="finance", min_overlap=2,
+            new_item_id="kv_new",
+            entities=["A", "X", "Y"],
+            domain="finance",
+            min_overlap=2,
         )
         assert cands == []
         conn.close()
@@ -159,8 +170,10 @@ class TestFindDuplicateCandidatesByEntities:
         self._seed(repo, "kv_old", ["A", "B", "C"])
         # 2 shared entities (A, B); union = {A,B,C,X} → Jaccard = 2/4 = 0.5
         cands = repo.find_duplicate_candidates_by_entities(
-            new_item_id="kv_new", entities=["A", "B", "X"],
-            domain="finance", min_overlap=2,
+            new_item_id="kv_new",
+            entities=["A", "B", "X"],
+            domain="finance",
+            min_overlap=2,
         )
         assert len(cands) == 1
         assert cands[0]["overlap_count"] == 2
@@ -171,13 +184,20 @@ class TestFindDuplicateCandidatesByEntities:
         conn = _fresh_db(tmp_path, monkeypatch)
         repo = KnowledgeRepository(conn)
         repo.create(
-            id="kv_personal", title="t", content="c", category="x",
-            entities=["A", "B", "C"], domain="finance",
-            status="approved", is_personal=True,
+            id="kv_personal",
+            title="t",
+            content="c",
+            category="x",
+            entities=["A", "B", "C"],
+            domain="finance",
+            status="approved",
+            is_personal=True,
         )
         cands = repo.find_duplicate_candidates_by_entities(
-            new_item_id="kv_new", entities=["A", "B", "X"],
-            domain="finance", min_overlap=2,
+            new_item_id="kv_new",
+            entities=["A", "B", "X"],
+            domain="finance",
+            min_overlap=2,
         )
         assert cands == []
         conn.close()
@@ -187,8 +207,10 @@ class TestFindDuplicateCandidatesByEntities:
         repo = KnowledgeRepository(conn)
         self._seed(repo, "kv_self", ["A", "B", "C"])
         cands = repo.find_duplicate_candidates_by_entities(
-            new_item_id="kv_self", entities=["A", "B"],
-            domain="finance", min_overlap=2,
+            new_item_id="kv_self",
+            entities=["A", "B"],
+            domain="finance",
+            min_overlap=2,
         )
         assert cands == []
         conn.close()
@@ -197,8 +219,10 @@ class TestFindDuplicateCandidatesByEntities:
         conn = _fresh_db(tmp_path, monkeypatch)
         repo = KnowledgeRepository(conn)
         cands = repo.find_duplicate_candidates_by_entities(
-            new_item_id="kv_new", entities=["A", "B"],
-            domain=None, min_overlap=2,
+            new_item_id="kv_new",
+            entities=["A", "B"],
+            domain=None,
+            min_overlap=2,
         )
         assert cands == []
         conn.close()
@@ -208,8 +232,10 @@ class TestFindDuplicateCandidatesByEntities:
         repo = KnowledgeRepository(conn)
         self._seed(repo, "kv_old", ["A", "B", "C"], domain="product")
         cands = repo.find_duplicate_candidates_by_entities(
-            new_item_id="kv_new", entities=["A", "B"],
-            domain="finance", min_overlap=2,
+            new_item_id="kv_new",
+            entities=["A", "B"],
+            domain="finance",
+            min_overlap=2,
         )
         assert cands == []
         conn.close()
@@ -259,12 +285,22 @@ class TestDetectorHook:
         conn = _fresh_db(tmp_path, monkeypatch)
         repo = KnowledgeRepository(conn)
         repo.create(
-            id="kv_old", title="t", content="c", category="x",
-            entities=["A"], domain="product", status="approved",
+            id="kv_old",
+            title="t",
+            content="c",
+            category="x",
+            entities=["A"],
+            domain="product",
+            status="approved",
         )
         repo.create(
-            id="kv_new", title="t", content="c", category="x",
-            entities=["A", "B"], domain="product", status="pending",
+            id="kv_new",
+            title="t",
+            content="c",
+            category="x",
+            entities=["A", "B"],
+            domain="product",
+            status="pending",
         )
         n = _record_duplicate_candidates(repo, repo.get_by_id("kv_new"))
         assert n == 0
@@ -275,8 +311,12 @@ class TestDetectorHook:
         conn = _fresh_db(tmp_path, monkeypatch)
         repo = KnowledgeRepository(conn)
         repo.create(
-            id="kv_new", title="t", content="c", category="x",
-            entities=["A", "B", "C"], status="pending",
+            id="kv_new",
+            title="t",
+            content="c",
+            category="x",
+            entities=["A", "B", "C"],
+            status="pending",
         )
         n = _record_duplicate_candidates(repo, repo.get_by_id("kv_new"))
         assert n == 0
@@ -292,11 +332,10 @@ class TestDetectorHook:
 
 
 class TestRunPopulatesDuplicateStats:
-    def test_run_records_duplicates_when_two_items_share_entities(
-        self, tmp_path, monkeypatch
-    ):
+    def test_run_records_duplicates_when_two_items_share_entities(self, tmp_path, monkeypatch):
         from services.session_pipeline.runner import run_processor
         from services.session_processors.verification import VerificationProcessor
+
         conn = _fresh_db(tmp_path, monkeypatch)
 
         # Mocked golden: two items in same domain sharing 2 entities
@@ -331,7 +370,7 @@ class TestRunPopulatesDuplicateStats:
         (session_dir / "s1.jsonl").write_text('{"role":"user","content":"hi"}\n')
 
         stats = run_processor(
-            conn, VerificationProcessor(extractor),
+            VerificationProcessor(extractor),
             session_data_dir=tmp_path / "user_sessions",
         )
         assert stats["items_extracted"] >= 1

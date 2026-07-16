@@ -14,6 +14,7 @@ Three layers:
      sync rebuilds both.
   3. Endpoint + CLI passthrough scope identically.
 """
+
 import os
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
@@ -24,6 +25,7 @@ import pytest
 from app.api import sync as sync_module
 from connectors.bigquery.access import BqAccess, BqProjects
 from src.db import _ensure_schema
+from src.repositories import table_registry_repo
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.table_registry import TableRegistryRepository
 
@@ -58,19 +60,27 @@ def stub_bq():
 
 # ---- Layer 1: _run_materialized_pass source filter -------------------------
 
+
 def _seed_dual_source(conn, tmp_path):
     """Register one Keboola materialized row + one BQ materialized row, both
     due, and pre-create both parquet files so the hash step succeeds."""
     repo = TableRegistryRepository(conn)
     repo.register(
-        id="kbc_orders", name="kbc_orders", source_type="keboola",
-        query_mode="materialized", bucket="in.c-foo",
-        source_table="orders", source_query=None,
+        id="kbc_orders",
+        name="kbc_orders",
+        source_type="keboola",
+        query_mode="materialized",
+        bucket="in.c-foo",
+        source_table="orders",
+        source_query=None,
         sync_schedule="every 1m",
     )
     repo.register(
-        id="bq_sessions", name="bq_sessions", source_type="bigquery",
-        query_mode="materialized", source_query="SELECT 1 AS n",
+        id="bq_sessions",
+        name="bq_sessions",
+        source_type="bigquery",
+        query_mode="materialized",
+        source_query="SELECT 1 AS n",
         sync_schedule="every 1m",
     )
     for source, fname in (("keboola", "kbc_orders"), ("bigquery", "bq_sessions")):
@@ -104,14 +114,14 @@ def test_materialized_pass_source_filter_scopes_to_bigquery(tmp_path, monkeypatc
     try:
         with patch("app.api.sync._materialize_table", side_effect=_fake_bq):
             summary = sync_module._run_materialized_pass(
-                conn, stub_bq, source_type="bigquery",
+                conn,
+                stub_bq,
+                source_type="bigquery",
             )
     finally:
         conn.close()
 
-    assert materialized == ["bq_sessions"], (
-        "only the BQ materialized row should be rebuilt under source='bigquery'"
-    )
+    assert materialized == ["bq_sessions"], "only the BQ materialized row should be rebuilt under source='bigquery'"
     assert summary["materialized"] == ["bq_sessions"]
     assert {"table": "kbc_orders", "reason": "source_filter"} in summary["skipped"]
 
@@ -142,15 +152,16 @@ def test_materialized_pass_no_filter_processes_all(tmp_path, monkeypatch, stub_b
 
     def _fake_kb(**kwargs):
         seen.append(("kb", kwargs["table_id"]))
-        return {"table_id": kwargs["table_id"], "path": "x",
-                "rows": 1, "bytes": 100, "md5": "deadbeef"}
+        return {"table_id": kwargs["table_id"], "path": "x", "rows": 1, "bytes": 100, "md5": "deadbeef"}
 
     try:
-        with patch("app.api.sync._materialize_table", side_effect=_fake_bq), \
-             patch(
-                 "connectors.keboola.extractor.materialize_query",
-                 side_effect=_fake_kb,
-             ):
+        with (
+            patch("app.api.sync._materialize_table", side_effect=_fake_bq),
+            patch(
+                "connectors.keboola.extractor.materialize_query",
+                side_effect=_fake_kb,
+            ),
+        ):
             summary = sync_module._run_materialized_pass(conn, stub_bq)
     finally:
         conn.close()
@@ -161,6 +172,7 @@ def test_materialized_pass_no_filter_processes_all(tmp_path, monkeypatch, stub_b
 
 
 # ---- Layer 2: _run_sync end-to-end with mtime isolation --------------------
+
 
 def _run_sync_harness(tmp_path, monkeypatch):
     """Set up `_run_sync` to run against a real registry with one Keboola
@@ -181,12 +193,19 @@ def _run_sync_harness(tmp_path, monkeypatch):
     conn = _db_mod.get_system_db()
     repo = TableRegistryRepository(conn)
     repo.register(
-        id="kbc_orders", name="kbc_orders", source_type="keboola",
-        query_mode="local", bucket="in.c-foo", source_table="orders",
+        id="kbc_orders",
+        name="kbc_orders",
+        source_type="keboola",
+        query_mode="local",
+        bucket="in.c-foo",
+        source_table="orders",
     )
     repo.register(
-        id="bq_sessions", name="bq_sessions", source_type="bigquery",
-        query_mode="materialized", source_query="SELECT 1 AS n",
+        id="bq_sessions",
+        name="bq_sessions",
+        source_type="bigquery",
+        query_mode="materialized",
+        source_query="SELECT 1 AS n",
         sync_schedule="every 1m",
     )
     _db_mod.close_system_db()
@@ -194,14 +213,12 @@ def _run_sync_harness(tmp_path, monkeypatch):
     # source, but the registry carries both. The `?source=` filter is what
     # scopes a partial rebuild.
     monkeypatch.setattr(
-        "app.instance_config.get_data_source_type", lambda: "keboola",
+        "app.instance_config.get_data_source_type",
+        lambda: "keboola",
     )
     monkeypatch.setattr(
         "app.instance_config.get_value",
-        lambda *args, **kw: (
-            "my-bq-proj" if (args and args[-1] == "project")
-            else kw.get("default", "")
-        ),
+        lambda *args, **kw: "my-bq-proj" if (args and args[-1] == "project") else kw.get("default", ""),
     )
 
     # Pre-create a real keboola extract.duckdb on disk; the Keboola extractor
@@ -231,8 +248,11 @@ def _run_sync_harness(tmp_path, monkeypatch):
     monkeypatch.setattr(sync_module.subprocess, "Popen", _FakePopen)
 
     def _spy_materialized(_conn, _bq, *, tables=None, source_type=None):
-        # Use the connection `_run_sync` already passed (single-writer).
-        repo2 = TableRegistryRepository(_conn)
+        # `_run_sync` no longer opens a real conn for the materialized pass
+        # (it's unused in the production body — every lookup goes through
+        # the repository factory), so route this spy through the factory
+        # too instead of assuming `_conn` is a live DuckDB connection.
+        repo2 = table_registry_repo()
         for row in repo2.list_all():
             if row.get("query_mode") != "materialized":
                 continue
@@ -240,11 +260,11 @@ def _run_sync_harness(tmp_path, monkeypatch):
             if source_type is not None and rst != source_type:
                 continue
             spies["materialized"].append(row["name"])
-        return {"materialized": list(spies["materialized"]),
-                "skipped": [], "errors": []}
+        return {"materialized": list(spies["materialized"]), "skipped": [], "errors": []}
 
     monkeypatch.setattr(
-        "app.api.sync._run_materialized_pass", _spy_materialized,
+        "app.api.sync._run_materialized_pass",
+        _spy_materialized,
     )
 
     class _OrchStub:
@@ -253,7 +273,8 @@ def _run_sync_harness(tmp_path, monkeypatch):
             return {}
 
     monkeypatch.setattr(
-        "src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub(),
+        "src.orchestrator.SyncOrchestrator",
+        lambda *a, **kw: _OrchStub(),
     )
 
     return spies, kbc_extract
@@ -268,12 +289,8 @@ def test_run_sync_bigquery_filter_skips_keboola_extract(tmp_path, monkeypatch):
 
     sync_module._run_sync(tables=None, source_type_filter="bigquery")
 
-    assert spies["keboola_subprocess"] == 0, (
-        "Keboola extractor subprocess must NOT run under source='bigquery'"
-    )
-    assert spies["materialized"] == ["bq_sessions"], (
-        "only the BQ materialized row should be rebuilt"
-    )
+    assert spies["keboola_subprocess"] == 0, "Keboola extractor subprocess must NOT run under source='bigquery'"
+    assert spies["materialized"] == ["bq_sessions"], "only the BQ materialized row should be rebuilt"
     assert kbc_extract.stat().st_mtime == mtime_before, (
         "keboola/extract.duckdb mtime must be unchanged by a BQ-scoped rebuild"
     )
@@ -286,15 +303,12 @@ def test_run_sync_no_filter_rebuilds_both(tmp_path, monkeypatch):
 
     sync_module._run_sync(tables=None)
 
-    assert spies["keboola_subprocess"] == 1, (
-        "Keboola extractor subprocess must run on a full sweep"
-    )
-    assert spies["materialized"] == ["bq_sessions"], (
-        "the BQ materialized row must also be rebuilt on a full sweep"
-    )
+    assert spies["keboola_subprocess"] == 1, "Keboola extractor subprocess must run on a full sweep"
+    assert spies["materialized"] == ["bq_sessions"], "the BQ materialized row must also be rebuilt on a full sweep"
 
 
 # ---- Layer 3: endpoint + CLI passthrough -----------------------------------
+
 
 def _make_client():
     from fastapi import FastAPI

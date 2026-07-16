@@ -143,7 +143,7 @@ def _materialize_table(
 
 
 def _run_materialized_pass(
-    conn: duckdb.DuckDBPyConnection,
+    conn: Optional[duckdb.DuckDBPyConnection],
     bq,
     tables: Optional[List[str]] = None,
     source_type: Optional[str] = None,
@@ -926,19 +926,21 @@ sys.exit(compute_exit_code(result, len(configs)))
         # gets recorded against that row only — no cascade.
         try:
             from connectors.bigquery.access import get_bq_access
-            from src.db import get_system_db as _get_system_db
 
             bq_access = get_bq_access()  # sentinel if no BQ project; OK
-            mat_conn = _get_system_db()
-            try:
-                mat_summary = _run_materialized_pass(
-                    mat_conn,
-                    bq_access,
-                    tables=tables,
-                    source_type=source_type_filter,
-                )
-            finally:
-                mat_conn.close()
+            # `conn` is accepted for signature/call-site stability but is
+            # never read inside _run_materialized_pass (every repo lookup in
+            # its body already routes through the src.repositories factory)
+            # — passing None avoids force-opening the process-singleton
+            # DuckDB connection on every scheduler tick (~120s), which held
+            # a persistent exclusive OS-level lock on system.duckdb even on
+            # Postgres-backed instances.
+            mat_summary = _run_materialized_pass(
+                None,
+                bq_access,
+                tables=tables,
+                source_type=source_type_filter,
+            )
             skipped_count = len(mat_summary["skipped"])
             in_flight_count = sum(1 for s in mat_summary["skipped"] if s.get("reason") == "in_flight")
             print(

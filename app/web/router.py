@@ -700,14 +700,10 @@ async def login_page(request: Request):
     if is_local_dev_mode():
         # Only short-circuit to the home route if the dev user is actually
         # seeded. Otherwise a 401 there would bounce back to /login and loop.
-        from src.db import get_system_db
-
-        conn = get_system_db()
-        try:
-            if _get_local_dev_user(conn):
-                return RedirectResponse(url=get_home_route(), status_code=302)
-        finally:
-            conn.close()
+        # _get_local_dev_user resolves through the repository factory
+        # regardless of `conn` — no DuckDB connection needs to be opened here.
+        if _get_local_dev_user(None):
+            return RedirectResponse(url=get_home_route(), status_code=302)
         # Fall through to the normal login form so the missing-seed error is visible.
 
     next_path = request.query_params.get("next", "")

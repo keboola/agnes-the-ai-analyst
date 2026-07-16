@@ -18,7 +18,6 @@ import sys
 from app.logging_config import setup_logging
 from services.session_pipeline.runner import run_processor
 from services.session_processors.verification import build_verification_processor
-from src.db import get_system_db
 from src.repositories import session_processor_state_repo
 
 logger = logging.getLogger(__name__)
@@ -52,15 +51,13 @@ def main() -> None:
         )
         sys.exit(1)
 
-    conn = get_system_db()
-
     if args.reset:
         logger.info("Resetting verification processor state...")
         # Routed through the factory (not a raw DELETE on the always-DuckDB
         # connection) so the reset hits the active backend.
         session_processor_state_repo().delete_for_processors([processor.name])
 
-    stats = run_processor(conn, processor)
+    stats = run_processor(processor)
 
     print("\n--- Verification Processor Summary ---")
     print(f"Sessions scanned:        {stats['scanned']}")

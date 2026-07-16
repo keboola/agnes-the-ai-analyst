@@ -367,7 +367,7 @@ class _FakeProcessor:
         self.call_kwargs: list[dict] = []
         self.call_usernames: list[str] = []
 
-    def process_session(self, session_path: Path, username: str, session_key: str, conn, **kwargs: object):
+    def process_session(self, session_path: Path, username: str, session_key: str, **kwargs: object):
         self.calls.append(session_key)
         self.call_usernames.append(username)
         self.call_kwargs.append(dict(kwargs))
@@ -392,12 +392,12 @@ class TestRunProcessor:
 
         proc = _FakeProcessor(return_value=ProcessorResult(items_count=2))
 
-        stats1 = run_processor(conn, proc, session_data_dir=sessions)
+        stats1 = run_processor(proc, session_data_dir=sessions)
         assert stats1["processed"] == 1
         assert stats1["items_extracted"] == 2
         assert proc.calls == ["alice/s.jsonl"]
 
-        stats2 = run_processor(conn, proc, session_data_dir=sessions)
+        stats2 = run_processor(proc, session_data_dir=sessions)
         # Stable session (mtime <= processed_at) is filtered at scan, so the
         # runner never sees it — `scanned == 0`, not `skipped == 1`. The
         # earlier shape (return-everything-then-runner-skips) caused an
@@ -416,7 +416,7 @@ class TestRunProcessor:
 
         proc = _FakeProcessor(raise_on_session="alice/s.jsonl")
 
-        stats = run_processor(conn, proc, session_data_dir=sessions)
+        stats = run_processor(proc, session_data_dir=sessions)
         assert stats["errors"] == 1
         assert stats["processed"] == 0
 
@@ -426,7 +426,7 @@ class TestRunProcessor:
 
         # Second call retries.
         proc.raise_on_session = None  # this time succeed
-        stats2 = run_processor(conn, proc, session_data_dir=sessions)
+        stats2 = run_processor(proc, session_data_dir=sessions)
         assert stats2["processed"] == 1
         conn.close()
 
@@ -439,11 +439,11 @@ class TestRunProcessor:
 
         proc = _FakeProcessor(return_value=ProcessorResult(items_count=0))
 
-        stats1 = run_processor(conn, proc, session_data_dir=sessions)
+        stats1 = run_processor(proc, session_data_dir=sessions)
         assert stats1["processed"] == 1
         assert stats1["items_extracted"] == 0
 
-        stats2 = run_processor(conn, proc, session_data_dir=sessions)
+        stats2 = run_processor(proc, session_data_dir=sessions)
         # Filtered at scan via mtime precheck — see test_processed_then_skipped_on_second_call.
         assert stats2["processed"] == 0
         assert stats2["scanned"] == 0
@@ -458,12 +458,12 @@ class TestRunProcessor:
 
         proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
 
-        stats1 = run_processor(conn, proc, session_data_dir=sessions)
+        stats1 = run_processor(proc, session_data_dir=sessions)
         assert stats1["processed"] == 1
 
         # Mutate the file → new hash → reprocessed on next call.
         path.write_text("line1\nline2\n")
-        stats2 = run_processor(conn, proc, session_data_dir=sessions)
+        stats2 = run_processor(proc, session_data_dir=sessions)
         assert stats2["processed"] == 1
         assert proc.calls == ["alice/s.jsonl", "alice/s.jsonl"]
         conn.close()
@@ -483,7 +483,7 @@ class TestRunProcessor:
         _seed_session(sessions, "uuid-aaa", "s.jsonl")
 
         proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
-        run_processor(conn, proc, session_data_dir=sessions)
+        run_processor(proc, session_data_dir=sessions)
 
         assert proc.call_usernames == ["alice@example.com"]
         assert proc.call_kwargs[0]["user_id"] == "uuid-aaa"
@@ -502,7 +502,7 @@ class TestRunProcessor:
         _seed_session(sessions, "bob", "s.jsonl")
 
         proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
-        run_processor(conn, proc, session_data_dir=sessions)
+        run_processor(proc, session_data_dir=sessions)
 
         assert proc.call_usernames == ["bob@example.com"]
         assert proc.call_kwargs[0]["user_id"] == "uuid-bbb"
@@ -517,7 +517,7 @@ class TestRunProcessor:
         _seed_session(sessions, "orphan-uuid", "s.jsonl")
 
         proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
-        run_processor(conn, proc, session_data_dir=sessions)
+        run_processor(proc, session_data_dir=sessions)
 
         assert proc.call_usernames == ["orphan-uuid"]
         assert proc.call_kwargs[0]["user_id"] is None
@@ -533,8 +533,8 @@ class TestRunProcessor:
         proc_a = _FakeProcessor(name="a")
         proc_b = _FakeProcessor(name="b")
 
-        run_processor(conn, proc_a, session_data_dir=sessions)
-        run_processor(conn, proc_b, session_data_dir=sessions)
+        run_processor(proc_a, session_data_dir=sessions)
+        run_processor(proc_b, session_data_dir=sessions)
 
         assert proc_a.calls == ["alice/s.jsonl"]
         assert proc_b.calls == ["alice/s.jsonl"]
@@ -543,7 +543,7 @@ class TestRunProcessor:
     def test_no_sessions_dir_returns_clean_stats(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         proc = _FakeProcessor()
-        stats = run_processor(conn, proc, session_data_dir=tmp_path / "does_not_exist")
+        stats = run_processor(proc, session_data_dir=tmp_path / "does_not_exist")
         assert stats["scanned"] == 0
         assert stats["processed"] == 0
         assert stats["errors"] == 0
@@ -564,9 +564,74 @@ class TestRunProcessor:
             def process_session(self, *a, **kw):
                 return None  # type: ignore[return-value]
 
-        stats = run_processor(conn, _BadReturn(), session_data_dir=sessions)
+        stats = run_processor(_BadReturn(), session_data_dir=sessions)
         assert stats["processed"] == 1
         assert stats["items_extracted"] == 0
+        conn.close()
+
+
+class TestRunProcessorMaxSessionsPerRun:
+    """max_sessions_per_run bounds a single run's worst-case duration/CPU
+    cost by deferring the remainder to the next scheduler tick, rather than
+    processing an unbounded burst of unprocessed sessions in one request."""
+
+    def test_caps_candidates_and_reports_deferred_count(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        _seed_session(sessions, "alice", "a.jsonl")
+        _seed_session(sessions, "bob", "b.jsonl")
+        _seed_session(sessions, "carol", "c.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+
+        stats = run_processor(proc, session_data_dir=sessions, max_sessions_per_run=2)
+        assert stats["scanned"] == 3  # true total, regardless of the cap
+        assert stats["processed"] == 2
+        assert stats["capped"] == 1
+        assert len(proc.calls) == 2
+        conn.close()
+
+    def test_deferred_sessions_are_picked_up_on_next_call(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        _seed_session(sessions, "alice", "a.jsonl")
+        _seed_session(sessions, "bob", "b.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+
+        stats1 = run_processor(proc, session_data_dir=sessions, max_sessions_per_run=1)
+        assert stats1["processed"] == 1
+        assert stats1["capped"] == 1
+
+        stats2 = run_processor(proc, session_data_dir=sessions, max_sessions_per_run=1)
+        assert stats2["processed"] == 1
+        assert stats2["capped"] == 0
+        assert sorted(proc.calls) == ["alice/a.jsonl", "bob/b.jsonl"]
+        conn.close()
+
+    def test_none_means_unbounded_default_behavior(self, tmp_path, monkeypatch):
+        """No cap (the default when unset) preserves pre-existing behavior —
+        every candidate is processed in one call."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        for i in range(5):
+            _seed_session(sessions, f"user{i}", "s.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+        stats = run_processor(proc, session_data_dir=sessions)
+        assert stats["processed"] == 5
+        assert stats["capped"] == 0
+        conn.close()
+
+    def test_cap_larger_than_candidates_is_a_no_op(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        _seed_session(sessions, "alice", "a.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+        stats = run_processor(proc, session_data_dir=sessions, max_sessions_per_run=50)
+        assert stats["processed"] == 1
+        assert stats["capped"] == 0
         conn.close()
 
 

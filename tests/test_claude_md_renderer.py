@@ -97,6 +97,24 @@ def test_render_uses_override_when_set(conn):
     assert "charlie@example.com" in out
 
 
+def test_render_with_conn_none_still_applies_override(conn):
+    """`render_claude_md` — unlike `build_zip` — never gates the override
+    check on `conn` truthiness; `resolve_prompt`/`build_claude_md_context`
+    resolve everything through the backend-aware factory regardless. This
+    locks in that `conn=None` (the app/main.py cloud-chat workdir path,
+    which avoids force-opening the process-singleton DuckDB connection)
+    still applies the admin's editor override, matching the conn-supplied
+    call exactly."""
+    ClaudeMdTemplateRepository(conn).set(
+        "# {{ instance.name }} Workspace\n\nHello {{ user.email }}.",
+        updated_by="admin@example.com",
+    )
+    with_conn = render_claude_md(conn, user=_user("charlie@example.com"), server_url="https://example.com")
+    without_conn = render_claude_md(None, user=_user("charlie@example.com"), server_url="https://example.com")
+    assert "charlie@example.com" in without_conn
+    assert without_conn == with_conn
+
+
 def test_render_override_tables_list(conn):
     # Seed a table registry entry and ensure the test user is an admin so
     # RBAC filtering does not hide the table.

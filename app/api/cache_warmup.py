@@ -27,6 +27,7 @@ from app.auth.access import require_admin
 from src.repositories import (
     table_registry_repo,
 )
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -75,7 +76,8 @@ def maybe_schedule_startup_warmup() -> None:
 
 
 async def _warm_catalog_caches_bg(
-    trigger: str = "startup", state: WarmupRunState | None = None,
+    trigger: str = "startup",
+    state: WarmupRunState | None = None,
 ) -> None:
     """Walk registry, warm metadata + schema caches for every remote row.
 
@@ -101,39 +103,59 @@ async def _warm_catalog_caches_bg(
     state.total = len(rows)
     for r in rows:
         state.rows[r["id"]] = WarmupRowState(
-            table_id=r["id"], status="pending",
+            table_id=r["id"],
+            status="pending",
         )
-    _broadcast(state, {"event": "start", "data": {
-        "run_id": run_id, "trigger": trigger, "total": state.total,
-    }})
+    _broadcast(
+        state,
+        {
+            "event": "start",
+            "data": {
+                "run_id": run_id,
+                "trigger": trigger,
+                "total": state.total,
+            },
+        },
+    )
 
     sem = asyncio.Semaphore(int(os.environ.get("AGNES_WARMUP_CONCURRENCY", "4")))
     await asyncio.gather(
-        *(_warm_one(r, state, sem) for r in rows), return_exceptions=True,
+        *(_warm_one(r, state, sem) for r in rows),
+        return_exceptions=True,
     )
 
     state.completed_at = _now_iso()
-    _broadcast(state, {"event": "complete", "data": {
-        "run_id": run_id, "total": state.total,
-        "completed": state.completed, "failed": state.failed,
-    }})
+    _broadcast(
+        state,
+        {
+            "event": "complete",
+            "data": {
+                "run_id": run_id,
+                "total": state.total,
+                "completed": state.completed,
+                "failed": state.failed,
+            },
+        },
+    )
     logger.info(
         "cache warmup complete: run_id=%s total=%d ok=%d fail=%d",
-        run_id, state.total, state.completed, state.failed,
+        run_id,
+        state.total,
+        state.completed,
+        state.failed,
     )
 
 
 def _list_remote_rows() -> list[dict]:
     """Snapshot of registry rows that need a warmup pass."""
     rows = table_registry_repo().list_all()
-    return [
-        r for r in rows
-        if r.get("query_mode") == "remote" and r.get("source_type") == "bigquery"
-    ]
+    return [r for r in rows if r.get("query_mode") == "remote" and r.get("source_type") == "bigquery"]
 
 
 async def _warm_one(
-    row: dict, state: WarmupRunState, sem: asyncio.Semaphore,
+    row: dict,
+    state: WarmupRunState,
+    sem: asyncio.Semaphore,
 ) -> None:
     async with sem:
         rs = state.rows[row["id"]]
@@ -167,6 +189,7 @@ def _warm_metadata_sync(row: dict) -> None:
     (the same primitive the scheduler-driven refresh uses).
     """
     from app.api.bq_metadata_refresh import refresh_one
+
     refresh_one(row)
 
 
@@ -174,17 +197,17 @@ def _warm_schema_sync(row: dict) -> None:
     """Trigger schema cache populate via build_schema_uncached."""
     from app.api.v2_schema import build_schema_uncached
     from connectors.bigquery.access import get_bq_access
-    from src.db import get_system_db
+
     bq = get_bq_access()
-    build_schema_uncached(get_system_db(), row["id"], bq=bq, row=row)
+    # build_schema_uncached doesn't read `conn` — every lookup routes
+    # through the repository factory / a standalone system-db path.
+    build_schema_uncached(None, row["id"], bq=bq, row=row)
 
 
 async def warm_one_table(table_id: str) -> None:
     """Single-row re-warm — invoked by `invalidate_for_table` after a
     registry change. Does NOT update WARMUP_STATE (small change shouldn't
     overwrite the last full run's status); just refreshes the caches."""
-    from src.db import get_system_db
-    conn = get_system_db()
     row = table_registry_repo().get(table_id)
     if not row or row.get("query_mode") != "remote":
         return

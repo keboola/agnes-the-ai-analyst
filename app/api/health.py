@@ -308,7 +308,35 @@ def _check_db_schema() -> dict:
     """Check DB schema version against expected SCHEMA_VERSION.
 
     Returns a dict with 'db_schema' key and optional 'detail' key.
+
+    On Postgres-backed instances (``use_pg()``) this consults the Alembic
+    revision instead of the DuckDB-only ``schema_version`` table — reading
+    that table off ``get_system_db()`` forced open the process-singleton
+    DuckDB connection (and its persistent exclusive OS-level lock on
+    ``system.duckdb``) on every probe, even on a PG-backed instance that
+    should never touch that file (production incident: an idle DuckDB lock
+    was held for the life of the process).
     """
+    from src.repositories import use_pg
+
+    if use_pg():
+        try:
+            from src.db_pg import _pg_revisions
+
+            current, head, db_ahead = _pg_revisions()
+            if current == head:
+                return {"db_schema": "ok", "current": current, "expected": head}
+            if db_ahead:
+                return {
+                    "db_schema": "mismatch",
+                    "current": current,
+                    "expected": head,
+                    "detail": "Postgres schema is ahead of this image's migration scripts",
+                }
+            return {"db_schema": "mismatch", "current": current, "expected": head}
+        except Exception as e:
+            return {"db_schema": "unreachable", "detail": str(e)}
+
     try:
         conn = get_system_db()
         row = conn.execute("SELECT version FROM schema_version ORDER BY applied_at DESC LIMIT 1").fetchone()

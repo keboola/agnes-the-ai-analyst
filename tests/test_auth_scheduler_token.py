@@ -17,6 +17,7 @@ def fresh_db(monkeypatch):
         # Force pristine state — earlier tests in the same session may have
         # opened the singleton; drop it so the new DATA_DIR takes effect.
         from src.db import close_system_db
+
         close_system_db()
         yield tmp
         close_system_db()
@@ -68,11 +69,12 @@ def test_ensure_scheduler_user_seeds_user_and_admin_membership(fresh_db, monkeyp
 
     conn = get_system_db()
     try:
-        user1 = ensure_scheduler_user(conn)
+        user1 = ensure_scheduler_user()
         assert user1["email"] == SCHEDULER_USER_EMAIL
         # Admin group membership exists.
         admin_group = conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
+            "SELECT id FROM user_groups WHERE name = ?",
+            [SYSTEM_ADMIN_GROUP],
         ).fetchone()
         assert admin_group is not None
         membership = conn.execute(
@@ -82,7 +84,7 @@ def test_ensure_scheduler_user_seeds_user_and_admin_membership(fresh_db, monkeyp
         assert membership is not None
 
         # Second call — same id, no duplicate membership row.
-        user2 = ensure_scheduler_user(conn)
+        user2 = ensure_scheduler_user()
         assert user2["id"] == user1["id"]
         rows = conn.execute(
             "SELECT COUNT(*) FROM user_group_members WHERE user_id = ? AND group_id = ?",

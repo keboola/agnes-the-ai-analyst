@@ -12,8 +12,6 @@ from typing import Optional
 import duckdb
 from fastapi import HTTPException
 
-from src.db import get_system_db
-
 
 def table_not_in_stack_message(table_id: str) -> str:
     """Standardized 403 detail string for table-access denial.
@@ -90,31 +88,23 @@ def can_access_table(
     if not user_id:
         return False
 
-    should_close = False
-    if conn is None:
-        conn = get_system_db()
-        should_close = True
-    try:
-        from app.auth.access import is_user_admin
+    from app.auth.access import is_user_admin
 
-        if is_user_admin(user_id, conn):
-            return True
+    if is_user_admin(user_id, conn):
+        return True
 
-        from app.services.stack_resolver import StackResolver
-        from app.resource_types import ResourceType
+    from app.services.stack_resolver import StackResolver
+    from app.resource_types import ResourceType
 
-        resolver = StackResolver(conn)
-        pkg_entries = resolver.stack(user_id, ResourceType.DATA_PACKAGE)
-        if not pkg_entries:
-            return False
-        pkg_ids_set = {e.id for e in pkg_entries}
-        from src.repositories import data_packages_repo as _dp_repo
+    resolver = StackResolver(conn)
+    pkg_entries = resolver.stack(user_id, ResourceType.DATA_PACKAGE)
+    if not pkg_entries:
+        return False
+    pkg_ids_set = {e.id for e in pkg_entries}
+    from src.repositories import data_packages_repo as _dp_repo
 
-        table_pkg_ids = {p["id"] for p in _dp_repo().list_packages_of_table(table_id)}
-        return bool(pkg_ids_set & table_pkg_ids)
-    finally:
-        if should_close:
-            conn.close()
+    table_pkg_ids = {p["id"] for p in _dp_repo().list_packages_of_table(table_id)}
+    return bool(pkg_ids_set & table_pkg_ids)
 
 
 def get_accessible_ids(
@@ -143,20 +133,12 @@ def get_accessible_ids(
     if not user_id:
         return frozenset()
 
-    should_close = False
-    if conn is None:
-        conn = get_system_db()
-        should_close = True
-    try:
-        from app.auth.access import is_user_admin, _allowed_ids_for_user
+    from app.auth.access import is_user_admin, _allowed_ids_for_user
 
-        if is_user_admin(user_id, conn):
-            return None  # admin sees everything
+    if is_user_admin(user_id, conn):
+        return None  # admin sees everything
 
-        return _allowed_ids_for_user(user_id, resource_type, conn)
-    finally:
-        if should_close:
-            conn.close()
+    return _allowed_ids_for_user(user_id, resource_type, conn)
 
 
 def get_accessible_tables(
@@ -191,34 +173,26 @@ def get_accessible_tables(
     if not user_id:
         return []
 
-    should_close = False
-    if conn is None:
-        conn = get_system_db()
-        should_close = True
-    try:
-        from app.auth.access import is_user_admin
+    from app.auth.access import is_user_admin
 
-        if is_user_admin(user_id, conn):
-            return None  # admin sees everything
+    if is_user_admin(user_id, conn):
+        return None  # admin sees everything
 
-        from app.services.stack_resolver import StackResolver
-        from app.resource_types import ResourceType
+    from app.services.stack_resolver import StackResolver
+    from app.resource_types import ResourceType
 
-        resolver = StackResolver(conn)
-        pkg_entries = resolver.stack(user_id, ResourceType.DATA_PACKAGE)
-        result: list[str] = []
-        if pkg_entries:
-            pkg_ids_set = {e.id for e in pkg_entries}
-            from src.repositories import data_packages_repo as _dp_repo
+    resolver = StackResolver(conn)
+    pkg_entries = resolver.stack(user_id, ResourceType.DATA_PACKAGE)
+    result: list[str] = []
+    if pkg_entries:
+        pkg_ids_set = {e.id for e in pkg_entries}
+        from src.repositories import data_packages_repo as _dp_repo
 
-            result = _dp_repo().list_member_table_ids(pkg_ids_set)
-        # Internal tables — always accessible (row-level RBAC at query time).
-        from connectors.internal.access import INTERNAL_TABLES
+        result = _dp_repo().list_member_table_ids(pkg_ids_set)
+    # Internal tables — always accessible (row-level RBAC at query time).
+    from connectors.internal.access import INTERNAL_TABLES
 
-        for t in INTERNAL_TABLES:
-            if t.registry_id not in result:
-                result.append(t.registry_id)
-        return result
-    finally:
-        if should_close:
-            conn.close()
+    for t in INTERNAL_TABLES:
+        if t.registry_id not in result:
+            result.append(t.registry_id)
+    return result

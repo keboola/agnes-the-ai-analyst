@@ -6,7 +6,6 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 from typing import Optional
@@ -15,13 +14,13 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.db import get_system_db
 from src.scheduler import is_valid_schedule, is_table_due
 
 from src.repositories import (
     audit_repo,
     notifications_script_repo,
 )
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/scripts", tags=["scripts"])
@@ -45,10 +44,7 @@ class DeployScriptRequest(BaseModel):
         # We do NOT silently normalise whitespace to None; surfacing the
         # caller's mistake at register time beats persisting an unusable value.
         if not is_valid_schedule(v):
-            raise ValueError(
-                f"schedule must be 'every Nm' / 'every Nh' / "
-                f"'daily HH:MM[,HH:MM,...]', got {v!r}"
-            )
+            raise ValueError(f"schedule must be 'every Nm' / 'every Nh' / 'daily HH:MM[,HH:MM,...]', got {v!r}")
         return v
 
 
@@ -99,8 +95,10 @@ async def deploy_script(
         source=request.source,
     )
     return ScriptResponse(
-        id=script_id, name=request.name,
-        schedule=request.schedule, owner=user["id"],
+        id=script_id,
+        name=request.name,
+        schedule=request.schedule,
+        owner=user["id"],
     )
 
 
@@ -188,7 +186,6 @@ async def run_due_scripts(
         )
     scripts_run_count = len(claimed)
     try:
-        _audit_conn = get_system_db()
         audit_repo().log(
             user_id=user.get("id"),
             action="script_runner.tick",
@@ -196,7 +193,6 @@ async def run_due_scripts(
             result="success",
             client_kind="scheduler",
         )
-        _audit_conn.close()
     except Exception:
         logger.exception("audit_log write failed for script_runner.tick; continuing")
     return {"claimed": claimed, "count": scripts_run_count}
@@ -205,8 +201,9 @@ async def run_due_scripts(
 def _run_claimed_script(script_id: str, source: str, name: str) -> None:
     """Execute a previously-claimed script and write the terminal status.
 
-    Runs in a FastAPI BackgroundTask, so it owns its own DB connection
-    (the request-scoped conn is already gone by the time this fires).
+    Runs in a FastAPI BackgroundTask (the request-scoped conn is already
+    gone by the time this fires) — all repo lookups go through the
+    backend-aware factory, so no DB connection needs to be opened here.
     ``_execute_script`` only raises on safety-check violations — runtime
     failures (non-zero exit code, ``subprocess.TimeoutExpired`` → exit -1)
     are returned in the result dict, so we must inspect ``exit_code`` to
@@ -214,20 +211,14 @@ def _run_claimed_script(script_id: str, source: str, name: str) -> None:
     success. Any exception still writes 'failure' and re-raises so the BG
     handler surfaces the traceback in logs.
     """
-    # Fresh connection for the background task — the request-scoped conn
-    # was returned to FastAPI by the time this fires.
-    bg_conn = get_system_db()
+    bg_repo = notifications_script_repo()
     try:
-        bg_repo = notifications_script_repo()
-        try:
-            result = _execute_script(source, name)
-            status = "success" if result.get("exit_code", 1) == 0 else "failure"
-            bg_repo.record_run_result(script_id, status=status)
-        except Exception:
-            bg_repo.record_run_result(script_id, status="failure")
-            raise
-    finally:
-        bg_conn.close()
+        result = _execute_script(source, name)
+        status = "success" if result.get("exit_code", 1) == 0 else "failure"
+        bg_repo.record_run_result(script_id, status=status)
+    except Exception:
+        bg_repo.record_run_result(script_id, status="failure")
+        raise
 
 
 def _validate_script_source(source: str) -> None:
@@ -241,15 +232,24 @@ def _validate_script_source(source: str) -> None:
     """
     blocked_patterns = [
         # Direct imports of dangerous modules
-        "import subprocess", "from subprocess",
-        "import shutil", "from shutil",
-        "import ctypes", "from ctypes",
-        "import importlib", "from importlib",
-        "import socket", "from socket",
-        "import requests", "from requests",
-        "import httpx", "from httpx",
-        "import urllib", "from urllib",
-        "import http", "from http",
+        "import subprocess",
+        "from subprocess",
+        "import shutil",
+        "from shutil",
+        "import ctypes",
+        "from ctypes",
+        "import importlib",
+        "from importlib",
+        "import socket",
+        "from socket",
+        "import requests",
+        "from requests",
+        "import httpx",
+        "from httpx",
+        "import urllib",
+        "from urllib",
+        "import http",
+        "from http",
         # Dynamic import bypasses
         "__import__",
         "importlib",
@@ -258,9 +258,12 @@ def _validate_script_source(source: str) -> None:
         "eval(",
         "compile(",
         # OS-level access
-        "import os", "from os",
-        "import sys", "from sys",
-        "import signal", "from signal",
+        "import os",
+        "from os",
+        "import sys",
+        "from sys",
+        "import signal",
+        "from signal",
         # File access bypasses
         "open(",
         "pathlib",
@@ -286,11 +289,36 @@ def _validate_script_source(source: str) -> None:
     ]
     import ast
 
-    BLOCKED_MODULES = {"os", "sys", "subprocess", "shutil", "ctypes", "importlib", "socket",
-                       "requests", "httpx", "urllib", "http", "signal", "pathlib", "builtins"}
-    BLOCKED_FUNCTIONS = {"exec", "eval", "compile", "open", "globals", "locals",
-                         "getattr", "setattr", "delattr", "breakpoint", "__import__",
-                         "vars"}
+    BLOCKED_MODULES = {
+        "os",
+        "sys",
+        "subprocess",
+        "shutil",
+        "ctypes",
+        "importlib",
+        "socket",
+        "requests",
+        "httpx",
+        "urllib",
+        "http",
+        "signal",
+        "pathlib",
+        "builtins",
+    }
+    BLOCKED_FUNCTIONS = {
+        "exec",
+        "eval",
+        "compile",
+        "open",
+        "globals",
+        "locals",
+        "getattr",
+        "setattr",
+        "delattr",
+        "breakpoint",
+        "__import__",
+        "vars",
+    }
 
     try:
         tree = ast.parse(source)

@@ -24,7 +24,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import duckdb
-from jinja2 import Environment, StrictUndefined, TemplateError
+from jinja2 import Environment, StrictUndefined
 
 from app.instance_config import (
     get_data_source_type,
@@ -88,7 +88,7 @@ def _missing_table_excs() -> "tuple[type[BaseException], ...]":
     return excs
 
 
-def _list_tables(conn: duckdb.DuckDBPyConnection, *, user: dict) -> list[dict[str, Any]]:
+def _list_tables(conn: duckdb.DuckDBPyConnection | None, *, user: dict) -> list[dict[str, Any]]:
     """Return registered tables filtered by the calling user's RBAC grants.
 
     For admins, returns all tables. For non-admins, returns only tables the
@@ -127,7 +127,7 @@ def _metrics_summary() -> dict[str, Any]:
 
 
 def _marketplaces_for_user(
-    conn: duckdb.DuckDBPyConnection, user: dict[str, Any]
+    conn: duckdb.DuckDBPyConnection | None, user: dict[str, Any]
 ) -> list[dict[str, Any]]:
     """Return marketplaces with the plugins the user is allowed to see.
 
@@ -172,7 +172,7 @@ def _marketplaces_for_user(
 
 
 def build_claude_md_context(
-    conn: duckdb.DuckDBPyConnection,
+    conn: duckdb.DuckDBPyConnection | None,
     *,
     user: dict[str, Any],
     server_url: str,
@@ -224,7 +224,7 @@ def compute_default_claude_md(
 
 
 def render_claude_md(
-    conn: duckdb.DuckDBPyConnection,
+    conn: duckdb.DuckDBPyConnection | None,
     *,
     user: dict[str, Any],
     server_url: str,

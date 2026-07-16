@@ -386,6 +386,67 @@ class TestMetadataApply:
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
 
+    def test_metadata_apply_writes_through_factory_without_conn(self, tmp_path):
+        """Regression: `metadata-apply` (non-dry-run) used to open a
+        `get_system_db()` connection purely to keep it alive around the
+        `column_metadata_repo()` factory call, never reading from it. Locks
+        in that dropping the dead connection didn't break the actual write
+        path."""
+        proposal = {
+            "tables": {
+                "orders": {
+                    "columns": {
+                        "id": {"basetype": "INTEGER", "description": "Primary key", "confidence": "high"},
+                    }
+                }
+            }
+        }
+        proposal_file = tmp_path / "proposal.json"
+        proposal_file.write_text(json.dumps(proposal))
+
+        result = runner.invoke(app, ["admin", "metadata-apply", str(proposal_file)])
+        assert result.exit_code == 0, result.output
+        assert "Imported 1 column(s)" in result.output
+
+        from src.repositories import column_metadata_repo
+
+        rows = column_metadata_repo().list_for_table("orders")
+        assert any(r["column_name"] == "id" and r["basetype"] == "INTEGER" for r in rows)
+
+
+class TestBreakGlassGrantAdmin:
+    """Regression: `break-glass grant-admin` used to open a `get_system_db()`
+    connection purely to keep it alive around the `users_repo()` /
+    `user_groups_repo()` / `user_group_members_repo()` factory calls, never
+    reading from it directly. Locks in that dropping the dead connection
+    didn't break the actual grant (new user + existing user, both paths)."""
+
+    def test_grants_admin_to_new_user(self):
+        result = runner.invoke(app, ["admin", "break-glass", "grant-admin", "new@example.com", "--yes"])
+        assert result.exit_code == 0, result.output
+        assert "Granted Admin to new@example.com" in result.output
+
+        from src.db import SYSTEM_ADMIN_GROUP
+        from src.repositories import user_group_members_repo, user_groups_repo, users_repo
+
+        user = users_repo().get_by_email("new@example.com")
+        assert user is not None
+        admin_group = user_groups_repo().get_by_name(SYSTEM_ADMIN_GROUP)
+        assert user_group_members_repo().has_membership(user["id"], admin_group["id"])
+
+    def test_grants_admin_to_existing_user_is_idempotent(self):
+        from src.repositories import users_repo
+        import uuid
+
+        users_repo().create(id=str(uuid.uuid4()), email="existing@example.com", name="Existing")
+
+        result = runner.invoke(app, ["admin", "break-glass", "grant-admin", "existing@example.com", "--yes"])
+        assert result.exit_code == 0, result.output
+
+        result2 = runner.invoke(app, ["admin", "break-glass", "grant-admin", "existing@example.com", "--yes"])
+        assert result2.exit_code == 0, result2.output
+        assert "already a member" in result2.output
+
 
 class TestResolveGrantId:
     """Pin the grant_list short_id -> grant_delete workflow contract.

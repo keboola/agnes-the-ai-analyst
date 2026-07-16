@@ -489,3 +489,27 @@ def test_sandbox_ref_roundtrip_after_messages(_chat_env):
     repo.clear_sandbox_ref(s.id)
     got2 = repo.get_session(s.id)
     assert (got2.sandbox_id, got2.runner_pid, got2.sandbox_paused_at) == (None, None, None)
+
+
+def test_chat_repository_conn_none_on_pg(engine, monkeypatch):
+    """``ChatRepository(None)`` must work end-to-end when the active backend
+    is Postgres — every method delegates to the ``*_pg`` repos and never
+    touches ``self._conn``. This is the production-incident fix: boot-time
+    construction of ``app.state.chat_repo`` no longer force-opens a DuckDB
+    connection when ``use_pg()`` is True (see app/main.py's CHAT-INIT block).
+    """
+    monkeypatch.setattr("src.repositories.use_pg", lambda: True)
+    monkeypatch.setattr("src.db_pg.get_engine", lambda: engine)
+
+    from app.chat.persistence import ChatRepository
+
+    repo = ChatRepository(None)
+    assert repo._sessions_pg is not None, "expected the PG delegate to be populated"
+
+    s = repo.create_session(user_email="pgconn@example.com", surface=Surface.WEB)
+    assert s.id.startswith("chat_")
+    fetched = repo.get_session(s.id)
+    assert fetched is not None and fetched.user_email == "pgconn@example.com"
+    repo.append_message(session_id=s.id, role="user", content="hello from conn=None")
+    msgs = repo.list_messages(s.id)
+    assert any(m.content == "hello from conn=None" for m in msgs)

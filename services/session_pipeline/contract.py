@@ -12,8 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-import duckdb
-
 
 @dataclass(frozen=True)
 class ProcessorResult:
@@ -21,6 +19,7 @@ class ProcessorResult:
     of records the processor produced (knowledge items, events, etc.) and
     is stored in session_processor_state.items_extracted for observability —
     not load-bearing for the framework's correctness."""
+
     items_count: int = 0
 
 
@@ -43,7 +42,6 @@ class SessionProcessor(Protocol):
         session_path: Path,
         username: str,
         session_key: str,
-        conn: duckdb.DuckDBPyConnection,
     ) -> ProcessorResult:
         """Process exactly one session jsonl. Idempotent per
         (name, session_key, file_hash).
@@ -51,5 +49,12 @@ class SessionProcessor(Protocol):
         Raise = the runner will NOT mark this session as processed for this
         processor → it will be retried on the next scheduler tick. Return =
         the runner marks it processed and skips it next time (until its
-        file_hash changes)."""
+        file_hash changes).
+
+        No DB connection is passed — implementations read/write state
+        through the ``src.repositories`` factory (backend-aware; DuckDB or
+        Postgres). A prior ``conn`` parameter was dead in every
+        implementation and, at the runner's call site, forced open the
+        process-singleton DuckDB connection even on Postgres-backed
+        instances."""
         ...

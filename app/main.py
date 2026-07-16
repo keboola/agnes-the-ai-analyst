@@ -542,10 +542,13 @@ async def lifespan(app):
     # the BG-task / scheduler paths that bypass the per-mutation hook.
     # Soft-failure — logs WARNING and the repo falls back to ILIKE.
     try:
-        from src.db import get_system_db
-        from src.fts import ensure_knowledge_fts_index
+        from src.repositories import use_pg as _use_pg_fts
 
-        ensure_knowledge_fts_index(get_system_db())
+        if not _use_pg_fts():
+            from src.db import get_system_db
+            from src.fts import ensure_knowledge_fts_index
+
+            ensure_knowledge_fts_index(get_system_db())
     except Exception:
         logger.exception("startup FTS index rebuild failed; falling back to ILIKE on /api/memory?search=")
 
@@ -735,7 +738,6 @@ async def lifespan(app):
                 SCHEDULER_TOKEN_MIN_LENGTH,
                 ensure_scheduler_user,
             )
-            from src.db import get_system_db
 
             secret = get_scheduler_secret()
             if len(secret) < SCHEDULER_TOKEN_MIN_LENGTH:
@@ -746,11 +748,7 @@ async def lifespan(app):
                     SCHEDULER_TOKEN_MIN_LENGTH,
                 )
             else:
-                conn = get_system_db()
-                try:
-                    ensure_scheduler_user(conn)
-                finally:
-                    conn.close()
+                ensure_scheduler_user()
         except Exception as e:
             logger.warning(f"Could not seed scheduler user: {e}")
 
@@ -759,9 +757,6 @@ async def lifespan(app):
     # window should be visible in startup logs so it's not forgotten.
     if not is_local_dev_mode():
         try:
-            from src.db import get_system_db
-
-            conn = get_system_db()
             repo = users_repo()
             all_users = repo.list_all()
             has_password = any(u.get("password_hash") for u in all_users)
@@ -770,7 +765,6 @@ async def lifespan(app):
                     "No user has a password set — /auth/bootstrap is reachable. "
                     "Claim the seed admin (or set SEED_ADMIN_PASSWORD) to close this window."
                 )
-            conn.close()
         except Exception:
             pass  # never block startup on a logging convenience
 
@@ -796,12 +790,26 @@ async def lifespan(app):
     # the admin_chat and chat API routers (which use app.state.chat_repo) work
     # even when chat is disabled — they degrade gracefully via _get_manager().
     try:
-        from src.db import get_system_db as _get_system_db_chat, _get_data_dir as _get_data_dir_chat
+        from src.db import _get_data_dir as _get_data_dir_chat
+        from src.repositories import use_pg as _use_pg_chat
         from app.chat.config import load_chat_config
         from app.chat.persistence import ChatRepository
 
         _chat_data_dir = _get_data_dir_chat()
-        _chat_conn = _get_system_db_chat()
+        # ChatRepository delegates every method to the Postgres *_pg repos
+        # (via the factory) when use_pg() is true — the DuckDB conn is never
+        # touched on that path, so only open the process-singleton DuckDB
+        # connection when the active backend actually needs it. Opening it
+        # unconditionally force-held a persistent exclusive OS-level lock on
+        # system.duckdb even on Postgres-backed instances (production
+        # incident — the boot-time chat-init used to run this before the
+        # use_pg() check existed).
+        if _use_pg_chat():
+            _chat_conn = None
+        else:
+            from src.db import get_system_db as _get_system_db_chat
+
+            _chat_conn = _get_system_db_chat()
         app.state.chat_repo = ChatRepository(_chat_conn)
         app.state.chat_data_dir = _chat_data_dir
 
@@ -846,13 +854,25 @@ async def lifespan(app):
         def _fetch_local_template_zip() -> bytes:
             """Read the cached template zip from disk.
 
-            Passes a system-DB conn so the workspace-prompt admin overlay
-            (source_mode='editor') replaces the clone's CLAUDE.md, keeping
-            cloud-chat workdirs byte-compatible with laptop override-mode
-            `agnes init` (#622)."""
+            Resolves the workspace-prompt admin overlay (source_mode='editor')
+            so it replaces the clone's CLAUDE.md, keeping cloud-chat workdirs
+            byte-compatible with laptop override-mode `agnes init` (#622).
+
+            On DuckDB, passes a system-DB conn (the original mechanism that
+            enables `build_zip`'s overlay check). On Postgres, opening that
+            conn would force-open the process-singleton DuckDB connection for
+            no reason — `resolve_prompt`/`_prompt_repo` already resolve the
+            override through the backend-aware factory regardless of `conn`
+            — so `resolve_overlay=True` opts into the same check without a
+            DuckDB connection.
+            """
             try:
-                from src.db import get_system_db
                 from src.initial_workspace import build_zip
+                from src.repositories import use_pg
+
+                if use_pg():
+                    return build_zip(None, resolve_overlay=True)
+                from src.db import get_system_db
 
                 conn = get_system_db()
                 try:
@@ -916,24 +936,25 @@ async def lifespan(app):
                     GET /api/welcome. Returns None on any failure so workdir
                     init falls back to the bundled static CLAUDE.md."""
                     try:
-                        from src.db import get_system_db
                         from src.claude_md import render_claude_md
                         from src.repositories import users_repo
 
                         # User read via the factory so it honors use_pg() — a
                         # direct UserRepository(conn) read the frozen DuckDB
-                        # system file on Postgres instances (#518). The conn
-                        # below is still handed to render_claude_md, which
-                        # routes its own state reads through the factory (the
-                        # conn is the DuckDB-mode path; vestigial on PG).
+                        # system file on Postgres instances (#518).
                         u = users_repo().get_by_email(user_email)
                         if not u:
                             return None
-                        conn = get_system_db()
-                        try:
-                            return render_claude_md(conn, user=u, server_url=_server_url)
-                        finally:
-                            conn.close()
+                        # render_claude_md always resolves the workspace-prompt
+                        # override + RBAC'd table/marketplace context through
+                        # the backend-aware factory (resolve_prompt,
+                        # get_accessible_tables, resolve_allowed_plugins) —
+                        # unlike build_zip's `conn is not None` overlay gate,
+                        # it never special-cases a missing conn. Passing None
+                        # avoids force-opening the process-singleton DuckDB
+                        # connection for a value that's already vestigial on
+                        # both backends.
+                        return render_claude_md(None, user=u, server_url=_server_url)
                     except Exception:
                         logger.exception("render workspace prompt failed for %s", user_email)
                         return None
@@ -1727,20 +1748,20 @@ def create_app() -> FastAPI:
         (LOCAL_DEV_MODE → seeded dev user, else verify JWT from
         Authorization header or ``access_token`` cookie). Returns None on
         any failure — error page still renders, just without the user menu.
+
+        ``conn=None``: every helper ``get_current_user`` calls
+        (``_get_local_dev_user``, ``_attach_admin_flag`` → ``is_user_admin``,
+        ``get_scheduler_user``, ``resolve_token_to_user``) already treats a
+        missing/None conn as "resolve through the backend-aware factory" —
+        verified individually. Opening a DuckDB connection here was pure
+        overhead on every rendered error page (and a force-open on the
+        Postgres backend).
         """
         try:
             from app.auth.dependencies import get_current_user
-            from src.db import get_system_db
 
-            conn = get_system_db()
-            try:
-                authorization = request.headers.get("authorization")
-                return await get_current_user(request=request, authorization=authorization, conn=conn)
-            finally:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+            authorization = request.headers.get("authorization")
+            return await get_current_user(request=request, authorization=authorization, conn=None)
         except Exception:
             return None
 

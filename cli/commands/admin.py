@@ -706,7 +706,7 @@ def metadata_apply(
     push_to_source: bool = typer.Option(False, "--push-to-source", help="Push metadata to Keboola after import"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would change without applying"),
 ):
-    """Apply a metadata proposal JSON to DuckDB."""
+    """Apply a metadata proposal JSON to the active backend."""
     import os
 
     if not os.path.exists(proposal_path):
@@ -730,15 +730,9 @@ def metadata_apply(
                 )
         return
 
-    from src.db import get_system_db
-
-    conn = get_system_db()
-    try:
-        repo = column_metadata_repo()
-        count = repo.import_proposal(proposal_path)
-        typer.echo(f"Imported {count} column(s) from proposal.")
-    finally:
-        conn.close()
+    repo = column_metadata_repo()
+    count = repo.import_proposal(proposal_path)
+    typer.echo(f"Imported {count} column(s) from proposal.")
 
     if push_to_source:
         for table_id in tables:
@@ -1284,18 +1278,22 @@ def break_glass_grant_admin(
 ) -> None:
     """Grant Admin-group membership to a user without going through the API.
 
-    Operates directly on system.duckdb. Use when the server is up but the
-    Admin group has no live members (race, mistake, accidental DELETE) or
-    when bootstrapping a brand-new install before any admin exists. Membership
-    is recorded with source='cli_break_glass' so it's distinguishable from
-    google_sync / admin / system_seed in audits.
+    Operates directly on the active state backend (DuckDB `system.duckdb` or
+    Postgres — via the `src.repositories` factory, same as the server). Use
+    when the server is up but the Admin group has no live members (race,
+    mistake, accidental DELETE) or when bootstrapping a brand-new install
+    before any admin exists. Membership is recorded with
+    source='cli_break_glass' so it's distinguishable from google_sync /
+    admin / system_seed in audits.
 
-    The DuckDB file must not be locked by a running app process — stop the
-    app or use a separate replica before running this.
+    On the DuckDB backend, the `system.duckdb` file must not be locked by a
+    running app process — stop the app or use a separate replica before
+    running this. Postgres has no such lock caveat (concurrent connections
+    are normal).
     """
     import uuid as _uuid
 
-    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.db import SYSTEM_ADMIN_GROUP
 
     if not yes:
         confirm = typer.confirm(
@@ -1306,46 +1304,39 @@ def break_glass_grant_admin(
             typer.echo("Aborted.")
             raise typer.Exit(1)
 
-    conn = get_system_db()
-    try:
-        users = users_repo()
-        groups = user_groups_repo()
-        members = user_group_members_repo()
+    users = users_repo()
+    groups = user_groups_repo()
+    members = user_group_members_repo()
 
-        admin_group = groups.get_by_name(SYSTEM_ADMIN_GROUP)
-        if admin_group is None:
-            typer.echo(
-                f"FATAL: '{SYSTEM_ADMIN_GROUP}' group missing. Start the app "
-                "once so _seed_system_groups can recreate it, then retry.",
-                err=True,
-            )
-            raise typer.Exit(2)
-
-        existing = users.get_by_email(email)
-        if existing is None:
-            user_id = _uuid.uuid4().hex
-            users.create(
-                id=user_id,
-                email=email,
-                name=email.split("@", 1)[0],
-            )
-            typer.echo(f"Created user {email} (id={user_id[:8]}…)")
-        else:
-            user_id = existing["id"]
-
-        if members.has_membership(user_id, admin_group["id"]):
-            typer.echo(f"{email} is already a member of '{SYSTEM_ADMIN_GROUP}'.")
-            return
-
-        members.add_member(
-            user_id=user_id,
-            group_id=admin_group["id"],
-            source="cli_break_glass",
-            added_by="cli:break-glass",
+    admin_group = groups.get_by_name(SYSTEM_ADMIN_GROUP)
+    if admin_group is None:
+        typer.echo(
+            f"FATAL: '{SYSTEM_ADMIN_GROUP}' group missing. Start the app "
+            "once so _seed_system_groups can recreate it, then retry.",
+            err=True,
         )
-        typer.echo(f"Granted Admin to {email}. Audit source='cli_break_glass'.")
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        raise typer.Exit(2)
+
+    existing = users.get_by_email(email)
+    if existing is None:
+        user_id = _uuid.uuid4().hex
+        users.create(
+            id=user_id,
+            email=email,
+            name=email.split("@", 1)[0],
+        )
+        typer.echo(f"Created user {email} (id={user_id[:8]}…)")
+    else:
+        user_id = existing["id"]
+
+    if members.has_membership(user_id, admin_group["id"]):
+        typer.echo(f"{email} is already a member of '{SYSTEM_ADMIN_GROUP}'.")
+        return
+
+    members.add_member(
+        user_id=user_id,
+        group_id=admin_group["id"],
+        source="cli_break_glass",
+        added_by="cli:break-glass",
+    )
+    typer.echo(f"Granted Admin to {email}. Audit source='cli_break_glass'.")

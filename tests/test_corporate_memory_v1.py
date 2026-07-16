@@ -51,7 +51,7 @@ def _run_verification_processor(conn, extractor, session_data_dir=None):
     pre_contradictions = conn.execute("SELECT COUNT(*) FROM knowledge_contradictions").fetchone()[0]
 
     processor = VerificationProcessor(extractor)
-    stats = run_processor(conn, processor, session_data_dir=session_data_dir)
+    stats = run_processor(processor, session_data_dir=session_data_dir)
 
     post_evidence = conn.execute("SELECT COUNT(*) FROM verification_evidence").fetchone()[0]
     post_contradictions = conn.execute("SELECT COUNT(*) FROM knowledge_contradictions").fetchone()[0]

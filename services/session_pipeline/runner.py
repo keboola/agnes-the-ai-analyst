@@ -17,7 +17,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-import duckdb
 
 from services.session_pipeline.contract import ProcessorResult, SessionProcessor
 from services.session_pipeline.lib import compute_file_hash
@@ -26,6 +25,7 @@ from src.repositories import (
     session_processor_state_repo,
     users_repo,
 )
+
 logger = logging.getLogger(__name__)
 
 
@@ -82,16 +82,32 @@ DEFAULT_SESSION_DATA_DIR = Path(os.environ.get("SESSION_DATA_DIR", "/data/user_s
 
 
 def run_processor(
-    conn: duckdb.DuckDBPyConnection,
     processor: SessionProcessor,
     session_data_dir: Path | None = None,
+    max_sessions_per_run: int | None = None,
 ) -> dict[str, Any]:
     """Run *processor* against every unprocessed session in
     *session_data_dir* (defaults to $SESSION_DATA_DIR or /data/user_sessions).
 
-    Returns a stats dict with: scanned, processed, skipped, errors,
+    Returns a stats dict with: scanned, processed, skipped, capped, errors,
     items_extracted, errors_detail. Caller (admin endpoint) puts this in the
     audit row and HTTP response body.
+
+    ``max_sessions_per_run``, when set, caps how many candidates are actually
+    processed in this call — the rest are left for the next scheduler tick.
+    Bounds the worst-case wall-clock/CPU cost of a single invocation (each
+    candidate can trigger multiple synchronous, blocking LLM calls); a burst
+    of session closures landing in the same tick no longer processes
+    unboundedly in one request. ``scanned`` always reflects the true total
+    found; ``capped`` reports how many were deferred, so operators can see a
+    forming backlog before it becomes one.
+
+    No DB connection is accepted — every state read/write here and in every
+    ``SessionProcessor.process_session`` implementation routes through the
+    ``src.repositories`` factory. A prior ``conn`` parameter was threaded
+    through but never read; at the caller (``POST
+    /api/admin/run-session-processor``) it forced open the process-singleton
+    DuckDB connection on every invocation, even on Postgres-backed instances.
     """
     effective_dir = session_data_dir if session_data_dir is not None else DEFAULT_SESSION_DATA_DIR
 
@@ -100,6 +116,7 @@ def run_processor(
         "scanned": 0,
         "processed": 0,
         "skipped": 0,
+        "capped": 0,
         "errors": 0,
         "items_extracted": 0,
         "errors_detail": [],
@@ -112,6 +129,17 @@ def run_processor(
     if not candidates:
         logger.info("No sessions to process for processor=%s", processor.name)
         return stats
+
+    if max_sessions_per_run is not None and len(candidates) > max_sessions_per_run:
+        stats["capped"] = len(candidates) - max_sessions_per_run
+        logger.info(
+            "Processor %s: capping this run to %d/%d candidates; %d deferred to next tick",
+            processor.name,
+            max_sessions_per_run,
+            len(candidates),
+            stats["capped"],
+        )
+        candidates = candidates[:max_sessions_per_run]
 
     # Pre-resolve (user_id, email) per directory name so each processor
     # can store the stable identity. Cache avoids repeated DB lookups
@@ -161,7 +189,6 @@ def run_processor(
                 jsonl_path,
                 canonical_username,
                 session_key,
-                conn,
                 user_id=resolved_uid,
             )
         except Exception as e:
@@ -198,11 +225,12 @@ def run_processor(
         stats["items_extracted"] += result.items_count
 
     logger.info(
-        "Processor %s: scanned=%d processed=%d skipped=%d errors=%d items=%d",
+        "Processor %s: scanned=%d processed=%d skipped=%d capped=%d errors=%d items=%d",
         processor.name,
         stats["scanned"],
         stats["processed"],
         stats["skipped"],
+        stats["capped"],
         stats["errors"],
         stats["items_extracted"],
     )

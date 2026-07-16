@@ -96,68 +96,65 @@ async def google_callback(request: Request):
 
         # Find or create user, sync Workspace group memberships into
         # user_group_members.
-        from src.db import get_system_db
         from app.auth.group_sync import apply_user_groups
         import uuid
 
-        conn = get_system_db()
-        try:
-            repo = users_repo()
+        repo = users_repo()
+        user = repo.get_by_email(email)
+        if not user:
+            user_id = str(uuid.uuid4())
+            repo.create(id=user_id, email=email, name=name)
+            # Issue #748: auto-grant Everyone at creation (source=
+            # 'system_seed') unless AGNES_GROUP_EVERYONE_EMAIL maps
+            # Everyone to a Workspace group — then apply_user_groups
+            # below is the sole writer. Creation-time only: never
+            # called again for a returning user, so an admin's manual
+            # removal later sticks.
+            try:
+                from app.auth.group_sync import ensure_everyone_membership
+
+                ensure_everyone_membership(user_id, added_by="auth.google:first-signin")
+            except Exception:
+                logger.exception(
+                    "ensure_everyone_membership failed for new user %s",
+                    email,
+                )
+            # v39: subscribe new user to every system plugin so the
+            # mandatory tier reaches them on their first session
+            # without an admin reconcile. Fail-soft — a transient
+            # marketplace_plugins read failure doesn't block sign-in.
+            try:
+                from src.repositories import user_curated_subscriptions_repo
+
+                user_curated_subscriptions_repo().fanout_system_for_user(user_id)
+            except Exception:
+                logger.exception(
+                    "system-plugin fanout failed for new user %s",
+                    email,
+                )
             user = repo.get_by_email(email)
-            if not user:
-                user_id = str(uuid.uuid4())
-                repo.create(id=user_id, email=email, name=name)
-                # Issue #748: auto-grant Everyone at creation (source=
-                # 'system_seed') unless AGNES_GROUP_EVERYONE_EMAIL maps
-                # Everyone to a Workspace group — then apply_user_groups
-                # below is the sole writer. Creation-time only: never
-                # called again for a returning user, so an admin's manual
-                # removal later sticks.
-                try:
-                    from app.auth.group_sync import ensure_everyone_membership
+        if not bool(user.get("active", True)):
+            return RedirectResponse(url="/login?error=deactivated")
 
-                    ensure_everyone_membership(user_id, added_by="auth.google:first-signin")
-                except Exception:
-                    logger.exception(
-                        "ensure_everyone_membership failed for new user %s",
-                        email,
-                    )
-                # v39: subscribe new user to every system plugin so the
-                # mandatory tier reaches them on their first session
-                # without an admin reconcile. Fail-soft — the import +
-                # fanout sit inside the same conn used for repo.create
-                # above, so a transient marketplace_plugins read failure
-                # doesn't block sign-in.
-                try:
-                    from src.repositories import user_curated_subscriptions_repo
+        # Sync Workspace groups → user_group_members (source='google_sync').
+        # Shared write path with /auth/refresh-groups so post-OAuth-callback
+        # refreshes use the same logic. Fail-soft: ``apply_user_groups``
+        # never raises; on transient API failure it returns
+        # ``soft_failed=True`` and preserves the previous snapshot.
+        # `conn` is `None` — `apply_user_groups` ignores it, routing every
+        # repo lookup through the backend-aware factory instead (retained
+        # only for signature stability, matching the app/auth/access.py
+        # call site).
+        sync_result = apply_user_groups(user["id"], email, None)
 
-                    user_curated_subscriptions_repo().fanout_system_for_user(user_id)
-                except Exception:
-                    logger.exception(
-                        "system-plugin fanout failed for new user %s",
-                        email,
-                    )
-                user = repo.get_by_email(email)
-            if not bool(user.get("active", True)):
-                return RedirectResponse(url="/login?error=deactivated")
-
-            # Sync Workspace groups → user_group_members (source='google_sync').
-            # Shared write path with /auth/refresh-groups so post-OAuth-callback
-            # refreshes use the same logic. Fail-soft: ``apply_user_groups``
-            # never raises; on transient API failure it returns
-            # ``soft_failed=True`` and preserves the previous snapshot.
-            sync_result = apply_user_groups(user["id"], email, conn)
-
-            # Login gate: ``denied=True`` means the prefix filter is configured
-            # and the Admin SDK returned a non-empty fetch that contained zero
-            # groups matching the prefix — i.e. the user is signed into Google
-            # but is not a member of any group permitted to use this Agnes
-            # instance. ``soft_failed`` (empty fetch / API error) does NOT
-            # trigger the gate, so transient outages can't lock users out.
-            if sync_result.denied:
-                return RedirectResponse(url="/login?error=not_in_allowed_group")
-        finally:
-            conn.close()
+        # Login gate: ``denied=True`` means the prefix filter is configured
+        # and the Admin SDK returned a non-empty fetch that contained zero
+        # groups matching the prefix — i.e. the user is signed into Google
+        # but is not a member of any group permitted to use this Agnes
+        # instance. ``soft_failed`` (empty fetch / API error) does NOT
+        # trigger the gate, so transient outages can't lock users out.
+        if sync_result.denied:
+            return RedirectResponse(url="/login?error=not_in_allowed_group")
 
         # Issue JWT — identity-only, authorization derives from
         # user_group_members at request time (see app.auth.access).

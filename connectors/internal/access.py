@@ -164,9 +164,7 @@ def build_filter_clause(table: InternalTable, user: dict[str, Any], is_admin: bo
     return f"WHERE {table.filter_column} = '{safe}'"
 
 
-def sample_internal_rows(
-    table: InternalTable, where_clause: str, n: int
-) -> list[dict[str, Any]]:
+def sample_internal_rows(table: InternalTable, where_clause: str, n: int) -> list[dict[str, Any]]:
     """Read up to ``n`` rows from an internal table's physical source on the
     ACTIVE state backend (DuckDB or Postgres), applying the RBAC ``where_clause``.
 
@@ -312,10 +310,7 @@ def _materialized_internal_duckdb(refs, user, is_admin):
             for table_id in refs:
                 table = INTERNAL_TABLES_BY_ID[table_id]
                 where_clause = build_filter_clause(table, user, is_admin)
-                q = (
-                    f'SELECT * FROM "{table.source_table}" {where_clause} '
-                    f"LIMIT {_PG_MATERIALIZE_ROW_CAP + 1}"
-                )
+                q = f'SELECT * FROM "{table.source_table}" {where_clause} LIMIT {_PG_MATERIALIZE_ROW_CAP + 1}'
                 result = pg.exec_driver_sql(q)
                 col_names = list(result.keys())
                 fetched = result.mappings().all()
@@ -327,15 +322,9 @@ def _materialized_internal_duckdb(refs, user, is_admin):
                     )
                 # Empty result → keep the column names so the user SQL's column
                 # references still resolve (COUNT/GROUP BY return empty).
-                src_df = (
-                    pd.DataFrame(list(fetched))
-                    if fetched
-                    else pd.DataFrame(columns=col_names)
-                )
+                src_df = pd.DataFrame(list(fetched)) if fetched else pd.DataFrame(columns=col_names)
                 conn.register("_pg_src_df", src_df)
-                conn.execute(
-                    f'CREATE TABLE "{table.source_table}" AS SELECT * FROM _pg_src_df'
-                )
+                conn.execute(f'CREATE TABLE "{table.source_table}" AS SELECT * FROM _pg_src_df')
                 conn.unregister("_pg_src_df")
         return conn, conn.close
     except Exception:
@@ -410,6 +399,16 @@ def execute_internal_query(
     #
     # Admin path is unaffected — admins have legitimate need to read
     # raw rows, and the filter clause is empty for them anyway.
+    #
+    # NOT gated on use_pg(): DuckDB self-migrates its full schema on every
+    # `get_system_db()` connect regardless of the active state backend
+    # (src/db.py), so system.duckdb always holds the same table NAMES as
+    # the active backend even when Postgres holds the actual rows — the
+    # denylist is schema-shape-based, not data-based, so this read is
+    # correct on both backends. (Tried gating this on PG during the 2026-07
+    # backend-split cleanup; reverted — it let a CTE-shadow attack skip the
+    # denylist on PG, caught by
+    # tests/db_pg/test_parity_internal_query.py::test_cte_shadow_cannot_escape_rbac_both_backends.)
     if not is_admin:
         stripped = _strip_sql_noise(sql)
         sensitive = _sensitive_table_reference(stripped, get_system_db())
@@ -464,18 +463,42 @@ def get_schema(system_db_path: str, table_id: str) -> list[dict]:
     """Return the underlying physical schema for an internal table.
 
     Used by ``/api/v2/schema/<id>`` so ``agnes schema <table>`` works
-    against internal sources. Reuses the shared ``system.duckdb``
-    connection — same rationale as ``execute_internal_query``: opening
-    a parallel handle to the same file is process-wide blocked. The
-    information_schema query is read-only and small.
+    against internal sources.
 
     ``system_db_path`` is kept in the signature for API symmetry with the
     earlier draft, but is unused — the singleton handle already knows the
     path.
+
+    Backend-aware (same ``use_pg()`` split as ``sample_internal_rows``
+    above): the internal source tables (``usage_session_summary`` /
+    ``audit_log`` / etc.) are app-state tables that live in Postgres on a
+    PG-backed instance, not in ``system.duckdb`` — querying the DuckDB
+    ``information_schema`` there returned an empty/wrong schema (and forced
+    open the process-singleton DuckDB connection for no reason).
     """
     if table_id not in INTERNAL_TABLES_BY_ID:
         return []
     table = INTERNAL_TABLES_BY_ID[table_id]
+
+    from src.repositories import use_pg
+
+    if use_pg():
+        from src.db_pg import get_engine
+
+        # table.source_table is a trusted value from the internal-table
+        # enum (never user input) — interpolated directly, matching
+        # sample_internal_rows' raw exec_driver_sql style above, rather
+        # than bind params whose placeholder syntax (%s vs :name) varies
+        # by DBAPI driver.
+        sql = (
+            "SELECT column_name, data_type, is_nullable "
+            "FROM information_schema.columns "
+            f"WHERE table_name = '{table.source_table}' ORDER BY ordinal_position"
+        )
+        with get_engine().connect() as conn:
+            rows = conn.exec_driver_sql(sql).fetchall()
+        return [{"name": r[0], "type": r[1], "nullable": r[2] == "YES"} for r in rows]
+
     from src.db import get_system_db
 
     cursor = get_system_db().cursor()

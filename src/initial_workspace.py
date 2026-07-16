@@ -69,9 +69,7 @@ _WORKSPACE_SUBDIR = "workspace"
 # modal) rather than at extract time (analyst sees a confusing failure
 # half-way through ``agnes init``). The repo on disk stays unchanged —
 # admin must commit + push a fix.
-_RESERVED_PATHS: tuple[str, ...] = (
-    ".claude/init-complete",
-)
+_RESERVED_PATHS: tuple[str, ...] = (".claude/init-complete",)
 
 
 class TemplateValidationError(ValueError):
@@ -141,19 +139,12 @@ def validate_template_tree(root: Path) -> None:
             continue
         if entry.is_symlink():
             rel = entry.relative_to(workspace_dir).as_posix()
-            raise TemplateValidationError(
-                f"symlinks are not allowed in the template repo: "
-                f"{_WORKSPACE_SUBDIR}/{rel}"
-            )
+            raise TemplateValidationError(f"symlinks are not allowed in the template repo: {_WORKSPACE_SUBDIR}/{rel}")
         rel_posix = entry.relative_to(workspace_dir).as_posix()
         if ".." in rel_posix.split("/"):
-            raise TemplateValidationError(
-                f"path contains '..' segment: {_WORKSPACE_SUBDIR}/{rel_posix}"
-            )
+            raise TemplateValidationError(f"path contains '..' segment: {_WORKSPACE_SUBDIR}/{rel_posix}")
         if entry.is_absolute() and not str(entry).startswith(str(workspace_dir)):
-            raise TemplateValidationError(
-                f"path escapes template root: {_WORKSPACE_SUBDIR}/{rel_posix}"
-            )
+            raise TemplateValidationError(f"path escapes template root: {_WORKSPACE_SUBDIR}/{rel_posix}")
         if rel_posix in _RESERVED_PATHS:
             raise TemplateValidationError(
                 f"path {_WORKSPACE_SUBDIR}/{rel_posix} is reserved by Agnes "
@@ -207,9 +198,7 @@ def sync_template(
             stderr = _redact(e.stderr or "", token).strip()
             raise RuntimeError(f"git {action} failed: {stderr}") from None
         except subprocess.TimeoutExpired:
-            raise RuntimeError(
-                f"git {action} timed out after {GIT_TIMEOUT_SEC}s"
-            ) from None
+            raise RuntimeError(f"git {action} timed out after {GIT_TIMEOUT_SEC}s") from None
 
         # Run the strict validator AFTER the working tree is settled.
         # A failure here leaves the working dir on disk so the admin can
@@ -220,7 +209,9 @@ def sync_template(
         files = list_template_files()
         logger.info(
             "initial-workspace %s sha=%s files=%d",
-            action, sha, len(files),
+            action,
+            sha,
+            len(files),
         )
         return {"commit_sha": sha, "path": str(target), "file_count": len(files)}
 
@@ -286,7 +277,7 @@ def list_iwt_repo_files() -> List[str]:
     return out
 
 
-def build_zip(conn=None, *, user=None, server_url=None) -> bytes:
+def build_zip(conn=None, *, user=None, server_url=None, resolve_overlay: Optional[bool] = None) -> bytes:
     """Build an in-memory zip of ``<initial-workspace>/workspace/``,
     excluding ``.git/`` and anything outside the ``workspace/`` subdir.
     Re-runs ``validate_template_tree`` first as defense in depth —
@@ -298,10 +289,11 @@ def build_zip(conn=None, *, user=None, server_url=None) -> bytes:
     ``workspace/CLAUDE.md`` in the repo → ``CLAUDE.md`` at workspace
     root after extraction).
 
-    Admin overlay (#622): when ``conn`` is provided and the workspace prompt
-    is in ``source_mode='editor'`` with override content set, the admin's
-    edited ``CLAUDE.md`` REPLACES the IWT clone's ``workspace/CLAUDE.md`` in
-    the zip. This is THE chokepoint that fixes the issue: override-mode
+    Admin overlay (#622): when the overlay check runs (see
+    ``resolve_overlay`` below) and the workspace prompt is in
+    ``source_mode='editor'`` with override content set, the admin's edited
+    ``CLAUDE.md`` REPLACES the IWT clone's ``workspace/CLAUDE.md`` in the
+    zip. This is THE chokepoint that fixes the issue: override-mode
     ``agnes init`` serves this zip verbatim (it bypasses ``/api/welcome``), so
     without the overlay the admin editor would ship nothing.
 
@@ -313,8 +305,24 @@ def build_zip(conn=None, *, user=None, server_url=None) -> bytes:
     logged and drops the overlay (pure clone) — never raw template syntax.
     Without ``user`` (the cloud-chat workdir fetch, which re-renders
     ``CLAUDE.md`` itself via ``render_claude_md``) the override ships
-    verbatim. ``conn=None`` (defensive callers, tests,
-    ``delete_template_dir`` path) skips the overlay → pure clone.
+    verbatim.
+
+    ``resolve_overlay`` controls whether the overlay check runs at all,
+    independent of whether a live DuckDB ``conn`` is available:
+
+      - ``None`` (default): run the check iff ``conn is not None`` — the
+        original contract, preserved for existing callers that pass a
+        DuckDB conn to opt in and rely on ``conn=None`` to opt out
+        (defensive callers, tests, the pure-clone fallback path).
+      - Explicit ``True``/``False``: overrides the ``conn``-based default.
+        Needed on the Postgres backend, where ``resolve_prompt`` /
+        ``_prompt_repo`` already resolve the override through the
+        backend-aware factory regardless of ``conn`` (only a *DuckDB*
+        ``conn`` is ever bound directly) — a caller with no DuckDB
+        connection to offer (because opening one would force-open the
+        process-singleton system.duckdb on a PG-backed instance) still
+        wants the overlay check to run. Pass ``resolve_overlay=True`` with
+        ``conn=None`` in that case instead of fabricating a connection.
 
     Returns the zip bytes. Caller computes ``ETag`` from the bytes (or
     from ``last_commit_sha`` for a cheaper stable identifier).
@@ -322,8 +330,9 @@ def build_zip(conn=None, *, user=None, server_url=None) -> bytes:
     target = get_initial_workspace_dir()
     validate_template_tree(target)
 
+    check_overlay = resolve_overlay if resolve_overlay is not None else conn is not None
     workspace_overlay: Optional[str] = None
-    if conn is not None:
+    if check_overlay:
         try:
             content, mode = resolve_prompt("workspace", conn)
             if mode == "editor" and content is not None:
@@ -335,9 +344,7 @@ def build_zip(conn=None, *, user=None, server_url=None) -> bytes:
 
                     env = Environment(undefined=StrictUndefined, autoescape=False)
                     workspace_overlay = env.from_string(content).render(
-                        **build_claude_md_context(
-                            conn, user=user, server_url=server_url
-                        )
+                        **build_claude_md_context(conn, user=user, server_url=server_url)
                     )
         except Exception:
             # An overlay failure must NEVER block serving the clone — the
@@ -409,6 +416,7 @@ def is_configured() -> bool:
     """
     # Lazy import to avoid pulling app.api into src module load time.
     from app.api.initial_workspace import _read_section
+
     return bool(_read_section().get("url"))
 
 
@@ -626,8 +634,7 @@ def resolve_prompt(kind: str, conn=None) -> tuple[Optional[str], str]:
         if _is_within(iwt_root, target) and target.is_file():
             return (target.read_text(encoding="utf-8"), "git")
         logger.warning(
-            "resolve_prompt(%s): git mode bound to %r but file is absent in the "
-            "IWT clone — falling back to default",
+            "resolve_prompt(%s): git mode bound to %r but file is absent in the IWT clone — falling back to default",
             kind,
             rel_path,
         )
@@ -731,9 +738,7 @@ def _assert_safe_entry(name: str, workspace: Path) -> None:
     try:
         target.relative_to(workspace)
     except ValueError as exc:
-        raise ValueError(
-            f"unsafe zip entry escapes workspace: {name!r}"
-        ) from exc
+        raise ValueError(f"unsafe zip entry escapes workspace: {name!r}") from exc
 
 
 def extract_zip_to_workspace(zip_bytes: bytes, workspace: Path) -> ExtractResult:

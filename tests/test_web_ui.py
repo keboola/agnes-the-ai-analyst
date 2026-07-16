@@ -1,5 +1,4 @@
 """Smoke tests for web UI pages."""
-import os
 import pytest
 from fastapi.testclient import TestClient
 
@@ -629,3 +628,48 @@ class TestUnauthenticatedHtmlRedirects:
         assert safe_next_path(None) == "/dashboard"
         # Empty-default variant (used when computing query string).
         assert safe_next_path(None, default="") == ""
+
+
+class TestLocalDevLoginShortcut:
+    """`GET /login` under LOCAL_DEV_MODE=1 short-circuits to the home route
+    once the seeded dev user exists — via `_get_local_dev_user`, which
+    resolves through the repository factory regardless of `conn`. Regression
+    for dropping the dead `get_system_db()` connection that used to wrap
+    this check (see tests/test_backend_split_guard.py)."""
+
+    @pytest.fixture
+    def dev_client(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-min-32-characters!!")
+        monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+        monkeypatch.setenv("LOCAL_DEV_USER_EMAIL", "dev@localhost")
+        (tmp_path / "state").mkdir()
+        (tmp_path / "analytics").mkdir()
+        (tmp_path / "extracts").mkdir()
+        from src.db import close_system_db
+        close_system_db()
+        from app.main import create_app
+        with TestClient(create_app()) as client:
+            yield client
+        close_system_db()
+
+    def test_redirects_home_when_dev_user_seeded(self, dev_client):
+        """App startup (lifespan) seeds the dev user under LOCAL_DEV_MODE — a
+        subsequent GET /login must redirect straight to the home route."""
+        resp = dev_client.get("/login", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] != "/login"
+
+    def test_falls_through_to_form_when_dev_user_missing(self, dev_client, monkeypatch):
+        """If the seed somehow didn't run, the login form must still render
+        (not crash) instead of infinitely bouncing."""
+        from src.repositories import users_repo
+
+        # Startup already seeded the dev user; simulate "missing" by pointing
+        # the lookup at a different email than the one actually seeded.
+        monkeypatch.setenv("LOCAL_DEV_USER_EMAIL", "someone-else@localhost")
+        assert users_repo().get_by_email("someone-else@localhost") is None
+        resp = dev_client.get("/login")
+        assert resp.status_code == 200
+        assert "email" in resp.text.lower()

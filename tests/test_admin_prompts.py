@@ -31,8 +31,7 @@ def test_fresh_db_has_v75_columns(tmp_path, monkeypatch):
         cols = {
             r[0]
             for r in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'instance_templates'"
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'instance_templates'"
             ).fetchall()
         }
         assert {"source_mode", "git_path", "base_sha"} <= cols
@@ -57,9 +56,7 @@ def test_v74_upgrades_to_v75_preserving_content(tmp_path):
         "CREATE TABLE instance_templates (key VARCHAR PRIMARY KEY, content TEXT, "
         "previous_content TEXT, updated_at TIMESTAMP, updated_by VARCHAR)"
     )
-    conn.execute(
-        "INSERT INTO instance_templates (key, content) VALUES ('claude_md', 'KEEP ME')"
-    )
+    conn.execute("INSERT INTO instance_templates (key, content) VALUES ('claude_md', 'KEEP ME')")
 
     from src.db import _v74_to_v75
 
@@ -196,6 +193,56 @@ def test_build_zip_no_conn_is_pure_clone(tmp_path, monkeypatch):
     assert files["CLAUDE.md"] == "FROM CLONE"
 
 
+def test_build_zip_resolve_overlay_true_without_conn_still_applies_override(tmp_path, monkeypatch):
+    """``resolve_overlay=True`` must apply the editor override even with
+    ``conn=None`` — the Postgres-backend path (app/main.py's
+    ``_fetch_local_template_zip``) relies on this so it never has to open a
+    DuckDB connection just to trigger the overlay check. Regression for the
+    production incident: a naive `conn=None` pass-through without this flag
+    would have silently dropped the admin CLAUDE.md overlay on cloud-chat
+    workdir fetches on Postgres-backed instances."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    _make_iwt_clone(tmp_path, claude_md="FROM CLONE")
+
+    from src.repositories import claude_md_template_repo
+    import src.initial_workspace as iw
+
+    monkeypatch.setattr(iw, "validate_template_tree", lambda *a, **k: None)
+
+    repo = claude_md_template_repo()
+    repo.set("FROM EDITOR OVERRIDE", updated_by="a@x.com")  # editor mode default
+
+    data = iw.build_zip(None, resolve_overlay=True)
+    files = _zip_names_and_content(data)
+    assert files["CLAUDE.md"] == "FROM EDITOR OVERRIDE"
+    assert "settings.json" in files
+
+
+def test_build_zip_resolve_overlay_false_skips_override_even_with_conn(tmp_path, monkeypatch):
+    """``resolve_overlay=False`` must skip the overlay check even when a live
+    conn is passed — proves the explicit flag wins over the conn-based
+    default in both directions."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    _make_iwt_clone(tmp_path, claude_md="FROM CLONE")
+
+    from src.repositories import claude_md_template_repo
+    import src.initial_workspace as iw
+    from src.db import get_system_db
+
+    monkeypatch.setattr(iw, "validate_template_tree", lambda *a, **k: None)
+
+    repo = claude_md_template_repo()
+    repo.set("FROM EDITOR OVERRIDE", updated_by="a@x.com")
+
+    conn = get_system_db()
+    try:
+        data = iw.build_zip(conn, resolve_overlay=False)
+    finally:
+        conn.close()
+    files = _zip_names_and_content(data)
+    assert files["CLAUDE.md"] == "FROM CLONE"
+
+
 # ---------------------------------------------------------------------------
 # 4. resolve_prompt — git mode binds to the IWT file
 # ---------------------------------------------------------------------------
@@ -270,9 +317,7 @@ def test_resolve_prompt_rejects_path_traversal(tmp_path, monkeypatch):
     repo.bind_git("../outside_secret.env", base_sha="x", updated_by="a@x.com")
 
     content, mode = iw.resolve_prompt("workspace", None)
-    assert content is None and mode == "git", (
-        "a git_path escaping the IWT root must fall back, not read the file"
-    )
+    assert content is None and mode == "git", "a git_path escaping the IWT root must fall back, not read the file"
 
 
 def test_resolve_seed_file_rejects_path_traversal(monkeypatch, tmp_path: Path):
@@ -635,9 +680,7 @@ def test_prompt_repo_ignores_duckdb_conn_on_postgres(monkeypatch):
 
     conn = _duckdb.connect(":memory:")
     try:
-        assert iw._prompt_repo("workspace", conn) is sentinel, (
-            "PG backend + DuckDB conn must route through the factory"
-        )
+        assert iw._prompt_repo("workspace", conn) is sentinel, "PG backend + DuckDB conn must route through the factory"
     finally:
         conn.close()
 

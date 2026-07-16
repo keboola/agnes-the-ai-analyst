@@ -7,8 +7,6 @@ import hashlib
 import logging
 from pathlib import Path
 
-import duckdb
-
 from services.session_pipeline.contract import ProcessorResult
 from services.session_pipeline.lib import parse_jsonl
 from services.session_processors.usage_lib import (
@@ -35,7 +33,6 @@ class UsageProcessor:
         session_path: Path,
         username: str,
         session_key: str,
-        conn: duckdb.DuckDBPyConnection,
         *,
         user_id: str | None = None,
     ) -> ProcessorResult:

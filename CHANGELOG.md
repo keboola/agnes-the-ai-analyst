@@ -10,6 +10,47 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- `SESSION_PROCESSOR_MAX_PER_RUN` (default 50) caps how many sessions a
+  single `/api/admin/run-session-processor` invocation processes; the rest
+  are deferred to the next scheduler tick instead of running unboundedly in
+  one request. Bounds the worst-case wall-clock/CPU cost of a burst of
+  session closures landing in the same tick (each candidate can trigger
+  multiple synchronous LLM calls). The response/audit-log stats gained a
+  `capped` field reporting how many sessions were deferred.
+- `SCHEDULER_VERIFICATION_SCHEDULE` lets an operator pin the LLM-heavy
+  verification session-processor to a fixed off-peak time (e.g.
+  `"daily 04:15"`) instead of firing every N minutes/hours — useful when
+  daytime CPU contention with request-serving matters more than
+  near-real-time verification freshness. Falls back to the existing
+  interval-derived cadence when unset or invalid. Pair with a matching
+  `SCHEDULER_VERIFICATION_DETECTOR_INTERVAL` bump so the liveness probe's
+  staleness-warning grace window stays calibrated to the real cadence.
+
+### Fixed
+
+- Closed a batch of backend-split debt (`get_system_db()` callers bypassing
+  the DuckDB/Postgres factory) that could force-open and hold a persistent,
+  process-singleton DuckDB connection — with its exclusive OS-level file
+  lock — on instances configured for the Postgres app-state backend. The
+  worst offenders ran on every boot (the knowledge-base FTS index rebuild,
+  cloud-chat repository construction, scheduler-user seeding, the
+  cloud-chat workdir CLAUDE.md fetch/render) or on a tight cadence (the
+  liveness probe's schema check, the materialized-SQL sync pass,
+  MCP/git-marketplace request auth, the session-pipeline processor runner,
+  every rendered HTML error page); those are now gated on `use_pg()` or
+  route entirely through the repository factory. The liveness probe
+  (`/api/health`) now checks the Alembic revision instead of the
+  DuckDB-only `schema_version` table when the active backend is Postgres.
+  Internal-table schema introspection (`agnes schema <table>` /
+  `/api/v2/schema/<id>` for `agnes_sessions`/`agnes_telemetry`/`agnes_audit`)
+  now reads the Postgres `information_schema` on that backend instead of
+  always querying the DuckDB-only one, which previously returned an empty
+  schema. `SessionProcessor.process_session()` no longer accepts an unused
+  DB connection parameter (dropped from the framework, both built-in
+  processors, and the CLI/admin-endpoint runner).
+
 ---
 
 ## [0.74.94] - 2026-07-15

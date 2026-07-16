@@ -17,6 +17,7 @@ from src.repositories import (
     audit_repo,
     table_registry_repo,
 )
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 
@@ -120,7 +121,7 @@ def build_schema(
 
 
 def build_schema_uncached(
-    conn: duckdb.DuckDBPyConnection,
+    conn: duckdb.DuckDBPyConnection | None,
     table_id: str,
     *,
     bq: BqAccess,
@@ -134,6 +135,11 @@ def build_schema_uncached(
     Pass `row` from the upstream caller's `repo.get(table_id)` to avoid
     a redundant DB round-trip; if not provided, `build_schema_uncached`
     fetches it itself (the warmup-direct call site).
+
+    ``conn`` is accepted for call-site stability but is not read in this
+    function's body — every lookup here goes through the repository
+    factory or a standalone path (e.g. the internal-source branch below
+    resolves the system-db file path directly). Callers may pass ``None``.
     """
     if row is None:
         repo = table_registry_repo()
@@ -150,6 +156,7 @@ def build_schema_uncached(
         # returns the same shape as /api/v2/schema/<keboola-table>.
         from connectors.internal.access import get_schema as _get_internal_schema
         from src.db import _get_state_dir
+
         system_db_path = str(_get_state_dir() / "system.duckdb")
         cols = _get_internal_schema(system_db_path, table_id)
         payload = {
@@ -157,8 +164,7 @@ def build_schema_uncached(
             "source_type": source_type,
             "sql_flavor": "duckdb",
             "columns": [
-                {"name": c["name"], "type": c["type"], "nullable": c["nullable"], "description": ""}
-                for c in cols
+                {"name": c["name"], "type": c["type"], "nullable": c["nullable"], "description": ""} for c in cols
             ],
             "partition_by": None,
             "clustered_by": [],
@@ -191,24 +197,20 @@ def build_schema_uncached(
         # necessarily the source_type (e.g. the bundled `demo` extract registers
         # tables as source_type='local' but lives under extracts/demo/).
         from app.utils import resolve_local_parquet
+
         parquet = resolve_local_parquet(table_id, source_type)
         if parquet is None:
             raise NotFound(table_id)
         local_conn = _open_duckdb(":memory:")
         try:
-            cols = local_conn.execute(
-                "DESCRIBE SELECT * FROM read_parquet(?)", [str(parquet)]
-            ).fetchall()
+            cols = local_conn.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(parquet)]).fetchall()
         finally:
             local_conn.close()
         payload = {
             "table_id": table_id,
             "source_type": source_type,
             "sql_flavor": "duckdb",
-            "columns": [
-                {"name": c[0], "type": c[1], "nullable": c[2] == "YES", "description": ""}
-                for c in cols
-            ],
+            "columns": [{"name": c[0], "type": c[1], "nullable": c[2] == "YES", "description": ""} for c in cols],
             "partition_by": None,
             "clustered_by": [],
             "where_dialect_hints": {},
@@ -257,8 +259,7 @@ def schema(
                 user_id=user.get("id"),
                 action="catalog.schema",
                 resource=resource,
-                params={"duration_ms": int((time.monotonic() - t0) * 1000),
-                        "error": str(exc)[:200]},
+                params={"duration_ms": int((time.monotonic() - t0) * 1000), "error": str(exc)[:200]},
                 result=f"error.{status_code}",
                 client_kind=client_kind_from_user(user),
             )
@@ -268,6 +269,7 @@ def schema(
             raise HTTPException(status_code=404, detail=f"table {table_id!r} not found")
         if isinstance(exc, PermissionError):
             from src.rbac import table_not_in_stack_message
+
             raise HTTPException(
                 status_code=403,
                 detail=table_not_in_stack_message(table_id),

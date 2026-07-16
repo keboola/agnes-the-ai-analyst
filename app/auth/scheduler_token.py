@@ -72,15 +72,15 @@ def is_scheduler_token(token: str) -> bool:
     return hmac.compare_digest(token, secret)
 
 
-def ensure_scheduler_user(conn: Optional[duckdb.DuckDBPyConnection] = None) -> dict:
+def ensure_scheduler_user() -> dict:
     """Idempotently provision the scheduler user + Admin group membership.
 
     Called both from the app's startup hook (so the user exists from the
     very first boot) and lazily from :func:`get_scheduler_user` so a token
     presented before the next restart of the app still resolves.
 
-    ``conn`` retained for signature stability — actual repo lookups go
-    through the factory in ``src.repositories``.
+    All repo lookups go through the factory in ``src.repositories`` — no
+    connection is needed (or accepted).
     """
     from src.db import SYSTEM_ADMIN_GROUP
     from src.repositories import (

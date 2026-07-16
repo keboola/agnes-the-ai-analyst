@@ -310,3 +310,45 @@ class TestHasExplicitGrant:
             assert has_explicit_grant("admin1", "chat", "chat", conn) is False
         finally:
             conn.close()
+
+
+class TestConnNoneRoutesThroughFactory:
+    """src/rbac.py's `can_access_table` / `get_accessible_ids` /
+    `get_accessible_tables` used to fall back to an internal
+    `get_system_db()` open when `conn` was `None`. That fallback was
+    removed (#backend-split cleanup) — `conn=None` must now flow straight
+    through to `is_user_admin` / `StackResolver` / `_allowed_ids_for_user`,
+    which already resolve the active backend via the factory. This locks
+    in that the DuckDB-mode default path (no conn passed at all) still
+    returns the same answers as the explicit-conn path.
+    """
+
+    def test_can_access_table_no_conn_matches_explicit_conn(self, setup_db):
+        from src.rbac import can_access_table
+
+        admin = {"id": "admin1"}
+        user = {"id": "user1"}
+        assert can_access_table(admin, "orders") is True
+        assert can_access_table(admin, "salaries") is True
+        assert can_access_table(user, "orders") is True
+        assert can_access_table(user, "salaries") is False
+
+    def test_get_accessible_tables_no_conn(self, setup_db):
+        from src.rbac import get_accessible_tables
+
+        assert get_accessible_tables({"id": "admin1"}) is None
+        accessible = get_accessible_tables({"id": "user1"})
+        assert accessible is not None
+        assert "orders" in accessible
+        assert "salaries" not in accessible
+
+    def test_get_accessible_ids_no_conn(self, setup_db):
+        from src.rbac import get_accessible_ids
+        from app.resource_types import ResourceType
+
+        # Admin sees "all" (None) regardless of resource type.
+        assert get_accessible_ids({"id": "admin1"}, ResourceType.DATA_PACKAGE.value) is None
+        # Non-admin gets the grant-based set — must not raise even though no
+        # conn is passed (previously this opened a fresh get_system_db()).
+        ids = get_accessible_ids({"id": "user1"}, ResourceType.DATA_PACKAGE.value)
+        assert isinstance(ids, frozenset)

@@ -7,7 +7,6 @@ import json
 from pathlib import Path
 
 import duckdb
-import pytest
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "sessions" / "usage"
 
@@ -16,10 +15,12 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures" / "sessions" / "usage"
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _fresh_db(tmp_path, monkeypatch) -> duckdb.DuckDBPyConnection:
     """Fresh fully-migrated DuckDB in tmp_path (same idiom as test_session_pipeline.py)."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     import src.db as db_module
+
     db_module._system_db_conn = None
     db_module._system_db_path = None
     return db_module.get_system_db()
@@ -46,15 +47,9 @@ def _seed_attribution(conn: duckdb.DuckDBPyConnection) -> None:
         "INSERT OR IGNORE INTO marketplace_registry (id, name, url) "
         "VALUES ('mp', 'TestMarket', 'https://example.test/mp.git')"
     )
-    conn.execute(
-        "INSERT OR IGNORE INTO marketplace_plugins (marketplace_id, name) "
-        "VALUES ('mp', 'myplug')"
-    )
+    conn.execute("INSERT OR IGNORE INTO marketplace_plugins (marketplace_id, name) VALUES ('mp', 'myplug')")
     # Second curated plugin used as the `compound:debug` slash-command prefix.
-    conn.execute(
-        "INSERT OR IGNORE INTO marketplace_plugins (marketplace_id, name) "
-        "VALUES ('mp', 'compound')"
-    )
+    conn.execute("INSERT OR IGNORE INTO marketplace_plugins (marketplace_id, name) VALUES ('mp', 'compound')")
     # Flea entity — visibility_status='approved' is required (lookup filters
     # on it). type='skill' so the resolver places the invocation under
     # type='skill' in the rollup. v49 phase-1 added NOT NULL `title` +
@@ -69,23 +64,28 @@ def _seed_attribution(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def _process(fixture_name: str, conn: duckdb.DuckDBPyConnection) -> None:
-    """Run UsageProcessor against a fixture file."""
+    """Run UsageProcessor against a fixture file.
+
+    ``conn`` is kept in this helper's signature for call-site stability
+    (every caller passes the seeded connection so it can read back
+    usage_events/usage_session_summary afterward) but is no longer forwarded
+    to ``process_session`` — the processor writes through ``usage_repo()``
+    regardless of which connection the test seeded its fixtures on.
+    """
     from services.session_processors.usage import UsageProcessor
+
     processor = UsageProcessor()
     path = FIXTURES_DIR / fixture_name
     result = processor.process_session(
         session_path=path,
         username="test-user",
         session_key=fixture_name,
-        conn=conn,
     )
     return result
 
 
 def _events(conn: duckdb.DuckDBPyConnection) -> list[dict]:
-    rows = conn.execute(
-        "SELECT * FROM usage_events ORDER BY occurred_at ASC"
-    ).fetchall()
+    rows = conn.execute("SELECT * FROM usage_events ORDER BY occurred_at ASC").fetchall()
     desc = [d[0] for d in conn.description]
     return [dict(zip(desc, row)) for row in rows]
 
@@ -104,6 +104,7 @@ def _summary(conn: duckdb.DuckDBPyConnection, session_key: str) -> dict | None:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestSimpleBash:
     def test_extracts_one_event(self, tmp_path, monkeypatch):
@@ -179,9 +180,7 @@ class TestCuratedSkill:
         # Fixture uses `myplug:my-skill` (plugin-prefixed). ref_id is the
         # parent plugin name; the local skill name is preserved in
         # `skill_name` for downstream rollup attribution.
-        row = conn.execute(
-            "SELECT source, ref_id FROM usage_events WHERE skill_name = 'myplug:my-skill'"
-        ).fetchone()
+        row = conn.execute("SELECT source, ref_id FROM usage_events WHERE skill_name = 'myplug:my-skill'").fetchone()
         assert row is not None
         assert row[0] == "curated"
         assert row[1] == "myplug"
@@ -203,8 +202,7 @@ class TestFleaSkill:
         # normalised to NULL by UsageProcessor. v49 phase-5: JSONL local
         # part is the entity's synthetic_name (= `<name>-by-<owner>`).
         row = conn.execute(
-            "SELECT source, ref_id FROM usage_events "
-            "WHERE skill_name = 'flea:flea-skill-by-alice'"
+            "SELECT source, ref_id FROM usage_events WHERE skill_name = 'flea:flea-skill-by-alice'"
         ).fetchone()
         assert row is not None
         assert row[0] == "flea"
@@ -230,9 +228,7 @@ class TestSlashCommand:
         conn = _fresh_db(tmp_path, monkeypatch)
         _seed_attribution(conn)
         _process("slash_command.jsonl", conn)
-        row = conn.execute(
-            "SELECT source, ref_id FROM usage_events WHERE command_name = 'compound:debug'"
-        ).fetchone()
+        row = conn.execute("SELECT source, ref_id FROM usage_events WHERE command_name = 'compound:debug'").fetchone()
         assert row is not None
         assert row[0] == "curated"
         assert row[1] == "compound"
@@ -321,9 +317,7 @@ class TestMixedSession:
         conn = _fresh_db(tmp_path, monkeypatch)
         _seed_attribution(conn)
         _process("mixed.jsonl", conn)
-        err_evts = conn.execute(
-            "SELECT tool_name FROM usage_events WHERE is_error = TRUE"
-        ).fetchall()
+        err_evts = conn.execute("SELECT tool_name FROM usage_events WHERE is_error = TRUE").fetchall()
         assert len(err_evts) == 1
         assert err_evts[0][0] == "Bash"
 
@@ -333,7 +327,7 @@ class TestEmptySession:
         """Empty session (only system/summary turns) yields 0 events but a summary row."""
         conn = _fresh_db(tmp_path, monkeypatch)
         _seed_attribution(conn)
-        result = _process("empty.jsonl", conn)
+        _process("empty.jsonl", conn)
         evts = _events(conn)
         assert len(evts) == 0
         s = _summary(conn, "empty.jsonl")
@@ -380,35 +374,36 @@ class TestMultiToolTurnDedup:
 
         jsonl_path = tmp_path / "multi_tool_turn.jsonl"
         jsonl_path.write_text(
-            json.dumps({
-                "uuid": "turn-1",
-                "parentUuid": None,
-                "type": "assistant",
-                "sessionId": "sess-multi",
-                "timestamp": "2026-05-12T10:00:00Z",
-                "message": {
-                    "role": "assistant",
-                    "model": "claude-x",
-                    "content": [
-                        {"type": "tool_use", "id": "tu_a", "name": "Bash", "input": {"command": "ls"}},
-                        {"type": "tool_use", "id": "tu_b", "name": "Bash", "input": {"command": "pwd"}},
-                    ],
-                },
-            }) + "\n"
+            json.dumps(
+                {
+                    "uuid": "turn-1",
+                    "parentUuid": None,
+                    "type": "assistant",
+                    "sessionId": "sess-multi",
+                    "timestamp": "2026-05-12T10:00:00Z",
+                    "message": {
+                        "role": "assistant",
+                        "model": "claude-x",
+                        "content": [
+                            {"type": "tool_use", "id": "tu_a", "name": "Bash", "input": {"command": "ls"}},
+                            {"type": "tool_use", "id": "tu_b", "name": "Bash", "input": {"command": "pwd"}},
+                        ],
+                    },
+                }
+            )
+            + "\n"
         )
 
         from services.session_processors.usage import UsageProcessor
+
         processor = UsageProcessor()
         processor.process_session(
             session_path=jsonl_path,
             username="alice",
             session_key="alice/multi_tool_turn.jsonl",
-            conn=conn,
         )
 
-        n = conn.execute(
-            "SELECT COUNT(*) FROM usage_events WHERE session_id='sess-multi'"
-        ).fetchone()[0]
+        n = conn.execute("SELECT COUNT(*) FROM usage_events WHERE session_id='sess-multi'").fetchone()[0]
         assert n == 2, f"expected 2 events (one per tu_xxx), got {n}"
 
 
@@ -431,9 +426,8 @@ class TestCommandNameTagExtraction:
 
     def test_extracts_command_name_from_string_content(self):
         from services.session_processors.usage_lib import iter_events
-        turn = self._user_turn(
-            "<command-name>/clear</command-name>\n<command-args></command-args>"
-        )
+
+        turn = self._user_turn("<command-name>/clear</command-name>\n<command-args></command-args>")
         events = list(iter_events([turn]))
         assert len(events) == 1
         assert events[0].event_type == "slash_command"
@@ -443,9 +437,8 @@ class TestCommandNameTagExtraction:
         """Defensive: same regex behavior when content arrives as a list-of-blocks
         instead of a plain string, in case Claude Code's wire format shifts."""
         from services.session_processors.usage_lib import iter_events
-        turn = self._user_turn(
-            [{"type": "text", "text": "<command-name>/plugin:name</command-name>"}]
-        )
+
+        turn = self._user_turn([{"type": "text", "text": "<command-name>/plugin:name</command-name>"}])
         events = list(iter_events([turn]))
         assert len(events) == 1
         assert events[0].command_name == "plugin:name"
@@ -454,6 +447,7 @@ class TestCommandNameTagExtraction:
         """Real Claude Code prepends a <command-message> sibling before the
         <command-name> tag — regex must search, not anchor at start."""
         from services.session_processors.usage_lib import iter_events
+
         turn = self._user_turn(
             "<command-message>foo</command-message>\n"
             "<command-name>/foo</command-name>\n"
@@ -468,6 +462,7 @@ class TestCommandNameTagExtraction:
         <command-name> tag, must NOT yield a slash_command event — that's the
         whole point of switching from the old `^\\s*/<name>` regex."""
         from services.session_processors.usage_lib import iter_events
+
         turn = self._user_turn("Hello world, see /not-a-command-just-prose for context.")
         events = list(iter_events([turn]))
         assert events == []

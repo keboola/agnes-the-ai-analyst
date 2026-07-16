@@ -133,13 +133,8 @@ class _AuthMiddleware:
         raw_token = auth[7:]
         try:
             from app.auth.pat_resolver import resolve_token_to_user
-            from src.db import get_system_db
 
-            conn = get_system_db()
-            try:
-                user, reason = resolve_token_to_user(conn, raw_token)
-            finally:
-                conn.close()
+            user, reason = resolve_token_to_user(None, raw_token)
         except Exception:
             logger.exception("MCP auth error")
             await _send_401(scope, send)
