@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agnes init` and the recommended launch command no longer trip Claude Code's auto-mode classifier during analyst setup.** `agnes refresh-marketplace --bootstrap` (marketplace clone + plugin install) was soft-denied as "Untrusted Code Integration" under `--permission-mode auto`; `agnes init` now declares the configured marketplace host as trusted internal infrastructure in the user-scope `~/.claude/settings.json` (`autoMode.environment`), derived from config at runtime — never hardcoded. Separately, the `/home` onboarding page's recommended launch command now pre-approves `uv tool install` (setup step 1) via `Bash(uv tool install:*)` in `--allowedTools`, so it no longer requires an interactive permission prompt. Existing installs pick up the trust on their next `agnes init`; wiring it into `agnes update` for installs that never re-run init is a tracked follow-up.
+
 ## [0.74.100] - 2026-07-16
 
 ### Added
