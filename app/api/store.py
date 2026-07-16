@@ -1679,6 +1679,7 @@ async def dryrun_entity(
     file: UploadFile = File(...),
     type: str = Form(...),
     description: Optional[str] = Form(None),
+    lint_only: bool = Form(False),
     user: dict = Depends(get_current_user),
 ):
     """Run the full guardrail pipeline against a candidate bundle WITHOUT
@@ -1698,6 +1699,11 @@ async def dryrun_entity(
     Per-submitter dry-run quota + identical-bundle verdict caching are
     deferred (tracked on #317) — the auth gate plus HTTP-level rate
     limiting bound abuse until they land.
+
+    ``lint_only=true`` returns ``inline`` + ``lint`` and SKIPS the LLM
+    security review entirely (no ``verdict``, and ``would_publish`` is not
+    meaningful). The advisory-lint panels use it so previewing findings never
+    bills a security-review round-trip the caller would discard.
     """
     if type not in _VALID_TYPES:
         raise HTTPException(status_code=400, detail="invalid_type")
@@ -1732,7 +1738,16 @@ async def dryrun_entity(
 
         verdict: Optional[dict] = None
         safe = False
-        if get_guardrails_enabled() and get_guardrails_llm_provider_ready():
+        if lint_only:
+            # Advisory-lint-only preview (the store upload wizard's step-2
+            # panel). The LLM *security* review is the expensive part of this
+            # endpoint and is irrelevant to lint findings, so skip it: running
+            # it here would bill a blocking Anthropic round-trip whose verdict
+            # the caller discards, and the real publish path schedules the
+            # review again anyway. `would_publish` is meaningless without a
+            # verdict, so callers must not read it in this mode.
+            safe = False
+        elif get_guardrails_enabled() and get_guardrails_llm_provider_ready():
             from src.store_guardrails import llm_review
 
             # review_bundle makes a blocking Anthropic round-trip; run it
