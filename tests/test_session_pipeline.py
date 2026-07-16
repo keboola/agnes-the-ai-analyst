@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import duckdb
@@ -289,7 +290,6 @@ class TestSessionProcessorStateRepository:
         runner never sees them and never hashes them. PR #232 review fix:
         before the mtime precheck, every stable session was rehashed on
         every scheduler tick."""
-        import os
         import time
 
         conn = _fresh_db(tmp_path, monkeypatch)
@@ -318,7 +318,6 @@ class TestSessionProcessorStateRepository:
     def test_scan_surfaces_session_modified_after_processing(self, tmp_path, monkeypatch):
         """File touched after processed_at — likely a Claude Code live append —
         must come back through scan so the runner can hash + decide."""
-        import os
         import time
         from datetime import datetime, timezone
 
@@ -567,6 +566,116 @@ class TestRunProcessor:
         stats = run_processor(conn, _BadReturn(), session_data_dir=sessions)
         assert stats["processed"] == 1
         assert stats["items_extracted"] == 0
+        conn.close()
+
+
+class TestRunProcessorMaxSessionsPerRun:
+    """max_sessions_per_run bounds a single run's worst-case duration/CPU
+    cost by deferring the remainder to the next scheduler tick, rather than
+    processing an unbounded burst of unprocessed sessions in one request."""
+
+    def test_caps_candidates_and_reports_deferred_count(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        _seed_session(sessions, "alice", "a.jsonl")
+        _seed_session(sessions, "bob", "b.jsonl")
+        _seed_session(sessions, "carol", "c.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+
+        stats = run_processor(conn, proc, session_data_dir=sessions, max_sessions_per_run=2)
+        assert stats["scanned"] == 3  # true total, regardless of the cap
+        assert stats["processed"] == 2
+        assert stats["capped"] == 1
+        assert len(proc.calls) == 2
+        conn.close()
+
+    def test_deferred_sessions_are_picked_up_on_next_call(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        _seed_session(sessions, "alice", "a.jsonl")
+        _seed_session(sessions, "bob", "b.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+
+        stats1 = run_processor(conn, proc, session_data_dir=sessions, max_sessions_per_run=1)
+        assert stats1["processed"] == 1
+        assert stats1["capped"] == 1
+
+        stats2 = run_processor(conn, proc, session_data_dir=sessions, max_sessions_per_run=1)
+        assert stats2["processed"] == 1
+        assert stats2["capped"] == 0
+        assert sorted(proc.calls) == ["alice/a.jsonl", "bob/b.jsonl"]
+        conn.close()
+
+    def test_none_means_unbounded_default_behavior(self, tmp_path, monkeypatch):
+        """No cap (the default when unset) preserves pre-existing behavior —
+        every candidate is processed in one call."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        for i in range(5):
+            _seed_session(sessions, f"user{i}", "s.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+        stats = run_processor(conn, proc, session_data_dir=sessions)
+        assert stats["processed"] == 5
+        assert stats["capped"] == 0
+        conn.close()
+
+    def test_cap_larger_than_candidates_is_a_no_op(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        _seed_session(sessions, "alice", "a.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+        stats = run_processor(conn, proc, session_data_dir=sessions, max_sessions_per_run=50)
+        assert stats["processed"] == 1
+        assert stats["capped"] == 0
+        conn.close()
+
+    def test_skip_only_candidates_do_not_consume_the_budget(self, tmp_path, monkeypatch):
+        """Regression (Devin Review, PR #894): scan_unprocessed_for's mtime
+        prefilter can resurface a file whose content (hash) hasn't actually
+        changed — the runner's hash-aware is_processed() check then skips it
+        for free, without ever calling the processor. That skip must NOT
+        consume attempt budget: a skip-only candidate visited ahead of a
+        genuinely unprocessed one must not push the real work past the cap.
+
+        Both sessions live under the SAME username directory so their
+        relative order is deterministic (``scan_unprocessed_for`` sorts
+        files *within* a user directory via ``sorted(user_dir.glob(...))``,
+        but does not sort the outer per-user directories against each
+        other) — "a.jsonl" is always visited before "b.jsonl".
+        """
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        a_path = _seed_session(sessions, "alice", "a.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+
+        # Fully process a.jsonl first...
+        stats0 = run_processor(conn, proc, session_data_dir=sessions)
+        assert stats0["processed"] == 1
+        assert proc.calls == ["alice/a.jsonl"]
+
+        # ...then bump its mtime WITHOUT changing content, so
+        # scan_unprocessed_for's cheap mtime prefilter resurfaces it as a
+        # candidate again, even though its hash (and therefore
+        # is_processed()) says it's already done. Under the pre-fix
+        # (candidates[:cap]) slicing, this skip-only candidate would have
+        # occupied the single available slot ahead of b.jsonl.
+        future = a_path.stat().st_mtime + 10
+        os.utime(a_path, (future, future))
+
+        # b.jsonl only arrives now — a genuinely unprocessed candidate that
+        # must not be starved out by a.jsonl's free skip.
+        _seed_session(sessions, "alice", "b.jsonl")
+
+        stats1 = run_processor(conn, proc, session_data_dir=sessions, max_sessions_per_run=1)
+        assert stats1["skipped"] == 1  # a.jsonl: free, doesn't touch the budget
+        assert stats1["processed"] == 1  # b.jsonl: real work, gets its attempt
+        assert stats1["capped"] == 0
+        assert proc.calls == ["alice/a.jsonl", "alice/b.jsonl"]
         conn.close()
 
 

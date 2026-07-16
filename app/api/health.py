@@ -305,10 +305,19 @@ def _verification_detector_grace_seconds() -> int:
 
 
 def _check_db_schema() -> dict:
-    """Check DB schema version against expected SCHEMA_VERSION.
+    """Check DB schema version against the expected head.
 
     Returns a dict with 'db_schema' key and optional 'detail' key.
+
+    Backend-aware: on Postgres the system state lives in PG (the system DuckDB
+    must never be opened — ``get_system_db()`` raises there), so we compare the
+    ``alembic_version`` revision against the shipped migration head. On DuckDB
+    we compare the ``schema_version`` table against ``SCHEMA_VERSION``.
     """
+    from src.repositories import use_pg
+
+    if use_pg():
+        return _check_pg_db_schema()
     try:
         conn = get_system_db()
         row = conn.execute("SELECT version FROM schema_version ORDER BY applied_at DESC LIMIT 1").fetchone()
@@ -319,6 +328,24 @@ def _check_db_schema() -> dict:
             return {"db_schema": "ok", "current": current_version, "expected": SCHEMA_VERSION}
         else:
             return {"db_schema": "mismatch", "current": current_version, "expected": SCHEMA_VERSION}
+    except Exception as e:
+        return {"db_schema": "unreachable", "detail": str(e)}
+
+
+def _check_pg_db_schema() -> dict:
+    """Postgres variant of :func:`_check_db_schema` — compares the DB's stamped
+    Alembic revision against the migration head shipped in this image. Doubles
+    as a PG connectivity probe. Never opens the system DuckDB.
+    """
+    try:
+        from src.db_pg import _pg_revisions
+
+        current, head, _db_ahead = _pg_revisions()
+        if current is None:
+            return {"db_schema": "mismatch", "detail": "postgres alembic_version not stamped"}
+        if current == head:
+            return {"db_schema": "ok", "current": current, "expected": head}
+        return {"db_schema": "mismatch", "current": current, "expected": head}
     except Exception as e:
         return {"db_schema": "unreachable", "detail": str(e)}
 
@@ -388,9 +415,22 @@ async def health_check_detailed(
     checks = {}
     include_set = {p.strip() for p in include.split(",") if p.strip()}
 
-    # DuckDB state
+    # State-backend connectivity probe. Backend-aware: on Postgres the request
+    # conn (from _get_db) is None — the system DuckDB must never be opened — so
+    # probe the active PG engine instead. A healthy PG instance must report ok
+    # here, not flip the whole check to "unhealthy" on a None.execute().
+    from src.repositories import use_pg
+
     try:
-        conn.execute("SELECT 1").fetchone()
+        if use_pg():
+            import sqlalchemy as sa
+
+            from src.db_pg import get_engine
+
+            with get_engine().connect() as _pg_conn:
+                _pg_conn.execute(sa.text("SELECT 1")).fetchone()
+        else:
+            conn.execute("SELECT 1").fetchone()
         checks["duckdb_state"] = {"status": "ok"}
     except Exception as e:
         checks["duckdb_state"] = {"status": "error", "detail": str(e)}

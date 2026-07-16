@@ -19,6 +19,7 @@ so a user without the RBAC grant gets a 403 even on direct URL hit.
 from __future__ import annotations
 
 import logging
+import re
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
@@ -1800,6 +1801,24 @@ async def curated_uninstall(
 # ---------------------------------------------------------------------------
 
 
+_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _reject_unsafe_segment(*segments: str) -> None:
+    """404 on a path segment that could escape its intended root.
+
+    ``marketplace_id`` / ``plugin_name`` arrive as Starlette ``[^/]+`` path
+    params — they can't contain ``/`` but CAN be ``..`` or carry ``\\``. Both
+    are used verbatim to build the served root (``marketplaces_dir/<id>``,
+    ``.../plugins/<name>``); a ``..`` there escapes the marketplaces dir and
+    ``_safe_join`` then re-anchors on the ESCAPED root, so the traversal guard
+    is defeated (audit L1). Enforce a strict slug and explicitly reject ``..``.
+    """
+    for seg in segments:
+        if seg == ".." or not _SAFE_SEGMENT_RE.match(seg or ""):
+            raise HTTPException(status_code=404, detail="not_found")
+
+
 def _safe_join(plugin_root: Path, *parts: str) -> Optional[Path]:
     """Join ``parts`` onto ``plugin_root`` and return the resolved path only if
     it actually lives under ``plugin_root``. Defends against ``..`` segments,
@@ -2657,6 +2676,7 @@ async def curated_asset(
     """
     from src.marketplace_asset_validation import IMAGE_EXTENSIONS
 
+    _reject_unsafe_segment(marketplace_id)
     repo_root = Path(get_marketplaces_dir()) / marketplace_id
     if not repo_root.exists():
         raise HTTPException(status_code=404, detail="marketplace_not_synced")
@@ -2705,12 +2725,25 @@ async def curated_doc(
     """
     from src.marketplace_asset_validation import DOC_EXTENSIONS
 
+    _reject_unsafe_segment(marketplace_id, plugin_name)
     repo_root = Path(get_marketplaces_dir()) / marketplace_id
     if not repo_root.exists():
         raise HTTPException(status_code=404, detail="marketplace_not_synced")
     safe = _safe_join(repo_root, path)
     if safe is None or not safe.is_file():
         raise HTTPException(status_code=404, detail="doc_not_found")
+    # M2: the RBAC grant is for THIS plugin, but `path` is repo-root-relative and
+    # could point into a DIFFERENT plugin's tree. If the resolved doc lives under
+    # plugins/<other>/, require <other> == the granted plugin_name. Files outside
+    # any plugins/<X>/ dir (marketplace-shared, e.g. .agnes/) stay accessible —
+    # they are not another plugin's private content. Without this, a grant to one
+    # plugin reads any sibling plugin's docs in the same marketplace (audit M2).
+    try:
+        rel = safe.resolve().relative_to((repo_root / "plugins").resolve())
+        if rel.parts and rel.parts[0] != plugin_name:
+            raise HTTPException(status_code=404, detail="doc_not_found")
+    except ValueError:
+        pass  # not under plugins/<X>/ — marketplace-shared, allowed
     if safe.suffix.lower() not in DOC_EXTENSIONS:
         raise HTTPException(
             status_code=415,
@@ -2746,6 +2779,7 @@ async def curated_mirrored(
     document distribution. Tighter doc gating lives on the separate
     ``curated_doc`` endpoint which retains ``require_resource_access``.
     """
+    _reject_unsafe_segment(marketplace_id, plugin_name)
     cache_root = get_marketplace_cache_dir() / marketplace_id / plugin_name
     if not cache_root.exists():
         raise HTTPException(status_code=404, detail="mirror_cache_missing")

@@ -27,7 +27,7 @@ from app.auth.dependencies import _get_db, get_current_user
 from app.auth.session_principal import SessionPrincipal
 from app.resource_types import ResourceType
 from src.audit_helpers import client_kind_from_user
-from src.rbac import can_access_table
+from src.rbac import get_accessible_tables
 from src.repositories import audit_repo, resource_grants_repo, table_registry_repo, user_group_members_repo
 from src.search.unified import unified_search
 
@@ -73,12 +73,23 @@ async def knowledge_search(
     Results are typed (``chunk | knowledge | table``); table hits carry a
     pivot hint (query via SQL) instead of rows. Everything is filtered to the
     caller's grants, fail-closed per source.
+
+    ``retrieval`` (``hybrid | lexical_only``) labels the chunk engine's mode:
+    ``lexical_only`` means the embeddings extra is absent and document chunks
+    were ranked without semantic scoring (#898). Knowledge and table hits are
+    lexical by design and unaffected.
     """
     from app.api.collections import _accessible_corpus_ids
+    from src.ingest.retrieval import retrieval_mode
 
     corpus_ids = _accessible_corpus_ids(user)
     groups, domains = _resolve_knowledge_grants(user)
-    tables = [t for t in table_registry_repo().list_all() if can_access_table(user, t["id"], conn)]
+    # Resolve the caller's accessible table-id set ONCE per request instead of
+    # calling `can_access_table` per row (FAI-132 N+1 collapse: ~115 stack
+    # resolutions -> 1). `None` means admin/all, mirroring `can_access_table`.
+    _accessible_ids = get_accessible_tables(user, conn)
+    allowed = None if _accessible_ids is None else set(_accessible_ids)
+    tables = [t for t in table_registry_repo().list_all() if allowed is None or t["id"] in allowed]
 
     results = unified_search(
         q,
@@ -88,7 +99,7 @@ async def knowledge_search(
         tables=tables,
         k=k,
     )
-    return {"query": q, "results": results}
+    return {"query": q, "results": results, "retrieval": retrieval_mode()}
 
 
 @router.get("/artifacts/{corpus_id}/download")

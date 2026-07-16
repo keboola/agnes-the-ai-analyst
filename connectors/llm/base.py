@@ -17,8 +17,16 @@ class StructuredExtractor(Protocol):
         max_tokens: int,
         json_schema: dict,
         schema_name: str,
+        system: str | None = None,
     ) -> dict:
         """Extract structured JSON from a prompt.
+
+        ``system`` is an optional trust-boundary system prompt. When the user
+        ``prompt`` embeds untrusted third-party content (uploaded files, other
+        users' notes), pass the rules here so a crafted payload in the user
+        content cannot override them — the provider sends it via the model's
+        separate system channel. Providers that cannot honor a system prompt
+        must fold it into the request safely rather than ignore it.
 
         Args:
             prompt: The extraction prompt to send to the model.

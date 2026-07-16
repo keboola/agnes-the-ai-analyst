@@ -12,6 +12,7 @@ to admins **without leaking values** (presence only), and offers live
 "does the key actually work" probes — a present-but-invalid key otherwise
 only fails at the first sandbox spawn, deep inside a user's chat.
 """
+
 from __future__ import annotations
 
 import os
@@ -41,12 +42,16 @@ def secret_status(chat_config: Any) -> dict:
     enabled = bool(getattr(chat_config, "enabled", False))
     provider = getattr(chat_config, "provider", "e2b") or "e2b"
     e2b_needed = enabled and provider == "e2b"
+    # In workload_identity mode there is intentionally NO static ANTHROPIC_API_KEY
+    # — don't flag it as a missing secret in the admin UI.
+    llm_auth = getattr(chat_config, "llm_auth", "api_key")
+    anthropic_key_needed = enabled and llm_auth != "workload_identity"
 
     jwt_val = os.environ.get(ENV_JWT, "")
     jwt_ok = len(jwt_val.encode()) >= _JWT_MIN_BYTES
 
     secrets = {
-        "anthropic_api_key": {"set": _is_set(ENV_ANTHROPIC), "required": enabled},
+        "anthropic_api_key": {"set": _is_set(ENV_ANTHROPIC), "required": anthropic_key_needed},
         "e2b_api_key": {"set": _is_set(ENV_E2B), "required": e2b_needed},
         "jwt_secret_key": {"set": jwt_ok, "required": enabled},
         "e2b_template_id": {
@@ -88,6 +93,12 @@ async def test_e2b_key(api_key: Optional[str] = None, *, timeout: float = 8.0) -
     Uses ``AsyncSandbox.list`` (lists running sandboxes) — it hits the E2B
     API and authenticates without spinning up a microVM. Returns
     ``{ok, detail}``. Falls back to the env key when ``api_key`` is omitted.
+
+    Note: on the modern e2b SDK ``AsyncSandbox.list`` is NOT a coroutine — it
+    synchronously returns an ``AsyncSandboxPaginator``; the authenticated round
+    trip happens when its first page is awaited. Awaiting ``list`` itself
+    raises ``TypeError: object AsyncSandboxPaginator can't be used in 'await'
+    expression``, so we await ``next_items()`` instead.
     """
     key = (api_key or os.environ.get(ENV_E2B, "")).strip()
     if not key:
@@ -95,7 +106,8 @@ async def test_e2b_key(api_key: Optional[str] = None, *, timeout: float = 8.0) -
     try:
         from e2b import AsyncSandbox
 
-        await AsyncSandbox.list(api_key=key, request_timeout=timeout)
+        paginator = AsyncSandbox.list(api_key=key, request_timeout=timeout)
+        await paginator.next_items()
     except Exception as exc:  # noqa: BLE001 — classify, never raise to the admin
         return {"ok": False, "detail": _classify(exc)}
     return {"ok": True, "detail": "E2B API key valid"}
@@ -135,3 +147,50 @@ async def test_anthropic_key(api_key: Optional[str] = None, *, timeout: float = 
     import asyncio
 
     return await asyncio.to_thread(_test_anthropic_sync, key, timeout)
+
+
+def _test_wif_sync(timeout: float) -> dict:
+    """Mint a federated token and confirm the API accepts it. Returns {ok, detail}."""
+    from app.auth.wif import WIFAuthError, clear_token_cache, get_federated_access_token
+
+    try:
+        token = get_federated_access_token()
+    except WIFAuthError as exc:
+        return {"ok": False, "detail": f"federation token exchange failed: {exc}"}
+    # The exchange succeeded; confirm the minted token is actually accepted by the
+    # API with the same cheap 1-token Haiku completion test_anthropic_key uses —
+    # authenticated the keyless way (Authorization: Bearer + the oauth beta header).
+    try:
+        import anthropic
+    except ImportError:  # pragma: no cover — SDK is a hard dep for chat
+        return {"ok": True, "detail": "federated token minted (anthropic SDK unavailable for full probe)"}
+    from app.chat.auto_title import _TITLE_MODEL
+
+    try:
+        client = anthropic.Anthropic(
+            auth_token=token,
+            default_headers={"anthropic-beta": "oauth-2025-04-20"},
+            timeout=timeout,
+        )
+        client.messages.create(
+            model=_TITLE_MODEL,
+            max_tokens=1,
+            messages=[{"role": "user", "content": "ping"}],
+        )
+    except Exception as exc:  # noqa: BLE001 — classify, never raise to the admin
+        # The cached token may be scope-limited or revoked — drop it so a later
+        # probe/request re-mints rather than reusing a known-bad token.
+        clear_token_cache()
+        return {"ok": False, "detail": f"federated token minted but API call failed: {_classify(exc)}"}
+    return {"ok": True, "detail": "workload identity federation valid"}
+
+
+async def test_wif_credentials(*, timeout: float = 8.0) -> dict:
+    """Live-probe ``workload_identity`` auth: mint a federated token from the
+    workload's OIDC identity and confirm the API accepts it. Returns
+    ``{ok, detail}``. The blocking exchange + SDK call run on a worker thread so
+    they never stall the event loop. This is the keyless-mode analog of
+    ``test_anthropic_key`` for the admin "test connection" surface."""
+    import asyncio
+
+    return await asyncio.to_thread(_test_wif_sync, timeout)

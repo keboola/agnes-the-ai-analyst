@@ -43,6 +43,9 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "store_rate",
     "store_status",
     "store_publish_markdown",
+    "admin_store_lint_findings",
+    "admin_store_lint_audit",
+    "admin_store_lint_dismiss",
     "documentation_api",
     "list_contributed_skills",
     "contribute_skill",
@@ -151,6 +154,9 @@ def register_foundation_tools(
 
         Returns ranked chunks with citations (``filename``, ``ordinal``, ``text``,
         ``score``). Optionally restrict to one collection via ``collection_id``.
+        The response's ``retrieval`` field says how results were ranked:
+        ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded
+        mode when the server has no embedding model installed.
 
         Args:
             query: Natural-language or keyword query.
@@ -179,6 +185,9 @@ def register_foundation_tools(
         all RBAC-filtered. Results are typed ``chunk | knowledge | table``;
         a ``table`` hit means structured data: pivot to SQL via the ``query``
         tool with the hit's ``table_id`` instead of reading text chunks.
+        The response's ``retrieval`` field labels the chunk engine's mode:
+        ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded
+        mode when the server has no embedding model installed.
 
         Args:
             query: Natural-language or keyword query.
@@ -239,7 +248,10 @@ def register_foundation_tools(
             table_id: Table ID from the catalog.
             rows:     How many sample rows to return (default 5, max 50).
 
-        Returns ``{"schema": {...}, "sample": {"columns": [...], "rows": [...]}}``.
+        Returns ``{"schema": {...}, "sample": {"table_id": ..., "rows": [...],
+        "source": ...}}`` where ``sample.rows`` is a list of ``{column: value}``
+        objects (empty when the table has no rows — there is no ``columns``
+        key; column names come from ``schema.columns``).
         """
         rows = min(max(1, rows), 50)
         async with httpx.AsyncClient() as c:
@@ -501,6 +513,77 @@ def register_foundation_tools(
             return r.json()
 
     @mcp.tool()
+    async def admin_store_lint_findings(include_dismissed: bool = False) -> dict:
+        """List advisory skill-lint findings across the store (admin only).
+
+        Advisory craft findings — bloat, weak triggers, likely duplicates — never
+        block publication. Mirrors ``GET /api/admin/store/lint-findings`` and
+        ``agnes admin store lint-findings``.
+
+        Args:
+            include_dismissed: Also include findings an admin has dismissed.
+
+        Returns ``{"findings": [...], "last_run": {...}|null}``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/admin/store/lint-findings",
+                params={"include_dismissed": str(include_dismissed).lower()},
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def admin_store_lint_audit(force: bool = False) -> dict:
+        """Run a full skill-lint audit over published skills now (admin only).
+
+        Loads the store corpus once and lints each published skill, skipping
+        entities whose content is unchanged since their last lint. Guarded by a
+        configurable minimum interval unless ``force`` is set. Mirrors
+        ``POST /api/admin/store/lint-audit`` and ``agnes admin store lint-audit``.
+
+        Args:
+            force: Run even if a recent audit already ran (bypass the guard).
+
+        Returns the run stats, or ``{"skipped": true, ...}`` if the guard fired.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/admin/store/lint-audit",
+                json={"force": force},
+                headers=headers_fn(),
+                timeout=300,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def admin_store_lint_dismiss(entity_id: str, rule_id: str) -> dict:
+        """Dismiss one advisory finding until the entity's content changes (admin only).
+
+        The dismissal is keyed to the finding's current content hash, so it
+        auto-resets when the skill is edited. Mirrors
+        ``POST /api/admin/store/lint-dismiss`` and ``agnes admin store lint-dismiss``.
+
+        Args:
+            entity_id: The store entity id.
+            rule_id:   The rule id to dismiss (e.g. ``SL002``).
+
+        Returns ``{"dismissed": true}``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/admin/store/lint-dismiss",
+                json={"entity_id": entity_id, "rule_id": rule_id},
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
     async def documentation_api() -> str:
         """Return the curated Agnes REST API reference as Markdown.
 
@@ -645,7 +728,6 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-
     @mcp.tool()
     async def admin_knowledge_digest_get(digest_id: str) -> dict:
         """Show one maintained digest's full detail (admin only).
@@ -669,7 +751,6 @@ def register_foundation_tools(
             )
             r.raise_for_status()
             return r.json()
-
 
     @mcp.tool()
     async def admin_knowledge_digest_create(
@@ -715,7 +796,6 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-
     @mcp.tool()
     async def admin_knowledge_digest_update(
         digest_id: str,
@@ -757,7 +837,6 @@ def register_foundation_tools(
             )
             r.raise_for_status()
             return r.json()
-
 
     @mcp.tool()
     async def admin_knowledge_digest_delete(digest_id: str) -> dict:

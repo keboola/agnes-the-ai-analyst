@@ -72,11 +72,11 @@ def _extract_json_from_text(text: str) -> dict:
     last_brace = stripped.rfind("}")
     if first_brace != -1 and last_brace > first_brace:
         try:
-            return json.loads(stripped[first_brace:last_brace + 1])
+            return json.loads(stripped[first_brace : last_brace + 1])
         except json.JSONDecodeError:
             pass
 
-    raise LLMFormatError(f"Could not extract valid JSON from model response")
+    raise LLMFormatError("Could not extract valid JSON from model response")
 
 
 class OpenAICompatExtractor:
@@ -110,7 +110,9 @@ class OpenAICompatExtractor:
         # Custom httpx client for SSL control (corporate proxies often use self-signed certs)
         http_client = httpx.Client(verify=verify_ssl)
         self._client = openai.OpenAI(
-            api_key=api_key, base_url=base_url, http_client=http_client,
+            api_key=api_key,
+            base_url=base_url,
+            http_client=http_client,
         )
         self._model = model
         self._structured_output = structured_output
@@ -127,6 +129,7 @@ class OpenAICompatExtractor:
         max_tokens: int,
         json_schema: dict,
         schema_name: str,
+        system: str | None = None,
     ) -> dict:
         """Extract structured JSON using an OpenAI-compatible API.
 
@@ -156,15 +159,24 @@ class OpenAICompatExtractor:
             try:
                 logger.info(
                     "OpenAI-compat extraction: url=%s, model=%s, strategy=%s, schema=%s",
-                    self._safe_url, self._model, strategy, schema_name,
+                    self._safe_url,
+                    self._model,
+                    strategy,
+                    schema_name,
                 )
                 return self._extract_with_strategy(
-                    prompt, max_tokens, json_schema, schema_name, strategy,
+                    prompt,
+                    max_tokens,
+                    json_schema,
+                    schema_name,
+                    strategy,
+                    system,
                 )
             except LLMUnsupportedError:
                 logger.info(
                     "Strategy %s not supported at %s, trying next fallback",
-                    strategy, self._safe_url,
+                    strategy,
+                    self._safe_url,
                 )
                 continue
 
@@ -189,6 +201,7 @@ class OpenAICompatExtractor:
         json_schema: dict,
         schema_name: str,
         strategy: str,
+        system: str | None = None,
     ) -> dict:
         """Execute extraction with a specific structured output strategy."""
         last_exception: Exception | None = None
@@ -196,8 +209,13 @@ class OpenAICompatExtractor:
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 return self._attempt_extraction(
-                    prompt, max_tokens, json_schema, schema_name,
-                    strategy, attempt,
+                    prompt,
+                    max_tokens,
+                    json_schema,
+                    schema_name,
+                    strategy,
+                    attempt,
+                    system,
                 )
             except LLMAuthError:
                 raise
@@ -210,10 +228,13 @@ class OpenAICompatExtractor:
                 if attempt < MAX_RETRIES:
                     delay = INITIAL_BACKOFF_SECONDS * (BACKOFF_MULTIPLIER ** (attempt - 1))
                     logger.warning(
-                        "Transient error on attempt %d/%d for %s model %s, "
-                        "retrying in %ds: %s",
-                        attempt, MAX_RETRIES, self._safe_url,
-                        self._model, delay, type(e).__name__,
+                        "Transient error on attempt %d/%d for %s model %s, retrying in %ds: %s",
+                        attempt,
+                        MAX_RETRIES,
+                        self._safe_url,
+                        self._model,
+                        delay,
+                        type(e).__name__,
                     )
                     time.sleep(delay)
 
@@ -227,14 +248,22 @@ class OpenAICompatExtractor:
         schema_name: str,
         strategy: str,
         attempt: int,
+        system: str | None = None,
     ) -> dict:
         """Single extraction attempt with a specific strategy."""
         logger.info(
             "OpenAI-compat attempt %d/%d, url=%s, model=%s, strategy=%s",
-            attempt, MAX_RETRIES, self._safe_url, self._model, strategy,
+            attempt,
+            MAX_RETRIES,
+            self._safe_url,
+            self._model,
+            strategy,
         )
 
-        messages = [{"role": "user", "content": prompt}]
+        # A trust-boundary system prompt (when supplied) rides the separate
+        # system role so untrusted content in `prompt` can't override it.
+        system_messages = [{"role": "system", "content": system}] if system else []
+        messages = system_messages + [{"role": "user", "content": prompt}]
         kwargs: dict = {
             "model": self._model,
             "max_tokens": max_tokens,
@@ -253,8 +282,9 @@ class OpenAICompatExtractor:
         elif strategy == "json_object":
             kwargs["response_format"] = {"type": "json_object"}
         elif strategy == "text":
-            # Append JSON instruction to prompt for text-based fallback
-            messages = [
+            # Append JSON instruction to prompt for text-based fallback,
+            # preserving the trust-boundary system message.
+            messages = system_messages + [
                 {
                     "role": "user",
                     "content": prompt + "\n\nIMPORTANT: Respond with valid JSON only, no markdown.",
@@ -270,45 +300,30 @@ class OpenAICompatExtractor:
                 response = self._client.chat.completions.create(**kwargs)
                 _trace.set_output_from_openai(response)
         except openai.AuthenticationError as e:
-            raise LLMAuthError(
-                f"OpenAI-compat authentication failed at {self._safe_url} (check API key)"
-            ) from e
+            raise LLMAuthError(f"OpenAI-compat authentication failed at {self._safe_url} (check API key)") from e
         except openai.RateLimitError as e:
-            raise LLMRateLimitError(
-                f"OpenAI-compat rate limited at {self._safe_url}"
-            ) from e
+            raise LLMRateLimitError(f"OpenAI-compat rate limited at {self._safe_url}") from e
         except (openai.APITimeoutError, openai.APIConnectionError) as e:
-            raise LLMTimeoutError(
-                f"OpenAI-compat connection error at {self._safe_url} ({type(e).__name__})"
-            ) from e
+            raise LLMTimeoutError(f"OpenAI-compat connection error at {self._safe_url} ({type(e).__name__})") from e
         except openai.BadRequestError as e:
             # json_schema format not supported by this endpoint
             error_msg = str(e).lower()
             if "response_format" in error_msg or "json_schema" in error_msg:
                 raise LLMUnsupportedError(
-                    f"Structured output strategy '{strategy}' not supported "
-                    f"at {self._safe_url}"
+                    f"Structured output strategy '{strategy}' not supported at {self._safe_url}"
                 ) from e
-            raise LLMFormatError(
-                f"Bad request at {self._safe_url} ({type(e).__name__})"
-            ) from e
+            raise LLMFormatError(f"Bad request at {self._safe_url} ({type(e).__name__})") from e
 
         choice = response.choices[0]
 
         # Check for truncation - raise and let outer retry loop handle it
         if choice.finish_reason == "length":
-            raise LLMFormatError(
-                f"Response truncated (max_tokens) for schema {schema_name} "
-                f"at {self._safe_url}"
-            )
+            raise LLMFormatError(f"Response truncated (max_tokens) for schema {schema_name} at {self._safe_url}")
 
         # Check for refusal
         content = choice.message.content
         if not content:
-            raise LLMRefusalError(
-                f"Model at {self._safe_url} refused to generate response "
-                f"for schema {schema_name}"
-            )
+            raise LLMRefusalError(f"Model at {self._safe_url} refused to generate response for schema {schema_name}")
 
         # Parse JSON from response
         if strategy == "text":
@@ -318,6 +333,5 @@ class OpenAICompatExtractor:
             return json.loads(content)
         except json.JSONDecodeError as e:
             raise LLMFormatError(
-                f"Failed to parse response as JSON for schema {schema_name} "
-                f"at {self._safe_url} ({type(e).__name__})"
+                f"Failed to parse response as JSON for schema {schema_name} at {self._safe_url} ({type(e).__name__})"
             ) from e

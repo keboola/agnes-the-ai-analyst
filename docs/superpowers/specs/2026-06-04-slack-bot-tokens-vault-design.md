@@ -22,7 +22,9 @@ Resolve each Slack bot secret as **`env > vault > none`**:
 
 ## Alternative considered — `.env_overlay` (rejected)
 
-Agnes already has a UI-managed-secret mechanism: `app/secrets.py::persist_overlay_token()` writes a key to `${STATE_DIR}/.env_overlay` (chmod 0600) and sets `os.environ` live; startup loads the overlay via `os.environ.setdefault(...)` so real env (Terraform) wins. `ANTHROPIC_API_KEY`, `E2B_API_KEY`, the marketplace PAT, and the initial-workspace PAT all use it (e.g. `app/api/admin_chat.py::set_chat_secrets`). Routing the Slack tokens through it would need **zero** read-site changes and no DB work at all.
+Agnes already has a UI-managed-secret mechanism: `app/secrets.py::persist_overlay_token()` writes a key to `${STATE_DIR}/.env_overlay` (chmod 0600) and sets `os.environ` live; startup loads the overlay into `os.environ`. `ANTHROPIC_API_KEY`, `E2B_API_KEY`, the marketplace PAT, and the initial-workspace PAT all use it (e.g. `app/api/admin_chat.py::set_chat_secrets`). Routing the Slack tokens through it would need **zero** read-site changes and no DB work at all.
+
+> **Note (2026-07-15):** this section originally described the boot-load as `os.environ.setdefault(...)` "so real env (Terraform) wins". That precedence was a bug: it silently discarded a UI-rotated key on the next restart whenever a same-named baked value was present. The boot-load now uses `os.environ[k] = v` — the admin's persisted overlay **overrides** the baked env, matching `persist_overlay_token`'s own live-write semantics. The rejection rationale below (encryption at rest + live rotation) is unaffected.
 
 It was rejected here in favour of the vault because the vault gives **encryption at rest** (Fernet) and **live rotation without restart** (the `.env_overlay` Socket Mode token would need a restart, and values sit in plaintext on disk). The trade-off is a larger change surface; that cost is accepted deliberately. This is a conscious divergence from how the comparably-sensitive `ANTHROPIC_API_KEY` is handled today.
 

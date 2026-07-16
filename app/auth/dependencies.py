@@ -105,6 +105,17 @@ def _parse_local_dev_groups(raw: str) -> list[dict]:
 
 
 def _get_db():
+    # On a Postgres instance the system state lives in PG, not the system
+    # DuckDB — opening it here would create a stale ``state/system.duckdb`` file
+    # (and is a hard error once ``get_system_db()`` enforces the invariant).
+    # Yield ``None``: every consumer of this dependency routes its state reads
+    # through the repository factory under ``use_pg()``, so the conn is
+    # vestigial on Postgres.
+    from src.repositories import use_pg
+
+    if use_pg():
+        yield None
+        return
     conn = get_system_db()
     try:
         yield conn
@@ -194,7 +205,7 @@ def _stash_user(request: Optional[Request], user: dict) -> dict:
     return user
 
 
-async def get_current_user(
+def get_current_user(
     request: Request = None,
     authorization: Optional[str] = Header(None),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -203,6 +214,14 @@ async def get_current_user(
 
     No role hydration, no session caches — authorization is decided at gate
     time by ``app.auth.access`` which reads ``user_group_members`` directly.
+
+    Plain ``def`` (not ``async def``) so FastAPI auto-offloads it to the anyio
+    thread pool — the body is a synchronous RBAC/token read (``pat_resolver``,
+    ``users_repo``, ``is_user_admin``) that on a Postgres instance blocks on a
+    sync SQLAlchemy query. Auth runs on nearly every request; under ``async
+    def`` a single slow auth query holds the single uvicorn event loop and
+    freezes the whole process (→ 503 "system unavailable"). See PR #188's Tier
+    1 event-loop unblocking rollout for the convention.
     """
     if is_local_dev_mode():
         user = _get_local_dev_user(conn)
@@ -287,19 +306,24 @@ def _attach_admin_flag(user: dict, conn: duckdb.DuckDBPyConnection) -> None:
         user["is_admin"] = False
 
 
-async def get_optional_user(
+def get_optional_user(
     request: Request = None,
     authorization: Optional[str] = Header(None),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ) -> Optional[dict]:
-    """Like get_current_user but returns None instead of 401 if no token."""
+    """Like get_current_user but returns None instead of 401 if no token.
+
+    Plain ``def`` (not ``async def``) so FastAPI offloads it to the anyio
+    thread pool — same Tier 1 rationale as ``get_current_user``, which it
+    calls synchronously (a direct call, not via ``Depends``).
+    """
     try:
-        return await get_current_user(request=request, authorization=authorization, conn=conn)
+        return get_current_user(request=request, authorization=authorization, conn=conn)
     except HTTPException:
         return None
 
 
-async def require_session_token(request: Request, user: dict = Depends(get_current_user)) -> dict:
+def require_session_token(request: Request, user: dict = Depends(get_current_user)) -> dict:
     """Like get_current_user but rejects every non-interactive token kind —
     for endpoints that must not be callable via a long-lived service or CI
     credential (e.g. creating new tokens, changing password).
@@ -314,6 +338,10 @@ async def require_session_token(request: Request, user: dict = Depends(get_curre
        holding the scheduler secret could mint persistent PATs through
        ``POST /auth/tokens`` that survive a secret rotation. Explicit
        check here closes that bypass.
+
+    Plain ``def`` (not ``async def``) so FastAPI offloads it to the anyio
+    thread pool — the body is sync token inspection + the sync RBAC read in
+    the ``get_current_user`` dependency it depends on (Tier 1, PR #188).
     """
     auth = request.headers.get("authorization", "")
     token = None

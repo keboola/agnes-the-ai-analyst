@@ -1,6 +1,7 @@
 """In-subprocess entrypoint. Runs claude-agent-sdk inside the chat sandbox.
 
-Stdin: JSON lines, one per frame. Inbound types: user_msg, cancel.
+Stdin: JSON lines, one per frame. Inbound types: user_msg, cancel,
+       ticket_push (routed to the in-sandbox relay, never enqueued).
 Stdout: JSON lines. Outbound types: runner_ready, token, tool_call,
         tool_result, assistant_message, error, done.
 
@@ -8,6 +9,12 @@ Env (set by ChatManager via the sandbox provider — under v1 the
 E2BProvider passes these through ``AsyncSandbox.create(envs=...)``):
 - AGNES_SESSION_ID, AGNES_USER_EMAIL, AGNES_SERVER, AGNES_TOKEN
 - AGNES_DAILY_BUDGET_USD, AGNES_PER_TOOL_CALL_SECONDS
+
+Before any CLI/MCP subprocess spawn, ``_start_relay`` starts an in-sandbox
+loopback relay (``app/chat/relay.py``) and rewrites ``AGNES_SERVER``/
+``ANTHROPIC_BASE_URL``/``ANTHROPIC_API_KEY`` in this process's env to point at
+it with a dummy key — the relay is the only thing that ever holds a real
+credential, fed in-memory ``ticket_push`` frames over stdin.
 """
 
 from __future__ import annotations
@@ -21,6 +28,27 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # names for annotations only — no runtime import (see below)
+    from app.chat.relay import Relay
+
+# NOTE: `app.chat.relay` is intentionally NOT imported at module level. This
+# file runs as a standalone script (`python3 /work/runner.py`) inside the E2B
+# sandbox, where the `app` package does not exist until `_install_agnes_cli()`
+# pip-installs the uploaded wheel. A module-level `from app.chat.relay import
+# Relay` crashed the runner at interpreter startup with `ModuleNotFoundError:
+# No module named 'app'` — before the install ever ran — taking chat down
+# end-to-end. `_start_relay()` imports it lazily, after the install. The
+# forward-ref annotation below is a string (PEP 563 / `from __future__ import
+# annotations`) so it needs no import at load time.
+
+# Module-level in-sandbox relay. Populated by ``_start_relay`` in ``amain()``
+# before any CLI/MCP subprocess spawn, and fed fresh tickets pushed by the
+# manager over stdin (see ``_dispatch_frame``). Stays ``None`` in fake-agent
+# test mode (AGNES_RUNNER_FAKE_AGENT=1), where there is no real CLI/MCP
+# subprocess to broker credentials for.
+_relay: "Relay | None" = None
 
 # Directory the agnes CLI wheel is staged in by ChatManager at spawn
 # (e2b_workspace_sync.upload_agnes_wheel keeps the wheel's PEP 427 filename).
@@ -120,26 +148,36 @@ def _agnes_mcp_servers() -> dict:
     Without this, the sandbox agent could only reach Agnes through the
     ``agnes`` CLI's Bash surface and never saw passthrough tools at all.
 
-    The stdio server authenticates the same way the CLI does — off
-    ``AGNES_SERVER`` + ``AGNES_TOKEN`` (+ ``AGNES_SESSION_ID`` for the
-    per-session re-mint path), which ChatManager._spawn_runner already seeds
-    into this process's env. We forward them explicitly on the MCP server's
-    own ``env`` rather than relying on inheritance, because the SDK spawns the
-    server through the ``claude`` CLI and env inheritance across that hop is
-    not guaranteed. ``PATH`` is forwarded so the ``agnes`` console script
-    (installed by ``_install_agnes_cli`` into /usr/local/bin) resolves.
+    The stdio server authenticates off ``AGNES_SERVER`` (+ ``AGNES_SESSION_ID``
+    for the per-session re-mint path). ``AGNES_SERVER`` is the in-sandbox
+    loopback relay's address by the time this runs (``_start_relay`` rewrites
+    it before any subprocess spawn), not the real Agnes server — the relay is
+    the only thing in the sandbox that ever holds an authenticating
+    credential (a short-lived broker ticket pushed over stdin, see
+    ``_dispatch_frame``), attached on the outbound leg. No ``AGNES_TOKEN`` is
+    placed in this env (AC-F2b). We forward ``AGNES_SERVER`` explicitly on the
+    MCP server's own ``env`` rather than relying on inheritance, because the
+    SDK spawns the server through the ``claude`` CLI and env inheritance
+    across that hop is not guaranteed. ``PATH`` is forwarded so the ``agnes``
+    console script (installed by ``_install_agnes_cli`` into /usr/local/bin)
+    resolves.
 
-    Returns ``{}`` when ``AGNES_SERVER``/``AGNES_TOKEN`` are absent (e.g. the
-    fake-agent test path or a misconfigured spawn) so the agent still runs
-    with its built-in tools rather than failing on a broken MCP handshake.
+    Returns ``{}`` when ``AGNES_SERVER`` is absent (e.g. the fake-agent test
+    path or a misconfigured spawn) so the agent still runs with its built-in
+    tools rather than failing on a broken MCP handshake.
     """
     server = os.environ.get("AGNES_SERVER", "").strip()
-    token = os.environ.get("AGNES_TOKEN", "").strip()
-    if not server or not token:
+    if not server:
         return {}
+    # The MCP stdio server must ride the mcp-scoped broker ticket, not the
+    # agent process's main-scoped one. `_start_relay` set this process's
+    # AGNES_SERVER to the relay's `/agnes-api` path (main scope); rewrite it to
+    # `/agnes-mcp` for the MCP subprocess so the relay attaches the mcp ticket
+    # (relay._SCOPE_FOR_PREFIX). Without this, the minted+pushed mcp ticket is
+    # dead and both surfaces share one scope, defeating the split (§11).
+    mcp_server = server.replace("/agnes-api", "/agnes-mcp")
     env = {
-        "AGNES_SERVER": server,
-        "AGNES_TOKEN": token,
+        "AGNES_SERVER": mcp_server,
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         # ``agnes mcp`` resolves its config dir via ``expanduser("~/.config/
         # agnes")`` (cli/config.py), which needs HOME. The ``claude`` CLI
@@ -195,6 +233,22 @@ def _bootstrap_marketplace(workdir: str) -> None:
         print(f"marketplace bootstrap failed: {exc}", file=sys.stderr, flush=True)
 
 
+async def _dispatch_frame(frame: dict, queue: "asyncio.Queue[dict]") -> None:
+    """Route one parsed inbound stdin frame.
+
+    ``ticket_push`` frames (``{"type": "ticket_push", "main": ..., "mcp":
+    ...}``) update the module-level relay's in-memory tickets and are never
+    enqueued for the agent loop — the agent must never see a ticket. Every
+    other frame type (``user_msg``, ``cancel``, ``_eof``) is queued
+    unchanged, exactly as it always has been.
+    """
+    if frame.get("type") == "ticket_push":
+        if _relay is not None:
+            _relay.set_tickets(frame.get("main", ""), frame.get("mcp", ""))
+        return
+    await queue.put(frame)
+
+
 async def _stdin_lines() -> "asyncio.Queue[dict]":
     queue: asyncio.Queue[dict] = asyncio.Queue()
 
@@ -209,9 +263,10 @@ async def _stdin_lines() -> "asyncio.Queue[dict]":
                 await queue.put({"type": "_eof"})
                 return
             try:
-                await queue.put(json.loads(line))
+                frame = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            await _dispatch_frame(frame, queue)
 
     asyncio.create_task(reader())
     return queue
@@ -499,10 +554,36 @@ async def _real_agent_loop(
             _emit({"type": "done"})
 
 
+async def _start_relay() -> int:
+    """Start the module-level loopback relay and rewrite this process's env
+    so every subsequently-spawned CLI/MCP subprocess (``claude``, ``agnes``,
+    ``agnes mcp``) talks to the relay with a dummy key instead of the real
+    Anthropic/Agnes endpoints with a real credential.
+
+    Must run before any such subprocess is spawned. Captures the real
+    ``AGNES_SERVER`` value to construct the ``Relay`` *before* overwriting it
+    below — the relay itself still needs the real server URL to forward
+    brokered requests to.
+    """
+    global _relay
+    # Lazy import: the `app` package only exists after _install_agnes_cli()
+    # has pip-installed the uploaded wheel, so this MUST run after that step
+    # (see amain()). Importing at module scope crashed the runner at startup.
+    from app.chat.relay import Relay
+
+    real_server = os.environ.get("AGNES_SERVER", "").strip()
+    _relay = Relay(server_url=real_server)
+    port = await _relay.start()
+    os.environ["AGNES_SERVER"] = f"http://127.0.0.1:{port}/agnes-api"
+    os.environ["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}/anthropic"
+    os.environ["ANTHROPIC_API_KEY"] = "sk-dummy-broker"
+    return port
+
+
 async def amain() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--session-id", required=True)
-    args = parser.parse_args()
+    parser.parse_args()  # validates required --session-id; value read from env
 
     workdir = Path(os.environ.get("AGNES_WORKDIR", os.getcwd()))
 
@@ -517,7 +598,20 @@ async def amain() -> None:
     # in the OS pipe until _stdin_lines() starts reading. Skipped in fake-agent
     # mode (tests) — there is no wheel to install.
     if not fake_agent:
+        # Install the agnes CLI wheel FIRST: it ships the `app` package that
+        # _start_relay() imports (`from app.chat.relay import Relay`). Ordering
+        # it after _start_relay crashed the relay import with ModuleNotFoundError
+        # (the `app` package doesn't exist in the sandbox until this install).
+        # Safe to run before the relay: the install is an offline
+        # `pip install --no-deps <uploaded wheel>` — it hits no network and
+        # needs no broker. The relay only has to be up before the AGENT
+        # subprocess spawns (`claude`, `agnes mcp`), which come further below.
         _install_agnes_cli()
+        # Now start the in-sandbox loopback relay and repoint this process's env
+        # at it, before any CLI/MCP agent subprocess spawn — the real agent
+        # loop's `claude` spawn and `_agnes_mcp_servers()`'s `agnes mcp` spawn
+        # must see the rewritten AGNES_SERVER / ANTHROPIC_* env.
+        await _start_relay()
         # Opt-in (AGNES_BOOTSTRAP_MARKETPLACE=1): install the user's marketplace
         # plugins into this project so setting_sources surfaces them. After the
         # CLI install (needs the `agnes` binary); before the reader attaches for

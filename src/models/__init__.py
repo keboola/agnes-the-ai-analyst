@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from src.models.audit import AuditLog
 from src.models.chat import ChatMessage, ChatSession, UserWorkdir
+from src.models.chat_broker_tickets import ChatBrokerTicket
 from src.models.collections import CorpusChunk, CorpusFile, FileCorpus
 from src.models.config import InstanceTemplate, MetricDefinition, PersonalAccessToken
 from src.models.connections import ConnectionSecret, SourceConnection
@@ -47,6 +48,10 @@ from src.models.store import (
     MarketplaceRegistry,
     StoreEntity,
     StoreEntityVote,
+    StoreLintDismissal,
+    StoreLintEntityState,
+    StoreLintFinding,
+    StoreLintRun,
     StoreSubmission,
     UserPluginOptout,
     UserStackSubscription,
@@ -82,6 +87,7 @@ from src.models.vault import SystemSecret
 __all__ = [
     "AuditLog",
     "BqMetadataCache",
+    "ChatBrokerTicket",
     "ChatMessage",
     "ChatSession",
     "ColumnMetadata",
@@ -119,6 +125,10 @@ __all__ = [
     "SourceConnection",
     "StoreEntity",
     "StoreEntityVote",
+    "StoreLintDismissal",
+    "StoreLintEntityState",
+    "StoreLintFinding",
+    "StoreLintRun",
     "StoreSubmission",
     "SyncHistory",
     "SyncState",

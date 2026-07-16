@@ -148,6 +148,30 @@ class TestCreateCollection:
 
 
 class TestListCollections:
+    def test_list_calls_file_corpora_list_once(self, seeded_app, monkeypatch):
+        """Regression: N+1 collapse — the handler must call
+        ``file_corpora_repo().list()`` exactly once per request (previously
+        called once inside ``_accessible_corpus_ids`` and once more in the
+        handler)."""
+        import app.api.collections as collections_mod
+        from src.repositories import file_corpora_repo as real_file_corpora_repo
+
+        calls = {"n": 0}
+        real_repo = real_file_corpora_repo()
+        real_list = real_repo.list
+
+        def counting_list():
+            calls["n"] += 1
+            return real_list()
+
+        monkeypatch.setattr(real_repo, "list", counting_list)
+        monkeypatch.setattr(collections_mod, "file_corpora_repo", lambda: real_repo)
+
+        c = seeded_app["client"]
+        resp = c.get("/api/collections", headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 200
+        assert calls["n"] == 1, f"expected file_corpora_repo().list() called once, got {calls['n']}"
+
     def test_admin_sees_all_collections(self, seeded_app):
         c = seeded_app["client"]
         c.post(
@@ -559,6 +583,42 @@ class TestSearch:
         results = resp.json()["results"]
         assert results
         assert results[0]["confidence"] in ("high", "medium", "low")
+
+    def test_search_response_labels_lexical_only_retrieval(self, seeded_app, monkeypatch):
+        """#898: without the embeddings extra the ranking silently degrades to
+        lexical-only — the response must say so instead of leaving clients to
+        read server logs."""
+        import src.ingest.retrieval as retrieval
+
+        monkeypatch.setattr(retrieval, "embedding_capability", lambda: False)
+        c = seeded_app["client"]
+        self._seed_corpus_with_chunk(seeded_app, "Degraded", "the magic keyword appears here", grant=True)
+        resp = c.get(
+            "/api/collections/search",
+            params={"q": "magic keyword"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["retrieval"] == "lexical_only"
+
+    def test_search_response_labels_hybrid_retrieval(self, seeded_app, monkeypatch):
+        """#898: with an embedding model available the response labels the
+        ranking as hybrid."""
+        import src.ingest.retrieval as retrieval
+
+        monkeypatch.setattr(retrieval, "embedding_capability", lambda: True)
+        # Keep ranking deterministic without a real model — the label reflects
+        # capability; the blend handles a None query vector as lexical scores.
+        monkeypatch.setattr(retrieval, "embed_query", lambda _q: None)
+        c = seeded_app["client"]
+        self._seed_corpus_with_chunk(seeded_app, "Hybrid", "the magic keyword appears here", grant=True)
+        resp = c.get(
+            "/api/collections/search",
+            params={"q": "magic keyword"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["retrieval"] == "hybrid"
 
     def test_search_fail_closed_excludes_ungranted(self, seeded_app):
         c = seeded_app["client"]

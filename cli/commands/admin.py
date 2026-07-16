@@ -731,14 +731,18 @@ def metadata_apply(
         return
 
     from src.db import get_system_db
+    from src.repositories import use_pg
 
-    conn = get_system_db()
+    # Repo work routes through the factory (PG or DuckDB); the system DuckDB
+    # must never be opened on a Postgres instance (get_system_db raises there).
+    conn = None if use_pg() else get_system_db()
     try:
         repo = column_metadata_repo()
         count = repo.import_proposal(proposal_path)
         typer.echo(f"Imported {count} column(s) from proposal.")
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
     if push_to_source:
         for table_id in tables:
@@ -1296,6 +1300,7 @@ def break_glass_grant_admin(
     import uuid as _uuid
 
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.repositories import use_pg
 
     if not yes:
         confirm = typer.confirm(
@@ -1306,7 +1311,9 @@ def break_glass_grant_admin(
             typer.echo("Aborted.")
             raise typer.Exit(1)
 
-    conn = get_system_db()
+    # Repo work routes through the factory (PG or DuckDB); the system DuckDB
+    # must never be opened on a Postgres instance (get_system_db raises there).
+    conn = None if use_pg() else get_system_db()
     try:
         users = users_repo()
         groups = user_groups_repo()
@@ -1345,7 +1352,8 @@ def break_glass_grant_admin(
         )
         typer.echo(f"Granted Admin to {email}. Audit source='cli_break_glass'.")
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass

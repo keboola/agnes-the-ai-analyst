@@ -23,6 +23,10 @@ DOC_PATH = Path(__file__).resolve().parent.parent / "docs" / "api-reference.md"
 EXEMPT: tuple[str, ...] = (
     # populated during triage if the sweep flags internal-only surfaces;
     # keep reasons honest — "we forgot" is not a reason
+    # /api/broker/* are internal sandbox→server credential-broker routes, not
+    # a public API surface: ticket-authed, never user/CLI-callable, and
+    # already _EXEMPT in the REST×CLI×MCP triple-surface ratchet.
+    "/api/broker/",
 )
 
 
@@ -57,9 +61,7 @@ def test_doc_exists():
 def test_every_public_api_path_documented(public_api_paths):
     doc = DOC_PATH.read_text(encoding="utf-8")
     missing = [
-        path
-        for path in public_api_paths
-        if not path.startswith(EXEMPT or ("\0",)) and not _path_documented(path, doc)
+        path for path in public_api_paths if not path.startswith(EXEMPT or ("\0",)) and not _path_documented(path, doc)
     ]
     assert not missing, (
         f"{len(missing)} public API endpoint(s) missing from docs/api-reference.md.\n"

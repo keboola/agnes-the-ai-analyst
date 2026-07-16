@@ -109,6 +109,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Inbound Slack transport (`http`/`socket`) | `SLACK_TRANSPORT` | `chat.slack.transport` | `http` | `get_slack_transport()` |
 | Allowed login email domains | — | `auth.allowed_domain` | `[]` | `get_allowed_domains()` |
 | Full auth block | — | `auth` | `{}` | `get_auth_config()` |
+| SSRF allowlist — hostnames exempt from the private/reserved-network guard on **all** admin URLs routed through the shared validator (marketplace + initial-workspace clone URLs, Keboola `stack_url`, server-config URL fields), not just clone URLs; use for an internal git host on a private network (e.g. on-prem GitHub Enterprise). List or comma-string. Empty = guard fail-closed. | `AGNES_SSRF_ALLOWED_HOSTS` | `security.ssrf_allowed_hosts` | `""` (fail-closed) | `get_ssrf_allowed_hosts()` |
 | Dataset registry | — | `datasets` | `{}` | `get_datasets()` |
 | Corporate Memory block | — | `corporate_memory` | `{}` | `get_corporate_memory_config()` |
 
@@ -128,6 +129,9 @@ See [`STORE_GUARDRAILS.md`](STORE_GUARDRAILS.md) for the pipeline these tune.
 | Min slash-command description chars | `guardrails.min_command_description_chars` | `25` | `get_guardrails_min_command_description_chars()` |
 | Min distinct words in a description | `guardrails.min_distinct_words` | `5` | `get_guardrails_min_distinct_words()` |
 | Min skill/agent body chars | `guardrails.min_body_chars` | `200` | `get_guardrails_min_body_chars()` |
+| Skill-lint bloat threshold (chars) | `guardrails.lint_max_body_chars` | `8000` | `get_lint_max_body_chars()` |
+| Skill-lint duplicate candidate count | `guardrails.lint_duplicate_top_n` | `5` | `get_lint_duplicate_top_n()` |
+| Skill-lint audit min interval (hours) | `guardrails.lint_audit_min_interval_hours` | `144` | `get_lint_audit_min_interval_hours()` |
 
 ---
 

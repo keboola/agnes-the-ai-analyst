@@ -25,6 +25,7 @@ in browser history it is inert.
 import hashlib
 import secrets
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import quote, urlencode
@@ -47,6 +48,35 @@ _CODE_TTL = timedelta(seconds=120)
 # Default lifetime of the PAT minted by this flow. Mirrors the CLI token
 # default (90d) so analysts re-auth quarterly, not weekly.
 _PAT_TTL_DAYS = 90
+
+
+@contextmanager
+def _cli_auth_repo(conn):
+    """Yield the cli-auth-codes repo bound to the right DuckDB handle.
+
+    ``cli_auth_codes`` is a DuckDB-local operational table (single-use CLI-login
+    exchange codes, ~2-min TTL) with no Postgres mirror. On Postgres the request
+    ``conn`` (from ``_get_db``) is None — the system DuckDB must never be opened
+    there — so fall back to the dedicated ``operational.duckdb`` file, which the
+    same in-process ``confirm()`` (``POST /cli/auth/start``) and ``exchange()``
+    (``POST /cli/auth/exchange``) handlers share. On DuckDB the caller's
+    system-DB conn is used as-is.
+
+    The operational cursor opened here is CLOSED on exit — it has no ``_get_db``
+    generator ``finally`` to release it, so a plain return would leak one cursor
+    per request on Postgres. A caller-supplied DuckDB conn is left untouched for
+    its own owner to close.
+    """
+    if conn is not None:
+        yield CliAuthCodeRepository(conn)
+        return
+    from src.db import get_operational_db
+
+    owned = get_operational_db()
+    try:
+        yield CliAuthCodeRepository(owned)
+    finally:
+        owned.close()
 
 
 def _validate_loopback(port: int, state: str) -> None:
@@ -102,12 +132,13 @@ async def confirm(
 
     raw_code = secrets.token_urlsafe(32)
     code_hash = hashlib.sha256(raw_code.encode()).hexdigest()
-    CliAuthCodeRepository(conn).create(
-        code_hash=code_hash,
-        user_id=user["id"],
-        email=user["email"],
-        expires_at=datetime.now(timezone.utc) + _CODE_TTL,
-    )
+    with _cli_auth_repo(conn) as _repo:
+        _repo.create(
+            code_hash=code_hash,
+            user_id=user["id"],
+            email=user["email"],
+            expires_at=datetime.now(timezone.utc) + _CODE_TTL,
+        )
     try:
         audit_repo().log(
             user_id=user["id"],
@@ -148,7 +179,8 @@ async def exchange(
     if not payload.code:
         raise HTTPException(status_code=400, detail="code is required")
     code_hash = hashlib.sha256(payload.code.encode()).hexdigest()
-    claimed = CliAuthCodeRepository(conn).consume(code_hash)
+    with _cli_auth_repo(conn) as _repo:
+        claimed = _repo.consume(code_hash)
     if not claimed:
         # Expired, already used, or never existed — all indistinguishable on
         # purpose so a guesser learns nothing.

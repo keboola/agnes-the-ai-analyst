@@ -34,16 +34,14 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Up
 from pydantic import BaseModel, Field
 
 from app.auth.access import (
-    can_access,
-    can_access_session,
     require_admin,
     require_resource_access,
 )
 from app.auth.dependencies import get_current_user
-from app.auth.session_principal import SessionPrincipal
 from app.resource_types import ResourceType
 from src.corpus_allowlist import classify
 from src.file_storage import delete_corpus_file, store_corpus_file
+from src.rbac import get_accessible_ids
 from src.repositories import (
     corpus_chunks_repo,
     corpus_files_repo,
@@ -180,16 +178,17 @@ async def create_collection(
 def _accessible_corpus_ids(user) -> list[str]:
     """The collection ids the caller may access (fail-closed).
 
-    Admins are waved through by ``can_access`` (Admin-group short-circuit);
-    non-admins get only granted collections; ``SessionPrincipal`` co-session
-    callers route through ``can_access_session``. Goes through the repository
-    factory (no raw DuckDB conn) → correct on the Postgres backend.
+    Resolves the grant set **once** via ``get_accessible_ids`` (admin -> None
+    => every collection; ``SessionPrincipal`` co-session callers get their
+    intersection set; other non-admins get only granted collections) instead
+    of a per-row ``can_access`` check. Goes through the repository factory
+    (no raw DuckDB conn) → correct on the Postgres backend.
     """
+    allowed = get_accessible_ids(user, ResourceType.COLLECTION.value)
     rows = file_corpora_repo().list()
-    if isinstance(user, SessionPrincipal):
-        return [r["id"] for r in rows if can_access_session(user, ResourceType.COLLECTION.value, r["id"])]
-    uid = user["id"]
-    return [r["id"] for r in rows if can_access(uid, ResourceType.COLLECTION.value, r["id"])]
+    if allowed is None:
+        return [r["id"] for r in rows]
+    return [r["id"] for r in rows if r["id"] in allowed]
 
 
 @router.get("")
@@ -197,8 +196,8 @@ async def list_collections(
     user=Depends(get_current_user),
 ):
     """List collections accessible to the caller (fail-closed)."""
-    allowed = set(_accessible_corpus_ids(user))
-    rows = [r for r in file_corpora_repo().list() if r["id"] in allowed]
+    allowed = get_accessible_ids(user, ResourceType.COLLECTION.value)  # None => admin
+    rows = [r for r in file_corpora_repo().list() if allowed is None or r["id"] in allowed]
     return {"items": [_collection_out(r) for r in rows]}
 
 
@@ -214,14 +213,18 @@ async def search_collections(
     Fail-closed: only the caller's granted collections are searched; an
     optional ``corpus_id`` narrows to one (ignored if not accessible). Declared
     before ``/{collection_id}`` so ``search`` isn't captured as a collection id.
+
+    The response carries ``retrieval`` (``hybrid | lexical_only``) so clients
+    can tell semantic-scored results from the lexical-only degradation that
+    kicks in when the embeddings extra is not installed (#898).
     """
-    from src.ingest.retrieval import search as _search
+    from src.ingest.retrieval import retrieval_mode, search as _search
 
     allowed = _accessible_corpus_ids(user)
     if corpus_id is not None:
         allowed = [c for c in allowed if c == corpus_id]
     k = max(1, min(k, 50))
-    return {"results": _search(allowed, q, k=k)}
+    return {"results": _search(allowed, q, k=k), "retrieval": retrieval_mode()}
 
 
 @router.get("/{collection_id}")

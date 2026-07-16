@@ -118,6 +118,34 @@ def _chat_anthropic_key_ok(chat_config) -> bool:
     # Bypass for TESTING=1 — pytest-driven sessions don't need a real key.
     if os.environ.get("TESTING", "").lower() in ("1", "true"):
         return True
+    # Keyless (workload_identity): there is NO static ANTHROPIC_API_KEY by
+    # design — the broker mints a federated token from the workload's own
+    # identity. Validate the federation env instead so a misconfigured WIF
+    # deployment fails loudly at startup rather than with a runtime 502 on the
+    # first completion.
+    if getattr(chat_config, "llm_auth", "api_key") == "workload_identity":
+        missing = [
+            var
+            for var in (
+                "ANTHROPIC_FEDERATION_RULE_ID",
+                "ANTHROPIC_ORGANIZATION_ID",
+                "ANTHROPIC_SERVICE_ACCOUNT_ID",
+            )
+            if not os.environ.get(var, "").strip()
+        ]
+        if not (
+            os.environ.get("ANTHROPIC_IDENTITY_TOKEN", "").strip()
+            or os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE", "").strip()
+        ):
+            missing.append("ANTHROPIC_IDENTITY_TOKEN|ANTHROPIC_IDENTITY_TOKEN_FILE")
+        if missing:
+            logging.getLogger("app.main").error(
+                "chat.llm.auth=workload_identity requires the federation env to be set "
+                "(missing: %s); refusing to spawn ChatManager",
+                ", ".join(missing),
+            )
+            return False
+        return True
     if os.environ.get("ANTHROPIC_API_KEY", ""):
         return True
     logging.getLogger("app.main").error(
@@ -276,6 +304,7 @@ from app.api.stack_views import router as stack_views_router
 from app.api.initial_workspace import router as initial_workspace_router
 from app.api.config_surface import router as config_surface_router
 from app.api.store import router as store_router
+from app.api.store_lint_admin import router as store_lint_admin_router
 from app.api.my_stack import router as my_stack_router
 from app.api.marketplace import router as marketplace_router
 from app.api.welcome import router as welcome_router
@@ -295,6 +324,7 @@ from app.api.mcp_streamable import mount_root_route as _mcp_streamable_mount_roo
 from app.auth.mcp_oauth import make_consent_routes as _make_mcp_consent_routes
 from app.api.cache_warmup import router as cache_warmup_router
 from app.api.bq_metadata_refresh import router as bq_metadata_refresh_router
+from app.api.keboola_semantic_layer_refresh import router as keboola_semantic_layer_refresh_router
 from app.api.activity import router as activity_router
 from app.api.observability import router as observability_router
 from app.api.admin_user_sessions import router as admin_user_sessions_router
@@ -305,12 +335,13 @@ from app.api.admin_reports import router as admin_reports_router
 from app.api.admin_adoption import router as admin_adoption_router
 from app.api.db_state import router as db_state_router
 from app.marketplace_server.router import router as marketplace_server_router
-from app.marketplace_server.git_router import make_git_wsgi_app
+from app.marketplace_server.git_router import router as marketplace_git_router
 from app.web.router import router as web_router
 from app.api.chat import router as chat_router
 from app.api.chat_copresence import router as chat_copresence_router
 from app.api.slack import router as slack_router
 from app.api.admin_chat import router as admin_chat_router
+from app.api.broker import router as broker_router
 from app.instance_config import get_slack_transport
 from services.slack_bot.socket_mode_client import (
     SocketModeDispatcher,
@@ -413,15 +444,19 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
     writes at the mercy of a cross-version WAL replay. CHECKPOINT runs in
     a worker thread — it can block while DuckDB flushes a large WAL.
     """
-    from src.db import checkpoint_system_db
+    from src.db import checkpoint_operational_db, checkpoint_system_db
 
     while True:
         await asyncio.sleep(interval_s)
         try:
             await asyncio.to_thread(checkpoint_system_db)
+            # operational.duckdb is a second long-lived singleton with the same
+            # unbounded-WAL exposure; both accessors no-op when their singleton
+            # isn't open, so this is cheap on every backend.
+            await asyncio.to_thread(checkpoint_operational_db)
         except Exception:
-            # checkpoint_system_db already swallows DB errors; this guards
-            # the loop itself (e.g. to_thread failure) so it never dies.
+            # checkpoint_*_db already swallow DB errors; this guards the loop
+            # itself (e.g. to_thread failure) so it never dies.
             logger.exception("state-checkpoint tick failed; loop continues")
 
 
@@ -485,13 +520,19 @@ async def lifespan(app):
         pass  # never block startup on a logging convenience
 
     # Bump anyio's default thread pool size from 40 → AGNES_THREADPOOL_SIZE
-    # (default 200). FastAPI auto-runs every plain `def` route handler in
-    # this pool — the Tier 1 endpoints converted in PR #188 (`/api/query`,
-    # `/api/v2/scan`, `/api/v2/sample`, `/api/v2/schema`) all block on
-    # synchronous DuckDB / BQ-extension calls inside the handler body and
-    # would otherwise serialise once 40 are in flight. 200 keeps the per-
-    # process working set well under the BQ extension's connection cap
-    # while leaving headroom for concurrent UI / health probes.
+    # (default 200). FastAPI auto-runs every plain `def` route handler AND
+    # every plain `def` dependency in this pool — the Tier 1 endpoints
+    # converted in PR #188 (`/api/query`, `/api/v2/scan`, `/api/v2/sample`,
+    # `/api/v2/schema`) all block on synchronous DuckDB / BQ-extension calls
+    # inside the handler body, and the auth/RBAC dependencies that run on
+    # nearly every request (`get_current_user`, `get_optional_user`,
+    # `require_session_token`, `require_admin`, `require_resource_access`'s
+    # inner dep, `require_broker_ticket`) block on synchronous system-DB reads
+    # (Postgres via the sync SQLAlchemy engine in prod) — all would otherwise
+    # serialise on the single event loop once 40 are in flight, and a slow
+    # auth read would freeze every other request (→ 503 "system unavailable").
+    # 200 keeps the per-process working set well under the BQ extension's
+    # connection cap while leaving headroom for concurrent UI / health probes.
     try:
         import anyio.to_thread
 
@@ -539,13 +580,20 @@ async def lifespan(app):
     # rebuild guarantees the index reflects whatever mutations landed via
     # the BG-task / scheduler paths that bypass the per-mutation hook.
     # Soft-failure — logs WARNING and the repo falls back to ILIKE.
-    try:
-        from src.db import get_system_db
-        from src.fts import ensure_knowledge_fts_index
+    #
+    # DuckDB-only: the BM25 index is a DuckDB FTS-extension artefact built on
+    # the system DuckDB. On Postgres there is no system DuckDB (and opening one
+    # is forbidden), so skip entirely — memory search there uses the PG path.
+    from src.repositories import use_pg as _use_pg
 
-        ensure_knowledge_fts_index(get_system_db())
-    except Exception:
-        logger.exception("startup FTS index rebuild failed; falling back to ILIKE on /api/memory?search=")
+    if not _use_pg():
+        try:
+            from src.db import get_system_db
+            from src.fts import ensure_knowledge_fts_index
+
+            ensure_knowledge_fts_index(get_system_db())
+        except Exception:
+            logger.exception("startup FTS index rebuild failed; falling back to ILIKE on /api/memory?search=")
 
     # Surface BQ config gaps at startup so the operator sees them in
     # the boot log instead of as cryptic "provider returned no data" /
@@ -744,11 +792,18 @@ async def lifespan(app):
                     SCHEDULER_TOKEN_MIN_LENGTH,
                 )
             else:
-                conn = get_system_db()
+                # ensure_scheduler_user routes its reads/writes through the
+                # repository factory (honors use_pg()) and ignores ``conn``, so
+                # on Postgres pass None — opening the system DuckDB there would
+                # create a stale system.duckdb (forbidden invariant).
+                from src.repositories import use_pg
+
+                conn = None if use_pg() else get_system_db()
                 try:
                     ensure_scheduler_user(conn)
                 finally:
-                    conn.close()
+                    if conn is not None:
+                        conn.close()
         except Exception as e:
             logger.warning(f"Could not seed scheduler user: {e}")
 
@@ -758,17 +813,23 @@ async def lifespan(app):
     if not is_local_dev_mode():
         try:
             from src.db import get_system_db
+            from src.repositories import use_pg
 
-            conn = get_system_db()
-            repo = users_repo()
-            all_users = repo.list_all()
-            has_password = any(u.get("password_hash") for u in all_users)
-            if not has_password:
-                logger.warning(
-                    "No user has a password set — /auth/bootstrap is reachable. "
-                    "Claim the seed admin (or set SEED_ADMIN_PASSWORD) to close this window."
-                )
-            conn.close()
+            # users_repo() is factory-routed and ignores ``conn``; on Postgres
+            # pass None so the system DuckDB is never opened (forbidden).
+            conn = None if use_pg() else get_system_db()
+            try:
+                repo = users_repo()
+                all_users = repo.list_all()
+                has_password = any(u.get("password_hash") for u in all_users)
+                if not has_password:
+                    logger.warning(
+                        "No user has a password set — /auth/bootstrap is reachable. "
+                        "Claim the seed admin (or set SEED_ADMIN_PASSWORD) to close this window."
+                    )
+            finally:
+                if conn is not None:
+                    conn.close()
         except Exception:
             pass  # never block startup on a logging convenience
 
@@ -795,11 +856,15 @@ async def lifespan(app):
     # even when chat is disabled — they degrade gracefully via _get_manager().
     try:
         from src.db import get_system_db as _get_system_db_chat, _get_data_dir as _get_data_dir_chat
+        from src.repositories import use_pg as _use_pg_chat
         from app.chat.config import load_chat_config
         from app.chat.persistence import ChatRepository
 
         _chat_data_dir = _get_data_dir_chat()
-        _chat_conn = _get_system_db_chat()
+        # ChatRepository delegates to the *_pg repositories under use_pg() and
+        # leaves ``conn`` unused there; on Postgres pass None so the system
+        # DuckDB is never opened (forbidden invariant).
+        _chat_conn = None if _use_pg_chat() else _get_system_db_chat()
         app.state.chat_repo = ChatRepository(_chat_conn)
         app.state.chat_data_dir = _chat_data_dir
 
@@ -850,13 +915,18 @@ async def lifespan(app):
             `agnes init` (#622)."""
             try:
                 from src.db import get_system_db
+                from src.repositories import use_pg
                 from src.initial_workspace import build_zip
 
-                conn = get_system_db()
+                # On Postgres pass conn=None — build_zip resolves the admin
+                # workspace-prompt overlay through the repository factory when
+                # use_pg() is true (opening the system DuckDB is forbidden).
+                conn = None if use_pg() else get_system_db()
                 try:
                     return build_zip(conn)
                 finally:
-                    conn.close()
+                    if conn is not None:
+                        conn.close()
             except Exception:
                 logger.exception("_fetch_local_template_zip failed (non-fatal)")
                 return b""
@@ -916,22 +986,24 @@ async def lifespan(app):
                     try:
                         from src.db import get_system_db
                         from src.claude_md import render_claude_md
-                        from src.repositories import users_repo
+                        from src.repositories import use_pg, users_repo
 
                         # User read via the factory so it honors use_pg() — a
                         # direct UserRepository(conn) read the frozen DuckDB
                         # system file on Postgres instances (#518). The conn
-                        # below is still handed to render_claude_md, which
-                        # routes its own state reads through the factory (the
-                        # conn is the DuckDB-mode path; vestigial on PG).
+                        # below is the DuckDB-mode path handed to
+                        # render_claude_md, which routes its own state reads
+                        # through the factory; on Postgres it is None so the
+                        # system DuckDB is never opened (forbidden invariant).
                         u = users_repo().get_by_email(user_email)
                         if not u:
                             return None
-                        conn = get_system_db()
+                        conn = None if use_pg() else get_system_db()
                         try:
                             return render_claude_md(conn, user=u, server_url=_server_url)
                         finally:
-                            conn.close()
+                            if conn is not None:
+                                conn.close()
                     except Exception:
                         logger.exception("render workspace prompt failed for %s", user_email)
                         return None
@@ -961,6 +1033,7 @@ async def lifespan(app):
                         app.state.chat_config.max_session_seconds,
                         E2B_SANDBOX_MAX_SECONDS,
                     ),
+                    egress_allow_out=app.state.chat_config.egress_allow_out,
                 )
                 mgr = ChatManager(
                     provider=provider,
@@ -1015,13 +1088,15 @@ async def lifespan(app):
     # Periodic system.duckdb CHECKPOINT (#710) — see _state_checkpoint_loop.
     # Started here (worker-only), not create_app(): the uvicorn --reload
     # master must not touch system.duckdb (same reasoning as the seeding
-    # above). Runs on Postgres-state instances too: boot still opens the
-    # DuckDB singleton unconditionally for the DuckDB-only FTS index rebuild
-    # (ensure_knowledge_fts_index above), so the file exists and takes writes
-    # there as well — checkpointing it is cheap and keeps its WAL folded.
-    # (ensure_internal_tables_registered now routes through the repository
-    # factory and no longer forces the DuckDB singleton open on PG-backed
-    # instances.)
+    # above). This applies only when the system DuckDB singleton is actually
+    # open, i.e. on DuckDB-state instances: checkpoint_system_db() never opens
+    # one implicitly (it no-ops when no singleton is held). Postgres-state
+    # instances must NOT open the system DuckDB — get_system_db() raises under
+    # use_pg(), the startup FTS rebuild is skipped there, and every remaining
+    # opener routes through the repository factory — so on Postgres the
+    # checkpoint_system_db() arm no-ops, while the same loop still folds the
+    # operational.duckdb WAL (checkpoint_operational_db) once a CLI login /
+    # Slack bind has opened it.
     _checkpoint_interval = _state_checkpoint_interval_s()
     _checkpoint_task = None
     if _checkpoint_interval > 0:
@@ -1050,10 +1125,16 @@ async def lifespan(app):
         get_posthog().shutdown()
     except Exception:
         logger.exception("PostHog shutdown failed")
-    from src.db import close_analytics_db, close_system_db
+    from src.db import close_analytics_db, close_operational_db, close_system_db
 
     close_system_db()
     close_analytics_db()
+    # operational.duckdb (CLI-auth / Slack-binding codes) is a separate
+    # long-lived DuckDB singleton — CHECKPOINT + close it too so its WAL is
+    # folded on graceful shutdown (on Postgres it is the only written DuckDB
+    # file; the checkpoint loop folds it periodically, and this closes it
+    # cleanly on the way out).
+    close_operational_db()
 
 
 def _is_truthy_env(name: str) -> bool:
@@ -1350,7 +1431,18 @@ def create_app() -> FastAPI:
         for line in _overlay.read_text().splitlines():
             if "=" in line and not line.startswith("#"):
                 k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
+                # Override, NOT setdefault: the overlay is the admin's
+                # persisted runtime configuration (secrets set via
+                # /api/admin/configure and the chat "configure secrets" UI,
+                # e.g. ANTHROPIC_API_KEY / E2B_API_KEY, marketplace PATs). It
+                # MUST win over an image-baked default of the same name.
+                # With setdefault, a stale baked key already occupying
+                # os.environ shadowed the overlay, so rotating a key via the
+                # UI was silently discarded on the next restart and chat broke
+                # with a 401. This matches persist_overlay_token's own
+                # ``os.environ[k] = v`` write semantics — set once at the UI,
+                # win consistently across restarts.
+                os.environ[k.strip()] = v.strip()
 
     # Load instance config on startup
     try:
@@ -1531,6 +1623,7 @@ def create_app() -> FastAPI:
     app.include_router(initial_workspace_router)
     app.include_router(config_surface_router)
     app.include_router(store_router)
+    app.include_router(store_lint_admin_router)
     app.include_router(my_stack_router)
     app.include_router(marketplace_router)
     app.include_router(welcome_router)
@@ -1602,6 +1695,7 @@ def create_app() -> FastAPI:
 
     app.include_router(cache_warmup_router)
     app.include_router(bq_metadata_refresh_router)
+    app.include_router(keboola_semantic_layer_refresh_router)
     app.include_router(activity_router)
     app.include_router(observability_router)
     app.include_router(admin_user_sessions_router)
@@ -1617,12 +1711,13 @@ def create_app() -> FastAPI:
     app.include_router(chat_copresence_router)
     app.include_router(slack_router)
     app.include_router(admin_chat_router)
+    app.include_router(broker_router)
 
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
-    # WSGI → ASGI bridge (dulwich is WSGI-native; FastAPI is ASGI).
-    from a2wsgi import WSGIMiddleware
-
-    app.mount("/marketplace.git", WSGIMiddleware(make_git_wsgi_app()))
+    # Native ASGI route that shells out to the real `git http-backend` CLI
+    # binary (CGI protocol) — see app/marketplace_server/git_router.py for
+    # why this replaced the dulwich/WSGI bridge.
+    app.include_router(marketplace_git_router)
 
     # Authenticated Swagger / ReDoc / OpenAPI JSON — requires a valid session
     # so the full admin API surface is not visible to unauthenticated callers.
@@ -1713,18 +1808,32 @@ def create_app() -> FastAPI:
         any failure — error page still renders, just without the user menu.
         """
         try:
+            from fastapi.concurrency import run_in_threadpool
+
             from app.auth.dependencies import get_current_user
             from src.db import get_system_db
+            from src.repositories import use_pg
 
-            conn = get_system_db()
+            # get_current_user is now a plain ``def`` (Tier 1, PR #188) — it must
+            # not be ``await``ed as a coroutine. Offload it to the thread pool so
+            # its sync RBAC/DB read never runs on the async exception handler's
+            # loop. On Postgres no system DuckDB is opened (use_pg() guard); the
+            # dependency routes through the repository factory with conn=None.
+            conn = None if use_pg() else get_system_db()
             try:
                 authorization = request.headers.get("authorization")
-                return await get_current_user(request=request, authorization=authorization, conn=conn)
+                return await run_in_threadpool(
+                    get_current_user,
+                    request=request,
+                    authorization=authorization,
+                    conn=conn,
+                )
             finally:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
         except Exception:
             return None
 

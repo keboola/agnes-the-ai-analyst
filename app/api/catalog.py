@@ -9,12 +9,13 @@ import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
-from src.rbac import can_access_table
+from src.rbac import can_access_table, get_accessible_tables
 
 from src.repositories import (
     profile_repo,
     table_registry_repo,
 )
+
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
 
 
@@ -33,7 +34,7 @@ class CatalogTablesResponse(BaseModel):
 
 
 @router.get("/profile/{table_name}")
-async def get_table_profile(
+def get_table_profile(
     table_name: str,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -60,7 +61,7 @@ async def get_table_profile(
 
 
 @router.get("/tables", response_model=CatalogTablesResponse)
-async def list_catalog_tables(
+def list_catalog_tables(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -68,9 +69,12 @@ async def list_catalog_tables(
     repo = table_registry_repo()
     all_tables = repo.list_all()
 
-    # Filter by user's accessible tables. ``can_access_table`` has its own
-    # admin shortcut (Admin group → True), so no need to pre-branch here.
-    all_tables = [t for t in all_tables if can_access_table(user, t["id"], conn)]
+    # Resolve the accessible-table set ONCE per request (was: one
+    # ``can_access_table`` call per row — an N+1 that serialized ~8-9
+    # round-trips per table over ~115 tables). ``None`` means admin/all.
+    _accessible_ids = get_accessible_tables(user, conn)
+    _allowed = None if _accessible_ids is None else set(_accessible_ids)
+    all_tables = [t for t in all_tables if _allowed is None or t["id"] in _allowed]
 
     tables = [
         {
@@ -87,18 +91,19 @@ async def list_catalog_tables(
 
 
 @router.get("/metrics/{metric_path:path}", deprecated=True)
-async def get_metric(
+def get_metric(
     metric_path: str,
     user: dict = Depends(get_current_user),
 ):
     """Deprecated: use GET /api/metrics/{metric_id} instead."""
     from fastapi.responses import RedirectResponse
+
     metric_id = metric_path.replace(".yml", "")
     return RedirectResponse(url=f"/api/metrics/{metric_id}", status_code=301)
 
 
 @router.post("/profile/{table_name}/refresh")
-async def refresh_profile(
+def refresh_profile(
     table_name: str,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),

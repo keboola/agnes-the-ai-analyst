@@ -906,6 +906,9 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 
 ### `/api/admin/store` — Marketplace store submissions (admin)
 
+- /api/admin/store/lint-audit
+- /api/admin/store/lint-dismiss
+- /api/admin/store/lint-findings
 - /api/admin/store/submissions
 - /api/admin/store/submissions/{submission_id}
 - /api/admin/store/submissions/{submission_id}/bundle.zip
@@ -920,6 +923,7 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/admin/run-corporate-memory
 - /api/admin/run-jira-consistency-check
 - /api/admin/run-jira-sla-poll
+- /api/admin/run-keboola-semantic-layer-refresh
 - /api/admin/run-knowledge-digests
 - /api/admin/run-knowledge-migration
 - /api/admin/run-knowledge-packaging

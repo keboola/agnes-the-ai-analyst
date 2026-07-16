@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import zipfile
 from pathlib import Path
 
@@ -46,6 +47,7 @@ def web_client(tmp_path, monkeypatch):
     (tmp_path / "extracts").mkdir()
     close_system_db()
     from app.main import create_app
+
     app = create_app()
     yield TestClient(app)
     close_system_db()
@@ -56,7 +58,10 @@ def _create_user(client, email, password="UserPass1!"):
     conn = get_system_db()
     user_id = email.split("@")[0]
     UserRepository(conn).create(
-        id=user_id, email=email, name=user_id, password_hash=ph.hash(password),
+        id=user_id,
+        email=email,
+        name=user_id,
+        password_hash=ph.hash(password),
     )
     conn.close()
     r = client.post("/auth/token", json={"email": email, "password": password})
@@ -66,6 +71,7 @@ def _create_user(client, email, password="UserPass1!"):
 
 def _create_admin(client, email="admin-edit@x.com"):
     from tests.helpers.auth import grant_admin
+
     user_id, cookies = _create_user(client, email, password="AdminPass1!")
     conn = get_system_db()
     grant_admin(conn, user_id)
@@ -100,7 +106,8 @@ def _upload_clean(client, cookies, name="ed1"):
     r = client.post(
         "/api/store/entities",
         files={"file": ("s.zip", _make_skill_zip(name), "application/zip")},
-        data={"type": "skill", "description": _OK_DESC}, cookies=cookies,
+        data={"type": "skill", "description": _OK_DESC},
+        cookies=cookies,
     )
     assert r.status_code == 201, r.text
     return r.json()["id"]
@@ -163,6 +170,7 @@ class TestEditFeature:
         """Manually flip the entity to visibility=pending + create a
         pending submission, then attempt edit → 409."""
         from src.repositories.store_submissions import StoreSubmissionsRepository
+
         owner_id, owner_cookies = _create_user(web_client, "blockowner@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="blockpending")
 
@@ -173,9 +181,13 @@ class TestEditFeature:
             [eid],
         )
         StoreSubmissionsRepository(conn).create(
-            submitter_id=owner_id, submitter_email="blockowner@x.com",
-            type="skill", name="blockpending", version="2.0.0",
-            status="pending_llm", entity_id=eid,
+            submitter_id=owner_id,
+            submitter_email="blockowner@x.com",
+            type="skill",
+            name="blockpending",
+            version="2.0.0",
+            status="pending_llm",
+            entity_id=eid,
             inline_checks={"manifest": {"status": "pass"}},
         )
         conn.close()
@@ -247,9 +259,7 @@ class TestRestoreVersion:
         assert len(entity["version_history"]) == 3
         v3 = entity["version_history"][2]
         assert v3["n"] == 3
-        assert v3["hash"] == v1_hash, (
-            "restored bundle should hash identically to v1 — same bytes"
-        )
+        assert v3["hash"] == v1_hash, "restored bundle should hash identically to v1 — same bytes"
 
     def test_restore_already_current_400(self, web_client):
         owner_id, owner_cookies = _create_user(web_client, "alreadyowner@x.com")
@@ -293,17 +303,18 @@ class TestRestoreVersion:
         submission.status='blocked_llm'. The restore endpoint must
         refuse to roll forward from that bundle — defense in depth
         against the UI being bypassed by direct POST."""
+
         # Mock LLM to BLOCK v2.
         def mock_review_bundle(*args, **kwargs):
             return {
                 "risk_level": "high",
                 "summary": "mock block",
-                "findings": [{"severity": "high", "category": "test",
-                              "file": "x", "explanation": "mock"}],
+                "findings": [{"severity": "high", "category": "test", "file": "x", "explanation": "mock"}],
                 "template_placeholders_found": 0,
                 "reviewed_by_model": "mock-model",
                 "error": None,
             }
+
         monkeypatch.setattr(
             "src.store_guardrails.llm_review.review_bundle",
             mock_review_bundle,
@@ -326,6 +337,7 @@ class TestRestoreVersion:
         # Drive the BG review synchronously.
         from src.repositories.store_submissions import StoreSubmissionsRepository
         from src.store_guardrails.runner import run_llm_review
+
         conn = get_system_db()
         sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
         conn.close()
@@ -352,6 +364,7 @@ class TestRestoreVersion:
         """Same as blocked_llm but the LLM call errored — the
         submission row lands at 'review_error' and the version is
         equally not-approvable."""
+
         def mock_review_bundle(*args, **kwargs):
             return {
                 "risk_level": None,
@@ -361,6 +374,7 @@ class TestRestoreVersion:
                 "reviewed_by_model": "mock-model",
                 "error": "LLMFormatError: mock truncation",
             }
+
         monkeypatch.setattr(
             "src.store_guardrails.llm_review.review_bundle",
             mock_review_bundle,
@@ -380,6 +394,7 @@ class TestRestoreVersion:
 
         from src.repositories.store_submissions import StoreSubmissionsRepository
         from src.store_guardrails.runner import run_llm_review
+
         conn = get_system_db()
         sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
         conn.close()
@@ -443,7 +458,8 @@ class TestEditPage:
         owner_id, owner_cookies = _create_user(web_client, "editpage@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="editrender")
         r = web_client.get(
-            f"/marketplace/flea/{eid}/edit", cookies=owner_cookies,
+            f"/marketplace/flea/{eid}/edit",
+            cookies=owner_cookies,
         )
         assert r.status_code == 200
         assert "edit-form" in r.text
@@ -454,7 +470,8 @@ class TestEditPage:
         eid = _upload_clean(web_client, owner_cookies, name="snoopedit")
         _, snoop_cookies = _create_user(web_client, "snoopedit@x.com")
         r = web_client.get(
-            f"/marketplace/flea/{eid}/edit", cookies=snoop_cookies,
+            f"/marketplace/flea/{eid}/edit",
+            cookies=snoop_cookies,
         )
         assert r.status_code == 404
 
@@ -462,7 +479,8 @@ class TestEditPage:
         owner_id, owner_cookies = _create_user(web_client, "vowner@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="vcard")
         r = web_client.get(
-            f"/marketplace/flea/{eid}", cookies=owner_cookies,
+            f"/marketplace/flea/{eid}",
+            cookies=owner_cookies,
         )
         assert r.status_code == 200
         assert "versions-card" in r.text
@@ -473,7 +491,8 @@ class TestEditPage:
         eid = _upload_clean(web_client, owner_cookies, name="vhide")
         _, other_cookies = _create_user(web_client, "vother@x.com")
         r = web_client.get(
-            f"/marketplace/flea/{eid}", cookies=other_cookies,
+            f"/marketplace/flea/{eid}",
+            cookies=other_cookies,
         )
         assert r.status_code == 200
         assert "versions-card" not in r.text
@@ -494,7 +513,6 @@ class TestInstallerAlwaysGetsLatestApproved:
     def _install_as_user(self, web_client, owner_cookies, eid):
         """Install as a separate consumer user, return their list_for_user
         rows post-install (mirrors what marketplace.zip serves)."""
-        from src.repositories.user_store_installs import UserStoreInstallsRepository
         installer_id, installer_cookies = _create_user(web_client, "installer@x.com")
         r = web_client.post(
             f"/api/store/entities/{eid}/install",
@@ -509,7 +527,6 @@ class TestInstallerAlwaysGetsLatestApproved:
         version should defer promotion: existing installer must
         continue seeing v1 + entity.version_no=1, not get hidden by a
         flipped visibility or a half-promoted live dir."""
-        from app import instance_config as ic
         # Stub LLM scheduling so the BG path never actually runs.
         monkeypatch.setattr(
             "app.api.store._schedule_llm_review",
@@ -551,30 +568,26 @@ class TestInstallerAlwaysGetsLatestApproved:
         # + size + visibility='approved'. The pending edit must not
         # have hidden the entity from them.
         from src.repositories.user_store_installs import UserStoreInstallsRepository
+
         conn = get_system_db()
         installs = UserStoreInstallsRepository(conn).list_for_user(installer_id)
         ids = {r["id"] for r in installs}
         assert eid in ids, (
-            "installer lost access to the entity during the LLM "
-            "review window — list_for_user filter excluded it"
+            "installer lost access to the entity during the LLM review window — list_for_user filter excluded it"
         )
         row = next(r for r in installs if r["id"] == eid)
         assert row["version"] == v1_hash, (
-            f"installer should still get v1 hash {v1_hash[:8]} but "
-            f"got {row['version'][:8]}"
+            f"installer should still get v1 hash {v1_hash[:8]} but got {row['version'][:8]}"
         )
         assert row["file_size"] == v1_size, "size shouldn't change pre-promotion"
         assert row["visibility_status"] == "approved", (
-            "entity must stay 'approved' through the review window so "
-            "existing installers continue serving"
+            "entity must stay 'approved' through the review window so existing installers continue serving"
         )
 
         # Entity row's version_no must NOT have bumped yet.
         ent = StoreEntitiesRepository(conn).get(eid)
         conn.close()
-        assert ent["version_no"] == 1, (
-            f"version_no must stay 1 during pending review; got {ent['version_no']}"
-        )
+        assert ent["version_no"] == 1, f"version_no must stay 1 during pending review; got {ent['version_no']}"
         # But version_history MUST have v2 entry tracked (with the
         # new hash) so admin can see what's in flight.
         history_n = [int(e["n"]) for e in ent["version_history"]]
@@ -584,15 +597,13 @@ class TestInstallerAlwaysGetsLatestApproved:
         """Mock the LLM to BLOCK the v2 review. Installer must keep
         v1; entity.version_no must stay at 1; live plugin/ must hold
         v1's bytes."""
-        from app import instance_config as ic
 
         # Mock the runner's LLM call to return a high-risk verdict.
         def mock_review_bundle(*args, **kwargs):
             return {
                 "risk_level": "high",
                 "summary": "mock block",
-                "findings": [{"severity": "high", "category": "test",
-                              "file": "x", "explanation": "mock"}],
+                "findings": [{"severity": "high", "category": "test", "file": "x", "explanation": "mock"}],
                 "template_placeholders_found": 0,
                 "reviewed_by_model": "mock-model",
                 "error": None,
@@ -633,6 +644,7 @@ class TestInstallerAlwaysGetsLatestApproved:
         from src.repositories.store_submissions import StoreSubmissionsRepository
         from src.store_guardrails.runner import run_llm_review
         from app.utils import get_store_dir
+
         conn = get_system_db()
         sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
         conn.close()
@@ -646,6 +658,7 @@ class TestInstallerAlwaysGetsLatestApproved:
 
         # Installer must STILL see v1.
         from src.repositories.user_store_installs import UserStoreInstallsRepository
+
         conn = get_system_db()
         installs = UserStoreInstallsRepository(conn).list_for_user(installer_id)
         ent = StoreEntitiesRepository(conn).get(eid)
@@ -655,9 +668,7 @@ class TestInstallerAlwaysGetsLatestApproved:
         assert row["version"] == v1_hash, (
             f"after v2 blocked, installer must still get v1 hash; got {row['version'][:8]}"
         )
-        assert ent["version_no"] == 1, (
-            f"version_no must stay at 1 after a blocked verdict; got {ent['version_no']}"
-        )
+        assert ent["version_no"] == 1, f"version_no must stay at 1 after a blocked verdict; got {ent['version_no']}"
 
     def test_approved_new_version_promotes_to_installer(self, web_client):
         """Default test path: guardrails OFF → guardrails-disabled
@@ -681,6 +692,7 @@ class TestInstallerAlwaysGetsLatestApproved:
 
         # Installer should now see v2 hash.
         from src.repositories.user_store_installs import UserStoreInstallsRepository
+
         conn = get_system_db()
         installs = UserStoreInstallsRepository(conn).list_for_user(installer_id)
         ent = StoreEntitiesRepository(conn).get(eid)
@@ -737,7 +749,9 @@ class TestRestoreDeferredPromotion:
     on prior current until LLM approves the restored copy."""
 
     def test_restore_with_guardrails_on_does_not_promote_until_approved(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """Owner restores v1 → restored bytes baked into v3 dir.
         Until LLM approves, live + version_no stay at v2."""
@@ -767,8 +781,7 @@ class TestRestoreDeferredPromotion:
         # version_no must STAY at 2 until LLM approves the v3 (restored)
         # copy. version_history has 3 entries; current is still 2.
         assert ent["version_no"] == 2, (
-            f"restore must defer promotion when guardrails on; "
-            f"version_no={ent['version_no']}"
+            f"restore must defer promotion when guardrails on; version_no={ent['version_no']}"
         )
         history_n = sorted([int(e["n"]) for e in ent["version_history"]])
         assert history_n == [1, 2, 3]
@@ -779,7 +792,9 @@ class TestEditPageBanner:
     the version under review + the prior version still serving."""
 
     def test_banner_shows_review_error_when_prior_version_still_serving(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """v2+ edit landing in review_error must surface a banner to
         owner/admin even though entity stays at visibility=approved.
@@ -798,6 +813,7 @@ class TestEditPageBanner:
                 "reviewed_by_model": "mock-model",
                 "error": "LLMFormatError: mock truncation",
             }
+
         monkeypatch.setattr(
             "src.store_guardrails.llm_review.review_bundle",
             mock_review_bundle,
@@ -819,13 +835,12 @@ class TestEditPageBanner:
         # Drive the BG review synchronously so the submission row
         # lands at review_error.
         from src.store_guardrails.runner import run_llm_review
+
         conn = get_system_db()
         sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
         ent = StoreEntitiesRepository(conn).get(eid)
         conn.close()
-        assert ent["visibility_status"] == "approved", (
-            "deferred promotion: entity stays approved at prior version"
-        )
+        assert ent["visibility_status"] == "approved", "deferred promotion: entity stays approved at prior version"
         run_llm_review(
             sub_id,
             plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
@@ -840,31 +855,28 @@ class TestEditPageBanner:
         ent = StoreEntitiesRepository(conn).get(eid)
         conn.close()
         assert sub["status"] == "review_error"
-        assert ent["visibility_status"] == "approved", (
-            "entity must remain approved — prior version still serving"
-        )
+        assert ent["visibility_status"] == "approved", "entity must remain approved — prior version still serving"
 
         # Detail page MUST surface the failure.
         r = web_client.get(
-            f"/marketplace/flea/{eid}", cookies=owner_cookies,
+            f"/marketplace/flea/{eid}",
+            cookies=owner_cookies,
         )
         assert r.status_code == 200
         body = r.text
         # The widened v2+ review_error copy mentions the prior version
         # still serving — that's the user-visible signal we just added.
         assert "Latest edit failed review" in body, (
-            "banner partial must render review_error H3 for v2+ edit "
-            "when prior version still serves"
+            "banner partial must render review_error H3 for v2+ edit when prior version still serves"
         )
-        assert "previously approved version (v1)" in body, (
-            "banner copy must explain why the entity still appears live"
-        )
+        assert "previously approved version (v1)" in body, "banner copy must explain why the entity still appears live"
         # The model's error string must reach the page so the owner
         # can see what went wrong.
         assert "LLMFormatError" in body
 
     def test_banner_shows_version_n_under_review(self, web_client, monkeypatch):
         from src.repositories.store_submissions import StoreSubmissionsRepository
+
         owner_id, owner_cookies = _create_user(web_client, "bannerowner@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="bannerver")
 
@@ -902,7 +914,8 @@ class TestEditPageBanner:
         # approved and operational). Owner-facing review status
         # surfaces via the Edit button being disabled.
         r = web_client.get(
-            f"/marketplace/flea/{eid}", cookies=owner_cookies,
+            f"/marketplace/flea/{eid}",
+            cookies=owner_cookies,
         )
         assert r.status_code == 200
         # Edit button should reflect the in-flight review (locked).
@@ -916,6 +929,7 @@ class TestAuditLogPerVersion:
 
     def test_edit_audit_carries_version_no(self, web_client):
         from src.repositories.audit import AuditRepository
+
         owner_id, owner_cookies = _create_user(web_client, "auditver@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="auditver")
         v2 = _make_skill_zip("auditver", body="v2 " * 80)
@@ -927,20 +941,21 @@ class TestAuditLogPerVersion:
 
         conn = get_system_db()
         rows = AuditRepository(conn).query_for_resources(
-            [f"store_entity:{eid}"], limit=20,
+            [f"store_entity:{eid}"],
+            limit=20,
         )
         conn.close()
         # store.entity.update event for the edit must carry version_no
         # in its params.
         update_rows = [r for r in rows if r.get("action") == "store.entity.update"]
         assert update_rows, "missing store.entity.update audit"
-        assert any(
-            (r.get("params") or {}).get("version_no") == 2
-            for r in update_rows
-        ), "update audit must carry version_no=2 in params"
+        assert any((r.get("params") or {}).get("version_no") == 2 for r in update_rows), (
+            "update audit must carry version_no=2 in params"
+        )
 
     def test_restore_audit_carries_versions(self, web_client):
         from src.repositories.audit import AuditRepository
+
         owner_id, owner_cookies = _create_user(web_client, "auditrestore@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="auditrest")
         v2 = _make_skill_zip("auditrest", body="v2 " * 80)
@@ -956,7 +971,8 @@ class TestAuditLogPerVersion:
 
         conn = get_system_db()
         rows = AuditRepository(conn).query_for_resources(
-            [f"store_entity:{eid}"], limit=20,
+            [f"store_entity:{eid}"],
+            limit=20,
         )
         conn.close()
         restore_rows = [r for r in rows if r.get("action") == "store.entity.restore"]
@@ -970,11 +986,14 @@ class TestPRReviewFixes:
     """Locks in the fixes called out in the PR #239 review."""
 
     def test_block_while_pending_fires_for_v2_edit_under_deferred_promotion(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """#1 — v2+ edit during in-flight LLM review must 409 even
         though entity.visibility_status is still 'approved'."""
         from src.repositories.store_submissions import StoreSubmissionsRepository
+
         owner_id, owner_cookies = _create_user(web_client, "blockv2@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="blockv2")
 
@@ -1013,12 +1032,15 @@ class TestPRReviewFixes:
         assert r.json()["detail"]["code"] == "prior_version_pending"
 
     def test_name_change_with_bundle_does_not_rename_live_until_promote(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """#2 — name + bundle in same PUT must NOT rename live until
         the LLM approves and promotion runs. Existing installer keeps
         getting the prior bundle under the prior slug."""
         from app.utils import get_store_dir
+
         owner_id, owner_cookies = _create_user(web_client, "rename-defer@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="origname")
 
@@ -1046,23 +1068,19 @@ class TestPRReviewFixes:
         # Live skill dir MUST still hold the old slug — promotion
         # hasn't fired since we stubbed _schedule_llm_review.
         assert old_skill_dir.is_dir(), (
-            "live skill dir was renamed before LLM approval — "
-            "violates deferred-promotion contract"
+            "live skill dir was renamed before LLM approval — violates deferred-promotion contract"
         )
         new_skill_dir = plugin_dir / "skills" / "newname-by-rename-defer"
-        assert not new_skill_dir.exists(), (
-            "live shouldn't have the renamed slug yet"
-        )
+        assert not new_skill_dir.exists(), "live shouldn't have the renamed slug yet"
         # Version dir HAS been renamed (so promotion will land on the
         # new slug).
-        v2_dir = (
-            Path(get_store_dir()) / eid / "versions" / "v2" / "plugin"
-            / "skills" / "newname-by-rename-defer"
-        )
+        v2_dir = Path(get_store_dir()) / eid / "versions" / "v2" / "plugin" / "skills" / "newname-by-rename-defer"
         assert v2_dir.is_dir(), "version dir should carry the new slug"
 
     def test_v2_approval_logs_approved_not_skipped(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """#3 — v2+ approvals must log store.submission.approved, NOT
         store.submission.bg_verdict_skipped. Pre-fix the runner used
@@ -1089,9 +1107,12 @@ class TestPRReviewFixes:
         monkeypatch.setattr(
             "src.store_guardrails.llm_review.review_bundle",
             lambda *a, **kw: {
-                "risk_level": "safe", "summary": "ok",
-                "findings": [], "template_placeholders_found": 0,
-                "reviewed_by_model": "mock", "error": None,
+                "risk_level": "safe",
+                "summary": "ok",
+                "findings": [],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": "mock",
+                "error": None,
             },
         )
 
@@ -1118,24 +1139,23 @@ class TestPRReviewFixes:
         # promoted_to_version_no=2; NO bg_verdict_skipped.
         conn = get_system_db()
         rows = AuditRepository(conn).query_for_resources(
-            [f"store_submission:{sub_id}"], limit=20,
+            [f"store_submission:{sub_id}"],
+            limit=20,
         )
         conn.close()
         actions = [r.get("action") for r in rows]
-        assert "store.submission.approved" in actions, (
-            f"v2 approval missing approved audit; got {actions}"
-        )
+        assert "store.submission.approved" in actions, f"v2 approval missing approved audit; got {actions}"
         assert "store.submission.bg_verdict_skipped" not in actions, (
             f"v2 approval should NOT log bg_verdict_skipped; got {actions}"
         )
-        approved_row = next(
-            r for r in rows if r.get("action") == "store.submission.approved"
-        )
+        approved_row = next(r for r in rows if r.get("action") == "store.submission.approved")
         params = approved_row.get("params") or {}
         assert params.get("promoted_to_version_no") == 2
 
     def test_bg_verdict_skipped_when_admin_archives_during_review(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """Negative: when admin DOES archive mid-review, the runner
         correctly logs bg_verdict_skipped (not approved)."""
@@ -1157,9 +1177,12 @@ class TestPRReviewFixes:
         monkeypatch.setattr(
             "src.store_guardrails.llm_review.review_bundle",
             lambda *a, **kw: {
-                "risk_level": "safe", "summary": "ok",
-                "findings": [], "template_placeholders_found": 0,
-                "reviewed_by_model": "mock", "error": None,
+                "risk_level": "safe",
+                "summary": "ok",
+                "findings": [],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": "mock",
+                "error": None,
             },
         )
 
@@ -1186,16 +1209,15 @@ class TestPRReviewFixes:
 
         conn = get_system_db()
         rows = AuditRepository(conn).query_for_resources(
-            [f"store_submission:{sub_id}"], limit=20,
+            [f"store_submission:{sub_id}"],
+            limit=20,
         )
         conn.close()
         actions = [r.get("action") for r in rows]
         assert "store.submission.bg_verdict_skipped" in actions, (
             f"archive-during-review must log bg_verdict_skipped; got {actions}"
         )
-        assert "store.submission.approved" not in actions, (
-            f"archive-during-review must NOT log approved; got {actions}"
-        )
+        assert "store.submission.approved" not in actions, f"archive-during-review must NOT log approved; got {actions}"
 
 
 class TestAdminQueueShowsVersion:
@@ -1213,17 +1235,15 @@ class TestAdminQueueShowsVersion:
 
         _, admin_cookies = _create_admin(web_client)
         r = web_client.get(
-            "/api/admin/store/submissions", cookies=admin_cookies,
+            "/api/admin/store/submissions",
+            cookies=admin_cookies,
         )
         assert r.status_code == 200
         items = {it["name"]: it for it in r.json()["items"]}
         assert "vqcol" in items
         # version_no derived for the v2 row should be 2.
         # The list returns rows newest-first; pick the v2 (current).
-        v2_row = next(
-            it for it in r.json()["items"]
-            if it.get("entity_id") == eid and it.get("version_no") == 2
-        )
+        v2_row = next(it for it in r.json()["items"] if it.get("entity_id") == eid and it.get("version_no") == 2)
         assert v2_row["version_no"] == 2
         assert v2_row["entity_version_no"] == 2
 
@@ -1231,6 +1251,7 @@ class TestAdminQueueShowsVersion:
         """Detail page renders v# under the Status / Entity-lifecycle
         block + a separate Bundle hash row."""
         from src.repositories.store_submissions import StoreSubmissionsRepository
+
         owner_id, owner_cookies = _create_user(web_client, "vdowner@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="vdrow")
 
@@ -1240,7 +1261,8 @@ class TestAdminQueueShowsVersion:
 
         _, admin_cookies = _create_admin(web_client)
         r = web_client.get(
-            f"/admin/store/submissions/{sub_id}", cookies=admin_cookies,
+            f"/admin/store/submissions/{sub_id}",
+            cookies=admin_cookies,
         )
         assert r.status_code == 200
         body = r.text
@@ -1259,15 +1281,20 @@ class TestPublishGateFailClosed:
     credentials."""
 
     def test_v1_upload_enabled_but_not_ready_holds_at_pending(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         from src.repositories.store_submissions import StoreSubmissionsRepository
+
         # Flip guardrails ON but leave provider_ready as False.
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_enabled", lambda: True,
+            "app.api.store.get_guardrails_enabled",
+            lambda: True,
         )
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_llm_provider_ready", lambda: False,
+            "app.api.store.get_guardrails_llm_provider_ready",
+            lambda: False,
         )
         # No mock review_bundle — we should never call the LLM.
         # If we did, the lack of patching would surface as a real
@@ -1280,18 +1307,14 @@ class TestPublishGateFailClosed:
         ent = StoreEntitiesRepository(conn).get(eid)
         sub = StoreSubmissionsRepository(conn).latest_for_entity(eid)
         conn.close()
-        assert ent["visibility_status"] == "pending", (
-            "enabled-but-not-ready must NOT publish — entity stays pending"
-        )
-        assert sub["status"] == "pending_llm", (
-            "submission must hold at pending_llm awaiting admin retry"
-        )
-        assert sub["llm_findings"] is None, (
-            "no LLM call was made — findings must be empty"
-        )
+        assert ent["visibility_status"] == "pending", "enabled-but-not-ready must NOT publish — entity stays pending"
+        assert sub["status"] == "pending_llm", "submission must hold at pending_llm awaiting admin retry"
+        assert sub["llm_findings"] is None, "no LLM call was made — findings must be empty"
 
     def test_admin_retry_pending_llm_fires_review(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """After the operator sets the API key, admin Retry-review on a
         held pending_llm row schedules + runs the LLM."""
@@ -1299,10 +1322,12 @@ class TestPublishGateFailClosed:
 
         # Phase 1: upload with provider not-ready → held at pending_llm.
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_enabled", lambda: True,
+            "app.api.store.get_guardrails_enabled",
+            lambda: True,
         )
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_llm_provider_ready", lambda: False,
+            "app.api.store.get_guardrails_llm_provider_ready",
+            lambda: False,
         )
         owner_id, owner_cookies = _create_user(web_client, "retryholder@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="retryholder")
@@ -1315,15 +1340,20 @@ class TestPublishGateFailClosed:
         # Inject a fake env var so default_api_key_loader doesn't raise
         # before the mock review_bundle runs.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-fake-key-for-retry")
+
         # Mock review_bundle so the retry resolves to approved without
         # touching the network.
         def mock_review_bundle(*args, **kwargs):
             return {
-                "risk_level": "safe", "summary": "ok",
-                "findings": [], "template_placeholders_found": 0,
-                "reviewed_by_model": "mock-model", "error": None,
+                "risk_level": "safe",
+                "summary": "ok",
+                "findings": [],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": "mock-model",
+                "error": None,
                 "content_quality": {"verdict": "pass", "issues": []},
             }
+
         monkeypatch.setattr(
             "src.store_guardrails.llm_review.review_bundle",
             mock_review_bundle,
@@ -1341,20 +1371,19 @@ class TestPublishGateFailClosed:
         sub = StoreSubmissionsRepository(conn).get(sub_id)
         ent = StoreEntitiesRepository(conn).get(eid)
         conn.close()
-        assert sub["status"] == "approved", (
-            f"retry must drive submission to approved; got {sub['status']}"
-        )
-        assert ent["visibility_status"] == "approved", (
-            "entity must flip to approved after LLM ok"
-        )
+        assert sub["status"] == "approved", f"retry must drive submission to approved; got {sub['status']}"
+        assert ent["visibility_status"] == "approved", "entity must flip to approved after LLM ok"
 
     def test_edit_enabled_but_not_ready_holds_prior_serving(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """v2+ edit under enabled-but-not-ready: v1 keeps serving,
         v2 submission held at pending_llm. Critical safety property:
         no silent promotion."""
         from src.repositories.store_submissions import StoreSubmissionsRepository
+
         # Initial upload runs with guardrails OFF (autouse default) →
         # v1 approved. Then flip to enabled-but-not-ready for PUT.
         owner_id, owner_cookies = _create_user(web_client, "holdedit@x.com")
@@ -1364,10 +1393,12 @@ class TestPublishGateFailClosed:
         conn.close()
 
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_enabled", lambda: True,
+            "app.api.store.get_guardrails_enabled",
+            lambda: True,
         )
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_llm_provider_ready", lambda: False,
+            "app.api.store.get_guardrails_llm_provider_ready",
+            lambda: False,
         )
         v2 = _make_skill_zip("holdedit", body="V2 BODY " * 80)
         r = web_client.put(
@@ -1384,19 +1415,20 @@ class TestPublishGateFailClosed:
         # Entity stays approved at v1, v2 sits at pending_llm.
         assert ent["visibility_status"] == "approved"
         assert ent["version_no"] == 1
-        assert ent["version"] == v1_hash, (
-            "live bundle must remain v1 — no silent promotion of v2"
-        )
+        assert ent["version"] == v1_hash, "live bundle must remain v1 — no silent promotion of v2"
         assert sub["status"] == "pending_llm"
         assert sub["llm_findings"] is None
 
     def test_disabled_intent_still_auto_approves(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """Operator explicitly opting out (``enabled: false``) keeps
         the prior auto-approve behavior — local dev / no-LLM
         deployments aren't blocked."""
         from src.repositories.store_submissions import StoreSubmissionsRepository
+
         # autouse fixture already sets enabled=False. Just confirm
         # behavior end-to-end.
         owner_id, owner_cookies = _create_user(web_client, "offowner@x.com")
@@ -1476,9 +1508,7 @@ class TestConcurrentPutSerialization:
         # ordering depending on which coroutine the loop picks first).
         assert seq[0] in {"A-in", "B-in"}
         assert seq[1] in {"A-in", "B-in"}
-        assert seq[0] != seq[1], (
-            f"entities should have run in parallel — got serial: {seq}"
-        )
+        assert seq[0] != seq[1], f"entities should have run in parallel — got serial: {seq}"
 
 
 class TestBgTaskIdempotency:
@@ -1499,22 +1529,33 @@ class TestBgTaskIdempotency:
         conn = get_system_db()
         ents = StoreEntitiesRepository(conn)
         ents.create(
-            id="ent-idemp", owner_user_id=user_id, owner_username="idemp",
-            type="skill", name="idemp-skill", description="x" * 40,
-            category=None, version="aaaaaaaaaaaaaaaa", file_size=10,
+            id="ent-idemp",
+            owner_user_id=user_id,
+            owner_username="idemp",
+            type="skill",
+            name="idemp-skill",
+            description="x" * 40,
+            category=None,
+            version="aaaaaaaaaaaaaaaa",
+            file_size=10,
             visibility_status="pending",
         )
         subs = StoreSubmissionsRepository(conn)
         sid = subs.create(
-            submitter_id=user_id, submitter_email="idemp@x.com",
-            type="skill", name="idemp-skill", version="aaaaaaaaaaaaaaaa",
-            status="blocked_llm", entity_id="ent-idemp",
+            submitter_id=user_id,
+            submitter_email="idemp@x.com",
+            type="skill",
+            name="idemp-skill",
+            version="aaaaaaaaaaaaaaaa",
+            status="blocked_llm",
+            entity_id="ent-idemp",
             llm_findings={"risk_level": "high", "summary": "x"},
         )
         ents.update_history_submission_id("ent-idemp", 1, sid)
         conn.close()
 
         from tests.helpers.auth import grant_admin
+
         admin_id, admin_cookies = _create_user(web_client, "idemp-admin@x.com")
         conn = get_system_db()
         grant_admin(conn, admin_id)
@@ -1534,13 +1575,12 @@ class TestBgTaskIdempotency:
         subs = StoreSubmissionsRepository(conn)
         # CAS no-op because status=='overridden' is terminal.
         wrote = subs.update_status(
-            sid, status="approved",
+            sid,
+            status="approved",
             llm_findings={"risk_level": "safe", "summary": "late"},
         )
         conn.close()
-        assert wrote is False, (
-            "late BG verdict must NOT overwrite a terminal `overridden` row"
-        )
+        assert wrote is False, "late BG verdict must NOT overwrite a terminal `overridden` row"
 
         # Status still overridden.
         conn = get_system_db()
@@ -1549,7 +1589,9 @@ class TestBgTaskIdempotency:
         assert row["status"] == "overridden"
 
     def test_runner_late_verdict_logs_skipped_not_approved(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """End-to-end pair to ``test_late_verdict_does_not_clobber_overridden``:
         when the LLM verdict lands on an already-overridden submission,
@@ -1562,7 +1604,6 @@ class TestBgTaskIdempotency:
              the misleading audit write.
         """
         from src.repositories.audit import AuditRepository
-        from src.repositories.store_entities import StoreEntitiesRepository
         from src.repositories.store_submissions import StoreSubmissionsRepository
         from src.store_guardrails.runner import run_llm_review
         from app.utils import get_store_dir
@@ -1575,16 +1616,20 @@ class TestBgTaskIdempotency:
         monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
         monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
         monkeypatch.setattr(
-            "app.api.store._schedule_llm_review", lambda *a, **kw: None,
+            "app.api.store._schedule_llm_review",
+            lambda *a, **kw: None,
         )
         # Mock review_bundle to return an "approved"-shape verdict so
         # the runner would (pre-fix) hit the approved branch + cascade.
         monkeypatch.setattr(
             "src.store_guardrails.llm_review.review_bundle",
             lambda *a, **kw: {
-                "risk_level": "safe", "summary": "ok",
-                "findings": [], "template_placeholders_found": 0,
-                "reviewed_by_model": "mock", "error": None,
+                "risk_level": "safe",
+                "summary": "ok",
+                "findings": [],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": "mock",
+                "error": None,
             },
         )
 
@@ -1597,6 +1642,7 @@ class TestBgTaskIdempotency:
 
         # Admin override flips the v2 submission row to 'overridden'.
         from tests.helpers.auth import grant_admin
+
         admin_id, admin_cookies = _create_user(web_client, "lv-admin@x.com")
         conn = get_system_db()
         grant_admin(conn, admin_id)
@@ -1624,13 +1670,12 @@ class TestBgTaskIdempotency:
         conn = get_system_db()
         row = StoreSubmissionsRepository(conn).get(sub_id)
         rows = AuditRepository(conn).query_for_resources(
-            [f"store_submission:{sub_id}"], limit=20,
+            [f"store_submission:{sub_id}"],
+            limit=20,
         )
         conn.close()
         actions = [r.get("action") for r in rows]
-        assert row["status"] == "overridden", (
-            f"row must stay overridden under CAS no-op; got {row['status']}"
-        )
+        assert row["status"] == "overridden", f"row must stay overridden under CAS no-op; got {row['status']}"
         assert "store.submission.bg_verdict_skipped" in actions, (
             f"runner must log bg_verdict_skipped on CAS no-op; got {actions}"
         )
@@ -1644,15 +1689,22 @@ class TestBgTaskIdempotency:
         state can pass `allow_terminal_overwrite=True` and get the
         write through. Used by rescan and similar admin actions."""
         from src.repositories.store_submissions import StoreSubmissionsRepository
+
         user_id, _ = _create_user(web_client, "termok@x.com")
         conn = get_system_db()
         sid = StoreSubmissionsRepository(conn).create(
-            submitter_id=user_id, submitter_email="termok@x.com",
-            type="skill", name="x", version="aaaa", status="approved",
+            submitter_id=user_id,
+            submitter_email="termok@x.com",
+            type="skill",
+            name="x",
+            version="aaaa",
+            status="approved",
             entity_id=None,
         )
         wrote = StoreSubmissionsRepository(conn).update_status(
-            sid, status="pending_llm", allow_terminal_overwrite=True,
+            sid,
+            status="pending_llm",
+            allow_terminal_overwrite=True,
         )
         conn.close()
         assert wrote is True
@@ -1675,23 +1727,33 @@ class TestAtomicPromote:
     def test_missing_source_dir_does_not_advance_db(self, web_client):
         """Promote with a missing version dir must leave both DB and
         live untouched."""
-        from app.api.store import promote_to_version, _plugin_dir
+        from app.api.store import promote_to_version
         from src.repositories.store_entities import StoreEntitiesRepository
 
         user_id, _ = _create_user(web_client, "atomic@x.com")
         conn = get_system_db()
         repo = StoreEntitiesRepository(conn)
         repo.create(
-            id="ent-atomic", owner_user_id=user_id, owner_username="atomic",
-            type="skill", name="atomic", description="x" * 40,
-            category=None, version="aaaaaaaaaaaaaaaa", file_size=10,
+            id="ent-atomic",
+            owner_user_id=user_id,
+            owner_username="atomic",
+            type="skill",
+            name="atomic",
+            description="x" * 40,
+            category=None,
+            version="aaaaaaaaaaaaaaaa",
+            file_size=10,
             visibility_status="approved",
         )
         # Inject a v2 history entry without creating the on-disk dir
         # — simulates the "DB has entry, bundle wiped" inconsistency.
         repo.append_version_history(
-            "ent-atomic", version_hash="bbbbbbbbbbbbbbbb",
-            sha256=None, size=20, submission_id="fake-sub", created_by=user_id,
+            "ent-atomic",
+            version_hash="bbbbbbbbbbbbbbbb",
+            sha256=None,
+            size=20,
+            submission_id="fake-sub",
+            created_by=user_id,
         )
         conn.close()
 
@@ -1703,8 +1765,7 @@ class TestAtomicPromote:
         conn.close()
         assert result is None, "must signal failure when source missing"
         assert ent_after["version_no"] == 1, (
-            f"DB must NOT advance when live swap can't happen; got "
-            f"version_no={ent_after['version_no']}"
+            f"DB must NOT advance when live swap can't happen; got version_no={ent_after['version_no']}"
         )
 
 
@@ -1722,7 +1783,9 @@ class TestPromoteLookupByByteIdenticalBundles:
     Fix: look up by `submission_id` via `_version_no_for_submission`."""
 
     def test_byte_identical_v2_promotes_to_current(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         from pathlib import Path
         from app.utils import get_store_dir
@@ -1754,21 +1817,28 @@ class TestPromoteLookupByByteIdenticalBundles:
 
         # Flip guardrails ON for v2. Mock LLM to approve.
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_enabled", lambda: True,
+            "app.api.store.get_guardrails_enabled",
+            lambda: True,
         )
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+            "app.api.store.get_guardrails_llm_provider_ready",
+            lambda: True,
         )
 
         def mock_approve(*a, **kw):
             return {
-                "risk_level": "safe", "summary": "ok",
-                "findings": [], "template_placeholders_found": 0,
-                "reviewed_by_model": "mock", "error": None,
+                "risk_level": "safe",
+                "summary": "ok",
+                "findings": [],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": "mock",
+                "error": None,
                 "content_quality": {"verdict": "pass", "issues": []},
             }
+
         monkeypatch.setattr(
-            "src.store_guardrails.llm_review.review_bundle", mock_approve,
+            "src.store_guardrails.llm_review.review_bundle",
+            mock_approve,
         )
 
         # PUT v2 with IDENTICAL bytes.
@@ -1787,7 +1857,8 @@ class TestPromoteLookupByByteIdenticalBundles:
             v2_sub_id,
             plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
             conn_factory=get_system_db,
-            api_key_loader=lambda: "sk", model_loader=lambda: "mock",
+            api_key_loader=lambda: "sk",
+            model_loader=lambda: "mock",
         )
 
         conn = get_system_db()
@@ -1803,12 +1874,12 @@ class TestPromoteLookupByByteIdenticalBundles:
             f"would have stuck the entity at v1."
         )
         assert v2_sub["status"] == "approved"
-        assert ent_after["version"] == v1_hash, (
-            "hash unchanged (bundle is byte-identical) but version_no DID move"
-        )
+        assert ent_after["version"] == v1_hash, "hash unchanged (bundle is byte-identical) but version_no DID move"
 
     def test_byte_identical_v3_after_different_v2(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """v1 + v2 (different hash) + v3 byte-identical to v1.
         Lookup must resolve v3 to n=3, not v1 (same hash) or v2 (the
@@ -1822,10 +1893,7 @@ class TestPromoteLookupByByteIdenticalBundles:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-v3-test")
         owner_id, owner_cookies = _create_user(web_client, "v3hash@x.com")
 
-        body_a = (
-            "Body A line that is intentionally long enough to clear the "
-            "content threshold for skill bodies. " * 4
-        )
+        body_a = "Body A line that is intentionally long enough to clear the content threshold for skill bodies. " * 4
         body_b = (
             "Body B line that is intentionally DIFFERENT and also long "
             "enough to clear the content threshold for skill bodies. " * 4
@@ -1833,8 +1901,7 @@ class TestPromoteLookupByByteIdenticalBundles:
 
         r = web_client.post(
             "/api/store/entities",
-            files={"file": ("v1.zip", _make_skill_zip("v3hash", body=body_a),
-                            "application/zip")},
+            files={"file": ("v1.zip", _make_skill_zip("v3hash", body=body_a), "application/zip")},
             data={"type": "skill", "description": _OK_DESC},
             cookies=owner_cookies,
         )
@@ -1842,21 +1909,28 @@ class TestPromoteLookupByByteIdenticalBundles:
         eid = r.json()["id"]
 
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_enabled", lambda: True,
+            "app.api.store.get_guardrails_enabled",
+            lambda: True,
         )
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+            "app.api.store.get_guardrails_llm_provider_ready",
+            lambda: True,
         )
 
         def mock_approve(*a, **kw):
             return {
-                "risk_level": "safe", "summary": "ok",
-                "findings": [], "template_placeholders_found": 0,
-                "reviewed_by_model": "mock", "error": None,
+                "risk_level": "safe",
+                "summary": "ok",
+                "findings": [],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": "mock",
+                "error": None,
                 "content_quality": {"verdict": "pass", "issues": []},
             }
+
         monkeypatch.setattr(
-            "src.store_guardrails.llm_review.review_bundle", mock_approve,
+            "src.store_guardrails.llm_review.review_bundle",
+            mock_approve,
         )
 
         v2_zip = _make_skill_zip("v3hash", body=body_b)
@@ -1873,7 +1947,8 @@ class TestPromoteLookupByByteIdenticalBundles:
             v2_sub_id,
             plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
             conn_factory=get_system_db,
-            api_key_loader=lambda: "sk", model_loader=lambda: "mock",
+            api_key_loader=lambda: "sk",
+            model_loader=lambda: "mock",
         )
         conn = get_system_db()
         ent_at_v2 = StoreEntitiesRepository(conn).get(eid)
@@ -1894,14 +1969,14 @@ class TestPromoteLookupByByteIdenticalBundles:
             v3_sub_id,
             plugin_dir=Path(get_store_dir()) / eid / "versions" / "v3" / "plugin",
             conn_factory=get_system_db,
-            api_key_loader=lambda: "sk", model_loader=lambda: "mock",
+            api_key_loader=lambda: "sk",
+            model_loader=lambda: "mock",
         )
         conn = get_system_db()
         ent_at_v3 = StoreEntitiesRepository(conn).get(eid)
         conn.close()
         assert ent_at_v3["version_no"] == 3, (
-            f"v3 must promote despite hash collision with v1; "
-            f"got version_no={ent_at_v3['version_no']}"
+            f"v3 must promote despite hash collision with v1; got version_no={ent_at_v3['version_no']}"
         )
 
 
@@ -1913,7 +1988,9 @@ class TestRescanPromotesNonCurrent:
     version. Fix mirrors the inline-promote in create/update/restore."""
 
     def test_rescan_promotes_non_current_v2_when_guardrails_disabled(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         from pathlib import Path
         from app.utils import get_store_dir
@@ -1924,23 +2001,28 @@ class TestRescanPromotesNonCurrent:
         eid = _upload_clean(web_client, owner_cookies, name="rescanpromote")
 
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_enabled", lambda: True,
+            "app.api.store.get_guardrails_enabled",
+            lambda: True,
         )
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+            "app.api.store.get_guardrails_llm_provider_ready",
+            lambda: True,
         )
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-rescan-promote")
 
         def mock_block(*a, **kw):
             return {
-                "risk_level": "high", "summary": "mock block",
-                "findings": [{"severity": "high", "category": "test",
-                              "file": "x", "explanation": "mock"}],
+                "risk_level": "high",
+                "summary": "mock block",
+                "findings": [{"severity": "high", "category": "test", "file": "x", "explanation": "mock"}],
                 "template_placeholders_found": 0,
-                "reviewed_by_model": "mock", "error": None,
+                "reviewed_by_model": "mock",
+                "error": None,
             }
+
         monkeypatch.setattr(
-            "src.store_guardrails.llm_review.review_bundle", mock_block,
+            "src.store_guardrails.llm_review.review_bundle",
+            mock_block,
         )
 
         v2 = _make_skill_zip("rescanpromote", body="V2 body content " * 30)
@@ -1957,7 +2039,8 @@ class TestRescanPromotesNonCurrent:
             v2_sub_id,
             plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
             conn_factory=get_system_db,
-            api_key_loader=lambda: "sk", model_loader=lambda: "mock",
+            api_key_loader=lambda: "sk",
+            model_loader=lambda: "mock",
         )
 
         conn = get_system_db()
@@ -1969,10 +2052,12 @@ class TestRescanPromotesNonCurrent:
         # Rescan with guardrails OFF — branch under test. Patch both
         # bound symbols (admin imports function-locally).
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_enabled", lambda: False,
+            "app.api.store.get_guardrails_enabled",
+            lambda: False,
         )
         monkeypatch.setattr(
-            "app.instance_config.get_guardrails_enabled", lambda: False,
+            "app.instance_config.get_guardrails_enabled",
+            lambda: False,
         )
         _, admin_cookies = _create_admin(web_client)
         r = web_client.post(
@@ -1989,9 +2074,8 @@ class TestRescanPromotesNonCurrent:
             f"rescan-approve of v2 must promote entity to v2 when "
             f"guardrails are disabled; got version_no={ent_after['version_no']}"
         )
-        assert ent_after["version"] != v1_hash, (
-            "entity.version hash must move to v2 after rescan promote"
-        )
+        assert ent_after["version"] != v1_hash, "entity.version hash must move to v2 after rescan promote"
+
 
 class TestRestoreReusesApprovedVerdict:
     """Live-bug fix: a second restore of an already-approved version
@@ -2002,7 +2086,9 @@ class TestRestoreReusesApprovedVerdict:
     (same reviewed_by_model) and reuses that verdict."""
 
     def test_restore_of_approved_version_skips_llm_and_reuses_verdict(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         from pathlib import Path
         from app.utils import get_store_dir
@@ -2014,10 +2100,12 @@ class TestRestoreReusesApprovedVerdict:
         eid = _upload_clean(web_client, owner_cookies, name="reuseme")
 
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_enabled", lambda: True,
+            "app.api.store.get_guardrails_enabled",
+            lambda: True,
         )
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+            "app.api.store.get_guardrails_llm_provider_ready",
+            lambda: True,
         )
         monkeypatch.setattr(
             "app.api.store.get_guardrails_review_model",
@@ -2037,14 +2125,18 @@ class TestRestoreReusesApprovedVerdict:
         def mock_approve(*a, **kw):
             approve_calls["n"] += 1
             return {
-                "risk_level": "safe", "summary": "ok",
-                "findings": [], "template_placeholders_found": 0,
+                "risk_level": "safe",
+                "summary": "ok",
+                "findings": [],
+                "template_placeholders_found": 0,
                 "reviewed_by_model": "claude-haiku-4-5-test",
                 "error": None,
                 "content_quality": {"verdict": "pass", "issues": []},
             }
+
         monkeypatch.setattr(
-            "src.store_guardrails.llm_review.review_bundle", mock_approve,
+            "src.store_guardrails.llm_review.review_bundle",
+            mock_approve,
         )
 
         v2_zip = _make_skill_zip("reuseme", body="V2 body unique " * 30)
@@ -2097,15 +2189,13 @@ class TestRestoreReusesApprovedVerdict:
         )
         assert r.status_code == 200, r.text
         assert approve_calls["n"] == calls_after_v3, (
-            f"restore of approved version must NOT call LLM; "
-            f"count grew from {calls_after_v3} to {approve_calls['n']}"
+            f"restore of approved version must NOT call LLM; count grew from {calls_after_v3} to {approve_calls['n']}"
         )
 
         conn = get_system_db()
         ent_after = StoreEntitiesRepository(conn).get(eid)
         v4_sub_id = next(
-            (e["submission_id"] for e in ent_after["version_history"]
-             if int(e["n"]) == 4),
+            (e["submission_id"] for e in ent_after["version_history"] if int(e["n"]) == 4),
             None,
         )
         v4_sub = StoreSubmissionsRepository(conn).get(v4_sub_id) if v4_sub_id else None
@@ -2113,13 +2203,13 @@ class TestRestoreReusesApprovedVerdict:
         assert v4_sub is not None
         assert v4_sub["status"] == "approved"
         assert v4_sub["reviewed_by_model"] == "claude-haiku-4-5-test"
-        assert (v4_sub["llm_findings"] or {}).get(
-            "reused_from_submission_id"
-        ) == v2_sub_id
+        assert (v4_sub["llm_findings"] or {}).get("reused_from_submission_id") == v2_sub_id
         assert ent_after["version_no"] == 4
 
     def test_restore_legacy_v1_falls_back_to_llm(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """v1 seed (guardrails-OFF approval, no reviewed_by_model) is
         NOT eligible for reuse. Restoring v1 must schedule a real
@@ -2134,10 +2224,12 @@ class TestRestoreReusesApprovedVerdict:
         eid = _upload_clean(web_client, owner_cookies, name="noreuse")
 
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_enabled", lambda: True,
+            "app.api.store.get_guardrails_enabled",
+            lambda: True,
         )
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+            "app.api.store.get_guardrails_llm_provider_ready",
+            lambda: True,
         )
         monkeypatch.setattr(
             "app.api.store.get_guardrails_review_model",
@@ -2157,14 +2249,18 @@ class TestRestoreReusesApprovedVerdict:
         def mock_approve(*a, **kw):
             approve_calls["n"] += 1
             return {
-                "risk_level": "safe", "summary": "ok",
-                "findings": [], "template_placeholders_found": 0,
+                "risk_level": "safe",
+                "summary": "ok",
+                "findings": [],
+                "template_placeholders_found": 0,
                 "reviewed_by_model": "claude-haiku-4-5-test",
                 "error": None,
                 "content_quality": {"verdict": "pass", "issues": []},
             }
+
         monkeypatch.setattr(
-            "src.store_guardrails.llm_review.review_bundle", mock_approve,
+            "src.store_guardrails.llm_review.review_bundle",
+            mock_approve,
         )
 
         v2_zip = _make_skill_zip("noreuse", body="V2 body " * 30)
@@ -2207,24 +2303,26 @@ class TestRestoreReusesApprovedVerdict:
         v3_sub = StoreSubmissionsRepository(conn).get(v3_sub_id)
         conn.close()
         assert v3_sub["status"] == "approved"
-        assert (v3_sub["llm_findings"] or {}).get(
-            "reused_from_submission_id"
-        ) is None
+        assert (v3_sub["llm_findings"] or {}).get("reused_from_submission_id") is None
 
 
 # Mock LLM payloads used by the lifecycle integration test class below.
 _MOCK_APPROVE_LIFECYCLE = {
-    "risk_level": "safe", "summary": "ok",
-    "findings": [], "template_placeholders_found": 0,
-    "reviewed_by_model": "mock-haiku", "error": None,
+    "risk_level": "safe",
+    "summary": "ok",
+    "findings": [],
+    "template_placeholders_found": 0,
+    "reviewed_by_model": "mock-haiku",
+    "error": None,
     "content_quality": {"verdict": "pass", "issues": []},
 }
 _MOCK_BLOCK_LIFECYCLE = {
-    "risk_level": "high", "summary": "mock block — security issue",
-    "findings": [{"severity": "high", "category": "exfiltration",
-                  "file": "run.sh", "explanation": "mock-block"}],
+    "risk_level": "high",
+    "summary": "mock block — security issue",
+    "findings": [{"severity": "high", "category": "exfiltration", "file": "run.sh", "explanation": "mock-block"}],
     "template_placeholders_found": 0,
-    "reviewed_by_model": "mock-haiku", "error": None,
+    "reviewed_by_model": "mock-haiku",
+    "error": None,
     "content_quality": {"verdict": "pass", "issues": []},
 }
 
@@ -2249,6 +2347,7 @@ class TestFullLifecycleFromInstaller:
     def _serve_zip(client, cookies, if_none_match=None):
         import io as _io
         import zipfile as _zip
+
         headers = {}
         if if_none_match:
             headers["If-None-Match"] = f'"{if_none_match}"'
@@ -2266,6 +2365,7 @@ class TestFullLifecycleFromInstaller:
         from pathlib import Path
         from app.utils import get_store_dir
         from src.store_guardrails.runner import run_llm_review
+
         monkeypatch.setattr(
             "src.store_guardrails.llm_review.review_bundle",
             lambda *a, **kw: mock,
@@ -2281,6 +2381,7 @@ class TestFullLifecycleFromInstaller:
     @staticmethod
     def _latest_sub_id(eid):
         from src.repositories.store_submissions import StoreSubmissionsRepository
+
         conn = get_system_db()
         sid = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
         conn.close()
@@ -2296,6 +2397,7 @@ class TestFullLifecycleFromInstaller:
     @staticmethod
     def _installs(installer_id):
         from src.repositories.user_store_installs import UserStoreInstallsRepository
+
         conn = get_system_db()
         installs = UserStoreInstallsRepository(conn).list_for_user(installer_id)
         conn.close()
@@ -2305,21 +2407,26 @@ class TestFullLifecycleFromInstaller:
     def _setup_guardrails_on(monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-lifecycle")
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_enabled", lambda: True,
+            "app.api.store.get_guardrails_enabled",
+            lambda: True,
         )
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+            "app.api.store.get_guardrails_llm_provider_ready",
+            lambda: True,
         )
         monkeypatch.setattr(
             "app.api.store.get_guardrails_review_model",
             lambda: "mock-haiku",
         )
         monkeypatch.setattr(
-            "app.api.store._schedule_llm_review", lambda *a, **kw: None,
+            "app.api.store._schedule_llm_review",
+            lambda *a, **kw: None,
         )
 
     def test_main_lifecycle_v1_v2_v3blocked_override_restorev1(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """User's exact spec, end-to-end."""
         self._setup_guardrails_on(monkeypatch)
@@ -2355,9 +2462,7 @@ class TestFullLifecycleFromInstaller:
         # Skills/agents land bundled under plugins/store-bundle/<skill_slug>/.
         # The suffixed name `lifecycle-by-lc-owner` identifies our entity.
         skill_files_v1 = [n for n in contents_v1 if "lifecycle-by-lc-owner" in n]
-        assert skill_files_v1, (
-            f"v1 bytes missing from marketplace.zip; got {list(contents_v1)[:5]}"
-        )
+        assert skill_files_v1, f"v1 bytes missing from marketplace.zip; got {list(contents_v1)[:5]}"
 
         # ── Phase 3 ── v2 PUT (approve) → promote
         v2_zip = _make_skill_zip("lifecycle", body="V2 body upgraded with more detail for the skill body content. " * 6)
@@ -2382,7 +2487,9 @@ class TestFullLifecycleFromInstaller:
         assert etag_v2 != etag_v1, "etag must flip on v2 promote"
 
         # ── Phase 4 ── v3 PUT (mock block) → stays at v2
-        v3_zip = _make_skill_zip("lifecycle", body="V3 body risky content that the LLM mock will mark as exfiltration. " * 6)
+        v3_zip = _make_skill_zip(
+            "lifecycle", body="V3 body risky content that the LLM mock will mark as exfiltration. " * 6
+        )
         r = web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v3.zip", v3_zip, "application/zip")},
@@ -2393,6 +2500,7 @@ class TestFullLifecycleFromInstaller:
         self._drive_llm(monkeypatch, eid, v3_sub_id, 3, _MOCK_BLOCK_LIFECYCLE)
 
         from src.repositories.store_submissions import StoreSubmissionsRepository
+
         conn = get_system_db()
         v3_sub = StoreSubmissionsRepository(conn).get(v3_sub_id)
         ent = StoreEntitiesRepository(conn).get(eid)
@@ -2405,9 +2513,7 @@ class TestFullLifecycleFromInstaller:
         assert installs[0]["version"] == v2_hash
 
         etag_v3_check, _, _ = self._serve_zip(web_client, installer_cookies)
-        assert etag_v3_check == etag_v2, (
-            "etag must NOT flip on blocked submission"
-        )
+        assert etag_v3_check == etag_v2, "etag must NOT flip on blocked submission"
 
         # ── Phase 5 ── admin overrides v3 → promotes
         r = web_client.post(
@@ -2445,28 +2551,23 @@ class TestFullLifecycleFromInstaller:
 
         ent = self._ent(eid)
         assert ent["version_no"] == 4
-        assert ent["version"] == v1_hash, (
-            "v4 bytes byte-identical to v1 — entity.version (hash) "
-            "should match v1's"
-        )
+        assert ent["version"] == v1_hash, "v4 bytes byte-identical to v1 — entity.version (hash) should match v1's"
 
         installs = self._installs(installer_id)
-        assert installs[0]["version"] == v1_hash, (
-            "installer should receive v1 bytes through v4 promotion"
-        )
+        assert installs[0]["version"] == v1_hash, "installer should receive v1 bytes through v4 promotion"
 
         etag_restore, contents_restore, _ = self._serve_zip(web_client, installer_cookies)
         assert etag_restore != etag_override
         v1_skill = {n: b for n, b in contents_v1.items() if "SKILL.md" in n and "lifecycle-by-lc-owner" in n}
         rs_skill = {n: b for n, b in contents_restore.items() if "SKILL.md" in n and "lifecycle-by-lc-owner" in n}
-        assert v1_skill == rs_skill, (
-            "restored SKILL.md byte-equal v1's SKILL.md"
-        )
+        assert v1_skill == rs_skill, "restored SKILL.md byte-equal v1's SKILL.md"
 
     # ── Corner cases ────────────────────────────────────────────────
 
     def test_unsubscribed_user_does_not_get_entity(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """G1 negative control: a third user who never installs the
         entity must NEVER see it in list_for_user — regardless of
@@ -2475,7 +2576,10 @@ class TestFullLifecycleFromInstaller:
         owner_id, owner_cookies = _create_user(web_client, "unsub-owner@x.com")
         unsub_id, unsub_cookies = _create_user(web_client, "unsub-other@x.com")
 
-        v1_zip = _make_skill_zip("unsubme", body="Body content for unsubscribed-user negative test that's long enough to clear threshold. " * 4)
+        v1_zip = _make_skill_zip(
+            "unsubme",
+            body="Body content for unsubscribed-user negative test that's long enough to clear threshold. " * 4,
+        )
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("v1.zip", v1_zip, "application/zip")},
@@ -2494,12 +2598,12 @@ class TestFullLifecycleFromInstaller:
         # marketplace.zip for the non-subscriber must NOT contain the bundle.
         _, contents, _ = self._serve_zip(web_client, unsub_cookies)
         skill_files = [n for n in contents if "unsubme-by-unsub-owner" in n]
-        assert not skill_files, (
-            f"non-subscriber's marketplace.zip leaked the bundle: {skill_files}"
-        )
+        assert not skill_files, f"non-subscriber's marketplace.zip leaked the bundle: {skill_files}"
 
     def test_late_subscriber_during_quarantine_gets_v2(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """G2: subscriber installs AFTER v3 is blocked but BEFORE
         override. Must get v2 bytes (entity.version_no=2 at install
@@ -2543,12 +2647,13 @@ class TestFullLifecycleFromInstaller:
         self._install(web_client, eid, late_cookies)
         installs = self._installs(late_id)
         assert installs[0]["version"] == v2_hash, (
-            f"late subscriber during quarantine must get v2 hash; "
-            f"got {installs[0]['version'][:8]}"
+            f"late subscriber during quarantine must get v2 hash; got {installs[0]['version'][:8]}"
         )
 
     def test_non_owner_does_not_see_quarantine_banner(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """G3 privacy gate: during v3-blocked phase, a non-owner
         non-admin third user hits /marketplace/flea/<eid>. Banner is
@@ -2583,21 +2688,17 @@ class TestFullLifecycleFromInstaller:
         r = web_client.get(f"/marketplace/flea/{eid}", cookies=third_cookies)
         assert r.status_code == 200, r.text
         body = r.text
-        assert "Latest edit failed review" not in body, (
-            "third user must NOT see the v2+-edit failure banner"
-        )
-        assert "blocked_llm" not in body, (
-            "third user must NOT see blocked-status detail"
-        )
+        assert "Latest edit failed review" not in body, "third user must NOT see the v2+-edit failure banner"
+        assert "blocked_llm" not in body, "third user must NOT see blocked-status detail"
         # Sanity: owner DOES see the banner.
         r_owner = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
         assert r_owner.status_code == 200
-        assert "Latest edit failed review" in r_owner.text, (
-            "owner must see the banner for the same in-flight failure"
-        )
+        assert "Latest edit failed review" in r_owner.text, "owner must see the banner for the same in-flight failure"
 
     def test_second_restore_of_v1_triggers_reuse_path(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """G4 (live agnes-development bug, PR #332 lifecycle
         validation): owner restores v1 → v4. Then restores v1 AGAIN
@@ -2605,6 +2706,7 @@ class TestFullLifecycleFromInstaller:
         approved by same model. v5 submission must NOT make a new
         LLM call AND must carry reused_from_submission_id marker."""
         from src.repositories.store_submissions import StoreSubmissionsRepository
+
         self._setup_guardrails_on(monkeypatch)
         owner_id, owner_cookies = _create_user(web_client, "reuse2-owner@x.com")
 
@@ -2650,11 +2752,14 @@ class TestFullLifecycleFromInstaller:
 
         # Count LLM calls BEFORE second restore.
         call_count = {"n": 0}
+
         def counting_mock(*a, **kw):
             call_count["n"] += 1
             return _MOCK_APPROVE_LIFECYCLE
+
         monkeypatch.setattr(
-            "src.store_guardrails.llm_review.review_bundle", counting_mock,
+            "src.store_guardrails.llm_review.review_bundle",
+            counting_mock,
         )
 
         # Second restore v1 → v4 with v1 bytes. PR #332 reuse path
@@ -2669,23 +2774,22 @@ class TestFullLifecycleFromInstaller:
         conn = get_system_db()
         v4_sub = StoreSubmissionsRepository(conn).get(v4_sub_id)
         conn.close()
-        assert v4_sub["status"] == "approved", (
-            f"v4 must be approved via reuse path; got status={v4_sub['status']}"
-        )
+        assert v4_sub["status"] == "approved", f"v4 must be approved via reuse path; got status={v4_sub['status']}"
         assert (v4_sub["llm_findings"] or {}).get("reused_from_submission_id"), (
             "v4 must carry reused_from_submission_id marker (PR #332)"
         )
-        assert call_count["n"] == 0, (
-            f"second restore must NOT call LLM; count={call_count['n']}"
-        )
+        assert call_count["n"] == 0, f"second restore must NOT call LLM; count={call_count['n']}"
 
     def test_archived_entity_keeps_serving_installed_subscribers(
-        self, web_client, monkeypatch,
+        self,
+        web_client,
+        monkeypatch,
     ):
         """G5: owner soft-archives entity → already-subscribed users
         STILL get bundle served (per CLAUDE.md contract). Browse
         listing for a third user does NOT include the entity."""
         from src.repositories.store_entities import StoreEntitiesRepository
+
         self._setup_guardrails_on(monkeypatch)
         owner_id, owner_cookies = _create_user(web_client, "arch-owner@x.com")
         installer_id, installer_cookies = _create_user(web_client, "arch-installer@x.com")
@@ -2708,7 +2812,8 @@ class TestFullLifecycleFromInstaller:
 
         # Owner soft-archives.
         r = web_client.delete(
-            f"/api/store/entities/{eid}", cookies=owner_cookies,
+            f"/api/store/entities/{eid}",
+            cookies=owner_cookies,
         )
         assert r.status_code == 204, r.text
 
@@ -2720,8 +2825,7 @@ class TestFullLifecycleFromInstaller:
         # Already-installed user STILL has the entity in list_for_user.
         installs_after = self._installs(installer_id)
         assert eid in {row["id"] for row in installs_after}, (
-            "soft-archive must NOT cascade to existing user_store_installs "
-            "(CLAUDE.md contract)"
+            "soft-archive must NOT cascade to existing user_store_installs (CLAUDE.md contract)"
         )
 
         # Third user browsing marketplace must NOT see the entity.
@@ -2729,6 +2833,34 @@ class TestFullLifecycleFromInstaller:
         r = web_client.get("/api/store/entities", cookies=third_cookies)
         assert r.status_code == 200
         ids = {item["id"] for item in r.json().get("items", [])}
-        assert eid not in ids, (
-            "archived entity must NOT appear in browse listing"
+        assert eid not in ids, "archived entity must NOT appear in browse listing"
+
+
+class TestItemDetailHeroPlaceholder:
+    """The flea skill/agent detail hero must reuse the card grid's
+    name-derived, type-tinted placeholder (#791). Regression guard for the
+    hardcoded ``{{ 'SK' if kind == 'skill' else 'AG' }}`` that survived on
+    marketplace_item_detail.html after #791 tinted every other surface —
+    the detail hero showed a generic dark "SK" glyph instead of the same
+    name-derived initials + type tint as the tile the user clicked from.
+    """
+
+    def test_flea_skill_hero_name_derived_initials_and_type_tint(self, web_client):
+        _, owner_cookies = _create_user(web_client, "heroinit@x.com")
+        # Multi-word slug → distinctive derived glyph ("SD"), not "SK".
+        eid = _upload_clean(web_client, owner_cookies, name="sales-dashboard")
+        r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
+        assert r.status_code == 200, r.text
+
+        m = re.search(
+            r'<div\s+class="([^"]*)"\s+id="hero-window-body"\s*>([^<]*)</div>',
+            r.text,
+        )
+        assert m, "hero-window-body element not found in rendered detail HTML"
+        cls, text = m.group(1), m.group(2).strip()
+
+        assert "hero-window-body--skill" in cls, f"skill hero must carry the type-tint class (green); got class={cls!r}"
+        assert text == "SD", (
+            "hero placeholder must show name-derived initials 'SD' for "
+            f"'sales-dashboard', not a generic per-kind glyph; got {text!r}"
         )

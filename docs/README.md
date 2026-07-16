@@ -44,6 +44,8 @@ Deploying, configuring, and running an Agnes instance.
 - [`operator/news-content-guide.md`](operator/news-content-guide.md) — editorial guidelines for in-app news content
 - [Cloud-hosted Claude Code](cloud-chat.md) — zero-install web + Slack
   surfaces with the full Agnes harness.
+- [`chat-keyless-auth.md`](chat-keyless-auth.md) — keyless LLM auth for chat via
+  Workload Identity Federation (no static `ANTHROPIC_API_KEY`); opt-in.
 
 ## For developers
 

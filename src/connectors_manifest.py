@@ -71,6 +71,10 @@ class ConnectorEntry:
     ``icon`` (deferred to the post-init connectors panel — out of v1
     scope). Adding fields requires updating ``parse_frontmatter`` AND
     bumping ``SCHEMA_VERSION`` in the API response.
+
+    ``required=True`` moves the connector out of the optional Y/n tile
+    list into the install prompt's mandatory "Install required tools"
+    step (no per-tool ask; rendered before the optional tiles).
     """
 
     slug: str
@@ -79,6 +83,7 @@ class ConnectorEntry:
     estimated_minutes: int
     vendor_url: Optional[str] = None
     requires_oauth_app: bool = False
+    required: bool = False
 
 
 # Cache: { cache_key: list[ConnectorEntry] }. Single-process; refreshed
@@ -155,6 +160,7 @@ def _validate(slug: str, raw: dict) -> Optional[ConnectorEntry]:
     estimated_minutes = connector_block.get("estimated_minutes")
     vendor_url = connector_block.get("vendor_url")
     requires_oauth_app = connector_block.get("requires_oauth_app", False)
+    required = connector_block.get("required", False)
 
     # Required fields + types
     for field, value, expected_type in (
@@ -202,6 +208,7 @@ def _validate(slug: str, raw: dict) -> Optional[ConnectorEntry]:
         estimated_minutes=minutes,
         vendor_url=vendor_url_clean,
         requires_oauth_app=bool(requires_oauth_app),
+        required=bool(required),
     )
 
 

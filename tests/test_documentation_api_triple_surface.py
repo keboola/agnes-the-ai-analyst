@@ -64,6 +64,11 @@ _COHORT: dict[str, tuple[str, str]] = {
     # entries are RED until then by design (see the K4 plan's Task 3).
     "/api/admin/knowledge-digests": ("admin digest list", "admin_knowledge_digests_list"),
     "/api/admin/knowledge-digests/{digest_id}": ("admin digest show", "admin_knowledge_digest_get"),
+    # Skill-linter admin moderation surface (v89, #687): findings list,
+    # manual full-corpus audit, per-finding dismiss.
+    "/api/admin/store/lint-findings": ("admin store lint-findings", "admin_store_lint_findings"),
+    "/api/admin/store/lint-audit": ("admin store lint-audit", "admin_store_lint_audit"),
+    "/api/admin/store/lint-dismiss": ("admin store lint-dismiss", "admin_store_lint_dismiss"),
 }
 
 
@@ -216,6 +221,11 @@ _SOURCE_CONNECTIONS_CRUD_REASON = (
     "reachable via `agnes admin connection add/remove/test`; the list path carries "
     "the triple-surface contract in _COHORT"
 )
+_BROKER_REASON = (
+    "chat sandbox secret broker (2026-07-14 incident hardening) — internal "
+    "sandbox->server routes, ticket-gated (not user auth); the in-sandbox "
+    "loopback relay is the only caller. No analyst CLI/MCP analogue."
+)
 _EXEMPT: dict[str, str] = {
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "
@@ -294,6 +304,19 @@ _EXEMPT: dict[str, str] = {
         "(written to .claude/rules/ka_<slug>.md, pruned on de-authorization); "
         "no interactive CLI/MCP analogue, mirrors the knowledge-artifact "
         "download and /api/memory/bundle delivery channels"
+    ),
+    # Chat sandbox secret broker (2026-07-14 incident hardening) — internal
+    # sandbox→server routes only, gated by an opaque ticket (not user auth).
+    # No CLI/MCP analogue: these exist purely so the in-sandbox loopback
+    # relay never needs a real credential.
+    "/api/broker/anthropic": _BROKER_REASON,
+    "/api/broker/anthropic/{subpath}": _BROKER_REASON,
+    "/api/broker/agnes-api": _BROKER_REASON,
+    "/api/broker/agnes-mcp": _BROKER_REASON,
+    "/api/admin/run-keboola-semantic-layer-refresh": (
+        "scheduler-driven Keboola semantic layer (Metastore) sync trigger — "
+        "admin/scheduler maintenance op, mirrors the run-bq-metadata-refresh / "
+        "run-knowledge-digests exemptions; no analyst CLI/MCP analogue"
     ),
 }
 

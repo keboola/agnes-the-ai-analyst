@@ -88,6 +88,10 @@ _DEFAULTS = {
     # (single env var → both, so an operator changing the cadence moves
     # both). Name retained post session-pipeline refactor for operator
     # compatibility — existing docker-compose env files keep working.
+    # SCHEDULER_VERIFICATION_SCHEDULE (see _verification_schedule()) can
+    # override the interval-derived cadence with a fixed schedule string
+    # (e.g. "daily 04:15") — when set, bump this interval to match the real
+    # cadence too, so the health-check grace window stays calibrated.
     "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL": 15 * 60,
     "SCHEDULER_USAGE_PROCESSOR_INTERVAL": 10 * 60,
     "SCHEDULER_CORPORATE_MEMORY_INTERVAL": 17 * 60,
@@ -97,6 +101,13 @@ _DEFAULTS = {
     # registry, short enough that operator-edited tables show real numbers
     # within an analyst's working day.
     "SCHEDULER_BQ_METADATA_REFRESH_INTERVAL": 4 * 60 * 60,
+    # Keboola semantic layer (Metastore) refresh: walks a Keboola project's
+    # datasets/metrics/constraints and upserts+prunes metric_definitions
+    # rows tagged source='keboola_semantic_layer'. Default 6 h — metrics
+    # change less often than BQ metadata cache entries (4 h default), and
+    # each run does far fewer HTTP calls (a handful of Metastore list
+    # requests vs one BQ metadata fetch per registered table).
+    "SCHEDULER_KEBOOLA_SEMANTIC_LAYER_REFRESH_INTERVAL": 6 * 60 * 60,
     # Pause between scheduler startup and the first tick. Keeps the
     # scheduler from synchronising its "Table never synced, marking as
     # due" burst with the app's own startup cache_warmup. Set to 0 to
@@ -251,6 +262,44 @@ def _iw_sync_schedule() -> Optional[str]:
     return _IW_SYNC_SCHEDULE_DEFAULT
 
 
+def _verification_schedule(verify_seconds: int) -> str:
+    """Resolve the verification-detector processor's cadence.
+
+    Read order:
+      1. ``SCHEDULER_VERIFICATION_SCHEDULE`` env override (validated via
+         ``is_valid_schedule``) — e.g. ``"daily 04:15"`` to pin the LLM-heavy
+         verification pass to a fixed off-peak time instead of firing every
+         N minutes/hours. Useful on instances where daytime CPU contention
+         with request-serving matters more than near-real-time verification
+         freshness.
+      2. Interval-derived ``"every Nm"``/``"every Nh"`` from
+         ``SCHEDULER_VERIFICATION_DETECTOR_INTERVAL`` (existing default
+         behavior, unchanged for instances that don't set the override).
+
+    An invalid override falls back to the interval-derived schedule rather
+    than crashing the scheduler on a typo.
+
+    IMPORTANT: the health check's staleness grace window
+    (``app/api/health.py::_verification_detector_grace_seconds``) reads
+    ``SCHEDULER_VERIFICATION_DETECTOR_INTERVAL`` directly and independently
+    of this override — an operator who pins a daily schedule here should
+    also set ``SCHEDULER_VERIFICATION_DETECTOR_INTERVAL=86400`` so the grace
+    window (2x the cadence) stays calibrated to the real ~24h gap between
+    runs instead of false-positiving a "stuck pipeline" warning every day.
+    """
+    from src.scheduler import is_valid_schedule
+
+    raw = os.environ.get("SCHEDULER_VERIFICATION_SCHEDULE", "").strip()
+    if raw:
+        if is_valid_schedule(raw):
+            return raw
+        logger.warning(
+            "scheduler: invalid SCHEDULER_VERIFICATION_SCHEDULE %r — falling back to interval-derived schedule",
+            raw,
+        )
+    return _seconds_to_schedule(verify_seconds)
+
+
 def resolved_tick_seconds() -> int:
     """Read + validate SCHEDULER_TICK_SECONDS in isolation (test helper)."""
     return _read_positive_int("SCHEDULER_TICK_SECONDS")
@@ -313,6 +362,7 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
     usage = _read_positive_int("SCHEDULER_USAGE_PROCESSOR_INTERVAL")
     corpmem = _read_positive_int("SCHEDULER_CORPORATE_MEMORY_INTERVAL")
     bqmeta = _read_positive_int("SCHEDULER_BQ_METADATA_REFRESH_INTERVAL")
+    kbsl = _read_positive_int("SCHEDULER_KEBOOLA_SEMANTIC_LAYER_REFRESH_INTERVAL")
     usageprune = _read_positive_int("SCHEDULER_USAGE_PRUNE_INTERVAL")
     jirasla = _read_positive_int("SCHEDULER_JIRA_SLA_POLL_INTERVAL")
     jiraconsis = _read_positive_int("SCHEDULER_JIRA_CONSISTENCY_INTERVAL")
@@ -328,6 +378,7 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         usage,
         corpmem,
         bqmeta,
+        kbsl,
         usageprune,
         jirasla,
         jiraconsis,
@@ -359,7 +410,7 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # in services/session_processors/__init__.py registry.
         (
             "session-processor:verification",
-            _seconds_to_schedule(verify),
+            _verification_schedule(verify),
             "/api/admin/run-session-processor?processor=verification",
             "POST",
             900,
@@ -386,9 +437,29 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # to review_error so admin can retry. Cheap (one indexed
         # SELECT + N small UPDATEs); short timeout sufficient.
         ("store-reap-stuck-reviews", "every 15m", "/api/admin/run-reap-stuck-reviews", "POST", 60),
+        # Weekly skill-lint retro-audit (#687). Re-lints published skills,
+        # skipping entities whose content is unchanged since their last lint
+        # (zero LLM cost on a static store). The endpoint self-guards against
+        # restart-refire via a min-interval check on the last scheduler run,
+        # so the effective cadence holds even though scheduler last_run state
+        # is in-memory. Monday 05:00 UTC — off-peak, distinct from the daily
+        # 03:00/04:00 store jobs.
+        ("store-lint-audit", "cron 0 5 * * 1", "/api/admin/store/lint-audit", "POST", 900),
         # BigQuery metadata refresh — keeps ``bq_metadata_cache`` warm so
         # ``GET /api/v2/catalog`` never has to call BQ at request time.
         ("bq-metadata-refresh", _seconds_to_schedule(bqmeta), "/api/admin/run-bq-metadata-refresh", "POST", 1800),
+        # Keboola semantic layer refresh — keeps metric_definitions rows
+        # tagged source='keboola_semantic_layer' in sync with the project's
+        # Metastore. Short-circuits (returns an error result, doesn't crash)
+        # when Keboola credentials aren't configured or the token isn't a
+        # master token — see connectors/keboola/semantic_layer.py.
+        (
+            "keboola-semantic-layer-refresh",
+            _seconds_to_schedule(kbsl),
+            "/api/admin/run-keboola-semantic-layer-refresh",
+            "POST",
+            900,
+        ),
         # Usage event retention pruning. Reads USAGE_EVENTS_RETENTION_DAYS
         # on the server side; short-circuits when unset or 0. Runs daily
         # (default 86400s). Rollup tables untouched.

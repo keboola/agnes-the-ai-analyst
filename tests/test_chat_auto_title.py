@@ -91,6 +91,29 @@ def test_generate_title_dispatches_to_thread(monkeypatch):
     assert captured["user_message"] == "Show me revenue last week"
 
 
+def test_generate_title_ignores_stale_static_key_in_workload_identity_mode(monkeypatch):
+    """A leftover ANTHROPIC_API_KEY must not win over llm_auth="workload_identity" —
+    otherwise auto-title silently uses a different credential than the broker
+    (which decides purely off chat_config.llm_auth), even though the static
+    key would still authenticate. Mirrors the broker's config-driven check."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "stale-static-key")
+    captured = {}
+
+    def fake_sync(user_message, **kwargs):
+        captured.update(kwargs)
+        return "WIF title"
+
+    def fake_get_token():
+        return "federated-token"
+
+    monkeypatch.setattr(auto_title, "_generate_title_sync", fake_sync)
+    monkeypatch.setattr("app.auth.wif.get_federated_access_token", fake_get_token)
+
+    out = asyncio.run(auto_title.generate_title("Show me revenue last week", llm_auth="workload_identity"))
+    assert out == "WIF title"
+    assert captured == {"auth_token": "federated-token"}
+
+
 def test_generate_title_swallows_sync_exceptions(monkeypatch):
     """If the sync helper raises, generate_title returns None."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
@@ -242,7 +265,7 @@ def test_assistant_message_triggers_auto_title(tmp_path: Path, monkeypatch):
     call our fake generate_title, persist the result, and broadcast a
     ``session_renamed`` frame on the WS."""
 
-    async def fake_gen(_msg: str):
+    async def fake_gen(_msg: str, **_kwargs):
         return "Revenue trend"
 
     monkeypatch.setattr("app.chat.auto_title.generate_title", fake_gen)
@@ -298,7 +321,7 @@ def test_auto_title_fires_only_once(tmp_path: Path, monkeypatch):
     """Two assistant_message frames must not produce two Haiku calls."""
     call_count = {"n": 0}
 
-    async def fake_gen(_msg: str):
+    async def fake_gen(_msg: str, **_kwargs):
         call_count["n"] += 1
         return "Once only"
 
@@ -335,7 +358,7 @@ def test_auto_title_skipped_when_title_preset(tmp_path: Path, monkeypatch):
     """A session created with an explicit title is left alone."""
     called = {"n": 0}
 
-    async def fake_gen(_msg: str):
+    async def fake_gen(_msg: str, **_kwargs):
         called["n"] += 1
         return "Robot pick"
 
@@ -373,7 +396,7 @@ def test_auto_title_skipped_when_title_preset(tmp_path: Path, monkeypatch):
 def test_auto_title_swallows_haiku_failure(tmp_path: Path, monkeypatch):
     """A crashed Haiku call must not kill the session; the title stays NULL."""
 
-    async def fake_gen(_msg: str):
+    async def fake_gen(_msg: str, **_kwargs):
         raise RuntimeError("Haiku down")
 
     monkeypatch.setattr("app.chat.auto_title.generate_title", fake_gen)

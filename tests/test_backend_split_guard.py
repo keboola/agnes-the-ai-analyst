@@ -238,9 +238,12 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     # factory; vestigial get_system_db() scaffolding deleted. Entry removed.
     # app/api/query.py — the bq-metadata VIEW-hint lookup (_view_targets_in)
     # now routes through the factory; no remaining get_system_db caller.
-    "app/api/scripts.py",
+    # app/api/scripts.py — the script-runner tick + background-task audit/status
+    # writes dropped their unused get_system_db() handles (audit_repo() /
+    # notifications_script_repo() are factory-routed). Entry removed.
     "app/api/sync.py",
-    "app/api/upload.py",
+    # app/api/upload.py — the session-upload audit write dropped its unused
+    # get_system_db() handle; audit_repo() is factory-routed. Entry removed.
     # app/api/v2_sample.py — internal-table sampling now routes through
     # connectors.internal.access.sample_internal_rows (use_pg() dispatch).
     # app/auth/access.py — mint_session_jwt migrated off get_system_db() onto
@@ -250,7 +253,8 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     # chat_session_participants_repo()/chat_session_repo() (factory); entry
     # removed as the residual shrank.
     "app/auth/providers/google.py",
-    "app/auth/router.py",
+    # app/auth/router.py — the _audit helper dropped its unused get_system_db()
+    # handle; audit_repo() is factory-routed. Entry removed.
     "app/main.py",
     "app/marketplace_server/git_router.py",
     "app/web/router.py",
@@ -654,3 +658,34 @@ def test_detector_ignores_factory_call(tmp_path):
     )
     found = scan_direct_instantiations([clean], classes)
     assert not found, f"factory call wrongly flagged: {found}"
+
+
+# ---------------------------------------------------------------------------
+# AC-G-noinject: chat sandbox spawn env must never carry the real Anthropic
+# key or Agnes token — both are brokered via short-lived tickets pushed over
+# stdin (2026-07-14 secret-broker hardening) instead of injected into the
+# sandbox process environment.
+# ---------------------------------------------------------------------------
+
+
+def test_no_real_secret_in_sandbox_spawn_env():
+    """Static scan of the two functions that build a chat sandbox's env: the
+    real ``ANTHROPIC_API_KEY``/``AGNES_TOKEN`` values must never be assigned
+    into that env dict — only a dummy (or absence) is allowed."""
+    targets = [
+        (REPO_ROOT / "app/chat/manager.py", "_spawn_runner"),
+        (REPO_ROOT / "app/chat/runner.py", "_agnes_mcp_servers"),
+    ]
+    for path, func_name in targets:
+        src = path.read_text()
+        tree = ast.parse(src)
+        matches = [
+            n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == func_name
+        ]
+        assert matches, f"expected a function named {func_name!r} in {path}"
+        seg = ast.get_source_segment(src, matches[0])
+        assert seg is not None
+        assert 'os.environ.get("ANTHROPIC_API_KEY"' not in seg or "dummy" in seg.lower(), (
+            f"{path}:{func_name} must not forward the real ANTHROPIC_API_KEY into the sandbox env"
+        )
+        assert '"AGNES_TOKEN": token' not in seg, f"{path}:{func_name} must not inject the real AGNES_TOKEN"

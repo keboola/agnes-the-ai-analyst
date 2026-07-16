@@ -22,9 +22,15 @@ def _create_recipe(slug: str, title: str, status: str = "prod") -> str:
 
     conn = get_system_db()
     rid = RecipesRepository(conn).create(
-        slug=slug, title=title, description=None,
-        icon=None, color=None, sql_template=None,
-        related_table_ids=None, status=status, created_by="test",
+        slug=slug,
+        title=title,
+        description=None,
+        icon=None,
+        color=None,
+        sql_template=None,
+        related_table_ids=None,
+        status=status,
+        created_by="test",
     )
     conn.close()
     return rid
@@ -58,7 +64,8 @@ class TestRecipeListRbac:
         _create_recipe("r-pub", "Public")
         _create_recipe("r-prv", "Private")
         resp = seeded_app["client"].get(
-            "/api/recipes", headers=_auth(seeded_app["admin_token"]),
+            "/api/recipes",
+            headers=_auth(seeded_app["admin_token"]),
         )
         assert resp.status_code == 200
         slugs = {r["slug"] for r in resp.json()["items"]}
@@ -67,7 +74,8 @@ class TestRecipeListRbac:
     def test_analyst_without_grant_sees_nothing(self, seeded_app):
         _create_recipe("r-secret", "Secret")
         resp = seeded_app["client"].get(
-            "/api/recipes", headers=_auth(seeded_app["analyst_token"]),
+            "/api/recipes",
+            headers=_auth(seeded_app["analyst_token"]),
         )
         assert resp.status_code == 200
         slugs = {r["slug"] for r in resp.json()["items"]}
@@ -80,7 +88,8 @@ class TestRecipeListRbac:
         gid = _group_with("analyst1", "Analysts-shared")
         _grant(gid, rid, "available")
         resp = seeded_app["client"].get(
-            "/api/recipes", headers=_auth(seeded_app["analyst_token"]),
+            "/api/recipes",
+            headers=_auth(seeded_app["analyst_token"]),
         )
         assert resp.status_code == 200
         slugs = {r["slug"] for r in resp.json()["items"]}
@@ -93,11 +102,45 @@ class TestRecipeListRbac:
         gid = _group_with("analyst1", "Analysts-draft")
         _grant(gid, rid, "available")
         resp = seeded_app["client"].get(
-            "/api/recipes", headers=_auth(seeded_app["analyst_token"]),
+            "/api/recipes",
+            headers=_auth(seeded_app["analyst_token"]),
         )
         assert resp.status_code == 200
         slugs = {r["slug"] for r in resp.json()["items"]}
         assert "r-draft" not in slugs
+
+    def test_recipe_access_resolved_once_not_per_row(self, seeded_app, monkeypatch):
+        # N+1 regression guard: the accessible-RECIPE set must be resolved
+        # exactly once per request (via get_accessible_ids), regardless of
+        # how many recipes exist — not once per row via can_access.
+        for i in range(5):
+            rid = f"r-bulk-{i}"
+            _create_recipe(rid, f"Bulk {i}")
+        gid = _group_with("analyst1", "Analysts-bulk")
+        # Grant a couple of them so the filter has real work to do.
+        conn = get_system_db()
+        rows = conn.execute("SELECT id FROM recipes WHERE slug LIKE 'r-bulk-%'").fetchall()
+        conn.close()
+        for (rid,) in rows[:2]:
+            _grant(gid, rid, "available")
+
+        calls = {"n": 0}
+        import app.api.recipes as recipes_module
+
+        original = recipes_module.get_accessible_ids
+
+        def _counting_get_accessible_ids(*args, **kwargs):
+            calls["n"] += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(recipes_module, "get_accessible_ids", _counting_get_accessible_ids)
+
+        resp = seeded_app["client"].get(
+            "/api/recipes",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 200
+        assert calls["n"] == 1
 
 
 class TestRecipeGetBySlugRbac:

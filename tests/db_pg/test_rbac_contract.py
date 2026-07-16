@@ -215,12 +215,18 @@ def test_delete_for_marketplace_plugins_drops_only_that_marketplace(rbac_repos):
 
     grp = groups.create(name="mp-cascade", created_by="admin@x.com")
     # Target marketplace slug contains '_'; sibling differs only by '_'→'-'.
-    grants.create(group_id=grp["id"], resource_type="marketplace_plugin",
-                  resource_id="acme_data/grpn", assigned_by="admin@x.com")
-    grants.create(group_id=grp["id"], resource_type="marketplace_plugin",
-                  resource_id="acme_data/grpn-eng", assigned_by="admin@x.com")
-    grants.create(group_id=grp["id"], resource_type="marketplace_plugin",
-                  resource_id="acme-data/other", assigned_by="admin@x.com")
+    grants.create(
+        group_id=grp["id"], resource_type="marketplace_plugin", resource_id="acme_data/grpn", assigned_by="admin@x.com"
+    )
+    grants.create(
+        group_id=grp["id"],
+        resource_type="marketplace_plugin",
+        resource_id="acme_data/grpn-eng",
+        assigned_by="admin@x.com",
+    )
+    grants.create(
+        group_id=grp["id"], resource_type="marketplace_plugin", resource_id="acme-data/other", assigned_by="admin@x.com"
+    )
 
     removed = grants.delete_for_marketplace_plugins("acme_data")
     assert removed == 2
@@ -380,12 +386,20 @@ def test_list_resource_ids_for_user_returns_distinct_grants(rbac_repos):
     members.add_member("u-grants", g2["id"], source="admin")
 
     finance_id = domains.create(
-        name="Finance", slug="grants-finance", description=None,
-        icon=None, color=None, created_by="admin@x.com",
+        name="Finance",
+        slug="grants-finance",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="admin@x.com",
     )
     legal_id = domains.create(
-        name="Legal", slug="grants-legal", description=None,
-        icon=None, color=None, created_by="admin@x.com",
+        name="Legal",
+        slug="grants-legal",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="admin@x.com",
     )
 
     grants.create(group_id=g1["id"], resource_type="memory_domain", resource_id=finance_id)
@@ -403,3 +417,29 @@ def test_list_resource_ids_for_user_empty_when_no_membership(rbac_repos):
     repos, _, _ = rbac_repos
     grants = repos["grants"]
     assert grants.list_resource_ids_for_user("no-such-user", "memory_domain") == []
+
+
+def test_list_for_groups_returns_same_ids_both_backends(rbac_repos):
+    """``list_for_groups`` — the primitive ``app.auth.access._allowed_ids_for_user``
+    (and therefore ``src.rbac.get_accessible_ids``) builds on. Same
+    resource_id set, either engine, scoped by group membership and
+    resource_type."""
+    repos, _, _ = rbac_repos
+    groups = repos["groups"]
+    grants = repos["grants"]
+
+    g1 = groups.create(name="ids-g1", created_by="admin@x.com")
+    g2 = groups.create(name="ids-g2", created_by="admin@x.com")
+
+    # marketplace_plugin has no per-type FK column, so a bare string id is
+    # valid on both engines without needing a matching parent row.
+    grants.create(group_id=g1["id"], resource_type="marketplace_plugin", resource_id="mp/plugin-a")
+    grants.create(group_id=g2["id"], resource_type="marketplace_plugin", resource_id="mp/plugin-b")
+    # Different resource_type must not leak in.
+    grants.create(group_id=g1["id"], resource_type="chat", resource_id="chat")
+
+    rows = grants.list_for_groups([g1["id"], g2["id"]], "marketplace_plugin")
+    assert {r["resource_id"] for r in rows} == {"mp/plugin-a", "mp/plugin-b"}
+
+    # Empty group_ids list — no query, empty result, on both engines.
+    assert grants.list_for_groups([], "marketplace_plugin") == []

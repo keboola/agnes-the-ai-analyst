@@ -45,6 +45,11 @@ class ChatConfig:
     # ``chat.enabled=true`` and ``provider=e2b``; startup gate refuses
     # otherwise. Operator obtains this from ``e2b template build``.
     e2b_template_id: Optional[str] = None
+    # Hosts/CIDRs the sandbox may reach outbound, enforced at the E2B VM
+    # level via SandboxNetworkOpts.allow_out. Empty = provider computes a
+    # default (broker host + loopback). NEVER include api.anthropic.com
+    # directly once the broker is live — Anthropic traffic goes via the relay.
+    egress_allow_out: list[str] = field(default_factory=list)
     # Per-spawn workspace push cap (Q1, 100 MB default). Files past this
     # cap → WorkspaceTooLarge → user-facing error frame.
     e2b_workspace_max_bytes: int = 100 * 1024 * 1024
@@ -64,6 +69,14 @@ class ChatConfig:
     # (an empty placeholder plugin contributes nothing). Independent of the
     # always-on plugin.json sanitization in the marketplace packager.
     bootstrap_marketplace: bool = False
+    # How the chat broker authenticates to Anthropic. ``api_key`` (default) uses
+    # the static ``ANTHROPIC_API_KEY``. ``workload_identity`` mints a short-lived
+    # token from the workload's own OIDC identity via Anthropic Workload Identity
+    # Federation (``app/auth/wif.py``) — no long-lived key anywhere. Opt-in; the
+    # federation env (ANTHROPIC_FEDERATION_RULE_ID / ORGANIZATION_ID /
+    # SERVICE_ACCOUNT_ID / IDENTITY_TOKEN[_FILE]) must be configured for it. Any
+    # value other than ``workload_identity`` falls back to ``api_key``.
+    llm_auth: str = "api_key"
     slack: "SlackConfig" = field(default_factory=SlackConfig)
 
 
@@ -113,11 +126,13 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         tool_calls_per_turn_budget=int(raw.get("tool_calls_per_turn_budget", 50)),
         marketplace_sha_debounce_seconds=int(raw.get("marketplace_sha_debounce_seconds", 5 * 60)),
         e2b_template_id=raw.get("e2b_template_id") or None,
+        egress_allow_out=list(raw.get("egress_allow_out") or []),
         e2b_workspace_max_bytes=int(raw.get("e2b_workspace_max_bytes", 100 * 1024 * 1024)),
         on_detach=_parse_on_detach(raw),
         detach_linger_seconds=int(raw.get("detach_linger_seconds", 60)),
         paused_ttl_seconds=int(raw.get("paused_ttl_seconds", 7 * 24 * 3600)),
         e2b_kill_on_ws_disconnect=bool(raw.get("e2b_kill_on_ws_disconnect", True)),
         bootstrap_marketplace=bool(raw.get("bootstrap_marketplace", False)),
+        llm_auth=str((raw.get("llm") or {}).get("auth", "api_key")).strip().lower() or "api_key",
         slack=_parse_slack_config(raw),
     )

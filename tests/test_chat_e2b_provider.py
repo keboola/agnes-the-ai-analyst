@@ -81,8 +81,18 @@ def test_provider_spawns_sandbox_and_returns_handle(tmp_path: Path):
             assert call_kwargs["api_key"] == "sk-e2b-test"
             assert call_kwargs["envs"]["AGNES_TOKEN"] == "t"
             assert call_kwargs["timeout"] == 1800
-            # Q4: default open egress
-            assert call_kwargs.get("allow_internet_access", True) is True
+            # Egress is default-deny: the sandbox is created with a VM-level
+            # allowlist (network.allow_out), never the retired open-egress
+            # allow_internet_access=True. (INC-01572)
+            assert "allow_internet_access" not in call_kwargs
+            assert "allow_out" in call_kwargs["network"]
+            # deny_out=[ALL_TRAFFIC] MUST accompany allow_out: the E2B API 400s
+            # an allow-list with no deny, and without it the allowlist blocks
+            # nothing (egress no-op). Every spawn 400'd on e2b>=2.32.0 without
+            # this — caught by live E2E, not unit tests.
+            from e2b import ALL_TRAFFIC
+
+            assert call_kwargs["network"].get("deny_out") == [ALL_TRAFFIC]
 
             # commands.run was called with background=True and the joined argv
             fake_sb.commands.run.assert_called_once()
@@ -455,6 +465,66 @@ def test_destroy_kills_sandbox_by_id_without_resuming():
 
 
 # ---------------------------------------------------------------------------
+# Task 2: VM-level egress allowlist (network.allow_out)
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_sets_network_allow_out(tmp_path: Path):
+    """spawn() passes network={'allow_out': [...]} and drops the unconditional
+    allow_internet_access=True kwarg."""
+
+    async def _run():
+        fake_sb = _make_fake_sandbox()
+        fake_handle = _make_fake_handle()
+        fake_sb.commands.run = AsyncMock(return_value=fake_handle)
+
+        with patch("app.chat.e2b_provider.AsyncSandbox") as MockSandbox:
+            MockSandbox.create = AsyncMock(return_value=fake_sb)
+            prov = E2BProvider(
+                api_key="k",
+                template_id="t",
+                egress_allow_out=["api.github.com"],
+                upload_runner=False,
+            )
+            await prov.spawn(workdir=tmp_path, env={}, argv=["true"])
+
+            call_kwargs = MockSandbox.create.call_args.kwargs
+            assert call_kwargs["network"].get("allow_out") == ["api.github.com"]
+            assert call_kwargs.get("allow_internet_access") is not True
+
+    asyncio.run(_run())
+
+
+def test_spawn_defaults_allow_out_to_server_host_and_upstreams(tmp_path: Path, monkeypatch):
+    """When egress_allow_out is unset, the effective allowlist defaults to the
+    Agnes server host (from agnes_server_url()) plus loopback and the upstreams
+    the in-sandbox CLIs reach directly (Anthropic, GitHub) — mirroring the
+    PreToolUse hook's ALLOWED_HOSTS."""
+
+    async def _run():
+        monkeypatch.setenv("SERVER_URL", "https://agnes.example.com")
+        fake_sb = _make_fake_sandbox()
+        fake_handle = _make_fake_handle()
+        fake_sb.commands.run = AsyncMock(return_value=fake_handle)
+
+        with patch("app.chat.e2b_provider.AsyncSandbox") as MockSandbox:
+            MockSandbox.create = AsyncMock(return_value=fake_sb)
+            prov = E2BProvider(api_key="k", template_id="t", upload_runner=False)
+            await prov.spawn(workdir=tmp_path, env={}, argv=["true"])
+
+            call_kwargs = MockSandbox.create.call_args.kwargs
+            assert call_kwargs["network"].get("allow_out") == [
+                "agnes.example.com",
+                "127.0.0.1",
+                "localhost",
+                "api.anthropic.com",
+                "api.github.com",
+            ]
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
 # Gated real-E2B test — skips cleanly without E2B_API_KEY
 # ---------------------------------------------------------------------------
 
@@ -481,13 +551,17 @@ def test_e2b_pause_resume_real():
 
         # Write the echo program inline after spawn by using files API directly
         # (upload_runner=False keeps this test self-contained)
+        from e2b import ALL_TRAFFIC
         from e2b import AsyncSandbox as _RealSandbox
 
+        # Mirror the production default-deny egress model (a loopback-only
+        # allowlist here — this test exercises pause/resume, not network) rather
+        # than the retired open-egress flag, which also 400s on e2b>=2.32.0.
         sandbox = await _RealSandbox.create(
             template="base",
             api_key=_E2B_KEY,
             timeout=600,
-            allow_internet_access=True,
+            network={"allow_out": ["127.0.0.1"], "deny_out": [ALL_TRAFFIC]},
         )
         await sandbox.files.write("/tmp/echo.py", ECHO_PROGRAM)
 

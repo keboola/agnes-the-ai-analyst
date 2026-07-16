@@ -134,12 +134,17 @@ class _AuthMiddleware:
         try:
             from app.auth.pat_resolver import resolve_token_to_user
             from src.db import get_system_db
+            from src.repositories import use_pg
 
-            conn = get_system_db()
+            # resolve_token_to_user routes through the repository factory and
+            # ignores ``conn``; on Postgres pass None so the system DuckDB is
+            # never opened (forbidden invariant).
+            conn = None if use_pg() else get_system_db()
             try:
                 user, reason = resolve_token_to_user(conn, raw_token)
             finally:
-                conn.close()
+                if conn is not None:
+                    conn.close()
         except Exception:
             logger.exception("MCP auth error")
             await _send_401(scope, send)
@@ -189,16 +194,29 @@ def _register_dynamic_tools() -> None:
     cowork MCP server still comes up with the static tools.
     """
     try:
-        from app.api.mcp.tools_generator import register_passthrough_tools
+        from app.api.mcp.tools_generator import (
+            install_grant_filtered_list_tools,
+            register_passthrough_tools,
+        )
     except Exception:  # pragma: no cover - import-time defensive
         logger.exception("Universal MCP imports unavailable; skipping dynamic tool registration")
         return
+    _caller_id = lambda: _current_user_id.get() or None  # noqa: E731
+    names: list[str] = []
     try:
-        names = register_passthrough_tools(mcp, caller_id_fn=lambda: _current_user_id.get() or None)
+        names = register_passthrough_tools(mcp, caller_id_fn=_caller_id)
         if names:
             logger.info("MCP HTTP: registered %d passthrough tools", len(names))
     except Exception:
         logger.exception("Universal MCP passthrough registration failed")
+    # Hide passthrough tools the caller isn't granted from tools/list (their
+    # invocation is already gated; this matches the REST listing's visibility).
+    # Pass the registered names so the filter's hide-set is fixed at install
+    # time and a runtime grant-resolution error fails closed (see the helper).
+    try:
+        install_grant_filtered_list_tools(mcp, caller_id_fn=_caller_id, passthrough_names=names)
+    except Exception:
+        logger.exception("MCP HTTP: grant-filtered tools/list install failed")
 
 
 # ── factory ────────────────────────────────────────────────────────────────────

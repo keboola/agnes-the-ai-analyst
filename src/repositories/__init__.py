@@ -98,6 +98,7 @@ __all__ = [
     "user_store_installs_repo",
     "user_curated_subscriptions_repo",
     "store_submissions_repo",
+    "store_lint_repo",
     # Knowledge
     "knowledge_repo",
     # Data packages / memory / recipes / subscriptions
@@ -131,6 +132,8 @@ __all__ = [
     "corpus_chunks_repo",
     # Maintained digests (K4, #799)
     "knowledge_digests_repo",
+    # Chat sandbox secret broker tickets
+    "ticket_repo",
 ]
 
 
@@ -334,6 +337,10 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.store_submissions", "StoreSubmissionsRepository"),
         PG: ("src.repositories.store_submissions_pg", "StoreSubmissionsPgRepository"),
     },
+    "store_lint": {
+        DUCKDB: ("src.repositories.store_lint", "StoreLintRepository"),
+        PG: ("src.repositories.store_lint_pg", "StoreLintPgRepository"),
+    },
     # knowledge
     "knowledge": {
         DUCKDB: ("src.repositories.knowledge", "KnowledgeRepository"),
@@ -441,6 +448,11 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
     "knowledge_digests": {
         DUCKDB: ("src.repositories.knowledge_digests", "KnowledgeDigestsRepository"),
         PG: ("src.repositories.knowledge_digests_pg", "KnowledgeDigestsPgRepository"),
+    },
+    # Chat sandbox secret broker tickets
+    "ticket": {
+        DUCKDB: ("src.repositories.ticket", "TicketRepository"),
+        PG: ("src.repositories.ticket_pg", "TicketPgRepository"),
     },
 }
 
@@ -594,6 +606,10 @@ def store_submissions_repo() -> Any:
     return _build("store_submissions")
 
 
+def store_lint_repo() -> Any:
+    return _build("store_lint")
+
+
 # knowledge
 def knowledge_repo() -> Any:
     return _build("knowledge")
@@ -698,3 +714,8 @@ def corpus_chunks_repo() -> Any:
 # Maintained digests (K4, #799)
 def knowledge_digests_repo() -> Any:
     return _build("knowledge_digests")
+
+
+# chat sandbox secret broker tickets
+def ticket_repo() -> Any:
+    return _build("ticket")

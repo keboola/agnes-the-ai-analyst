@@ -546,3 +546,57 @@ def test_create_app_keeps_streamable_mcp_on_localhost_http(seeded_app, monkeypat
 
     app = create_app()
     assert app.state.mcp_streamable_instance is not None
+
+
+def test_oauth_load_exposes_raw_not_hash_so_delete_and_revoke_work(seeded_app):
+    """Double-hash guard (audit M4 / Devin #863).
+
+    Codes/tokens are hashed at rest, but the provider's load_* methods must
+    hand the SDK back the RAW value — the SDK passes it straight into
+    delete_auth_code / revoke_refresh_token, which hash again. If load_*
+    returned the stored digest, the follow-up would hash a hash
+    (sha256(sha256(raw))) and match nothing — one-time-use + rotation would
+    silently no-op. This drives the provider objects through that round-trip.
+    """
+    import asyncio
+    import secrets
+    import time
+
+    from app.auth.mcp_oauth import AgnesMCPOAuthProvider
+    from src.repositories import oauth_clients_repo
+
+    with seeded_app["client"]:
+        repo = oauth_clients_repo()
+        prov = AgnesMCPOAuthProvider()
+        repo.upsert_client(
+            client_id="dh-int",
+            client_secret="s",
+            redirect_uris=["http://x/cb"],
+            client_name="DH",
+        )
+        client = asyncio.run(prov.get_client("dh-int"))
+        assert client is not None
+
+        # Authorization code: load hands back the RAW code; delete then matches.
+        raw_code = secrets.token_urlsafe(16)
+        repo.save_auth_code(
+            code=raw_code,
+            client_id="dh-int",
+            scopes=["read"],
+            code_challenge="chal",
+            redirect_uri="http://x/cb",
+            redirect_uri_provided_explicitly=True,
+            expires_at=time.time() + 300,
+        )
+        ac = asyncio.run(prov.load_authorization_code(client, raw_code))
+        assert ac is not None and ac.code == raw_code, "load must expose the raw code, not the digest"
+        repo.delete_auth_code(ac.code)  # SDK hands ac.code straight back
+        assert repo.get_auth_code(raw_code) is None, "used code must be deleted (one-time-use)"
+
+        # Refresh token: load hands back the RAW token; revoke then matches.
+        raw_rt = secrets.token_urlsafe(16)
+        repo.save_refresh_token(token=raw_rt, client_id="dh-int", scopes=["read"])
+        rt = asyncio.run(prov.load_refresh_token(client, raw_rt))
+        assert rt is not None and rt.token == raw_rt, "load must expose the raw refresh token, not the digest"
+        repo.revoke_refresh_token(rt.token)
+        assert asyncio.run(prov.load_refresh_token(client, raw_rt)) is None, "revoked refresh token must not load"

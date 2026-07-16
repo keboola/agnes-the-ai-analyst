@@ -127,7 +127,7 @@ class TemplatePreviewRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/api/welcome", response_model=ClaudeMdResponse)
-async def get_welcome(
+def get_welcome(
     request: Request,
     server_url: Optional[str] = Query(None, description="Server URL used in rendered CLAUDE.md"),
     user: dict = Depends(get_current_user),
@@ -160,7 +160,7 @@ async def get_welcome(
 # ---------------------------------------------------------------------------
 
 @router.get("/api/admin/workspace-prompt-template", response_model=TemplateGetResponse)
-async def admin_get_workspace_template(
+def admin_get_workspace_template(
     request: Request,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -201,7 +201,7 @@ async def admin_get_workspace_template(
 
 
 @router.put("/api/admin/workspace-prompt-template")
-async def admin_put_workspace_template(
+def admin_put_workspace_template(
     payload: TemplatePutRequest,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -256,7 +256,7 @@ async def admin_put_workspace_template(
 
 
 @router.delete("/api/admin/workspace-prompt-template", status_code=204)
-async def admin_reset_workspace_template(
+def admin_reset_workspace_template(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -279,7 +279,7 @@ async def admin_reset_workspace_template(
 
 
 @router.post("/api/admin/workspace-prompt-template/preview", response_model=ClaudeMdResponse)
-async def admin_preview_workspace_template(
+def admin_preview_workspace_template(
     payload: TemplatePreviewRequest,
     request: Request,
     user: dict = Depends(require_admin),

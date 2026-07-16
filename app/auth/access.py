@@ -296,7 +296,7 @@ def can_access_session(
 # ---------------------------------------------------------------------------
 
 
-async def require_admin(
+def require_admin(
     user=Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -309,6 +309,10 @@ async def require_admin(
 
     A ``SessionPrincipal`` (co-session runner token) is HARD-DENIED before
     any ``is_user_admin`` check — co-sessions never hold admin authority.
+
+    Plain ``def`` (not ``async def``) so FastAPI offloads it to the anyio
+    thread pool — the body is a sync ``is_user_admin`` RBAC read that must
+    not run on the event loop (Tier 1, PR #188).
     """
     if isinstance(user, SessionPrincipal):
         raise HTTPException(
@@ -345,7 +349,11 @@ def require_resource_access(
     they failed against.
     """
 
-    async def dep(
+    # Plain ``def`` (not ``async def``) so FastAPI offloads the returned
+    # dependency to the anyio thread pool — its body is a sync RBAC read
+    # (``can_access`` / ``can_access_session``) that must not run on the
+    # event loop (Tier 1, PR #188).
+    def dep(
         request: Request,
         user=Depends(get_current_user),
         conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -430,5 +438,8 @@ def mint_co_session_jwt(session_id: str, *, ttl: int = 3600) -> str:
         email="",  # no real identity; resolver never reads this
         expires_delta=timedelta(seconds=ttl),
         typ="co_session",
-        extra_claims={"chat_session_id": session_id},
+        # scope="chat" triggers the per-session BigQuery budget stash
+        # (`_stash_chat_session_id_from_token`), same as the solo path — a
+        # co-session is a chat session and must be capped too. (#849)
+        extra_claims={"scope": "chat", "chat_session_id": session_id},
     )

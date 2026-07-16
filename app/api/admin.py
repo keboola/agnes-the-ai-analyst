@@ -71,6 +71,33 @@ def _get_processor_run_lock(name: str) -> threading.Lock:
         return _processor_run_locks[name]
 
 
+def _session_processor_max_per_run() -> Optional[int]:
+    """Cap on sessions processed per `/run-session-processor` invocation.
+
+    A burst of session closures landing in the same scheduler tick would
+    otherwise run unboundedly in one request — each candidate can trigger
+    multiple synchronous, blocking LLM calls (verification), holding the
+    handling thread and competing for CPU with request-serving for the
+    whole batch duration. Configurable via SESSION_PROCESSOR_MAX_PER_RUN;
+    "" or an invalid value disables the cap (returns None) rather than
+    failing the request — this is a protective default, not a hard
+    contract, so a misconfigured env var shouldn't 500 every scheduler tick.
+    Default 50: comfortably above a normal tick's session count, low enough
+    to bound worst-case tick duration under a burst or backlog.
+    """
+    raw = os.environ.get("SESSION_PROCESSOR_MAX_PER_RUN", "50")
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("SESSION_PROCESSOR_MAX_PER_RUN=%r is not an integer; cap disabled", raw)
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
 # SSRF protection: reject private/internal URLs for keboola_url
 import ipaddress as _ipaddress  # noqa: E402
 import socket as _socket  # noqa: E402
@@ -91,6 +118,19 @@ def _validate_url_not_private(url: str, field_name: str = "url") -> None:
     host = parsed.hostname or ""
     if not host:
         raise HTTPException(status_code=400, detail=f"Invalid {field_name}: missing hostname")
+
+    # Deployer-trusted internal hosts (e.g. an on-prem GitHub Enterprise on a
+    # private network) opt out of the private/reserved-network rejection. This
+    # is the shared validator, so a listed host is exempt on EVERY SSRF-guarded
+    # admin URL that reaches here — clone URLs (marketplace + initial-workspace),
+    # the Keboola stack_url, and the _validate_urls_in_patch config fields — not
+    # just marketplace clones. The allowlist is operator-set and empty by
+    # default, so the OSS ships fail-closed. See
+    # app.instance_config.get_ssrf_allowed_hosts.
+    from app.instance_config import get_ssrf_allowed_hosts
+
+    if host.lower() in get_ssrf_allowed_hosts():
+        return
 
     # Reject well-known dangerous hostnames before DNS resolution
     if host.lower() in ("localhost", "localhost.localdomain"):
@@ -2492,17 +2532,23 @@ def _materialize_bigquery_extract() -> Dict[str, Any]:
     from connectors.bigquery import extractor as _bq_extractor
     from src.db import get_system_db
     from src.orchestrator import SyncOrchestrator
+    from src.repositories import use_pg
 
-    fresh_conn = get_system_db()
+    # rebuild_from_registry reads the table registry through the repository
+    # factory when use_pg() (ignoring ``conn``); on Postgres pass None so the
+    # system DuckDB is never opened (forbidden invariant). The analytics
+    # extract.duckdb it writes is a separate DuckDB file on both backends.
+    fresh_conn = None if use_pg() else get_system_db()
     try:
         result = _bq_extractor.rebuild_from_registry(conn=fresh_conn)
         SyncOrchestrator().rebuild()
         return result or {}
     finally:
-        try:
-            fresh_conn.close()
-        except Exception:
-            pass
+        if fresh_conn is not None:
+            try:
+                fresh_conn.close()
+            except Exception:
+                pass
 
 
 def _materialize_bigquery_extract_bg() -> None:
@@ -4058,6 +4104,7 @@ def run_session_processor(
     from services.session_pipeline.runner import run_processor as _run_processor
     from services.session_processors import get_processor, list_processor_names
     from src.db import get_system_db
+    from src.repositories import use_pg
 
     proc = get_processor(processor)
     if proc is None:
@@ -4076,11 +4123,23 @@ def run_session_processor(
             detail=f"Processor '{processor}' is already running",
         )
 
-    job_conn = get_system_db()
+    # run_processor / the processors resolve their state through the repository
+    # factory and ignore ``conn``; on Postgres pass None so the system DuckDB is
+    # never opened (forbidden invariant).
+    job_conn = None if use_pg() else get_system_db()
+    # The cap exists to bound wall-clock/CPU from processors that make
+    # synchronous, blocking LLM calls per session (verification). "usage" is
+    # pure local jsonl parsing + repository writes — no network I/O — so
+    # capping it too just throttles telemetry-extraction throughput for no
+    # safety benefit (Devin Review, PR #894: a bulk backfill/onboarding wave
+    # would otherwise drain at cap-size-per-tick instead of clearing in one
+    # run). Default-capped for any other/future processor (safe-by-default);
+    # explicitly exempt "usage" since it's verified cheap.
+    session_processor_cap = None if processor == "usage" else _session_processor_max_per_run()
     stats: dict = {}
     job_error: Optional[Exception] = None
     try:
-        stats = _run_processor(job_conn, proc)
+        stats = _run_processor(job_conn, proc, max_sessions_per_run=session_processor_cap)
         # Rebuild daily rollups after a successful usage run so the
         # marketplace / admin dashboards see fresh aggregates. Backend-aware
         # (#728 — the free-function DuckDB-only producer left rollups
@@ -4102,10 +4161,11 @@ def run_session_processor(
         # operator's only signal beyond docker logs.
         job_error = e
     finally:
-        try:
-            job_conn.close()
-        except Exception:
-            pass
+        if job_conn is not None:
+            try:
+                job_conn.close()
+            except Exception:
+                pass
         # Always release, even if the runner raised. A leaked lock would
         # wedge the processor permanently until process restart.
         proc_lock.release()
@@ -4115,6 +4175,7 @@ def run_session_processor(
         "scanned": stats.get("scanned", 0),
         "processed": stats.get("processed", 0),
         "skipped": stats.get("skipped", 0),
+        "capped": stats.get("capped", 0),
         "errors": stats.get("errors", 0),
         "items_extracted": stats.get("items_extracted", 0),
     }

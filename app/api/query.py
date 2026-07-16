@@ -2,10 +2,8 @@
 
 import contextlib
 import logging
-import os
 import re
 import time
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -45,6 +43,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/query", tags=["query"])
 
+# Orchestrator-internal base tables inside each source's ATTACHed
+# extract.duckdb catalog. Never part of an analyst's query surface (analysts
+# hit the RBAC-filtered master views); a non-admin referencing them leaks
+# cross-source schemas + remote-source URLs / token_env names (audit M1).
+_INTERNAL_EXTRACT_TABLES = ("_meta", "_remote_attach", "_remote_links")
+
 # ---------------------------------------------------------------------------
 # Per-session BQ scan budget (Phase 12.3)
 # ---------------------------------------------------------------------------
@@ -74,9 +78,7 @@ def _maybe_charge_chat_session_bq_budget(request, scan_bytes: int) -> None:
         cfg = request.app.state.chat_config
     except Exception:
         cfg = None
-    limit_bytes = (
-        cfg.per_session_bq_scan_bytes if cfg is not None else _DEFAULT_PER_SESSION_BQ_BYTES
-    )
+    limit_bytes = cfg.per_session_bq_scan_bytes if cfg is not None else _DEFAULT_PER_SESSION_BQ_BYTES
     accumulate_session_bq_bytes(session_id, scan_bytes, limit_bytes=limit_bytes)
 
 
@@ -99,16 +101,18 @@ def accumulate_session_bq_bytes(
     new_total = current + scan_bytes
     _per_session_bq_bytes[session_id] = new_total
     if limit_bytes > 0 and new_total > limit_bytes:
-        raise HTTPException(status_code=400, detail={
-            "reason": "bq_budget_exhausted",
-            "session_id": session_id,
-            "scan_bytes_cumulative": new_total,
-            "limit_bytes": limit_bytes,
-            "suggestion": (
-                "Per-session BigQuery scan budget exhausted. "
-                "Start a new chat session to reset the quota."
-            ),
-        })
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason": "bq_budget_exhausted",
+                "session_id": session_id,
+                "scan_bytes_cumulative": new_total,
+                "limit_bytes": limit_bytes,
+                "suggestion": (
+                    "Per-session BigQuery scan budget exhausted. Start a new chat session to reset the quota."
+                ),
+            },
+        )
 
 
 # Heuristic: did the BQ-side execution of a `bigquery_query()`-rewritten
@@ -202,6 +206,7 @@ def _hint_for_bq_bad_request(message: str) -> str:
         "reserved-keyword aliases, or unregistered table paths."
     )
 
+
 # Issue #160 §4.3.1 — direct `bq.<dataset>.<source_table>` references in user
 # SQL. Catalog token accepts both `bq` (the unquoted DuckDB-style name) and
 # `"bq"` (quoted identifier). DuckDB resolves both to the same ATTACHed
@@ -220,8 +225,8 @@ BQ_PATH = re.compile(
 # Issue #201 — full backtick BQ path `<project>.<dataset>.<table>` in user
 # SQL. Used by the registry-gating pass and (via `_mask_backticks`) to keep
 # bare-name regexes from firing inside backtick-quoted segments.
-_BACKTICK_SEGMENT = re.compile(r'`[^`]*`')
-_BACKTICK_FULL_PATH = re.compile(r'`([^.`]+)\.([^.`]+)\.([^.`]+)`')
+_BACKTICK_SEGMENT = re.compile(r"`[^`]*`")
+_BACKTICK_FULL_PATH = re.compile(r"`([^.`]+)\.([^.`]+)\.([^.`]+)`")
 
 
 def _mask_backticks(sql: str) -> str:
@@ -237,7 +242,7 @@ def _mask_backticks(sql: str) -> str:
     backtick path ``\\`<project>.<dataset>.unit_economics\\``` and get
     falsely rewritten — corrupting the user's intended SQL.
     """
-    return _BACKTICK_SEGMENT.sub(lambda m: ' ' * len(m.group(0)), sql)
+    return _BACKTICK_SEGMENT.sub(lambda m: " " * len(m.group(0)), sql)
 
 
 def _default_remote_query_cap_bytes() -> int:
@@ -282,6 +287,7 @@ def _run_internal_query(
     a hint that points at ``agnes catalog`` for the registered ids.
     """
     from src.db import _get_state_dir
+
     system_db_path = str(_get_state_dir() / "system.duckdb")
     # is_user_admin takes (user_id, conn) — passing the dict raises
     # TypeError, which is exactly the regression review #278/1 caught.
@@ -312,9 +318,7 @@ def _run_internal_query(
         raise HTTPException(status_code=400, detail=f"DuckDB error: {exc}")
 
     serializable = [
-        [str(v) if v is not None and not isinstance(v, (int, float, bool, str)) else v
-         for v in row]
-        for row in rows
+        [str(v) if v is not None and not isinstance(v, (int, float, bool, str)) else v for v in row] for row in rows
     ]
     try:
         audit_repo().log(
@@ -349,7 +353,7 @@ def _first_table_from_sql(sql: str) -> Optional[str]:
     """
     m = re.search(r'\b(?:from|join)\s+(["\`]?[\w.]+["\`]?)', sql, re.IGNORECASE)
     if m:
-        return m.group(1).strip('"\'`')[:200]
+        return m.group(1).strip("\"'`")[:200]
     return None
 
 
@@ -358,30 +362,67 @@ def _first_table_from_sql(sql: str) -> Optional[str]:
 # (the snapshot `from_query` materialize path) so the two surfaces can never
 # drift on what counts as a safe single-SELECT.
 _BLOCKED_SQL_TOKENS = [
-    "drop ", "delete ", "insert ", "update ", "alter ", "create ",
-    "copy ", "attach ", "detach ", "load ", "install ",
-    "export ", "import ", "pragma ", "call ",
+    "drop ",
+    "delete ",
+    "insert ",
+    "update ",
+    "alter ",
+    "create ",
+    "copy ",
+    "attach ",
+    "detach ",
+    "load ",
+    "install ",
+    "export ",
+    "import ",
+    "pragma ",
+    "call ",
     # File access functions
-    "read_csv", "read_json", "read_parquet", "read_text",
-    "write_csv", "write_parquet", "read_blob", "read_ndjson",
-    "parquet_scan", "parquet_metadata", "parquet_schema",
-    "json_scan", "csv_scan",
-    "query_table", "iceberg_scan", "delta_scan",
+    "read_csv",
+    "read_json",
+    "read_parquet",
+    "read_text",
+    "write_csv",
+    "write_parquet",
+    "read_blob",
+    "read_ndjson",
+    "parquet_scan",
+    "parquet_metadata",
+    "parquet_schema",
+    "json_scan",
+    "csv_scan",
+    "query_table",
+    "iceberg_scan",
+    "delta_scan",
     # #160: bigquery_query() bypasses the registry / RBAC entirely
     # (it runs an arbitrary BQ jobs API call against any reachable
     # dataset). Wrap views created by the BQ extractor use it inside
     # CREATE VIEW bodies, but those run via DuckDB's view resolution at
     # query time — user-submitted SQL never contains the function name.
     "bigquery_query",
-    "glob(", "list_files",
-    "'/", '"/', 'http://', 'https://', 's3://', 'gcs://',
+    "glob(",
+    "list_files",
+    "'/",
+    '"/',
+    "http://",
+    "https://",
+    "s3://",
+    "gcs://",
     # DuckDB metadata (leaks schema info regardless of RBAC)
-    "information_schema", "duckdb_tables", "duckdb_columns",
-    "duckdb_databases", "duckdb_settings", "duckdb_functions",
-    "duckdb_views", "duckdb_indexes", "duckdb_schemas",
-    "pragma_table_info", "pragma_storage_info",
+    "information_schema",
+    "duckdb_tables",
+    "duckdb_columns",
+    "duckdb_databases",
+    "duckdb_settings",
+    "duckdb_functions",
+    "duckdb_views",
+    "duckdb_indexes",
+    "duckdb_schemas",
+    "pragma_table_info",
+    "pragma_storage_info",
     # Relative path traversal
-    "'../", '"../',
+    "'../",
+    '"../',
     # Multiple statements
     ";",
 ]
@@ -442,8 +483,7 @@ def execute_query(
         if BQ_PATH.search(_mask_backticks(request.sql)) or _BACKTICK_FULL_PATH.search(request.sql):
             raise HTTPException(
                 status_code=400,
-                detail="Internal tables can't be combined with `bq.*` paths in a "
-                       "single SELECT (v1 limitation).",
+                detail="Internal tables can't be combined with `bq.*` paths in a single SELECT (v1 limitation).",
             )
         # Reject if user SQL also mentions any non-internal registry id —
         # that would be a mixed query against analytics.duckdb views.
@@ -456,7 +496,7 @@ def execute_query(
                 raise HTTPException(
                     status_code=400,
                     detail=f"Internal tables can't be joined with registered "
-                           f"table {rid!r} in a single SELECT (v1 limitation).",
+                    f"table {rid!r} in a single SELECT (v1 limitation).",
                 )
         return _run_internal_query(request, user, conn, _t0, internal_refs)
 
@@ -470,9 +510,12 @@ def execute_query(
     try:
         if allowed is not None:  # None = admin, sees all
             # Get all views in analytics DB
-            all_views = {row[0] for row in analytics.execute(
-                "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
-            ).fetchall()}
+            all_views = {
+                row[0]
+                for row in analytics.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
+                ).fetchall()
+            }
 
             # `allowed` carries registry IDs (resource_grants.resource_id);
             # DuckDB master views are named by registry display `name`.
@@ -483,10 +526,7 @@ def execute_query(
             # PR's BQ guardrail too).
             allowed_ids = set(allowed)
             registry_rows = table_registry_repo().list_all()
-            allowed_view_names = {
-                r["name"] for r in registry_rows
-                if r.get("name") and r.get("id") in allowed_ids
-            }
+            allowed_view_names = {r["name"] for r in registry_rows if r.get("name") and r.get("id") in allowed_ids}
 
             # Check if query references any forbidden tables (word-boundary
             # match). Issue #201: mask backtick segments so `\b` doesn't
@@ -498,17 +538,41 @@ def execute_query(
             sql_lower_masked = _mask_backticks(sql_lower)
             forbidden = all_views - allowed_view_names
             for table in forbidden:
-                pattern = r'\b' + re.escape(table.lower()) + r'\b'
+                pattern = r"\b" + re.escape(table.lower()) + r"\b"
                 if re.search(pattern, sql_lower_masked):
                     from src.rbac import table_not_in_stack_message
+
                     raise HTTPException(
                         status_code=403,
                         detail=table_not_in_stack_message(table),
                     )
 
+            # The per-source extract.duckdb files ATTACHed as catalogs expose
+            # INTERNAL base tables — `_meta` (schema + rowcounts), and for
+            # remote sources `_remote_attach` (upstream URL + the token_env
+            # var name) / `_remote_links`. These are orchestrator-internal and
+            # never part of an analyst's query surface (analysts hit the
+            # RBAC-filtered master views). Because they are base tables, not
+            # VIEWs, a non-admin reaching them via a catalog-qualified path
+            # (`<ungranted_source>.main."_meta"`) slipped past the view-name
+            # denylist above — leaking cross-source schemas and remote
+            # credentials' env-var names (audit M1). Deny any reference for
+            # non-admins. (Broader cross-source catalog-qualified row access is
+            # tracked as a follow-up allowlist redesign.)
+            for internal in _INTERNAL_EXTRACT_TABLES:
+                if re.search(r"\b" + re.escape(internal) + r"\b", sql_lower_masked):
+                    raise HTTPException(
+                        status_code=403,
+                        detail="query references an internal extract metadata table (_meta/_remote_attach/_remote_links)",
+                    )
+
         # ---- #160 BQ remote-row guardrail + RBAC patch -------------------
         dry_run_set, name_lookups, blocked_bq_path = _bq_guardrail_inputs(
-            request.sql, sql_lower, conn, user, allowed,
+            request.sql,
+            sql_lower,
+            conn,
+            user,
+            allowed,
         )
         _dry_run_set = dry_run_set  # expose to outer scope for audit
         if blocked_bq_path is not None:
@@ -549,7 +613,8 @@ def execute_query(
             # original SQL unchanged when rewriting would be unsafe
             # (cross-source JOIN, no BQ tables referenced, double-wrap).
             execution_sql, did_rewrite = _rewrite_user_sql_for_bigquery_query(
-                request.sql, conn,
+                request.sql,
+                conn,
             )
             if did_rewrite:
                 # Memory-safety: ``bigquery_query()`` materialises the entire
@@ -560,10 +625,7 @@ def execute_query(
                 # buffer the full table into the worker process — the cap
                 # is pushed into the BQ job itself. Aliased subquery so the
                 # outer LIMIT applies to the final rewritten result.
-                execution_sql = (
-                    f"SELECT * FROM ({execution_sql}) AS _bqq_outer "
-                    f"LIMIT {request.limit + 1}"
-                )
+                execution_sql = f"SELECT * FROM ({execution_sql}) AS _bqq_outer LIMIT {request.limit + 1}"
                 logger.info(
                     "query_rewrite_to_bigquery_query: user_id=%s — wrapped "
                     "SQL in bigquery_query() with outer LIMIT for BQ "
@@ -572,8 +634,7 @@ def execute_query(
                 )
             else:
                 logger.debug(
-                    "query_rewrite_skipped: user_id=%s — running original "
-                    "SQL via ATTACH-catalog path",
+                    "query_rewrite_skipped: user_id=%s — running original SQL via ATTACH-catalog path",
                     user_id,
                 )
 
@@ -593,14 +654,15 @@ def execute_query(
                         "query_rewrite_fallback: user_id=%s — bigquery_query() "
                         "rewrite rejected by BQ (%s); retrying via "
                         "ATTACH-catalog path",
-                        user_id, type(exc).__name__,
+                        user_id,
+                        type(exc).__name__,
                     )
                     result = analytics.execute(request.sql).fetchmany(request.limit + 1)
                 else:
                     raise
             columns = [desc[0] for desc in analytics.description] if analytics.description else []
             truncated = len(result) > request.limit
-            rows = result[:request.limit]
+            rows = result[: request.limit]
 
             # Post-flight: bill the dry-run estimate against the user's daily
             # quota. Do this AFTER execute so a downstream failure (e.g. BQ
@@ -611,7 +673,8 @@ def execute_query(
                 total_bq_bytes = sum(b for _, _, b in dry_run_set)
                 try:
                     _build_quota_tracker().record_bytes(
-                        user_id, total_bq_bytes,
+                        user_id,
+                        total_bq_bytes,
                     )
                 except Exception:
                     # record_bytes is documented as never-raising; defensive guard.
@@ -626,10 +689,9 @@ def execute_query(
         # Convert to serializable types
         serializable_rows = []
         for row in rows:
-            serializable_rows.append([
-                str(v) if v is not None and not isinstance(v, (int, float, bool, str)) else v
-                for v in row
-            ])
+            serializable_rows.append(
+                [str(v) if v is not None and not isinstance(v, (int, float, bool, str)) else v for v in row]
+            )
         # bytes_scanned from _dry_run_set (pinned to entry 0 after _bq_quota_and_cap_guard).
         # Computed before building the response so it can be surfaced to
         # REST/CLI/MCP consumers; ``None`` for local queries (no BQ tables).
@@ -658,8 +720,8 @@ def execute_query(
                     # by the DuckDB BQ extension execute() path — deferred TODO.
                     # bytes_scanned comes from the dry-run estimate (close approximation).
                     "bytes_scanned": _bytes_scanned,
-                    "bytes_billed": None,   # deferred — BQ extension doesn't expose per-execute billing
-                    "bq_job_id": None,      # deferred — bigquery_query() path doesn't return a job id
+                    "bytes_billed": None,  # deferred — BQ extension doesn't expose per-execute billing
+                    "bq_job_id": None,  # deferred — bigquery_query() path doesn't return a job id
                     "rows_returned": len(serializable_rows),
                     "duration_ms": int((time.monotonic() - _t0) * 1000),
                 },
@@ -678,9 +740,11 @@ def execute_query(
                 user_id=user.get("id"),
                 action=_action_err,
                 resource=_resource,
-                params={"sql_preview": (request.sql or "")[:200],
-                        "error": str(exc.detail)[:200],
-                        "duration_ms": int((time.monotonic() - _t0) * 1000)},
+                params={
+                    "sql_preview": (request.sql or "")[:200],
+                    "error": str(exc.detail)[:200],
+                    "duration_ms": int((time.monotonic() - _t0) * 1000),
+                },
                 result=f"error.{exc.status_code}",
                 client_kind=client_kind_from_user(user),
             )
@@ -708,9 +772,11 @@ def execute_query(
                 user_id=user.get("id"),
                 action="query.local",
                 resource=_resource,
-                params={"sql_preview": (request.sql or "")[:200],
-                        "error": msg[:200],
-                        "duration_ms": int((time.monotonic() - _t0) * 1000)},
+                params={
+                    "sql_preview": (request.sql or "")[:200],
+                    "error": msg[:200],
+                    "duration_ms": int((time.monotonic() - _t0) * 1000),
+                },
                 result="error.400",
                 client_kind=client_kind_from_user(user),
             )
@@ -724,7 +790,9 @@ def execute_query(
 
 
 def _materialized_hint_for_query_error(
-    conn: duckdb.DuckDBPyConnection, sql: str, error_msg: str,
+    conn: duckdb.DuckDBPyConnection,
+    sql: str,
+    error_msg: str,
 ) -> Optional[str]:
     """Return a materialize-aware error message if the failed query
     references a registry row whose `query_mode='materialized'` and which
@@ -781,10 +849,7 @@ def _build_materialized_hint(row: dict) -> str:
         # BigQuery: `bq."dataset"."table"`; Keboola: `kbc."bucket"."table"`.
         # Pick the alias by source_type so the hint is copy-pasteable.
         alias = "bq" if (row.get("source_type") or "") == "bigquery" else "kbc"
-        direct_hint = (
-            f' or query the source directly via {alias}."{bucket}".'
-            f'"{source_table}"'
-        )
+        direct_hint = f' or query the source directly via {alias}."{bucket}"."{source_table}"'
     return (
         f"Table {tid!r} is registered as query_mode='materialized' but is "
         f"not yet materialized in this instance's analytics views. Run "
@@ -860,7 +925,7 @@ def _bq_guardrail_inputs(
             # Forbidden-table loop above will have rejected the request
             # before we get here. Defensive skip.
             continue
-        pattern = r'\b' + re.escape(str(name).lower()) + r'\b'
+        pattern = r"\b" + re.escape(str(name).lower()) + r"\b"
         if re.search(pattern, sql_lower_masked):
             key = (bucket.lower(), source_table.lower())
             if key not in seen_paths:
@@ -880,26 +945,34 @@ def _bq_guardrail_inputs(
         source_table_raw = m.group(2).strip('"')
         row = repo.find_by_bq_path(bucket_raw, source_table_raw)
         if row is None:
-            return [], [], {
-                "reason": "bq_path_not_registered",
-                "path": f'bq."{bucket_raw}"."{source_table_raw}"',
-                "hint": (
-                    "Direct bq.* references must point to a registered table. "
-                    "Register via `agnes admin register-table` or use the "
-                    "registered name from `agnes catalog`."
-                ),
-            }
+            return (
+                [],
+                [],
+                {
+                    "reason": "bq_path_not_registered",
+                    "path": f'bq."{bucket_raw}"."{source_table_raw}"',
+                    "hint": (
+                        "Direct bq.* references must point to a registered table. "
+                        "Register via `agnes admin register-table` or use the "
+                        "registered name from `agnes catalog`."
+                    ),
+                },
+            )
         # Row exists. Per-id grant check (non-admin only).
         # `accessible_set` is keyed by registry id (resource_grants
         # resource_id), so use `row["id"]` here, not display name.
         # Devin Review iter #3.
         if not is_admin:
             if accessible_set is None or row["id"] not in accessible_set:
-                return [], [], {
-                    "reason": "bq_path_access_denied",
-                    "path": f'bq."{bucket_raw}"."{source_table_raw}"',
-                    "registered_as": row["name"],
-                }
+                return (
+                    [],
+                    [],
+                    {
+                        "reason": "bq_path_access_denied",
+                        "path": f'bq."{bucket_raw}"."{source_table_raw}"',
+                        "registered_as": row["name"],
+                    },
+                )
         # Add to dry-run set if not already covered by bare-name pass.
         bucket = row["bucket"]
         source_table = row["source_table"]
@@ -932,35 +1005,47 @@ def _bq_guardrail_inputs(
         for m in _BACKTICK_FULL_PATH.finditer(sql):
             proj, ds, tbl = m.group(1), m.group(2), m.group(3)
             if proj.lower() != data_project.lower():
-                return [], [], {
-                    "reason": "bq_path_cross_project",
-                    "path": f"`{proj}.{ds}.{tbl}`",
-                    "expected_project": data_project,
-                    "hint": (
-                        "--remote queries can only reference tables in the "
-                        "configured BigQuery data project. Register "
-                        "cross-project tables via `agnes admin "
-                        "register-table` if needed."
-                    ),
-                }
+                return (
+                    [],
+                    [],
+                    {
+                        "reason": "bq_path_cross_project",
+                        "path": f"`{proj}.{ds}.{tbl}`",
+                        "expected_project": data_project,
+                        "hint": (
+                            "--remote queries can only reference tables in the "
+                            "configured BigQuery data project. Register "
+                            "cross-project tables via `agnes admin "
+                            "register-table` if needed."
+                        ),
+                    },
+                )
             row = repo.find_by_bq_path(ds, tbl)
             if row is None:
-                return [], [], {
-                    "reason": "bq_path_not_registered",
-                    "path": f"`{proj}.{ds}.{tbl}`",
-                    "hint": (
-                        "Direct BigQuery paths must point to a registered "
-                        "table. Register via `agnes admin register-table` "
-                        "or use the registered name from `agnes catalog`."
-                    ),
-                }
+                return (
+                    [],
+                    [],
+                    {
+                        "reason": "bq_path_not_registered",
+                        "path": f"`{proj}.{ds}.{tbl}`",
+                        "hint": (
+                            "Direct BigQuery paths must point to a registered "
+                            "table. Register via `agnes admin register-table` "
+                            "or use the registered name from `agnes catalog`."
+                        ),
+                    },
+                )
             if not is_admin:
                 if accessible_set is None or row["id"] not in accessible_set:
-                    return [], [], {
-                        "reason": "bq_path_access_denied",
-                        "path": f"`{proj}.{ds}.{tbl}`",
-                        "registered_as": row["name"],
-                    }
+                    return (
+                        [],
+                        [],
+                        {
+                            "reason": "bq_path_access_denied",
+                            "path": f"`{proj}.{ds}.{tbl}`",
+                            "registered_as": row["name"],
+                        },
+                    )
             bucket = row["bucket"]
             source_table = row["source_table"]
             if bucket and source_table:
@@ -973,7 +1058,9 @@ def _bq_guardrail_inputs(
 
 
 def _rewrite_bq_table_refs_to_native(
-    sql: str, name_lookups: list, project: str,
+    sql: str,
+    name_lookups: list,
+    project: str,
 ) -> str:
     """Core identifier rewrite: DuckDB-flavor table references → BQ-native
     backtick form. Shared between dry-run and execution-path rewriters.
@@ -1051,7 +1138,7 @@ def _rewrite_bq_table_refs_to_native(
         # outside, backtick, …]. Even indices are outside-backtick chunks
         # eligible for bare-name rewrite; odd indices are full backtick
         # segments preserved verbatim.
-        parts = re.split(r'(`[^`]*`)', out)
+        parts = re.split(r"(`[^`]*`)", out)
         for i, part in enumerate(parts):
             if i % 2 == 0:
                 parts[i] = re.sub(pattern, _name_repl, part, flags=re.IGNORECASE)
@@ -1068,7 +1155,9 @@ def _rewrite_bq_table_refs_to_native(
 
 
 def _rewrite_user_sql_for_bq_dry_run(
-    sql: str, name_lookups: list, project: str,
+    sql: str,
+    name_lookups: list,
+    project: str,
 ) -> str:
     """Rewrite user SQL from DuckDB-flavor to BQ-native so a single
     `_bq_dry_run_bytes` call can estimate scan size for the EXACT query
@@ -1079,7 +1168,8 @@ def _rewrite_user_sql_for_bq_dry_run(
 
 
 def _rewrite_user_sql_for_bigquery_query(
-    user_sql: str, conn: duckdb.DuckDBPyConnection,
+    user_sql: str,
+    conn: duckdb.DuckDBPyConnection,
 ) -> tuple[str, bool]:
     """Rewrite user SQL so the entire query ships to BQ as a single
     ``bigquery_query(<project>, <inner-sql>)`` call.
@@ -1180,7 +1270,7 @@ def _rewrite_user_sql_for_bigquery_query(
             # single-project assumption. Bail out completely so we don't
             # mix rewritten and non-rewritten BQ paths in one query.
             return user_sql, False
-        pattern = r'\b' + re.escape(str(name).lower()) + r'\b'
+        pattern = r"\b" + re.escape(str(name).lower()) + r"\b"
         if re.search(pattern, sql_lower_masked):
             key = (bucket.lower(), source_table.lower())
             if key not in seen_paths:
@@ -1228,7 +1318,7 @@ def _rewrite_user_sql_for_bigquery_query(
             # Same name registered both BQ-remote and local? Pathological;
             # skip as a safety measure.
             return user_sql, False
-        if re.search(r'\b' + re.escape(name_lc) + r'\b', sql_lower_masked):
+        if re.search(r"\b" + re.escape(name_lc) + r"\b", sql_lower_masked):
             logger.info(
                 "rewrite_skip_cross_source: user SQL references both "
                 "BQ-remote and local-mode tables; falling back to "
@@ -1275,14 +1365,9 @@ def _rewrite_user_sql_for_bigquery_query(
     DOLLAR_TAG = "$bqq_inner$"
     if DOLLAR_TAG in inner_sql:
         escaped_inner = inner_sql.replace("'", "''")
-        rewritten = (
-            f"SELECT * FROM bigquery_query('{billing_project}', '{escaped_inner}')"
-        )
+        rewritten = f"SELECT * FROM bigquery_query('{billing_project}', '{escaped_inner}')"
     else:
-        rewritten = (
-            f"SELECT * FROM bigquery_query('{billing_project}', "
-            f"{DOLLAR_TAG}{inner_sql}{DOLLAR_TAG})"
-        )
+        rewritten = f"SELECT * FROM bigquery_query('{billing_project}', {DOLLAR_TAG}{inner_sql}{DOLLAR_TAG})"
     return rewritten, True
 
 
@@ -1312,9 +1397,7 @@ def _view_targets_in(dry_run_set: list) -> list[str]:
 
         wanted = {(b, t) for b, t, _ in dry_run_set}
         target_ids = {
-            r["id"]
-            for r in table_registry_repo().list_all()
-            if (r.get("bucket"), r.get("source_table")) in wanted
+            r["id"] for r in table_registry_repo().list_all() if (r.get("bucket"), r.get("source_table")) in wanted
         }
         if not target_ids:
             return []
@@ -1403,22 +1486,28 @@ def _bq_quota_and_cap_guard(
     try:
         quota.check_daily_budget(user_id)
     except QuotaExceededError as exc:
-        raise HTTPException(status_code=429, detail={
-            "reason": "daily_byte_cap_exceeded",
-            "kind": exc.kind,
-            "current": exc.current,
-            "limit": exc.limit,
-            "retry_after_seconds": exc.retry_after_seconds,
-        })
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "reason": "daily_byte_cap_exceeded",
+                "kind": exc.kind,
+                "current": exc.current,
+                "limit": exc.limit,
+                "retry_after_seconds": exc.retry_after_seconds,
+            },
+        )
 
     try:
         bq = get_bq_access()
     except BqAccessError as exc:
-        raise HTTPException(status_code=502, detail={
-            "kind": exc.kind,
-            "message": exc.message,
-            **(exc.details or {}),
-        })
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "kind": exc.kind,
+                "message": exc.message,
+                **(exc.details or {}),
+            },
+        )
 
     cap_bytes = _default_remote_query_cap_bytes()
 
@@ -1435,7 +1524,9 @@ def _bq_quota_and_cap_guard(
         with quota.acquire(user_id):
             project = bq.projects.data
             rewritten_sql = _rewrite_user_sql_for_bq_dry_run(
-                sql, name_lookups, project,
+                sql,
+                name_lookups,
+                project,
             )
 
             # Try the single-dry-run path first (issue #171). On BQ parse
@@ -1457,53 +1548,60 @@ def _bq_quota_and_cap_guard(
                 total_bytes = _bq_dry_run_bytes(bq, rewritten_sql, user=user, agent_name="query")
             except BqAccessError as exc:
                 if exc.kind != "bq_bad_request":
-                    raise HTTPException(status_code=502, detail={
-                        "kind": exc.kind,
-                        "message": exc.message,
-                        **(exc.details or {}),
-                    })
+                    raise HTTPException(
+                        status_code=502,
+                        detail={
+                            "kind": exc.kind,
+                            "message": exc.message,
+                            **(exc.details or {}),
+                        },
+                    )
                 logger.warning(
                     "BQ dry-run rejected the rewritten SQL "
                     "(kind=%s, message=%s). Retrying with the user's "
                     "original SQL.",
-                    exc.kind, exc.message,
+                    exc.kind,
+                    exc.message,
                 )
                 try:
                     total_bytes = _bq_dry_run_bytes(bq, sql, user=user, agent_name="query")
                 except BqAccessError as exc2:
                     if exc2.kind != "bq_bad_request":
-                        raise HTTPException(status_code=502, detail={
-                            "kind": exc2.kind,
-                            "message": exc2.message,
-                            **(exc2.details or {}),
-                        })
-                    raise HTTPException(status_code=400, detail={
-                        "kind": "remote_estimate_failed",
-                        "message": (
-                            "BigQuery rejected this query during cost "
-                            "estimation."
-                        ),
-                        # Branch the hint on the actual BQ error class —
-                        # syntax errors (e.g. reserved-keyword aliases like
-                        # `AS rows`) deserve a different pointer than
-                        # column-not-found, which deserves a different one
-                        # than table-not-found. Pre-#NNN this was a single
-                        # hardcoded "column referenced doesn't exist" hint
-                        # that misled analysts whenever BQ actually rejected
-                        # on syntax. The first attempt's diagnostic
-                        # (rewritten SQL — has the real BQ position info)
-                        # is the more informative one to dispatch on.
-                        "hint": _hint_for_bq_bad_request(exc.message),
-                        # Surface the FIRST attempt's diagnostic (rewritten
-                        # SQL — has the real "Unrecognized name" / syntax
-                        # info). Second attempt for catalog-id-only SQL
-                        # always fails with the unhelpful "must be
-                        # qualified" message, so we keep it as
-                        # `underlying_original` for operator context but
-                        # don't lead with it.
-                        "underlying": exc.message,
-                        "underlying_original": exc2.message,
-                    })
+                        raise HTTPException(
+                            status_code=502,
+                            detail={
+                                "kind": exc2.kind,
+                                "message": exc2.message,
+                                **(exc2.details or {}),
+                            },
+                        )
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "kind": "remote_estimate_failed",
+                            "message": ("BigQuery rejected this query during cost estimation."),
+                            # Branch the hint on the actual BQ error class —
+                            # syntax errors (e.g. reserved-keyword aliases like
+                            # `AS rows`) deserve a different pointer than
+                            # column-not-found, which deserves a different one
+                            # than table-not-found. Pre-#NNN this was a single
+                            # hardcoded "column referenced doesn't exist" hint
+                            # that misled analysts whenever BQ actually rejected
+                            # on syntax. The first attempt's diagnostic
+                            # (rewritten SQL — has the real BQ position info)
+                            # is the more informative one to dispatch on.
+                            "hint": _hint_for_bq_bad_request(exc.message),
+                            # Surface the FIRST attempt's diagnostic (rewritten
+                            # SQL — has the real "Unrecognized name" / syntax
+                            # info). Second attempt for catalog-id-only SQL
+                            # always fails with the unhelpful "must be
+                            # qualified" message, so we keep it as
+                            # `underlying_original` for operator context but
+                            # don't lead with it.
+                            "underlying": exc.message,
+                            "underlying_original": exc2.message,
+                        },
+                    )
 
             # Distribute the total to dry_run_set so the caller's
             # `record_bytes(sum(...))` stays correct. Per-table breakdown
@@ -1537,14 +1635,17 @@ def _bq_quota_and_cap_guard(
                         "--where <predicate> --estimate` to materialize a "
                         "filtered subset, then query the snapshot locally."
                     )
-                raise HTTPException(status_code=400, detail={
-                    "reason": "remote_scan_too_large",
-                    "scan_bytes": total_bytes,
-                    "limit_bytes": cap_bytes,
-                    "tables": tables,
-                    "view_targets": view_targets,
-                    "suggestion": suggestion,
-                })
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "reason": "remote_scan_too_large",
+                        "scan_bytes": total_bytes,
+                        "limit_bytes": cap_bytes,
+                        "tables": tables,
+                        "view_targets": view_targets,
+                        "suggestion": suggestion,
+                    },
+                )
 
             # Yield control to the handler — slot stays acquired while the
             # caller runs analytics.execute() + record_bytes().
@@ -1553,13 +1654,16 @@ def _bq_quota_and_cap_guard(
         # Only KIND_CONCURRENT can land here (daily-budget already mapped
         # above; record_bytes never raises). Map to 429 with structured
         # detail consistent with the daily-budget shape.
-        raise HTTPException(status_code=429, detail={
-            "reason": "concurrent_slot_exceeded",
-            "kind": exc.kind,
-            "current": exc.current,
-            "limit": exc.limit,
-            "retry_after_seconds": exc.retry_after_seconds,
-        })
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "reason": "concurrent_slot_exceeded",
+                "kind": exc.kind,
+                "current": exc.current,
+                "limit": exc.limit,
+                "retry_after_seconds": exc.retry_after_seconds,
+            },
+        )
 
 
 def run_remote_select_to_arrow(conn, user, sql, bq, quota):
@@ -1594,26 +1698,41 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
     analytics = get_analytics_db_readonly()
     try:
         if allowed is not None:  # None = admin, sees all
-            all_views = {row[0] for row in analytics.execute(
-                "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
-            ).fetchall()}
+            all_views = {
+                row[0]
+                for row in analytics.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
+                ).fetchall()
+            }
             allowed_ids = set(allowed)
             registry_rows = table_registry_repo().list_all()
-            allowed_view_names = {
-                r["name"] for r in registry_rows
-                if r.get("name") and r.get("id") in allowed_ids
-            }
+            allowed_view_names = {r["name"] for r in registry_rows if r.get("name") and r.get("id") in allowed_ids}
             sql_lower_masked = _mask_backticks(sql_lower)
             for table in all_views - allowed_view_names:
-                pattern = r'\b' + re.escape(table.lower()) + r'\b'
+                pattern = r"\b" + re.escape(table.lower()) + r"\b"
                 if re.search(pattern, sql_lower_masked):
                     from src.rbac import table_not_in_stack_message
+
                     raise HTTPException(
-                        status_code=403, detail=table_not_in_stack_message(table),
+                        status_code=403,
+                        detail=table_not_in_stack_message(table),
+                    )
+            # Same internal-extract-table denial as /api/query (audit M1): the
+            # scan `from_query` path shares the view-name denylist and the same
+            # catalog-qualified bypass to `_meta`/`_remote_attach`/`_remote_links`.
+            for internal in _INTERNAL_EXTRACT_TABLES:
+                if re.search(r"\b" + re.escape(internal) + r"\b", sql_lower_masked):
+                    raise HTTPException(
+                        status_code=403,
+                        detail="query references an internal extract metadata table (_meta/_remote_attach/_remote_links)",
                     )
 
         dry_run_set, name_lookups, blocked_bq_path = _bq_guardrail_inputs(
-            sql, sql_lower, conn, user, allowed,
+            sql,
+            sql_lower,
+            conn,
+            user,
+            allowed,
         )
         if blocked_bq_path is not None:
             raise HTTPException(status_code=403, detail=blocked_bq_path)
@@ -1632,7 +1751,9 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
                 try:
                     project = bq.projects.data
                     rewritten = _rewrite_user_sql_for_bq_dry_run(
-                        sql, name_lookups, project,
+                        sql,
+                        name_lookups,
+                        project,
                     )
                     total_bq_bytes = _bq_dry_run_bytes(bq, rewritten, user=user, agent_name="query")
                 except HTTPException:
@@ -1651,7 +1772,8 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
                     ) from exc
 
             execution_sql, did_rewrite = _rewrite_user_sql_for_bigquery_query(
-                sql, conn,
+                sql,
+                conn,
             )
             try:
                 try:

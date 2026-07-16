@@ -20,7 +20,7 @@ from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
 from src.audit_helpers import client_kind_from_user
-from src.rbac import can_access_table
+from src.rbac import get_accessible_tables
 from src.scheduler import filter_due_tables, is_table_due
 
 from src.repositories import (
@@ -620,13 +620,18 @@ def _run_sync(
                 logger.info("No tables registered — running auto-discovery from Keboola")
                 try:
                     from app.api.admin import _discover_and_register_tables
+                    from src.repositories import use_pg
 
-                    auto_conn = get_system_db()
+                    # _discover_and_register_tables routes through the repository
+                    # factory and ignores ``conn``; on Postgres pass None so the
+                    # system DuckDB is never opened (forbidden invariant).
+                    auto_conn = None if use_pg() else get_system_db()
                     try:
                         result = _discover_and_register_tables(auto_conn, "auto-discovery")
                         logger.info("Auto-discovered %d tables, skipped %d", result["registered"], result["skipped"])
                     finally:
-                        auto_conn.close()
+                        if auto_conn is not None:
+                            auto_conn.close()
                     # Re-read table configs after auto-registration
                     table_configs = table_registry_repo().list_local(effective_source_type)
                 except Exception as e:
@@ -927,9 +932,13 @@ sys.exit(compute_exit_code(result, len(configs)))
         try:
             from connectors.bigquery.access import get_bq_access
             from src.db import get_system_db as _get_system_db
+            from src.repositories import use_pg
 
             bq_access = get_bq_access()  # sentinel if no BQ project; OK
-            mat_conn = _get_system_db()
+            # _run_materialized_pass routes through the repository factory and
+            # ignores ``conn``; on Postgres pass None so the system DuckDB is
+            # never opened (forbidden invariant).
+            mat_conn = None if use_pg() else _get_system_db()
             try:
                 mat_summary = _run_materialized_pass(
                     mat_conn,
@@ -938,7 +947,8 @@ sys.exit(compute_exit_code(result, len(configs)))
                     source_type=source_type_filter,
                 )
             finally:
-                mat_conn.close()
+                if mat_conn is not None:
+                    mat_conn.close()
             skipped_count = len(mat_summary["skipped"])
             in_flight_count = sum(1 for s in mat_summary["skipped"] if s.get("reason") == "in_flight")
             print(
@@ -1383,16 +1393,21 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     # `query_mode=local`, causing the CLI to try downloading remote tables.
     registry_by_name = {t["name"]: t for t in table_repo.list_all()}
 
-    # Filter by user's accessible tables. `can_access_table` has its own
-    # admin shortcut (Admin group → True). Lookup translates name→id first
-    # because `s["table_id"]` is sourced from `_meta.table_name` = registry
-    # `name` while `can_access_table` keys on registry `id`; when id != name
-    # an id-keyed call would miss.
+    # Filter by user's accessible tables. `get_accessible_tables` resolves the
+    # caller's accessible id set ONCE (None => admin/all) instead of the old
+    # per-row `can_access_table` call — same admin shortcut and stack-gated
+    # semantics, collapsed from an N+1 to a single resolution + in-memory
+    # membership test (FAI-132). Lookup translates name→id first because
+    # `s["table_id"]` is sourced from `_meta.table_name` = registry `name`
+    # while the accessible-id set keys on registry `id`; when id != name an
+    # id-keyed call would miss.
     def _id_for(state):
         reg = registry_by_name.get(state["table_id"])
         return reg["id"] if reg else state["table_id"]
 
-    all_states = [s for s in all_states if can_access_table(user, _id_for(s), conn)]
+    _accessible_ids = get_accessible_tables(user, conn)
+    _allowed = None if _accessible_ids is None else set(_accessible_ids)
+    all_states = [s for s in all_states if _allowed is None or _id_for(s) in _allowed]
 
     data_dir = _get_data_dir()
     tables = {}
@@ -1477,7 +1492,7 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
 
 
 @router.get("/manifest")
-async def sync_manifest(
+def sync_manifest(
     user=Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -1552,7 +1567,7 @@ class PullConfirmRequest(BaseModel):
 
 
 @router.post("/pull-confirm")
-async def pull_confirm(
+def pull_confirm(
     payload: PullConfirmRequest,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -1592,7 +1607,7 @@ async def pull_confirm(
 
 
 @router.get("/status")
-async def sync_status():
+def sync_status():
     """Whether a sync is currently in flight on this app process.
 
     Public (no auth) — used by the host-side ``agnes-auto-upgrade.sh``
@@ -1621,7 +1636,7 @@ async def sync_status():
 
 
 @router.post("/trigger")
-async def trigger_sync(
+def trigger_sync(
     background_tasks: BackgroundTasks,
     body: Optional[Any] = Body(None),
     source: Optional[str] = Query(
@@ -1753,7 +1768,7 @@ class SyncSettingsUpdate(BaseModel):
 
 
 @router.get("/settings")
-async def get_sync_settings(
+def get_sync_settings(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -1769,7 +1784,7 @@ async def get_sync_settings(
 
 
 @router.post("/settings")
-async def update_sync_settings(
+def update_sync_settings(
     request: SyncSettingsUpdate,
     user=Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -1809,7 +1824,7 @@ class TableSubscriptionUpdate(BaseModel):
 
 
 @router.get("/table-subscriptions")
-async def get_table_subscriptions(
+def get_table_subscriptions(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -1820,7 +1835,7 @@ async def get_table_subscriptions(
 
 
 @router.post("/table-subscriptions")
-async def update_table_subscriptions(
+def update_table_subscriptions(
     request: TableSubscriptionUpdate,
     user=Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),

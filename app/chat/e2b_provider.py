@@ -39,7 +39,7 @@ from typing import Any
 
 # Imported as a module-level name so unit tests can ``patch("app.chat.
 # e2b_provider.AsyncSandbox")``.
-from e2b import AsyncSandbox
+from e2b import ALL_TRAFFIC, AsyncSandbox
 
 logger = logging.getLogger(__name__)
 
@@ -235,11 +235,37 @@ class E2BProvider:
         template_id: str,
         sandbox_timeout_seconds: int = 30 * 60,
         upload_runner: bool = True,
+        egress_allow_out: list[str] | None = None,
     ) -> None:
         self._api_key = api_key
         self._template_id = template_id
         self._timeout = sandbox_timeout_seconds
         self._upload_runner = upload_runner
+        self._egress_allow_out = egress_allow_out or []
+
+    def _effective_allow_out(self) -> list[str]:
+        """Hosts the sandbox VM may reach outbound.
+
+        Uses the configured ``chat.egress_allow_out`` allowlist when set;
+        otherwise falls back to the hosts a chat session legitimately needs:
+        the Agnes host (derived from ``agnes_server_url()``), loopback, and
+        the upstreams the in-sandbox CLIs reach directly — ``api.anthropic.com``
+        (the agent's model calls) and ``api.github.com``. This default mirrors
+        the bundled ``PreToolUse`` hook's ``ALLOWED_HOSTS`` so the VM-level
+        policy and the hook agree. Operators who front Anthropic/Agnes traffic
+        through a host-side broker can tighten this via ``chat.egress_allow_out``.
+        """
+        if self._egress_allow_out:
+            return list(self._egress_allow_out)
+        from urllib.parse import urlparse
+
+        from app.chat.manager import agnes_server_url
+
+        host = urlparse(agnes_server_url()).hostname or "127.0.0.1"
+        # Include both loopback spellings so the VM policy matches the hook's
+        # ALLOWED_HOSTS (127.0.0.1 + localhost) — a service reached via the
+        # `localhost` name would otherwise pass the hook but be blocked at the VM.
+        return [host, "127.0.0.1", "localhost", "api.anthropic.com", "api.github.com"]
 
     async def spawn(
         self,
@@ -257,17 +283,23 @@ class E2BProvider:
                 "chat.e2b_template_id missing — refusing to spawn chat sandbox",
             )
 
-        # Per Q4: allow_internet_access=True. Egress allowlist lives only
-        # in the PreToolUse hook bundled with the workspace template.
+        # Egress is enforced at the VM level via the network config, independent
+        # of the in-sandbox PreToolUse hook. `deny_out=[ALL_TRAFFIC]` is
+        # REQUIRED alongside `allow_out`: the E2B API rejects an allow-list with
+        # no matching deny (`400: when specifying allowed domains ... you must
+        # include 'ALL_TRAFFIC' in deny out to block all other traffic`), and
+        # semantically the allow-list only actually blocks anything when
+        # everything else is denied — without it egress was a no-op. (Found by
+        # the live E2E when every spawn 400'd on e2b>=2.32.0.)
         # lifecycle on_timeout=pause: if the in-process reaper misses a session
         # (e.g. a crashed server) E2B pauses the sandbox instead of destroying
-        # it, keeping the process and its memory intact for later resume.
+        # it, keeping the process + memory intact for later resume.
         sandbox = await AsyncSandbox.create(
             template=self._template_id,
             api_key=self._api_key,
             envs=dict(env),
             timeout=self._timeout,
-            allow_internet_access=True,
+            network={"allow_out": self._effective_allow_out(), "deny_out": [ALL_TRAFFIC]},
             lifecycle={"on_timeout": "pause"},
         )
 

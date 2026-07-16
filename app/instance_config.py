@@ -46,13 +46,18 @@ def get_database_config() -> dict:
 
 
 def reset_database_cache() -> None:
-    """No-op for now — get_database_config reads fresh each call.
+    """Drop the in-process backend-state cache.
 
-    Exposed as a public API so future caching (if added) has a single
-    invalidation point. Called by app/api/db_state.py after a successful
-    backend flip.
+    Clears the parse-once memoization of the ``instance.yaml`` overlay in
+    ``src.db_state_machine``, so the next ``read_backend_state`` /
+    ``use_pg`` re-reads from disk. Production backend flips restart the app,
+    so runtime correctness gets a fresh process; same-process writes are
+    already invalidated inside ``write_backend_state``. This public hook
+    exists for tests and any other manual same-process caller.
     """
-    pass
+    from src.db_state_machine import reset_backend_state_cache
+
+    reset_backend_state_cache()
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:
@@ -517,6 +522,45 @@ def get_hidden_login_features() -> frozenset[str]:
     return frozenset(token.strip().lower() for token in tokens if token.strip())
 
 
+def get_ssrf_allowed_hosts() -> frozenset[str]:
+    """Deployer-trusted hostnames exempt from the private/reserved-network
+    SSRF guard in ``app.api.admin._validate_url_not_private``.
+
+    Because that is the shared validator, a listed host is exempt on EVERY
+    admin URL that routes through it, not just git clone URLs: the marketplace
+    + initial-workspace clone URLs, the Keboola ``stack_url`` in the configure
+    wizard, and the URL-bearing server-config fields checked by
+    ``_validate_urls_in_patch`` (``data_source.keboola.stack_url``,
+    ``marketplace.curators_url``).
+
+    The motivating case is an organization hosting its git behind an internal
+    GitHub Enterprise / GitLab on a private network — a legitimate clone target
+    the guard would otherwise reject because the hostname resolves to an
+    RFC-1918 / reserved address. Listing the host is an explicit operator
+    opt-in: every affected URL is already admin-gated, so this is a
+    deployment-level trust decision, not a user-facing one.
+
+    Empty default keeps the OSS distribution fail-closed and vendor-neutral —
+    the concrete internal host is set in deployment config, outside this repo.
+
+    Resolution: ``AGNES_SSRF_ALLOWED_HOSTS`` env (comma-separated) >
+    ``security.ssrf_allowed_hosts`` in instance.yaml (a YAML list *or* a
+    comma-separated string) > empty. Hostnames are split on commas, stripped,
+    and lowercased. Mirrors :func:`get_hidden_login_features` in accepting
+    either form.
+    """
+    raw = os.environ.get("AGNES_SSRF_ALLOWED_HOSTS")
+    if raw is None:
+        raw = get_value("security", "ssrf_allowed_hosts", default="")
+    if isinstance(raw, (list, tuple)):
+        tokens: list[str] = []
+        for item in raw:
+            tokens.extend(str(item).split(","))
+    else:
+        tokens = str(raw or "").split(",")
+    return frozenset(token.strip().lower() for token in tokens if token.strip())
+
+
 def get_instance_custom_preamble() -> str:
     """Operator-authored preamble injected at the TOP of the `agnes init`
     install prompt (above ``Set up the {instance_brand} CLI…``). Empty/unset
@@ -929,3 +973,50 @@ def get_guardrails_llm_provider_ready() -> bool:
     if os.environ.get("LLM_API_KEY", "").strip():
         return True
     return False
+
+
+def get_lint_max_body_chars() -> int:
+    """Maximum body character length for skill linter (SL002 bloat rule).
+
+    Reads ``guardrails.lint_max_body_chars`` (default 8000). Skills whose
+    body length exceeds this threshold trigger a linter warning. Set lower
+    (e.g. 5000) to tighten the "keep it lean" guideline; set higher to
+    relax the constraint.
+    """
+    val = get_value("guardrails", "lint_max_body_chars", default=8000)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 8000
+
+
+def get_lint_duplicate_top_n() -> int:
+    """Top N candidate skills the duplicate stage shortlists (feeds SL010's
+    LLM confirmation and the SL012 degraded fallback).
+
+    Reads ``guardrails.lint_duplicate_top_n`` (default 5). When linting a
+    new skill, the linter compares its description against the top N most
+    recent skills in the marketplace to flag possible near-duplicates.
+    Increase to broaden the search scope at the cost of more comparisons.
+    """
+    val = get_value("guardrails", "lint_duplicate_top_n", default=5)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 5
+
+
+def get_lint_audit_min_interval_hours() -> int:
+    """Minimum interval in hours between full-corpus lint audits (the
+    ``/api/admin/store/lint-audit`` self-guard; not tied to any single rule).
+
+    Reads ``guardrails.lint_audit_min_interval_hours`` (default 144 = 6 days).
+    When a skill is updated, the linter may trigger a fresh audit. This
+    threshold prevents audit fatigue by not re-auditing the same skill more
+    frequently than this interval.
+    """
+    val = get_value("guardrails", "lint_audit_min_interval_hours", default=144)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 144

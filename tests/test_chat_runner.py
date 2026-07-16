@@ -248,12 +248,13 @@ def test_per_tool_call_timeout_emits_synthetic_result(tmp_path: Path):
 
 
 def test_agnes_mcp_servers_builds_stdio_config(monkeypatch):
-    """With AGNES_SERVER + AGNES_TOKEN set, the runner exposes the Agnes MCP
-    stdio server to the sandbox agent so it sees passthrough tools."""
+    """With AGNES_SERVER set, the runner exposes the Agnes MCP stdio server
+    to the sandbox agent so it sees passthrough tools. No token is placed in
+    its env — the relay carries the credential (Task 8 / AC-F2b)."""
     from app.chat import runner
 
     monkeypatch.setenv("AGNES_SERVER", "http://localhost:8000")
-    monkeypatch.setenv("AGNES_TOKEN", "jwt-token")
+    monkeypatch.delenv("AGNES_TOKEN", raising=False)
     monkeypatch.setenv("AGNES_SESSION_ID", "chat_abc")
 
     cfg = runner._agnes_mcp_servers()
@@ -262,10 +263,9 @@ def test_agnes_mcp_servers_builds_stdio_config(monkeypatch):
     assert server["type"] == "stdio"
     assert server["command"] == "agnes"
     assert server["args"] == ["mcp"]
-    # Auth + session are forwarded on the server's own env (not left to
+    # Server + session are forwarded on the server's own env (not left to
     # inheritance across the claude-CLI hop).
     assert server["env"]["AGNES_SERVER"] == "http://localhost:8000"
-    assert server["env"]["AGNES_TOKEN"] == "jwt-token"
     assert server["env"]["AGNES_SESSION_ID"] == "chat_abc"
     assert "PATH" in server["env"]
     # HOME is forwarded so `agnes mcp` can expanduser its config dir; env
@@ -274,14 +274,88 @@ def test_agnes_mcp_servers_builds_stdio_config(monkeypatch):
 
 
 def test_agnes_mcp_servers_empty_when_unconfigured(monkeypatch):
-    """No AGNES_SERVER/AGNES_TOKEN (fake-agent path) → empty dict so the agent
-    still runs on built-in tools instead of a broken MCP handshake."""
+    """No AGNES_SERVER (fake-agent path) → empty dict so the agent still runs
+    on built-in tools instead of a broken MCP handshake."""
     from app.chat import runner
 
     monkeypatch.delenv("AGNES_SERVER", raising=False)
-    monkeypatch.delenv("AGNES_TOKEN", raising=False)
     assert runner._agnes_mcp_servers() == {}
 
-    monkeypatch.setenv("AGNES_SERVER", "http://x:8000")
-    monkeypatch.setenv("AGNES_TOKEN", "")  # blank token is not usable
-    assert runner._agnes_mcp_servers() == {}
+
+def test_mcp_env_has_no_token(monkeypatch):
+    """AC-F2b: whatever AGNES_TOKEN happens to be set to (or not), the MCP
+    server config's env never carries it — the relay is the credential
+    carrier now, not a token in a subprocess env."""
+    from app.chat import runner
+
+    monkeypatch.setenv("AGNES_SERVER", "http://127.0.0.1:9999/agnes-api")
+    monkeypatch.setenv("AGNES_TOKEN", "should-never-appear")
+
+    servers = runner._agnes_mcp_servers()
+    assert servers  # sanity: config was built
+    for cfg in servers.values():
+        assert "AGNES_TOKEN" not in (cfg.get("env") or {})
+
+
+def test_ticket_push_frame_not_enqueued(monkeypatch):
+    """A ticket_push frame calls relay.set_tickets(...) and is never put on
+    the agent message queue; a following user_msg IS enqueued unchanged."""
+    from app.chat import runner
+
+    class _FakeRelay:
+        def __init__(self):
+            self.tickets = None
+
+        def set_tickets(self, main, mcp):
+            self.tickets = (main, mcp)
+
+    fake_relay = _FakeRelay()
+    monkeypatch.setattr(runner, "_relay", fake_relay)
+
+    async def _run():
+        queue: asyncio.Queue = asyncio.Queue()
+        await runner._dispatch_frame({"type": "ticket_push", "main": "M", "mcp": "C"}, queue)
+        await runner._dispatch_frame({"type": "user_msg", "text": "hi"}, queue)
+
+        assert fake_relay.tickets == ("M", "C")
+        assert queue.qsize() == 1
+        enqueued = queue.get_nowait()
+        assert enqueued["type"] == "user_msg"
+        assert enqueued["text"] == "hi"
+
+    asyncio.run(_run())
+
+
+def test_mcp_server_rides_mcp_scope_url(monkeypatch):
+    """The agnes-mcp stdio subprocess must target the relay's /agnes-mcp path
+    (mcp-scoped ticket), not the agent process's /agnes-api (main scope) — so
+    the minted mcp ticket is actually used, not dead (§11)."""
+    monkeypatch.setenv("AGNES_SERVER", "http://127.0.0.1:5000/agnes-api")
+    from app.chat.runner import _agnes_mcp_servers
+
+    servers = _agnes_mcp_servers()
+    assert servers["agnes"]["env"]["AGNES_SERVER"] == "http://127.0.0.1:5000/agnes-mcp"
+
+
+def test_runner_has_no_module_level_app_import():
+    """The runner runs as a standalone script inside the E2B sandbox, where the
+    `app` package does not exist until _install_agnes_cli() pip-installs the
+    uploaded wheel. A module-level `import app.*` (e.g. the broker relay import)
+    crashes the interpreter at startup with ModuleNotFoundError — before the
+    install runs — taking chat down end-to-end (found by live E2E on agnes-dev).
+    Guard: NO top-level `import app.*` / `from app.* import ...` in runner.py.
+    All such imports must be lazy (inside functions, after the install), or
+    TYPE_CHECKING-only for annotations."""
+    import ast
+    from pathlib import Path
+
+    src = Path("app/chat/runner.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    offenders = []
+    for node in tree.body:  # module-level statements only
+        if isinstance(node, ast.Import):
+            offenders += [a.name for a in node.names if a.name.split(".")[0] == "app"]
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").split(".")[0] == "app":
+                offenders.append(node.module)
+    assert not offenders, f"runner.py has module-level app.* imports (must be lazy): {offenders}"

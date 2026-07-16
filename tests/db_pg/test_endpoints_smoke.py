@@ -1383,6 +1383,16 @@ class TestReportsSmoke:
 # ---------------------------------------------------------------------------
 
 KNOWN_UNTESTED = {
+    # Chat sandbox secret broker (2026-07-14 incident) — internal
+    # sandbox→server routes, ticket-authed, never parameter-free (require a
+    # POST body + a valid broker ticket), so they have no place in this
+    # parameter-free smoke sweep. Behaviour covered in tests/test_broker_routes.py
+    # (app-tier: ticket auth, scope enforcement, admin-path 403, ASGI-replay
+    # RBAC fidelity).
+    "POST /api/broker/anthropic",
+    "POST /api/broker/anthropic/{subpath}",
+    "POST /api/broker/agnes-api",
+    "POST /api/broker/agnes-mcp",
     # Collections (bring-your-files) — behaviorally covered in the dedicated
     # suites tests/test_api_collections.py (CRUD/upload/search/reingest, RBAC fail-closed,
     # SessionPrincipal) and tests/test_web_library.py (/library pages), plus the
@@ -1428,6 +1438,14 @@ KNOWN_UNTESTED = {
     "POST /api/studio/memory-mining/consent",
     "POST /api/admin/memory-mining/run",
     "GET /me/memory-mining",
+    # Skill-linter admin moderation surface (v89, #687) — findings list,
+    # full-corpus audit, per-finding dismiss. Behaviour covered by
+    # tests/test_store_lint_api.py + tests/test_web_store_lint.py; the audit
+    # runs a corpus lint (LLM/FTS), not a fit for the parameter-free sweep.
+    "GET /admin/store/lint",
+    "GET /api/admin/store/lint-findings",
+    "POST /api/admin/store/lint-audit",
+    "POST /api/admin/store/lint-dismiss",
     # Skill contribution — admin web-form flow + REST/MCP triple-surface
     # (paste a SKILL.md, publish it to the contributed marketplace). Core logic
     # covered by tests/test_skill_contribution.py and
@@ -1838,6 +1856,11 @@ KNOWN_UNTESTED = {
     "POST /api/admin/run-corporate-memory",
     "POST /api/admin/run-jira-consistency-check",
     "POST /api/admin/run-jira-sla-poll",
+    # Keboola semantic layer (Metastore) sync — scheduler-driven admin
+    # maintenance op, mirrors run-bq-metadata-refresh. No dual-backend
+    # contract test needed (no new repo methods/migration). Behaviour
+    # covered in tests/test_keboola_semantic_layer_refresh_endpoint.py.
+    "POST /api/admin/run-keboola-semantic-layer-refresh",
     # K3 local knowledge packaging (#798) — scheduler-driven admin maintenance
     # op, mirrors run-corporate-memory. No dual-backend contract test needed
     # (no new repo methods/migration; state.json lives on disk). Behaviour

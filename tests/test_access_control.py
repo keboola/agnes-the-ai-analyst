@@ -9,10 +9,6 @@ resource_id)` grants in `resource_grants`. Admin group members short-circuit
 to True. Every other access requires an explicit grant.
 """
 
-import os
-import duckdb
-import pytest
-
 from tests.conftest import create_mock_extract
 
 
@@ -29,10 +25,15 @@ def _grant_table_to_analyst(conn, table_id: str, group_name: str = "analyst-gran
     the wrapping package + required grant.
     """
     from tests.conftest import grant_table_via_package
+
     grant_table_via_package(
-        conn, table_id, "analyst1", group_name=group_name,
+        conn,
+        table_id,
+        "analyst1",
+        group_name=group_name,
     )
     from src.repositories.user_groups import UserGroupsRepository
+
     return UserGroupsRepository(conn).get_by_name(group_name)["id"]
 
 
@@ -40,6 +41,7 @@ def _revoke_all_table_grants(conn, table_id: str) -> None:
     """Revoke via dropping the wrapping data_package (cascade clears
     junction + grant)."""
     from tests.conftest import revoke_table_via_package
+
     revoke_table_via_package(conn, table_id)
 
 
@@ -49,31 +51,51 @@ class TestAdminBypass:
     def test_admin_sees_all_tables_in_manifest(self, seeded_app):
         c = seeded_app["client"]
         env = seeded_app["env"]
-        create_mock_extract(env["extracts_dir"], "keboola", [
-            {"name": "orders", "data": [{"id": "1"}]},
-        ])
+        create_mock_extract(
+            env["extracts_dir"],
+            "keboola",
+            [
+                {"name": "orders", "data": [{"id": "1"}]},
+            ],
+        )
         from src.orchestrator import SyncOrchestrator
+
         SyncOrchestrator().rebuild()
 
-        c.post("/api/admin/register-table", json={
-            "name": "orders", "source_type": "keboola",
-        }, headers=_auth(seeded_app["admin_token"]))
+        c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "orders",
+                "source_type": "keboola",
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
 
         resp = c.get("/api/sync/manifest", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 200
 
     def test_admin_can_download_any_table(self, seeded_app):
         env = seeded_app["env"]
-        create_mock_extract(env["extracts_dir"], "keboola", [
-            {"name": "salaries", "data": [{"id": "1"}]},
-        ])
+        create_mock_extract(
+            env["extracts_dir"],
+            "keboola",
+            [
+                {"name": "salaries", "data": [{"id": "1"}]},
+            ],
+        )
         from src.orchestrator import SyncOrchestrator
+
         SyncOrchestrator().rebuild()
 
         c = seeded_app["client"]
-        c.post("/api/admin/register-table", json={
-            "name": "salaries", "source_type": "keboola",
-        }, headers=_auth(seeded_app["admin_token"]))
+        c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "salaries",
+                "source_type": "keboola",
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
 
         resp = c.get("/api/data/salaries/download", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 200
@@ -85,15 +107,25 @@ class TestNonAdminDeniedByDefault:
     def test_analyst_cannot_see_ungranted_table_in_manifest(self, seeded_app):
         c = seeded_app["client"]
         env = seeded_app["env"]
-        create_mock_extract(env["extracts_dir"], "keboola", [
-            {"name": "orders", "data": [{"id": "1"}]},
-        ])
+        create_mock_extract(
+            env["extracts_dir"],
+            "keboola",
+            [
+                {"name": "orders", "data": [{"id": "1"}]},
+            ],
+        )
         from src.orchestrator import SyncOrchestrator
+
         SyncOrchestrator().rebuild()
 
-        c.post("/api/admin/register-table", json={
-            "name": "orders", "source_type": "keboola",
-        }, headers=_auth(seeded_app["admin_token"]))
+        c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "orders",
+                "source_type": "keboola",
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
 
         # No grant minted for analyst1 → table is invisible.
         resp = c.get("/api/sync/manifest", headers=_auth(seeded_app["analyst_token"]))
@@ -103,23 +135,31 @@ class TestNonAdminDeniedByDefault:
     def test_analyst_blocked_from_downloading_ungranted_table(self, seeded_app):
         c = seeded_app["client"]
         env = seeded_app["env"]
-        create_mock_extract(env["extracts_dir"], "keboola", [
-            {"name": "salaries", "data": [{"id": "1"}]},
-        ])
+        create_mock_extract(
+            env["extracts_dir"],
+            "keboola",
+            [
+                {"name": "salaries", "data": [{"id": "1"}]},
+            ],
+        )
         from src.orchestrator import SyncOrchestrator
-        SyncOrchestrator().rebuild()
-        c.post("/api/admin/register-table", json={
-            "name": "salaries", "source_type": "keboola",
-        }, headers=_auth(seeded_app["admin_token"]))
 
-        resp = c.get("/api/data/salaries/download",
-                     headers=_auth(seeded_app["analyst_token"]))
+        SyncOrchestrator().rebuild()
+        c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "salaries",
+                "source_type": "keboola",
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
+
+        resp = c.get("/api/data/salaries/download", headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 403
 
     def test_analyst_cannot_see_ungranted_table_in_catalog(self, seeded_app):
         c = seeded_app["client"]
-        c.post("/api/admin/register-table", json={"name": "secret_data"},
-               headers=_auth(seeded_app["admin_token"]))
+        c.post("/api/admin/register-table", json={"name": "secret_data"}, headers=_auth(seeded_app["admin_token"]))
 
         resp = c.get("/api/catalog/tables", headers=_auth(seeded_app["analyst_token"]))
         names = {t["name"] for t in resp.json()["tables"]}
@@ -133,20 +173,31 @@ class TestExplicitGrants:
     def test_grant_makes_table_visible_in_manifest(self, seeded_app):
         c = seeded_app["client"]
         env = seeded_app["env"]
-        create_mock_extract(env["extracts_dir"], "keboola", [
-            {"name": "salaries", "data": [{"id": "1"}]},
-        ])
+        create_mock_extract(
+            env["extracts_dir"],
+            "keboola",
+            [
+                {"name": "salaries", "data": [{"id": "1"}]},
+            ],
+        )
         from src.orchestrator import SyncOrchestrator
+
         SyncOrchestrator().rebuild()
-        c.post("/api/admin/register-table", json={
-            "name": "salaries", "source_type": "keboola",
-        }, headers=_auth(seeded_app["admin_token"]))
+        c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "salaries",
+                "source_type": "keboola",
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
 
         # Initially invisible.
         resp = c.get("/api/sync/manifest", headers=_auth(seeded_app["analyst_token"]))
         assert "salaries" not in resp.json().get("tables", {})
 
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             _grant_table_to_analyst(conn, "salaries")
@@ -160,21 +211,31 @@ class TestExplicitGrants:
     def test_grant_then_download(self, seeded_app):
         c = seeded_app["client"]
         env = seeded_app["env"]
-        create_mock_extract(env["extracts_dir"], "keboola", [
-            {"name": "salaries", "data": [{"id": "1"}]},
-        ])
+        create_mock_extract(
+            env["extracts_dir"],
+            "keboola",
+            [
+                {"name": "salaries", "data": [{"id": "1"}]},
+            ],
+        )
         from src.orchestrator import SyncOrchestrator
+
         SyncOrchestrator().rebuild()
-        c.post("/api/admin/register-table", json={
-            "name": "salaries", "source_type": "keboola",
-        }, headers=_auth(seeded_app["admin_token"]))
+        c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "salaries",
+                "source_type": "keboola",
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
 
         # Blocked before grant.
-        resp = c.get("/api/data/salaries/download",
-                     headers=_auth(seeded_app["analyst_token"]))
+        resp = c.get("/api/data/salaries/download", headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 403
 
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             _grant_table_to_analyst(conn, "salaries")
@@ -182,31 +243,40 @@ class TestExplicitGrants:
             conn.close()
 
         # OK after grant.
-        resp = c.get("/api/data/salaries/download",
-                     headers=_auth(seeded_app["analyst_token"]))
+        resp = c.get("/api/data/salaries/download", headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 200
 
     def test_revoke_blocks_access(self, seeded_app):
         c = seeded_app["client"]
         env = seeded_app["env"]
-        create_mock_extract(env["extracts_dir"], "keboola", [
-            {"name": "salaries", "data": [{"id": "1"}]},
-        ])
+        create_mock_extract(
+            env["extracts_dir"],
+            "keboola",
+            [
+                {"name": "salaries", "data": [{"id": "1"}]},
+            ],
+        )
         from src.orchestrator import SyncOrchestrator
+
         SyncOrchestrator().rebuild()
-        c.post("/api/admin/register-table", json={
-            "name": "salaries", "source_type": "keboola",
-        }, headers=_auth(seeded_app["admin_token"]))
+        c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "salaries",
+                "source_type": "keboola",
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
 
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             _grant_table_to_analyst(conn, "salaries")
         finally:
             conn.close()
 
-        resp = c.get("/api/data/salaries/download",
-                     headers=_auth(seeded_app["analyst_token"]))
+        resp = c.get("/api/data/salaries/download", headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 200
 
         # Revoke
@@ -216,8 +286,7 @@ class TestExplicitGrants:
         finally:
             conn.close()
 
-        resp = c.get("/api/data/salaries/download",
-                     headers=_auth(seeded_app["analyst_token"]))
+        resp = c.get("/api/data/salaries/download", headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 403
 
 
@@ -227,10 +296,8 @@ class TestCatalogFiltering:
 
     def test_admin_sees_all_in_catalog(self, seeded_app):
         c = seeded_app["client"]
-        c.post("/api/admin/register-table", json={"name": "table_a"},
-               headers=_auth(seeded_app["admin_token"]))
-        c.post("/api/admin/register-table", json={"name": "table_b"},
-               headers=_auth(seeded_app["admin_token"]))
+        c.post("/api/admin/register-table", json={"name": "table_a"}, headers=_auth(seeded_app["admin_token"]))
+        c.post("/api/admin/register-table", json={"name": "table_b"}, headers=_auth(seeded_app["admin_token"]))
 
         resp = c.get("/api/catalog/tables", headers=_auth(seeded_app["admin_token"]))
         names = {t["name"] for t in resp.json()["tables"]}
@@ -238,12 +305,11 @@ class TestCatalogFiltering:
 
     def test_analyst_sees_only_granted_tables_in_catalog(self, seeded_app):
         c = seeded_app["client"]
-        c.post("/api/admin/register-table", json={"name": "granted_table"},
-               headers=_auth(seeded_app["admin_token"]))
-        c.post("/api/admin/register-table", json={"name": "ungranted_table"},
-               headers=_auth(seeded_app["admin_token"]))
+        c.post("/api/admin/register-table", json={"name": "granted_table"}, headers=_auth(seeded_app["admin_token"]))
+        c.post("/api/admin/register-table", json={"name": "ungranted_table"}, headers=_auth(seeded_app["admin_token"]))
 
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             _grant_table_to_analyst(conn, "granted_table")
@@ -255,6 +321,50 @@ class TestCatalogFiltering:
         assert "granted_table" in names
         assert "ungranted_table" not in names
 
+    def test_catalog_resolves_accessible_tables_once_not_per_row(self, seeded_app, monkeypatch):
+        """N+1 regression guard: ``/api/catalog/tables`` must resolve the
+        caller's accessible set with a single ``get_accessible_tables`` call,
+        not one ``can_access_table`` call per registered table."""
+        c = seeded_app["client"]
+        c.post("/api/admin/register-table", json={"name": "table_c1"}, headers=_auth(seeded_app["admin_token"]))
+        c.post("/api/admin/register-table", json={"name": "table_c2"}, headers=_auth(seeded_app["admin_token"]))
+        c.post("/api/admin/register-table", json={"name": "table_c3"}, headers=_auth(seeded_app["admin_token"]))
+
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            _grant_table_to_analyst(conn, "table_c1")
+        finally:
+            conn.close()
+
+        import app.api.catalog as catalog_module
+
+        calls = {"get_accessible_tables": 0, "can_access_table": 0}
+        real_get_accessible_tables = catalog_module.get_accessible_tables
+        real_can_access_table = catalog_module.can_access_table
+
+        def _counting_get_accessible_tables(*args, **kwargs):
+            calls["get_accessible_tables"] += 1
+            return real_get_accessible_tables(*args, **kwargs)
+
+        def _counting_can_access_table(*args, **kwargs):
+            calls["can_access_table"] += 1
+            return real_can_access_table(*args, **kwargs)
+
+        monkeypatch.setattr(catalog_module, "get_accessible_tables", _counting_get_accessible_tables)
+        monkeypatch.setattr(catalog_module, "can_access_table", _counting_can_access_table)
+
+        resp = c.get("/api/catalog/tables", headers=_auth(seeded_app["analyst_token"]))
+        assert resp.status_code == 200
+        names = {t["name"] for t in resp.json()["tables"]}
+        assert "table_c1" in names
+        assert "table_c2" not in names
+        assert "table_c3" not in names
+
+        assert calls["get_accessible_tables"] == 1
+        assert calls["can_access_table"] == 0
+
 
 class TestQueryFiltering:
     """`/api/query` blocks SQL referencing tables the user has no grant on."""
@@ -262,56 +372,84 @@ class TestQueryFiltering:
     def test_analyst_blocked_from_querying_ungranted_table(self, seeded_app):
         c = seeded_app["client"]
         env = seeded_app["env"]
-        create_mock_extract(env["extracts_dir"], "keboola", [
-            {"name": "salaries", "data": [{"id": "1"}]},
-        ])
+        create_mock_extract(
+            env["extracts_dir"],
+            "keboola",
+            [
+                {"name": "salaries", "data": [{"id": "1"}]},
+            ],
+        )
         from src.orchestrator import SyncOrchestrator
-        SyncOrchestrator().rebuild()
-        c.post("/api/admin/register-table", json={
-            "name": "salaries", "source_type": "keboola",
-        }, headers=_auth(seeded_app["admin_token"]))
 
-        resp = c.post("/api/query", json={"sql": "SELECT * FROM salaries"},
-                      headers=_auth(seeded_app["analyst_token"]))
+        SyncOrchestrator().rebuild()
+        c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "salaries",
+                "source_type": "keboola",
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
+
+        resp = c.post("/api/query", json={"sql": "SELECT * FROM salaries"}, headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 403
 
     def test_admin_can_query_any_table(self, seeded_app):
         c = seeded_app["client"]
         env = seeded_app["env"]
-        create_mock_extract(env["extracts_dir"], "keboola", [
-            {"name": "salaries", "data": [{"id": "1"}]},
-        ])
+        create_mock_extract(
+            env["extracts_dir"],
+            "keboola",
+            [
+                {"name": "salaries", "data": [{"id": "1"}]},
+            ],
+        )
         from src.orchestrator import SyncOrchestrator
-        SyncOrchestrator().rebuild()
-        c.post("/api/admin/register-table", json={
-            "name": "salaries", "source_type": "keboola",
-        }, headers=_auth(seeded_app["admin_token"]))
 
-        resp = c.post("/api/query", json={"sql": "SELECT * FROM salaries"},
-                      headers=_auth(seeded_app["admin_token"]))
+        SyncOrchestrator().rebuild()
+        c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "salaries",
+                "source_type": "keboola",
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
+
+        resp = c.post("/api/query", json={"sql": "SELECT * FROM salaries"}, headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code != 403
 
     def test_granted_analyst_can_query(self, seeded_app):
         c = seeded_app["client"]
         env = seeded_app["env"]
-        create_mock_extract(env["extracts_dir"], "keboola", [
-            {"name": "salaries", "data": [{"id": "1"}]},
-        ])
+        create_mock_extract(
+            env["extracts_dir"],
+            "keboola",
+            [
+                {"name": "salaries", "data": [{"id": "1"}]},
+            ],
+        )
         from src.orchestrator import SyncOrchestrator
+
         SyncOrchestrator().rebuild()
-        c.post("/api/admin/register-table", json={
-            "name": "salaries", "source_type": "keboola",
-        }, headers=_auth(seeded_app["admin_token"]))
+        c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "salaries",
+                "source_type": "keboola",
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
 
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             _grant_table_to_analyst(conn, "salaries")
         finally:
             conn.close()
 
-        resp = c.post("/api/query", json={"sql": "SELECT * FROM salaries"},
-                      headers=_auth(seeded_app["analyst_token"]))
+        resp = c.post("/api/query", json={"sql": "SELECT * FROM salaries"}, headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code != 403
 
 
@@ -344,21 +482,18 @@ class TestDownloadPathTraversal:
 
     def test_download_rejects_traversal_id(self, seeded_app):
         c = seeded_app["client"]
-        resp = c.get("/api/data/..%2Fetc/download",
-                     headers=_auth(seeded_app["admin_token"]))
+        resp = c.get("/api/data/..%2Fetc/download", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 404
 
     def test_download_rejects_dotdot(self, seeded_app):
         c = seeded_app["client"]
         # FastAPI routing collapses backslash; use the URL-unsafe path arg
-        resp = c.get("/api/data/foo%2F..%2Fbar/download",
-                     headers=_auth(seeded_app["admin_token"]))
+        resp = c.get("/api/data/foo%2F..%2Fbar/download", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 404
 
     def test_download_rejects_special_chars(self, seeded_app):
         c = seeded_app["client"]
-        resp = c.get("/api/data/foo%3Bbar/download",
-                     headers=_auth(seeded_app["admin_token"]))
+        resp = c.get("/api/data/foo%3Bbar/download", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 404
 
     def test_download_accepts_hyphenated_dotted_id(self, seeded_app):
@@ -366,6 +501,5 @@ class TestDownloadPathTraversal:
         c = seeded_app["client"]
         # Just exercise the filter — table doesn't exist on disk so 404
         # is the expected outcome (NOT 422 / 400 from the safety check).
-        resp = c.get("/api/data/in.c-crm.orders/download",
-                     headers=_auth(seeded_app["admin_token"]))
+        resp = c.get("/api/data/in.c-crm.orders/download", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 404

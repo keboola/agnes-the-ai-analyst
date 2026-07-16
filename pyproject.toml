@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.74.67"
+version = "0.74.103"
 description = "Agnes — self-hosted AI harness for organizations: governed data access, skills marketplace, corporate memory, and agent workspaces"
 requires-python = ">=3.11,<3.14"
 license = {file = "LICENSE"}
@@ -12,8 +12,14 @@ dependencies = [
     # tables referenced by other tables — broke the test_db migration
     # ladder replay on 1.5.1. CI runs 1.5.2; local devs need it too.
     "duckdb>=1.5.2",
-    # Web framework (FastAPI)
-    "fastapi>=0.115.0",
+    # Web framework (FastAPI). Upper-bounded below 0.137.0: that release
+    # regressed APIRouter.include_router so it no longer copies the source
+    # router's routes into the app (adds zero routes), leaving create_app()
+    # with no /api routes. Empirically bisected: 0.136.0 OK, 0.137.0 broken.
+    # Only surfaces on Python 3.13, where the resolver otherwise picks a
+    # >=0.137 release (0.136.x is the last good line). Lift the cap once the
+    # app is verified against the newer include_router.
+    "fastapi>=0.115.0,<0.137",
     "uvicorn[standard]>=0.32.0",
     "python-multipart>=0.0.31",
     "jinja2>=3.1.0",
@@ -60,9 +66,10 @@ dependencies = [
     # Profiler visualizations
     "matplotlib>=3.8.0",
     "numpy>=1.24.0",
-    # Claude Code marketplace endpoint — pure-Python git server mounted in FastAPI
+    # Claude Code marketplace endpoint — dulwich builds the on-disk bare repo
+    # (git_backend.py); serving is done via the real `git http-backend` CLI
+    # subprocess (git_router.py), not a2wsgi/WSGI bridging.
     "dulwich>=1.2.5",
-    "a2wsgi>=1.10.0",
     # In-process TTL cache for marketplace etag (transitively present via
     # google-auth, declared explicitly here because we depend on it directly).
     "cachetools>=5.3.0",
@@ -73,11 +80,16 @@ dependencies = [
     # microVM (`AsyncSandbox`); `app/chat/e2b_provider.py` adapts the SDK's
     # background-command + filesystem APIs to our `SandboxProvider`
     # Protocol. See `docs/cloud-chat.md` for operator setup.
-    # 2.0+ floor: the cloud chat runner relies on the `stdin=True` parameter
-    # on `sandbox.commands.run()` which was added in 2.0. On SDK 1.x the
-    # kwarg raises TypeError and every chat session stalls without an answer
-    # (Devin Review on #585).
-    "e2b>=2.0.0,<3.0.0",
+    # Floor rationale: the cloud chat runner relies on `stdin=True` on
+    # `sandbox.commands.run()` (added in 2.0; on SDK 1.x the kwarg raises
+    # TypeError and every chat session stalls — Devin Review on #585) AND on
+    # the `network=SandboxNetworkOpts(allow_out=...)` parameter to
+    # `AsyncSandbox.create()` for VM-level egress restriction. The floor is
+    # 2.25.1 — the version validated to accept `network` (verified: its
+    # `AsyncSandbox.create` signature carries `network: Optional[SandboxNetworkOpts]`)
+    # — rather than a bare 2.0 so an older 2.0.x that predates the parameter
+    # can't silently TypeError on spawn (Devin Review on #846).
+    "e2b>=2.25.1,<3.0.0",
     # Per-IP rate limiting on auth endpoints (#45). In-process counters by
     # default — fine for single-replica deploys. Multi-replica rollouts can
     # swap the storage backend via slowapi's `storage_uri` (Redis, Memcached).

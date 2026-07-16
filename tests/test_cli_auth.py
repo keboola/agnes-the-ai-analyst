@@ -220,6 +220,76 @@ class TestAuthImportToken:
         data = json.loads(token_file.read_text())
         assert data == {"access_token": token, "email": "carol@example.com"}
 
+    def _mock_verify_raises(self, exc):
+        """Patch cli.commands.auth.httpx.Client so the verify GET raises `exc`."""
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_client.__exit__.return_value = False
+        mock_client.get.side_effect = exc
+        return patch("cli.commands.auth.httpx.Client", return_value=mock_client)
+
+    def test_import_token_5xx_proceeds_with_warning(self, tmp_path, monkeypatch):
+        """A 5xx during verification is transient, not a token rejection — the
+        valid PAT is still saved, with a warning (was: hard Exit(1))."""
+        monkeypatch.setenv("AGNES_SERVER", "http://example.test")
+        token = self._make_jwt(email="erin@example.com")
+
+        with self._mock_verify(503):
+            result = runner.invoke(app, ["auth", "import-token", "--token", token])
+
+        assert result.exit_code == 0, result.output
+        assert "could not verify" in result.output.lower()
+        token_file = tmp_path / "config" / "token.json"
+        assert json.loads(token_file.read_text()) == {
+            "access_token": token,
+            "email": "erin@example.com",
+        }
+
+    def test_import_token_read_timeout_proceeds_with_warning(self, tmp_path, monkeypatch):
+        """A slow verify (read timeout) must not fail a valid PAT — save + warn."""
+        import httpx
+
+        monkeypatch.setenv("AGNES_SERVER", "http://example.test")
+        token = self._make_jwt(email="frank@example.com")
+
+        with self._mock_verify_raises(httpx.ReadTimeout("timed out")):
+            result = runner.invoke(app, ["auth", "import-token", "--token", token])
+
+        assert result.exit_code == 0, result.output
+        assert "could not verify" in result.output.lower()
+        token_file = tmp_path / "config" / "token.json"
+        assert json.loads(token_file.read_text()) == {
+            "access_token": token,
+            "email": "frank@example.com",
+        }
+
+    def test_import_token_connect_error_still_aborts(self, tmp_path, monkeypatch):
+        """A genuinely unreachable server (connect error) still aborts and does
+        not write a token — that failure mode is unchanged."""
+        import httpx
+
+        monkeypatch.setenv("AGNES_SERVER", "http://example.test")
+        token = self._make_jwt()
+
+        with self._mock_verify_raises(httpx.ConnectError("refused")):
+            result = runner.invoke(app, ["auth", "import-token", "--token", token])
+
+        assert result.exit_code == 1
+        assert "could not reach server" in result.output.lower()
+        assert not (tmp_path / "config" / "token.json").exists()
+
+    def test_import_token_verify_timeout_env_override(self, tmp_path, monkeypatch):
+        """AGNES_VERIFY_TIMEOUT overrides the hard-coded verification timeout."""
+        monkeypatch.setenv("AGNES_SERVER", "http://example.test")
+        monkeypatch.setenv("AGNES_VERIFY_TIMEOUT", "45")
+        token = self._make_jwt(email="grace@example.com")
+
+        with self._mock_verify(200) as mock_client_cls:
+            result = runner.invoke(app, ["auth", "import-token", "--token", token])
+
+        assert result.exit_code == 0, result.output
+        assert mock_client_cls.call_args.kwargs["timeout"] == 45.0
+
 
 class TestAuthWhoami:
     def test_whoami_no_token(self):
@@ -344,3 +414,21 @@ def test_da_auth_token_create_calls_api(monkeypatch):
     assert captured["path"] == "/auth/tokens"
     assert captured["json"] == {"name": "laptop", "expires_in_days": 30}
     assert "raw-token-once" in result.output
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (None, 15.0),  # unset -> default
+        ("", 15.0),  # empty -> default
+        ("30", 30.0),  # integer string
+        ("12.5", 12.5),  # float string
+        ("abc", 15.0),  # non-numeric -> default (typo can't disable the timeout)
+        ("0", 15.0),  # non-positive -> default
+        ("-5", 15.0),  # negative -> default
+    ],
+)
+def test_resolve_verify_timeout(raw, expected):
+    from cli.commands.auth import _resolve_verify_timeout
+
+    assert _resolve_verify_timeout(raw) == expected

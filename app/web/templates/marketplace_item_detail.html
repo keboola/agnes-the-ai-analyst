@@ -117,6 +117,15 @@
   .item-detail .hero .hero-window-body img {
     width: 100%; height: 100%; object-fit: cover; display: block;
   }
+  /* Per-type tint for the placeholder initials — matches the card grid
+     (marketplace.css) and the plugin detail hero: skill (green) / agent
+     (amber) / plugin (blue). Reuses the theme-aware --ds-accent-* family
+     (light bg + ink text) so the cover-less hero reads as the same legend
+     as the tile the user clicked from. Overridden by the cover <img> when
+     present. Same specificity as the base rule above, so ordering wins. */
+  .item-detail .hero .hero-window-body--skill  { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .item-detail .hero .hero-window-body--agent  { background: var(--ds-accent-warn-bg);    color: var(--ds-accent-warn-ink); }
+  .item-detail .hero .hero-window-body--plugin { background: var(--ds-accent-info-bg);    color: var(--ds-accent-info-ink); }
 
   .item-detail .hero .meta {
     min-width: 0;
@@ -806,7 +815,14 @@
           <span class="hwdot green"></span>
           <span class="hero-window-label" id="hero-window-label">{{ (entity.title if entity else None) or inner_name or item_name or plugin_name }}</span>
         </div>
-        <div class="hero-window-body" id="hero-window-body">{{ 'SK' if kind == 'skill' else 'AG' }}</div>
+        {#- Name-derived placeholder initials (progressive-enhancement fallback;
+            JS re-derives from the API display name after load). Mirrors
+            initialsFor() in marketplace.html — split on separators + whitespace,
+            first letter of the first two words. Empty name → type abbreviation. #}
+        {%- set _hero_nm = ((entity.title if entity else None) or inner_name or item_name or plugin_name or '') | string %}
+        {%- set _hero_parts = (_hero_nm | replace('-', ' ') | replace('_', ' ') | replace('.', ' ') | replace('/', ' ') | replace(':', ' ') | string).split() %}
+        {%- set _hero_ini = ((_hero_parts[0][0] ~ _hero_parts[1][0]) if _hero_parts | length >= 2 else (_hero_parts[0][:2] if _hero_parts else '')) | upper %}
+        <div class="hero-window-body{% if kind in ['skill', 'agent', 'plugin'] %} hero-window-body--{{ kind }}{% endif %}" id="hero-window-body">{{ _hero_ini or ('SK' if kind == 'skill' else 'AG') }}</div>
       </div>
       <div class="meta">
         <h1 id="hero-name">{{ (entity.title if entity else None) or inner_name or item_name or plugin_name }}</h1>
@@ -945,6 +961,19 @@
     return String(s ?? '').replace(/[&<>"']/g, ch => (
       {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
   }
+  // Placeholder initials derived from the entity name. Mirrors initialsFor()
+  // in marketplace.html (the card grid) so the detail hero shows the same
+  // name-derived glyph ("Sales Dashboard" → "SD") instead of a generic
+  // per-kind "SK"/"AG". Falls back to the type abbreviation when empty.
+  function deriveInitials(name, type) {
+    const words = String(name || '').split(/[^A-Za-z0-9]+/).filter(Boolean);
+    let initials = '';
+    if (words.length >= 2) initials = words[0][0] + words[1][0];
+    else if (words.length === 1) initials = words[0].slice(0, 2);
+    initials = initials.toUpperCase();
+    if (initials) return initials;
+    return type === 'skill' ? 'SK' : type === 'agent' ? 'AG' : type === 'plugin' ? 'PL' : '?';
+  }
   function fmtBytes(n) {
     if (n == null) return '—';
     if (n < 1024) return n + ' B';
@@ -1072,16 +1101,26 @@
   // Cover photo — flea may have one; curated v32 may also have one when
   // marketplace-metadata.json sub-tree references a skill/agent cover via
   // either an internal path (resolved to /asset/) or an external URL.
+  const bodyEl = document.getElementById('hero-window-body');
+  // Placeholder initials derived from the display name — mirrors the card
+  // grid so the cover-less hero shows "SD" for "Sales Dashboard" instead
+  // of a generic "SK"/"AG". Re-derived here (not just server-rendered)
+  // because the curated path fills the title from the API after load.
+  const heroInitials = deriveInitials(heroTitle, kind);
+  // Per-kind tint matching the card grid + plugin detail hero (skill=green,
+  // agent=amber, plugin=blue). Known kinds only; others keep the gradient.
+  if (kind === 'skill' || kind === 'agent' || kind === 'plugin') {
+    bodyEl.classList.add(`hero-window-body--${kind}`);
+  }
   if (d.cover_photo_url) {
-    const bodyEl = document.getElementById('hero-window-body');
-    // Initials fallback already lives inside #hero-window-body (rendered by
-    // the server-side template as 'SK' / 'AG'). Capture before swapping so
-    // a 404 on the cover restores the original glyph.
-    const initials = bodyEl.textContent || (kind === 'skill' ? 'SK' : 'AG');
+    // When the cover 404s, the onerror handler restores these initials so
+    // the hero looks identical to the no-cover case (not a broken image).
     bodyEl.innerHTML = `<img src="${esc(d.cover_photo_url)}" alt=""
         onerror="this.parentElement.classList.add('photo-failed');
                  this.parentElement.textContent=this.dataset.fallback;"
-        data-fallback="${esc(initials)}">`;
+        data-fallback="${esc(heroInitials)}">`;
+  } else {
+    bodyEl.textContent = heroInitials;
   }
 
   // Pills — same structure / class names as plugin detail hero so the two

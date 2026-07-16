@@ -62,6 +62,7 @@ def _flea_zip_for_skill(tmp_path):
     declaring `name` + `description`.
     """
     import zipfile
+
     buf = io.BytesIO()
     body = (
         "Body explaining when to invoke the skill and the expected outputs. "
@@ -88,7 +89,11 @@ def test_flea_doc_upload_rejects_docx(seeded_app, _flea_zip_for_skill):
             ("file", ("skill.zip", _flea_zip_for_skill, "application/zip")),
             ("docs", ("notes.docx", b"PKfake-docx-content", "application/vnd.openxmlformats")),
         ],
-        data={"type": "skill", "version": "1.0", "description": "Use when validating flea-market endpoint integrations across guardrails"},
+        data={
+            "type": "skill",
+            "version": "1.0",
+            "description": "Use when validating flea-market endpoint integrations across guardrails",
+        },
     )
     assert r.status_code == 415
     assert "unsupported_doc_type" in r.text or "doc_extension" in r.text
@@ -107,7 +112,11 @@ def test_flea_doc_upload_accepts_pdf(seeded_app, _flea_zip_for_skill):
             ("file", ("skill.zip", _flea_zip_for_skill, "application/zip")),
             ("docs", ("setup.pdf", pdf_body, "application/pdf")),
         ],
-        data={"type": "skill", "version": "1.0", "description": "Use when validating flea-market endpoint integrations across guardrails"},
+        data={
+            "type": "skill",
+            "version": "1.0",
+            "description": "Use when validating flea-market endpoint integrations across guardrails",
+        },
     )
     assert r.status_code == 201, r.text
 
@@ -124,7 +133,11 @@ def test_flea_doc_upload_rejects_pdf_with_bad_magic_bytes(seeded_app, _flea_zip_
             ("file", ("skill.zip", _flea_zip_for_skill, "application/zip")),
             ("docs", ("evil.pdf", b"not a pdf at all", "application/pdf")),
         ],
-        data={"type": "skill", "version": "1.0", "description": "Use when validating flea-market endpoint integrations across guardrails"},
+        data={
+            "type": "skill",
+            "version": "1.0",
+            "description": "Use when validating flea-market endpoint integrations across guardrails",
+        },
     )
     assert r.status_code == 415
     assert "magic_bytes" in r.text or "unsupported" in r.text
@@ -142,7 +155,11 @@ def test_flea_photo_upload_rejects_svg(seeded_app, _flea_zip_for_skill):
             ("file", ("skill.zip", _flea_zip_for_skill, "application/zip")),
             ("photo", ("logo.svg", b"<svg></svg>", "image/svg+xml")),
         ],
-        data={"type": "skill", "version": "1.0", "description": "Use when validating flea-market endpoint integrations across guardrails"},
+        data={
+            "type": "skill",
+            "version": "1.0",
+            "description": "Use when validating flea-market endpoint integrations across guardrails",
+        },
     )
     assert r.status_code == 415
     assert "photo_unsupported_format" in r.text
@@ -184,18 +201,16 @@ def test_curated_asset_endpoint_blocks_path_traversal(seeded_app, monkeypatch, t
     conn = get_system_db()
     try:
         MarketplaceRegistryRepository(conn).register(
-            id="test-mp", name="Test", url="https://example.com/x.git",
-            curator_name="C", curator_email="c@example.com",
+            id="test-mp",
+            name="Test",
+            url="https://example.com/x.git",
+            curator_name="C",
+            curator_email="c@example.com",
         )
         # Insert a plugin row so the RBAC check has a target. Resource id is
         # `<slug>/<plugin>`.
-        conn.execute(
-            "INSERT OR REPLACE INTO marketplace_plugins "
-            "(marketplace_id, name) VALUES ('test-mp', 'demo')"
-        )
-        admin_group = conn.execute(
-            "SELECT id FROM user_groups WHERE name = 'Admin'"
-        ).fetchone()
+        conn.execute("INSERT OR REPLACE INTO marketplace_plugins (marketplace_id, name) VALUES ('test-mp', 'demo')")
+        admin_group = conn.execute("SELECT id FROM user_groups WHERE name = 'Admin'").fetchone()
         if admin_group:
             try:
                 ResourceGrantsRepository(conn).create(
@@ -230,6 +245,48 @@ def test_curated_asset_endpoint_blocks_path_traversal(seeded_app, monkeypatch, t
     assert r.status_code == 404
 
 
+def test_reject_unsafe_segment_blocks_dotdot(seeded_app):
+    """Audit L1: a ``..`` (or ``/``/``\\``) marketplace_id/plugin_name escapes
+    the marketplaces dir (``marketplaces/..`` → DATA_DIR) and _safe_join then
+    re-anchors on the escaped root. The segment guard must reject it (404)."""
+    from fastapi import HTTPException
+
+    from app.api.marketplace import _reject_unsafe_segment
+
+    for bad in ("..", "a/b", "a\\b", "", "foo/../bar"):
+        with pytest.raises(HTTPException) as ei:
+            _reject_unsafe_segment(bad)
+        assert ei.value.status_code == 404, bad
+    # legitimate slugs pass through untouched
+    _reject_unsafe_segment("test-mp", "demo_plugin", "a.b-c", "PascalCase")
+
+
+def test_curated_doc_blocks_cross_plugin_disclosure(seeded_app):
+    """Audit M2: the RBAC grant is per-plugin, but the served doc path is
+    repo-root-relative. A grant to plugin `public` must NOT read `private`'s
+    docs in the same marketplace via a repo-relative path pointing into it."""
+    from src.marketplace_asset_validation import DOC_EXTENSIONS
+
+    assert ".md" in DOC_EXTENSIONS  # sanity — the doc ext we use below is allowed
+    repo_root = _seed_asset_marketplace(seeded_app, slug="xplug", plugin="public")
+    (repo_root / "plugins" / "public" / "docs").mkdir(parents=True, exist_ok=True)
+    (repo_root / "plugins" / "public" / "docs" / "own.md").write_text("mine", encoding="utf-8")
+    (repo_root / "plugins" / "private" / "docs").mkdir(parents=True, exist_ok=True)
+    (repo_root / "plugins" / "private" / "docs" / "secret.md").write_text("secret", encoding="utf-8")
+
+    client = seeded_app["client"]
+    headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+
+    # The granted plugin's own doc serves fine.
+    r_ok = client.get("/api/marketplace/curated/xplug/public/doc/plugins/public/docs/own.md", headers=headers)
+    assert r_ok.status_code == 200, r_ok.text
+
+    # A repo-relative path into a DIFFERENT plugin's dir is refused (404),
+    # even though the file exists and the URL's plugin_name (public) is granted.
+    r = client.get("/api/marketplace/curated/xplug/public/doc/plugins/private/docs/secret.md", headers=headers)
+    assert r.status_code == 404, r.text
+
+
 # --- /asset/{path} XSS hardening (#234 review #3) -------------------------
 
 
@@ -247,18 +304,19 @@ def _seed_asset_marketplace(seeded_app, *, slug="xss-mp", plugin="demo"):
     try:
         try:
             MarketplaceRegistryRepository(conn).register(
-                id=slug, name=slug, url=f"https://example.com/{slug}.git",
-                curator_name="C", curator_email="c@example.com",
+                id=slug,
+                name=slug,
+                url=f"https://example.com/{slug}.git",
+                curator_name="C",
+                curator_email="c@example.com",
             )
         except Exception:
             pass  # already registered
         conn.execute(
-            "INSERT OR REPLACE INTO marketplace_plugins "
-            "(marketplace_id, name) VALUES (?, ?)", [slug, plugin],
+            "INSERT OR REPLACE INTO marketplace_plugins (marketplace_id, name) VALUES (?, ?)",
+            [slug, plugin],
         )
-        admin_group = conn.execute(
-            "SELECT id FROM user_groups WHERE name = 'Admin'"
-        ).fetchone()
+        admin_group = conn.execute("SELECT id FROM user_groups WHERE name = 'Admin'").fetchone()
         if admin_group:
             try:
                 ResourceGrantsRepository(conn).create(
@@ -279,7 +337,8 @@ def test_curated_asset_rejects_html_extension(seeded_app):
     ``text/html`` — extension allowlist denies any non-image extension."""
     repo_root = _seed_asset_marketplace(seeded_app, slug="xss-html")
     (repo_root / "evil.html").write_text(
-        "<script>alert('xss')</script>", encoding="utf-8",
+        "<script>alert('xss')</script>",
+        encoding="utf-8",
     )
     client = seeded_app["client"]
     headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
@@ -310,7 +369,8 @@ def test_curated_asset_renamed_html_is_neutered_by_headers(seeded_app):
     """
     repo_root = _seed_asset_marketplace(seeded_app, slug="xss-rename")
     (repo_root / "evil.png").write_text(
-        "<script>alert('xss')</script>", encoding="utf-8",
+        "<script>alert('xss')</script>",
+        encoding="utf-8",
     )
     client = seeded_app["client"]
     headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
@@ -331,8 +391,7 @@ def test_curated_asset_rejects_svg_extension(seeded_app):
     executes in the browser, so even valid SVG would carry XSS risk."""
     repo_root = _seed_asset_marketplace(seeded_app, slug="xss-svg")
     (repo_root / "logo.svg").write_text(
-        '<svg xmlns="http://www.w3.org/2000/svg">'
-        '<script>alert("xss")</script></svg>',
+        '<svg xmlns="http://www.w3.org/2000/svg"><script>alert("xss")</script></svg>',
         encoding="utf-8",
     )
     client = seeded_app["client"]
@@ -388,16 +447,17 @@ def _seed_marketplace_with_doc(seeded_app, *, slug="dl-mp", plugin="demo"):
     conn = get_system_db()
     try:
         MarketplaceRegistryRepository(conn).register(
-            id=slug, name=slug, url=f"https://example.com/{slug}.git",
-            curator_name="C", curator_email="c@example.com",
+            id=slug,
+            name=slug,
+            url=f"https://example.com/{slug}.git",
+            curator_name="C",
+            curator_email="c@example.com",
         )
         conn.execute(
-            "INSERT OR REPLACE INTO marketplace_plugins "
-            "(marketplace_id, name) VALUES (?, ?)", [slug, plugin],
+            "INSERT OR REPLACE INTO marketplace_plugins (marketplace_id, name) VALUES (?, ?)",
+            [slug, plugin],
         )
-        admin_group = conn.execute(
-            "SELECT id FROM user_groups WHERE name = 'Admin'"
-        ).fetchone()
+        admin_group = conn.execute("SELECT id FROM user_groups WHERE name = 'Admin'").fetchone()
         if admin_group:
             try:
                 ResourceGrantsRepository(conn).create(
@@ -446,7 +506,8 @@ def test_curated_doc_endpoint_rejects_non_allowlist_extension(seeded_app):
     data_dir = _seed_marketplace_with_doc(seeded_app)
     # Plant a .docx file in the seeded marketplace
     (data_dir / "marketplaces" / "dl-mp" / "docs" / "evil.docx").write_text(
-        "PKfake", encoding="utf-8",
+        "PKfake",
+        encoding="utf-8",
     )
     client = seeded_app["client"]
     headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}

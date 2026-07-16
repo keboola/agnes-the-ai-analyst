@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 89
+SCHEMA_VERSION = 91
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1395,6 +1395,69 @@ CREATE TABLE IF NOT EXISTS knowledge_digests (
     created_at         TIMESTAMP DEFAULT current_timestamp,
     updated_at         TIMESTAMP DEFAULT current_timestamp
 );
+
+-- chat_broker_tickets: v90. Opaque, short-lived tickets minted by the chat
+-- sandbox secret broker (ticket_repo().mint) so a sandboxed chat agent never
+-- holds the real ANTHROPIC_API_KEY / AGNES_TOKEN — only an opaque token the
+-- broker resolves server-side. Indexed on session_id so revoke_session can
+-- invalidate every outstanding ticket for a session in one statement.
+CREATE TABLE IF NOT EXISTS chat_broker_tickets (
+    token       VARCHAR PRIMARY KEY,
+    session_id  VARCHAR NOT NULL,
+    scope       VARCHAR NOT NULL,
+    expires_at  TIMESTAMP NOT NULL,
+    created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+CREATE INDEX IF NOT EXISTS idx_chat_broker_tickets_session_id ON chat_broker_tickets(session_id);
+
+-- v91: skill lint (store guardrails). store_lint_runs tracks each lint pass
+-- (scheduler | admin | publish trigger); store_lint_findings holds the
+-- *current* generation of findings per entity (replace-on-relint, no
+-- history retained here — dismissals below are the audit trail);
+-- store_lint_dismissals is a per-(entity, rule) admin dismissal keyed to the
+-- content_hash it was dismissed against, so a content change auto-resets it.
+CREATE TABLE IF NOT EXISTS store_lint_runs (
+    id               VARCHAR PRIMARY KEY,
+    trigger          VARCHAR NOT NULL,  -- 'scheduler' | 'admin' | 'publish'
+    started_at       TIMESTAMP NOT NULL,
+    finished_at      TIMESTAMP,
+    entities_linted  INTEGER NOT NULL DEFAULT 0,
+    entities_skipped INTEGER NOT NULL DEFAULT 0,
+    findings_count   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS store_lint_findings (
+    id           VARCHAR PRIMARY KEY,
+    run_id       VARCHAR NOT NULL,
+    entity_id    VARCHAR NOT NULL,
+    rule_id      VARCHAR NOT NULL,
+    severity     VARCHAR NOT NULL,
+    message      VARCHAR NOT NULL,
+    evidence     VARCHAR DEFAULT '{}',
+    doc_url      VARCHAR DEFAULT '',
+    content_hash VARCHAR DEFAULT '',
+    created_at   TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_store_lint_findings_entity ON store_lint_findings(entity_id);
+
+CREATE TABLE IF NOT EXISTS store_lint_dismissals (
+    entity_id     VARCHAR NOT NULL,
+    rule_id       VARCHAR NOT NULL,
+    dismissed_by  VARCHAR NOT NULL,
+    dismissed_at  TIMESTAMP NOT NULL,
+    content_hash  VARCHAR NOT NULL,
+    PRIMARY KEY (entity_id, rule_id)
+);
+
+-- Tracks the last lint per entity even when it produced zero findings, so
+-- the unchanged-content skip works for clean skills too (a findings-only
+-- read would return nothing after a clean lint and force a re-lint).
+CREATE TABLE IF NOT EXISTS store_lint_entity_state (
+    entity_id    VARCHAR PRIMARY KEY,
+    content_hash VARCHAR NOT NULL,
+    run_id       VARCHAR NOT NULL,
+    linted_at    TIMESTAMP NOT NULL
+);
 """
 
 
@@ -1761,7 +1824,26 @@ def get_system_db() -> duckdb.DuckDBPyConnection:
     Uses a single shared connection per DATA_DIR to avoid DuckDB lock
     conflicts between the main app and background tasks. Returns a cursor
     so callers can safely close() it without closing the underlying connection.
+
+    HARD INVARIANT: on a Postgres instance (``use_pg()``) the system state
+    lives in Postgres, not the system DuckDB — opening it would create a stale
+    ``state/system.duckdb`` file and read/write the wrong backend. This raises
+    ``RuntimeError`` there. Safe because the only sanctioned callers gate on
+    ``not use_pg()``: the DUCKDB arm of the repository factory
+    (``src/repositories/__init__.py``), the ``else`` branch in
+    ``connectors/internal/access.py``, and all CLI / scripts / tests. Every
+    request/startup opener has been moved behind a ``use_pg()`` guard or
+    rerouted through the repository factory.
     """
+    from src.repositories import use_pg
+
+    if use_pg():
+        raise RuntimeError(
+            "system DuckDB must not be opened on a Postgres instance — "
+            "route system-state reads through the src.repositories factory "
+            "(use_pg() is true)"
+        )
+
     global _system_db_conn, _system_db_path
     db_path = str(_get_state_dir() / "system.duckdb")
 
@@ -1784,6 +1866,65 @@ def get_system_db() -> duckdb.DuckDBPyConnection:
             _system_db_path = db_path
             _ensure_schema(_system_db_conn)
         return _maybe_instrument(_system_db_conn.cursor(), "system")
+
+
+_operational_db_conn: duckdb.DuckDBPyConnection | None = None
+_operational_db_path: str | None = None
+
+# DuckDB-local operational tables that are deliberately NOT part of the
+# dual-backend repository layer — transient state with a short TTL and no
+# Postgres mirror. They live in the dedicated operational DuckDB (never the
+# system DuckDB, which must not be opened on a Postgres instance).
+_OPERATIONAL_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS cli_auth_codes (
+    code_hash   VARCHAR PRIMARY KEY,
+    user_id     VARCHAR NOT NULL,
+    email       VARCHAR NOT NULL,
+    created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    expires_at  TIMESTAMP NOT NULL,
+    consumed_at TIMESTAMP
+);
+"""
+
+
+def get_operational_db() -> duckdb.DuckDBPyConnection:
+    """Get a connection to the ephemeral DuckDB-local operational DB.
+
+    Some operational tables are transient state with a short TTL and NO
+    Postgres mirror — deliberately DuckDB-only on both backends:
+
+      * ``cli_auth_codes`` — single-use browser-loopback CLI-login exchange
+        codes (``app/api/cli_auth.py``), ~2-minute TTL.
+      * ``slack_binding_codes`` / ``slack_binding_issue_log`` /
+        ``slack_binding_redeem_log`` — Slack identity-binding verification
+        codes (``services/slack_bot/binding.py``), ~10-minute TTL, created
+        lazily by that module's ``_ensure_table``.
+
+    These cannot live in the system DuckDB, which must never be opened on a
+    Postgres instance (``get_system_db()`` raises there). They get their own
+    file at ``{DATA_DIR}/state/operational.duckdb``. This accessor is
+    backend-agnostic (valid on DuckDB and Postgres alike). Cursor-per-call on a
+    shared singleton, mirroring ``get_system_db()`` so callers can ``.close()``
+    without dropping the underlying connection.
+    """
+    global _operational_db_conn, _operational_db_path
+    db_path = str(_get_state_dir() / "operational.duckdb")
+
+    with _system_db_lock:
+        if _operational_db_conn is None or _operational_db_path != db_path:
+            if _operational_db_conn is not None:
+                try:
+                    _operational_db_conn.close()
+                except Exception:
+                    pass
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            _operational_db_conn = _open_duckdb(db_path)
+            _apply_memory_caps(
+                _operational_db_conn, _SYSTEM_DB_MEMORY_LIMIT, label="get_operational_db"
+            )
+            _operational_db_conn.execute(_OPERATIONAL_SCHEMA_DDL)
+            _operational_db_path = db_path
+        return _maybe_instrument(_operational_db_conn.cursor(), "operational")
 
 
 def get_analytics_db() -> duckdb.DuckDBPyConnection:
@@ -1831,7 +1972,7 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
 
 
 def close_singleton_connections() -> None:
-    """Close both shared DuckDB connections so a subprocess can take the lock.
+    """Close the shared DuckDB connections so a subprocess can take the lock.
 
     Called from the DB-backend state-machine migrator-spawn path
     (`app.api.db_state.start_migration`) right before launching the migrator
@@ -1844,7 +1985,7 @@ def close_singleton_connections() -> None:
     flipped the backend to Postgres, the app process will be recreated by
     the host applier and these globals never need to re-open.
     """
-    global _system_db_conn, _analytics_db_conn
+    global _system_db_conn, _analytics_db_conn, _operational_db_conn
     with _system_db_lock:
         if _system_db_conn is not None:
             try:
@@ -1852,6 +1993,16 @@ def close_singleton_connections() -> None:
             except Exception:
                 pass
             _system_db_conn = None
+        # The operational DuckDB (cli_auth_codes / Slack binding codes) is a
+        # third long-lived singleton, guarded by the same _system_db_lock. On a
+        # Postgres instance it is the ONLY written DuckDB file, so its exclusive
+        # file lock must also be released before a migrator subprocess spawns.
+        if _operational_db_conn is not None:
+            try:
+                _operational_db_conn.close()
+            except Exception:
+                pass
+            _operational_db_conn = None
     with _analytics_db_lock:
         if _analytics_db_conn is not None:
             try:
@@ -5634,6 +5785,93 @@ def _v88_to_v89(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 89")
 
 
+def _v89_to_v90(conn: duckdb.DuckDBPyConnection) -> None:
+    """v89→v90: ``chat_broker_tickets`` — chat sandbox secret broker tickets.
+
+    Opaque, short-lived tickets minted by ``ticket_repo().mint`` so a
+    sandboxed chat agent never holds the real ``ANTHROPIC_API_KEY`` /
+    ``AGNES_TOKEN`` — only an opaque token the broker resolves server-side.
+
+    Idempotent CREATE TABLE/INDEX IF NOT EXISTS; fresh installs already get
+    the table from ``_SYSTEM_SCHEMA`` (no-op here). Sequential upgrades from
+    a v89 instance create it now.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_broker_tickets (
+            token       VARCHAR PRIMARY KEY,
+            session_id  VARCHAR NOT NULL,
+            scope       VARCHAR NOT NULL,
+            expires_at  TIMESTAMP NOT NULL,
+            created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_broker_tickets_session_id ON chat_broker_tickets(session_id)")
+    conn.execute("UPDATE schema_version SET version = 90")
+
+
+def _v90_to_v91(conn: duckdb.DuckDBPyConnection) -> None:
+    """v90→v91: skill lint (store guardrails) — ``store_lint_runs``,
+    ``store_lint_findings``, ``store_lint_dismissals``,
+    ``store_lint_entity_state``.
+
+    Additive-only; ``_SYSTEM_SCHEMA`` already creates all four tables on
+    fresh installs (no-op ``CREATE IF NOT EXISTS`` here).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS store_lint_runs (
+            id               VARCHAR PRIMARY KEY,
+            trigger          VARCHAR NOT NULL,
+            started_at       TIMESTAMP NOT NULL,
+            finished_at      TIMESTAMP,
+            entities_linted  INTEGER NOT NULL DEFAULT 0,
+            entities_skipped INTEGER NOT NULL DEFAULT 0,
+            findings_count   INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS store_lint_findings (
+            id           VARCHAR PRIMARY KEY,
+            run_id       VARCHAR NOT NULL,
+            entity_id    VARCHAR NOT NULL,
+            rule_id      VARCHAR NOT NULL,
+            severity     VARCHAR NOT NULL,
+            message      VARCHAR NOT NULL,
+            evidence     VARCHAR DEFAULT '{}',
+            doc_url      VARCHAR DEFAULT '',
+            content_hash VARCHAR DEFAULT '',
+            created_at   TIMESTAMP NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_store_lint_findings_entity ON store_lint_findings(entity_id)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS store_lint_dismissals (
+            entity_id    VARCHAR NOT NULL,
+            rule_id      VARCHAR NOT NULL,
+            dismissed_by VARCHAR NOT NULL,
+            dismissed_at TIMESTAMP NOT NULL,
+            content_hash VARCHAR NOT NULL,
+            PRIMARY KEY (entity_id, rule_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS store_lint_entity_state (
+            entity_id    VARCHAR PRIMARY KEY,
+            content_hash VARCHAR NOT NULL,
+            run_id       VARCHAR NOT NULL,
+            linted_at    TIMESTAMP NOT NULL
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 91")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6000,6 +6238,14 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # already creates it on fresh installs (no-op CREATE IF NOT
             # EXISTS here).
             _v88_to_v89(conn)
+            # v89→v90: chat_broker_tickets table (chat sandbox secret
+            # broker). _SYSTEM_SCHEMA already creates it on fresh installs
+            # (no-op CREATE IF NOT EXISTS here).
+            _v89_to_v90(conn)
+            # v90→v91: skill lint tables (store_lint_runs/findings/dismissals/entity_state).
+            # _SYSTEM_SCHEMA already creates them on fresh installs (no-op
+            # CREATE IF NOT EXISTS here).
+            _v90_to_v91(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -6231,6 +6477,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v87_to_v88(conn)
             if current < 89:
                 _v88_to_v89(conn)
+            if current < 90:
+                _v89_to_v90(conn)
+            if current < 91:
+                _v90_to_v91(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
@@ -6388,3 +6638,56 @@ def close_analytics_db() -> None:
             logger.debug("close_analytics_db: close raised (%s); ignoring", exc)
         _analytics_db_conn = None
         _analytics_db_path = None
+
+
+def checkpoint_operational_db() -> bool:
+    """Best-effort CHECKPOINT of the open operational DB singleton (#710).
+
+    ``operational.duckdb`` is a second long-lived DuckDB singleton (CLI-auth +
+    Slack-binding codes). Like ``get_system_db()`` the app holds the connection
+    for its whole lifetime, so DuckDB defers its automatic checkpoint and the
+    WAL never folds on its own — and on a Postgres-state instance this is the
+    ONLY written DuckDB file, so the system-DB checkpoint loop would otherwise
+    never touch it. Fold its WAL periodically so a non-graceful exit can't leave
+    a dirty WAL (there is no salvage-reopen path for this file).
+
+    Returns True when a CHECKPOINT ran, False when skipped (no open singleton —
+    never opens one implicitly) or when DuckDB refused; refusal is expected
+    under load and simply means the next tick retries. Mirrors
+    ``checkpoint_system_db()``.
+    """
+    with _system_db_lock:
+        if _operational_db_conn is None:
+            return False
+        try:
+            _operational_db_conn.execute("CHECKPOINT")
+            logger.debug("checkpoint_operational_db: CHECKPOINT ok")
+            return True
+        except Exception as exc:
+            logger.warning("checkpoint_operational_db: CHECKPOINT failed (%s); will retry next tick", exc)
+            return False
+
+
+def close_operational_db() -> None:
+    """Close the shared operational DB connection. Called on app shutdown.
+
+    Mirrors ``close_system_db()`` (best-effort CHECKPOINT then close, swallow
+    exceptions) so the ``operational.duckdb`` WAL is flushed into the main file
+    and the file is left clean. Skipping this would leave a populated ``.wal``
+    that the next process must replay on open — and unlike the system DuckDB
+    there is no salvage-reopen recovery path here, so a failed replay would wedge
+    CLI login + Slack binding until the file is deleted.
+    """
+    global _operational_db_conn, _operational_db_path
+    if _operational_db_conn:
+        try:
+            _operational_db_conn.execute("CHECKPOINT")
+            logger.debug("close_operational_db: CHECKPOINT ok")
+        except Exception as exc:
+            logger.warning("close_operational_db: CHECKPOINT failed (%s); proceeding to close", exc)
+        try:
+            _operational_db_conn.close()
+        except Exception as exc:
+            logger.debug("close_operational_db: close raised (%s); ignoring", exc)
+        _operational_db_conn = None
+        _operational_db_path = None

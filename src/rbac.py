@@ -90,8 +90,14 @@ def can_access_table(
     if not user_id:
         return False
 
+    # On Postgres never open the system DuckDB — the RBAC helpers below
+    # (is_user_admin / StackResolver / data_packages_repo) route through the
+    # repository factory when ``conn`` is None (see their use_pg() guards), so
+    # a raw system-DB handle is both unnecessary and forbidden on PG.
+    from src.repositories import use_pg
+
     should_close = False
-    if conn is None:
+    if conn is None and not use_pg():
         conn = get_system_db()
         should_close = True
     try:
@@ -112,6 +118,53 @@ def can_access_table(
 
         table_pkg_ids = {p["id"] for p in _dp_repo().list_packages_of_table(table_id)}
         return bool(pkg_ids_set & table_pkg_ids)
+    finally:
+        if should_close:
+            conn.close()
+
+
+def get_accessible_ids(
+    user,  # dict | SessionPrincipal
+    resource_type: str,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
+) -> Optional[frozenset]:
+    """Grant-based accessible id set for ``resource_type``. ``None`` means
+    "all" (admin).
+
+    Symmetric to :func:`get_accessible_tables` but generic over any
+    ``resource_grants`` resource_type (RECIPE, COLLECTION, DATA_PACKAGE, …)
+    and grant-model only — this is NOT the stack-gated table model, so it
+    must not be used for ``table`` access (see :func:`can_access_table` /
+    :func:`get_accessible_tables` for that).
+
+    For a ``SessionPrincipal``, returns the intersection id-set for
+    ``resource_type`` (never ``None`` — no admin god-mode for a co-session).
+    """
+    from app.auth.session_principal import SessionPrincipal
+
+    if isinstance(user, SessionPrincipal):
+        return frozenset(user.intersection.get(resource_type, frozenset()))
+
+    user_id = user.get("id")
+    if not user_id:
+        return frozenset()
+
+    # On Postgres never open the system DuckDB — see can_access_table above;
+    # is_user_admin / _allowed_ids_for_user route through the repository factory
+    # when conn is None.
+    from src.repositories import use_pg
+
+    should_close = False
+    if conn is None and not use_pg():
+        conn = get_system_db()
+        should_close = True
+    try:
+        from app.auth.access import is_user_admin, _allowed_ids_for_user
+
+        if is_user_admin(user_id, conn):
+            return None  # admin sees everything
+
+        return _allowed_ids_for_user(user_id, resource_type, conn)
     finally:
         if should_close:
             conn.close()
@@ -149,8 +202,12 @@ def get_accessible_tables(
     if not user_id:
         return []
 
+    # On Postgres never open the system DuckDB — see can_access_table above;
+    # all reads below route through the repository factory when conn is None.
+    from src.repositories import use_pg
+
     should_close = False
-    if conn is None:
+    if conn is None and not use_pg():
         conn = get_system_db()
         should_close = True
     try:

@@ -25,13 +25,14 @@ from fastapi import APIRouter, Depends
 from app.api.v2_cache import TTLCache
 from app.auth.dependencies import _get_db, get_current_user
 from src.audit_helpers import client_kind_from_user
-from src.rbac import can_access_table
+from src.rbac import get_accessible_tables
 
 from src.repositories import (
     audit_repo,
     bq_metadata_cache_repo,
     table_registry_repo,
 )
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 
@@ -75,11 +76,7 @@ def _examples_for(source_type: str, known_columns: list[str] | None) -> list[str
     if not known_columns:
         return []
     cols = set(known_columns)
-    return [
-        predicate
-        for predicate, required in _BQ_WHERE_TEMPLATES
-        if all(c in cols for c in required)
-    ]
+    return [predicate for predicate, required in _BQ_WHERE_TEMPLATES if all(c in cols for c in required)]
 
 
 def _fetch_hint(table_id: str, source_type: str, server_only: bool = False) -> str:
@@ -92,6 +89,13 @@ def _fetch_hint(table_id: str, source_type: str, server_only: bool = False) -> s
         return "server-only — not synced locally; query via `agnes query --remote`"
     if source_type == "bigquery":
         return f"agnes snapshot create {table_id} --select <cols> --where '<BQ predicate>' --limit <N>"
+    if source_type == "internal":
+        # Internal tables live in the server state backend and reach the
+        # analyst laptop only after the scheduled usage export lands in the
+        # pull manifest — on a fresh workspace there is NO local view yet, so
+        # "already local" would misroute a client straight into a failing
+        # local query (#898). `agnes query` auto-routes server-side either way.
+        return "query via `agnes query` (auto-routes server-side; local after the usage export + `agnes pull`)"
     return "already local — query directly via `agnes query`"
 
 
@@ -101,10 +105,10 @@ def _fetch_hint(table_id: str, source_type: str, server_only: bool = False) -> s
 # default `bq_max_scan_bytes` 5 GiB ceiling — at "large" you're already at
 # half the per-query gate and a naive `--remote` is likely to refuse.
 _SIZE_BUCKETS = (
-    (10 * 2**20, "small"),     # ≤10 MiB
-    (100 * 2**20, "small"),    # ≤100 MiB still small (analyst-laptop scale)
-    (1 * 2**30, "medium"),     # ≤1 GiB
-    (10 * 2**30, "large"),     # ≤10 GiB
+    (10 * 2**20, "small"),  # ≤10 MiB
+    (100 * 2**20, "small"),  # ≤100 MiB still small (analyst-laptop scale)
+    (1 * 2**30, "medium"),  # ≤1 GiB
+    (10 * 2**30, "large"),  # ≤10 GiB
 )
 
 
@@ -116,7 +120,9 @@ def _bucket_size(byte_count: int) -> str:
 
 
 def _materialized_parquet_size_bucket(
-    table_id: str, source_type: str, query_mode: str,
+    table_id: str,
+    source_type: str,
+    query_mode: str,
 ) -> str | None:
     """Size hint for rows whose data is on the server filesystem
     (``local`` or ``materialized``). Cheap ``Path.stat()``; never blocks.
@@ -130,6 +136,7 @@ def _materialized_parquet_size_bucket(
         return None
     try:
         from app.utils import resolve_local_parquet
+
         path = resolve_local_parquet(table_id, source_type)
         if path is None:
             return None
@@ -163,7 +170,9 @@ def _hint_for_row(
     if query_mode in ("local", "materialized"):
         return {
             "rough_size_hint": _materialized_parquet_size_bucket(
-                table_id, source_type, query_mode,
+                table_id,
+                source_type,
+                query_mode,
             ),
             "entity_type": None,
             "known_columns": [],
@@ -180,6 +189,7 @@ def _hint_for_row(
 
     # Remote: read from the persistent cache; never call BQ here.
     from app.api.bq_metadata_refresh import compute_freshness
+
     cache_row = bq_cache_index.get(table_id)
     freshness = compute_freshness(cache_row)
 
@@ -254,45 +264,56 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
 
     # One DB read for all remote-row metadata. Indexed by table_id so the
     # per-row loop below stays O(N).
-    bq_cache_index: dict[str, dict[str, Any]] = {
-        r["table_id"]: r for r in bq_metadata_cache_repo().list_all()
-    }
+    bq_cache_index: dict[str, dict[str, Any]] = {r["table_id"]: r for r in bq_metadata_cache_repo().list_all()}
 
     # RBAC is enforced fresh per request. Revoking a user's access to a
     # table takes effect on their next call to this endpoint, not after the
     # cache TTL expires.
+    #
+    # Resolve the accessible set ONCE for the whole request instead of
+    # calling can_access_table() per row (was ~8-9 serialized Postgres
+    # round-trips x ~115 rows = 600+ round-trips / request). `None` means
+    # admin/all; otherwise membership is a plain set lookup.
+    _accessible_ids = get_accessible_tables(user, conn)
+    allowed = None if _accessible_ids is None else set(_accessible_ids)
+
     visible = []
     for r in rows:
-        if not can_access_table(user, r["id"], conn):
+        if not (allowed is None or r["id"] in allowed):
             continue
         hint = _hint_for_row(r, bq_cache_index)
-        visible.append({
-            "id": r["id"],
-            "name": r.get("name") or r["id"],
-            "description": r.get("description") or "",
-            "source_type": r.get("source_type") or "",
-            "query_mode": r.get("query_mode") or "local",
-            # Distribution flag, decoupled from query_mode (#607): a
-            # server_only row is materialized/local on the server but excluded
-            # from `agnes pull`, so it must be queried via --remote. Surfaced
-            # as structured metadata so tooling doesn't have to parse the
-            # free-text description.
-            "server_only": bool(r.get("server_only")),
-            "sql_flavor": _flavor_for(r.get("source_type") or ""),
-            "where_examples": _examples_for(
-                r.get("source_type") or "", hint.get("known_columns"),
-            ),
-            "fetch_via": _fetch_hint(
-                r["id"], r.get("source_type") or "", bool(r.get("server_only")),
-            ),
-            "rough_size_hint": hint.get("rough_size_hint"),
-            "rows": hint.get("rows"),
-            "size_bytes": hint.get("size_bytes"),
-            "partition_by": hint.get("partition_by"),
-            "clustered_by": hint.get("clustered_by") or [],
-            "entity_type": hint.get("entity_type"),
-            "metadata_freshness": hint.get("metadata_freshness"),
-        })
+        visible.append(
+            {
+                "id": r["id"],
+                "name": r.get("name") or r["id"],
+                "description": r.get("description") or "",
+                "source_type": r.get("source_type") or "",
+                "query_mode": r.get("query_mode") or "local",
+                # Distribution flag, decoupled from query_mode (#607): a
+                # server_only row is materialized/local on the server but excluded
+                # from `agnes pull`, so it must be queried via --remote. Surfaced
+                # as structured metadata so tooling doesn't have to parse the
+                # free-text description.
+                "server_only": bool(r.get("server_only")),
+                "sql_flavor": _flavor_for(r.get("source_type") or ""),
+                "where_examples": _examples_for(
+                    r.get("source_type") or "",
+                    hint.get("known_columns"),
+                ),
+                "fetch_via": _fetch_hint(
+                    r["id"],
+                    r.get("source_type") or "",
+                    bool(r.get("server_only")),
+                ),
+                "rough_size_hint": hint.get("rough_size_hint"),
+                "rows": hint.get("rows"),
+                "size_bytes": hint.get("size_bytes"),
+                "partition_by": hint.get("partition_by"),
+                "clustered_by": hint.get("clustered_by") or [],
+                "entity_type": hint.get("entity_type"),
+                "metadata_freshness": hint.get("metadata_freshness"),
+            }
+        )
 
     return {
         "tables": visible,

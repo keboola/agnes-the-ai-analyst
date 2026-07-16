@@ -73,6 +73,7 @@ MigrationTask = GenericCopyTask
 # (the inspector would need a live connection), so we maintain an explicit
 # map for tables whose PK is NOT a single column named "id".
 _PK_COLUMNS: Dict[str, List[str]] = {
+    "chat_broker_tickets": ["token"],
     "user_group_members": ["user_id", "group_id"],
     "sync_state": ["table_id"],
     "instance_templates": ["key"],
@@ -92,6 +93,8 @@ _PK_COLUMNS: Dict[str, List[str]] = {
     "marketplace_plugins": ["marketplace_id", "name"],
     "user_store_installs": ["user_id", "entity_id"],
     "store_entity_votes": ["entity_id", "user_id"],
+    "store_lint_dismissals": ["entity_id", "rule_id"],
+    "store_lint_entity_state": ["entity_id"],
     "user_plugin_optouts": ["user_id", "marketplace_id", "plugin_name"],
     "knowledge_item_relations": ["item_a_id", "item_b_id", "relation_type"],
     "knowledge_votes": ["item_id", "user_id"],
@@ -246,10 +249,7 @@ def reset_target_state_tables(pg_engine: Engine) -> int:
     with pg_engine.begin() as conn:
         existing = set(
             conn.execute(
-                sa.text(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = 'public'"
-                )
+                sa.text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
             ).scalars()
         )
         present = [t for t in tables if t.name in existing]

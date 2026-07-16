@@ -588,6 +588,55 @@ def test_api_rejects_bad_slug_and_non_https(seeded_app):
     )
     assert r.status_code == 400
 
+    # SSRF: https but pointing at a private/reserved host — the clone runs
+    # server-side, so these must be rejected (audit L2). Chosen so the check
+    # short-circuits without an external DNS lookup: `localhost` is a literal
+    # deny, and a link-local IP needs no resolution.
+    for bad_url in ("https://localhost/x.git", "https://169.254.169.254/x.git"):
+        r = client.post(
+            "/api/marketplaces",
+            headers=token_headers,
+            json={"name": "X", "slug": "ssrf", "url": bad_url, **curator},
+        )
+        assert r.status_code == 400, f"{bad_url} -> {r.status_code}: {r.text}"
+        assert "private or reserved" in r.text, r.text
+
+
+def test_api_ssrf_allowlist_permits_trusted_host(seeded_app, monkeypatch):
+    """A deployer-configured allowlist (AGNES_SSRF_ALLOWED_HOSTS) exempts an
+    internal host from the private/reserved-network reject — the escape hatch
+    for an on-prem git host on a private network. Uses a link-local IP literal
+    as both URL host and allowlist entry so the match happens at the hostname
+    stage before any DNS resolution (hermetic); register() writes the registry
+    row only, no clone runs at request time."""
+    monkeypatch.setenv("AGNES_SSRF_ALLOWED_HOSTS", "169.254.169.254")
+    client = seeded_app["client"]
+    token_headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+    curator = {"curator_name": "Curator", "curator_email": "c@example.com"}
+    r = client.post(
+        "/api/marketplaces",
+        headers=token_headers,
+        json={
+            "name": "Internal",
+            "slug": "internal",
+            "url": "https://169.254.169.254/x.git",
+            **curator,
+        },
+    )
+    assert r.status_code == 201, r.text
+
+
+def test_ssrf_allowed_hosts_parsing(monkeypatch):
+    """get_ssrf_allowed_hosts normalizes a comma-separated env value (strip +
+    lowercase + drop empties) and treats an empty string as no allowlist."""
+    from app.instance_config import get_ssrf_allowed_hosts
+
+    monkeypatch.setenv("AGNES_SSRF_ALLOWED_HOSTS", " Git.Internal , ghe.corp ,")
+    assert get_ssrf_allowed_hosts() == frozenset({"git.internal", "ghe.corp"})
+
+    monkeypatch.setenv("AGNES_SSRF_ALLOWED_HOSTS", "")
+    assert get_ssrf_allowed_hosts() == frozenset()
+
 
 def test_api_rejects_ref_and_branch_together(seeded_app):
     client = seeded_app["client"]

@@ -6,10 +6,17 @@ both; the same return shapes must come back.
 
 from __future__ import annotations
 
+import hashlib
 import time
 from pathlib import Path
 
 import pytest
+
+
+def _sha(v: str) -> str:
+    # OAuth codes/tokens are stored hashed at rest (audit M4).
+    return hashlib.sha256(v.encode()).hexdigest()
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -119,7 +126,7 @@ def test_save_and_get_auth_code(repo):
     )
     row = repo.get_auth_code("auth-code-abc")
     assert row is not None
-    assert row["code"] == "auth-code-abc"
+    assert row["code"] == _sha("auth-code-abc")  # stored hashed, not raw (M4)
     assert row["client_id"] == "c1"
     assert row["scopes"] == ["read"]
     assert row["code_challenge"] == "challenge123"
@@ -163,7 +170,7 @@ def test_save_and_get_access_token(repo):
     )
     row = repo.get_access_token("tok-abc")
     assert row is not None
-    assert row["token"] == "tok-abc"
+    assert row["token"] == _sha("tok-abc")  # stored hashed, not raw (M4)
     assert row["client_id"] == "c1"
     assert row["scopes"] == ["read", "write"]
     assert row["subject"] == "user-id-2"
@@ -198,7 +205,7 @@ def test_save_and_get_refresh_token(repo):
     )
     row = repo.get_refresh_token("ref-abc")
     assert row is not None
-    assert row["token"] == "ref-abc"
+    assert row["token"] == _sha("ref-abc")  # stored hashed, not raw (M4)
     assert row["client_id"] == "c1"
     assert row["scopes"] == ["read"]
     assert row["subject"] == "user-id-3"

@@ -7,7 +7,7 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, Request, HTTPException
@@ -50,6 +50,7 @@ from src.repositories import (
     profile_repo,
     recipes_repo,
     store_entities_repo,
+    store_lint_repo,
     store_submissions_repo,
     sync_settings_repo,
     sync_state_repo,
@@ -488,10 +489,18 @@ def _read_agnes_ca_pem() -> Optional[str]:
         return None
 
 
+# Sentinel distinguishing "caller omitted conn" from "caller passed conn=None".
+# On Postgres a supplied request conn is ALWAYS None (the system DuckDB is never
+# opened), so None cannot tell an authenticated DB-backed caller (conn=Depends(
+# _get_db) → None on PG) apart from an anonymous page that passed no conn at all.
+# The sentinel captures that intent so the two stay distinguishable on Postgres.
+_CONN_UNSET: Any = object()
+
+
 def _build_context(
     request: Request,
     user: Optional[dict] = None,
-    conn: Optional[duckdb.DuckDBPyConnection] = None,
+    conn: Any = _CONN_UNSET,
     **extra,
 ) -> dict:
     """Build template context with config, user, and theme.
@@ -552,7 +561,23 @@ def _build_context(
     #
     # When no conn is supplied (e.g. public pages that don't need a DB round-trip)
     # we fall back to resolve_lines() directly with anonymous/no-plugin context.
-    if conn is not None:
+    #
+    # On Postgres the request conn is None (the system DuckDB must never be
+    # opened), but render_agent_prompt_banner → resolve_prompt routes through
+    # the repository factory with conn=None, so the admin-override path must
+    # still run under use_pg() to stay at parity with DuckDB — but ONLY for
+    # callers that actually opted into the DB-backed prompt by supplying the
+    # `conn` kwarg. Unauthenticated pages (/login, /first-time-setup,
+    # /login/password) omit conn entirely and must get the anonymous default on
+    # BOTH backends; gating the use_pg() branch on `conn is not None` alone would
+    # leak the admin install-prompt override to anonymous visitors on Postgres
+    # (where a supplied conn is always None). See PR #878 review.
+    from src.repositories import use_pg as _use_pg_banner
+
+    conn_supplied = conn is not _CONN_UNSET
+    conn = None if not conn_supplied else conn
+
+    if conn is not None or (conn_supplied and _use_pg_banner()):
         from src.welcome_template import render_agent_prompt_banner
 
         _script_text = render_agent_prompt_banner(conn, user=user, server_url=ctx_server_url)
@@ -701,13 +726,17 @@ async def login_page(request: Request):
         # Only short-circuit to the home route if the dev user is actually
         # seeded. Otherwise a 401 there would bounce back to /login and loop.
         from src.db import get_system_db
+        from src.repositories import use_pg
 
-        conn = get_system_db()
+        # _get_local_dev_user is factory-routed and ignores conn; on Postgres
+        # pass None so the system DuckDB is never opened (forbidden invariant).
+        conn = None if use_pg() else get_system_db()
         try:
             if _get_local_dev_user(conn):
                 return RedirectResponse(url=get_home_route(), status_code=302)
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
         # Fall through to the normal login form so the missing-seed error is visible.
 
     next_path = request.query_params.get("next", "")
@@ -1400,14 +1429,16 @@ async def library(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Library — the caller's accessible file Collections (bring-your-files)."""
-    from app.auth.access import can_access
+    from src.rbac import get_accessible_ids
     from app.resource_types import ResourceType
 
     is_admin = is_user_admin(user["id"], conn)
+    accessible_ids = get_accessible_ids(user, ResourceType.COLLECTION.value, conn)  # None => admin/all
+    allowed = None if accessible_ids is None else set(accessible_ids)
     cf_repo = corpus_files_repo()
     cards = []
     for col in file_corpora_repo().list():
-        if not is_admin and not can_access(user["id"], ResourceType.COLLECTION.value, col["id"], conn):
+        if not is_admin and allowed is not None and col["id"] not in allowed:
             continue
         files = cf_repo.list_for_corpus(col["id"])
         cards.append({**col, "file_count": len(files)})
@@ -1457,7 +1488,7 @@ async def catalog_table_detail(
     table. Falls back to 403 otherwise — analysts only see tables that
     belong to packages they're granted on.
     """
-    from app.auth.access import can_access
+    from src.rbac import get_accessible_ids
     from app.resource_types import ResourceType
 
     table_repo = table_registry_repo()
@@ -1466,20 +1497,34 @@ async def catalog_table_detail(
         raise HTTPException(status_code=404, detail="table_not_found")
 
     # Find every package that includes this table; gate access on
-    # admin god-mode OR a grant on ANY of those packages.
+    # admin god-mode OR a grant on ANY of those packages. Resolve the
+    # caller's accessible DATA_PACKAGE set ONCE (was a per-package
+    # `can_access` call) and the {package_id -> [table_id, ...]} member
+    # map in one bulk query (was a `list_tables(pkg_id)` call per
+    # package — the worst N+1 in this file).
     pkg_repo = data_packages_repo()
+    accessible_pkg_ids = get_accessible_ids(user, ResourceType.DATA_PACKAGE.value, conn)  # None => admin/all
+    is_admin = accessible_pkg_ids is None
     parent_packages = []
-    is_admin = is_user_admin(user["id"], conn)
     has_grant = False
     try:
-        # Walk packages (instances are small enough that this is fine).
+        # Bulk {package_id -> [table_id, ...]} membership map in one query
+        # (was a `list_tables(pkg_id)` call per package). Kept INSIDE the
+        # try/except so a bulk-query failure degrades gracefully (logged +
+        # fail-closed below) instead of 500ing the route — same contract as
+        # the per-package lookup it replaced.
+        member_map = pkg_repo.list_member_ids_bulk()
+        # Walk packages (instances are small enough that this is fine) —
+        # only to preserve name-ordering of `parent_packages` and find the
+        # ones that contain this table; membership itself is now a dict
+        # lookup, not a query.
         for p in pkg_repo.list(limit=10000):
-            mem_ids = {t["id"] for t in pkg_repo.list_tables(p["id"])}
+            mem_ids = member_map.get(p["id"], [])
             if table_id not in mem_ids:
                 continue
             parent_packages.append({"slug": p["slug"], "name": p["name"]})
             if not has_grant and not is_admin:
-                if can_access(user["id"], ResourceType.DATA_PACKAGE.value, p["id"], conn):
+                if p["id"] in accessible_pkg_ids:
                     has_grant = True
     except Exception:
         logger.warning("could not enumerate parent packages for %s", table_id, exc_info=True)
@@ -1896,6 +1941,49 @@ async def me_memory_mining(
     return templates.TemplateResponse(request, "me_memory_mining.html", _chrome_ctx(request, user))
 
 
+@router.get("/admin/store/lint", response_class=HTMLResponse)
+async def store_lint_admin_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Curator view of advisory skill-lint findings (#687).
+
+    Findings are rendered server-side (grouped per entity); the page's JS only
+    drives the "Audit now" and per-row Dismiss mutations against the admin lint
+    API. Dismissed findings are hidden unless ``?include_dismissed=true``.
+    """
+    include_dismissed = request.query_params.get("include_dismissed") == "true"
+    repo = store_lint_repo()
+    findings = repo.all_latest_findings(include_dismissed=include_dismissed)
+    entities = store_entities_repo()
+    groups: list[dict] = []
+    by_entity: dict[str, dict] = {}
+    for f in findings:
+        eid = f["entity_id"]
+        group = by_entity.get(eid)
+        if group is None:
+            ent = entities.get(eid)
+            group = {
+                "entity_id": eid,
+                "name": (ent or {}).get("name") or eid,
+                "type": (ent or {}).get("type") or "skill",
+                "findings": [],
+            }
+            by_entity[eid] = group
+            groups.append(group)
+        group["findings"].append(f)
+    return templates.TemplateResponse(
+        request,
+        "admin_store_lint.html",
+        {
+            **_chrome_ctx(request, user),
+            "groups": groups,
+            "last_run": repo.last_run(),
+            "include_dismissed": include_dismissed,
+        },
+    )
+
+
 @router.get("/admin/studio/suggestions", response_class=HTMLResponse)
 async def studio_suggestions_admin(
     request: Request,
@@ -2290,6 +2378,7 @@ async def store_edit(
         pending_sub=pending_sub,
         title_acronyms=TITLE_ACRONYMS,
         owner_username=entity.get("owner_username") or "",
+        lint_findings=store_lint_repo().latest_findings(entity_id, include_dismissed=False),
     )
     return templates.TemplateResponse(request, "store_edit.html", ctx)
 
@@ -3768,14 +3857,16 @@ def _chat_capability_snapshot(conn: duckdb.DuckDBPyConnection, user: dict) -> di
     sync, and rendering becomes a single round-trip with no client-side
     fetch races. JSON gets embedded by the template via ``| tojson``.
     """
-    from src.rbac import can_access_table
+    from src.rbac import get_accessible_tables
     from src.marketplace_filter import resolve_allowed_plugins
 
     by_source: dict[str, int] = {}
     try:
         all_tables = table_registry_repo().list_all()
+        accessible_ids = get_accessible_tables(user, conn)  # None => admin/all
+        allowed = None if accessible_ids is None else set(accessible_ids)
         for t in all_tables:
-            if not can_access_table(user, t["id"], conn):
+            if allowed is not None and t["id"] not in allowed:
                 continue
             src = t.get("source_type") or "unknown"
             by_source[src] = by_source.get(src, 0) + 1

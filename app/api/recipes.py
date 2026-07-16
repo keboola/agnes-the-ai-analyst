@@ -29,6 +29,7 @@ from app.api.data_packages import _validate_color, _validate_status
 from app.auth.access import can_access, is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
+from src.rbac import get_accessible_ids
 from src.repositories import audit_repo, recipes_repo
 
 logger = logging.getLogger(__name__)
@@ -143,16 +144,15 @@ async def list_recipes(
     """List recipes. Admin sees every row; non-admin sees only ``prod``
     rows the caller's groups have a ``resource_grants`` row for. Default
     visibility is *closed* — without a grant a recipe is hidden, matching
-    the data-package behavior on /catalog Browse."""
+    the data-package behavior on /catalog Browse.
+
+    Resolves the caller's accessible RECIPE id set once per request
+    (``get_accessible_ids``) instead of a per-row ``can_access`` check —
+    collapses an N+1 of resource_grants lookups into one."""
     rows = recipes_repo().list(search=search)
-    is_admin = is_user_admin(user["id"], conn)
-    if not is_admin:
-        rows = [
-            r
-            for r in rows
-            if (r.get("status") or "prod") == "prod"
-            and can_access(user["id"], ResourceType.RECIPE.value, r["id"], conn)
-        ]
+    allowed = get_accessible_ids(user, ResourceType.RECIPE.value, conn)
+    if allowed is not None:
+        rows = [r for r in rows if (r.get("status") or "prod") == "prod" and r["id"] in allowed]
     return {"items": [_serialize(r) for r in rows]}
 
 

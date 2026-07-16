@@ -116,6 +116,14 @@ See the [Migrating an existing VM to the non-root applier](#migrating-an-existin
   deploy backfills, subsequent deploys are no-ops. `app` and `scheduler`
   both `depends_on: { data-migrate: { condition: service_completed_successfully } }`
   so no request hits a partially-migrated database.
+- **Fresh deployments (no prior DuckDB) boot too.** On a brand-new data
+  volume there is no `system.duckdb`; the compose `data-migrate` command
+  passes `--missing-source-ok`, which turns the missing source into a
+  logged no-op (exit 0) so the boot proceeds straight to an
+  alembic-seeded PG. Operator-driven runs of
+  `python -m scripts.migrate_duckdb_to_pg` WITHOUT the flag still exit 2
+  on a missing source — during a real cutover a missing `system.duckdb`
+  means a mis-mounted volume, not a fresh install.
 
 ---
 

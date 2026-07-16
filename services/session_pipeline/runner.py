@@ -26,6 +26,7 @@ from src.repositories import (
     session_processor_state_repo,
     users_repo,
 )
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,13 +86,44 @@ def run_processor(
     conn: duckdb.DuckDBPyConnection,
     processor: SessionProcessor,
     session_data_dir: Path | None = None,
+    max_sessions_per_run: int | None = None,
 ) -> dict[str, Any]:
     """Run *processor* against every unprocessed session in
     *session_data_dir* (defaults to $SESSION_DATA_DIR or /data/user_sessions).
 
-    Returns a stats dict with: scanned, processed, skipped, errors,
+    Returns a stats dict with: scanned, processed, skipped, capped, errors,
     items_extracted, errors_detail. Caller (admin endpoint) puts this in the
     audit row and HTTP response body.
+
+    ``max_sessions_per_run``, when set, caps how many candidates get an
+    actual processing attempt (a ``processor.process_session()`` call) in
+    this call — the rest are left for the next scheduler tick. Bounds the
+    worst-case wall-clock/CPU cost of a single invocation (each attempt can
+    trigger multiple synchronous, blocking LLM calls); a burst of session
+    closures landing in the same tick no longer processes unboundedly in
+    one request. The cap is enforced on attempts, not on the raw candidate
+    count: ``scan_unprocessed_for`` uses a cheap mtime-based prefilter that
+    can surface candidates the hash-aware ``is_processed`` check below then
+    skips for free (e.g. a file whose mtime bumped but content didn't
+    change) — counting those against the budget would let skip-only
+    candidates consume the cap and starve genuinely unprocessed sessions
+    behind them. ``scanned`` always reflects the true total found;
+    ``capped`` reports how many were left un-visited when the budget ran
+    out, so operators can see a forming backlog before it becomes one.
+
+    A *failed* attempt still counts against the budget (unlike a free
+    ``is_processed`` skip) — deliberately: a session that raises can still
+    have burned real wall-clock/LLM cost before failing, so exempting
+    errors would reopen the unbounded-tick-duration problem this cap
+    exists to close. The accepted tradeoff (Devin Review, PR #894): a large
+    cluster of persistently-failing sessions sorted ahead of healthy ones
+    could consume the whole per-tick budget indefinitely, deferring the
+    healthy sessions behind them. This is an extension of the same
+    "no max_retries / dead letter" limitation already documented in the
+    module docstring above (a poison session already retries forever,
+    capped or not) rather than a new failure mode introduced by capping —
+    revisit together if it bites in practice (e.g. a separate error quota
+    or least-recently-attempted ordering).
     """
     effective_dir = session_data_dir if session_data_dir is not None else DEFAULT_SESSION_DATA_DIR
 
@@ -100,6 +132,7 @@ def run_processor(
         "scanned": 0,
         "processed": 0,
         "skipped": 0,
+        "capped": 0,
         "errors": 0,
         "items_extracted": 0,
         "errors_detail": [],
@@ -121,8 +154,20 @@ def run_processor(
     # session arrived via /api/upload/sessions (UUID dir) or the legacy
     # collector (OS-username dir).
     _identity_cache: dict[str, tuple[str | None, str | None]] = {}
+    attempts = 0
 
-    for dir_name, jsonl_path in candidates:
+    for idx, (dir_name, jsonl_path) in enumerate(candidates):
+        if max_sessions_per_run is not None and attempts >= max_sessions_per_run:
+            stats["capped"] = len(candidates) - idx
+            logger.info(
+                "Processor %s: hit %d-attempt budget after %d candidates; %d left for next tick",
+                processor.name,
+                max_sessions_per_run,
+                idx,
+                stats["capped"],
+            )
+            break
+
         session_key = f"{dir_name}/{jsonl_path.name}"
         try:
             file_hash = compute_file_hash(jsonl_path)
@@ -141,10 +186,14 @@ def run_processor(
         # do the authoritative is_processed check here so the runner is the
         # single place that decides "this exact (processor, session, hash)
         # tuple is already done". Cost: one extra SELECT per candidate, but
-        # only for files that survived directory scan.
+        # only for files that survived directory scan. Free with respect to
+        # the attempt budget above — it never calls the (expensive, LLM-
+        # driving) processor, so it can't be starved out by the cap.
         if repo.is_processed(processor.name, session_key, file_hash):
             stats["skipped"] += 1
             continue
+
+        attempts += 1
 
         if dir_name not in _identity_cache:
             _identity_cache[dir_name] = resolve_user_identity(dir_name)
@@ -198,11 +247,12 @@ def run_processor(
         stats["items_extracted"] += result.items_count
 
     logger.info(
-        "Processor %s: scanned=%d processed=%d skipped=%d errors=%d items=%d",
+        "Processor %s: scanned=%d processed=%d skipped=%d capped=%d errors=%d items=%d",
         processor.name,
         stats["scanned"],
         stats["processed"],
         stats["skipped"],
+        stats["capped"],
         stats["errors"],
         stats["items_extracted"],
     )
