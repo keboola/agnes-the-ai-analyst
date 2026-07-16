@@ -198,13 +198,14 @@ def materialize_query(
     # tempfiles off the overlayfs (e.g. onto the data disk) — see
     # storage_api.get_temp_root for the rationale.
     import tempfile
-    from connectors.keboola.storage_api import get_temp_root
+    from connectors.keboola.storage_api import get_temp_root, warn_if_scratch_survived
 
-    with tempfile.TemporaryDirectory(
+    _tmp_ctx = tempfile.TemporaryDirectory(
         prefix=f"kbc-export-{table_id}-",
         dir=get_temp_root(),
         ignore_cleanup_errors=True,
-    ) as tmpdir:
+    )
+    with _tmp_ctx as tmpdir:
         full_table_id = f"{bucket}.{source_table}"
 
         if export_filter.file_type == FILE_TYPE_PARQUET:
@@ -390,6 +391,8 @@ def materialize_query(
                     if tmp_parquet.exists():
                         tmp_parquet.unlink()
                     raise
+
+    warn_if_scratch_survived(_tmp_ctx.name)
 
     # Row count from the parquet, not from `stats["rows"]` — Storage API
     # sometimes omits totalRowsCount on small results, and the parquet is
@@ -949,6 +952,7 @@ def _extract_via_legacy(
         ExportFilter,
         KeboolaStorageClient,
         get_temp_root,
+        warn_if_scratch_survived,
     )
 
     bucket = tc.get("bucket", "")
@@ -985,35 +989,39 @@ def _extract_via_legacy(
         # the worker wrapper turns into a per-table error.
         export_filter = ExportFilter(where_filters=list(where_filters))
 
-    with tempfile.TemporaryDirectory(
+    _tmp_ctx = tempfile.TemporaryDirectory(
         prefix=f"kbc-export-{tc['name']}-",
         dir=get_temp_root(),
         ignore_cleanup_errors=True,
-    ) as tmpdir:
-        csv_path = Path(tmpdir) / f"{tc['name']}.csv"
-        client = KeboolaStorageClient(url=keboola_url, token=keboola_token)
-        client.export_table_to_csv(table_id, csv_path, export_filter=export_filter)
+    )
+    try:
+        with _tmp_ctx as tmpdir:
+            csv_path = Path(tmpdir) / f"{tc['name']}.csv"
+            client = KeboolaStorageClient(url=keboola_url, token=keboola_token)
+            client.export_table_to_csv(table_id, csv_path, export_filter=export_filter)
 
-        if not csv_path.exists() or csv_path.stat().st_size == 0:
-            # Storage API succeeded but produced no rows. Emit an empty
-            # parquet rather than crashing — same defensive behavior as
-            # `materialize_query`.
-            _open_consolidation_conn().execute(
-                f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{pq_path}' (FORMAT PARQUET)"
-            ).close()
-            return
+            if not csv_path.exists() or csv_path.stat().st_size == 0:
+                # Storage API succeeded but produced no rows. Emit an empty
+                # parquet rather than crashing — same defensive behavior as
+                # `materialize_query`.
+                _open_consolidation_conn().execute(
+                    f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{pq_path}' (FORMAT PARQUET)"
+                ).close()
+                return
 
-        # v27 typed-parquet path: use csv_to_parquet with PyArrow schema
-        # from Keboola metadata. Falls through to string typing when
-        # pyarrow_schema is None (metadata API unreachable).
-        csv_to_parquet(
-            csv_path=csv_path,
-            parquet_path=Path(pq_path),
-            dtypes=dtypes,
-            date_columns=date_columns,
-            pyarrow_schema=pyarrow_schema,
-            table_id=table_id,
-        )
+            # v27 typed-parquet path: use csv_to_parquet with PyArrow schema
+            # from Keboola metadata. Falls through to string typing when
+            # pyarrow_schema is None (metadata API unreachable).
+            csv_to_parquet(
+                csv_path=csv_path,
+                parquet_path=Path(pq_path),
+                dtypes=dtypes,
+                date_columns=date_columns,
+                pyarrow_schema=pyarrow_schema,
+                table_id=table_id,
+            )
+    finally:
+        warn_if_scratch_survived(_tmp_ctx.name)
 
 
 def compute_exit_code(stats: Dict[str, Any], total: int) -> int:

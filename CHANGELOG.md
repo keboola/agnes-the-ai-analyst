@@ -25,6 +25,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **Keboola export scratch dirs could leak silently, filling the data disk.**
+  `materialize_query` / `_extract_via_legacy` pass `ignore_cleanup_errors=True`
+  to their owning `TemporaryDirectory` so a cleanup failure never masks the
+  export's real exception — but that flag also silently swallows the failure,
+  so a leaked `kbc-export-*` dir was indistinguishable from a hard-kill
+  orphan and the only signal was the disk slowly filling (observed live:
+  disk climbed from 32% to 91% in under two hours on a 15-minute materialize
+  cadence, repeatedly failing table syncs on ENOSPC). Added
+  `warn_if_scratch_survived()`, called right after each export's
+  `TemporaryDirectory` block exits — logs a warning naming the surviving dir
+  instead of leaving operators to discover it via `df -h`.
+  `connectors/keboola/storage_api.py`, `connectors/keboola/extractor.py`.
 - **`UsageRepository.rebuild_rollups()` could crash the whole app process on DuckDB.**
   The `usage_tool_daily` / `usage_marketplace_item_daily` / `usage_marketplace_item_window`
   rollup producers deleted a day/period range then bulk-reinserted overlapping
