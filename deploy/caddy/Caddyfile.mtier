@@ -1,0 +1,8 @@
+:8080 {
+	reverse_proxy api1:8000 api2:8000 {
+		health_uri /readyz
+		health_interval 5s
+		fail_duration 10s
+		lb_policy round_robin
+	}
+}
