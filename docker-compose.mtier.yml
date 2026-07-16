@@ -1,0 +1,154 @@
+# M-tier role-split overlay (spec §3.8). Compose profile: mtier.
+#
+# Layer over docker-compose.yml + docker-compose.postgres.yml:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.postgres.yml \
+#       -f docker-compose.mtier.yml --profile mtier up
+#
+# Redis is a placeholder for WS C — the startup guard (app/startup_guards.py)
+# only checks instance.yaml::coordination.backend == "redis" today;
+# coordination itself lands next wave.
+#
+# The base docker-compose.yml `app` and `scheduler` services carry no
+# `profiles:` (they're "always on" per Compose semantics), so they'd start
+# alongside the role-split services on `--profile mtier up` and fight over
+# the same `data` volume / DATABASE_URL wiring. Gate them behind an unused
+# profile here so only the role services boot for this topology.
+services:
+  app:
+    profiles: ["standalone"]
+  scheduler:
+    profiles: ["standalone"]
+
+  # api1/api2 are intentionally two full, explicit stanzas rather than a
+  # YAML anchor (`&api_role` / `<<: *api_role`) — verified via
+  # `docker compose config` that Compose's `!reset` merge tag does not
+  # propagate through a `<<:` alias merge (api2 kept the inherited
+  # `ports: ["8000:8000"]` from the base `app` service, defeating the
+  # proxy-only-exposure intent). Explicit stanzas sidestep that.
+  api1:
+    extends: { file: docker-compose.yml, service: app }
+    ports: !reset []            # proxy-only exposure — no host ports
+    volumes:
+      # Mounted at a dedicated path, NOT shadowed onto a sub-path of the
+      # inherited `./config:/app/config:ro` mount — nesting a file bind
+      # mount inside an already-read-only host directory mount fails at
+      # container start ("read-only file system" creating the mountpoint).
+      # CONFIG_DIR below repoints the loader (config/loader.py) here so the
+      # startup guard sees coordination.backend=redis.
+      - ./config/instance.mtier.yaml:/app/mtier-config/instance.yaml:ro
+    environment:
+      AGNES_ROLE: api
+      CONFIG_DIR: /app/mtier-config
+      DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      SESSION_SECRET: ${SESSION_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      data-migrate:
+        condition: service_completed_successfully
+    profiles: [mtier]
+  api2:
+    extends: { file: docker-compose.yml, service: app }
+    ports: !reset []
+    volumes:
+      - ./config/instance.mtier.yaml:/app/mtier-config/instance.yaml:ro
+    environment:
+      AGNES_ROLE: api
+      CONFIG_DIR: /app/mtier-config
+      DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      SESSION_SECRET: ${SESSION_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      data-migrate:
+        condition: service_completed_successfully
+    profiles: [mtier]
+  gateway:
+    extends: { file: docker-compose.yml, service: app }
+    ports: !reset []
+    volumes:
+      - ./config/instance.mtier.yaml:/app/mtier-config/instance.yaml:ro
+    environment:
+      AGNES_ROLE: gateway
+      CONFIG_DIR: /app/mtier-config
+      DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      SESSION_SECRET: ${SESSION_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      data-migrate:
+        condition: service_completed_successfully
+    profiles: [mtier]
+  worker:
+    extends: { file: docker-compose.yml, service: app }
+    ports: !reset []
+    volumes:
+      - ./config/instance.mtier.yaml:/app/mtier-config/instance.yaml:ro
+    environment:
+      AGNES_ROLE: worker
+      CONFIG_DIR: /app/mtier-config
+      DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      SESSION_SECRET: ${SESSION_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      data-migrate:
+        condition: service_completed_successfully
+    profiles: [mtier]
+  # docker-compose.postgres.yml's `data-migrate` one-shot is a *cutover*
+  # tool — it copies rows from an already-existing `system.duckdb` into
+  # Postgres, and mounts the `data` volume read-only so it never mutates
+  # DuckDB state. On a brand-new `data` volume (first-ever boot of this
+  # harness) there is no `system.duckdb` yet, so `data-migrate` fails with
+  # "DuckDB file not found" — that gap is pre-existing in the Postgres-
+  # cutover machinery, not something Tasks 1-6 touched, and out of scope to
+  # fix here. This one-shot bootstraps an empty, schema-migrated
+  # `system.duckdb` first so `data-migrate` has something (empty) to read.
+  # No DATABASE_URL here deliberately — `get_system_db()` raises if
+  # `use_pg()` is true, so this must run in plain DuckDB mode.
+  duckdb-seed:
+    extends: { file: docker-compose.yml, service: app }
+    ports: !reset []
+    command: ["python", "-c", "from src.db import get_system_db; get_system_db(); print('duckdb-seed: system.duckdb ready')"]
+    restart: "no"
+    profiles: [mtier]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    profiles: [mtier]
+  caddy-mtier:
+    image: caddy:2-alpine
+    ports: ["8080:8080"]
+    volumes:
+      - ./deploy/caddy/Caddyfile.mtier:/etc/caddy/Caddyfile:ro
+    depends_on: [api1, api2]
+    profiles: [mtier]
+
+  # Additive depends_on merge onto docker-compose.postgres.yml's
+  # `data-migrate` definition — see the duckdb-seed comment above.
+  data-migrate:
+    depends_on:
+      duckdb-seed:
+        condition: service_completed_successfully
+
+volumes:
+  # docker-compose.postgres.yml binds `postgres_data` straight to
+  # /data/postgres on the host (customer-instance VMs pre-create + chown it
+  # via the startup-script). That path doesn't exist on a laptop checkout;
+  # fall back to a plain Docker-managed volume for this local harness.
+  postgres_data: !override
+    driver: local
