@@ -3986,6 +3986,11 @@ a.app-header-logo:focus-visible {
        nav wraps to row 2. In-page search remains available on each surface. */
     .app-header-search { display: none; }
     .app-header-nav { order: 3; flex-basis: 100%; }
+    /* initPriorityNav() adds .is-priority regardless of viewport (it only
+       reacts to overflow, not screen width), which would otherwise force
+       flex-wrap: nowrap here and fight the two-row mobile layout above —
+       the nav needs to wrap on its own row, not overflow into "More". */
+    .app-header-nav.is-priority { flex-wrap: wrap; overflow: visible; }
     .app-nav-link { padding: 6px 10px; }
 }
 

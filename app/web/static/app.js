@@ -12,12 +12,21 @@
         var trigger = document.getElementById(triggerId);
         var panel = document.getElementById(panelId);
         if (!trigger || !panel) return;
+        // The primary nav's #navMore panel lives inside `.app-header-nav
+        // .is-priority`, which sets `overflow: hidden` so the priority-plus
+        // JS can measure available width. That same clip crops the open
+        // dropdown to the nav's own (thin) height. Toggle it off for the
+        // duration the panel is open — a no-op for dropdowns (user/admin
+        // menu) that aren't nested inside that overflow-clipped ancestor.
+        var clippedAncestor = panel.closest(".is-priority");
         function setOpen(open) {
             trigger.setAttribute("aria-expanded", open ? "true" : "false");
             if (open) {
                 panel.removeAttribute("hidden");
+                if (clippedAncestor) clippedAncestor.style.overflow = "visible";
             } else {
                 panel.setAttribute("hidden", "");
+                if (clippedAncestor) clippedAncestor.style.overflow = "";
             }
         }
         trigger.addEventListener("click", function () {
