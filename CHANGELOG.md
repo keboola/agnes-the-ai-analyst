@@ -22,6 +22,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   on an internal git server (e.g. an on-prem GitHub Enterprise on a private
   network). Accepts a YAML list or a comma-separated string; empty by default,
   so the guard stays fail-closed for every host not listed.
+- `SESSION_PROCESSOR_MAX_PER_RUN` (default 50) caps how many sessions a
+  single `/api/admin/run-session-processor` invocation processes; the rest
+  are deferred to the next scheduler tick instead of running unboundedly in
+  one request. Bounds the worst-case wall-clock/CPU cost of a burst of
+  session closures landing in the same tick (each candidate can trigger
+  multiple synchronous LLM calls). The response/audit-log stats gained a
+  `capped` field reporting how many sessions were deferred. Complements the
+  per-session time budget added for the verification processor above — this
+  caps how many *sessions* a run touches, that caps how long *one* session's
+  item loop can run.
+- `SCHEDULER_VERIFICATION_SCHEDULE` lets an operator pin the LLM-heavy
+  verification session-processor to a fixed off-peak time (e.g.
+  `"daily 04:15"`) instead of firing every N minutes/hours — useful when
+  daytime CPU contention with request-serving matters more than
+  near-real-time verification freshness. Falls back to the existing
+  interval-derived cadence when unset or invalid. Pair with a matching
+  `SCHEDULER_VERIFICATION_DETECTOR_INTERVAL` bump so the liveness probe's
+  staleness-warning grace window stays calibrated to the real cadence.
 
 ### Changed
 

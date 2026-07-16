@@ -71,6 +71,33 @@ def _get_processor_run_lock(name: str) -> threading.Lock:
         return _processor_run_locks[name]
 
 
+def _session_processor_max_per_run() -> Optional[int]:
+    """Cap on sessions processed per `/run-session-processor` invocation.
+
+    A burst of session closures landing in the same scheduler tick would
+    otherwise run unboundedly in one request — each candidate can trigger
+    multiple synchronous, blocking LLM calls (verification), holding the
+    handling thread and competing for CPU with request-serving for the
+    whole batch duration. Configurable via SESSION_PROCESSOR_MAX_PER_RUN;
+    "" or an invalid value disables the cap (returns None) rather than
+    failing the request — this is a protective default, not a hard
+    contract, so a misconfigured env var shouldn't 500 every scheduler tick.
+    Default 50: comfortably above a normal tick's session count, low enough
+    to bound worst-case tick duration under a burst or backlog.
+    """
+    raw = os.environ.get("SESSION_PROCESSOR_MAX_PER_RUN", "50")
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("SESSION_PROCESSOR_MAX_PER_RUN=%r is not an integer; cap disabled", raw)
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
 # SSRF protection: reject private/internal URLs for keboola_url
 import ipaddress as _ipaddress  # noqa: E402
 import socket as _socket  # noqa: E402
@@ -4103,7 +4130,7 @@ def run_session_processor(
     stats: dict = {}
     job_error: Optional[Exception] = None
     try:
-        stats = _run_processor(job_conn, proc)
+        stats = _run_processor(job_conn, proc, max_sessions_per_run=_session_processor_max_per_run())
         # Rebuild daily rollups after a successful usage run so the
         # marketplace / admin dashboards see fresh aggregates. Backend-aware
         # (#728 — the free-function DuckDB-only producer left rollups
@@ -4139,6 +4166,7 @@ def run_session_processor(
         "scanned": stats.get("scanned", 0),
         "processed": stats.get("processed", 0),
         "skipped": stats.get("skipped", 0),
+        "capped": stats.get("capped", 0),
         "errors": stats.get("errors", 0),
         "items_extracted": stats.get("items_extracted", 0),
     }
