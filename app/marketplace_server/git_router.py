@@ -217,7 +217,30 @@ async def _run_git_http_backend(env: dict, body: bytes) -> tuple[int, list[tuple
     stderr_chunks: list[bytes] = []
     stderr_task = asyncio.ensure_future(_drain_stderr(proc.stderr, stderr_chunks))
 
-    header_block = await _read_cgi_headers(proc.stdout)
+    try:
+        header_block = await _read_cgi_headers(proc.stdout)
+    except BaseException:
+        # Anything raised while reading headers — a malformed/over-long
+        # header line, or the awaiting task itself being cancelled — means
+        # `body_stream()` never gets created, so its `finally` (the only
+        # other place that kills the child and awaits stderr_task) never
+        # runs either. Without this, an interrupted fetch during this brief
+        # pre-streaming window leaks a hung `git http-backend` process and
+        # an orphaned drain task. Clean up the same way body_stream()'s
+        # finally does, then propagate the original failure.
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        await proc.wait()
+        stderr_task.cancel()
+        try:
+            await stderr_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        raise
+
     if not header_block:
         # stdout hit EOF before a single byte was written — a well-behaved
         # git http-backend always emits at least a Status:/Content-Type

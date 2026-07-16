@@ -531,6 +531,55 @@ class TestRunGitHttpBackendCrashBeforeHeaders:
             asyncio.run(asyncio.wait_for(run(), timeout=10))
 
 
+class TestRunGitHttpBackendCleansUpOnHeaderReadFailure:
+    """If reading CGI headers raises (or the awaiting task is cancelled)
+    before `body_stream()` is created, nothing else ever kills the child or
+    awaits the stderr-drain task — `body_stream()`'s `finally` is the only
+    other place that does that cleanup, and it never runs if the generator
+    is never returned. Left unhandled, an interrupted fetch during this
+    brief pre-streaming window leaks a hung subprocess."""
+
+    def test_header_read_failure_still_kills_the_child(self, monkeypatch):
+        import asyncio
+        import sys
+
+        from app.marketplace_server import git_router
+
+        # A child that would otherwise run well past the test timeout —
+        # proof that cleanup, not a natural exit, is what stops it.
+        stub = "import time\ntime.sleep(60)\n"
+        monkeypatch.setattr(
+            git_router,
+            "_GIT_HTTP_BACKEND",
+            (sys.executable, "-c", stub),
+        )
+
+        async def failing_read_cgi_headers(stdout):
+            raise ValueError("boom")
+
+        monkeypatch.setattr(git_router, "_read_cgi_headers", failing_read_cgi_headers)
+
+        captured_proc = {}
+        real_create_subprocess_exec = asyncio.create_subprocess_exec
+
+        async def spy_create_subprocess_exec(*args, **kwargs):
+            proc = await real_create_subprocess_exec(*args, **kwargs)
+            captured_proc["proc"] = proc
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spy_create_subprocess_exec)
+
+        async def run():
+            await git_router._run_git_http_backend(env={}, body=b"")
+
+        with pytest.raises(ValueError, match="boom"):
+            asyncio.run(asyncio.wait_for(run(), timeout=10))
+
+        assert captured_proc["proc"].returncode is not None, (
+            "subprocess was left running after _read_cgi_headers raised"
+        )
+
+
 class TestBuildCgiEnvContentLength:
     """CONTENT_LENGTH must reflect the buffered body actually sent to the
     subprocess's stdin, not the client's Content-Length header — a chunked
