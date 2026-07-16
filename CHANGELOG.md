@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.74.101] - 2026-07-16
+
 ### Fixed
 
 - Built-in marketplace plugins (`agnes-analyst`, `agnes-operator`) now ship
