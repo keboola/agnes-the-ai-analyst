@@ -238,7 +238,7 @@
       // first key to teach the shortcut on the fly.
       (function () {
         // Admin-only — short-circuit if the nav isn't there.
-        if (!document.getElementById('adminNavMenu')) return;
+        if (!document.getElementById('adminMenu')) return;
         const MAP = {
           't': '/admin/tables',          // (data packages)
           'a': '/admin/access',           // resource access
@@ -310,11 +310,11 @@
 
       // v55 admin command palette — Cmd/Ctrl-K opens a fuzzy-search
       // overlay over the same set of routes the admin nav exposes,
-      // plus a few common actions. Admin-only (gated on adminNavMenu
+      // plus a few common actions. Admin-only (gated on adminMenu
       // presence). Esc to close; arrows + Enter to navigate; the same
       // typing-into-input safeguards as the g+letter handler.
       (function () {
-        if (!document.getElementById('adminNavMenu')) return;
+        if (!document.getElementById('adminMenu')) return;
         const ITEMS = [
           { label: 'Tables / Data packages',      hint: 'admin · g t',  href: '/admin/tables' },
           { label: 'Resource access',             hint: 'admin · g a',  href: '/admin/access' },
