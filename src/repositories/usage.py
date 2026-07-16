@@ -426,9 +426,7 @@ class UsageRepository:
     def count_events_export(self, filters: dict) -> int:
         """Row count for the admin export's audit-log entry."""
         where_sql, params = self._export_where(filters)
-        row = self.conn.execute(
-            f"SELECT COUNT(*) FROM usage_events WHERE {where_sql}", params
-        ).fetchone()
+        row = self.conn.execute(f"SELECT COUNT(*) FROM usage_events WHERE {where_sql}", params).fetchone()
         return int(row[0] or 0)
 
     def export_events(self, filters: dict) -> tuple[list[str], list[tuple]]:
@@ -1335,21 +1333,32 @@ class UsageRepository:
             [cutoff_day],
         ).fetchall()
         buckets = _aggregate_events(events, curated_plugins, flea_entities, flea_plugins, group_by_day=False)
-        self.conn.execute(
-            "DELETE FROM usage_marketplace_item_window WHERE period_label = ?",
-            [period_label],
-        )
+        # DuckDB 1.5.4: a DELETE of the whole period_label followed by a bulk
+        # re-INSERT of overlapping keys in the same transaction can hit an
+        # internal PRIMARY KEY index assertion (duplicate-key false positive)
+        # that aborts the process uncatchably. INSERT ... ON CONFLICT DO
+        # UPDATE never deletes the row, so it never hits that path. Rows for
+        # entities that no longer have any events in the window are only
+        # cleared when the whole bucket set is empty.
         if buckets:
             self.conn.executemany(
                 """
                 INSERT INTO usage_marketplace_item_window
                     (period_label, source, type, parent_plugin, name, invocations, distinct_users)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (period_label, source, type, parent_plugin, name) DO UPDATE SET
+                    invocations = EXCLUDED.invocations,
+                    distinct_users = EXCLUDED.distinct_users
                 """,
                 [
                     (period_label, source, type_, parent, name, v["count"], len(v["users"]))
                     for (source, type_, parent, name), v in buckets.items()
                 ],
+            )
+        else:
+            self.conn.execute(
+                "DELETE FROM usage_marketplace_item_window WHERE period_label = ?",
+                [period_label],
             )
 
     def rebuild_rollups(self, *, since_day: "date | None" = None, force_30d: bool = False) -> None:
@@ -1379,8 +1388,16 @@ class UsageRepository:
             curated_plugins, flea_entities, flea_plugins = self._curated_flea_lookup()
             do_30d = force_30d or self._last_30d_due()
 
-            # ---- Legacy: usage_tool_daily (unchanged) ----
-            self.conn.execute("DELETE FROM usage_tool_daily WHERE day >= ?", [since_day])
+            # ---- Legacy: usage_tool_daily ----
+            # DuckDB 1.5.4: DELETE of this range then bulk INSERT-SELECT of
+            # overlapping (day, tool_name, source) keys in the same
+            # transaction deterministically hit an internal PRIMARY KEY index
+            # assertion ("Failed to append to PRIMARY_usage_tool_daily_*:
+            # duplicate key") that aborts the whole process uncatchably —
+            # observed in production every ~10-minute tick once ``since_day``'s
+            # boundary day held a key that got deleted and reinserted in the
+            # same commit. INSERT ... ON CONFLICT DO UPDATE never deletes the
+            # row, so it can't hit that path.
             self.conn.execute(
                 """
                 INSERT INTO usage_tool_daily
@@ -1397,6 +1414,11 @@ class UsageRepository:
                 WHERE CAST(occurred_at AS DATE) >= ?
                   AND tool_name IS NOT NULL
                 GROUP BY day, tool_name, source
+                ON CONFLICT (day, tool_name, source) DO UPDATE SET
+                    invocations = EXCLUDED.invocations,
+                    error_count = EXCLUDED.error_count,
+                    distinct_users = EXCLUDED.distinct_users,
+                    distinct_sessions = EXCLUDED.distinct_sessions
                 """,
                 [since_day],
             )
@@ -1420,19 +1442,27 @@ class UsageRepository:
             daily_buckets = _aggregate_events(
                 daily_events, curated_plugins, flea_entities, flea_plugins, group_by_day=True
             )
-            self.conn.execute("DELETE FROM usage_marketplace_item_daily WHERE day >= ?", [since_day])
+            # Same DELETE-then-bulk-INSERT-of-overlapping-keys hazard as
+            # usage_tool_daily above — see that comment. ON CONFLICT DO
+            # UPDATE avoids the delete+reinsert-same-key path entirely.
             if daily_buckets:
                 self.conn.executemany(
                     """
                     INSERT INTO usage_marketplace_item_daily
                         (day, source, type, parent_plugin, name, count, distinct_users, error_count)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (day, source, type, parent_plugin, name) DO UPDATE SET
+                        count = EXCLUDED.count,
+                        distinct_users = EXCLUDED.distinct_users,
+                        error_count = EXCLUDED.error_count
                     """,
                     [
                         (day, source, type_, parent, name, v["count"], len(v["users"]), v["errors"])
                         for (day, source, type_, parent, name), v in daily_buckets.items()
                     ],
                 )
+            else:
+                self.conn.execute("DELETE FROM usage_marketplace_item_daily WHERE day >= ?", [since_day])
 
             # ---- usage_marketplace_item_window period_label='last_7d' (full) ----
             cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).date()

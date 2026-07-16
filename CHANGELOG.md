@@ -148,6 +148,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **`UsageRepository.rebuild_rollups()` could crash the whole app process on DuckDB.**
+  The `usage_tool_daily` / `usage_marketplace_item_daily` / `usage_marketplace_item_window`
+  rollup producers deleted a day/period range then bulk-reinserted overlapping
+  keys within the same transaction; on DuckDB 1.5.4 this could hit an internal
+  PRIMARY KEY index assertion ("duplicate key") that aborted the process
+  uncatchably rather than raising a Python exception, taking down the whole
+  instance on the next scheduler tick whenever a key at the rolling window's
+  boundary got deleted and reinserted in the same commit. Switched all three
+  producers to `INSERT ... ON CONFLICT DO UPDATE`, which never deletes the row
+  so it can't hit that path. Postgres sibling is unaffected and intentionally
+  unchanged (documented in `usage_pg.py` — this is a DuckDB engine bug
+  workaround, not a general anti-pattern fix). `src/repositories/usage.py`.
 - **`use_pg()` re-parsed the state overlay YAML on every repo access.**
   Each `*_repo()` factory call ran `use_pg()` → `read_backend_state()` →
   uncached `yaml.safe_load()` of `$DATA_DIR/state/instance.yaml`, so a single

@@ -121,6 +121,22 @@ class TestRebuildRollupsToolDaily:
         assert row["invocations"] == 3
         assert row["tool_name"] == "Bash"
 
+    def test_repeated_rebuild_same_key_does_not_raise(self, tmp_path, monkeypatch):
+        """Regression: two rebuild_rollups calls whose since_day window both
+        cover the same (day, tool_name, source) key must not raise. The prior
+        DELETE-then-bulk-INSERT implementation hit a DuckDB 1.5.4 PRIMARY KEY
+        index assertion in production whenever a scheduler tick re-rebuilt a
+        window containing a key it had already written on a previous tick."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+        _seed_event(conn, occurred_at=today, tool_name="Edit", event_id="e-1")
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        _seed_event(conn, occurred_at=today, tool_name="Edit", event_id="e-2")
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        rows = conn.execute("SELECT invocations FROM usage_tool_daily WHERE tool_name = 'Edit'").fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == 2
+
     def test_distinct_users(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
