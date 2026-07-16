@@ -12,6 +12,7 @@ column is ``FLOAT[384]`` on DuckDB; the PG side validates length at write time.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 from typing import List, Optional
@@ -47,6 +48,24 @@ def _load_model():
 def embedding_available() -> bool:
     """True when an embedding model is loadable (the ``embeddings`` extra is in)."""
     return _load_model() is not None
+
+
+def embedding_capability() -> bool:
+    """Cheap availability probe that NEVER triggers a model load.
+
+    Response-labeling paths (``retrieval_mode`` in ``src/ingest/retrieval.py``)
+    call this on every search request — including ones where no chunk ranking
+    runs at all — so it must not pay ``_load_model``'s instantiation/download
+    cost just to compute a label. Uses the already-resolved state when
+    ``_load_model`` has run (the truth), else an import-spec probe: the extra
+    being importable is what separates hybrid from lexical-only deployments.
+    The one edge this can mislabel is an importable extra whose model fails to
+    load at runtime — the first real embed call resolves ``_model`` to False
+    and subsequent labels self-correct.
+    """
+    if _model is not None:
+        return bool(_model)
+    return importlib.util.find_spec("sentence_transformers") is not None
 
 
 def embed_texts(texts: List[str]) -> Optional[List[List[float]]]:

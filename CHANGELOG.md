@@ -10,6 +10,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.74.100] - 2026-07-16
+
+### Added
+
+- **Search responses now label the retrieval mode** (#898): `GET /api/collections/search`, `GET /api/knowledge/search`, and the MCP tools `collections_search` / `knowledge_search` (both transports, including the stdio offline fallback) carry a `retrieval: "hybrid" | "lexical_only"` field. Previously the lexical-only degradation that kicks in without the `agnes[embeddings]` extra was visible only in a server-side log line, so a client could not tell semantic-scored results from degraded ones.
+
+### Fixed
+
+- Catalog `fetch_via` hint for internal tables (`agnes_audit`, `agnes_sessions`, `agnes_telemetry`) no longer claims "already local" (#898) — on a fresh workspace no local view exists until the usage export lands in the pull manifest, so the old hint misrouted clients into a failing local query. It now points at the auto-routing `agnes query`.
+- MCP `describe` docstrings (stdio + server-side foundation tool) now document the actual sample shape (#898): `sample.rows` is a list of `{column: value}` objects and there is no `sample.columns` key — the docstring previously promised `{"columns": [...], "rows": [...]}`, which broke agents parsing the documented shape on empty tables.
+
 ## [0.74.99] - 2026-07-16
 
 ### Added
