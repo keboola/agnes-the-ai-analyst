@@ -718,7 +718,7 @@ class TestSchedulerJobsWireUp:
 
         target = next(j for j in build_jobs() if j[0] == "knowledge-packaging")
         _, schedule, endpoint, method, timeout = target
-        assert schedule == "every 15m"
+        assert schedule == "every 30m"
         assert endpoint == "/api/admin/run-knowledge-packaging"
         assert method == "POST"
         assert timeout == 600
@@ -735,7 +735,7 @@ class TestSchedulerJobsWireUp:
 
         target = next(j for j in build_jobs() if j[0] == "knowledge-digests")
         _, schedule, endpoint, method, timeout = target
-        assert schedule == "every 30m"
+        assert schedule == "every 1h"
         assert endpoint == "/api/admin/run-knowledge-digests"
         assert method == "POST"
         assert timeout == 900

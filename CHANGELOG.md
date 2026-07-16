@@ -23,6 +23,35 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   network). Accepts a YAML list or a comma-separated string; empty by default,
   so the guard stays fail-closed for every host not listed.
 
+### Changed
+
+- **Scheduler cadences reworked (`services/scheduler/__main__.py`).**
+  `session-collector` and the `usage` session-processor now default to a 60 min
+  interval (was 10 min); `knowledge-packaging` to 30 min (was 15) and
+  `knowledge-digests` to 60 min (was 30). The `verification` session-processor,
+  `corporate-memory` and `usage-prune` moved from intervals to fixed nightly
+  **times** — `daily 03:30`, `daily 03:45`, `daily 03:15` respectively — each
+  overridable via a new `SCHEDULER_VERIFICATION_SCHEDULE` /
+  `SCHEDULER_CORPORATE_MEMORY_SCHEDULE` / `SCHEDULER_USAGE_PRUNE_SCHEDULE` env
+  (accepts any schedule grammar, incl. an interval, so deployers can revert).
+  `store-reap-stuck-reviews` is now env-driven (`SCHEDULER_REAP_STUCK_REVIEWS_INTERVAL`,
+  default 120 min) instead of a hardcoded 15 min.
+- **Jira self-healing jobs (`jira-sla-poll`, `jira-consistency-check`) are now
+  DEFAULT-OFF.** They were always no-ops on non-Jira deployments (the endpoints
+  short-circuit without `JIRA_*` env); they're now omitted from the JOBS list
+  entirely unless a deployer opts in per job via `SCHEDULER_JIRA_SLA_POLL_INTERVAL`
+  / `SCHEDULER_JIRA_CONSISTENCY_INTERVAL` (seconds).
+
+### Removed
+
+- **`session_pipeline` health check disabled (`GET /api/health/detailed`).** It
+  derived its staleness grace from the verification-detector *interval* cadence
+  (2× cadence); with verification now on a fixed daily schedule that grace no
+  longer makes sense and would emit a permanent false `warning`. The check was
+  also a heavy probe (stat of every `/data/user_sessions/**/*.jsonl` + a
+  `session_processor_state` query). The helper is retained (commented out) for a
+  cheap re-enable if verification ever returns to an interval cadence.
+
 ### Fixed
 
 - **`use_pg()` re-parsed the state overlay YAML on every repo access.**

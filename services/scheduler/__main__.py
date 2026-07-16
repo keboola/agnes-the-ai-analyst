@@ -76,20 +76,22 @@ _DEFAULTS = {
     "SCHEDULER_HEALTH_CHECK_INTERVAL": 5 * 60,
     "SCHEDULER_SCRIPT_RUN_INTERVAL": 1 * 60,
     "SCHEDULER_TICK_SECONDS": 30,
-    # LLM pipeline cadences (#176, #179 review). Defaults preserve the
-    # 10m / 15m / 17m coprime offset so the three jobs don't fire on the
-    # same tick and stack their API + DB load. The verification-detector
-    # default (900s) is also the source of truth for the health-check
-    # staleness grace window in app/api/health.py — single env var drives
-    # both, so an operator changing the cadence moves both.
-    "SCHEDULER_SESSION_COLLECTOR_INTERVAL": 10 * 60,
-    # Drives the verification session-processor cadence AND the
-    # health-check staleness grace window in app/api/health.py
-    # (single env var → both, so an operator changing the cadence moves
-    # both). Name retained post session-pipeline refactor for operator
-    # compatibility — existing docker-compose env files keep working.
+    # LLM pipeline cadences. session-collector + usage-processor run on a
+    # 60 min interval; corporate-memory + verification moved to fixed daily
+    # times (see build_jobs → _daily_schedule) so their heavy LLM passes run
+    # once overnight instead of every N minutes.
+    "SCHEDULER_SESSION_COLLECTOR_INTERVAL": 60 * 60,
+    # NOTE: no longer drives the verification scheduler job (that moved to a
+    # daily time via SCHEDULER_VERIFICATION_SCHEDULE). Retained only as the
+    # default cadence input for the health-check staleness grace window in
+    # app/api/health.py (_verification_detector_grace_seconds). That health
+    # check is currently DISABLED (session-pipeline check commented out), so
+    # this value is effectively vestigial — kept for a cheap re-enable.
     "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL": 15 * 60,
-    "SCHEDULER_USAGE_PROCESSOR_INTERVAL": 10 * 60,
+    "SCHEDULER_USAGE_PROCESSOR_INTERVAL": 60 * 60,
+    # NOTE: corporate-memory moved to a daily time (SCHEDULER_CORPORATE_MEMORY_SCHEDULE);
+    # this interval default is no longer read by build_jobs. Retained for
+    # backward compat with env files that still set it (silently ignored).
     "SCHEDULER_CORPORATE_MEMORY_INTERVAL": 17 * 60,
     # BigQuery metadata refresh: walks remote registry rows and updates the
     # persistent ``bq_metadata_cache``. Default 4 h — long enough that the
@@ -122,15 +124,19 @@ _DEFAULTS = {
     # K3 (#798) local knowledge packaging: rebuilds per-collection
     # knowledge.duckdb artifacts whose chunk content changed since the last
     # pass (fingerprint-only when idle — cheap). The ingest pipeline writes
-    # chunks asynchronously, so a 15 min ceiling on artifact staleness
-    # matches the corporate-memory cadence class.
-    "SCHEDULER_KNOWLEDGE_PACKAGING_INTERVAL": 15 * 60,
+    # chunks asynchronously, so a 30 min ceiling on artifact staleness keeps
+    # the rebuild cost bounded.
+    "SCHEDULER_KNOWLEDGE_PACKAGING_INTERVAL": 30 * 60,
     # K4 (#799) maintained digests: fingerprints each digest's instructions +
     # source corpora and regenerates via LLM only when the fingerprint
     # changed (fingerprint-only when idle — cheap; LLM only on change).
-    # Same cadence class as corporate-memory, but a longer default since
-    # digest regeneration is a heavier LLM call than the packaging rebuild.
-    "SCHEDULER_KNOWLEDGE_DIGESTS_INTERVAL": 30 * 60,
+    # Longer default since digest regeneration is a heavier LLM call than the
+    # packaging rebuild.
+    "SCHEDULER_KNOWLEDGE_DIGESTS_INTERVAL": 60 * 60,
+    # Stuck-review reaper (#7) cadence. Flips submissions stuck at
+    # status='pending_llm' past guardrails.stuck_review_grace_seconds to
+    # review_error. Cheap (indexed SELECT + small UPDATEs); default 120 min.
+    "SCHEDULER_REAP_STUCK_REVIEWS_INTERVAL": 120 * 60,
 }
 
 
@@ -193,6 +199,48 @@ def _seconds_to_schedule(seconds: int) -> str:
     # Ceiling division: -(-x // y) is the standard trick.
     minutes = max(1, -(-seconds // 60))
     return f"every {minutes}m"
+
+
+def _daily_schedule(env_name: str, default: str) -> str:
+    """Resolve a fixed daily schedule string, env-overridable.
+
+    Returns the value of ``env_name`` when it is a non-empty, valid schedule
+    (``is_valid_schedule`` — accepts "daily HH:MM", "every Nm/Nh", cron, …);
+    otherwise the ``default``. A typo in the env falls back to the default
+    rather than producing a schedule string ``is_table_due`` would silently
+    ignore — same defensive posture as ``_seconds_to_schedule`` /
+    ``_iw_sync_schedule``. Keeps the OSS app portable: deployers who want a
+    different time (or an interval) can override without a code change, while
+    the shipped default matches the Groupon cadence.
+    """
+    from src.scheduler import is_valid_schedule
+
+    raw = os.environ.get(env_name, "").strip()
+    if raw and is_valid_schedule(raw):
+        return raw
+    if raw:
+        logger.warning(
+            "scheduler: invalid %s=%r — falling back to %r", env_name, raw, default
+        )
+    return default
+
+
+def _optional_interval(env_name: str) -> Optional[str]:
+    """Resolve an interval-driven schedule that defaults to OFF.
+
+    Returns ``None`` when the env var is unset or explicitly disabled
+    (``""`` / ``off`` / ``disabled`` / ``none``) — ``build_jobs`` then omits
+    the job entirely (same "cleared → not inserted" contract as
+    ``_iw_sync_schedule``). Any other value is parsed as a positive-int number
+    of seconds and converted to an "every Nm/Nh" string; a non-integer raises
+    (operator typo, fail fast). Lets a deployer that actually uses the feature
+    (e.g. Jira ingest) turn the job on with ``SCHEDULER_..._INTERVAL=900``
+    without shipping the job enabled-by-default for everyone else.
+    """
+    raw = os.environ.get(env_name, "").strip().lower()
+    if raw in ("", "off", "disabled", "none"):
+        return None
+    return _seconds_to_schedule(_read_positive_int(env_name))
 
 
 _IW_SYNC_SCHEDULE_DEFAULT = "daily 03:30"
@@ -316,30 +364,27 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
     health = _read_positive_int("SCHEDULER_HEALTH_CHECK_INTERVAL")
     scripts = _read_positive_int("SCHEDULER_SCRIPT_RUN_INTERVAL")
     sess = _read_positive_int("SCHEDULER_SESSION_COLLECTOR_INTERVAL")
-    verify = _read_positive_int("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL")
     usage = _read_positive_int("SCHEDULER_USAGE_PROCESSOR_INTERVAL")
-    corpmem = _read_positive_int("SCHEDULER_CORPORATE_MEMORY_INTERVAL")
     bqmeta = _read_positive_int("SCHEDULER_BQ_METADATA_REFRESH_INTERVAL")
     kbsl = _read_positive_int("SCHEDULER_KEBOOLA_SEMANTIC_LAYER_REFRESH_INTERVAL")
-    usageprune = _read_positive_int("SCHEDULER_USAGE_PRUNE_INTERVAL")
-    jirasla = _read_positive_int("SCHEDULER_JIRA_SLA_POLL_INTERVAL")
-    jiraconsis = _read_positive_int("SCHEDULER_JIRA_CONSISTENCY_INTERVAL")
+    reap = _read_positive_int("SCHEDULER_REAP_STUCK_REVIEWS_INTERVAL")
     kpkg = _read_positive_int("SCHEDULER_KNOWLEDGE_PACKAGING_INTERVAL")
     kdig = _read_positive_int("SCHEDULER_KNOWLEDGE_DIGESTS_INTERVAL")
     tick = _read_positive_int("SCHEDULER_TICK_SECONDS")
+    # Daily jobs (corporate-memory / usage-prune / verification) and the
+    # optional Jira jobs are NOT part of this guard — it only bounds the tick
+    # against the shortest `every Nm/Nh` interval so an interval job can't
+    # consistently miss its cadence by up to one tick. Daily "HH:MM" jobs fire
+    # once a day and the tick granularity is irrelevant to them.
     smallest = min(
         refresh,
         health,
         scripts,
         sess,
-        verify,
         usage,
-        corpmem,
         bqmeta,
         kbsl,
-        usageprune,
-        jirasla,
-        jiraconsis,
+        reap,
         kpkg,
         kdig,
     )
@@ -354,13 +399,12 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         ("health-check", _seconds_to_schedule(health), "/api/health", "GET", 30),
         ("script-runner", _seconds_to_schedule(scripts), "/api/scripts/run-due", "POST", 600),
         ("marketplaces", "daily 03:00", "/api/marketplaces/sync-all", "POST", 900),
-        # LLM pipeline (#176, #179 review). Cadences are deliberately offset
-        # (10m / 15m / 17m by default — all coprime modulo the 30s tick) so
-        # the three LLM-driven jobs don't fire on the same tick and stack
-        # their API + DB load. Driven by env so an operator can throttle
-        # without a code change; the verification-detector cadence is the
-        # single source of truth for the health-check staleness grace
-        # window in app/api/health.py (which uses 2x the cadence).
+        # LLM pipeline. session-collector + usage run on a 60 min interval
+        # (env-throttleable); verification + corporate-memory moved to fixed
+        # nightly times (_daily_schedule) so their heavier LLM passes run once
+        # overnight rather than every N minutes. Times are env-overridable to
+        # keep the OSS app portable (a deployer can pick another time or fall
+        # back to an interval string).
         ("session-collector", _seconds_to_schedule(sess), "/api/admin/run-session-collector", "POST", 300),
         # session-pipeline processors — independent loops, each invoked on
         # its own cadence via the parametrized run-session-processor endpoint.
@@ -368,7 +412,7 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # in services/session_processors/__init__.py registry.
         (
             "session-processor:verification",
-            _seconds_to_schedule(verify),
+            _daily_schedule("SCHEDULER_VERIFICATION_SCHEDULE", "daily 03:30"),
             "/api/admin/run-session-processor?processor=verification",
             "POST",
             900,
@@ -380,7 +424,13 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
             "POST",
             300,
         ),
-        ("corporate-memory", _seconds_to_schedule(corpmem), "/api/admin/run-corporate-memory", "POST", 900),
+        (
+            "corporate-memory",
+            _daily_schedule("SCHEDULER_CORPORATE_MEMORY_SCHEDULE", "daily 03:45"),
+            "/api/admin/run-corporate-memory",
+            "POST",
+            900,
+        ),
         # v30: TTL purge of blocked-bundle bytes. Cheap (just rmtree
         # + UPDATE), runs once daily at 04:00 UTC so the spike is
         # visible in audit_log without competing with the marketplaces
@@ -389,12 +439,13 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         ("store-blocked-purge", "daily 04:00", "/api/admin/run-blocked-purge", "POST", 600),
         # Stuck-review reaper (#7). A submission stays at
         # status='pending_llm' until the BackgroundTasks worker writes
-        # a verdict. If the worker crashes, the row sits forever. Run
-        # every 15 minutes; reap_stuck_llm_reviews flips rows older
-        # than guardrails.stuck_review_grace_seconds (default 1800)
-        # to review_error so admin can retry. Cheap (one indexed
-        # SELECT + N small UPDATEs); short timeout sufficient.
-        ("store-reap-stuck-reviews", "every 15m", "/api/admin/run-reap-stuck-reviews", "POST", 60),
+        # a verdict. If the worker crashes, the row sits forever.
+        # reap_stuck_llm_reviews flips rows older than
+        # guardrails.stuck_review_grace_seconds (default 1800) to
+        # review_error so admin can retry. Cheap (one indexed SELECT + N
+        # small UPDATEs); short timeout sufficient. Default 120 min,
+        # env-throttleable via SCHEDULER_REAP_STUCK_REVIEWS_INTERVAL.
+        ("store-reap-stuck-reviews", _seconds_to_schedule(reap), "/api/admin/run-reap-stuck-reviews", "POST", 60),
         # BigQuery metadata refresh — keeps ``bq_metadata_cache`` warm so
         # ``GET /api/v2/catalog`` never has to call BQ at request time.
         ("bq-metadata-refresh", _seconds_to_schedule(bqmeta), "/api/admin/run-bq-metadata-refresh", "POST", 1800),
@@ -411,30 +462,18 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
             900,
         ),
         # Usage event retention pruning. Reads USAGE_EVENTS_RETENTION_DAYS
-        # on the server side; short-circuits when unset or 0. Runs daily
-        # (default 86400s). Rollup tables untouched.
-        ("usage-prune", _seconds_to_schedule(usageprune), "/api/admin/usage/prune", "POST", 60),
-        # Jira self-healing pair (parity with the legacy Data Broker
-        # ``jira-sla-poll.timer`` and ``jira-consistency.timer`` systemd
-        # units). Both endpoints short-circuit when the JIRA_* env vars
-        # are not set, so a customer without Jira ingest pays nothing
-        # for these scheduler entries.
-        #
-        # poll-sla: refreshes elapsed_millis + status on open tickets
-        # whose snapshot would otherwise stagnate between webhooks.
-        # consistency-check: compares Jira API ↔ raw JSON ↔ parquet and
-        # backfills small gaps left behind by missed webhooks. The
-        # ``--max-age-days 30`` default in the endpoint matches the
-        # cadence: 30 min cadence × 30-day window keeps the cost
-        # bounded while catching realistic drift.
-        ("jira-sla-poll", _seconds_to_schedule(jirasla), "/api/admin/run-jira-sla-poll", "POST", 900),
+        # on the server side; short-circuits when unset or 0. Runs at a fixed
+        # nightly time (default 03:15, env-overridable). Rollup tables
+        # untouched.
         (
-            "jira-consistency-check",
-            _seconds_to_schedule(jiraconsis),
-            "/api/admin/run-jira-consistency-check",
+            "usage-prune",
+            _daily_schedule("SCHEDULER_USAGE_PRUNE_SCHEDULE", "daily 03:15"),
+            "/api/admin/usage/prune",
             "POST",
-            1800,
+            60,
         ),
+        # (Jira self-healing pair inserted below, only when explicitly enabled
+        # via SCHEDULER_JIRA_*_INTERVAL — default OFF. See _optional_interval.)
         # K3 (#798): per-collection knowledge.duckdb artifact rebuild.
         # Fingerprint-only when nothing changed since the last pass.
         ("knowledge-packaging", _seconds_to_schedule(kpkg), "/api/admin/run-knowledge-packaging", "POST", 600),
@@ -459,6 +498,24 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         jobs.insert(
             4,
             ("initial-workspace", iw_sched, "/api/admin/initial-workspace/sync-if-configured", "POST", 900),
+        )
+
+    # Jira self-healing pair (parity with the legacy Data Broker
+    # ``jira-sla-poll.timer`` / ``jira-consistency.timer`` systemd units).
+    # DEFAULT OFF: both endpoints short-circuit when the JIRA_* env vars are
+    # unset, so on a non-Jira deployment (the common case) they'd just tick
+    # empty. A deployer that ingests Jira opts in per job via
+    # ``SCHEDULER_JIRA_SLA_POLL_INTERVAL`` / ``SCHEDULER_JIRA_CONSISTENCY_INTERVAL``
+    # (seconds). poll-sla refreshes elapsed_millis + status on open tickets;
+    # consistency-check compares Jira API ↔ raw JSON ↔ parquet and backfills
+    # gaps left by missed webhooks.
+    jira_sla = _optional_interval("SCHEDULER_JIRA_SLA_POLL_INTERVAL")
+    if jira_sla is not None:
+        jobs.append(("jira-sla-poll", jira_sla, "/api/admin/run-jira-sla-poll", "POST", 900))
+    jira_consis = _optional_interval("SCHEDULER_JIRA_CONSISTENCY_INTERVAL")
+    if jira_consis is not None:
+        jobs.append(
+            ("jira-consistency-check", jira_consis, "/api/admin/run-jira-consistency-check", "POST", 1800)
         )
     return jobs
 

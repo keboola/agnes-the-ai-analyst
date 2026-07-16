@@ -390,14 +390,14 @@ class TestParseTimestamp:
 
 
 # ---------------------------------------------------------------------------
-# LLM pipeline cadence env vars (#179 review)
+# LLM pipeline cadences (js/new-scheduling)
 #
-# Three jobs (session-collector, verification-detector, corporate-memory) and
-# the health-check staleness grace must all derive from a single SCHEDULER_*
-# env var per job, so an operator changing the cadence in one place moves
-# both the schedule string and the grace window. The env var name was already
-# read in app/api/health.py before this change but didn't actually drive the
-# scheduler — this test pins the wired-up behavior.
+# session-collector + session-processor:usage run on a 60 min interval;
+# verification + corporate-memory moved to fixed nightly *times* (daily HH:MM,
+# env-overridable via SCHEDULER_*_SCHEDULE) so their heavier LLM passes run
+# once overnight instead of every N minutes. These tests pin the new defaults,
+# the env overrides (both interval and daily forms), and the input-validation
+# posture (interval jobs fail-fast on bad ints; daily jobs fall back on typos).
 # ---------------------------------------------------------------------------
 
 
@@ -407,9 +407,14 @@ _LLM_PIPELINE_ENV = (
     "SCHEDULER_TICK_SECONDS",
     "SCHEDULER_SCRIPT_RUN_INTERVAL",
     "SCHEDULER_SESSION_COLLECTOR_INTERVAL",
+    "SCHEDULER_USAGE_PROCESSOR_INTERVAL",
     "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL",
+    "SCHEDULER_VERIFICATION_SCHEDULE",
     "SCHEDULER_CORPORATE_MEMORY_INTERVAL",
+    "SCHEDULER_CORPORATE_MEMORY_SCHEDULE",
     "SCHEDULER_USAGE_PRUNE_INTERVAL",
+    "SCHEDULER_USAGE_PRUNE_SCHEDULE",
+    "SCHEDULER_REAP_STUCK_REVIEWS_INTERVAL",
     "SCHEDULER_JIRA_SLA_POLL_INTERVAL",
     "SCHEDULER_JIRA_CONSISTENCY_INTERVAL",
 )
@@ -421,16 +426,19 @@ def _clear_scheduler_env(monkeypatch) -> None:
 
 
 class TestLLMPipelineCadenceEnvVars:
-    """Three new env vars drive both the scheduler and the health grace window."""
+    """New default cadences + env overrides for the LLM pipeline jobs."""
 
-    def test_default_cadences_preserve_coprime_offset(self, monkeypatch) -> None:
-        """Defaults are 10m / 15m / 17m so the three jobs don't fire on the same tick."""
+    def test_default_cadences(self, monkeypatch) -> None:
+        """session-collector + usage → 60m interval; verification + corporate
+        memory → fixed nightly times."""
         _clear_scheduler_env(monkeypatch)
         from services.scheduler.__main__ import build_jobs
         jobs = {name: schedule for name, schedule, *_ in build_jobs()}
-        assert jobs["session-collector"]     == "every 10m"
-        assert jobs["session-processor:verification"] == "every 15m"
-        assert jobs["corporate-memory"]      == "every 17m"
+        # 3600s renders as the hour form ("every 1h"), not "every 60m".
+        assert jobs["session-collector"]               == "every 1h"
+        assert jobs["session-processor:usage"]         == "every 1h"
+        assert jobs["session-processor:verification"]  == "daily 03:30"
+        assert jobs["corporate-memory"]                == "daily 03:45"
 
     def test_session_collector_env_override_changes_cadence(self, monkeypatch) -> None:
         _clear_scheduler_env(monkeypatch)
@@ -439,34 +447,60 @@ class TestLLMPipelineCadenceEnvVars:
         jobs = {name: schedule for name, schedule, *_ in build_jobs()}
         assert jobs["session-collector"] == "every 5m"
         # Other LLM jobs must be unaffected.
-        assert jobs["session-processor:verification"] == "every 15m"
-        assert jobs["corporate-memory"]      == "every 17m"
+        assert jobs["session-processor:verification"] == "daily 03:30"
+        assert jobs["corporate-memory"]               == "daily 03:45"
 
-    def test_verification_detector_env_override_changes_cadence(self, monkeypatch) -> None:
+    def test_usage_processor_env_override_changes_cadence(self, monkeypatch) -> None:
         _clear_scheduler_env(monkeypatch)
-        monkeypatch.setenv("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL", "600")  # 10m
+        monkeypatch.setenv("SCHEDULER_USAGE_PROCESSOR_INTERVAL", "1800")  # 30m
         from services.scheduler.__main__ import build_jobs
         jobs = {name: schedule for name, schedule, *_ in build_jobs()}
-        assert jobs["session-processor:verification"] == "every 10m"
-        assert jobs["session-collector"] == "every 10m"
-        assert jobs["corporate-memory"]  == "every 17m"
+        assert jobs["session-processor:usage"] == "every 30m"
 
-    def test_corporate_memory_env_override_changes_cadence(self, monkeypatch) -> None:
+    def test_verification_schedule_env_override(self, monkeypatch) -> None:
+        """SCHEDULER_VERIFICATION_SCHEDULE overrides the daily time — and the
+        old SCHEDULER_VERIFICATION_DETECTOR_INTERVAL no longer touches it."""
         _clear_scheduler_env(monkeypatch)
-        monkeypatch.setenv("SCHEDULER_CORPORATE_MEMORY_INTERVAL", "1800")  # 30m
+        monkeypatch.setenv("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL", "600")  # ignored now
+        monkeypatch.setenv("SCHEDULER_VERIFICATION_SCHEDULE", "daily 04:10")
         from services.scheduler.__main__ import build_jobs
         jobs = {name: schedule for name, schedule, *_ in build_jobs()}
-        assert jobs["corporate-memory"]      == "every 30m"
-        assert jobs["session-collector"]     == "every 10m"
-        assert jobs["session-processor:verification"] == "every 15m"
+        assert jobs["session-processor:verification"] == "daily 04:10"
+
+    def test_corporate_memory_schedule_env_override(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_CORPORATE_MEMORY_SCHEDULE", "daily 05:20")
+        from services.scheduler.__main__ import build_jobs
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["corporate-memory"] == "daily 05:20"
+
+    def test_daily_schedule_garbage_falls_back_to_default(self, monkeypatch) -> None:
+        """A typo in a *_SCHEDULE env must NOT crash build_jobs nor produce an
+        unparseable schedule — fall back to the documented default."""
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_VERIFICATION_SCHEDULE", "not-a-schedule")
+        monkeypatch.setenv("SCHEDULER_CORPORATE_MEMORY_SCHEDULE", "daily 25:00")
+        from services.scheduler.__main__ import build_jobs
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["session-processor:verification"] == "daily 03:30"
+        assert jobs["corporate-memory"]               == "daily 03:45"
+
+    def test_daily_schedule_accepts_interval_form(self, monkeypatch) -> None:
+        """The *_SCHEDULE override accepts any valid grammar, incl. an interval
+        — so an OSS deployer can revert verification to an interval cadence."""
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_VERIFICATION_SCHEDULE", "every 20m")
+        from services.scheduler.__main__ import build_jobs
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["session-processor:verification"] == "every 20m"
 
     @pytest.mark.parametrize("var", [
         "SCHEDULER_SESSION_COLLECTOR_INTERVAL",
-        "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL",
-        "SCHEDULER_CORPORATE_MEMORY_INTERVAL",
+        "SCHEDULER_USAGE_PROCESSOR_INTERVAL",
     ])
     @pytest.mark.parametrize("bad", ["0", "-5", "abc", ""])
-    def test_invalid_llm_env_rejected(self, monkeypatch, var, bad) -> None:
+    def test_invalid_interval_env_rejected(self, monkeypatch, var, bad) -> None:
+        """The remaining interval-driven LLM jobs still fail fast on bad ints."""
         _clear_scheduler_env(monkeypatch)
         monkeypatch.setenv(var, bad)
         from services.scheduler.__main__ import build_jobs
@@ -474,21 +508,16 @@ class TestLLMPipelineCadenceEnvVars:
             build_jobs()
 
 
-class TestVerificationDetectorGraceFollowsCadence:
-    """The health-check grace window is 2x the cadence — same env var drives both."""
+class TestVerificationDetectorGrace:
+    """`_verification_detector_grace_seconds` is retained (health check that
+    used it is disabled) — keep its unit behavior pinned for a cheap re-enable.
+    It reads SCHEDULER_VERIFICATION_DETECTOR_INTERVAL directly; the scheduler no
+    longer derives the verification schedule from that env."""
 
-    def test_grace_doubles_when_env_overrides_cadence(self, monkeypatch) -> None:
+    def test_grace_doubles_when_env_set(self, monkeypatch) -> None:
         _clear_scheduler_env(monkeypatch)
         monkeypatch.setenv("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL", "600")  # 10m
         from app.api.health import _verification_detector_grace_seconds
-        from services.scheduler.__main__ import build_jobs
-
-        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
-        # Cadence and grace MUST be derived from the same env var, so an
-        # operator who throttles the detector for any reason (rate-limit,
-        # cost, debugging) gets a proportionally wider staleness window
-        # automatically — no second knob to forget.
-        assert jobs["session-processor:verification"] == "every 10m"
         assert _verification_detector_grace_seconds() == 2 * 600
 
     def test_grace_uses_default_cadence_when_env_unset(self, monkeypatch) -> None:
@@ -620,12 +649,13 @@ class TestRunLoopParallelism:
 
 
 # ---------------------------------------------------------------------------
-# usage-prune scheduler job
+# usage-prune scheduler job (now a fixed nightly time)
 # ---------------------------------------------------------------------------
 
 
 class TestUsagePruneJob:
-    """SCHEDULER_USAGE_PRUNE_INTERVAL drives the usage-prune job cadence."""
+    """usage-prune runs at a fixed nightly time (default 03:15), overridable
+    via SCHEDULER_USAGE_PRUNE_SCHEDULE."""
 
     def test_usage_prune_job_present_in_defaults(self, monkeypatch) -> None:
         _clear_scheduler_env(monkeypatch)
@@ -636,27 +666,60 @@ class TestUsagePruneJob:
         _, endpoint = jobs["usage-prune"]
         assert endpoint == "/api/admin/usage/prune"
 
-    def test_usage_prune_default_cadence_is_daily(self, monkeypatch) -> None:
+    def test_usage_prune_default_cadence_is_daily_time(self, monkeypatch) -> None:
         _clear_scheduler_env(monkeypatch)
         from services.scheduler.__main__ import build_jobs
 
         jobs = {name: schedule for name, schedule, *_ in build_jobs()}
-        # Default 86400s → every 24h
-        assert jobs["usage-prune"] == "every 24h"
+        assert jobs["usage-prune"] == "daily 03:15"
 
-    def test_usage_prune_env_override_changes_cadence(self, monkeypatch) -> None:
+    def test_usage_prune_schedule_env_override(self, monkeypatch) -> None:
         _clear_scheduler_env(monkeypatch)
-        monkeypatch.setenv("SCHEDULER_USAGE_PRUNE_INTERVAL", "3600")  # 1h
+        monkeypatch.setenv("SCHEDULER_USAGE_PRUNE_SCHEDULE", "daily 02:00")
         from services.scheduler.__main__ import build_jobs
 
         jobs = {name: schedule for name, schedule, *_ in build_jobs()}
-        assert jobs["usage-prune"] == "every 1h"
-        # Other jobs unaffected
-        assert jobs["session-collector"] == "every 10m"
+        assert jobs["usage-prune"] == "daily 02:00"
 
-    def test_usage_prune_invalid_env_rejected(self, monkeypatch) -> None:
+    def test_usage_prune_schedule_garbage_falls_back(self, monkeypatch) -> None:
         _clear_scheduler_env(monkeypatch)
-        monkeypatch.setenv("SCHEDULER_USAGE_PRUNE_INTERVAL", "0")
+        monkeypatch.setenv("SCHEDULER_USAGE_PRUNE_SCHEDULE", "nonsense")
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["usage-prune"] == "daily 03:15"
+
+
+# ---------------------------------------------------------------------------
+# store-reap-stuck-reviews scheduler job (now env-driven interval)
+# ---------------------------------------------------------------------------
+
+
+class TestReapStuckReviewsJob:
+    """store-reap-stuck-reviews cadence is env-driven (default 120m) rather
+    than hardcoded 'every 15m'."""
+
+    def test_reap_default_cadence(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: (schedule, endpoint) for name, schedule, endpoint, *_ in build_jobs()}
+        # 7200s renders as the hour form ("every 2h"), not "every 120m".
+        assert jobs["store-reap-stuck-reviews"][0] == "every 2h"
+        assert jobs["store-reap-stuck-reviews"][1] == "/api/admin/run-reap-stuck-reviews"
+
+    def test_reap_env_override_changes_cadence(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_REAP_STUCK_REVIEWS_INTERVAL", "900")  # 15m
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["store-reap-stuck-reviews"] == "every 15m"
+
+    @pytest.mark.parametrize("bad", ["0", "-5", "abc", ""])
+    def test_reap_invalid_env_rejected(self, monkeypatch, bad) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_REAP_STUCK_REVIEWS_INTERVAL", bad)
         from services.scheduler.__main__ import build_jobs
 
         with pytest.raises(ValueError):
@@ -664,54 +727,56 @@ class TestUsagePruneJob:
 
 
 class TestJiraSelfHealingJobs:
-    """SCHEDULER_JIRA_SLA_POLL_INTERVAL + SCHEDULER_JIRA_CONSISTENCY_INTERVAL
-    drive the two Jira maintenance jobs that bring Agnes back to parity with
-    the legacy Data Broker systemd timers."""
+    """The Jira maintenance pair is DEFAULT-OFF. A deployer that ingests Jira
+    opts in per job via SCHEDULER_JIRA_*_INTERVAL; on a non-Jira deployment the
+    jobs are omitted entirely so they don't tick empty."""
 
-    def test_jira_jobs_present_in_defaults(self, monkeypatch) -> None:
+    def test_jira_jobs_absent_by_default(self, monkeypatch) -> None:
         _clear_scheduler_env(monkeypatch)
         from services.scheduler.__main__ import build_jobs
 
-        jobs = {name: (schedule, endpoint) for name, schedule, endpoint, *_ in build_jobs()}
-        assert "jira-sla-poll" in jobs
-        assert "jira-consistency-check" in jobs
-        assert jobs["jira-sla-poll"][1] == "/api/admin/run-jira-sla-poll"
-        assert jobs["jira-consistency-check"][1] == "/api/admin/run-jira-consistency-check"
+        names = {name for name, *_ in build_jobs()}
+        assert "jira-sla-poll" not in names
+        assert "jira-consistency-check" not in names
 
-    def test_jira_default_cadences_match_legacy_systemd_units(self, monkeypatch) -> None:
-        """Defaults match connectors/jira/systemd/{jira-sla-poll,jira-consistency}.timer."""
+    @pytest.mark.parametrize("disable_word", ["off", "disabled", "none", ""])
+    def test_jira_explicit_disable_words_omit_job(self, monkeypatch, disable_word) -> None:
         _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_JIRA_SLA_POLL_INTERVAL", disable_word)
         from services.scheduler.__main__ import build_jobs
 
-        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
-        assert jobs["jira-sla-poll"] == "every 15m"
-        assert jobs["jira-consistency-check"] == "every 30m"
+        names = {name for name, *_ in build_jobs()}
+        assert "jira-sla-poll" not in names
 
-    def test_jira_sla_env_override_changes_cadence(self, monkeypatch) -> None:
+    def test_jira_sla_enabled_by_env(self, monkeypatch) -> None:
         _clear_scheduler_env(monkeypatch)
         monkeypatch.setenv("SCHEDULER_JIRA_SLA_POLL_INTERVAL", "300")  # 5m
         from services.scheduler.__main__ import build_jobs
 
-        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
-        assert jobs["jira-sla-poll"] == "every 5m"
-        # Other Jira job unaffected.
-        assert jobs["jira-consistency-check"] == "every 30m"
+        jobs = {name: (schedule, endpoint) for name, schedule, endpoint, *_ in build_jobs()}
+        assert "jira-sla-poll" in jobs
+        assert jobs["jira-sla-poll"] == ("every 5m", "/api/admin/run-jira-sla-poll")
+        # Consistency job stays off unless it too is opted in.
+        assert "jira-consistency-check" not in jobs
 
-    def test_jira_consistency_env_override_changes_cadence(self, monkeypatch) -> None:
+    def test_jira_consistency_enabled_by_env(self, monkeypatch) -> None:
         _clear_scheduler_env(monkeypatch)
         monkeypatch.setenv("SCHEDULER_JIRA_CONSISTENCY_INTERVAL", "3600")  # 1h
         from services.scheduler.__main__ import build_jobs
 
-        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
-        assert jobs["jira-consistency-check"] == "every 1h"
-        assert jobs["jira-sla-poll"] == "every 15m"
+        jobs = {name: (schedule, endpoint) for name, schedule, endpoint, *_ in build_jobs()}
+        assert "jira-consistency-check" in jobs
+        assert jobs["jira-consistency-check"] == ("every 1h", "/api/admin/run-jira-consistency-check")
+        assert "jira-sla-poll" not in jobs
 
     @pytest.mark.parametrize("var", [
         "SCHEDULER_JIRA_SLA_POLL_INTERVAL",
         "SCHEDULER_JIRA_CONSISTENCY_INTERVAL",
     ])
-    @pytest.mark.parametrize("bad", ["0", "-5", "abc", ""])
+    @pytest.mark.parametrize("bad", ["0", "-5", "abc"])
     def test_invalid_jira_env_rejected(self, monkeypatch, var, bad) -> None:
+        """A non-integer / non-positive value that ISN'T a disable word is an
+        operator typo → fail fast (empty string is a disable word, tested above)."""
         _clear_scheduler_env(monkeypatch)
         monkeypatch.setenv(var, bad)
         from services.scheduler.__main__ import build_jobs

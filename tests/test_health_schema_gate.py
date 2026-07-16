@@ -67,17 +67,18 @@ def test_info_severity_does_not_promote_overall(seeded_app, monkeypatch):
     """Issue #178: a service returning `status: info` must NOT push the
     headline to `degraded`. Only `warning`+ does that.
 
-    We synthesize an `info` entry by patching `_check_session_pipeline`
+    We synthesize an `info` entry by patching `_check_bq_billing_project`
     (any of the lazy checks would do) so we exercise the aggregator
-    without depending on a particular check's natural state.
+    without depending on a particular check's natural state. (Previously this
+    used `_check_session_pipeline`, disabled on js/new-scheduling.)
     """
     import app.api.health as health_mod
 
-    def _fake_session_pipeline():
+    def _fake_bq_config():
         return {"status": "info", "detail": "synthetic info entry"}
 
     monkeypatch.setattr(
-        health_mod, "_check_session_pipeline", _fake_session_pipeline
+        health_mod, "_check_bq_billing_project", _fake_bq_config
     )
 
     c = seeded_app["client"]
@@ -85,6 +86,6 @@ def test_info_severity_does_not_promote_overall(seeded_app, monkeypatch):
     r = c.get("/api/health/detailed", headers=_auth(token))
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["services"]["session_pipeline"]["status"] == "info"
+    assert body["services"]["bq_config"]["status"] == "info"
     # The critical assertion — info must not promote the headline.
     assert body["status"] == "healthy", body["status"]

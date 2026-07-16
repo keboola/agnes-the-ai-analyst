@@ -486,12 +486,20 @@ async def health_check_detailed(
     if bq_cfg is not None:
         checks["bq_config"] = bq_cfg
 
-    # Session pipeline (#176): warn when uploaded jsonls aren't getting
-    # processed by the verification-detector cadence.
-    try:
-        checks["session_pipeline"] = _check_session_pipeline()
-    except Exception as e:
-        checks["session_pipeline"] = {"status": "unknown", "detail": str(e)}
+    # Session pipeline (#176): DISABLED. This check derived its staleness
+    # grace window from the verification-detector *interval* cadence
+    # (grace = 2× cadence). Verification now runs on a fixed daily schedule
+    # (daily 03:30), so a 2×15m grace would flag the pipeline as stale for
+    # ~23h/day and emit a permanent false `warning`. It was also a heavy
+    # probe — stat of every /data/user_sessions/**/*.jsonl plus a
+    # session_processor_state query — on an endpoint that admin dashboards
+    # poll frequently. Left the helper (_check_session_pipeline) and its
+    # grace/stuck helpers in place so re-enabling is a one-line uncomment if
+    # verification ever returns to an interval cadence.
+    # try:
+    #     checks["session_pipeline"] = _check_session_pipeline()
+    # except Exception as e:
+    #     checks["session_pipeline"] = {"status": "unknown", "detail": str(e)}
 
     # Per-check audience tagging (issue #345 B): which checks does an
     # analyst care about vs. which are operator-only? An analyst seeing

@@ -25,8 +25,44 @@ from pathlib import Path
 import pytest
 
 
+# The session_pipeline health check was DISABLED on js/new-scheduling: the
+# verification processor moved from an interval cadence to a fixed daily time,
+# which would have made this check emit a permanent false `warning`. The
+# helper + its tests are retained (skipped) so re-enabling is a cheap revert.
+_CHECK_DISABLED = "session_pipeline health check disabled (verification is now daily)"
+
+
 def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+class TestSessionPipelineCheckDisabled:
+    """Pins the disable: /api/health/detailed must no longer surface a
+    session_pipeline entry, and a healthy instance stays 'healthy' (the daily
+    verification cadence can no longer drag the headline to 'degraded')."""
+
+    def test_session_pipeline_key_absent(self, seeded_app):
+        c = seeded_app["client"]
+        resp = c.get("/api/health/detailed", headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "session_pipeline" not in body["services"]
+
+    def test_stale_pipeline_does_not_degrade_headline(self, seeded_app):
+        """Old session jsonls with no processing would previously flip the
+        headline to 'degraded'; with the check disabled the instance stays
+        healthy."""
+        env = seeded_app["env"]
+        _make_session_file(env["data_dir"], "old.jsonl", mtime_ago_seconds=7200)
+        from datetime import timedelta
+
+        _seed_extraction_state(datetime.now(timezone.utc) - timedelta(hours=3))
+        c = seeded_app["client"]
+        resp = c.get("/api/health/detailed", headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "session_pipeline" not in body["services"]
+        assert body["status"] in ("healthy", "ok")
 
 
 def _seed_extraction_state(processed_at: datetime, session_file: str = "/data/user_sessions/x/y.jsonl"):
@@ -54,6 +90,7 @@ def _make_session_file(env_data_dir: Path, name: str, mtime_ago_seconds: int) ->
     return f
 
 
+@pytest.mark.skip(reason=_CHECK_DISABLED)
 class TestSessionPipelineHealthCheck:
     def test_no_session_files_returns_ok(self, seeded_app):
         """Empty /data/user_sessions/ is the cold-start case — not a warning."""
@@ -109,6 +146,7 @@ class TestSessionPipelineHealthCheck:
         assert services["session_pipeline"]["status"] == "warning"
 
 
+@pytest.mark.skip(reason=_CHECK_DISABLED)
 class TestSessionPipelineFIFOCheck:
     """FIFO check (#0.47.4): MAX-only comparison passes silently when
     the verification-detector skips a particular file but keeps processing

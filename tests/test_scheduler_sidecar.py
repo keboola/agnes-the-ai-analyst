@@ -20,8 +20,8 @@ def test_build_jobs_uses_documented_defaults(monkeypatch):
     assert jobs["script-runner"] == "every 1m"
     assert jobs["marketplaces"] == "daily 03:00"
     assert jobs["bq-metadata-refresh"] == "every 4h"
-    assert jobs["knowledge-packaging"] == "every 15m"
-    assert jobs["knowledge-digests"] == "every 30m"
+    assert jobs["knowledge-packaging"] == "every 30m"
+    assert jobs["knowledge-digests"] == "every 1h"
     assert resolved_tick_seconds() == 30
 
 
