@@ -1129,7 +1129,12 @@ async def lifespan(app):
         logger.info("Periodic state-DB CHECKPOINT disabled (AGNES_STATE_CHECKPOINT_INTERVAL_S=0)")
 
     # Background write-canary for /readyz — see app.api.health_probes. Same
-    # worker-only placement/lifecycle as the checkpoint task above.
+    # placement/lifecycle as the checkpoint task above: started here (in the
+    # uvicorn worker process), not create_app() (the --reload master must not
+    # touch the DB). "Worker" means the uvicorn worker process, not
+    # `Role.WORKER` — this task is intentionally NOT role-gated. Every
+    # replica (api/gateway/worker) serves /readyz and must self-report its
+    # own write-path health, so the canary runs on all of them.
     from app.api.health_probes import canary_loop
 
     _canary_task = asyncio.create_task(canary_loop(), name="readiness-canary")
