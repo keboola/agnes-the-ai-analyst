@@ -48,6 +48,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the lower-traffic siblings (profile, admin workspace-template, sync
   settings / table-subscriptions, pull-confirm). No payload change.
 - **Verification session processor no longer runs unbounded, starving the app under load.** `VerificationProcessor.process_session()` looped over every extracted verification item in a session with no cap, running one inline (blocking) LLM contradiction check per item; a single scheduled run against a session with dozens of items could run for over an hour inside a synchronous admin endpoint, exhausting the FastAPI threadpool and causing app-wide 503s on unrelated endpoints. `process_session()` now enforces a wall-clock time budget (180s) on its item loop: once exceeded it raises instead of returning, so — per the existing `SessionProcessor` contract — the session is left unprocessed and its remaining items are picked up on the next scheduler tick (cadence stays 15 minutes) rather than the run monopolizing the process indefinitely. Items already created on a prior tick no longer get a duplicate evidence row appended on retry — the duplicate-item branch now skips `create_evidence()` when evidence for the same `(source_user, source_ref)` was already recorded, so a session that spans multiple retries doesn't inflate its earliest items' confirmation count.
+- **Keyless chat auth: admin "test connection" + operator docs.** Follow-up to
+  the workload-identity LLM auth (0.74.95): the admin `POST
+  /api/admin/chat/secrets/test` probe now works in `workload_identity` mode —
+  it mints a federated token and runs a 1-token completion
+  (`readiness.test_wif_credentials`), the keyless analog of the static-key test,
+  so operators aren't left with only a runtime error as feedback. Auto-title
+  generation now also picks its credential off `chat_config.llm_auth` instead
+  of only checking for a static key's presence, so a stale `ANTHROPIC_API_KEY`
+  left set in `workload_identity` mode can no longer make it silently
+  authenticate with the wrong credential. Adds
+  [`docs/chat-keyless-auth.md`](docs/chat-keyless-auth.md) — the operator setup
+  guide (federation rule, env, config switch, verification, troubleshooting).
 
 ---
 
@@ -100,14 +112,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   backend-aware `_state_table_denylist()` opened a `get_system_db()` cursor on
   the DuckDB path without closing it; it now stores and closes it in a
   `try/finally`, matching the sibling `get_schema()`.
-- **Keyless chat auth: admin "test connection" + operator docs.** Follow-up to
-  the workload-identity LLM auth (0.74.95): the admin `POST
-  /api/admin/chat/secrets/test` probe now works in `workload_identity` mode —
-  it mints a federated token and runs a 1-token completion
-  (`readiness.test_wif_credentials`), the keyless analog of the static-key test,
-  so operators aren't left with only a runtime error as feedback. Adds
-  [`docs/chat-keyless-auth.md`](docs/chat-keyless-auth.md) — the operator setup
-  guide (federation rule, env, config switch, verification, troubleshooting).
 
 ---
 
