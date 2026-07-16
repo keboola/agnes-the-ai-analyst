@@ -31,6 +31,7 @@ from cli.lib.pull_sync import (
     SyncReport,
     _count_references,
     _link_or_copy,
+    _safe_segment,
     audit_invariants,
     run_stack_sync,
     sync_data_packages,
@@ -614,3 +615,96 @@ class TestRunStackSync:
         # pkg-b has 9 references.
         b_files = list((local_dir / "data" / "pkg-b").iterdir())
         assert len(b_files) == 9
+
+
+# ---------------------------------------------------------------------------
+# Path-segment sanitization (regression: "unsafe path segment: 'Agnes audit log'")
+# ---------------------------------------------------------------------------
+
+
+class TestSafeSegment:
+    def test_already_safe_names_pass_through_verbatim(self):
+        for name in ("agnes_audit", "foo__bar", "orders-2026", "a.b.c", "T1"):
+            assert _safe_segment(name) == name
+
+    def test_display_name_with_spaces_is_sanitized(self):
+        # The exact case that crashed every `agnes pull`.
+        assert _safe_segment("Agnes audit log") == "Agnes_audit_log"
+
+    def test_mixed_punctuation_is_coerced_and_trimmed(self):
+        assert _safe_segment("  spaced / weird!!name  ") == "spaced_weird_name"
+
+    def test_traversal_segments_are_rejected(self):
+        for bad in (".", ".."):
+            with pytest.raises(ValueError):
+                _safe_segment(bad)
+
+    def test_traversal_embedded_in_path_is_neutralized(self):
+        # A slash-bearing label can't traverse — the separator is coerced and
+        # leading dots stripped.
+        assert _safe_segment("../etc") == "etc"
+
+    def test_empty_or_unusable_names_raise(self):
+        for bad in ("", "   ", "///", "!!!"):
+            with pytest.raises(ValueError):
+                _safe_segment(bad)
+
+
+class TestSyncSanitizesTableNames:
+    def test_package_table_with_spaced_name_syncs(self, server, local_dir):
+        """Regression: a table whose display name has spaces used to raise
+        `unsafe path segment` and abort the whole package sync."""
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        pkg = {"slug": "internal", "tables": [_table("agnes_audit", "Agnes audit log")]}
+        state, report = sync_data_packages(
+            server_packages=[pkg], local_data_dir=local_data,
+            prev_state={}, fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+        )
+        assert report.added == 1
+        assert (local_data / "internal" / "Agnes_audit_log.parquet").exists()
+        # Idempotent re-pull: no refetch, no error, state stable.
+        state2, report2 = sync_data_packages(
+            server_packages=[pkg], local_data_dir=local_data,
+            prev_state=state, fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+        )
+        assert report2.added == 0
+        assert report2.updated == 0
+        assert set(state2["internal"]) == {"Agnes_audit_log"}
+
+    def test_one_unnameable_row_does_not_abort_the_rest(self, server, local_dir):
+        """A row whose name can't yield any safe segment is skipped, not fatal —
+        the remaining tables in the package still sync."""
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        pkg = {"slug": "mixed", "tables": [_table("t_ok", "orders"), _table("t_bad", "///")]}
+        state, report = sync_data_packages(
+            server_packages=[pkg], local_data_dir=local_data,
+            prev_state={}, fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+        )
+        assert report.added == 1
+        assert (local_data / "mixed" / "orders.parquet").exists()
+        assert set(state["mixed"]) == {"orders"}
+
+    def test_colliding_sanitized_names_resolve_deterministically(self, server, local_dir):
+        """Two distinct display names that fold to the same segment must not
+        silently overwrite each other, and the survivor must be independent of
+        manifest row order (lexicographically smaller raw label wins)."""
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        # Space (0x20) sorts before '/' (0x2f), so "Sales 2024" (t_a) wins.
+        a = _table("t_a", "Sales 2024")
+        b = _table("t_b", "Sales/2024")
+        for order in ([a, b], [b, a]):
+            shutil.rmtree(local_data / "sales", ignore_errors=True)
+            state, report = sync_data_packages(
+                server_packages=[{"slug": "sales", "tables": order}],
+                local_data_dir=local_data, prev_state={},
+                fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+            )
+            # One table synced; no crash, no double-write.
+            assert report.added == 1
+            assert set(state["sales"]) == {"Sales_2024"}
+            assert (local_data / "sales" / "Sales_2024.parquet").exists()
+            # Survivor is deterministic regardless of input order.
+            assert state["sales"]["Sales_2024"]["table_id"] == "t_a"
