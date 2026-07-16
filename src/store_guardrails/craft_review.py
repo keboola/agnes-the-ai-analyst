@@ -221,19 +221,23 @@ def craft_review(
 def default_craft_caller() -> Optional[CraftCaller]:
     """Build a ``CraftCaller`` bound to the instance's configured LLM.
 
-    Returns ``None`` when there's no Anthropic/LLM API key in the
-    environment, or when ``get_guardrails_llm_provider_ready()`` says the
-    guardrails LLM provider isn't ready — the same readiness gate
-    ``app/api/store.py``'s dry-run endpoint uses, so the linter's
-    "am I degraded" signal matches the guardrail pipeline's.
+    Returns ``None`` — i.e. the linter degrades to SL011/SL012 — unless BOTH
+    gates pass, exactly as ``app/api/store.py``'s dry-run endpoint gates its
+    LLM security review:
+
+    * ``get_guardrails_enabled()`` — the operator's master switch. Turning
+      guardrails off is a documented way to stop spending LLM tokens; the
+      linter must honour that intent rather than billing on every dry-run,
+      publish, and weekly audit just because a key happens to be present.
+    * ``get_guardrails_llm_provider_ready()`` — a usable provider/key exists.
 
     Unlike ``craft_review()``, the callable this returns lets
     ``CraftUnavailable`` propagate on failure (see module docstring) so
     ``skill_lint.lint_skill`` can distinguish "clean" from "unavailable".
     """
-    from app.instance_config import get_guardrails_llm_provider_ready
+    from app.instance_config import get_guardrails_enabled, get_guardrails_llm_provider_ready
 
-    if not get_guardrails_llm_provider_ready():
+    if not (get_guardrails_enabled() and get_guardrails_llm_provider_ready()):
         return None
 
     from .runner import default_api_key_loader, default_model_loader

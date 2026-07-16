@@ -66,16 +66,21 @@ class StoreLintRepository:
         return self._run_to_dict(row) if row else None
 
     def last_full_audit_run(self) -> Optional[Dict[str, Any]]:
-        """Most recent full-corpus audit run — ``scheduler`` or ``admin`` only.
+        """Most recent COMPLETED full-corpus audit run (``scheduler``/``admin``).
 
-        The audit self-guard must ignore per-publish (``trigger='publish'``)
-        runs: those fire on every skill publish, so counting them would let
-        routine publishing perpetually reset the interval and starve the
-        scheduled retro-audit.
+        Two filters, both load-bearing for the audit self-guard:
+
+        * ``trigger IN ('scheduler','admin')`` — per-publish runs fire on every
+          skill publish, so counting them would let routine publishing
+          perpetually reset the interval and starve the scheduled retro-audit.
+        * ``finished_at IS NOT NULL`` — an audit that crashed partway (or never
+          got a corpus) must not count as "we just audited", or one transient
+          failure would suppress retries for the whole min-interval.
         """
         row = self.conn.execute(
             f"SELECT {_RUN_COLS} FROM store_lint_runs "
-            "WHERE trigger IN ('scheduler', 'admin') ORDER BY started_at DESC LIMIT 1"
+            "WHERE trigger IN ('scheduler', 'admin') AND finished_at IS NOT NULL "
+            "ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
         return self._run_to_dict(row) if row else None
 

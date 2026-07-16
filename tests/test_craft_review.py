@@ -169,8 +169,21 @@ class TestDefaultCraftCaller:
         monkeypatch.setattr("app.instance_config.get_guardrails_llm_provider_ready", lambda: False)
         assert default_craft_caller() is None
 
-    def test_none_when_config_loader_raises(self, monkeypatch):
+    def test_none_when_guardrails_disabled_even_with_a_key(self, monkeypatch):
+        """`guardrails.enabled: false` is a documented way to stop spending
+        LLM tokens. The linter must honour that master switch instead of
+        billing on every dry-run/publish/audit just because a key exists —
+        it degrades to SL011/SL012 like any other keyless instance."""
         monkeypatch.setattr("app.instance_config.get_guardrails_llm_provider_ready", lambda: True)
+        monkeypatch.setattr("app.instance_config.get_guardrails_enabled", lambda: False)
+        monkeypatch.setattr("src.store_guardrails.runner.default_api_key_loader", lambda: "sk-test")
+        assert default_craft_caller() is None
+
+    def test_none_when_config_loader_raises(self, monkeypatch):
+        # Both gates must pass, else this asserts None for the wrong reason
+        # and never exercises the loader-raise path it is named for.
+        monkeypatch.setattr("app.instance_config.get_guardrails_llm_provider_ready", lambda: True)
+        monkeypatch.setattr("app.instance_config.get_guardrails_enabled", lambda: True)
 
         def _boom():
             raise RuntimeError("no key")
@@ -184,6 +197,7 @@ class TestDefaultCraftCaller:
         the degraded-mode SL011/SL012 rules instead of silently treating
         the failure as 'clean, nothing to report'."""
         monkeypatch.setattr("app.instance_config.get_guardrails_llm_provider_ready", lambda: True)
+        monkeypatch.setattr("app.instance_config.get_guardrails_enabled", lambda: True)
         monkeypatch.setattr("src.store_guardrails.runner.default_api_key_loader", lambda: "sk-test")
         monkeypatch.setattr("src.store_guardrails.runner.default_model_loader", lambda: "claude-haiku-4-5-20251001")
 
@@ -199,6 +213,7 @@ class TestDefaultCraftCaller:
 
     def test_returned_caller_maps_verdict_on_success(self, monkeypatch):
         monkeypatch.setattr("app.instance_config.get_guardrails_llm_provider_ready", lambda: True)
+        monkeypatch.setattr("app.instance_config.get_guardrails_enabled", lambda: True)
         monkeypatch.setattr("src.store_guardrails.runner.default_api_key_loader", lambda: "sk-test")
         monkeypatch.setattr("src.store_guardrails.runner.default_model_loader", lambda: "claude-haiku-4-5-20251001")
 

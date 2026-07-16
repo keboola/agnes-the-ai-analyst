@@ -93,6 +93,22 @@ def test_last_full_audit_run_none_when_only_publish_runs(repo):
     assert repo.last_full_audit_run() is None
 
 
+def test_last_full_audit_run_ignores_unfinished_runs(repo):
+    # A crashed audit (started, never finished) must NOT count as "we just
+    # audited" — otherwise one transient failure suppresses retries for the
+    # whole min-interval.
+    repo.start_run("scheduler")  # never finished
+    assert repo.last_full_audit_run() is None
+
+    done = repo.start_run("admin")
+    repo.finish_run(done, linted=2, skipped=0, findings=1)
+    assert repo.last_full_audit_run()["id"] == done
+
+    # A newer crashed run must not shadow the older completed one.
+    repo.start_run("scheduler")
+    assert repo.last_full_audit_run()["id"] == done
+
+
 def test_run_lifecycle_start_replace_finish_last_run(repo):
     run_id = repo.start_run("scheduler")
     assert run_id
