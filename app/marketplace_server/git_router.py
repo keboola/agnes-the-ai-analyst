@@ -89,7 +89,7 @@ def _server_error() -> Response:
     )
 
 
-def _build_cgi_env(request: Request, path: str, repo_path: Path, remote_user: Optional[str]) -> dict:
+def _build_cgi_env(request: Request, path: str, repo_path: Path, remote_user: Optional[str], body_length: int) -> dict:
     """Build the CGI/1.1 environment `git http-backend` expects.
 
     URL translation per `man git-http-backend`: the backend concatenates
@@ -97,6 +97,12 @@ def _build_cgi_env(request: Request, path: str, repo_path: Path, remote_user: Op
     `repo_path` already points at the exact bare repo for this caller (not a
     directory of repos), so `GIT_PROJECT_ROOT=repo_path` + `PATH_INFO=/<path>`
     resolves to `<repo_path>/<path>` — e.g. `<repo_path>/info/refs`.
+
+    `body_length` is `len()` of the buffered request body actually written to
+    the subprocess's stdin, not the client's `Content-Length` header — a
+    chunked-transfer request (no `Content-Length` at all) would otherwise
+    leave `CONTENT_LENGTH` unset and `git http-backend` reads a zero-length
+    body, failing the fetch even though the body was received in full.
     """
     env = dict(os.environ)
     env.update(
@@ -113,9 +119,8 @@ def _build_cgi_env(request: Request, path: str, repo_path: Path, remote_user: Op
     content_type = request.headers.get("content-type")
     if content_type:
         env["CONTENT_TYPE"] = content_type
-    content_length = request.headers.get("content-length")
-    if content_length is not None:
-        env["CONTENT_LENGTH"] = content_length
+    if body_length:
+        env["CONTENT_LENGTH"] = str(body_length)
     if remote_user:
         env["REMOTE_USER"] = remote_user
     # Modern git (protocol v2) negotiation — forward the client's declared
@@ -223,6 +228,21 @@ async def _run_git_http_backend(env: dict, body: bytes) -> tuple[int, list[tuple
                     break
                 yield chunk
         finally:
+            # A client disconnect mid-stream raises GeneratorExit here via
+            # StreamingResponse's aclose(), *before* the child has finished
+            # writing its pack output. Since nothing is reading proc.stdout
+            # anymore, a child with more than a pipe buffer's worth of pack
+            # data left to write blocks on write() and never exits on its
+            # own — kill it instead of waiting for a natural exit that may
+            # never come. Signalling an already-exited (zombie) process is a
+            # harmless no-op, so no race condition to guard beyond the
+            # ProcessLookupError case (fully reaped between the check and
+            # the call).
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
             await proc.wait()
             await stderr_task
             if proc.returncode not in (0, None):
@@ -277,7 +297,7 @@ async def _marketplace_git(path: str, request: Request):
 
     body = await request.body()
     remote_user = user.get("email") or user.get("id")
-    env = _build_cgi_env(request, path, repo_path, remote_user)
+    env = _build_cgi_env(request, path, repo_path, remote_user, len(body))
 
     try:
         status_code, headers, stream = await _run_git_http_backend(env, body)
