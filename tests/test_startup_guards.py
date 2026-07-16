@@ -41,7 +41,7 @@ def test_split_role_names_missing_secrets(monkeypatch):
         validate_deployment()
     assert "JWT_SECRET_KEY" in str(exc.value)
     assert "SESSION_SECRET" in str(exc.value)
-    assert "docs/DEPLOYMENT.md" in str(exc.value)
+    assert "docs/DEPLOYMENT.md#multi-process" in str(exc.value)
 
 
 def test_split_role_requires_redis_coordination(monkeypatch):
