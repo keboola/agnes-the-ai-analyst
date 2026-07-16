@@ -17,6 +17,42 @@ from cli.config import (
 
 auth_app = typer.Typer(help="Authentication commands")
 
+# Server-side PAT verification (import-token) hits a live endpoint, so the
+# timeout is generous and operator-tunable via AGNES_VERIFY_TIMEOUT (seconds)
+# for slow links or a transiently-loaded server.
+_VERIFY_TIMEOUT_DEFAULT = 15.0
+
+
+def _resolve_verify_timeout(raw: str | None) -> float:
+    """Verification HTTP timeout in seconds, overridable via AGNES_VERIFY_TIMEOUT.
+
+    Falls back to the default on an unset, non-numeric, or non-positive value so
+    a typo can never disable the timeout entirely.
+    """
+    if not raw:
+        return _VERIFY_TIMEOUT_DEFAULT
+    try:
+        val = float(raw)
+    except ValueError:
+        return _VERIFY_TIMEOUT_DEFAULT
+    return val if val > 0 else _VERIFY_TIMEOUT_DEFAULT
+
+
+def _warn_verify_unavailable(server_url: str, reason: str) -> None:
+    """Warn that server-side PAT verification could not complete, then proceed.
+
+    The token has already been decoded locally and was not rejected (no 401), so
+    a transient inability to verify — a read timeout, or a 5xx from an
+    overloaded endpoint — must not fail an otherwise-valid credential.
+    """
+    typer.echo(
+        f"Warning: could not verify token against {server_url} ({reason}). "
+        "The token decoded locally and was not rejected, so it will be saved. "
+        "If a later command reports it invalid, re-run "
+        "'agnes auth import-token' once the server is healthy.",
+        err=True,
+    )
+
 
 def _manual_token_hint() -> None:
     """Print the fallback path when the browser flow can't be used."""
@@ -237,30 +273,44 @@ def import_token(
     #    use /api/catalog/tables which is the lightest endpoint that every
     #    authenticated user can call and also exercises the PAT validation
     #    path (revocation, expiry, token_hash match).
+    #
+    #    Only a definitive rejection (401) aborts. A transient inability to
+    #    verify — the server unreachably slow (read timeout) or returning a 5xx
+    #    from an overloaded endpoint — must NOT fail a token that already decoded
+    #    locally: that turned a slow verify into a failed install. Those cases
+    #    warn and proceed, exactly as --skip-verify would.
     verify_url = get_server_url()
     if not skip_verify:
         headers = {"Authorization": f"Bearer {token}"}
+        resp = None
         try:
-            with httpx.Client(base_url=verify_url, headers=headers, timeout=15.0) as client:
+            timeout_s = _resolve_verify_timeout(os.environ.get("AGNES_VERIFY_TIMEOUT"))
+            with httpx.Client(base_url=verify_url, headers=headers, timeout=timeout_s) as client:
                 resp = client.get("/api/catalog/tables")
+        except httpx.ConnectError as e:
+            # Genuinely unreachable (bad URL / server down) — it can't be used.
+            typer.echo(f"Could not reach server {verify_url}: {e}", err=True)
+            raise typer.Exit(1)
+        except httpx.TransportError as e:
+            # Reachable but the call didn't complete (e.g. read timeout).
+            _warn_verify_unavailable(verify_url, f"request failed: {e}")
         except Exception as e:
             typer.echo(f"Could not reach server {verify_url}: {e}", err=True)
             raise typer.Exit(1)
-        if resp.status_code == 401:
-            detail = "unauthorized"
-            try:
-                detail = resp.json().get("detail", detail)
-            except Exception:
-                pass
-            typer.echo(f"Token rejected by server ({verify_url}): {detail}", err=True)
-            raise typer.Exit(1)
-        if resp.status_code >= 500:
-            typer.echo(
-                f"Server error from {verify_url} during verification "
-                f"(HTTP {resp.status_code}). Re-run with --skip-verify to bypass.",
-                err=True,
-            )
-            raise typer.Exit(1)
+
+        if resp is not None:
+            if resp.status_code == 401:
+                detail = "unauthorized"
+                try:
+                    detail = resp.json().get("detail", detail)
+                except Exception:
+                    pass
+                typer.echo(f"Token rejected by server ({verify_url}): {detail}", err=True)
+                raise typer.Exit(1)
+            if resp.status_code >= 500:
+                # Transient server fault (e.g. 503 from an overloaded endpoint) —
+                # not a token problem, and the token was not rejected.
+                _warn_verify_unavailable(verify_url, f"HTTP {resp.status_code}")
         # 4) Fallback claim lookup via a response the server might include.
         #    /api/catalog/tables doesn't return user info, but other JWT
         #    issuers might later gain an /auth/me. For now, we rely on JWT
