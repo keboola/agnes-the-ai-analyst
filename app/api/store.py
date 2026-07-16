@@ -48,6 +48,7 @@ from src.repositories import (
     audit_repo,
     store_entities_repo,
     store_entity_votes_repo,
+    store_lint_repo,
     store_submissions_repo,
     user_store_installs_repo,
     users_repo,
@@ -272,6 +273,9 @@ class DryRunResponse(BaseModel):
     inline_checks: dict
     llm_findings: Optional[dict] = None
     would_publish: bool
+    # v89: skill-linter dry-run block. Only populated for type == "skill"
+    # (the linter is skill-specific — agents/plugins never get a lint key).
+    lint: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1588,6 +1592,84 @@ async def preview_entity(
 
 
 # ---------------------------------------------------------------------------
+# Skill linter (v89) — shared one-off entry point for dry-run + publish hook
+# ---------------------------------------------------------------------------
+
+
+def _lint_skill_standalone(
+    entity: Dict[str, Any],
+    skill_md: str,
+    *,
+    plugin_dir: Optional[Path] = None,
+    exclude_id: Optional[str] = None,
+) -> dict:
+    """Lint one skill, building its own duplicate-recall corpus + craft caller.
+
+    Used by call sites that lint exactly one skill in isolation (the
+    dry-run endpoints, the post-publish hook) — as opposed to the admin
+    audit loop, which loads the corpus and craft caller ONCE and reuses
+    them across every published skill.
+
+    Blocking: ``load_corpus``/``top_candidates`` build a throwaway in-memory
+    FTS index and ``default_craft_caller`` may make an Anthropic round-trip.
+    Callers inside an async handler MUST wrap this in ``run_in_threadpool``;
+    the post-publish hook runs it directly since FastAPI's ``BackgroundTasks``
+    already executes sync callables off the event loop.
+    """
+    from app.instance_config import get_lint_duplicate_top_n
+    from src.store_guardrails.craft_review import default_craft_caller
+    from src.store_guardrails.lint_corpus import load_corpus, top_candidates
+    from src.store_guardrails.skill_lint import lint_skill
+
+    corpus = load_corpus()
+    candidates = top_candidates(
+        entity.get("name") or "",
+        entity.get("description") or "",
+        skill_md,
+        corpus,
+        n=get_lint_duplicate_top_n(),
+        exclude_id=exclude_id,
+    )
+    craft = default_craft_caller()
+    return lint_skill(entity, skill_md, plugin_dir=plugin_dir, candidates=candidates, craft=craft)
+
+
+def _run_publish_lint(entity_id: str) -> None:
+    """Post-publish lint pass — advisory only, never blocks or retries publish.
+
+    Scheduled via ``background_tasks.add_task`` from the skill-publish
+    success path of ``create_entity`` (mirrors ``_schedule_llm_review``):
+    runs after the response has been sent. Any failure is logged and
+    dropped — a lint hiccup must never surface to the submitter or touch
+    ``visibility_status``.
+    """
+    try:
+        skill_md_path = _find_skill_md(_plugin_dir(entity_id))
+        if skill_md_path is None:
+            return
+        skill_md = skill_md_path.read_text(encoding="utf-8", errors="replace")
+        entity_row = store_entities_repo().get(entity_id) or {}
+        entity = {
+            "id": entity_id,
+            "name": entity_row.get("name"),
+            "description": entity_row.get("description"),
+            "type": "skill",
+        }
+        report = _lint_skill_standalone(
+            entity,
+            skill_md,
+            plugin_dir=_plugin_dir(entity_id),
+            exclude_id=entity_id,
+        )
+        repo = store_lint_repo()
+        run_id = repo.start_run("publish")
+        repo.replace_findings(entity_id, run_id, report["findings"], report["content_hash"])
+        repo.finish_run(run_id, linted=1, skipped=0, findings=len(report["findings"]))
+    except Exception:
+        logger.exception("post-publish lint failed for entity %s", entity_id)
+
+
+# ---------------------------------------------------------------------------
 # Pre-submit dry-run — POST /api/store/entities/dryrun
 # ---------------------------------------------------------------------------
 
@@ -1597,6 +1679,7 @@ async def dryrun_entity(
     file: UploadFile = File(...),
     type: str = Form(...),
     description: Optional[str] = Form(None),
+    lint_only: bool = Form(False),
     user: dict = Depends(get_current_user),
 ):
     """Run the full guardrail pipeline against a candidate bundle WITHOUT
@@ -1616,6 +1699,11 @@ async def dryrun_entity(
     Per-submitter dry-run quota + identical-bundle verdict caching are
     deferred (tracked on #317) — the auth gate plus HTTP-level rate
     limiting bound abuse until they land.
+
+    ``lint_only=true`` returns ``inline`` + ``lint`` and SKIPS the LLM
+    security review entirely (no ``verdict``, and ``would_publish`` is not
+    meaningful). The advisory-lint panels use it so previewing findings never
+    bills a security-review round-trip the caller would discard.
     """
     if type not in _VALID_TYPES:
         raise HTTPException(status_code=400, detail="invalid_type")
@@ -1650,7 +1738,16 @@ async def dryrun_entity(
 
         verdict: Optional[dict] = None
         safe = False
-        if get_guardrails_enabled() and get_guardrails_llm_provider_ready():
+        if lint_only:
+            # Advisory-lint-only preview (the store upload wizard's step-2
+            # panel). The LLM *security* review is the expensive part of this
+            # endpoint and is irrelevant to lint findings, so skip it: running
+            # it here would bill a blocking Anthropic round-trip whose verdict
+            # the caller discards, and the real publish path schedules the
+            # review again anyway. `would_publish` is meaningless without a
+            # verdict, so callers must not read it in this mode.
+            safe = False
+        elif get_guardrails_enabled() and get_guardrails_llm_provider_ready():
             from src.store_guardrails import llm_review
 
             # review_bundle makes a blocking Anthropic round-trip; run it
@@ -1685,10 +1782,27 @@ async def dryrun_entity(
         if validation_failed:
             inline_checks["static_security"] = {"status": "skipped"}
 
+        # v89: skill linter — advisory-only, never affects would_publish.
+        # Only skills get linted (SL rules assume a SKILL.md body); agents
+        # and plugins omit the key entirely.
+        lint_report: Optional[dict] = None
+        if type == "skill":
+            skill_md_path = _find_skill_md(plugin_dir)
+            if skill_md_path is not None:
+                skill_text = skill_md_path.read_text(encoding="utf-8", errors="replace")
+                lint_entity = {"name": meta_name, "description": description, "type": type}
+                lint_report = await run_in_threadpool(
+                    _lint_skill_standalone,
+                    lint_entity,
+                    skill_text,
+                    plugin_dir=plugin_dir,
+                )
+
         return DryRunResponse(
             inline_checks=inline_checks,
             llm_findings=verdict,
             would_publish=inline.passed and safe,
+            lint=lint_report,
         )
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -1708,6 +1822,10 @@ class CreateFromMarkdownBody(BaseModel):
     description: Optional[str] = None
     category: Optional[str] = None
     skill_md: str
+    # v89: preview the skill linter's verdict before publishing. When set,
+    # short-circuits after name/frontmatter synthesis — no create_entity
+    # call, no DB writes of any kind.
+    dry_run: bool = False
 
 
 @router.post(
@@ -1743,6 +1861,51 @@ async def create_entity_from_markdown(
             sort_keys=False,
         )
         text = f"---\n{fm}---\n\n{text}"
+
+    if body.dry_run:
+        # Same throwaway-tree pipeline as `dryrun_entity`, minus the ZIP
+        # intake step: bake into a scratch dir with the exact bytes that
+        # would be published, run inline checks + the linter, and return
+        # WITHOUT ever calling create_entity — no store_entities row, no
+        # store_submissions row, no audit_log row, no bundle on disk once
+        # the finally block below wipes both temp dirs.
+        scratch = Path(tempfile.mkdtemp(prefix="agnes_store_dryrun_md_"))
+        plugin_root = Path(tempfile.mkdtemp(prefix="agnes_store_dryrun_md_baked_"))
+        plugin_dir = plugin_root / "plugin"
+        try:
+            (scratch / name).mkdir(parents=True, exist_ok=True)
+            (scratch / name / "SKILL.md").write_text(text, encoding="utf-8")
+            _bake_plugin_tree(
+                type_="skill",
+                extracted_root=scratch,
+                plugin_dir=plugin_dir,
+                final_name=name,
+                suffixed=name,
+                description=body.description,
+            )
+            inline = run_inline_checks(plugin_dir, type_="skill", description=body.description)
+            lint_entity = {"name": name, "description": body.description, "type": "skill"}
+            lint_report = await run_in_threadpool(
+                _lint_skill_standalone,
+                lint_entity,
+                text,
+                plugin_dir=plugin_dir,
+            )
+            return Response(
+                content=json.dumps(
+                    {
+                        "dry_run": True,
+                        "inline": inline.to_response_dict(),
+                        "lint": lint_report,
+                    }
+                ),
+                media_type="application/json",
+                status_code=200,
+            )
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+            shutil.rmtree(plugin_root, ignore_errors=True)
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(f"{name}/SKILL.md", text)
@@ -2023,6 +2186,12 @@ async def create_entity(
         )
         if schedule_async_llm:
             _schedule_llm_review(background_tasks, sub_id, plugin_dir)
+        # v89: skill linter post-publish pass. Advisory-only — runs
+        # regardless of the guardrails hold state above (a pending_llm
+        # entity still gets its first lint findings, same as an
+        # auto-approved one) and never affects visibility_status.
+        if type == "skill":
+            background_tasks.add_task(_run_publish_lint, entity_id)
         # When guardrails are explicitly disabled the entity is immediately
         # live (initial_visibility=='approved'); when enabled-but-not-ready
         # the submission sits at pending_llm and the admin retries / overrides
@@ -2917,6 +3086,7 @@ async def delete_entity(
         store_submissions_repo().mark_deleted_for_entity(entity_id)
         user_store_installs_repo().delete_all_for_entity(entity_id)
         store_entity_votes_repo().delete_all_for_entity(entity_id)
+        store_lint_repo().delete_for_entity(entity_id)  # v89: purge lint state too
         store_entities_repo().delete(entity_id)
         shutil.rmtree(_entity_dir(entity_id), ignore_errors=True)
         # v46: attribution lookup is live — the next UsageProcessor tick

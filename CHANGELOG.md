@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.74.97] - 2026-07-16
+
 ### Added
 
 - `security.ssrf_allowed_hosts` (env `AGNES_SSRF_ALLOWED_HOSTS`): operator
@@ -74,6 +76,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   [`docs/chat-keyless-auth.md`](docs/chat-keyless-auth.md) — the operator setup
   guide (federation rule, env, config switch, verification, troubleshooting).
 - **`agnes auth import-token` no longer fails a valid PAT when server-side verification is merely slow or transiently erroring.** The verification call (against `/api/catalog/tables`) hard-exited on any `5xx` and used a hard-coded 15s timeout, so a momentarily loaded or flapping endpoint turned a structurally-valid token into a failed install. Now only a definitive rejection (`401`) aborts; a `5xx` or a read timeout warns and proceeds to save the token (it already decoded locally and was not rejected — same posture as `--skip-verify`), while a genuine connection failure (bad URL / server down) still aborts. The timeout is configurable via `AGNES_VERIFY_TIMEOUT` (seconds; falls back to the 15s default on an unset, non-numeric, or non-positive value). `cli/commands/auth.py`.
+- Skill curation linter (v91, #687) — advisory craft review for store skills, complementing the hard spam/safety guardrails. Rules: SL002 (body bloat), SL010 (holistic LLM craft review — trigger clarity, single-purpose, duplicate confirmation), with SL011/SL012 degraded heuristics when no LLM key is set. Duplicate detection uses an in-memory FTS index over the published-skill corpus (name + description + body). Surfaced everywhere: `POST /api/store/entities/from-markdown` accepts `dry_run: true` and `POST /api/store/entities/dryrun` returns a `lint` block; the Skill Builder and classic upload page show findings before publishing; every publish runs a background post-publish lint; the skill's edit page shows the owner its latest findings. Admin curation at `/admin/store/lint` plus `GET /api/admin/store/lint-findings`, `POST /api/admin/store/lint-audit` (full-corpus re-lint, skips unchanged skills, rate-limited by `guardrails.lint_audit_min_interval_hours` unless `force: true`), and `POST /api/admin/store/lint-dismiss` — mirrored to `agnes admin store lint-{findings,audit,dismiss}` and the `admin_store_lint_*` MCP tools. A weekly scheduler job runs the audit. Best-practice guidance lives in `docs/skill-guidelines.md`. Purely advisory — never blocks publication or changes `visibility_status`. The upload wizard's advisory-lint preview passes `lint_only=true` to `/entities/dryrun` so previewing findings on reaching step 2 never bills the paid LLM security review (which the real publish path schedules separately).
 
 ---
 

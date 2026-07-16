@@ -973,3 +973,50 @@ def get_guardrails_llm_provider_ready() -> bool:
     if os.environ.get("LLM_API_KEY", "").strip():
         return True
     return False
+
+
+def get_lint_max_body_chars() -> int:
+    """Maximum body character length for skill linter (SL002 bloat rule).
+
+    Reads ``guardrails.lint_max_body_chars`` (default 8000). Skills whose
+    body length exceeds this threshold trigger a linter warning. Set lower
+    (e.g. 5000) to tighten the "keep it lean" guideline; set higher to
+    relax the constraint.
+    """
+    val = get_value("guardrails", "lint_max_body_chars", default=8000)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 8000
+
+
+def get_lint_duplicate_top_n() -> int:
+    """Top N candidate skills the duplicate stage shortlists (feeds SL010's
+    LLM confirmation and the SL012 degraded fallback).
+
+    Reads ``guardrails.lint_duplicate_top_n`` (default 5). When linting a
+    new skill, the linter compares its description against the top N most
+    recent skills in the marketplace to flag possible near-duplicates.
+    Increase to broaden the search scope at the cost of more comparisons.
+    """
+    val = get_value("guardrails", "lint_duplicate_top_n", default=5)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 5
+
+
+def get_lint_audit_min_interval_hours() -> int:
+    """Minimum interval in hours between full-corpus lint audits (the
+    ``/api/admin/store/lint-audit`` self-guard; not tied to any single rule).
+
+    Reads ``guardrails.lint_audit_min_interval_hours`` (default 144 = 6 days).
+    When a skill is updated, the linter may trigger a fresh audit. This
+    threshold prevents audit fatigue by not re-auditing the same skill more
+    frequently than this interval.
+    """
+    val = get_value("guardrails", "lint_audit_min_interval_hours", default=144)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 144

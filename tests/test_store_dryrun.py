@@ -354,3 +354,57 @@ class TestDryRunAuth:
             data={"type": "skill", "description": _OK_DESC},
         )
         assert r.status_code in (401, 403), r.text
+
+
+class TestDryRunLintOnly:
+    def test_lint_only_skips_the_paid_llm_review(self, web_client, monkeypatch):
+        """`lint_only=true` must NOT bill an LLM security review.
+
+        The upload wizard's advisory panel renders only the `lint` block, so
+        running the blocking Anthropic round-trip here would pay for a verdict
+        the caller discards — and the real publish schedules the review again.
+        Guardrails + provider are both ON, so the review WOULD run without the
+        flag (see TestDryRunClean); this pins that the flag is what stops it.
+        """
+        _enable_guardrails(monkeypatch)
+        _, cookies = _create_user(web_client, "lintonly@x.com")
+        before = _row_counts()
+
+        with patch("src.store_guardrails.llm_review.review_bundle") as mock_review:
+            r = web_client.post(
+                "/api/store/entities/dryrun",
+                files={"file": ("s.zip", _make_skill_zip("lint-only-skill"), "application/zip")},
+                data={"type": "skill", "description": _OK_DESC, "lint_only": "true"},
+                cookies=cookies,
+            )
+
+        assert r.status_code == 200, r.text
+        mock_review.assert_not_called()
+
+        body = r.json()
+        # Still does the cheap work: inline checks + the advisory lint block.
+        assert body["inline_checks"]["manifest"]["status"] == "pass", body
+        assert body["lint"] is not None, body
+        assert "findings" in body["lint"], body
+        # No verdict was computed, so the LLM tier reports nothing.
+        assert body["llm_findings"] is None, body
+        # Dry-run contract holds: still no DB writes.
+        assert _row_counts() == before
+
+    def test_without_lint_only_the_review_still_runs(self, web_client, monkeypatch):
+        """Guard against the flag silently defaulting on and killing the
+        endpoint's actual purpose (the #317 pre-submit guardrail verdict)."""
+        _enable_guardrails(monkeypatch)
+        _, cookies = _create_user(web_client, "withreview@x.com")
+
+        with patch("src.store_guardrails.llm_review.review_bundle") as mock_review:
+            mock_review.return_value = {"verdict": "safe", "findings": []}
+            r = web_client.post(
+                "/api/store/entities/dryrun",
+                files={"file": ("s.zip", _make_skill_zip("reviewed-skill"), "application/zip")},
+                data={"type": "skill", "description": _OK_DESC},
+                cookies=cookies,
+            )
+
+        assert r.status_code == 200, r.text
+        mock_review.assert_called_once()
