@@ -498,6 +498,39 @@ class TestRunGitHttpBackendStderrDrain:
         assert body == b"body"
 
 
+class TestRunGitHttpBackendCrashBeforeHeaders:
+    """A `git http-backend` child that dies before writing any CGI headers
+    must surface as a server error, not a default-200 empty response.
+
+    `_parse_cgi_status` defaults to 200 absent a `Status:` header (per the
+    CGI spec, headerless *does* legitimately mean 200 for a well-behaved
+    CGI program) — but a process that produced zero bytes of output before
+    exiting isn't "headerless success", it's a crash. The prior dulwich
+    implementation returned a 500 in this situation.
+    """
+
+    def test_no_output_before_exit_raises_instead_of_defaulting_to_200(self, monkeypatch):
+        import asyncio
+        import sys
+
+        from app.marketplace_server import git_router
+
+        # A child that exits immediately without writing anything to stdout
+        # (models a crash / being killed before it could emit CGI headers).
+        stub = "import sys\nsys.exit(1)\n"
+        monkeypatch.setattr(
+            git_router,
+            "_GIT_HTTP_BACKEND",
+            (sys.executable, "-c", stub),
+        )
+
+        async def run():
+            await git_router._run_git_http_backend(env={}, body=b"")
+
+        with pytest.raises(RuntimeError, match="no output"):
+            asyncio.run(asyncio.wait_for(run(), timeout=10))
+
+
 class TestBuildCgiEnvContentLength:
     """CONTENT_LENGTH must reflect the buffered body actually sent to the
     subprocess's stdin, not the client's Content-Length header — a chunked

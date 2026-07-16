@@ -218,6 +218,24 @@ async def _run_git_http_backend(env: dict, body: bytes) -> tuple[int, list[tuple
     stderr_task = asyncio.ensure_future(_drain_stderr(proc.stderr, stderr_chunks))
 
     header_block = await _read_cgi_headers(proc.stdout)
+    if not header_block:
+        # stdout hit EOF before a single byte was written — a well-behaved
+        # git http-backend always emits at least a Status:/Content-Type
+        # header, so this means the process crashed or was killed before
+        # producing any output. _parse_cgi_status defaults to 200 absent a
+        # Status: header, which would otherwise report this hard failure to
+        # the client as an empty-but-successful response (the prior dulwich
+        # path returned a 500 here). Raise instead — the caller's except
+        # Exception already converts this into a 500 via _server_error().
+        await proc.wait()
+        await stderr_task
+        stderr = b"".join(stderr_chunks)
+        logger.error(
+            "git http-backend produced no output before exiting %s: %s",
+            proc.returncode,
+            stderr.decode("utf-8", errors="replace"),
+        )
+        raise RuntimeError(f"git http-backend produced no output (exit {proc.returncode})")
     status_code, headers = _parse_cgi_status(header_block)
 
     async def body_stream() -> AsyncIterator[bytes]:
