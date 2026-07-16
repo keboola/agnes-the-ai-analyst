@@ -95,14 +95,21 @@ def run_processor(
     items_extracted, errors_detail. Caller (admin endpoint) puts this in the
     audit row and HTTP response body.
 
-    ``max_sessions_per_run``, when set, caps how many candidates are actually
-    processed in this call — the rest are left for the next scheduler tick.
-    Bounds the worst-case wall-clock/CPU cost of a single invocation (each
-    candidate can trigger multiple synchronous, blocking LLM calls); a burst
-    of session closures landing in the same tick no longer processes
-    unboundedly in one request. ``scanned`` always reflects the true total
-    found; ``capped`` reports how many were deferred, so operators can see a
-    forming backlog before it becomes one.
+    ``max_sessions_per_run``, when set, caps how many candidates get an
+    actual processing attempt (a ``processor.process_session()`` call) in
+    this call — the rest are left for the next scheduler tick. Bounds the
+    worst-case wall-clock/CPU cost of a single invocation (each attempt can
+    trigger multiple synchronous, blocking LLM calls); a burst of session
+    closures landing in the same tick no longer processes unboundedly in
+    one request. The cap is enforced on attempts, not on the raw candidate
+    count: ``scan_unprocessed_for`` uses a cheap mtime-based prefilter that
+    can surface candidates the hash-aware ``is_processed`` check below then
+    skips for free (e.g. a file whose mtime bumped but content didn't
+    change) — counting those against the budget would let skip-only
+    candidates consume the cap and starve genuinely unprocessed sessions
+    behind them. ``scanned`` always reflects the true total found;
+    ``capped`` reports how many were left un-visited when the budget ran
+    out, so operators can see a forming backlog before it becomes one.
     """
     effective_dir = session_data_dir if session_data_dir is not None else DEFAULT_SESSION_DATA_DIR
 
@@ -125,17 +132,6 @@ def run_processor(
         logger.info("No sessions to process for processor=%s", processor.name)
         return stats
 
-    if max_sessions_per_run is not None and len(candidates) > max_sessions_per_run:
-        stats["capped"] = len(candidates) - max_sessions_per_run
-        logger.info(
-            "Processor %s: capping this run to %d/%d candidates; %d deferred to next tick",
-            processor.name,
-            max_sessions_per_run,
-            len(candidates),
-            stats["capped"],
-        )
-        candidates = candidates[:max_sessions_per_run]
-
     # Pre-resolve (user_id, email) per directory name so each processor
     # can store the stable identity. Cache avoids repeated DB lookups
     # when one user has many sessions. Email is used as the canonical
@@ -144,8 +140,20 @@ def run_processor(
     # session arrived via /api/upload/sessions (UUID dir) or the legacy
     # collector (OS-username dir).
     _identity_cache: dict[str, tuple[str | None, str | None]] = {}
+    attempts = 0
 
-    for dir_name, jsonl_path in candidates:
+    for idx, (dir_name, jsonl_path) in enumerate(candidates):
+        if max_sessions_per_run is not None and attempts >= max_sessions_per_run:
+            stats["capped"] = len(candidates) - idx
+            logger.info(
+                "Processor %s: hit %d-attempt budget after %d candidates; %d left for next tick",
+                processor.name,
+                max_sessions_per_run,
+                idx,
+                stats["capped"],
+            )
+            break
+
         session_key = f"{dir_name}/{jsonl_path.name}"
         try:
             file_hash = compute_file_hash(jsonl_path)
@@ -164,10 +172,14 @@ def run_processor(
         # do the authoritative is_processed check here so the runner is the
         # single place that decides "this exact (processor, session, hash)
         # tuple is already done". Cost: one extra SELECT per candidate, but
-        # only for files that survived directory scan.
+        # only for files that survived directory scan. Free with respect to
+        # the attempt budget above — it never calls the (expensive, LLM-
+        # driving) processor, so it can't be starved out by the cap.
         if repo.is_processed(processor.name, session_key, file_hash):
             stats["skipped"] += 1
             continue
+
+        attempts += 1
 
         if dir_name not in _identity_cache:
             _identity_cache[dir_name] = resolve_user_identity(dir_name)
