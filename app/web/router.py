@@ -2788,6 +2788,23 @@ async def documentation_api(
     )
 
 
+@router.get("/admin", response_class=HTMLResponse)
+async def admin_hub(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Admin hub — the canonical landing page for instance administration.
+
+    A settings-style index that groups every /admin/* surface by domain
+    (Activity Center, Users & Access, Data Packages, Sources, Agent
+    Experience, Documentation, Server). The header's Admin mega-menu links
+    here; this page is the scalable home as the admin surface grows past what
+    a dropdown holds. Shell-only — every card links to an existing gated
+    route (each still enforces require_admin independently)."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_hub.html", ctx)
+
+
 @router.get("/admin/tables", response_class=HTMLResponse)
 async def admin_tables(
     request: Request,
