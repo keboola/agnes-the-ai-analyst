@@ -51,6 +51,7 @@ _DIRECT_DIRNAME = "_direct"
 _RESERVED_DATA_DIRS = frozenset({_SHARED_DIRNAME, _DIRECT_DIRNAME})
 
 _SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+_UNSAFE_SEGMENT_RE = re.compile(r"[^A-Za-z0-9_.\-]+")
 
 
 @dataclass
@@ -85,15 +86,46 @@ class SyncReport:
 
 
 def _safe_segment(name: str) -> str:
-    """Return ``name`` if it's safe to use as a path segment, else raise.
+    """Return a filesystem-safe path segment derived from ``name``.
 
-    Manifest slugs and table ids come from server-controlled rows but the
+    Manifest slugs and table ids come from server-controlled rows, but the
     sync layer is the last line of defense before they hit the local
-    filesystem — guard against traversal/control chars/empty.
+    filesystem. A table's display ``name`` is a human label ("Agnes audit
+    log") that is a legal name yet not usable as a raw path segment, so:
+
+    - if ``name`` is already strictly safe (and not ``.``/``..``), return it
+      verbatim so previously-synced filenames stay byte-for-byte stable;
+    - otherwise coerce every run of unsafe chars to ``_`` and strip leading/
+      trailing separators, raising only when nothing usable remains or the
+      result would traverse (``.``/``..``).
     """
-    if not name or not _SAFE_SEGMENT_RE.match(name):
+    if not name:
         raise ValueError(f"unsafe path segment: {name!r}")
-    return name
+    if _SAFE_SEGMENT_RE.match(name) and name not in {".", ".."}:
+        return name
+    cleaned = _UNSAFE_SEGMENT_RE.sub("_", name).strip("._-")
+    if not cleaned or cleaned in {".", ".."}:
+        raise ValueError(f"unsafe path segment: {name!r}")
+    return cleaned
+
+
+def _safe_segment_map(items: Iterable[dict], key: str, kind: str) -> Dict[str, dict]:
+    """Build ``{safe_segment: item}`` from server rows, skipping any row whose
+    ``key`` can't yield a usable path segment.
+
+    A single poison row must not abort the whole type's sync: sanitize what we
+    can, log + drop what we can't, so the rest of the manifest still syncs.
+    """
+    out: Dict[str, dict] = {}
+    for it in items:
+        raw = it.get(key)
+        if not raw:
+            continue
+        try:
+            out[_safe_segment(raw)] = it
+        except ValueError:
+            logger.warning("pull: skipping %s with unsafe %s %r", kind, key, raw)
+    return out
 
 
 def _shared_path(local_data_dir: Path, table_id: str) -> Path:
@@ -353,7 +385,7 @@ def sync_direct_tables(
     """
     report = TypeReport()
     new_state: Dict[str, Any] = {}
-    server_names = {_safe_segment(t["name"]): t for t in server_tables if t.get("name")}
+    server_names = _safe_segment_map(server_tables, "name", "direct table")
     prev_names = set(prev_state.keys())
 
     direct_dir = local_data_dir / _DIRECT_DIRNAME
@@ -419,16 +451,14 @@ def sync_data_packages(
     report = TypeReport()
     new_state: Dict[str, Dict[str, Any]] = {}
 
-    server_by_slug = {_safe_segment(p["slug"]): p for p in server_packages if p.get("slug")}
+    server_by_slug = _safe_segment_map(server_packages, "slug", "data package")
     prev_slugs = set(prev_state.keys())
 
     for slug, pkg in server_by_slug.items():
         pkg_dir = local_data_dir / slug
         prev_pkg = prev_state.get(slug) or {}
         server_tables = pkg.get("tables") or []
-        server_table_by_name = {
-            _safe_segment(t["name"]): t for t in server_tables if t.get("name")
-        }
+        server_table_by_name = _safe_segment_map(server_tables, "name", "package table")
         new_pkg_state: Dict[str, Any] = {}
 
         for name, table in server_table_by_name.items():
@@ -521,7 +551,7 @@ def sync_memory_domains(
     report = TypeReport()
     new_state: Dict[str, Any] = {}
 
-    server_by_slug = {_safe_segment(d["slug"]): d for d in server_domains if d.get("slug")}
+    server_by_slug = _safe_segment_map(server_domains, "slug", "memory domain")
     prev_slugs = set(prev_state.keys())
 
     for slug, dom in server_by_slug.items():
