@@ -220,7 +220,7 @@ status. The endpoint requires admin auth (the sidecar's
 | TLS | Caddy + corp cert, auto-rotated from URL | Caddy + corp cert, manual or user-scripted rotation |
 | Best for | Multi-tenant SaaS, production | Single-instance self-host, learning |
 
-## Multi-process (role split)
+## Multi-process
 
 `AGNES_ROLE` (env or `instance.yaml::deployment.role`) selects which planes a
 process serves: `api`, `gateway`, `worker`, or `all` (default — today's
