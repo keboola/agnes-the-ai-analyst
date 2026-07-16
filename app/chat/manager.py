@@ -1356,7 +1356,7 @@ class ChatManager:
                 # user_msg was persisted — shouldn't happen in normal
                 # flow, but bail cleanly if it does.
                 return
-            title = await generate_title(first_user)
+            title = await generate_title(first_user, llm_auth=self._config.llm_auth)
             if not title:
                 return
             self._repo.set_title(live.chat_id, title)

@@ -147,3 +147,50 @@ async def test_anthropic_key(api_key: Optional[str] = None, *, timeout: float = 
     import asyncio
 
     return await asyncio.to_thread(_test_anthropic_sync, key, timeout)
+
+
+def _test_wif_sync(timeout: float) -> dict:
+    """Mint a federated token and confirm the API accepts it. Returns {ok, detail}."""
+    from app.auth.wif import WIFAuthError, clear_token_cache, get_federated_access_token
+
+    try:
+        token = get_federated_access_token()
+    except WIFAuthError as exc:
+        return {"ok": False, "detail": f"federation token exchange failed: {exc}"}
+    # The exchange succeeded; confirm the minted token is actually accepted by the
+    # API with the same cheap 1-token Haiku completion test_anthropic_key uses —
+    # authenticated the keyless way (Authorization: Bearer + the oauth beta header).
+    try:
+        import anthropic
+    except ImportError:  # pragma: no cover — SDK is a hard dep for chat
+        return {"ok": True, "detail": "federated token minted (anthropic SDK unavailable for full probe)"}
+    from app.chat.auto_title import _TITLE_MODEL
+
+    try:
+        client = anthropic.Anthropic(
+            auth_token=token,
+            default_headers={"anthropic-beta": "oauth-2025-04-20"},
+            timeout=timeout,
+        )
+        client.messages.create(
+            model=_TITLE_MODEL,
+            max_tokens=1,
+            messages=[{"role": "user", "content": "ping"}],
+        )
+    except Exception as exc:  # noqa: BLE001 — classify, never raise to the admin
+        # The cached token may be scope-limited or revoked — drop it so a later
+        # probe/request re-mints rather than reusing a known-bad token.
+        clear_token_cache()
+        return {"ok": False, "detail": f"federated token minted but API call failed: {_classify(exc)}"}
+    return {"ok": True, "detail": "workload identity federation valid"}
+
+
+async def test_wif_credentials(*, timeout: float = 8.0) -> dict:
+    """Live-probe ``workload_identity`` auth: mint a federated token from the
+    workload's OIDC identity and confirm the API accepts it. Returns
+    ``{ok, detail}``. The blocking exchange + SDK call run on a worker thread so
+    they never stall the event loop. This is the keyless-mode analog of
+    ``test_anthropic_key`` for the admin "test connection" surface."""
+    import asyncio
+
+    return await asyncio.to_thread(_test_wif_sync, timeout)
