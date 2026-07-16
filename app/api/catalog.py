@@ -34,7 +34,7 @@ class CatalogTablesResponse(BaseModel):
 
 
 @router.get("/profile/{table_name}")
-async def get_table_profile(
+def get_table_profile(
     table_name: str,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -61,7 +61,7 @@ async def get_table_profile(
 
 
 @router.get("/tables", response_model=CatalogTablesResponse)
-async def list_catalog_tables(
+def list_catalog_tables(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -91,7 +91,7 @@ async def list_catalog_tables(
 
 
 @router.get("/metrics/{metric_path:path}", deprecated=True)
-async def get_metric(
+def get_metric(
     metric_path: str,
     user: dict = Depends(get_current_user),
 ):
@@ -103,7 +103,7 @@ async def get_metric(
 
 
 @router.post("/profile/{table_name}/refresh")
-async def refresh_profile(
+def refresh_profile(
     table_name: str,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),

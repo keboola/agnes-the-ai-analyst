@@ -13,7 +13,6 @@ Coverage:
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 
 import duckdb
@@ -261,11 +260,9 @@ def test_sync_manifest_writes_audit_row(stats_conn, monkeypatch, tmp_path):
     _seed_user(stats_conn, uid="ua", email="alice@example.com")
 
     from app.api.sync import sync_manifest
-    asyncio.run(
-        sync_manifest(
-            user={"id": "ua", "email": "alice@example.com"},
-            conn=stats_conn,
-        )
+    sync_manifest(
+        user={"id": "ua", "email": "alice@example.com"},
+        conn=stats_conn,
     )
     rows = stats_conn.execute(
         "SELECT action, resource, result, client_kind FROM audit_log "

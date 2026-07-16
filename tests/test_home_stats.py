@@ -13,7 +13,6 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 
 import duckdb
@@ -318,11 +317,9 @@ def test_sync_manifest_bumps_last_pull_at(stats_conn, monkeypatch, tmp_path):
     # Wipe seeded last_pull_at so we can detect the bump.
     stats_conn.execute("UPDATE users SET last_pull_at = NULL WHERE id = ?", ["u_pull"])
 
-    asyncio.run(
-        sync_manifest(
-            user={"id": "u_pull", "email": "puller@example.com"},
-            conn=stats_conn,
-        )
+    sync_manifest(
+        user={"id": "u_pull", "email": "puller@example.com"},
+        conn=stats_conn,
     )
     row = stats_conn.execute("SELECT last_pull_at FROM users WHERE id = ?", ["u_pull"]).fetchone()
     # Don't compare against `datetime.now(utc)` — DuckDB's
