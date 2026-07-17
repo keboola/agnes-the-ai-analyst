@@ -30,13 +30,33 @@ DuckDB has no partial-index support, so its sibling (``src/db.py`` /
 model) — see that module's docstring. The CONTRACT shared by both
 backends is the dedup *behavior* (matching key + queued/running status
 returns the existing row, no insert), not the mechanism.
+
+Claim/lease/complete/fail lifecycle (mirrors ``JobsRepository`` — see
+that module's docstring for the full shared-contract writeup):
+
+- ``claim_next()`` uses ``SELECT ... FOR UPDATE SKIP LOCKED`` inside a
+  single ``WITH ... UPDATE ... FROM ... RETURNING`` statement, so the
+  row-select-and-lock and the mutation happen atomically in one
+  round-trip — a plain SELECT-then-UPDATE here WOULD be racy under READ
+  COMMITTED (two concurrent transactions could both select the same
+  row before either commits its UPDATE) and is exactly the bug class
+  the enqueue()/``ON CONFLICT`` fix above already had to close for
+  inserts. ``MATERIALIZED`` pins the CTE so Postgres can't inline it in
+  a way that reorders the lock relative to the join.
+- ``heartbeat()``/``complete()``/``fail()`` don't need ``FOR UPDATE``:
+  every mutating statement's ``WHERE`` clause re-checks
+  ``leased_by = :worker_id AND status = 'running'`` at UPDATE time
+  (under READ COMMITTED, each statement re-reads current committed
+  state), so if another worker's ``claim_next()`` reclaims the job
+  between our read and our write, the WHERE clause simply matches zero
+  rows instead of clobbering the new owner.
 """
 
 from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
@@ -44,6 +64,12 @@ from sqlalchemy.engine import Engine
 
 
 class JobsPgRepository:
+    #: Worker-runtime lane identifiers — see ``JobsRepository.HEAVY_LANE``
+    #: for why these are duplicated rather than imported from the DuckDB
+    #: sibling module.
+    HEAVY_LANE = "heavy"
+    LIGHT_LANE = "light"
+
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
@@ -177,3 +203,161 @@ class JobsPgRepository:
         with self._engine.connect() as conn:
             rows = conn.execute(sa.text(sql), params).mappings().all()
         return [self._decode(dict(r)) for r in rows]
+
+    def claim_next(
+        self,
+        *,
+        kinds: List[str],
+        worker_id: str,
+        lease_seconds: int = 120,
+    ) -> Optional[Dict[str, Any]]:
+        """Atomically claim the oldest eligible queued job of ``kinds``.
+
+        Eligible = ``status='queued'`` with ``run_after`` unset or due, OR
+        a ``'running'`` job whose lease has expired and which hasn't yet
+        exhausted its attempts (crash-recovery reclaim). Ordered by
+        ``priority DESC, created_at ASC``. Race-safe under concurrent
+        claimers via ``FOR UPDATE SKIP LOCKED`` — see the module
+        docstring for why a plain SELECT-then-UPDATE would double-claim.
+        """
+        if not kinds:
+            return None
+        now = datetime.now(timezone.utc)
+        lease_expires_at = now + timedelta(seconds=lease_seconds)
+        stmt = sa.text(
+            """WITH candidate AS MATERIALIZED (
+                   SELECT id FROM jobs
+                   WHERE kind IN :kinds
+                     AND (
+                       (status = 'queued' AND (run_after IS NULL OR run_after <= :now))
+                       OR (status = 'running' AND lease_expires_at < :now AND attempts < max_attempts)
+                     )
+                   ORDER BY priority DESC, created_at ASC
+                   LIMIT 1
+                   FOR UPDATE SKIP LOCKED
+               )
+               UPDATE jobs
+               SET status = 'running',
+                   leased_by = :worker_id,
+                   started_at = COALESCE(started_at, :now),
+                   attempts = attempts + 1,
+                   lease_expires_at = :lease_expires_at
+               FROM candidate
+               WHERE jobs.id = candidate.id
+               RETURNING jobs.*"""
+        ).bindparams(sa.bindparam("kinds", expanding=True))
+        with self._engine.begin() as conn:
+            row = (
+                conn.execute(
+                    stmt,
+                    {
+                        "kinds": list(kinds),
+                        "now": now,
+                        "worker_id": worker_id,
+                        "lease_expires_at": lease_expires_at,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+        return self._decode(dict(row)) if row else None
+
+    def heartbeat(self, job_id: str, worker_id: str, lease_seconds: int = 120) -> bool:
+        """Extend the lease on a running job. Returns ``False`` (no-op) if
+        the job is no longer ``'running'`` or is held by a different
+        worker — the caller uses that to abandon a job reclaimed out
+        from under it."""
+        now = datetime.now(timezone.utc)
+        lease_expires_at = now + timedelta(seconds=lease_seconds)
+        with self._engine.begin() as conn:
+            row = (
+                conn.execute(
+                    sa.text(
+                        """UPDATE jobs SET lease_expires_at = :lease_expires_at
+                           WHERE id = :id AND leased_by = :worker_id AND status = 'running'
+                           RETURNING id"""
+                    ),
+                    {"lease_expires_at": lease_expires_at, "id": job_id, "worker_id": worker_id},
+                )
+                .mappings()
+                .first()
+            )
+        return row is not None
+
+    def complete(self, job_id: str, worker_id: str) -> None:
+        """Mark a running job done. No-op (raise-free) if the job is not
+        currently ``'running'`` under this exact ``worker_id`` — a stale
+        worker finishing a job that was already reclaimed must not
+        clobber the new owner's state."""
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    """UPDATE jobs
+                       SET status = 'done', finished_at = :now, lease_expires_at = NULL
+                       WHERE id = :id AND leased_by = :worker_id AND status = 'running'"""
+                ),
+                {"now": now, "id": job_id, "worker_id": worker_id},
+            )
+
+    def fail(
+        self,
+        job_id: str,
+        worker_id: str,
+        error: str,
+        *,
+        retry_in_seconds: Optional[int] = None,
+    ) -> None:
+        """Record a failure. No-op (raise-free) if the job is not
+        currently ``'running'`` under this exact ``worker_id`` (see
+        ``complete()``).
+
+        If attempts remain (``attempts < max_attempts``) AND
+        ``retry_in_seconds`` is given, requeues the job (``'queued'``,
+        ``run_after=now+retry_in_seconds``, lease cleared, ``error``
+        recorded). Otherwise finalizes to ``'failed'`` with
+        ``finished_at`` set.
+
+        The SELECT here (no ``FOR UPDATE``) is safe without a lock: the
+        decision (retry vs. finalize) only depends on ``attempts`` /
+        ``max_attempts``, which cannot change while this worker still
+        holds the lease, and the follow-up UPDATE re-checks
+        ``leased_by = :worker_id AND status = 'running'`` anyway — if a
+        concurrent reclaim slipped in between, that UPDATE simply
+        matches nothing.
+        """
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            job = (
+                conn.execute(
+                    sa.text(
+                        """SELECT attempts, max_attempts FROM jobs
+                           WHERE id = :id AND leased_by = :worker_id AND status = 'running'"""
+                    ),
+                    {"id": job_id, "worker_id": worker_id},
+                )
+                .mappings()
+                .first()
+            )
+            if job is None:
+                return  # stale worker (already reclaimed) — no-op
+            if job["attempts"] < job["max_attempts"] and retry_in_seconds is not None:
+                run_after = now + timedelta(seconds=retry_in_seconds)
+                conn.execute(
+                    sa.text(
+                        """UPDATE jobs
+                           SET status = 'queued', run_after = :run_after, lease_expires_at = NULL,
+                               leased_by = NULL, error = :error
+                           WHERE id = :id AND leased_by = :worker_id AND status = 'running'"""
+                    ),
+                    {"run_after": run_after, "error": error, "id": job_id, "worker_id": worker_id},
+                )
+            else:
+                conn.execute(
+                    sa.text(
+                        """UPDATE jobs
+                           SET status = 'failed', finished_at = :now, lease_expires_at = NULL, error = :error
+                           WHERE id = :id AND leased_by = :worker_id AND status = 'running'"""
+                    ),
+                    {"now": now, "error": error, "id": job_id, "worker_id": worker_id},
+                )
