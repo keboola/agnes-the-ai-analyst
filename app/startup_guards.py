@@ -1,9 +1,17 @@
 """Refuse unsafe multi-process topologies at boot.
 
-Multi-process = role split (AGNES_ROLE != all) OR UVICORN_WORKERS > 1.
-Such a deployment requires: Postgres app-state, explicit shared secrets,
-and a Redis coordination backend. Single-process ``all`` mode has no new
-requirements. Spec §3.2/§3.7.
+Multi-process = role split (AGNES_ROLE != all) OR UVICORN_WORKERS > 1 OR
+coordination.backend=redis. The third trigger closes a deferred wave-1
+finding: configuring the Redis coordination backend is itself a
+declaration of multi-process intent, even in an otherwise all-in-one
+topology (e.g. staging a redis-backed rollout ahead of the actual role
+split) — such a deployment must ALSO satisfy the other multi-process
+requirements below, not just gain the coordination backend.
+
+Multi-process deployments require: Postgres app-state, explicit shared
+secrets, and a Redis coordination backend. Single-process ``all`` mode
+with the default memory coordination backend has no new requirements.
+Spec §3.2/§3.7.
 """
 
 import os
@@ -22,9 +30,14 @@ def _use_pg() -> bool:
 
 
 def _coordination_backend() -> str:
+    """Effective coordination backend — same resolution as
+    ``app.coordination.factory._backend_name`` (env overrides instance.yaml)
+    so this guard reacts to the exact backend the process will actually use,
+    not just the yaml-only view of it."""
     from app.instance_config import get_value
 
-    return (get_value("coordination", "backend", default="memory") or "memory").lower()
+    raw = os.environ.get("AGNES_COORDINATION_BACKEND") or get_value("coordination", "backend", default="memory")
+    return (raw or "memory").strip().lower()
 
 
 def _workers() -> int:
@@ -35,7 +48,7 @@ def _workers() -> int:
 
 
 def is_multi_process() -> bool:
-    return (not is_all_in_one()) or _workers() > 1
+    return (not is_all_in_one()) or _workers() > 1 or _coordination_backend() == "redis"
 
 
 def validate_deployment() -> None:
