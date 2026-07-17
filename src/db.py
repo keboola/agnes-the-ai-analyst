@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 92
+SCHEMA_VERSION = 93
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1457,6 +1457,22 @@ CREATE TABLE IF NOT EXISTS store_lint_entity_state (
     content_hash VARCHAR NOT NULL,
     run_id       VARCHAR NOT NULL,
     linted_at    TIMESTAMP NOT NULL
+);
+
+-- glossary_terms: v93. Keboola semantic-glossary import destination
+-- (docs/superpowers/specs/2026-07-17-keboola-glossary-import-design.md).
+-- id = "keboola/{model_uuid}/{slug(term)}" for Keboola-sourced rows, or
+-- admin-chosen for source='manual' rows. see_also is an opaque string
+-- list (not resolved/validated against other Metastore types).
+CREATE TABLE IF NOT EXISTS glossary_terms (
+    id           VARCHAR PRIMARY KEY,
+    term         VARCHAR NOT NULL,
+    definition   TEXT NOT NULL,
+    see_also     VARCHAR[],
+    model_uuid   VARCHAR,
+    source       VARCHAR NOT NULL DEFAULT 'manual',
+    created_at   TIMESTAMP DEFAULT current_timestamp,
+    updated_at   TIMESTAMP DEFAULT current_timestamp
 );
 """
 
@@ -5885,6 +5901,30 @@ def _v91_to_v92(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 92")
 
 
+def _v92_to_v93(conn: duckdb.DuckDBPyConnection) -> None:
+    """v92→v93: ``glossary_terms`` — Keboola semantic-glossary import
+    destination (docs/superpowers/specs/2026-07-17-keboola-glossary-import-design.md).
+
+    Additive-only; ``_SYSTEM_SCHEMA`` already creates the table on fresh
+    installs (no-op ``CREATE TABLE IF NOT EXISTS`` here).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS glossary_terms (
+            id           VARCHAR PRIMARY KEY,
+            term         VARCHAR NOT NULL,
+            definition   TEXT NOT NULL,
+            see_also     VARCHAR[],
+            model_uuid   VARCHAR,
+            source       VARCHAR NOT NULL DEFAULT 'manual',
+            created_at   TIMESTAMP DEFAULT current_timestamp,
+            updated_at   TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 93")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6261,6 +6301,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v90_to_v91(conn)
             # v91→v92: mcp_sources.connect_hint column.
             _v91_to_v92(conn)
+            # v92→v93: glossary_terms table (Keboola semantic-glossary
+            # import). _SYSTEM_SCHEMA already creates it on fresh installs
+            # (no-op CREATE IF NOT EXISTS here).
+            _v92_to_v93(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -6498,6 +6542,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v90_to_v91(conn)
             if current < 92:
                 _v91_to_v92(conn)
+            if current < 93:
+                _v92_to_v93(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
