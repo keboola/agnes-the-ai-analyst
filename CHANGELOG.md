@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.74.115] - 2026-07-18
+
+### Added
+
+- Keboola glossary import: `semantic-glossary` Metastore items sync into a new `glossary_terms` table (DuckDB + Postgres, schema v93), tagged `source='keboola_semantic_layer'` and upsert+pruned each `keboola-semantic-layer-refresh` run alongside metrics — no new scheduler job. Relevance-ranked search (`GET /api/glossary/search`, `agnes glossary search`, the `glossary_search` MCP tool) uses DuckDB FTS BM25 (Postgres: `ts_rank`) with an ILIKE fallback, mirroring the corporate-memory knowledge search.
+
 ## [0.74.114] - 2026-07-18
 
 ### Fixed
@@ -50,9 +56,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   unconnected caller invokes a `per_user` tool, the error is now an actionable,
   web-linked remedy pointing at the connect page (falling back to the CLI hint
   when no public URL is configured).
-### Added
-
-- Keboola glossary import: `semantic-glossary` Metastore items sync into a new `glossary_terms` table (DuckDB + Postgres, schema v92), tagged `source='keboola_semantic_layer'` and upsert+pruned each `keboola-semantic-layer-refresh` run alongside metrics — no new scheduler job. Relevance-ranked search (`GET /api/glossary/search`, `agnes glossary search`, the `glossary_search` MCP tool) uses DuckDB FTS BM25 (Postgres: `ts_rank`) with an ILIKE fallback, mirroring the corporate-memory knowledge search.
 
 ## [0.74.112] - 2026-07-17
 
