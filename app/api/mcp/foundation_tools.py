@@ -31,6 +31,7 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "collection_get",
     "collections_search",
     "knowledge_search",
+    "glossary_search",
     "collections_reingest",
     "schema",
     "describe",
@@ -199,6 +200,29 @@ def register_foundation_tools(
                 headers=headers_fn(),
                 params={"q": query, "k": k},
                 timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def glossary_search(query: str, k: int = 10) -> dict:
+        """Search Keboola-imported business-term definitions (glossary).
+
+        Relevance-ranked (BM25) search across term + definition, RBAC tier
+        matches knowledge_search (any authenticated user). Use this to
+        resolve business terminology (e.g. "what does MRR mean here?")
+        before assuming a term's meaning.
+
+        Args:
+            query: Natural-language or keyword query.
+            k: Max results (default 10).
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/glossary/search",
+                headers=headers_fn(),
+                params={"q": query, "limit": k},
+                timeout=30,
             )
             r.raise_for_status()
             return r.json()
