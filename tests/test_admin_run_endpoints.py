@@ -760,6 +760,8 @@ class TestSchedulerJobsWireUp:
         assert "corporate-memory" in names
 
     def test_session_collector_endpoint_is_registered(self, monkeypatch):
+        """Wave-2B (Task 6): session-collector now enqueues via /api/jobs
+        instead of calling the run-session-collector endpoint synchronously."""
         for v in (
             "SCHEDULER_DATA_REFRESH_INTERVAL",
             "SCHEDULER_HEALTH_CHECK_INTERVAL",
@@ -770,9 +772,10 @@ class TestSchedulerJobsWireUp:
         from services.scheduler.__main__ import build_jobs
 
         target = next(j for j in build_jobs() if j[0] == "session-collector")
-        _, _, endpoint, method, _t = target
-        assert endpoint == "/api/admin/run-session-collector"
+        _, _, endpoint, method, _t, json_body = target
+        assert endpoint == "/api/jobs"
         assert method == "POST"
+        assert json_body == {"kind": "session-collector", "idempotency_key": "session-collector"}
 
     def test_session_processor_endpoints_are_registered(self, monkeypatch):
         for v in (
@@ -784,7 +787,7 @@ class TestSchedulerJobsWireUp:
             monkeypatch.delenv(v, raising=False)
         from services.scheduler.__main__ import build_jobs
 
-        jobs = {n: (endpoint, method) for n, _, endpoint, method, _ in build_jobs()}
+        jobs = {n: (endpoint, method) for n, _, endpoint, method, *_ in build_jobs()}
         assert jobs["session-processor:verification"] == (
             "/api/admin/run-session-processor?processor=verification",
             "POST",
@@ -795,6 +798,8 @@ class TestSchedulerJobsWireUp:
         )
 
     def test_corporate_memory_endpoint_is_registered(self, monkeypatch):
+        """Wave-2B (Task 6): corporate-memory now enqueues via /api/jobs
+        instead of calling the run-corporate-memory endpoint synchronously."""
         for v in (
             "SCHEDULER_DATA_REFRESH_INTERVAL",
             "SCHEDULER_HEALTH_CHECK_INTERVAL",
@@ -805,9 +810,10 @@ class TestSchedulerJobsWireUp:
         from services.scheduler.__main__ import build_jobs
 
         target = next(j for j in build_jobs() if j[0] == "corporate-memory")
-        _, _, endpoint, method, _t = target
-        assert endpoint == "/api/admin/run-corporate-memory"
+        _, _, endpoint, method, _t, json_body = target
+        assert endpoint == "/api/jobs"
         assert method == "POST"
+        assert json_body == {"kind": "corporate-memory", "idempotency_key": "corporate-memory"}
 
     def test_knowledge_packaging_endpoint_is_registered(self, monkeypatch):
         for v in (
