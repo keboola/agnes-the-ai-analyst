@@ -1,9 +1,9 @@
-"""Postgres-backed repository for the ``jobs`` table (durable job queue, v92).
+"""Postgres-backed repository for the ``jobs`` table (durable job queue, v93).
 
 Mirrors ``src/repositories/jobs.py``. Idempotency dedup is enforced with
 a partial unique index (``idx_jobs_idem`` — ``WHERE idempotency_key IS
 NOT NULL AND status IN ('queued', 'running')``, see
-``migrations/versions/0039_jobs_v92.py`` and ``src/models/jobs.py``) as
+``migrations/versions/0040_jobs_v93.py`` and ``src/models/jobs.py``) as
 the ``ON CONFLICT`` arbiter for the insert below.
 
 This is deliberately NOT a plain SELECT-then-INSERT: under READ
@@ -45,11 +45,22 @@ that module's docstring for the full shared-contract writeup):
   a way that reorders the lock relative to the join.
 - ``heartbeat()``/``complete()``/``fail()`` don't need ``FOR UPDATE``:
   every mutating statement's ``WHERE`` clause re-checks
-  ``leased_by = :worker_id AND status = 'running'`` at UPDATE time
+  ``lease_token = :lease_token AND status = 'running'`` at UPDATE time
   (under READ COMMITTED, each statement re-reads current committed
-  state), so if another worker's ``claim_next()`` reclaims the job
-  between our read and our write, the WHERE clause simply matches zero
-  rows instead of clobbering the new owner.
+  state), so if another claim reclaims the job between our read and our
+  write, the WHERE clause simply matches zero rows instead of clobbering
+  the new owner.
+
+Same-worker double-execution note (mirrors ``JobsRepository``): the guard
+is keyed on ``lease_token``, NOT ``leased_by``/``worker_id``. All lane
+slots inside one worker *process* share the same ``worker_id``
+(``hostname:pid``), so a ``leased_by = :worker_id`` guard cannot tell a
+stale slot's late call apart from a same-process reclaim of the same job
+by a DIFFERENT slot — empirically reproduced double-execution bug.
+``claim_next()`` mints a fresh ``uuid4`` ``lease_token`` on every claim
+(including a same-worker reclaim), so the guard distinguishes claims
+even when ``worker_id`` is identical. ``worker_id``/``leased_by`` remain
+for audit/logging only.
 """
 
 from __future__ import annotations
@@ -215,14 +226,23 @@ class JobsPgRepository:
 
         Eligible = ``status='queued'`` with ``run_after`` unset or due, OR
         a ``'running'`` job whose lease has expired and which hasn't yet
-        exhausted its attempts (crash-recovery reclaim). Ordered by
-        ``priority DESC, created_at ASC``. Race-safe under concurrent
-        claimers via ``FOR UPDATE SKIP LOCKED`` — see the module
-        docstring for why a plain SELECT-then-UPDATE would double-claim.
+        exhausted its attempts (crash-recovery reclaim — including a
+        same-worker reclaim; see the module docstring's same-worker
+        double-execution note). Ordered by ``priority DESC, created_at
+        ASC``. Race-safe under concurrent claimers via ``FOR UPDATE SKIP
+        LOCKED`` — see the module docstring for why a plain
+        SELECT-then-UPDATE would double-claim.
+
+        Mints and stores a fresh ``lease_token`` (uuid4 hex) on every
+        claim — including a reclaim of a job this same ``worker_id``
+        already held — so ``heartbeat()``/``complete()``/``fail()`` can
+        tell this claim apart from any other, even one under the
+        identical ``worker_id``.
         """
         if not kinds:
             return None
         now = datetime.now(timezone.utc)
+        lease_token = uuid.uuid4().hex
         lease_expires_at = now + timedelta(seconds=lease_seconds)
         stmt = sa.text(
             """WITH candidate AS MATERIALIZED (
@@ -239,6 +259,7 @@ class JobsPgRepository:
                UPDATE jobs
                SET status = 'running',
                    leased_by = :worker_id,
+                   lease_token = :lease_token,
                    started_at = COALESCE(started_at, :now),
                    attempts = attempts + 1,
                    lease_expires_at = :lease_expires_at
@@ -254,6 +275,7 @@ class JobsPgRepository:
                         "kinds": list(kinds),
                         "now": now,
                         "worker_id": worker_id,
+                        "lease_token": lease_token,
                         "lease_expires_at": lease_expires_at,
                     },
                 )
@@ -262,11 +284,14 @@ class JobsPgRepository:
             )
         return self._decode(dict(row)) if row else None
 
-    def heartbeat(self, job_id: str, worker_id: str, lease_seconds: int = 120) -> bool:
+    def heartbeat(self, job_id: str, worker_id: str, lease_token: str, lease_seconds: int = 120) -> bool:
         """Extend the lease on a running job. Returns ``False`` (no-op) if
-        the job is no longer ``'running'`` or is held by a different
-        worker — the caller uses that to abandon a job reclaimed out
-        from under it."""
+        the job is no longer ``'running'`` or ``lease_token`` no longer
+        matches the row's current one (reclaimed — possibly by another
+        slot of this SAME ``worker_id``; see the module docstring) — the
+        caller uses that to abandon a job reclaimed out from under it.
+        ``worker_id`` is accepted for audit/logging only; it is not part
+        of the atomicity guard."""
         now = datetime.now(timezone.utc)
         lease_expires_at = now + timedelta(seconds=lease_seconds)
         with self._engine.begin() as conn:
@@ -274,56 +299,58 @@ class JobsPgRepository:
                 conn.execute(
                     sa.text(
                         """UPDATE jobs SET lease_expires_at = :lease_expires_at
-                           WHERE id = :id AND leased_by = :worker_id AND status = 'running'
+                           WHERE id = :id AND lease_token = :lease_token AND status = 'running'
                            RETURNING id"""
                     ),
-                    {"lease_expires_at": lease_expires_at, "id": job_id, "worker_id": worker_id},
+                    {"lease_expires_at": lease_expires_at, "id": job_id, "lease_token": lease_token},
                 )
                 .mappings()
                 .first()
             )
         return row is not None
 
-    def complete(self, job_id: str, worker_id: str) -> None:
+    def complete(self, job_id: str, worker_id: str, lease_token: str) -> None:
         """Mark a running job done. No-op (raise-free) if the job is not
-        currently ``'running'`` under this exact ``worker_id`` — a stale
-        worker finishing a job that was already reclaimed must not
-        clobber the new owner's state."""
+        currently ``'running'`` under this exact ``lease_token`` — a
+        stale slot finishing a job that was already reclaimed (even by
+        another slot of the SAME ``worker_id``) must not clobber the new
+        owner's state. ``worker_id`` is accepted for audit/logging only."""
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
                     """UPDATE jobs
                        SET status = 'done', finished_at = :now, lease_expires_at = NULL
-                       WHERE id = :id AND leased_by = :worker_id AND status = 'running'"""
+                       WHERE id = :id AND lease_token = :lease_token AND status = 'running'"""
                 ),
-                {"now": now, "id": job_id, "worker_id": worker_id},
+                {"now": now, "id": job_id, "lease_token": lease_token},
             )
 
     def fail(
         self,
         job_id: str,
         worker_id: str,
+        lease_token: str,
         error: str,
         *,
         retry_in_seconds: Optional[int] = None,
     ) -> None:
         """Record a failure. No-op (raise-free) if the job is not
-        currently ``'running'`` under this exact ``worker_id`` (see
-        ``complete()``).
+        currently ``'running'`` under this exact ``lease_token`` (see
+        ``complete()``). ``worker_id`` is accepted for audit/logging only.
 
         If attempts remain (``attempts < max_attempts``) AND
         ``retry_in_seconds`` is given, requeues the job (``'queued'``,
-        ``run_after=now+retry_in_seconds``, lease cleared, ``error``
-        recorded). Otherwise finalizes to ``'failed'`` with
+        ``run_after=now+retry_in_seconds``, lease + lease_token cleared,
+        ``error`` recorded). Otherwise finalizes to ``'failed'`` with
         ``finished_at`` set.
 
         The SELECT here (no ``FOR UPDATE``) is safe without a lock: the
         decision (retry vs. finalize) only depends on ``attempts`` /
-        ``max_attempts``, which cannot change while this worker still
+        ``max_attempts``, which cannot change while this claim still
         holds the lease, and the follow-up UPDATE re-checks
-        ``leased_by = :worker_id AND status = 'running'`` anyway — if a
-        concurrent reclaim slipped in between, that UPDATE simply
+        ``lease_token = :lease_token AND status = 'running'`` anyway — if
+        a concurrent reclaim slipped in between, that UPDATE simply
         matches nothing.
         """
         now = datetime.now(timezone.utc)
@@ -332,34 +359,34 @@ class JobsPgRepository:
                 conn.execute(
                     sa.text(
                         """SELECT attempts, max_attempts FROM jobs
-                           WHERE id = :id AND leased_by = :worker_id AND status = 'running'"""
+                           WHERE id = :id AND lease_token = :lease_token AND status = 'running'"""
                     ),
-                    {"id": job_id, "worker_id": worker_id},
+                    {"id": job_id, "lease_token": lease_token},
                 )
                 .mappings()
                 .first()
             )
             if job is None:
-                return  # stale worker (already reclaimed) — no-op
+                return  # stale claim (already reclaimed) — no-op
             if job["attempts"] < job["max_attempts"] and retry_in_seconds is not None:
                 run_after = now + timedelta(seconds=retry_in_seconds)
                 conn.execute(
                     sa.text(
                         """UPDATE jobs
                            SET status = 'queued', run_after = :run_after, lease_expires_at = NULL,
-                               leased_by = NULL, error = :error
-                           WHERE id = :id AND leased_by = :worker_id AND status = 'running'"""
+                               leased_by = NULL, lease_token = NULL, error = :error
+                           WHERE id = :id AND lease_token = :lease_token AND status = 'running'"""
                     ),
-                    {"run_after": run_after, "error": error, "id": job_id, "worker_id": worker_id},
+                    {"run_after": run_after, "error": error, "id": job_id, "lease_token": lease_token},
                 )
             else:
                 conn.execute(
                     sa.text(
                         """UPDATE jobs
                            SET status = 'failed', finished_at = :now, lease_expires_at = NULL, error = :error
-                           WHERE id = :id AND leased_by = :worker_id AND status = 'running'"""
+                           WHERE id = :id AND lease_token = :lease_token AND status = 'running'"""
                     ),
-                    {"now": now, "error": error, "id": job_id, "worker_id": worker_id},
+                    {"now": now, "error": error, "id": job_id, "lease_token": lease_token},
                 )
 
     def reap_exhausted(self, now: Optional[datetime] = None) -> int:

@@ -1474,12 +1474,22 @@ CREATE TABLE IF NOT EXISTS store_lint_entity_state (
 -- model) rather than at the DB level. `idx_jobs_idem` below is a plain
 -- (non-unique) lookup index on this side.
 --
--- The Postgres ladder (migrations/versions/0039_jobs_v92.py /
+-- The Postgres ladder (migrations/versions/0040_jobs_v93.py /
 -- src/models/jobs.py) is asymmetric here: it DOES create `idx_jobs_idem`
 -- as a partial unique index, because a plain SELECT-then-INSERT in
 -- JobsPgRepository would race under READ COMMITTED (two concurrent
 -- transactions can both miss each other's uncommitted row). The CONTRACT
 -- shared by both backends is the dedup *behavior*, not the index shape.
+--
+-- `lease_token` is a fresh uuid4 minted by claim_next() on every claim
+-- (including a same-worker reclaim of its own previously-abandoned lease).
+-- heartbeat()/complete()/fail() guard on `lease_token = ? AND status =
+-- 'running'` rather than `leased_by = ?`: all lane slots in one worker
+-- process share the same `leased_by` (worker_id = hostname:pid), so a
+-- worker_id-only guard cannot tell a stale slot's late call apart from a
+-- same-process reclaim of the same job by a DIFFERENT slot — a
+-- same-worker double-execution bug, empirically reproduced. `leased_by`
+-- is kept for audit/logging only.
 CREATE TABLE IF NOT EXISTS jobs (
     id                VARCHAR PRIMARY KEY,
     kind              VARCHAR NOT NULL,
@@ -1491,6 +1501,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     max_attempts      INTEGER NOT NULL DEFAULT 3,
     lease_expires_at  TIMESTAMP,
     leased_by         VARCHAR,
+    lease_token       VARCHAR,
     idempotency_key   VARCHAR,
     error             VARCHAR,
     created_at        TIMESTAMP NOT NULL,
@@ -5939,6 +5950,9 @@ def _v92_to_v93(conn: duckdb.DuckDBPyConnection) -> None:
     uses a real partial unique index for this same column; see that
     docstring block for why the two ladders are intentionally asymmetric.
 
+    ``lease_token`` is the same-worker double-execution guard — see the
+    ``_SYSTEM_SCHEMA`` docstring block above for the full rationale.
+
     Renumbered from v92 to v93 after upstream's mcp_sources.connect_hint
     migration (#919) claimed schema v92 first.
     """
@@ -5955,6 +5969,7 @@ def _v92_to_v93(conn: duckdb.DuckDBPyConnection) -> None:
             max_attempts      INTEGER NOT NULL DEFAULT 3,
             lease_expires_at  TIMESTAMP,
             leased_by         VARCHAR,
+            lease_token       VARCHAR,
             idempotency_key   VARCHAR,
             error             VARCHAR,
             created_at        TIMESTAMP NOT NULL,
