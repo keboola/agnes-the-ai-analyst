@@ -297,3 +297,26 @@ def test_ws_join_route_rejects_non_participant_ticket(co_ws_app):
     with pytest.raises(Exception):
         with client.websocket_connect(f"/api/chat/sessions/{co_id}/join?ticket={bad_ticket}") as ws:
             ws.receive_json()
+
+
+def test_ws_join_route_closes_4503_on_coordination_unavailable(co_ws_app, monkeypatch):
+    """A coordination backend blip during ticket consume must close the WS
+    with 4503, not propagate an uncaught ``CoordinationUnavailable`` out of
+    the WS handler (FastAPI's HTTP exception handler doesn't cover WS scope).
+    """
+    from starlette.websockets import WebSocketDisconnect
+
+    import app.api.chat as chat_mod
+    from app.coordination.base import CoordinationUnavailable
+
+    client, co_id, owner_tk, collab_tk, stranger_tk = co_ws_app
+
+    def _raise(_ticket: str):
+        raise CoordinationUnavailable("redis blip")
+
+    monkeypatch.setattr(chat_mod, "_consume_ticket", _raise)
+
+    with pytest.raises(WebSocketDisconnect) as excinfo:
+        with client.websocket_connect(f"/api/chat/sessions/{co_id}/join?ticket=anything") as ws:
+            ws.receive_json()
+    assert excinfo.value.code == 4503
