@@ -1139,6 +1139,23 @@ async def lifespan(app):
 
     _canary_task = asyncio.create_task(canary_loop(), name="readiness-canary")
 
+    # Worker runtime loop (wave-2B job queue, spec §3.3) — claims and runs
+    # jobs off the `jobs` table (src/repositories/jobs.py) via heavy/light
+    # lanes (app/worker/runtime.py). Role-gated like the seeds/rebuild-on-boot
+    # blocks above, NOT unconditional like the canary above: only a process
+    # serving Role.WORKER should poll for and execute work. `all` mode (the
+    # default, single-container topology) always includes Role.WORKER, so
+    # this is by design still running there — enqueued work keeps executing
+    # in-process within seconds, no new deployment requirement for existing
+    # single-container operators. Same task-create/cancel placement as the
+    # canary task above (started here, in the uvicorn worker process, not
+    # create_app() — the --reload master must not touch the DB).
+    from app.worker.runtime import default_worker_id, worker_loop
+
+    _worker_task = None
+    if role_enabled(Role.WORKER):
+        _worker_task = asyncio.create_task(worker_loop(worker_id=default_worker_id()), name="worker-loop")
+
     async with streamable_session_manager_lifespan(app):
         yield
     if _checkpoint_task is not None:
@@ -1150,6 +1167,10 @@ async def lifespan(app):
     _canary_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await _canary_task
+    if _worker_task is not None:
+        _worker_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _worker_task
     _socket_disp = getattr(app.state, "slack_socket_dispatcher", None)
     if _socket_disp is not None:
         try:
