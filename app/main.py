@@ -378,10 +378,37 @@ def _maybe_rebuild_on_boot() -> bool:
 async def _start_slack_socket_transport(app) -> None:
     """If chat.slack.transport=socket, start one Socket Mode WS behind
     fail-closed gates. On any miss -> log + leave Slack HTTP-only; never
-    crash and never start a dead WS. Stashed on app.state for shutdown."""
+    crash and never start a dead WS.
+
+    Gateway-role gating and the token/workers preflight decide whether
+    this PROCESS participates at all — unrelated to cross-process
+    exclusivity, so both stay outside the lease below (a non-gateway
+    replica, or one with a broken Slack config, never even tries to
+    acquire the lease).
+
+    Once a process passes those gates, it races every other
+    Role.GATEWAY replica for the `slack-socket-mode` leader lease (see
+    app/coordination/leases.py) — Slack's Socket Mode protocol allows
+    multiple concurrent WS connections per app, but each delivers a
+    disjoint slice of at-least-once events, so multiple replicas
+    dispatching independently would double-handle events. The lease
+    task is stashed on app.state for shutdown (cancelling it runs the
+    lease's own stop()+release() path — see the lifespan teardown
+    below).
+
+    FLUSHALL story: if the coordination backend loses its state (Redis
+    FLUSHALL/restart, or an outage outliving one ttl_s), this replica's
+    lease renew fails -> the dispatcher is stopped -> the lease loop
+    re-enters acquire-polling -> some gateway replica (maybe this one)
+    re-acquires and reconnects within one ttl_s. In the default `memory`
+    backend (single-process) this never happens — the lease is
+    process-local and always immediately acquired, so behavior is
+    unchanged from before leases existed.
+    """
     from app.roles import Role, role_enabled
 
     app.state.slack_socket_dispatcher = None
+    app.state.slack_socket_lease_task = None
     if not role_enabled(Role.GATEWAY):
         logger.info("slack socket mode: skipped (not a gateway-role process)")
         return
@@ -403,17 +430,46 @@ async def _start_slack_socket_transport(app) -> None:
     if not ok:
         logger.error("Slack Socket Mode disabled: %s", reason)
         return
-    try:
-        dispatcher = SocketModeDispatcher(
-            app=app,
-            app_token=app_token,
-            bot_token=bot_token,
-        )
-        await dispatcher.start()
-        app.state.slack_socket_dispatcher = dispatcher
-    except Exception:
-        logger.exception("Slack Socket Mode disabled: start() failed")
+
+    async def _start() -> None:
+        try:
+            dispatcher = SocketModeDispatcher(
+                app=app,
+                app_token=app_token,
+                bot_token=bot_token,
+            )
+            await dispatcher.start()
+            app.state.slack_socket_dispatcher = dispatcher
+        except Exception:
+            # Matches the pre-lease behavior: a connect failure leaves this
+            # replica HTTP-only rather than crashing or retrying in a hot
+            # loop. The lease loop still considers the lease "held" (start()
+            # didn't raise past this point) — that's fine, it mirrors today's
+            # no-retry-on-start-failure trait rather than introducing new
+            # retry semantics as part of this change.
+            logger.exception("Slack Socket Mode disabled: start() failed")
+            app.state.slack_socket_dispatcher = None
+
+    async def _stop() -> None:
+        dispatcher = getattr(app.state, "slack_socket_dispatcher", None)
         app.state.slack_socket_dispatcher = None
+        if dispatcher is not None:
+            try:
+                await dispatcher.stop()
+            except Exception:
+                logger.exception("Slack Socket Mode dispatcher stop failed")
+
+    from app.coordination.leases import default_holder_id, run_with_lease
+
+    app.state.slack_socket_lease_task = asyncio.create_task(
+        run_with_lease("slack-socket-mode", default_holder_id(), ttl_s=15, start=_start, stop=_stop),
+        name="slack-socket-lease",
+    )
+    # Yield one scheduler tick so the memory-mode fast-path (always-acquire)
+    # actually runs start() before this function returns to the lifespan —
+    # preserves the pre-lease contract that Slack Socket Mode is live by the
+    # time app startup finishes, for the common single-process deployment.
+    await asyncio.sleep(0)
 
 
 def _state_checkpoint_interval_s() -> float:
@@ -1181,12 +1237,14 @@ async def lifespan(app):
         _worker_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await _worker_task
-    _socket_disp = getattr(app.state, "slack_socket_dispatcher", None)
-    if _socket_disp is not None:
-        try:
-            await _socket_disp.stop()
-        except Exception:
-            logger.exception("Slack Socket Mode shutdown failed")
+    # Cancelling the lease task runs run_with_lease's own cancellation path
+    # (stop() the dispatcher if held, then lease_release) — see
+    # app/coordination/leases.py and _start_slack_socket_transport above.
+    _socket_lease_task = getattr(app.state, "slack_socket_lease_task", None)
+    if _socket_lease_task is not None:
+        _socket_lease_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _socket_lease_task
     try:
         from src.observability import get_posthog
 
