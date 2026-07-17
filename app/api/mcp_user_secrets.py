@@ -17,6 +17,7 @@ For ``scope='shared'`` sources we still accept the PUT (operators may
 flip scope later) but warn the caller that the value won't be used
 until scope flips.
 """
+
 from __future__ import annotations
 
 import logging
@@ -40,6 +41,7 @@ class MySecretBody(BaseModel):
 class HasSecretResponse(BaseModel):
     has_secret: bool
     source_scope: str  # 'shared' | 'per_user'
+    updated_at: str | None = None  # ISO-8601 of last set; None when not connected
 
 
 @router.put("/{source_id}/my-secret", status_code=204)
@@ -92,4 +94,5 @@ async def get_my_secret_status(
     return HasSecretResponse(
         has_secret=per_user_secrets_repo().has(source_id, user["id"]),
         source_scope=(source.get("scope") or "shared"),
+        updated_at=per_user_secrets_repo().get_updated_at(source_id, user["id"]),
     )

@@ -12,6 +12,7 @@ through the repo factory (``mcp_sources_repo`` / ``per_user_secrets_repo``).
 Seed the source through the factory (``mcp_sources_repo().upsert(...)``),
 then drive the endpoints with the analyst token and assert the round-trip.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -79,7 +80,38 @@ def test_put_then_get_round_trip(seeded_app_both):
 
     # The stored value must decrypt back to cleartext through the factory.
     from src.repositories import per_user_secrets_repo
+
     assert per_user_secrets_repo().get(source_id, "analyst1") == "secret-token-abc"
+
+
+def test_updated_at_null_before_and_set_after_put(seeded_app_both):
+    """GET reports updated_at=None before any PUT and an ISO-8601 timestamp
+    after, on both backends. Never leaks the secret value."""
+    client = seeded_app_both["client"]
+    token = seeded_app_both["analyst_token"]
+    source_id = _seed_source(scope="per_user")
+
+    r = client.get(
+        f"/api/mcp/sources/{source_id}/my-secret",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["updated_at"] is None
+
+    client.put(
+        f"/api/mcp/sources/{source_id}/my-secret",
+        json={"value": "tok"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    r = client.get(
+        f"/api/mcp/sources/{source_id}/my-secret",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["updated_at"] is not None
+    assert "tok" not in str(body)  # timestamp only, never the secret
 
 
 def test_put_is_per_user_scoped(seeded_app_both):
