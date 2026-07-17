@@ -436,3 +436,47 @@ def seed_lease() -> Iterator[None]:
             yield
         finally:
             conn.execute(sa.text("SELECT pg_advisory_unlock(:key)"), {"key": _SEED_LEASE_ID})
+
+
+#: Session-scoped PG advisory lock id for the orchestrator rebuild critical
+#: section — "AGNT" packed as an int, distinct from ``_SEED_LEASE_ID`` and
+#: ``_PG_MIGRATE_LOCK_KEY``.
+_REBUILD_LEASE_ID = 0x41474E54
+
+
+@contextlib.contextmanager
+def rebuild_lease() -> Iterator[None]:
+    """Serialize ``SyncOrchestrator.rebuild()``/``rebuild_source()`` across processes.
+
+    In a role-split topology (a dedicated ``api`` process handling
+    ``/api/sync/trigger`` + the Jira webhook, and a separate ``worker``
+    process running enqueued jobs) both processes can independently reach
+    the orchestrator's rebuild critical section. ``SyncOrchestrator``'s
+    ``_rebuild_lock`` (a ``threading.Lock``) only serializes rebuilds
+    *within* one process — it is invisible across processes — so a
+    job-triggered rebuild in the worker and an HTTP-triggered rebuild in
+    the api process can concurrently ATTACH/swap ``analytics.duckdb``,
+    which is the known DuckDB corruption class this repo guards against
+    elsewhere (see ``docs/architecture.md``).
+
+    This wraps the rebuild critical section in a session-scoped Postgres
+    advisory lock, blocking (not failing) until the current holder
+    finishes, so the caller can just wait its turn: the in-process
+    ``_rebuild_lock`` still runs first (cheap, avoids reaching Postgres
+    when nothing outside this process can contend), and this lease adds
+    the cross-process guarantee.
+
+    No-op on the DuckDB backend — DuckDB app-state deployments are
+    single-process (Task 2's startup guard), so there is no second
+    process to serialize against.
+    """
+    if not _lease_use_pg():
+        yield
+        return
+    engine = get_engine()
+    with engine.connect() as conn:
+        conn.execute(sa.text("SELECT pg_advisory_lock(:key)"), {"key": _REBUILD_LEASE_ID})
+        try:
+            yield
+        finally:
+            conn.execute(sa.text("SELECT pg_advisory_unlock(:key)"), {"key": _REBUILD_LEASE_ID})
