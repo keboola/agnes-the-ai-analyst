@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 92
+SCHEMA_VERSION = 93
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1458,6 +1458,39 @@ CREATE TABLE IF NOT EXISTS store_lint_entity_state (
     run_id       VARCHAR NOT NULL,
     linted_at    TIMESTAMP NOT NULL
 );
+
+-- v93: jobs — durable job queue, the foundation of the worker runtime
+-- (wave-2B). This table + JobsRepository/JobsPgRepository cover
+-- enqueue/get/list + idempotency dedup only; the claim/lease lifecycle and
+-- the worker loop are later tasks in the same wave.
+--
+-- idempotency_key dedup note: a *partial* unique index
+-- (`... WHERE idempotency_key IS NOT NULL`) would let a duplicate key be
+-- reused once the earlier job leaves queued/running, but DuckDB does not
+-- support partial indexes ("Not implemented Error: Creating partial
+-- indexes is not supported currently"). Dedup is therefore enforced in
+-- the repository's `enqueue()` (both engines, for symmetric behavior)
+-- rather than at the DB level — the CONTRACT is the dedup behavior, not
+-- the index. `idx_jobs_idem` below is a plain (non-unique) lookup index.
+CREATE TABLE IF NOT EXISTS jobs (
+    id                VARCHAR PRIMARY KEY,
+    kind              VARCHAR NOT NULL,
+    payload_json      VARCHAR NOT NULL DEFAULT '{}',
+    status            VARCHAR NOT NULL DEFAULT 'queued',
+    priority          INTEGER NOT NULL DEFAULT 0,
+    run_after         TIMESTAMP,
+    attempts          INTEGER NOT NULL DEFAULT 0,
+    max_attempts      INTEGER NOT NULL DEFAULT 3,
+    lease_expires_at  TIMESTAMP,
+    leased_by         VARCHAR,
+    idempotency_key   VARCHAR,
+    error             VARCHAR,
+    created_at        TIMESTAMP NOT NULL,
+    started_at        TIMESTAMP,
+    finished_at       TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, priority, run_after);
+CREATE INDEX IF NOT EXISTS idx_jobs_idem ON jobs(idempotency_key);
 """
 
 
@@ -5885,6 +5918,46 @@ def _v91_to_v92(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 92")
 
 
+def _v92_to_v93(conn: duckdb.DuckDBPyConnection) -> None:
+    """v92→v93: ``jobs`` — durable job queue (wave-2B worker runtime
+    foundation). This migration covers table + claim/lookup index only;
+    ``_SYSTEM_SCHEMA`` already creates it on fresh installs (no-op
+    ``CREATE IF NOT EXISTS`` here).
+
+    See the ``jobs`` block in ``_SYSTEM_SCHEMA`` above for why
+    ``idx_jobs_idem`` is a plain index rather than a partial unique index
+    (DuckDB does not support partial indexes) — idempotency dedup is
+    enforced in ``JobsRepository.enqueue()`` instead.
+
+    Renumbered from v92 to v93 after upstream's mcp_sources.connect_hint
+    migration (#919) claimed schema v92 first.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS jobs (
+            id                VARCHAR PRIMARY KEY,
+            kind              VARCHAR NOT NULL,
+            payload_json      VARCHAR NOT NULL DEFAULT '{}',
+            status            VARCHAR NOT NULL DEFAULT 'queued',
+            priority          INTEGER NOT NULL DEFAULT 0,
+            run_after         TIMESTAMP,
+            attempts          INTEGER NOT NULL DEFAULT 0,
+            max_attempts      INTEGER NOT NULL DEFAULT 3,
+            lease_expires_at  TIMESTAMP,
+            leased_by         VARCHAR,
+            idempotency_key   VARCHAR,
+            error             VARCHAR,
+            created_at        TIMESTAMP NOT NULL,
+            started_at        TIMESTAMP,
+            finished_at       TIMESTAMP
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, priority, run_after)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_idem ON jobs(idempotency_key)")
+    conn.execute("UPDATE schema_version SET version = 93")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6261,6 +6334,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v90_to_v91(conn)
             # v91→v92: mcp_sources.connect_hint column.
             _v91_to_v92(conn)
+            # v92→v93: jobs table (durable job queue, wave-2B worker runtime
+            # foundation). _SYSTEM_SCHEMA already creates it on fresh
+            # installs (no-op CREATE IF NOT EXISTS here).
+            _v92_to_v93(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -6498,6 +6575,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v90_to_v91(conn)
             if current < 92:
                 _v91_to_v92(conn)
+            if current < 93:
+                _v92_to_v93(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
