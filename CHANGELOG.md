@@ -24,6 +24,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   to direct Anthropic on dispatcher failure. Unset ⇒ behavior unchanged. The
   broker logs a warning when the URL is set without the key.
   `app/api/broker.py`, documented in `config/.env.template`.
+
 ## [0.74.107] - 2026-07-17
 
 ### Security
