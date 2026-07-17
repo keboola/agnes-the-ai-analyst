@@ -205,6 +205,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   is unaffected and intentionally unchanged (documented in `usage_pg.py` —
   this is a DuckDB engine bug workaround, not a general anti-pattern fix).
   `src/repositories/usage.py`.
+### Fixed
+
+- **Worker shutdown drain no longer leaves stray heartbeats running or lets a DB error abort shutdown.** An abandoned (drain-timed-out) in-flight job's heartbeat task was left uncancelled, so it kept extending that job's lease after `worker_loop` had already returned and handed the job off to lease-expiry recovery. Separately, a `complete()`/`fail()` failure while finalizing a different in-flight job during the drain could propagate out of `worker_loop`'s shutdown path and abort the rest of lifespan shutdown (including closing the system DB). Both paths now cancel/await the heartbeat task and log-and-continue on a finalization error, matching the existing hardening pattern used elsewhere in the runtime.
 
 ## [0.74.105] - 2026-07-16
 

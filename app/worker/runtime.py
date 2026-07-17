@@ -380,6 +380,9 @@ async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -
                 job_id,
                 entry.kind_name,
             )
+            entry.hb_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await entry.hb_task
             continue
         if fut.cancelled():
             logger.warning(
@@ -390,24 +393,35 @@ async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -
             )
             continue
         exc = fut.exception()
-        if exc is not None:
+        try:
+            if exc is not None:
+                logger.exception(
+                    "worker %s: job %s (kind=%s) failed (finished during shutdown drain)",
+                    worker_id,
+                    job_id,
+                    entry.kind_name,
+                    exc_info=exc,
+                )
+                await asyncio.to_thread(
+                    _jobs_repo().fail,
+                    job_id,
+                    entry.worker_id,
+                    entry.lease_token,
+                    str(exc),
+                    retry_in_seconds=entry.retry_in_seconds,
+                )
+            else:
+                await asyncio.to_thread(_jobs_repo().complete, job_id, entry.worker_id, entry.lease_token)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
             logger.exception(
-                "worker %s: job %s (kind=%s) failed (finished during shutdown drain)",
+                "worker %s: job %s (kind=%s) finalization (complete/fail) failed during shutdown drain "
+                "(non-fatal); job will recover via lease expiry",
                 worker_id,
                 job_id,
                 entry.kind_name,
-                exc_info=exc,
             )
-            await asyncio.to_thread(
-                _jobs_repo().fail,
-                job_id,
-                entry.worker_id,
-                entry.lease_token,
-                str(exc),
-                retry_in_seconds=entry.retry_in_seconds,
-            )
-        else:
-            await asyncio.to_thread(_jobs_repo().complete, job_id, entry.worker_id, entry.lease_token)
         entry.hb_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await entry.hb_task
