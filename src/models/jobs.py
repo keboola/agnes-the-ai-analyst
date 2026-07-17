@@ -5,9 +5,14 @@ and the Alembic migration ``migrations/versions/0041_jobs_v94.py``. This is
 the wave-2B worker-runtime foundation: enqueue/get/list + idempotency
 dedup only (claim/lease lifecycle + worker loop are later tasks).
 
-``idx_jobs_idem`` is intentionally a plain (non-unique) index rather than
-a unique constraint — see the migration's module docstring for why
-idempotency dedup is enforced in the repository layer instead.
+``idx_jobs_idem`` is a *partial unique* index on Postgres — ``WHERE
+idempotency_key IS NOT NULL AND status IN ('queued', 'running')`` — so a
+duplicate key cannot be inserted concurrently while a queued/running row
+holds it (``JobsPgRepository.enqueue()`` uses it as an ``ON CONFLICT``
+arbiter). DuckDB has no partial-index support, so its sibling
+(``src/db.py``) keeps this a plain index and enforces dedup in
+``JobsRepository.enqueue()`` instead — see the migration's module
+docstring for the full rationale for this asymmetry.
 """
 
 from __future__ import annotations
@@ -41,5 +46,10 @@ class Job(Base):
 
     __table_args__ = (
         Index("idx_jobs_claim", "status", "priority", "run_after"),
-        Index("idx_jobs_idem", "idempotency_key"),
+        Index(
+            "idx_jobs_idem",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL AND status IN ('queued', 'running')"),
+        ),
     )
