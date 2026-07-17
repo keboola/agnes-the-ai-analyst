@@ -252,6 +252,145 @@ def test_lane_slot_survives_transient_claim_next_failure(worker_db, monkeypatch)
     assert real_repo.get(job["id"])["status"] == "done"
 
 
+def test_unregistered_kind_is_terminally_failed_without_retry(worker_db, monkeypatch):
+    """Registry-drift guard (carry-over finding): a claimed job whose kind
+    isn't (or is no longer) registered on this process must be failed
+    terminally with no retry, not re-claimed forever.
+
+    Under the current registry design a job can only be claimed for a
+    kind that's registered (kinds passed to ``claim_next`` come straight
+    from ``JOB_KINDS``), so the natural trigger is a race: the kind is
+    deregistered on this process *between* the claim and the
+    ``JOB_KINDS.get(job["kind"])`` lookup (e.g. a concurrent registry
+    update). Simulated here via a repo proxy that pops the kind from
+    ``JOB_KINDS`` right after ``claim_next`` returns it.
+    """
+    import app.worker.runtime as runtime_mod
+    from app.worker.registry import JOB_KINDS, LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    def handler(payload: dict) -> None:
+        raise AssertionError("handler must never run — the guard fires before dispatch")
+
+    register_kind(JobKind(name="ephemeral_kind", handler=handler, lane=LIGHT_LANE, lease_seconds=30))
+    real_repo = jobs_repo()
+    job = real_repo.enqueue("ephemeral_kind", {}, max_attempts=5)
+
+    class DriftingRepo:
+        def __getattr__(self, name):
+            return getattr(real_repo, name)
+
+        def claim_next(self, **kwargs):
+            claimed = real_repo.claim_next(**kwargs)
+            if claimed is not None:
+                # Simulate registry drift between claim and dispatch.
+                JOB_KINDS.pop("ephemeral_kind", None)
+            return claimed
+
+    monkeypatch.setattr(runtime_mod, "_jobs_repo", lambda: DriftingRepo())
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.3))
+
+    row = real_repo.get(job["id"])
+    assert row["status"] == "failed"
+    assert "no registered handler" in row["error"]
+    assert row["run_after"] is None, "must be finalized, not requeued, despite attempts remaining"
+
+
+def test_shutdown_drain_waits_for_in_flight_handler_and_finalizes(worker_db, monkeypatch):
+    """Critical: cancelling ``worker_loop`` must not orphan an in-flight
+    handler's OS thread against a DB the caller is about to close.
+    ``asyncio.to_thread``'s cancellation delivers ``CancelledError``
+    immediately while the underlying thread keeps running — the loop must
+    perform a bounded drain (wait for the handler, then finalize normally)
+    instead of abandoning it the instant cancellation is requested."""
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    monkeypatch.setenv("AGNES_WORKER_DRAIN_TIMEOUT_S", "5")
+
+    started = threading.Event()
+
+    def slow_handler(payload: dict) -> None:
+        started.set()
+        time.sleep(0.4)
+
+    register_kind(JobKind(name="slow_test", handler=slow_handler, lane=LIGHT_LANE, lease_seconds=30))
+    repo = jobs_repo()
+    job = repo.enqueue("slow_test", {})
+
+    async def _drive() -> None:
+        task = asyncio.create_task(worker_loop(worker_id="test-worker", poll_interval_s=0.05))
+        deadline = time.monotonic() + 2.0
+        while not started.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert started.is_set(), "handler never started"
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert task.done()
+
+    asyncio.run(_drive())
+
+    row = repo.get(job["id"])
+    assert row["status"] == "done", "in-flight handler must be finalized (not abandoned) by the shutdown drain"
+    assert row["finished_at"] is not None
+
+
+def test_shutdown_drain_times_out_and_abandons_slow_handler(worker_db, monkeypatch):
+    """If the in-flight handler doesn't finish within
+    ``AGNES_WORKER_DRAIN_TIMEOUT_S``, the drain gives up (logs, doesn't
+    wait forever) and leaves the job 'running' for lease-expiry recovery
+    (reclaim or ``reap_exhausted``), rather than blocking shutdown
+    indefinitely."""
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    monkeypatch.setenv("AGNES_WORKER_DRAIN_TIMEOUT_S", "0.2")
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def very_slow_handler(payload: dict) -> None:
+        started.set()
+        # Held open past the drain timeout; released once the test has
+        # observed the timeout behavior so the (non-daemon) thread doesn't
+        # block interpreter shutdown.
+        release.wait(timeout=5)
+
+    register_kind(JobKind(name="very_slow_test", handler=very_slow_handler, lane=LIGHT_LANE, lease_seconds=30))
+    repo = jobs_repo()
+    job = repo.enqueue("very_slow_test", {})
+
+    async def _drive() -> float:
+        task = asyncio.create_task(worker_loop(worker_id="test-worker", poll_interval_s=0.05))
+        deadline = time.monotonic() + 2.0
+        while not started.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert started.is_set(), "handler never started"
+        start = time.monotonic()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert task.done()
+        elapsed = time.monotonic() - start
+        # Release the abandoned handler thread while the loop is still
+        # running so its (harmless) completion callback has somewhere to
+        # land, then give the loop one more tick to process it.
+        release.set()
+        await asyncio.sleep(0.05)
+        return elapsed
+
+    elapsed = asyncio.run(_drive())
+
+    assert elapsed < 1.5, f"drain should give up around the 0.2s configured timeout, took {elapsed:.2f}s"
+    row = repo.get(job["id"])
+    assert row["status"] == "running", "abandoned in-flight job must NOT be finalized by a timed-out drain"
+
+
 def test_worker_loop_reaps_stuck_jobs(worker_db):
     """The reap sweep is wired into worker_loop itself, independent of
     whether any handler is registered for the stuck job's kind."""
