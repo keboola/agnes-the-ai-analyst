@@ -118,7 +118,9 @@ class SyncOrchestrator:
 
         Returns: {source_name: [table_names]} for logging.
         """
-        with _rebuild_lock:
+        from src.db_pg import rebuild_lease
+
+        with _rebuild_lock, rebuild_lease():
             try:
                 return self._do_rebuild()
             except Exception as exc:
@@ -127,7 +129,9 @@ class SyncOrchestrator:
 
     def rebuild_source(self, source_name: str) -> List[str]:
         """Rebuild views from a single source (e.g. after Jira webhook)."""
-        with _rebuild_lock:
+        from src.db_pg import rebuild_lease
+
+        with _rebuild_lock, rebuild_lease():
             try:
                 return self._do_rebuild_source(source_name)
             except Exception as exc:
