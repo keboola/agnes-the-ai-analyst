@@ -277,6 +277,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   backward compatible) so a counter can accumulate a variable-sized delta
   per event (e.g. tokens spent on one chat turn) instead of only a flat
   +1-per-call; `amount=0` is a valid no-op "peek" at the current value.
+- v2 catalog/schema/sample TTL caches (`app/api/v2_catalog.py`) now broadcast
+  a `cache-invalidate` event via the coordination backend whenever
+  `invalidate_for_table`/`invalidate_all` runs (registry register/update/
+  unregister/rebuild), so every api-serving replica drops its own local
+  copies instead of serving a stale row/schema/sample for up to the TTL.
+  Every api-serving process subscribes at startup (`app/main.py` lifespan)
+  and unsubscribes on shutdown. Under the default `memory` backend this is a
+  same-process, in-memory fan-out — unchanged single-process behavior.
+- CLI-auth login codes (`app/api/cli_auth.py`) and Slack binding codes
+  (`services/slack_bot/binding.py`) now store the code itself in the
+  coordination backend's TTL key/value store (`cli-auth:` / `slack-bind:`
+  prefixes, same TTLs and single-use semantics as before) when
+  `coordination.backend=redis`, instead of the dedicated `operational.duckdb`
+  file — one fewer always-RW DuckDB file across a multi-process topology.
+  Under the default `memory` backend, storage is unchanged (`operational.duckdb`
+  fallback on Postgres-state instances, the system DB on DuckDB-state
+  instances). Slack's issuance/redeem throttle logs stay on DuckDB
+  unconditionally either way — only the ephemeral code moves.
 
 ## [0.74.107] - 2026-07-17
 
