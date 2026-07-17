@@ -901,7 +901,10 @@ def test_shortcut_windows_writes_cmd_shim(tmp_path, monkeypatch):
     assert shim.exists()
     content = shim.read_text(encoding="utf-8")
     assert content.startswith("@echo off")
-    assert "rem >>> agnes launcher: myworkspace <<<" in content
+    # `::` label-comment, NOT `rem`: cmd.exe applies redirection parsing to
+    # rem lines, so `rem >>> ... <<<` would error on every launch.
+    assert ":: >>> agnes launcher: myworkspace <<<" in content
+    assert "rem >>>" not in content
     assert f'cd /d "{workspace}"' in content
     assert "claude --permission-mode auto %*" in content
 
