@@ -24,6 +24,7 @@ from connectors.keboola.semantic_layer import (
     resolve_relationship,
     resolve_table_name,
     table_lookup_from_registry,
+    try_join_composition,
 )
 
 
@@ -572,3 +573,164 @@ class TestComposeJoinSql:
         # 2 from the rewritten expression (both distinct aliases -> j.) +
         # 1 from the composed ON clause's own j. reference.
         assert sql.count('j."') == 3
+
+
+class TestTryJoinComposition:
+    def test_composes_join_when_fully_resolvable(self):
+        table_lookup = {
+            ("in.c-a", "activities"): "crm_activities",
+            ("in.c-a", "opportunities"): "crm_opportunities",
+        }
+        relationship_lookup = {
+            "in.c-a.activities": [
+                {
+                    "from": "in.c-a.opportunities",
+                    "to": "in.c-a.activities",
+                    "on": 'o."id" = a."opportunity_id"',
+                    "type": "left",
+                }
+            ],
+        }
+        column_lookup = {
+            "crm_activities": {"opportunity_id", "created_at"},
+            "crm_opportunities": {"id", "amount"},
+        }
+
+        result, skip_reason = try_join_composition(
+            'SUM(o."amount")',
+            "in.c-a.activities",
+            table_lookup,
+            relationship_lookup,
+            column_lookup,
+        )
+
+        assert skip_reason is None
+        assert result["table_name"] == "crm_activities"
+        assert result["tables"] == ["crm_activities", "crm_opportunities"]
+        assert 'FROM "crm_activities" AS t' in result["sql"]
+        assert 'LEFT JOIN "crm_opportunities" AS j' in result["sql"]
+
+    def test_falls_back_when_relationship_unresolvable(self):
+        result, skip_reason = try_join_composition(
+            'SUM(o."amount")',
+            "in.c-a.orphan",
+            {},
+            {},
+            {},
+        )
+        assert result is None
+        assert skip_reason == "ambiguous_relationship"
+
+    def test_falls_back_when_joined_table_not_registered(self):
+        table_lookup = {("in.c-a", "activities"): "crm_activities"}
+        relationship_lookup = {
+            "in.c-a.activities": [
+                {"from": "in.c-a.unregistered", "to": "in.c-a.activities", "on": 'o."x" = a."y"', "type": "left"}
+            ],
+        }
+        result, skip_reason = try_join_composition(
+            'SUM(o."x")',
+            "in.c-a.activities",
+            table_lookup,
+            relationship_lookup,
+            {},
+        )
+        assert result is None
+        assert skip_reason == "foreign_alias_reference"
+
+    def test_falls_back_when_column_metadata_missing(self):
+        table_lookup = {
+            ("in.c-a", "activities"): "crm_activities",
+            ("in.c-a", "opportunities"): "crm_opportunities",
+        }
+        relationship_lookup = {
+            "in.c-a.activities": [
+                {
+                    "from": "in.c-a.opportunities",
+                    "to": "in.c-a.activities",
+                    "on": 'o."id" = a."opportunity_id"',
+                    "type": "left",
+                }
+            ],
+        }
+        result, skip_reason = try_join_composition(
+            'SUM(o."amount")',
+            "in.c-a.activities",
+            table_lookup,
+            relationship_lookup,
+            {},
+        )
+        assert result is None
+        assert skip_reason == "foreign_alias_reference"
+
+
+def _relationship_metric_item(name, sql, dataset, model_uuid="model-1"):
+    return {
+        "type": "semantic-metric",
+        "id": f"id-{name}",
+        "attributes": {"name": name, "sql": sql, "dataset": dataset, "modelUUID": model_uuid},
+    }
+
+
+class TestBuildMetricRowWithRelationships:
+    def test_resolves_join_metric_when_relationship_available(self):
+        table_lookup = {
+            ("in.c-a", "activities"): "crm_activities",
+            ("in.c-a", "opportunities"): "crm_opportunities",
+        }
+        relationship_lookup = {
+            "in.c-a.activities": [
+                {
+                    "from": "in.c-a.opportunities",
+                    "to": "in.c-a.activities",
+                    "on": 'o."id" = a."opportunity_id"',
+                    "type": "left",
+                }
+            ],
+        }
+        column_lookup = {
+            "crm_activities": {"opportunity_id"},
+            "crm_opportunities": {"id", "amount"},
+        }
+        metric = _relationship_metric_item("linked_amount", 'SUM(o."amount")', "in.c-a.activities")
+
+        row, skip_reason = build_metric_row(
+            metric,
+            table_lookup,
+            {},
+            [],
+            "model-1",
+            relationship_lookup=relationship_lookup,
+            column_lookup=column_lookup,
+        )
+
+        assert skip_reason is None
+        assert row["table_name"] == "crm_activities"
+        assert row["tables"] == ["crm_activities", "crm_opportunities"]
+
+    def test_falls_through_to_foreign_alias_reference_without_lookups(self):
+        table_lookup = {("in.c-a", "activities"): "crm_activities"}
+        metric = _relationship_metric_item("linked_amount", 'SUM(o."amount")', "in.c-a.activities")
+
+        row, skip_reason = build_metric_row(metric, table_lookup, {}, [], "model-1")
+
+        assert row is None
+        assert skip_reason == "foreign_alias_reference"
+
+    def test_single_table_metric_unaffected_by_new_params(self):
+        table_lookup = {("in.c-a", "orders"): "crm_orders"}
+        metric = _relationship_metric_item("total", 'SUM("amount")', "in.c-a.orders")
+
+        row, skip_reason = build_metric_row(
+            metric,
+            table_lookup,
+            {},
+            [],
+            "model-1",
+            relationship_lookup={},
+            column_lookup={},
+        )
+
+        assert skip_reason is None
+        assert row["sql"] == 'SELECT SUM("amount") FROM "crm_orders" AS t'
+        assert "tables" not in row

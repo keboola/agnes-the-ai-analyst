@@ -191,24 +191,68 @@ def merge_constraints(metric_name: str, constraints: list[dict]) -> dict | None:
     }
 
 
+def try_join_composition(
+    expression: str,
+    dataset_table_id: str,
+    table_lookup: dict[tuple[str, str], str],
+    relationship_lookup: dict[str, list[dict]],
+    column_lookup: dict[str, set[str]],
+) -> tuple[Optional[dict], Optional[str]]:
+    """Attempt to resolve a foreign-alias-referencing metric expression into
+    a JOIN. Returns (fields, None) with 'table_name' / 'tables' / 'sql'
+    keys set on success, or (None, skip_reason) — never raises, every
+    failure mode is a specific skip_reason (docs/superpowers/specs/
+    2026-07-17-keboola-relationship-metrics-design.md — "skip and count,
+    never guess"). Any failure not covered by a resolve_relationship()
+    skip_reason falls back to "foreign_alias_reference", the pre-existing
+    generic reason — so this function never introduces a regression for a
+    metric it can't fully resolve.
+    """
+    relationship, skip_reason = resolve_relationship(dataset_table_id, relationship_lookup)
+    if relationship is None:
+        return None, skip_reason
+
+    table_name = resolve_table_name(dataset_table_id, table_lookup)
+    joined_table_name = resolve_table_name(relationship["from"], table_lookup)
+    if table_name is None or joined_table_name is None:
+        return None, "foreign_alias_reference"
+
+    to_columns = column_lookup.get(table_name)
+    from_columns = column_lookup.get(joined_table_name)
+    if not to_columns or not from_columns:
+        return None, "foreign_alias_reference"
+
+    alias_sides = resolve_join_aliases(relationship["on"], from_columns, to_columns)
+    if alias_sides is None:
+        return None, "foreign_alias_reference"
+    to_alias, from_alias = alias_sides
+
+    sql = compose_join_sql(expression, table_name, joined_table_name, relationship["on"], to_alias, from_alias)
+    return {"table_name": table_name, "tables": [table_name, joined_table_name], "sql": sql}, None
+
+
 def build_metric_row(
     metric_item: dict,
     table_lookup: dict[tuple[str, str], str],
     dataset_lookup: dict[str, dict],
     constraints: list[dict],
     model_uuid: str,
+    relationship_lookup: Optional[dict[str, list[dict]]] = None,
+    column_lookup: Optional[dict[str, set[str]]] = None,
 ) -> tuple[Optional[dict], Optional[str]]:
     """Map one semantic-metric item to a metric_definitions row dict.
 
     Returns (row, None) on success, or (None, skip_reason) where
-    skip_reason is "missing_name" (the item carries no usable name — the
-    metric id/name would otherwise stringify to "None"), "unresolved_table"
-    (the metric's dataset isn't registered in Agnes's table_registry),
-    "foreign_alias_reference" (the expression needs a JOIN this importer
-    can't safely compose — see references_foreign_alias), or
-    "embedded_sql_comment" (the expression carries a trailing `--` comment
-    that would swallow the composed FROM clause — see
-    has_embedded_sql_comment).
+    skip_reason is "missing_name", "unresolved_table", "embedded_sql_comment",
+    "foreign_alias_reference" (generic fallback — see try_join_composition
+    for the more specific relationship-resolution skip reasons this
+    function also propagates: "ambiguous_relationship",
+    "unsupported_relationship_type", "unverified_relationship_direction").
+
+    `relationship_lookup` / `column_lookup` are optional — omitting them
+    (the pre-relationship-feature call shape) preserves the exact
+    pre-existing behavior: every foreign-alias expression skips as
+    "foreign_alias_reference", unconditionally.
     """
     attrs = metric_item.get("attributes") or {}
     name = attrs.get("name")
@@ -216,20 +260,34 @@ def build_metric_row(
     dataset_table_id = attrs.get("dataset") or ""
 
     if not name:
-        # Upstream contract guarantees a name, but a missing/empty one would
-        # produce id "keboola/<model>/None" and name=None into metric_repo —
-        # skip defensively rather than write a malformed row.
         return None, "missing_name"
 
+    tables: list[str] = []
     if references_foreign_alias(expression):
-        return None, "foreign_alias_reference"
-
-    if has_embedded_sql_comment(expression):
-        return None, "embedded_sql_comment"
-
-    table_name = resolve_table_name(dataset_table_id, table_lookup)
-    if table_name is None:
-        return None, "unresolved_table"
+        if has_embedded_sql_comment(expression):
+            return None, "embedded_sql_comment"
+        join_fields: Optional[dict] = None
+        join_skip_reason: Optional[str] = "foreign_alias_reference"
+        if relationship_lookup is not None and column_lookup is not None:
+            join_fields, join_skip_reason = try_join_composition(
+                expression,
+                dataset_table_id,
+                table_lookup,
+                relationship_lookup,
+                column_lookup,
+            )
+        if join_fields is None:
+            return None, join_skip_reason
+        table_name = join_fields["table_name"]
+        tables = join_fields["tables"]
+        sql = join_fields["sql"]
+    else:
+        if has_embedded_sql_comment(expression):
+            return None, "embedded_sql_comment"
+        table_name = resolve_table_name(dataset_table_id, table_lookup)
+        if table_name is None:
+            return None, "unresolved_table"
+        sql = compose_sql(expression, table_name)
 
     row: dict[str, Any] = {
         "id": f"keboola/{model_uuid}/{name}",
@@ -239,9 +297,11 @@ def build_metric_row(
         "description": attrs.get("description") or "",
         "expression": expression,
         "table_name": table_name,
-        "sql": compose_sql(expression, table_name),
+        "sql": sql,
         "source": "keboola_semantic_layer",
     }
+    if tables:
+        row["tables"] = tables
 
     dataset_attrs = dataset_lookup.get(dataset_table_id) or {}
     grain = dataset_attrs.get("grain")
@@ -461,9 +521,7 @@ def resolve_relationship(
 # Matches the live-verified semantic-relationship.on shape exactly:
 # `<alias>."<column>" = <alias>."<column>"`. Verified live (2026-07-17):
 # 29/29 sampled relationships matched this pattern with no variation.
-_ON_CLAUSE_RE = re.compile(
-    r'^\s*(\w+)\s*\.\s*"([^"]+)"\s*=\s*(\w+)\s*\.\s*"([^"]+)"\s*$'
-)
+_ON_CLAUSE_RE = re.compile(r'^\s*(\w+)\s*\.\s*"([^"]+)"\s*=\s*(\w+)\s*\.\s*"([^"]+)"\s*$')
 
 
 def parse_on_clause(on: str) -> Optional[tuple[str, str, str, str]]:
@@ -550,18 +608,11 @@ def compose_join_sql(
     """
     rewritten_expression = expression
     for alias in extract_foreign_aliases(expression):
-        rewritten_expression = re.sub(
-            rf'\b{re.escape(alias)}\s*\.', "j.", rewritten_expression
-        )
+        rewritten_expression = re.sub(rf"\b{re.escape(alias)}\s*\.", "j.", rewritten_expression)
 
     on_alias1, on_col1, on_alias2, on_col2 = parse_on_clause(on)  # type: ignore[misc]
     remapped_alias1 = "t" if on_alias1 == to_alias else "j"
     remapped_alias2 = "t" if on_alias2 == to_alias else "j"
     remapped_on = f'{remapped_alias1}."{on_col1}" = {remapped_alias2}."{on_col2}"'
 
-    return (
-        f'SELECT {rewritten_expression} '
-        f'FROM "{primary_table}" AS t '
-        f'LEFT JOIN "{joined_table}" AS j '
-        f'ON {remapped_on}'
-    )
+    return f'SELECT {rewritten_expression} FROM "{primary_table}" AS t LEFT JOIN "{joined_table}" AS j ON {remapped_on}'
