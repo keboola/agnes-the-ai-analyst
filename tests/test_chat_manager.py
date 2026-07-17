@@ -20,6 +20,18 @@ from app.chat.manager import ChatManager, SinkEntry
 from app.chat.persistence import ChatRepository
 from app.chat.types import SessionState, Surface
 from app.chat.workdir import WorkdirManager
+from app.coordination.factory import reset_coordination_for_tests
+
+
+@pytest.fixture(autouse=True)
+def _reset_coordination():
+    """The per-sender message-rate window and daily-token counters
+    (wave-2C task 4) now live in the coordination-backend singleton, which
+    persists across tests in this file that reuse the same "u@x" identity
+    — reset it so one test's rate/quota usage never bleeds into another's."""
+    reset_coordination_for_tests()
+    yield
+    reset_coordination_for_tests()
 
 
 def _make_workdir_mgr(tmp_path: Path, repo: ChatRepository) -> WorkdirManager:
@@ -638,11 +650,16 @@ def test_crash_respawn_does_not_accumulate_pump_tasks(manager: ChatManager):
     asyncio.run(_run())
 
 
-def test_daily_tokens_cached_per_user(tmp_path):
-    """daily_anthropic_tokens is called at most once per 60-second window.
-
-    Two consecutive send_user_message calls for the same user must hit the
-    repo only once — the second resolves from the in-instance TTL cache.
+def test_daily_token_budget_uses_shared_coordination_counter(tmp_path):
+    """Wave-2C task 4: the daily-spend check no longer hits the DB aggregate
+    on every send — it reads coordination-backend counters that
+    ``_record_daily_tokens`` keeps up to date as turns complete (see
+    ``ChatManager._daily_token_totals``). Two consecutive sends must not
+    call ``repo.daily_anthropic_tokens`` at all, and — the actual point of
+    routing this through the coordination backend — a second ChatManager
+    instance (standing in for another app process) must see the same
+    running total once a turn's tokens are recorded, not an independent
+    zero.
     """
     from datetime import datetime, timezone
     from unittest.mock import patch
@@ -686,10 +703,21 @@ def test_daily_tokens_cached_per_user(tmp_path):
         with patch.object(repo, "daily_anthropic_tokens", wraps=repo.daily_anthropic_tokens) as mock_fn:
             await mgr.send_user_message(s.id, "msg1")
             await mgr.send_user_message(s.id, "msg2")
-            # Both calls should have used the cache; repo method called exactly once.
-            assert mock_fn.call_count == 1, (
-                f"expected daily_anthropic_tokens called once (cached); got {mock_fn.call_count}"
+            assert mock_fn.call_count == 0, (
+                f"expected the DB aggregate never consulted (coordination counter instead); "
+                f"got {mock_fn.call_count} calls"
             )
+
+        # A completed turn's tokens are recorded against the running
+        # counters (this is what _pump_subprocess_to_ws does for a real
+        # assistant_message frame).
+        mgr._record_daily_tokens("u@x", 1000, 2000)
+
+        # Another ChatManager instance (another process, sharing the same
+        # coordination backend) must see the identical accumulated total —
+        # not its own independent, zeroed cache.
+        mgr2 = ChatManager(provider=provider, workdir_mgr=workdir_mgr, repo=repo, config=cfg)
+        assert mgr2._daily_token_totals("u@x") == (1000, 2000)
 
     asyncio.run(_run())
 
@@ -2024,7 +2052,7 @@ def test_legacy_resume_destroys_old_sandbox_before_clearing(tmp_path):
 # ---------------------------------------------------------------------------
 
 from app.chat.manager import _PAUSED_SWEEP_LEASE_NAME  # noqa: E402
-from app.coordination.factory import coordination, reset_coordination_for_tests  # noqa: E402
+from app.coordination.factory import coordination  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

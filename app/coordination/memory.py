@@ -61,18 +61,18 @@ class MemoryCoordinationBackend(CoordinationBackend):
 
     # -- Counters ---------------------------------------------------------------
 
-    def incr(self, key: str, *, ttl_s: int) -> int:
+    def incr(self, key: str, *, amount: int = 1, ttl_s: int) -> int:
         with self._lock:
             now = self._now()
             entry = self._kv.get(key)
             if entry is not None and entry[1] <= now:
                 entry = None  # expired window — treat as absent
             if entry is None:
-                new_value = 1
+                new_value = amount
                 self._kv[key] = (str(new_value), now + ttl_s)
                 return new_value
             value, expiry = entry
-            new_value = int(value) + 1
+            new_value = int(value) + amount
             self._kv[key] = (str(new_value), expiry)  # TTL untouched
             return new_value
 
