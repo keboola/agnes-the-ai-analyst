@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.109] - 2026-07-17
+
 ### Fixed
 
 - **`INSERT OR REPLACE` could crash the whole app process on DuckDB, same class of bug as #909.**
