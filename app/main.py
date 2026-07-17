@@ -530,6 +530,40 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
             logger.exception("state-checkpoint tick failed; loop continues")
 
 
+def _on_cache_invalidate(message: str) -> None:
+    """Coordination-backend subscriber for the ``cache-invalidate`` channel
+    (wave 2C) — drops THIS process's local v2 catalog/schema/sample TTL
+    caches to mirror a table-registry mutation handled by (usually) another
+    api-serving replica.
+
+    ``message`` is ``json.dumps({"scope": "table"|"all", "table": <id or
+    None>})`` — see ``app.api.v2_catalog._publish_cache_invalidate``. Routes
+    into ``v2_catalog.invalidate_for_table`` / ``invalidate_all`` with
+    ``_publish=False`` so reacting to an incoming event never re-publishes
+    it — no echo loop back onto the channel (the process that originated
+    the invalidation already cleared its own caches before publishing).
+    """
+    import json
+
+    try:
+        payload = json.loads(message)
+    except (ValueError, TypeError):
+        logger.warning("cache-invalidate: unparseable message %r", message)
+        return
+
+    from app.api import v2_catalog
+
+    scope = payload.get("scope")
+    if scope == "all":
+        v2_catalog.invalidate_all(_publish=False)
+    elif scope == "table":
+        table = payload.get("table")
+        if table:
+            v2_catalog.invalidate_for_table(table, _publish=False)
+    else:
+        logger.warning("cache-invalidate: unknown scope %r", scope)
+
+
 @asynccontextmanager
 async def lifespan(app):
     # Refuse to boot an unsafe multi-process topology (role split or
@@ -649,6 +683,25 @@ async def lifespan(app):
         ensure_internal_tables_registered()
     except Exception:
         logger.exception("internal data-source seed failed; continuing")
+
+    # Subscribe this process to the coordination backend's cache-invalidate
+    # channel (wave 2C) — v2 catalog/schema/sample TTL caches are process-
+    # local, so a registry mutation handled by ONE api-serving replica must
+    # tell every other replica to drop its own copies. Unconditional (not
+    # role-gated): the /api/v2/* routers that own these caches are mounted
+    # in every role combination, not just Role.API. Memory backend: this is
+    # a same-process, in-memory subscriber list — harmless, and behaves
+    # exactly like today's single-process-only invalidation. FLUSHALL story:
+    # not applicable to pub/sub (nothing to lose but in-flight messages);
+    # a message dropped mid-flight just means a stale cache serves until its
+    # own TTL expires, same as if this feature didn't exist.
+    try:
+        from app.coordination.factory import coordination
+
+        app.state.cache_invalidate_unsubscribe = coordination().subscribe("cache-invalidate", _on_cache_invalidate)
+    except Exception:
+        logger.exception("cache-invalidate subscribe failed (non-fatal)")
+        app.state.cache_invalidate_unsubscribe = None
 
     # Baked-data images (no scheduler) need master views built at boot.
     if role_enabled(Role.WORKER):
@@ -1252,6 +1305,14 @@ async def lifespan(app):
         _socket_lease_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await _socket_lease_task
+    # Unsubscribe from the cache-invalidate channel — see the subscribe call
+    # earlier in this function for why it's unconditional/non-role-gated.
+    _cache_invalidate_unsubscribe = getattr(app.state, "cache_invalidate_unsubscribe", None)
+    if _cache_invalidate_unsubscribe is not None:
+        try:
+            _cache_invalidate_unsubscribe()
+        except Exception:
+            logger.exception("cache-invalidate unsubscribe failed (non-fatal)")
     try:
         from src.observability import get_posthog
 
