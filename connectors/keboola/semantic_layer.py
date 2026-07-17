@@ -402,3 +402,69 @@ def sync_semantic_layer(
         "skipped_foreign_alias": skipped_foreign_alias,
         "skipped_embedded_comment": skipped_embedded_comment,
     }
+
+
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def slugify_term(term: str) -> str:
+    """Lowercase, replace runs of non-alphanumeric characters with a single
+    underscore, strip leading/trailing underscores.
+
+    Keboola glossary terms are natural-language phrases ("Monthly Recurring
+    Revenue") — unlike semantic-metric.name, which is already a slug — so a
+    stable primary key requires this normalization step (verified live,
+    2026-07-17: terms contain spaces/uppercase/punctuation).
+    """
+    slug = _NON_ALNUM_RE.sub("_", term.lower()).strip("_")
+    return slug
+
+
+def assign_glossary_id(term: str, model_uuid: str, used_ids: set[str]) -> str:
+    """Build a stable glossary_terms.id from (model_uuid, slugified term),
+    resolving a slug collision within the same model with a numeric
+    ``-2``, ``-3``, ... suffix on first-seen order.
+
+    Mutates ``used_ids`` by adding the returned id — callers processing a
+    list of glossary items must reuse the same set across the whole run so
+    collisions are detected against everything assigned so far.
+    """
+    base = f"keboola/{model_uuid}/{slugify_term(term)}"
+    candidate = base
+    suffix = 2
+    while candidate in used_ids:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    used_ids.add(candidate)
+    return candidate
+
+
+def build_glossary_row(
+    item: dict,
+    model_uuid: str,
+    used_ids: set[str],
+) -> tuple[Optional[dict], Optional[str]]:
+    """Map one semantic-glossary item to a glossary_terms row dict.
+
+    Returns (row, None) on success, or (None, skip_reason) where
+    skip_reason is "missing_term" or "missing_definition" — both fields
+    are NOT NULL on glossary_terms, so a missing value is skipped
+    defensively rather than written as an empty string.
+    """
+    attrs = item.get("attributes") or {}
+    term = attrs.get("term")
+    definition = attrs.get("definition")
+
+    if not term:
+        return None, "missing_term"
+    if not definition:
+        return None, "missing_definition"
+
+    return {
+        "id": assign_glossary_id(term, model_uuid, used_ids),
+        "term": term,
+        "definition": definition,
+        "see_also": list(attrs.get("seeAlso") or []),
+        "model_uuid": model_uuid,
+        "source": "keboola_semantic_layer",
+    }, None
