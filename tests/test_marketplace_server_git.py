@@ -668,3 +668,77 @@ class TestRunGitHttpBackendKillsOnClientDisconnect:
             await agen.aclose()
 
         asyncio.run(asyncio.wait_for(run(), timeout=10))
+
+
+class TestRunGitHttpBackendStdinPipeClosed:
+    """Writing the request body to a child whose stdin pipe is already
+    closed (the child exited or closed stdin before consuming the body —
+    seen in production when the HTTP client disconnects mid-transfer) must
+    surface as the typed `_StdinPipeClosed`, not the raw transport error
+    (uvloop raises `RuntimeError: ... the handler is closed`; plain asyncio
+    surfaces `BrokenPipeError`/`ConnectionResetError` from `drain()`). The
+    route handler maps the typed error to a WARNING instead of an ERROR
+    traceback."""
+
+    def test_child_gone_before_body_write_raises_typed_error(self, monkeypatch):
+        import asyncio
+        import sys
+
+        from app.marketplace_server import git_router
+
+        # A child that exits immediately without ever reading stdin. The
+        # body below is far larger than the OS pipe buffer, so the write +
+        # drain cannot complete into the buffer alone — it hits the broken
+        # pipe of the already-dead child deterministically.
+        stub = "import sys\nsys.exit(0)\n"
+        monkeypatch.setattr(
+            git_router,
+            "_GIT_HTTP_BACKEND",
+            (sys.executable, "-c", stub),
+        )
+
+        captured_proc = {}
+        real_create_subprocess_exec = asyncio.create_subprocess_exec
+
+        async def spy_create_subprocess_exec(*args, **kwargs):
+            proc = await real_create_subprocess_exec(*args, **kwargs)
+            captured_proc["proc"] = proc
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spy_create_subprocess_exec)
+
+        body = b"B" * (10 * 1024 * 1024)
+
+        async def run():
+            await git_router._run_git_http_backend(env={}, body=body)
+
+        with pytest.raises(git_router._StdinPipeClosed):
+            asyncio.run(asyncio.wait_for(run(), timeout=10))
+
+        assert captured_proc["proc"].returncode is not None, "subprocess was left unreaped after the stdin pipe broke"
+
+    def test_route_logs_client_disconnect_as_warning_not_error(self, git_env, monkeypatch, caplog):
+        import logging
+
+        from app.marketplace_server import git_router
+
+        async def broken_run_git_http_backend(env, body):
+            raise git_router._StdinPipeClosed("unable to perform operation; the handler is closed")
+
+        monkeypatch.setattr(git_router, "_run_git_http_backend", broken_run_git_http_backend)
+
+        c = git_env["client"]
+        with caplog.at_level(logging.INFO, logger="app.marketplace_server.git_router"):
+            resp = c.get(
+                "/marketplace.git/info/refs?service=git-upload-pack",
+                headers={"Authorization": _basic("x", git_env["admin_pat"])},
+            )
+        assert resp.status_code == 500
+
+        records = [r for r in caplog.records if r.name == "app.marketplace_server.git_router"]
+        assert records, "expected a log record for the closed stdin pipe"
+        assert all(r.levelno < logging.ERROR for r in records), (
+            "client disconnect must not be logged at ERROR: "
+            + "; ".join(f"{r.levelname}: {r.getMessage()}" for r in records)
+        )
+        assert any("disconnect" in r.getMessage().lower() for r in records)

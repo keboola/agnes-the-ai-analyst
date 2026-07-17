@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- Git marketplace channel: an HTTP client disconnecting mid-transfer made the
+  request-body write into `git http-backend`'s stdin fail on the already-closed
+  pipe transport (uvloop `RuntimeError: … the handler is closed`; plain asyncio
+  `BrokenPipeError`/`ConnectionResetError`), which bubbled up as a spurious
+  "git http-backend failed" ERROR with a full traceback. The closed-pipe case
+  is now caught in `_run_git_http_backend`, the subprocess is reaped, and the
+  event is logged as a client-disconnect WARNING instead.
+
 ## [0.74.108] - 2026-07-17
 
 ### Added

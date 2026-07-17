@@ -52,6 +52,14 @@ router = APIRouter()
 _GIT_HTTP_BACKEND = ("git", "http-backend")
 
 
+class _StdinPipeClosed(Exception):
+    """The child's stdin pipe closed before the request body could be
+    written — the subprocess exited or closed stdin without consuming the
+    body, which in practice happens when the HTTP client disconnects
+    mid-transfer. Benign; the route handler logs it as a warning instead
+    of an ERROR traceback."""
+
+
 def token_from_basic_auth(auth_header: Optional[str]) -> Optional[str]:
     """Extract the password (= PAT in our scheme) from an HTTP Basic header.
 
@@ -208,8 +216,26 @@ async def _run_git_http_backend(env: dict, body: bytes) -> tuple[int, list[tuple
     )
     assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
 
-    proc.stdin.write(body)
-    proc.stdin.close()
+    try:
+        proc.stdin.write(body)
+        await proc.stdin.drain()
+        proc.stdin.close()
+    except (RuntimeError, BrokenPipeError, ConnectionResetError) as exc:
+        # The stdin pipe transport is already closed — the child exited or
+        # closed its stdin before consuming the body, which happens when the
+        # HTTP client disconnects mid-transfer. uvloop raises RuntimeError
+        # ("unable to perform operation on <WriteUnixTransport closed=True>;
+        # the handler is closed") from write(); plain asyncio surfaces
+        # BrokenPipeError/ConnectionResetError from drain(). Nothing below
+        # runs, so reap the child here and raise the typed error the route
+        # handler logs as a client disconnect instead of an ERROR traceback.
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        await proc.wait()
+        raise _StdinPipeClosed(str(exc)) from exc
 
     # Start draining stderr immediately, concurrently with everything below —
     # see `_drain_stderr` for why this must not happen sequentially after
@@ -361,6 +387,16 @@ async def _marketplace_git(path: str, request: Request):
         status_code, headers, stream = await _run_git_http_backend(env, body)
     except FileNotFoundError:
         logger.exception("git http-backend binary not found")
+        return _server_error()
+    except _StdinPipeClosed as exc:
+        # Benign: the client disconnected mid-transfer (or the child bailed
+        # before reading the body) — the response below won't be delivered
+        # anyway. Not a server fault, so no ERROR traceback.
+        logger.warning(
+            "git http-backend stdin pipe closed for user %r — client disconnect: %s",
+            user.get("id"),
+            exc,
+        )
         return _server_error()
     except Exception:
         logger.exception("git http-backend failed for user %r", user.get("id"))
