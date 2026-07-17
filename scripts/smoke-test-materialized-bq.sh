@@ -67,6 +67,45 @@ http() {
     fi
 }
 
+wait_for_job() {
+    # POST /api/sync/trigger now enqueues a `data-refresh` job (wave-2B job
+    # queue) instead of running inline via BackgroundTasks — the worker
+    # loop claims it on its next poll tick (default every 5s), so a flat
+    # `sleep 5` right after triggering is no longer a safe margin (worst
+    # case: enqueue lands just after a poll tick, eating the whole budget
+    # before the sync even starts). Poll `GET /api/jobs/<id>` (the
+    # `job_id` from the trigger response, still sitting in
+    # /tmp/smoke-mat-body) until it finalizes, up to ~20s.
+    local job_id status
+    job_id=$(python3 -c "
+import json
+try:
+    print(json.load(open('/tmp/smoke-mat-body')).get('job_id', ''))
+except Exception:
+    print('')
+")
+    if [ -z "$job_id" ]; then
+        echo "    (no job_id in trigger response — falling back to a flat sleep)"
+        sleep 8
+        return
+    fi
+    for _ in $(seq 1 20); do
+        http GET "/api/jobs/$job_id" >/dev/null
+        status=$(python3 -c "
+import json
+try:
+    print(json.load(open('/tmp/smoke-mat-body'))['job']['status'])
+except Exception:
+    print('')
+")
+        case "$status" in
+            done|failed) return ;;
+        esac
+        sleep 1
+    done
+    echo "    (job $job_id still '$status' after 20s — proceeding anyway)"
+}
+
 echo "Materialized BQ smoke: $HOST"
 echo "Big table for cost-guardrail test: $BIG_TABLE"
 echo "---"
@@ -92,7 +131,7 @@ STATUS=$(http POST /api/admin/register-table "{
 
 echo "    triggering sync..."
 http POST /api/sync/trigger '{}' >/dev/null
-sleep 5  # background task
+wait_for_job
 
 # Manifest must list the row with query_mode + non-empty hash.
 http GET /api/sync/manifest >/dev/null
@@ -134,7 +173,7 @@ STATUS=$(http POST /api/admin/register-table "{
 
 echo "    triggering sync (expect cap to fire)..."
 http POST /api/sync/trigger '{}' >/dev/null
-sleep 5
+wait_for_job
 
 # Manifest should NOT have a hash for the huge row (materialize was skipped).
 http GET /api/sync/manifest >/dev/null
@@ -170,7 +209,7 @@ STATUS=$(http POST /api/admin/register-table "{
 [ "$STATUS" = "201" ] && check "register 201" true || check "register 201 (got $STATUS)" false
 
 http POST /api/sync/trigger '{}' >/dev/null
-sleep 5
+wait_for_job
 
 http GET /api/sync/manifest >/dev/null
 EMPTY_ROWS=$(python3 -c "
