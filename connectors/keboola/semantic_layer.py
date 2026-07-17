@@ -510,3 +510,58 @@ def resolve_join_aliases(
     if candidate_b and not candidate_a:
         return alias2, alias1
     return None
+
+
+def extract_foreign_aliases(expression: str) -> set[str]:
+    """Return every distinct alias (excluding `t`) that qualifies a column
+    in `expression`, masking quoted regions first (same rationale as
+    references_foreign_alias / has_embedded_sql_comment).
+
+    A metric may use more than one local alias spelling for what resolves
+    to the SAME single relationship (live-verified real case) — all of
+    them get rewritten to the canonical join alias in compose_join_sql.
+    """
+    masked = _mask_quoted_regions(expression)
+    aliases = {m.group(1) for m in _ALIAS_QUALIFIER_RE.finditer(masked)}
+    aliases.discard("t")
+    return aliases
+
+
+def compose_join_sql(
+    expression: str,
+    primary_table: str,
+    joined_table: str,
+    on: str,
+    to_alias: str,
+    from_alias: str,
+) -> str:
+    """Compose a two-table LEFT JOIN metric_definitions.sql.
+
+    `to_alias`/`from_alias` are the on-clause's alias tokens as resolved by
+    resolve_join_aliases — `to_alias` corresponds to `primary_table`
+    (rewritten to the canonical `t`), `from_alias` to `joined_table`
+    (rewritten to the canonical `j`). Every foreign-alias-qualified column
+    in `expression` (there may be multiple distinct alias spellings for the
+    same joined table — see extract_foreign_aliases) is rewritten to `j.`.
+
+    Callers MUST have already checked references_foreign_alias(expression)
+    and has_embedded_sql_comment(expression) — this function does not
+    itself guard against those cases (mirrors compose_sql's contract).
+    """
+    rewritten_expression = expression
+    for alias in extract_foreign_aliases(expression):
+        rewritten_expression = re.sub(
+            rf'\b{re.escape(alias)}\s*\.', "j.", rewritten_expression
+        )
+
+    on_alias1, on_col1, on_alias2, on_col2 = parse_on_clause(on)  # type: ignore[misc]
+    remapped_alias1 = "t" if on_alias1 == to_alias else "j"
+    remapped_alias2 = "t" if on_alias2 == to_alias else "j"
+    remapped_on = f'{remapped_alias1}."{on_col1}" = {remapped_alias2}."{on_col2}"'
+
+    return (
+        f'SELECT {rewritten_expression} '
+        f'FROM "{primary_table}" AS t '
+        f'LEFT JOIN "{joined_table}" AS j '
+        f'ON {remapped_on}'
+    )

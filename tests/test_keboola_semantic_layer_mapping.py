@@ -10,12 +10,18 @@ import pytest
 from connectors.keboola.semantic_layer import (
     MasterTokenRequiredError,
     build_metric_row,
+    compose_join_sql,
     compose_sql,
     dataset_lookup_by_table_id,
+    extract_foreign_aliases,
     has_embedded_sql_comment,
     merge_constraints,
+    parse_on_clause,
     references_foreign_alias,
+    relationship_lookup_by_dataset,
     require_master_token,
+    resolve_join_aliases,
+    resolve_relationship,
     resolve_table_name,
     table_lookup_from_registry,
 )
@@ -387,25 +393,24 @@ class TestBuildMetricRowSkipsEmbeddedComment:
         assert skip_reason == "embedded_sql_comment"
 
 
-from connectors.keboola.semantic_layer import relationship_lookup_by_dataset, resolve_relationship
-
-
 def _relationship_item(name, from_id, to_id, on, rel_type="left", model_uuid="model-1"):
     return {
         "type": "semantic-relationship",
         "id": f"id-{name}",
         "attributes": {
-            "name": name, "from": from_id, "to": to_id, "on": on,
-            "type": rel_type, "modelUUID": model_uuid,
+            "name": name,
+            "from": from_id,
+            "to": to_id,
+            "on": on,
+            "type": rel_type,
+            "modelUUID": model_uuid,
         },
     }
 
 
 class TestRelationshipLookupByDataset:
     def test_indexes_by_both_from_and_to(self):
-        rel = _relationship_item(
-            "orders_to_customers", "in.c-a.orders", "in.c-a.customers", 'o."customer_id" = c."id"'
-        )
+        rel = _relationship_item("orders_to_customers", "in.c-a.orders", "in.c-a.customers", 'o."customer_id" = c."id"')
         lookup = relationship_lookup_by_dataset([rel])
         assert lookup["in.c-a.orders"] == [rel["attributes"]]
         assert lookup["in.c-a.customers"] == [rel["attributes"]]
@@ -416,9 +421,9 @@ class TestRelationshipLookupByDataset:
 
 class TestResolveRelationship:
     def test_resolves_when_dataset_is_verified_to_side(self):
-        rel_attrs = _relationship_item(
-            "o_to_c", "in.c-a.orders", "in.c-a.customers", 'o."customer_id" = c."id"'
-        )["attributes"]
+        rel_attrs = _relationship_item("o_to_c", "in.c-a.orders", "in.c-a.customers", 'o."customer_id" = c."id"')[
+            "attributes"
+        ]
         lookup = {"in.c-a.customers": [rel_attrs], "in.c-a.orders": [rel_attrs]}
 
         relationship, skip_reason = resolve_relationship("in.c-a.customers", lookup)
@@ -427,9 +432,9 @@ class TestResolveRelationship:
         assert relationship == rel_attrs
 
     def test_skips_when_dataset_is_unverified_from_side(self):
-        rel_attrs = _relationship_item(
-            "o_to_c", "in.c-a.orders", "in.c-a.customers", 'o."customer_id" = c."id"'
-        )["attributes"]
+        rel_attrs = _relationship_item("o_to_c", "in.c-a.orders", "in.c-a.customers", 'o."customer_id" = c."id"')[
+            "attributes"
+        ]
         lookup = {"in.c-a.customers": [rel_attrs], "in.c-a.orders": [rel_attrs]}
 
         relationship, skip_reason = resolve_relationship("in.c-a.orders", lookup)
@@ -464,9 +469,6 @@ class TestResolveRelationship:
         assert skip_reason == "unsupported_relationship_type"
 
 
-from connectors.keboola.semantic_layer import parse_on_clause, resolve_join_aliases
-
-
 class TestParseOnClause:
     def test_parses_standard_shape(self):
         assert parse_on_clause('o."customer_id" = c."id"') == ("o", "customer_id", "c", "id")
@@ -475,8 +477,8 @@ class TestParseOnClause:
         assert parse_on_clause('o."customer_id"   =   c."id"') == ("o", "customer_id", "c", "id")
 
     def test_returns_none_for_unrecognized_shape(self):
-        assert parse_on_clause('o.customer_id = c.id') is None
-        assert parse_on_clause('some garbage') is None
+        assert parse_on_clause("o.customer_id = c.id") is None
+        assert parse_on_clause("some garbage") is None
 
 
 class TestResolveJoinAliases:
@@ -518,3 +520,55 @@ class TestResolveJoinAliases:
 
     def test_returns_none_for_unparseable_on_clause(self):
         assert resolve_join_aliases("garbage", {"a"}, {"b"}) is None
+
+
+class TestExtractForeignAliases:
+    def test_extracts_single_alias(self):
+        assert extract_foreign_aliases('SUM(o."amount")') == {"o"}
+
+    def test_extracts_multiple_distinct_aliases(self):
+        # Live-verified real case: a metric used two distinct local alias
+        # spellings for what resolved to the SAME single relationship.
+        expr = 'CASE WHEN p."status" = \'x\' THEN SUM(pay."value") ELSE 0 END'
+        assert extract_foreign_aliases(expr) == {"p", "pay"}
+
+    def test_ignores_t_alias(self):
+        assert extract_foreign_aliases('SUM(t."amount")') == set()
+
+    def test_ignores_dotted_string_literal(self):
+        assert extract_foreign_aliases("COUNT(CASE WHEN \"status\" = 'in.progress' THEN 1 END)") == set()
+
+
+class TestComposeJoinSql:
+    def test_composes_left_join_with_rewritten_aliases(self):
+        expr = 'ROUND(SUM(TRY_CAST(o."amount" AS DECIMAL(18,2))), 2)'
+        sql = compose_join_sql(
+            expr,
+            "crm_activities",
+            "crm_opportunities",
+            'o."opportunity_id" = a."id"',
+            "a",
+            "o",
+        )
+        assert sql == (
+            'SELECT ROUND(SUM(TRY_CAST(j."amount" AS DECIMAL(18,2))), 2) '
+            'FROM "crm_activities" AS t '
+            'LEFT JOIN "crm_opportunities" AS j '
+            'ON j."opportunity_id" = t."id"'
+        )
+
+    def test_rewrites_multiple_distinct_aliases_to_canonical_j(self):
+        expr = 'CASE WHEN p."status" = \'x\' THEN SUM(pay."value") ELSE 0 END'
+        sql = compose_join_sql(
+            expr,
+            "kbc_projects",
+            "kbc_payg_payments",
+            'p."project_id" = k."id"',
+            "k",
+            "p",
+        )
+        assert 'p."status"' not in sql
+        assert 'pay."value"' not in sql
+        # 2 from the rewritten expression (both distinct aliases -> j.) +
+        # 1 from the composed ON clause's own j. reference.
+        assert sql.count('j."') == 3
