@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.74.106] - 2026-07-17
+
 ### Fixed
 
 - **Keboola export scratch dirs could leak silently, filling the data disk.**
