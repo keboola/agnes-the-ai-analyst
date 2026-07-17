@@ -13,12 +13,14 @@ Primitive-by-primitive notes:
 - ``kv_delete`` is a plain ``GETDEL`` (Redis >= 6.2; fakeredis supports
   it) — atomic get-and-delete server-side, no read-then-DEL round trip
   that could race two callers.
-- ``incr`` pipelines ``SET key 0 EX ttl_s NX`` followed by ``INCR key``
-  inside one MULTI/EXEC transaction (redis-py's default
+- ``incr`` pipelines ``SET key 0 EX ttl_s NX`` followed by ``INCRBY key
+  amount`` inside one MULTI/EXEC transaction (redis-py's default
   ``pipeline(transaction=True)``) — the ``NX`` makes the SET a no-op when
   the key already exists, so the TTL is only ever established on the
   first increment of a window, and wrapping both commands in one
   transaction closes the race between "does the key exist" and "set it".
+  ``amount=0`` is a valid no-op increment (a "peek" at the current
+  value) — ``INCRBY key 0`` is a normal Redis command, not a special case.
 - ``lease_acquire`` is ``SET name holder_id NX PX ttl_ms`` — the standard
   single-instance Redis lock acquire (create-if-absent, no compare
   needed since NX already guarantees exclusivity).
@@ -108,11 +110,11 @@ class RedisCoordinationBackend(CoordinationBackend):
 
     # -- Counters ---------------------------------------------------------------
 
-    def incr(self, key: str, *, ttl_s: int) -> int:
+    def incr(self, key: str, *, amount: int = 1, ttl_s: int) -> int:
         try:
             pipe = self._client.pipeline(transaction=True)
             pipe.set(key, 0, ex=ttl_s, nx=True)
-            pipe.incr(key)
+            pipe.incrby(key, amount)
             _, new_value = pipe.execute()
             return int(new_value)
         except _REDIS_ERRORS as exc:
