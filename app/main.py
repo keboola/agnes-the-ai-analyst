@@ -242,6 +242,7 @@ from app.auth.rate_limit import (
 from app.auth.router import router as auth_router
 from app.api.health import router as health_router
 from app.api.sync import router as sync_router
+from app.api.jobs import router as jobs_router
 from app.api.data import router as data_router
 from app.api.query import router as query_router
 from app.api.users import router as users_router
@@ -1639,6 +1640,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health_probes.router)  # /healthz + /readyz, unauthenticated LB probes
     app.include_router(sync_router)
+    app.include_router(jobs_router)
     app.include_router(data_router)
     app.include_router(query_router)
     app.include_router(users_router)
