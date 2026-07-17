@@ -401,6 +401,122 @@ def test_fail_is_noop_for_stale_worker(repo):
     assert row["error"] is None
 
 
+# ---------------------------------------------------------------------------
+# reap_exhausted — stuck-job reaper (wave-2B worker-runtime carry-over)
+# ---------------------------------------------------------------------------
+
+
+def test_reap_exhausted_finalizes_stuck_running_job_at_max_attempts(repo):
+    """A job whose lease expired on its LAST attempt is not reclaimable by
+    ``claim_next()`` (attempts >= max_attempts) and would stay 'running'
+    forever without the reaper."""
+    job = repo.enqueue("stuck", {}, max_attempts=1)
+    claimed = repo.claim_next(kinds=["stuck"], worker_id="w1", lease_seconds=-5)
+    assert claimed["attempts"] == 1  # == max_attempts now
+    # confirm it's genuinely stuck: not reclaimable
+    assert repo.claim_next(kinds=["stuck"], worker_id="w2") is None
+
+    reaped = repo.reap_exhausted()
+    assert reaped == 1
+    row = repo.get(job["id"])
+    assert row["status"] == "failed"
+    assert row["finished_at"] is not None
+    assert row["lease_expires_at"] is None
+    assert row["error"] == "lease expired after max attempts"
+
+
+def test_reap_exhausted_ignores_running_job_with_attempts_remaining(repo):
+    job = repo.enqueue("not_stuck", {}, max_attempts=5)
+    repo.claim_next(kinds=["not_stuck"], worker_id="w1", lease_seconds=-5)
+    assert repo.reap_exhausted() == 0
+    assert repo.get(job["id"])["status"] == "running"
+
+
+def test_reap_exhausted_ignores_running_job_with_live_lease(repo):
+    job = repo.enqueue("live_stuck", {}, max_attempts=1)
+    repo.claim_next(kinds=["live_stuck"], worker_id="w1", lease_seconds=120)
+    assert repo.reap_exhausted() == 0
+    assert repo.get(job["id"])["status"] == "running"
+
+
+def test_reap_exhausted_ignores_queued_and_done_jobs(repo):
+    repo.enqueue("queued_kind", {})
+    done_job = repo.enqueue("done_kind3", {})
+    claimed = repo.claim_next(kinds=["done_kind3"], worker_id="w1")
+    repo.complete(claimed["id"], "w1")
+    assert repo.reap_exhausted() == 0
+    assert repo.get(done_job["id"])["status"] == "done"
+
+
+def test_reap_exhausted_returns_count_across_multiple_stuck_jobs(repo):
+    job_a = repo.enqueue("stuck_bulk", {}, max_attempts=1)
+    job_b = repo.enqueue("stuck_bulk", {}, max_attempts=1)
+    repo.claim_next(kinds=["stuck_bulk"], worker_id="w1", lease_seconds=-5)
+    repo.claim_next(kinds=["stuck_bulk"], worker_id="w1", lease_seconds=-5)
+    assert repo.reap_exhausted() == 2
+    assert repo.get(job_a["id"])["status"] == "failed"
+    assert repo.get(job_b["id"])["status"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# reclaim race edges — permanent regression tests for the previous-review
+# carry-over findings (heartbeat-vs-reclaim, complete-vs-reclaim). Both are
+# simulated as deterministic single-thread interleavings (direct repo calls
+# in the racy order) rather than real concurrent threads — the guard each
+# no-op relies on (``WHERE leased_by = ? AND status = 'running'``) is
+# already exercised concurrently by test_concurrent_claim_never_double_claims
+# above; what these lock down is the *sequence*: stale-owner action AFTER a
+# reclaim must never affect the new owner's state.
+# ---------------------------------------------------------------------------
+
+
+def test_heartbeat_after_reclaim_never_extends_new_owners_lease(repo):
+    job = repo.enqueue("hb_vs_reclaim", {}, max_attempts=5)
+    # w1 claims with an already-expired lease (simulates a crashed/stalled
+    # worker whose lease ran out) ...
+    stale = repo.claim_next(kinds=["hb_vs_reclaim"], worker_id="w1", lease_seconds=-5)
+    assert stale is not None
+    # ... w2 reclaims the same job before w1 sends its next heartbeat.
+    reclaimed = repo.claim_next(kinds=["hb_vs_reclaim"], worker_id="w2", lease_seconds=120)
+    assert reclaimed is not None
+    assert reclaimed["leased_by"] == "w2"
+    lease_before = reclaimed["lease_expires_at"]
+
+    # w1, unaware it was reclaimed, sends a stale heartbeat.
+    ok = repo.heartbeat(job["id"], "w1", lease_seconds=9999)
+    assert ok is False
+
+    row = repo.get(job["id"])
+    assert row["leased_by"] == "w2"
+    assert row["status"] == "running"
+    assert row["lease_expires_at"] == lease_before  # w2's lease untouched by w1's stale heartbeat
+
+
+def test_complete_after_reclaim_is_noop_and_reclaim_never_claims_done_job(repo):
+    job = repo.enqueue("complete_vs_reclaim", {}, max_attempts=5)
+    stale = repo.claim_next(kinds=["complete_vs_reclaim"], worker_id="w1", lease_seconds=-5)
+    assert stale is not None
+    reclaimed = repo.claim_next(kinds=["complete_vs_reclaim"], worker_id="w2", lease_seconds=120)
+    assert reclaimed is not None
+
+    # w1 finishes its (already reclaimed) work late and calls complete().
+    repo.complete(job["id"], "w1")
+    row = repo.get(job["id"])
+    assert row["status"] == "running"  # unaffected — w1 is no longer the owner
+    assert row["leased_by"] == "w2"
+    assert row["finished_at"] is None
+
+    # the legitimate owner (w2) completing it IS honored.
+    repo.complete(job["id"], "w2")
+    row2 = repo.get(job["id"])
+    assert row2["status"] == "done"
+    assert row2["finished_at"] is not None
+
+    # a 'done' job is never claimable again — not queued, and not a
+    # reclaimable 'running' job with an expired lease.
+    assert repo.claim_next(kinds=["complete_vs_reclaim"], worker_id="w3") is None
+
+
 def test_concurrent_claim_never_double_claims_two_jobs_two_threads(repo_factory):
     """Two threads race to claim from a pool of two queued jobs. Neither
     may claim the same row as the other (no double-claim); it's fine if
