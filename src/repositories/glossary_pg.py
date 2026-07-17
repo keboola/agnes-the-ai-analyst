@@ -1,12 +1,22 @@
-"""Postgres-backed glossary_terms repository. Mirrors src/repositories/glossary.py."""
+"""Postgres-backed glossary_terms repository. Mirrors src/repositories/glossary.py.
+
+``search`` uses Postgres ``to_tsvector('english', term || ' ' || definition)``
+with ``plainto_tsquery`` and ``ts_rank`` for ranking, instead of DuckDB's BM25
+extension. Falls back to ``ILIKE`` when the FTS execute raises — same overall
+shape and the same ``bm25_score`` result-column naming as
+``KnowledgePgRepository.search`` (kept for API-shape consistency with the
+DuckDB response, even though the score here is a Postgres ``ts_rank`` value)."""
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
+
+logger = logging.getLogger(__name__)
 
 
 class GlossaryPgRepository:
@@ -89,17 +99,38 @@ class GlossaryPgRepository:
         return True
 
     def search(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
-        pattern = f"%{query}%"
-        with self._engine.connect() as conn:
-            rows = (
-                conn.execute(
-                    sa.text(
-                        "SELECT * FROM glossary_terms WHERE (term ILIKE :p OR definition ILIKE :p) "
-                        "ORDER BY term LIMIT :limit"
-                    ),
-                    {"p": pattern, "limit": limit},
+        """Relevance-ranked search across term + definition via Postgres
+        ``to_tsvector`` / ``plainto_tsquery`` / ``ts_rank`` with an ILIKE
+        fallback. Mirrors ``KnowledgePgRepository.search``."""
+        params: Dict[str, Any] = {"q": query, "limit": limit}
+
+        fts_sql = (
+            "SELECT *, ts_rank("
+            "  to_tsvector('english', coalesce(term,'') || ' ' || coalesce(definition,'')), "
+            "  plainto_tsquery('english', :q)"
+            ") AS bm25_score FROM glossary_terms "
+            "WHERE to_tsvector('english', coalesce(term,'') || ' ' || coalesce(definition,'')) "
+            "  @@ plainto_tsquery('english', :q) "
+            "ORDER BY bm25_score DESC, term LIMIT :limit"
+        )
+        try:
+            with self._engine.connect() as conn:
+                rows = conn.execute(sa.text(fts_sql), params).mappings().all()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            logger.warning("PG FTS failed on glossary_terms (%s); falling back to ILIKE", e)
+            pattern = f"%{query}%"
+            with self._engine.connect() as conn:
+                rows = (
+                    conn.execute(
+                        sa.text(
+                            "SELECT *, NULL AS bm25_score FROM glossary_terms "
+                            "WHERE (term ILIKE :p OR definition ILIKE :p) "
+                            "ORDER BY term LIMIT :limit"
+                        ),
+                        {"p": pattern, "limit": limit},
+                    )
+                    .mappings()
+                    .all()
                 )
-                .mappings()
-                .all()
-            )
-        return [dict(r) for r in rows]
+            return [dict(r) for r in rows]

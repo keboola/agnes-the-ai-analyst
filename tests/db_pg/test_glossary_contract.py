@@ -116,3 +116,19 @@ def test_search_ranks_by_bm25_when_fts_available(tmp_path):
     ids = [r["id"] for r in results]
     assert ids[0] == "b"  # term match ranks first under BM25, despite "Aardvark" < "Churn" alphabetically
     conn.close()
+
+
+def test_search_ranks_by_ts_rank_on_pg(pg_engine, monkeypatch):
+    """PG-only counterpart to test_search_ranks_by_bm25_when_fts_available:
+    ``ts_rank`` should rank an exact-term match above a definition-only
+    mention, even when alphabetical order disagrees."""
+    repo, _ = _make_pg_repo(pg_engine, monkeypatch)
+
+    repo.create(id="a", term="Aardvark Metric", definition="Mentions churn in passing.")
+    repo.create(id="b", term="Churn Rate", definition="The core definition of churn.")
+
+    results = repo.search("churn")
+    ids = [r["id"] for r in results]
+    assert ids[0] == "b"  # term match ranks first under ts_rank, despite "Aardvark" < "Churn" alphabetically
+    assert "bm25_score" in results[0]
+    assert results[0]["bm25_score"] is not None

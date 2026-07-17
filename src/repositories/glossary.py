@@ -75,7 +75,10 @@ class GlossaryRepository:
         from src.fts import ensure_fts_loaded
 
         pattern = f"%{query}%"
-        ilike_sql = "SELECT * FROM glossary_terms WHERE (term ILIKE ? OR definition ILIKE ?) ORDER BY term LIMIT ?"
+        ilike_sql = (
+            "SELECT *, NULL AS bm25_score FROM glossary_terms "
+            "WHERE (term ILIKE ? OR definition ILIKE ?) ORDER BY term LIMIT ?"
+        )
         ilike_params = [pattern, pattern, limit]
 
         if ensure_fts_loaded(self.conn):
