@@ -15,6 +15,15 @@ a second transaction inserting the same still-queued/running key blocks
 on the first's row lock, then sees the conflict once it commits and
 takes the ``DO NOTHING`` branch instead of inserting a duplicate.
 
+The fallback SELECT that finds the winner's row (below) has its own
+narrow race window: if the winner's job finishes (or is cancelled) between
+our INSERT losing ``ON CONFLICT`` and the SELECT running, the winner's row
+has already left ``'queued'``/``'running'`` — the SELECT misses it, but by
+the same token the partial index no longer excludes its key. ``enqueue()``
+retries the INSERT in that case (bounded — see ``max_fallback_retries``
+inline) rather than asserting, since the key is now legitimately free for
+reuse.
+
 DuckDB has no partial-index support, so its sibling (``src/db.py`` /
 ``JobsRepository.enqueue()``) keeps the app-level check-then-insert
 (guarded by an in-process lock, safe under DuckDB's single-writer
@@ -65,10 +74,10 @@ class JobsPgRepository:
         callers. Mirrors ``JobsRepository.enqueue`` (dedup *behavior*,
         not the underlying mechanism — see the module docstring).
         """
-        job_id = uuid.uuid4().hex
         now = datetime.now(timezone.utc)
-        with self._engine.begin() as conn:
-            row = (
+
+        def _try_insert(conn: sa.engine.Connection) -> Optional[Any]:
+            return (
                 conn.execute(
                     sa.text(
                         """INSERT INTO jobs
@@ -82,7 +91,7 @@ class JobsPgRepository:
                            RETURNING *"""
                     ),
                     {
-                        "id": job_id,
+                        "id": uuid.uuid4().hex,
                         "kind": kind,
                         "payload_json": json.dumps(payload or {}),
                         "priority": priority,
@@ -95,11 +104,20 @@ class JobsPgRepository:
                 .mappings()
                 .first()
             )
-            if row is None:
-                # Lost the race: another transaction holds a queued/running
-                # row for this key (NULL keys never conflict — the partial
-                # index excludes them — so this only happens when
-                # idempotency_key is not None). Return the winner's row.
+
+        # Bounds the fallback-miss retry loop below (see comment inline for
+        # why a retry — rather than the miss being a hard failure — is
+        # correct here).
+        max_fallback_retries = 3
+        with self._engine.begin() as conn:
+            row = _try_insert(conn)
+            attempt = 0
+            while row is None:
+                # Lost the INSERT race: another transaction holds a
+                # queued/running row for this key (NULL keys never
+                # conflict — the partial index excludes them — so this
+                # only happens when idempotency_key is not None). Look up
+                # the winner's row to return it unchanged.
                 assert idempotency_key is not None
                 row = (
                     conn.execute(
@@ -113,7 +131,26 @@ class JobsPgRepository:
                     .mappings()
                     .first()
                 )
-        assert row is not None  # either just inserted, or the conflicting row exists
+                if row is not None:
+                    break
+                # Race window: between our INSERT losing the ON CONFLICT
+                # race and this SELECT running, the winning row left
+                # 'queued'/'running' (e.g. it finished to 'done'). The
+                # SELECT above no longer sees it, but for the same reason
+                # the partial unique index no longer excludes its key
+                # either — the key is free for reuse. Retry the INSERT
+                # instead of asserting; it should now succeed (or, rarely,
+                # hit a brand-new live conflict, which loops again, bounded
+                # by max_fallback_retries).
+                attempt += 1
+                if attempt > max_fallback_retries:
+                    raise RuntimeError(
+                        f"enqueue: exhausted {max_fallback_retries} fallback retries for "
+                        f"idempotency_key={idempotency_key!r} — repeated concurrent churn "
+                        "on this key prevented both insert and lookup from succeeding"
+                    )
+                row = _try_insert(conn)
+        assert row is not None  # inserted (first try or a retry), or the conflicting row was found
         return self._decode(dict(row))
 
     def get(self, job_id: str) -> Optional[Dict[str, Any]]:
