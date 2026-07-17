@@ -1,7 +1,9 @@
 # Per-user MCP credential onboarding — self-service connect page
 
 Date: 2026-07-17
-Status: design approved (revised after review), implementation pending
+Status: design approved (revised after review + per-source hint), implementation pending
+Delivery: one PR (page + `updated_at` + test endpoint + CLI + MCP tool + remedy
++ per-source `connect_hint`), not split.
 
 ## Problem
 
@@ -72,11 +74,21 @@ Each source is a card:
 
 | State | Card contents |
 |---|---|
-| Not connected | status pill *Not connected*; password input; **Connect** (`PUT`); a hint on where to get the token |
+| Not connected | status pill *Not connected*; password input; **Connect** (`PUT`); the source's own *where to get the token* hint |
 | Connected | status pill *Connected*; *Updated `<timestamp>`*; **Replace token** (reveals input → `PUT`); **Test** (`POST …/my-secret/test`); **Remove** (`DELETE`, with confirmation) |
 
 `PUT` is already documented as "store **/ rotate**", so *replace* needs no new
 endpoint — only the affordance.
+
+**Per-source hint (dynamic, not hardcoded).** The "where to get the token" copy
+must come from the source, not from the page — a Notion source and a CRM source
+need different instructions, and this repo is vendor-neutral, so no source name
+may be baked into the template. `mcp_sources` has no field for this today, so add
+a nullable `connect_hint` text column (see §2 for the migration). The card
+renders the source's `connect_hint` when set (Jinja-escaped — it is admin-entered
+free text; if it contains a URL, autolink it rather than rendering raw HTML), and
+falls back to a generic line when null. It is admin-editable in the MCP source
+detail UI (`admin_mcp_source_detail.html`) and settable on source create/update.
 
 Deep link: `/me/connections?source=<id>` highlights and scrolls to that source.
 This is the target of the agent's remedy message.
@@ -95,15 +107,28 @@ The token input is `type="password"`, `autocomplete="off"`. Cleartext is never
 rendered back, never logged, never returned by any endpoint — rotation stays
 write-only, as today.
 
-### 2. Status endpoint gains `updated_at`
+### 2. Schema: `updated_at` exposure (no migration) + `connect_hint` column (one migration)
 
-`GET /api/mcp/sources/{source_id}/my-secret` currently returns `has_secret` and
-`source_scope`. Add `updated_at` (nullable) so the card can show when the
-credential was last set. The `mcp_user_secrets` table already carries
-`created_at` and `updated_at` on both ladders (`src/db.py` `_v65_to_v66`; Alembic
-`0014_cowork_mcp_v63_v67.py`) — **no migration**. `upsert` already maintains
+**`updated_at` — no migration.** `GET /api/mcp/sources/{source_id}/my-secret`
+currently returns `has_secret` and `source_scope`. Add `updated_at` (nullable) so
+the card can show when the credential was last set. The `mcp_user_secrets` table
+already carries `created_at` and `updated_at` on both ladders (`src/db.py`
+`_v65_to_v66`; Alembic `0014_cowork_mcp_v63_v67.py`). `upsert` already maintains
 `updated_at` on rotation in both backends, so the displayed timestamp is accurate
 after a `PUT`.
+
+**`connect_hint` — one migration, both ladders.** Add a nullable `connect_hint`
+VARCHAR to `mcp_sources` for the per-source token instructions (§1). This is the
+one schema change in this PR:
+
+- DuckDB: a new `_v<N>_to_v<N+1>` step in `src/db.py` (`ALTER TABLE mcp_sources
+  ADD COLUMN IF NOT EXISTS connect_hint VARCHAR`) bumping `SCHEMA_VERSION`.
+- Postgres: a matching Alembic revision. Both ladders must reach the same schema
+  endpoint — `tests/test_db_schema_version.py` is the gate.
+- `mcp_sources_repo` (DuckDB) and its `_pg` sibling read/write the new field, and
+  the source create/update path carries it. These repos *are* under
+  `src/repositories/`, so the static parity sweep covers them (unlike the
+  secrets repo in the note below).
 
 This needs a read method returning the metadata, added to **both backends in the
 same change**:
@@ -235,6 +260,17 @@ the agent readably on all four paths, fixing any that drop or flatten it:
 No prompt engineering is needed beyond this: a self-describing error is enough
 for the model to relay it.
 
+**Propagation verified (pre-implementation).** The stdio path — the one most
+likely to flatten the message — already carries it: `api_post_json`
+(`cli/v2_client.py`) raises `V2ClientError` on a 403, and `render_error`
+(`cli/error_render.py:65-66`) formats a string `detail` as `HTTP 403: <detail>`,
+so the whole remedy sentence reaches the agent verbatim. REST returns the
+`detail` directly; SSE/Streamable raise the same exception, which FastMCP
+surfaces as tool-error text (`str(exc)`). The remedy is a plain string in
+`detail`, so reshaping its wording changes nothing about how it flows. The
+implementation still runs a real chat session per transport to confirm the model
+relays it (e2e = real user path), rather than trusting the trace alone.
+
 ## Flow
 
 1. A user is signed in to Agnes but has no personal credential for a per_user
@@ -259,6 +295,10 @@ for the model to relay it.
 The token never passes through the chat or the agent. The user enters it only on
 the Agnes page over TLS.
 
+Because `test` is also exposed as an MCP tool, the agent can run it on the user's
+behalf: asked "am I connected to X?", it calls the tool and answers from the
+result rather than telling the user to check a page.
+
 ## Error handling
 
 | Case | Behaviour |
@@ -281,6 +321,11 @@ the Agnes page over TLS.
   present) — not merely HTTP 200.
 - Page source list is grant-filtered: a user with no grant on a per_user source
   does not see that source (name or hint) at all.
+- Per-source `connect_hint`: the card renders the source's hint when set and the
+  generic fallback when null; a hint containing a URL is autolinked, not rendered
+  as raw HTML (escaping test). Schema-ladder test stays green (`_v91_to_v92` and
+  the Alembic revision reach the same version); `mcp_sources` repo pair round-trips
+  the new field on both backends.
 - `GET …/my-secret` returns `updated_at`; null when not connected; reflects a
   rotation after a second `PUT`.
 - Cross-engine coverage for the new repo read method — extend
@@ -309,13 +354,15 @@ the Agnes page over TLS.
 | Change | Mirror surface | Severity |
 |---|---|---|
 | New REST endpoint (`…/my-secret/test`) | CLI command + MCP tool | BLOCKING |
-| New repo read method | `_pg` sibling + cross-engine test (manual — the static sweep does not reach `app/secrets_vault.py`) | BLOCKING |
+| New secrets repo read method (`updated_at`) | `_pg` sibling + cross-engine test (manual — the static sweep does not reach `app/secrets_vault.py`) | BLOCKING |
+| New `mcp_sources.connect_hint` column | DuckDB `_v91_to_v92` + Alembic revision reaching the same schema (`tests/test_db_schema_version.py`); `mcp_sources` repo pair read/write (static sweep covers it) | BLOCKING |
 | New web page | extends `base_page.html`, CSS in `head_extra`, chrome context | BLOCKING |
 | User-visible behaviour | `## [Unreleased]` CHANGELOG bullet | BLOCKING |
 
 No new `ResourceType`: every endpoint here is per-caller (`get_current_user`),
-not admin-gated or entity-scoped. No migration: `updated_at` already exists on
-both ladders.
+not admin-gated or entity-scoped. One migration: the `connect_hint` column
+(current `SCHEMA_VERSION` is 91 → 92). `updated_at` needs none — it already
+exists on both ladders.
 
 ## Future: OAuth
 
