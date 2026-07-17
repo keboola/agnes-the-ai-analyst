@@ -13,7 +13,7 @@ from src.models.audit import AuditLog
 from src.models.chat import ChatMessage, ChatSession, UserWorkdir
 from src.models.chat_broker_tickets import ChatBrokerTicket
 from src.models.collections import CorpusChunk, CorpusFile, FileCorpus
-from src.models.config import InstanceTemplate, MetricDefinition, PersonalAccessToken
+from src.models.config import GlossaryTerm, InstanceTemplate, MetricDefinition, PersonalAccessToken
 from src.models.connections import ConnectionSecret, SourceConnection
 from src.models.data_packages import DataPackage, DataPackageTable, DataPackageTool
 from src.models.knowledge import (
@@ -96,6 +96,7 @@ __all__ = [
     "CorpusFile",
     "FileCorpus",
     "DataPackage",
+    "GlossaryTerm",
     "DataPackageTable",
     "DataPackageTool",
     "InstanceTemplate",

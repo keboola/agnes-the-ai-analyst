@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import duckdb
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -12,9 +11,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def _make_duckdb_repo(tmp_path):
     from src.db import _ensure_schema
+    from src.duckdb_conn import _open_duckdb
     from src.repositories.glossary import GlossaryRepository
 
-    conn = duckdb.connect(str(tmp_path / "duck.duckdb"))
+    conn = _open_duckdb(str(tmp_path / "duck.duckdb"))
     _ensure_schema(conn)
     return GlossaryRepository(conn), conn
 
@@ -102,9 +102,10 @@ def test_search_ranks_by_bm25_when_fts_available(tmp_path):
     """DuckDB-only: BM25 should rank an exact-term match above a
     definition-only mention, even when alphabetical order disagrees."""
     from src.db import _ensure_schema
+    from src.duckdb_conn import _open_duckdb
     from src.repositories.glossary import GlossaryRepository
 
-    conn = duckdb.connect(str(tmp_path / "duck.duckdb"))
+    conn = _open_duckdb(str(tmp_path / "duck.duckdb"))
     _ensure_schema(conn)
     repo = GlossaryRepository(conn)
 
