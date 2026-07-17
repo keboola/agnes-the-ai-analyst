@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import secrets
-import time
 from typing import Optional
 
 import duckdb
@@ -19,6 +19,7 @@ from app.chat.persistence import ChatRepository
 from app.chat.profiles import get_profile
 from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR, list_recognized_commands, merged_skills
 from app.chat.types import Surface
+from app.coordination.factory import coordination
 from app.resource_types import ResourceType
 
 logger = logging.getLogger(__name__)
@@ -32,26 +33,32 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 require_chat_access = require_resource_access(ResourceType.CHAT, "chat")
 
 
-# In-memory ticket store. Per spec: single-worker constraint enforced at
-# startup; HA needs ticket store in DuckDB or Redis (future spec).
-_TICKETS: dict[str, tuple[str, str, float]] = {}  # ticket -> (chat_id, user_email, expires_at)
+# WS auth tickets ride the coordination backend (single-use KV with TTL) —
+# not a module-level dict. In single-process ``memory`` mode that's still
+# just an in-process dict under the hood (see app.coordination.memory), so
+# behavior is unchanged from the original in-memory store; configuring the
+# ``redis`` backend makes tickets visible across replicas, which is what HA
+# deployments need (see app/startup_guards.py for the multi-process gate).
 _TICKET_TTL_SEC = 60
+_TICKET_KEY_PREFIX = "ws-ticket:"
 
 
 def _issue_ticket(chat_id: str, user_email: str) -> str:
     ticket = secrets.token_urlsafe(32)
-    _TICKETS[ticket] = (chat_id, user_email, time.time() + _TICKET_TTL_SEC)
+    payload = json.dumps({"chat_id": chat_id, "user_email": user_email})
+    coordination().kv_set(f"{_TICKET_KEY_PREFIX}{ticket}", payload, ttl_s=_TICKET_TTL_SEC)
     return ticket
 
 
 def _consume_ticket(ticket: str) -> Optional[tuple[str, str]]:
-    rec = _TICKETS.pop(ticket, None)
-    if rec is None:
+    raw = coordination().kv_delete(f"{_TICKET_KEY_PREFIX}{ticket}")
+    if raw is None:
         return None
-    chat_id, user_email, expires_at = rec
-    if time.time() > expires_at:
+    try:
+        rec = json.loads(raw)
+        return rec["chat_id"], rec["user_email"]
+    except (ValueError, KeyError, TypeError):
         return None
-    return chat_id, user_email
 
 
 class CreateSessionBody(BaseModel):
@@ -289,8 +296,8 @@ async def ws_join(ws: WebSocket, session_id: str, ticket: str):
     A participant who obtained a ticket via POST /api/chat/{id}/join-ticket
     connects here to join a live co-session.  The route:
 
-      1. Consumes the short-lived opaque ticket (same _TICKETS mechanism as
-         ws_stream) to recover (session_id, participant_email).
+      1. Consumes the short-lived opaque ticket (same coordination-backed
+         ticket mechanism as ws_stream) to recover (session_id, participant_email).
       2. Re-verifies that the email is a live (left_at IS NULL) participant
          of the session (SR-9: membership re-verified at WS connect time,
          not just at ticket issuance).
