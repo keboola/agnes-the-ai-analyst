@@ -30,11 +30,14 @@ logger = logging.getLogger(__name__)
 _PRICE_IN_PER_MTOK = 3.0
 _PRICE_OUT_PER_MTOK = 15.0
 
-# TTL for the per-user daily-token-sum cache inside ChatManager.
-# The budget check runs on every send_user_message; hitting the DB on
-# every keystroke is wasteful — a 60-second stale window is acceptable
-# given the daily-cap semantics.
-_DAILY_CACHE_TTL_SEC = 60
+# Coordination-backend TTLs for the shared rate-limit/quota counters
+# (wave-2C task 4 — see _msg_window_key / _daily_token_keys). Both simply
+# need to outlive the wall-clock bucket their key encodes; the counter
+# resets to a fresh window the moment the bucket string itself rolls over
+# (a new hour/day), not when the TTL expires — the TTL only protects
+# against the old bucket's key lingering in the backend forever.
+_MSG_WINDOW_TTL_SEC = 2 * 3600  # hour bucket + 1h headroom
+_DAILY_TOKENS_TTL_SEC = 25 * 3600  # day bucket + 1h headroom
 
 # Leader-lease name + TTL for the paused-sandbox TTL sweep inside
 # _reap_once (wave-2C task 3). ~90s: comfortably longer than a single
@@ -170,15 +173,13 @@ class ChatManager:
         self._config = config
         self._live: dict[str, LiveSession] = {}
         self._idle_task: Optional[asyncio.Task] = None
-        # Per-user sliding-window message timestamps for the rate-limit knob.
-        # Each entry is a deque of monotonic timestamps in the last hour.
-        # Trimmed on each send; entries older than 3600 s evicted.
-        from collections import deque
-
-        self._user_msg_window: dict[str, "deque[float]"] = {}
-        self._deque_cls = deque
-        # TTL cache: user_email → (monotonic_timestamp, (tokens_in, tokens_out))
-        self._daily_tokens_cache: dict[str, tuple[float, tuple[int, int]]] = {}
+        # Per-user message-rate window (chat-msgs:...) and daily token spend
+        # (chat-tokens:...) now live in the coordination backend (see
+        # _msg_window_key / _daily_token_keys below) instead of process-local
+        # structures — a process-local deque/dict would give each replica of
+        # a multi-process deployment its own independent quota, letting a
+        # client multiply its effective limit by the replica count.
+        #
         # Spawn-time authoring profile per session id (not persisted). Set in
         # create_session, consumed in _spawn_live. After a process restart the
         # map is empty, but the profile is already materialized on disk in the
@@ -190,18 +191,99 @@ class ChatManager:
         # respawn vs. reconnect (AC-G-resume-legacy).
         self._known_protocol_sessions: set[str] = set()
 
-    def _cached_daily_tokens(self, user_email: str) -> tuple[int, int]:
-        """Return (tokens_in, tokens_out) for today, with a 60-second TTL cache.
+    @staticmethod
+    def _daily_token_keys(user_email: str) -> tuple[str, str]:
+        """Coordination-backend counter keys for `user_email`'s running
+        daily Anthropic token spend, bucketed by UTC calendar date.
 
-        Avoids hitting the DB on every send_user_message call.
+        TTL (``_DAILY_TOKENS_TTL_SEC``, 25h) deliberately outlives the
+        24h day it buckets — same "TTL only matters at first-write, and
+        just needs to comfortably outlive the window" reasoning as
+        ``_msg_window_key``'s 2h TTL on an hour bucket.
         """
-        now = time.monotonic()
-        cached = self._daily_tokens_cache.get(user_email)
-        if cached and now - cached[0] < _DAILY_CACHE_TTL_SEC:
-            return cached[1]
-        val = self._repo.daily_anthropic_tokens(user_email)
-        self._daily_tokens_cache[user_email] = (now, val)
-        return val
+        date_bucket = datetime.now(timezone.utc).strftime("%Y%m%d")
+        return (
+            f"chat-tokens:{user_email}:{date_bucket}:in",
+            f"chat-tokens:{user_email}:{date_bucket}:out",
+        )
+
+    def _daily_token_totals(self, user_email: str) -> tuple[int, int]:
+        """Return (tokens_in, tokens_out) accumulated today for `user_email`.
+
+        Reads the coordination-backend running counters that
+        ``_record_daily_tokens`` adds to as turns complete — a
+        ``amount=0`` increment is a deliberate no-op "peek" (see
+        ``CoordinationBackend.incr``), not a real event.
+
+        Replaces a DB aggregate query (``ChatRepository.daily_anthropic_tokens``)
+        fronted by a 60-second process-local TTL cache: in a multi-process
+        deployment that cache was N independently-stale copies of the same
+        query result, whereas every process now reads and writes the same
+        shared counter.
+
+        FLUSHALL / restart story: if the coordination backend has lost its
+        state (Redis FLUSHALL, a freshly started replica with no prior
+        history), this reads back as "0 spent today" — the daily cap is
+        temporarily looser until the day's usage re-accumulates from
+        scratch. Acceptable: this is a soft cost guardrail, not a billing
+        ledger — ``chat_messages`` (queried by
+        ``ChatRepository.daily_anthropic_tokens``, still used for
+        dashboards/reporting) remains the durable source of truth.
+        """
+        key_in, key_out = self._daily_token_keys(user_email)
+        try:
+            tokens_in = coordination().incr(key_in, amount=0, ttl_s=_DAILY_TOKENS_TTL_SEC)
+            tokens_out = coordination().incr(key_out, amount=0, ttl_s=_DAILY_TOKENS_TTL_SEC)
+        except CoordinationUnavailable:
+            logger.warning(
+                "daily token budget check: coordination backend unavailable; treating %s as 0 spent today",
+                user_email,
+            )
+            return (0, 0)
+        return tokens_in, tokens_out
+
+    def _record_daily_tokens(self, user_email: str, tokens_in: Optional[int], tokens_out: Optional[int]) -> None:
+        """Add one completed turn's token delta to `user_email`'s running
+        daily counters (see ``_daily_token_totals``).
+
+        Attributed to the SESSION OWNER (`live.user_email`), matching
+        ``ChatRepository.daily_anthropic_tokens``'s existing JOIN semantics
+        — it sums every message in every session owned by `user_email`,
+        not just messages a particular sender typed (an assistant reply
+        has no ``sender_email`` of its own to attribute by in the first
+        place; co-session per-sender attribution for the ASSISTANT's own
+        token spend was never implemented pre-this-task either).
+        """
+        tin = tokens_in or 0
+        tout = tokens_out or 0
+        if not tin and not tout:
+            return
+        key_in, key_out = self._daily_token_keys(user_email)
+        try:
+            if tin:
+                coordination().incr(key_in, amount=tin, ttl_s=_DAILY_TOKENS_TTL_SEC)
+            if tout:
+                coordination().incr(key_out, amount=tout, ttl_s=_DAILY_TOKENS_TTL_SEC)
+        except CoordinationUnavailable:
+            logger.warning(
+                "daily token budget: coordination backend unavailable; turn's tokens not recorded for %s",
+                user_email,
+            )
+
+    @staticmethod
+    def _msg_window_key(sender: str) -> str:
+        """Coordination-backend counter key for `sender`'s hourly message-rate
+        window, bucketed by UTC hour (fixed window, not the previous
+        per-process sliding window — see ``send_user_message``).
+
+        FLUSHALL / restart story: a lost counter just means the current
+        hour's count restarts at zero — a sender gets a fresh full quota
+        for the rest of the hour rather than losing the entire hour. Same
+        "soft guardrail, briefly looser after a backend hiccup" story as
+        ``_daily_token_totals``.
+        """
+        hour_bucket = datetime.now(timezone.utc).strftime("%Y%m%d%H")
+        return f"chat-msgs:{sender}:{hour_bucket}"
 
     # --- public API used by app/api/chat.py and services/slack_bot/ -------
 
@@ -263,6 +345,16 @@ class ChatManager:
         return created
 
     def _active_count_for_user(self, user_email: str) -> int:
+        # Deliberately process-local (unlike the rate/quota counters above)
+        # for wave-2C task 4: it counts LIVE sandbox handles in THIS
+        # process's `self._live`, not a value coordination() can hold — the
+        # concurrency cap is only meaningful once it can see every replica's
+        # live sessions for a user, which needs a real per-session lease
+        # (who is this session's owning replica right now?), not a plain
+        # counter. That lands in wave-2C's WS D once routing leases exist;
+        # building a throwaway counter-based version here now would just be
+        # thrown away then. Until WS D, this cap is only accurate within one
+        # process/replica — a documented, temporary gap, not a silent one.
         n = 0
         for s in self._live.values():
             if s.state not in (SessionState.NEW, SessionState.ACTIVE, SessionState.IDLE):
@@ -917,6 +1009,9 @@ class ChatManager:
                     tokens_out=frame.get("tokens_out"),
                     model=frame.get("model"),
                 )
+                # Feed the turn's token delta into the shared daily-spend
+                # counters _daily_token_totals checks in send_user_message.
+                self._record_daily_tokens(live.user_email, frame.get("tokens_in"), frame.get("tokens_out"))
                 live.turn_buffer.clear()
                 live.turn_in_flight = False
                 # Auto-title: the first assistant_message in a session
@@ -1084,8 +1179,8 @@ class ChatManager:
         # SR-10: key all per-user budget/rate checks on the actual SENDER,
         # not the session owner — each co-driver has their own daily/rate window.
         sender = sender_email or live.user_email
-        # Enforce daily Anthropic spend cap (result is TTL-cached — see _cached_daily_tokens)
-        tokens_in, tokens_out = self._cached_daily_tokens(sender)
+        # Enforce daily Anthropic spend cap — see _daily_token_totals.
+        tokens_in, tokens_out = self._daily_token_totals(sender)
         spent_usd = tokens_in * _PRICE_IN_PER_MTOK / 1_000_000 + tokens_out * _PRICE_OUT_PER_MTOK / 1_000_000
         if spent_usd >= self._config.daily_anthropic_spend_usd:
             await self._broadcast(
@@ -1118,15 +1213,19 @@ class ChatManager:
                 },
             )
             raise RuntimeError("max_session_tokens_exhausted")
-        # Per-user sliding-window message-rate cap keyed on the SENDER (SR-10).
-        # Trim entries older than one hour, then check the count.
-        import time as _time
-
-        now_mono = _time.monotonic()
-        window = self._user_msg_window.setdefault(sender, self._deque_cls())
-        while window and (now_mono - window[0]) > 3600:
-            window.popleft()
-        if len(window) >= self._config.rate_messages_per_hour:
+        # Per-user message-rate cap keyed on the SENDER (SR-10), enforced via
+        # a coordination-backend fixed-window counter (see _msg_window_key) —
+        # atomic incr-then-compare: this attempt is unconditionally counted
+        # (matches how most fixed-window API rate limiters behave — an
+        # attempt made while already over the cap still consumes a slot in
+        # the window rather than being a free retry) and only rejected if
+        # the count including it exceeds the configured cap.
+        try:
+            attempt_count = coordination().incr(self._msg_window_key(sender), ttl_s=_MSG_WINDOW_TTL_SEC)
+        except CoordinationUnavailable:
+            logger.warning("message-rate check: coordination backend unavailable; allowing message for %s", sender)
+            attempt_count = 0
+        if attempt_count > self._config.rate_messages_per_hour:
             await self._broadcast(
                 live,
                 {
@@ -1139,7 +1238,6 @@ class ChatManager:
                 },
             )
             raise RuntimeError("rate_limit_exceeded")
-        window.append(now_mono)
         self._repo.append_message(
             session_id=chat_id,
             role="user",

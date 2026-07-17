@@ -40,6 +40,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `coordination.backend=redis` deployment. Under the default `memory`
   backend the lease is process-local and always immediately acquired, so
   single-process behavior is unchanged.
+- Auth-endpoint rate limiting (`app/auth/rate_limit.py`) now points slowapi's
+  `Limiter` at the same Redis instance the coordination backend uses
+  (`storage_uri=app.coordination.factory.resolve_redis_url()`) when
+  `coordination.backend=redis`, so per-IP buckets are shared across every app
+  process instead of each replica keeping its own independent bucket (which
+  let a client multiply its effective limit by the replica count). Under the
+  default `memory` backend, construction is unchanged.
+- Chat per-user hourly message-rate limit and daily Anthropic token-spend cap
+  (`app/chat/manager.py`) now use coordination-backend counters
+  (`chat-msgs:{sender}:{hour}` / `chat-tokens:{user}:{date}:{in,out}`)
+  instead of process-local structures (a sliding-window deque and a
+  DB-aggregate-backed cache), so both quotas are enforced consistently
+  across every app process under `coordination.backend=redis`. Same limits
+  and error responses under the default `memory` backend. Per-user
+  concurrency (`_active_count_for_user`) stays process-local this wave —
+  it becomes lease-derived once per-session routing leases exist (later in
+  wave-2C).
+- `CoordinationBackend.incr` gained an `amount` keyword (default `1`,
+  backward compatible) so a counter can accumulate a variable-sized delta
+  per event (e.g. tokens spent on one chat turn) instead of only a flat
+  +1-per-call; `amount=0` is a valid no-op "peek" at the current value.
 
 ## [0.74.107] - 2026-07-17
 
