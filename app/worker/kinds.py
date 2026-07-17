@@ -94,10 +94,27 @@ def _run_data_refresh(payload: dict) -> None:
     ``SyncOrchestrator.rebuild()``/``rebuild_source()``, via
     ``src.db_pg.rebuild_lease()`` (a Postgres advisory lock; no-op on the
     DuckDB backend, where a single-process startup guard already applies).
+
+    Job-outcome honesty (wave-2B review carry-over, W2B-4/7): ``_run_sync``
+    used to swallow every failure internally (log + best-effort webhook
+    notify) and return nothing, so a ``data-refresh`` job always finalized
+    ``'done'`` even when the underlying sync failed outright or partially
+    — ``GET /api/jobs/{id}`` had no way to show it, and the job's
+    retry-on-failure semantics (``retry_in_seconds=300`` below) never
+    engaged. ``_run_sync`` now returns ``True`` (clean run), ``False``
+    (fatal exception or any per-table failure), or ``None`` (this call
+    was a no-op — another same-process invocation already held
+    ``_sync_lock``, not a failure of this job). Only ``False`` raises —
+    the worker's lane-slot handler (``app/worker/runtime.py``) turns an
+    uncaught exception into ``jobs_repo().fail(..., retry_in_seconds=...)``,
+    so this is the sole mechanism needed for the job to record `failed`
+    and retry.
     """
     from app.api.sync import _run_sync
 
-    _run_sync(payload.get("tables"), payload.get("source"))
+    ok = _run_sync(payload.get("tables"), payload.get("source"))
+    if ok is False:
+        raise RuntimeError("data-refresh sync failed — see server logs and sync_state for per-table errors")
 
 
 def _run_marketplaces_sync(payload: dict) -> None:

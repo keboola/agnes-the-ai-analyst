@@ -325,10 +325,13 @@ class TestSyncSmoke:
         assert r.status_code == 200
         assert "tables" in r.json()
 
-    def test_sync_trigger(self, seeded_app_both, monkeypatch):
-        monkeypatch.setattr("app.api.sync._run_sync", lambda *a, **kw: None)
+    def test_sync_trigger(self, seeded_app_both):
+        # Enqueues a `data-refresh` job (wave-2B job queue) rather than
+        # running `_run_sync` inline — nothing to monkeypatch here, the
+        # handler only touches `jobs_repo()`, which both backends provide.
         r = seeded_app_both["client"].post("/api/sync/trigger", headers=_admin_headers(seeded_app_both))
         assert r.status_code in (200, 202)
+        assert r.json().get("job_id")
 
     def test_sync_settings(self, seeded_app_both):
         r = seeded_app_both["client"].get("/api/sync/settings", headers=_admin_headers(seeded_app_both))
