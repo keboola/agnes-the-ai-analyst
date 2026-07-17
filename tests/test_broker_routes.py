@@ -468,3 +468,137 @@ def test_cosession_ticket_mints_cosession_jwt(broker_app, e2e_env):
     # for brokered chat traffic (security review on #849).
     assert solo_payload.get("scope") == "chat"
     assert co_payload.get("scope") == "chat"
+
+
+class _UrlCapturingClient(_HeaderCapturingClient):
+    """_HeaderCapturingClient that additionally records the outbound URL, so
+    the dispatcher opt-in tests can assert WHERE the broker forwarded."""
+
+    _captured_url: str = ""
+
+    async def request(self, method, url, *a, **k):
+        if self._real:
+            return await self._real.request(method, url, *a, **k)
+        _UrlCapturingClient._captured_url = str(url)
+        return await super().request(method, url, *a, **k)
+
+
+def _post_broker_anthropic(broker_app, subpath, ticket_label):
+    # Clear captured state from earlier tests so every assertion proves THIS
+    # request was forwarded — stale class attributes could otherwise satisfy
+    # the URL/header checks even if the broker never made the outbound call.
+    # NB: headers live on the BASE class (its request() assigns
+    # `_HeaderCapturingClient._captured` explicitly); resetting via the
+    # subclass would shadow that attribute and break the read-back.
+    _HeaderCapturingClient._captured = {}
+    _UrlCapturingClient._captured_url = ""
+    tok = ticket_repo().mint(ticket_label, "main", ttl_seconds=60)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                f"/api/broker/anthropic{subpath}",
+                headers={"Authorization": f"Bearer {tok}"},
+                content=b'{"model":"x"}',
+            )
+
+    return asyncio.run(_run())
+
+
+def test_dispatcher_optin_routes_v1_messages(broker_app, monkeypatch):
+    """LLM_DISPATCHER_URL set → POST /v1/messages goes to the dispatcher with
+    the dispatcher key; the static Anthropic key is NOT sent."""
+    import app.api.broker as broker_mod
+
+    monkeypatch.setenv("LLM_DISPATCHER_URL", "http://127.0.0.1:8600")
+    monkeypatch.setenv("LLM_DISPATCHER_API_KEY", "agnes-team-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static-KEY")
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _UrlCapturingClient)
+
+    r = _post_broker_anthropic(broker_app, "/v1/messages", "chat_disp1")
+    assert r.status_code == 200
+    assert _UrlCapturingClient._captured_url == "http://127.0.0.1:8600/v1/messages"
+    h = _lower_keys(_UrlCapturingClient._captured)
+    assert h.get("x-api-key") == "agnes-team-key"
+
+
+def test_dispatcher_optin_other_subpaths_stay_on_anthropic(broker_app, monkeypatch):
+    """count_tokens (and any non-/v1/messages subpath) keeps the pinned
+    Anthropic upstream + static key even while opted in — the dispatcher
+    only implements /v1/messages."""
+    import app.api.broker as broker_mod
+
+    monkeypatch.setenv("LLM_DISPATCHER_URL", "http://127.0.0.1:8600")
+    monkeypatch.setenv("LLM_DISPATCHER_API_KEY", "agnes-team-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static-KEY")
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _UrlCapturingClient)
+
+    r = _post_broker_anthropic(broker_app, "/v1/messages/count_tokens", "chat_disp2")
+    assert r.status_code == 200
+    assert _UrlCapturingClient._captured_url == (
+        "https://api.anthropic.com/v1/messages/count_tokens"
+    )
+    h = _lower_keys(_UrlCapturingClient._captured)
+    assert h.get("x-api-key") == "sk-ant-static-KEY"
+
+
+def test_dispatcher_unset_default_upstream_unchanged(broker_app, monkeypatch):
+    """No LLM_DISPATCHER_URL → today's pinned-Anthropic behavior."""
+    import app.api.broker as broker_mod
+
+    monkeypatch.delenv("LLM_DISPATCHER_URL", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static-KEY")
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _UrlCapturingClient)
+
+    r = _post_broker_anthropic(broker_app, "/v1/messages", "chat_disp3")
+    assert r.status_code == 200
+    assert _UrlCapturingClient._captured_url == "https://api.anthropic.com/v1/messages"
+    h = _lower_keys(_UrlCapturingClient._captured)
+    assert h.get("x-api-key") == "sk-ant-static-KEY"
+
+
+def test_dispatcher_optin_takes_precedence_over_wif(broker_app, monkeypatch):
+    """Explicit dispatcher opt-in wins over workload_identity for /v1/messages:
+    dispatcher key auth, no Bearer, and the WIF exchange is never attempted."""
+    import types
+
+    import app.api.broker as broker_mod
+    import app.auth.wif as wif
+
+    broker_app.state.chat_config = types.SimpleNamespace(llm_auth="workload_identity")
+
+    def _must_not_be_called():
+        raise AssertionError("WIF exchange must not run when dispatcher is opted in")
+
+    monkeypatch.setattr(wif, "get_federated_access_token", _must_not_be_called)
+    monkeypatch.setenv("LLM_DISPATCHER_URL", "http://127.0.0.1:8600")
+    monkeypatch.setenv("LLM_DISPATCHER_API_KEY", "agnes-team-key")
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _UrlCapturingClient)
+
+    r = _post_broker_anthropic(broker_app, "/v1/messages", "chat_disp4")
+    assert r.status_code == 200
+    h = _lower_keys(_UrlCapturingClient._captured)
+    assert h.get("x-api-key") == "agnes-team-key"
+    assert "authorization" not in h
+
+
+def test_dispatcher_optin_empty_key_logs_warning(broker_app, monkeypatch, caplog):
+    """URL set but key unset is a deployment misconfig: the request is still
+    forwarded to the dispatcher (no fallback) and the broker logs a
+    server-side warning naming the cause. This test asserts the forwarding
+    and the warning; the eventual 401 is the real dispatcher's behavior, not
+    something the fake outbound client here reproduces."""
+    import logging
+
+    import app.api.broker as broker_mod
+
+    monkeypatch.setenv("LLM_DISPATCHER_URL", "http://127.0.0.1:8600")
+    monkeypatch.delenv("LLM_DISPATCHER_API_KEY", raising=False)
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _UrlCapturingClient)
+
+    with caplog.at_level(logging.WARNING, logger="app.api.broker"):
+        r = _post_broker_anthropic(broker_app, "/v1/messages", "chat_disp5")
+    assert r.status_code == 200
+    assert _UrlCapturingClient._captured_url == "http://127.0.0.1:8600/v1/messages"
+    assert any("LLM_DISPATCHER_API_KEY is empty" in rec.message for rec in caplog.records)

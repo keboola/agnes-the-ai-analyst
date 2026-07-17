@@ -10,6 +10,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.74.108] - 2026-07-17
+
+### Added
+
+- Opt-in LLM dispatcher upstream for chat completions (token-arbitrage PoC).
+  When `LLM_DISPATCHER_URL` (+ `LLM_DISPATCHER_API_KEY`, the dispatcher team
+  key that doubles as the cost-ledger identity) is set in the server env, the
+  chat broker forwards `POST /v1/messages` to the dispatcher instead of
+  `api.anthropic.com`; all other Anthropic subpaths (e.g. `count_tokens`) keep
+  the pinned Anthropic upstream. Takes precedence over `chat.llm_auth`
+  (including `workload_identity`) for `/v1/messages`; deliberately no fallback
+  to direct Anthropic on dispatcher failure. Unset ⇒ behavior unchanged. The
+  broker logs a warning when the URL is set without the key.
+  `app/api/broker.py`, documented in `config/.env.template`.
+
 ## [0.74.107] - 2026-07-17
 
 ### Security

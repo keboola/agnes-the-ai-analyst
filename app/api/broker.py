@@ -25,6 +25,7 @@ privileged admin writes, regardless of the resolved identity's own grants.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from typing import Any, Dict
 from urllib.parse import unquote, urlsplit
@@ -36,6 +37,8 @@ from fastapi.routing import APIRoute
 from app.auth.access import mint_co_session_jwt, require_admin
 from app.auth.jwt import create_access_token
 from src.repositories import audit_repo, chat_session_repo, ticket_repo, users_repo
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/broker", tags=["broker"])
 
@@ -327,7 +330,10 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
     arrives at ``/api/broker/anthropic/v1/messages``. The sub-path is
     recomputed from ``request.url.path`` and forwarded to the pinned host —
     the agent-supplied request still cannot choose the target host (Devin
-    review on #849)."""
+    review on #849). When LLM_DISPATCHER_URL is set, POST /v1/messages is
+    instead forwarded to that dispatcher with LLM_DISPATCHER_API_KEY
+    (token-arbitrage PoC); all other subpaths keep the pinned Anthropic
+    upstream."""
     _require_scope(row, "main")
     raw_body = await request.body()
     headers = {
@@ -336,15 +342,50 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
         if k.lower() not in ("host", "authorization", "content-length", "x-api-key")
     }
 
+    upstream_path = request.url.path[len("/api/broker/anthropic") :] or "/"
+
+    # Opt-in LLM dispatcher (token-arbitrage PoC). When LLM_DISPATCHER_URL is
+    # set, chat completions (POST /v1/messages) forward to the dispatcher
+    # authenticated with the dispatcher's own team key — the key doubles as
+    # the ledger identity for this deployment. Every other subpath
+    # (count_tokens, ...) keeps the pinned Anthropic upstream: the dispatcher
+    # only implements /v1/messages. The target host still never comes from
+    # the agent-supplied request (env-configured, operator-owned). When set,
+    # this takes precedence over llm_auth — including workload_identity —
+    # for /v1/messages. Deliberately NO fallback to direct Anthropic on
+    # dispatcher failure: silently bypassing the cost-routing PoC would
+    # corrupt its measurements; the sandbox sees the ordinary upstream error.
+    dispatcher_url = os.environ.get("LLM_DISPATCHER_URL", "").strip().rstrip("/")
+    use_dispatcher = (
+        bool(dispatcher_url)
+        and request.method == "POST"
+        and upstream_path == "/v1/messages"
+    )
+
     # Credential injection is the ONE thing that differs between auth modes; the
     # sandbox never carries either credential (it's added here, server-side).
+    #   dispatcher opt-in      → x-api-key: <LLM_DISPATCHER_API_KEY>
     #   api_key (default)      → x-api-key: <static ANTHROPIC_API_KEY>
     #   workload_identity      → Authorization: Bearer <short-lived federated
     #                            token> + the oauth beta header OAuth-style
     #                            tokens require; NO static key exists.
     llm_auth = getattr(getattr(request.app.state, "chat_config", None), "llm_auth", "api_key")
-    wif_mode = llm_auth == "workload_identity"
-    if wif_mode:
+    wif_mode = llm_auth == "workload_identity" and not use_dispatcher
+    if use_dispatcher:
+        # strip() guards against trailing newlines/spaces from secret managers
+        # (same normalization the URL gets above) — an invisible \n in the key
+        # is a hard-to-debug dispatcher 401.
+        dispatcher_key = os.environ.get("LLM_DISPATCHER_API_KEY", "").strip()
+        if not dispatcher_key:
+            # Misconfiguration (URL set, key missing) fails loud at the
+            # dispatcher with a 401 — log it server-side so the operator sees
+            # the cause; the sandbox-facing behavior stays a plain upstream 401.
+            logger.warning(
+                "LLM_DISPATCHER_URL is set but LLM_DISPATCHER_API_KEY is empty — "
+                "forwarding without a key; the dispatcher will reject this request"
+            )
+        headers["x-api-key"] = dispatcher_key
+    elif wif_mode:
         from app.auth.wif import WIFAuthError, get_federated_access_token
 
         try:
@@ -378,11 +419,11 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
     else:
         headers["x-api-key"] = os.environ.get("ANTHROPIC_API_KEY", "")
 
-    upstream_path = request.url.path[len("/api/broker/anthropic") :] or "/"
+    upstream_base = dispatcher_url if use_dispatcher else _ANTHROPIC_BASE_URL
     async with httpx.AsyncClient(timeout=_ANTHROPIC_TIMEOUT) as client:
         resp = await client.request(
             request.method,
-            f"{_ANTHROPIC_BASE_URL}{upstream_path}",
+            f"{upstream_base}{upstream_path}",
             content=raw_body,
             headers=headers,
             params=request.query_params,
