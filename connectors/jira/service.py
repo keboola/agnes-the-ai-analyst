@@ -102,13 +102,20 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
 
         if success:
             logger.info(f"Incremental transform completed for {issue_key}")
-            # Rebuild Jira views in master analytics.duckdb
+            # Rebuild Jira views in master analytics.duckdb — enqueued
+            # (wave-2B job queue) rather than run inline. The webhook
+            # response must stay fast; the orchestrator rebuild is a full
+            # re-ATTACH + view rebuild over analytics.duckdb, cheap per
+            # call but wasteful to run once per webhook event during a
+            # burst. `idempotency_key="jira-refresh"` collapses any
+            # number of pending webhook events into a single queued
+            # rebuild — see `app.worker.kinds._run_jira_refresh`.
             try:
-                from src.orchestrator import SyncOrchestrator
+                from src.repositories import jobs_repo
 
-                SyncOrchestrator().rebuild_source("jira")
-            except Exception as orch_err:
-                logger.warning(f"Orchestrator rebuild failed: {orch_err}")
+                jobs_repo().enqueue("jira-refresh", {}, idempotency_key="jira-refresh")
+            except Exception as enqueue_err:
+                logger.warning(f"Failed to enqueue jira-refresh job: {enqueue_err}")
         else:
             logger.warning(f"Incremental transform failed for {issue_key}")
 
