@@ -12,6 +12,7 @@ from cli.commands.admin_autodoc import autodoc_tables
 from cli.commands.admin_data_package import admin_data_package_app
 from cli.commands.admin_data_semantics import admin_data_semantics_app
 from cli.commands.admin_digest import admin_digest_app
+from cli.commands.admin_jobs import admin_jobs_app
 from cli.commands.admin_mcp import mcp_app as admin_mcp_app
 from cli.commands.admin_memory_domain import admin_memory_domain_app
 from cli.commands.admin_skills import admin_skills_app
@@ -58,6 +59,7 @@ admin_app.add_typer(
     admin_connection_app, name="connection", help="Named source-connection CRUD (multi-project Keboola)"
 )
 admin_app.add_typer(admin_skills_app, name="skill", help="Contributed skills management")
+admin_app.add_typer(admin_jobs_app, name="jobs", help="Job queue admin (wave-2B worker runtime)")
 # Single direct command (mirrors `register-table` / `discover-and-register`):
 # LLM-generate descriptions for undescribed tables (#399).
 admin_app.command("autodoc-tables")(autodoc_tables)
