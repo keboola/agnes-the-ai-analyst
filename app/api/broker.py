@@ -25,6 +25,7 @@ privileged admin writes, regardless of the resolved identity's own grants.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from typing import Any, Dict
 from urllib.parse import unquote, urlsplit
@@ -36,6 +37,8 @@ from fastapi.routing import APIRoute
 from app.auth.access import mint_co_session_jwt, require_admin
 from app.auth.jwt import create_access_token
 from src.repositories import audit_repo, chat_session_repo, ticket_repo, users_repo
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/broker", tags=["broker"])
 
@@ -369,7 +372,16 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
     llm_auth = getattr(getattr(request.app.state, "chat_config", None), "llm_auth", "api_key")
     wif_mode = llm_auth == "workload_identity" and not use_dispatcher
     if use_dispatcher:
-        headers["x-api-key"] = os.environ.get("LLM_DISPATCHER_API_KEY", "")
+        dispatcher_key = os.environ.get("LLM_DISPATCHER_API_KEY", "")
+        if not dispatcher_key:
+            # Misconfiguration (URL set, key missing) fails loud at the
+            # dispatcher with a 401 — log it server-side so the operator sees
+            # the cause; the sandbox-facing behavior stays a plain upstream 401.
+            logger.warning(
+                "LLM_DISPATCHER_URL is set but LLM_DISPATCHER_API_KEY is empty — "
+                "forwarding without a key; the dispatcher will reject this request"
+            )
+        headers["x-api-key"] = dispatcher_key
     elif wif_mode:
         from app.auth.wif import WIFAuthError, get_federated_access_token
 

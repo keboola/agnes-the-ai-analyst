@@ -573,3 +573,22 @@ def test_dispatcher_optin_takes_precedence_over_wif(broker_app, monkeypatch):
     h = _lower_keys(_UrlCapturingClient._captured)
     assert h.get("x-api-key") == "agnes-team-key"
     assert "authorization" not in h
+
+
+def test_dispatcher_optin_empty_key_logs_warning(broker_app, monkeypatch, caplog):
+    """URL set but key unset is a deployment misconfig: the request still goes
+    to the dispatcher (which 401s — fail loud, no fallback), and the broker
+    logs a server-side warning naming the cause."""
+    import logging
+
+    import app.api.broker as broker_mod
+
+    monkeypatch.setenv("LLM_DISPATCHER_URL", "http://127.0.0.1:8600")
+    monkeypatch.delenv("LLM_DISPATCHER_API_KEY", raising=False)
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _UrlCapturingClient)
+
+    with caplog.at_level(logging.WARNING, logger="app.api.broker"):
+        r = _post_broker_anthropic(broker_app, "/v1/messages", "chat_disp5")
+    assert r.status_code == 200
+    assert _UrlCapturingClient._captured_url == "http://127.0.0.1:8600/v1/messages"
+    assert any("LLM_DISPATCHER_API_KEY is empty" in rec.message for rec in caplog.records)
