@@ -116,6 +116,37 @@ class TestDataRefreshHandler:
 
         assert calls == [(["orders"], "keboola")]
 
+    def test_raises_when_run_sync_reports_failure(self, monkeypatch):
+        """Job-outcome honesty (wave-2B review carry-over, W2B-4/7):
+        `_run_sync` used to swallow every failure internally and return
+        nothing, so a `data-refresh` job always finalized 'done' even when
+        the sync itself failed. `_run_sync` now returns `False` on a fatal
+        or per-table failure; the handler must turn that into a raised
+        exception so the worker's lane-slot records the job `failed`
+        (with `retry_in_seconds` from the kind's registration) instead of
+        `done`."""
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        register_all_kinds()
+        monkeypatch.setattr("app.api.sync._run_sync", lambda tables=None, source_type_filter=None: False)
+
+        with pytest.raises(RuntimeError):
+            JOB_KINDS["data-refresh"].handler({})
+
+    @pytest.mark.parametrize("run_sync_result", [True, None])
+    def test_does_not_raise_when_run_sync_succeeds_or_noops(self, monkeypatch, run_sync_result):
+        """`True` (clean run) and `None` (this call was a no-op — another
+        same-process `_run_sync` already held `_sync_lock`) must both be
+        treated as "not a failure of THIS job" — only `False` raises."""
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        register_all_kinds()
+        monkeypatch.setattr("app.api.sync._run_sync", lambda tables=None, source_type_filter=None: run_sync_result)
+
+        JOB_KINDS["data-refresh"].handler({})  # must not raise
+
 
 class TestMarketplacesSyncHandler:
     def test_delegates_to_sync_marketplaces(self, monkeypatch):
