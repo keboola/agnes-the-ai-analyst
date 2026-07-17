@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+- Tests: `agnes init` / launcher tests can no longer write into the developer's real home — all in-process and subprocess init invocations redirect `HOME` into tmp, and a `tests/conftest.py` autouse guard fails any test that mutates the real shell rc files (legacy-block cleanup) or drops launcher scripts into the real `~/.local/bin`.
+
 ## [0.74.109] - 2026-07-17
 
 ### Fixed

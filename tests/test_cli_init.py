@@ -12,7 +12,23 @@ def _clean(s: str) -> str:
 
 from cli.commands.init import init_app  # noqa: E402
 
+import pytest  # noqa: E402
+
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _home_in_tmp(tmp_path_factory, monkeypatch):
+    """Redirect HOME into tmp for every test in this file.
+
+    `agnes init` ends by installing a launcher shortcut into the shell rc
+    file under $HOME (cli/lib/shortcut.py). Without this, any test that
+    reaches that step appends a per-test marker block to the developer's
+    real ~/.zshrc. Tests that assert on shortcut behavior override HOME
+    again with their own fake home — this default just guarantees no test
+    can forget. The guard in tests/conftest.py fails leaking tests loudly.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))
 
 
 def _make_api_get():

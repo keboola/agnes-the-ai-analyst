@@ -28,6 +28,15 @@ from typer.testing import CliRunner
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
+@pytest.fixture(autouse=True)
+def _home_in_tmp(tmp_path_factory, monkeypatch):
+    """Redirect HOME into tmp — `agnes init` installs a launcher shortcut
+    into the shell rc under $HOME and would otherwise leak marker blocks
+    into the developer's real ~/.zshrc (guard in tests/conftest.py)."""
+    monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))
+
+
+
 def _clean(s: str) -> str:
     return _ANSI_RE.sub("", s)
 
