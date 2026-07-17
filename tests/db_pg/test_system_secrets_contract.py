@@ -6,6 +6,7 @@ secrets_vault_pg.py (PG), so the automatic method-parity sweep
 src/repositories/*.py) does NOT cover it. This test is the sole mechanical
 guard against DuckDB/PG drift — keep it in lockstep with the repo methods.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -55,6 +56,23 @@ def test_system_secret_absent_returns_none_both_backends(_env):
     assert system_secrets_repo().has("SLACK_APP_TOKEN") is False
 
 
+def test_list_names_with_prefix_both_backends(_env):
+    """Powers app.secrets.reapply_all_overlay_tokens_from_vault (wave 2C
+    task 6) — the ``env_overlay/`` namespace inside this same table."""
+    from src.repositories import system_secrets_repo
+
+    repo = system_secrets_repo()
+    repo.upsert("SLACK_BOT_TOKEN", "xoxb-unrelated")
+    repo.upsert("env_overlay/ANTHROPIC_API_KEY", "sk-anthropic")
+    repo.upsert("env_overlay/E2B_API_KEY", "e2b-key")
+
+    names = repo.list_names_with_prefix("env_overlay/")
+    assert names == ["env_overlay/ANTHROPIC_API_KEY", "env_overlay/E2B_API_KEY"]
+
+    assert repo.list_names_with_prefix("env_overlay/") == sorted(repo.list_names_with_prefix("env_overlay/"))
+    assert repo.list_names_with_prefix("does-not-exist/") == []
+
+
 def test_malformed_key_fails_closed_both_backends(_env, monkeypatch):
     """A set-but-malformed AGNES_VAULT_KEY must make get() return None
     (fail closed), not raise — the (InvalidToken, RuntimeError) catch.
@@ -67,5 +85,5 @@ def test_malformed_key_fails_closed_both_backends(_env, monkeypatch):
 
     # Corrupt the vault key: _get_fernet() now raises RuntimeError.
     monkeypatch.setenv("AGNES_VAULT_KEY", "not-a-valid-fernet-key")
-    assert repo.get("SLACK_SIGNING_SECRET") is None   # swallowed → fail closed
-    assert repo.has("SLACK_SIGNING_SECRET") is True   # presence unaffected
+    assert repo.get("SLACK_SIGNING_SECRET") is None  # swallowed → fail closed
+    assert repo.has("SLACK_SIGNING_SECRET") is True  # presence unaffected
