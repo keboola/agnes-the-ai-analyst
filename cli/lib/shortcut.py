@@ -200,7 +200,7 @@ def _posix_script(word: str, raw_word: str, workspace: Path) -> str:
             break
     return (
         "#!/bin/sh\n"
-        f"# {open_marker}\n"
+        f"{open_marker}\n"
         f"# Launcher for the {workspace.name} workspace. Managed by `agnes init`;\n"
         "# safe to delete together with the workspace.\n"
         f"{launch_cmd}\n"
@@ -323,11 +323,13 @@ def _strip_marked_block(content: str, word: str) -> str:
     if end == -1:
         return content
     end += len(close_marker)
-    # Swallow the surrounding newlines the writer added so cleanup does not
-    # accumulate blank lines across re-runs.
+    # Swallow the trailing newline of the block, plus the blank line the
+    # legacy writer inserted above it — but ONLY a blank line: eating the
+    # previous line's terminator would glue user lines together when the
+    # block sits directly under one.
     if content[end : end + 1] == "\n":
         end += 1
-    if start > 0 and content[start - 1 : start] == "\n":
+    if start >= 2 and content[start - 2 : start] == "\n\n":
         start -= 1
     return content[:start] + content[end:]
 
