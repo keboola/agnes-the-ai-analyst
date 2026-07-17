@@ -53,3 +53,8 @@ cadence, so it doesn't appear in `build_jobs()`.
   wakeup notification.
 - **Request-id correlation** across the scheduler → `/api/jobs` → worker →
   handler chain — deferred to the observability workstream.
+- **Scheduler catch-up semantics** — the scheduler still keeps in-memory
+  last_run; per-job catch-up (spec §3.3) is deferred to a later wave.
+- **Role-split /api/sync/status** — the api process's in-process lock is not
+  held on split topologies; the auto-upgrade sync-defer probe rewrite to a
+  job-queue query is deferred to WS I (ops tooling).
