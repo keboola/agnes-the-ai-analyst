@@ -63,10 +63,17 @@ def test_register_trigger_manifest_path(seeded_app, monkeypatch, tmp_path):
     # test's synchronous "trigger then assert parquet exists" shape.
     r = c.post("/api/sync/trigger", headers=auth)
     assert r.status_code in (200, 202)
-    assert r.json().get("job_id")
+    job_id = r.json().get("job_id")
+    assert job_id
     from app.worker.kinds import _run_data_refresh
+    from src.repositories import jobs_repo
 
-    _run_data_refresh({"tables": None, "source": None})
+    # Drive the handler with the job's ACTUAL enqueued payload rather than
+    # a hand-typed stand-in — keeps this test honest about what the
+    # trigger really enqueued (payload fidelity).
+    job = jobs_repo().get(job_id)
+    assert job is not None
+    _run_data_refresh(job["payload_json"])
 
     # Parquet must exist.
     parquet = Path(tmp_path) / "extracts" / "keboola" / "data" / "smoke_subset.parquet"
