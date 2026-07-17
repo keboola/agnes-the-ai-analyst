@@ -93,3 +93,36 @@ def ensure_knowledge_fts_index(conn: duckdb.DuckDBPyConnection) -> bool:
             e,
         )
         return False
+
+
+def ensure_glossary_fts_index(conn: duckdb.DuckDBPyConnection) -> bool:
+    """Create (or rebuild) the BM25 FTS index over ``glossary_terms``.
+
+    Mirrors ``ensure_knowledge_fts_index`` exactly — same idempotent
+    ``overwrite=1`` rebuild-on-mutation strategy, same
+    ``strip_accents=1, lower=1`` matching, same CHECKPOINT-after-DDL WAL
+    safety, same ``False``-return-means-ILIKE-fallback contract. The index
+    covers ``term`` and ``definition``, keyed by ``id``.
+    """
+    if not ensure_fts_loaded(conn):
+        return False
+    try:
+        conn.execute(
+            "PRAGMA create_fts_index("
+            "'main.glossary_terms', 'id', 'term', 'definition', "
+            "strip_accents=1, lower=1, overwrite=1)"
+        )
+        try:
+            conn.execute("CHECKPOINT")
+        except duckdb.Error as ckpt_err:
+            logger.debug(
+                "FTS index created but CHECKPOINT failed (%s); WAL flush deferred",
+                ckpt_err,
+            )
+        return True
+    except duckdb.Error as e:
+        logger.warning(
+            "Failed to (re)create FTS index on glossary_terms; falling back to ILIKE: %s",
+            e,
+        )
+        return False
