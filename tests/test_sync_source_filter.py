@@ -14,6 +14,7 @@ Three layers:
      sync rebuilds both.
   3. Endpoint + CLI passthrough scope identically.
 """
+
 import os
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
@@ -58,19 +59,27 @@ def stub_bq():
 
 # ---- Layer 1: _run_materialized_pass source filter -------------------------
 
+
 def _seed_dual_source(conn, tmp_path):
     """Register one Keboola materialized row + one BQ materialized row, both
     due, and pre-create both parquet files so the hash step succeeds."""
     repo = TableRegistryRepository(conn)
     repo.register(
-        id="kbc_orders", name="kbc_orders", source_type="keboola",
-        query_mode="materialized", bucket="in.c-foo",
-        source_table="orders", source_query=None,
+        id="kbc_orders",
+        name="kbc_orders",
+        source_type="keboola",
+        query_mode="materialized",
+        bucket="in.c-foo",
+        source_table="orders",
+        source_query=None,
         sync_schedule="every 1m",
     )
     repo.register(
-        id="bq_sessions", name="bq_sessions", source_type="bigquery",
-        query_mode="materialized", source_query="SELECT 1 AS n",
+        id="bq_sessions",
+        name="bq_sessions",
+        source_type="bigquery",
+        query_mode="materialized",
+        source_query="SELECT 1 AS n",
         sync_schedule="every 1m",
     )
     for source, fname in (("keboola", "kbc_orders"), ("bigquery", "bq_sessions")):
@@ -104,14 +113,14 @@ def test_materialized_pass_source_filter_scopes_to_bigquery(tmp_path, monkeypatc
     try:
         with patch("app.api.sync._materialize_table", side_effect=_fake_bq):
             summary = sync_module._run_materialized_pass(
-                conn, stub_bq, source_type="bigquery",
+                conn,
+                stub_bq,
+                source_type="bigquery",
             )
     finally:
         conn.close()
 
-    assert materialized == ["bq_sessions"], (
-        "only the BQ materialized row should be rebuilt under source='bigquery'"
-    )
+    assert materialized == ["bq_sessions"], "only the BQ materialized row should be rebuilt under source='bigquery'"
     assert summary["materialized"] == ["bq_sessions"]
     assert {"table": "kbc_orders", "reason": "source_filter"} in summary["skipped"]
 
@@ -142,15 +151,16 @@ def test_materialized_pass_no_filter_processes_all(tmp_path, monkeypatch, stub_b
 
     def _fake_kb(**kwargs):
         seen.append(("kb", kwargs["table_id"]))
-        return {"table_id": kwargs["table_id"], "path": "x",
-                "rows": 1, "bytes": 100, "md5": "deadbeef"}
+        return {"table_id": kwargs["table_id"], "path": "x", "rows": 1, "bytes": 100, "md5": "deadbeef"}
 
     try:
-        with patch("app.api.sync._materialize_table", side_effect=_fake_bq), \
-             patch(
-                 "connectors.keboola.extractor.materialize_query",
-                 side_effect=_fake_kb,
-             ):
+        with (
+            patch("app.api.sync._materialize_table", side_effect=_fake_bq),
+            patch(
+                "connectors.keboola.extractor.materialize_query",
+                side_effect=_fake_kb,
+            ),
+        ):
             summary = sync_module._run_materialized_pass(conn, stub_bq)
     finally:
         conn.close()
@@ -161,6 +171,7 @@ def test_materialized_pass_no_filter_processes_all(tmp_path, monkeypatch, stub_b
 
 
 # ---- Layer 2: _run_sync end-to-end with mtime isolation --------------------
+
 
 def _run_sync_harness(tmp_path, monkeypatch):
     """Set up `_run_sync` to run against a real registry with one Keboola
@@ -181,12 +192,19 @@ def _run_sync_harness(tmp_path, monkeypatch):
     conn = _db_mod.get_system_db()
     repo = TableRegistryRepository(conn)
     repo.register(
-        id="kbc_orders", name="kbc_orders", source_type="keboola",
-        query_mode="local", bucket="in.c-foo", source_table="orders",
+        id="kbc_orders",
+        name="kbc_orders",
+        source_type="keboola",
+        query_mode="local",
+        bucket="in.c-foo",
+        source_table="orders",
     )
     repo.register(
-        id="bq_sessions", name="bq_sessions", source_type="bigquery",
-        query_mode="materialized", source_query="SELECT 1 AS n",
+        id="bq_sessions",
+        name="bq_sessions",
+        source_type="bigquery",
+        query_mode="materialized",
+        source_query="SELECT 1 AS n",
         sync_schedule="every 1m",
     )
     _db_mod.close_system_db()
@@ -194,14 +212,12 @@ def _run_sync_harness(tmp_path, monkeypatch):
     # source, but the registry carries both. The `?source=` filter is what
     # scopes a partial rebuild.
     monkeypatch.setattr(
-        "app.instance_config.get_data_source_type", lambda: "keboola",
+        "app.instance_config.get_data_source_type",
+        lambda: "keboola",
     )
     monkeypatch.setattr(
         "app.instance_config.get_value",
-        lambda *args, **kw: (
-            "my-bq-proj" if (args and args[-1] == "project")
-            else kw.get("default", "")
-        ),
+        lambda *args, **kw: "my-bq-proj" if (args and args[-1] == "project") else kw.get("default", ""),
     )
 
     # Pre-create a real keboola extract.duckdb on disk; the Keboola extractor
@@ -240,11 +256,11 @@ def _run_sync_harness(tmp_path, monkeypatch):
             if source_type is not None and rst != source_type:
                 continue
             spies["materialized"].append(row["name"])
-        return {"materialized": list(spies["materialized"]),
-                "skipped": [], "errors": []}
+        return {"materialized": list(spies["materialized"]), "skipped": [], "errors": []}
 
     monkeypatch.setattr(
-        "app.api.sync._run_materialized_pass", _spy_materialized,
+        "app.api.sync._run_materialized_pass",
+        _spy_materialized,
     )
 
     class _OrchStub:
@@ -253,7 +269,8 @@ def _run_sync_harness(tmp_path, monkeypatch):
             return {}
 
     monkeypatch.setattr(
-        "src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub(),
+        "src.orchestrator.SyncOrchestrator",
+        lambda *a, **kw: _OrchStub(),
     )
 
     return spies, kbc_extract
@@ -268,12 +285,8 @@ def test_run_sync_bigquery_filter_skips_keboola_extract(tmp_path, monkeypatch):
 
     sync_module._run_sync(tables=None, source_type_filter="bigquery")
 
-    assert spies["keboola_subprocess"] == 0, (
-        "Keboola extractor subprocess must NOT run under source='bigquery'"
-    )
-    assert spies["materialized"] == ["bq_sessions"], (
-        "only the BQ materialized row should be rebuilt"
-    )
+    assert spies["keboola_subprocess"] == 0, "Keboola extractor subprocess must NOT run under source='bigquery'"
+    assert spies["materialized"] == ["bq_sessions"], "only the BQ materialized row should be rebuilt"
     assert kbc_extract.stat().st_mtime == mtime_before, (
         "keboola/extract.duckdb mtime must be unchanged by a BQ-scoped rebuild"
     )
@@ -281,20 +294,39 @@ def test_run_sync_bigquery_filter_skips_keboola_extract(tmp_path, monkeypatch):
 
 def test_run_sync_no_filter_rebuilds_both(tmp_path, monkeypatch):
     """Bare sync (no source filter): the Keboola extractor subprocess runs
-    AND the BQ materialized row is rebuilt."""
+    AND the BQ materialized row is rebuilt. A clean run with no per-table
+    errors reports success (`True`) — the honest outcome the wave-2B
+    `data-refresh` job path relies on to decide `done` vs `failed`."""
     spies, _kbc_extract = _run_sync_harness(tmp_path, monkeypatch)
 
-    sync_module._run_sync(tables=None)
+    result = sync_module._run_sync(tables=None)
 
-    assert spies["keboola_subprocess"] == 1, (
-        "Keboola extractor subprocess must run on a full sweep"
-    )
-    assert spies["materialized"] == ["bq_sessions"], (
-        "the BQ materialized row must also be rebuilt on a full sweep"
-    )
+    assert spies["keboola_subprocess"] == 1, "Keboola extractor subprocess must run on a full sweep"
+    assert spies["materialized"] == ["bq_sessions"], "the BQ materialized row must also be rebuilt on a full sweep"
+    assert result is True, "a clean run with no collected errors must report success"
+
+
+def test_run_sync_returns_false_on_per_table_errors(tmp_path, monkeypatch):
+    """A per-table failure (materialized pass reports an error, no fatal
+    exception) must still make `_run_sync` report `False`. Before the
+    wave-2B honesty fix, this case was swallowed entirely (logged +
+    best-effort webhook notify) and the function returned nothing — a
+    `data-refresh` job built on top would have finalized 'done' even
+    though a table failed."""
+    _run_sync_harness(tmp_path, monkeypatch)
+
+    def _materialized_with_error(_conn, _bq, *, tables=None, source_type=None):
+        return {"materialized": [], "skipped": [], "errors": [{"table": "bq_sessions", "error": "boom"}]}
+
+    monkeypatch.setattr("app.api.sync._run_materialized_pass", _materialized_with_error)
+
+    result = sync_module._run_sync(tables=None)
+
+    assert result is False, "a per-table failure must be reported as an unsuccessful run"
 
 
 # ---- Layer 3: endpoint + CLI passthrough -----------------------------------
+
 
 def _make_client():
     from fastapi import FastAPI
@@ -307,33 +339,57 @@ def _make_client():
     return TestClient(app)
 
 
+class _FakeJobsRepo:
+    """Minimal stand-in for `jobs_repo()` — no in-flight job, so every
+    `enqueue()` call looks like a fresh trigger. See
+    `tests/test_sync_trigger_singleton.py` for the fuller dedup-aware
+    version; this file only needs to assert what payload reaches
+    `enqueue()`, not the dedup branch."""
+
+    def __init__(self):
+        self.enqueue_calls: list[dict] = []
+
+    def list(self, *, kind=None, status=None, limit=50):
+        return []
+
+    def enqueue(self, kind, payload, *, idempotency_key=None, **kwargs):
+        self.enqueue_calls.append({"kind": kind, "payload": payload, "idempotency_key": idempotency_key})
+        return {"id": "fake-job-id", "kind": kind, "status": "queued", "idempotency_key": idempotency_key}
+
+
 def test_trigger_threads_source_into_run_sync():
-    """`?source=bigquery` reaches `_run_sync` as the second positional arg."""
+    """`?source=bigquery` reaches the enqueued `data-refresh` job's payload
+    as `source`."""
     client = _make_client()
-    with patch("app.api.sync._run_sync") as run_mock:
+    fake_repo = _FakeJobsRepo()
+    with patch("app.api.sync.jobs_repo", lambda: fake_repo):
         resp = client.post("/api/sync/trigger?source=bigquery")
     assert resp.status_code == 200, resp.text
     assert resp.json()["source"] == "bigquery"
-    run_mock.assert_called_once_with(None, "bigquery")
+    assert fake_repo.enqueue_calls == [
+        {"kind": "data-refresh", "payload": {"tables": None, "source": "bigquery"}, "idempotency_key": "sync"}
+    ]
 
 
 def test_trigger_source_is_normalized_lowercase():
     """Source is normalized (trim + lowercase) before validation/dispatch."""
     client = _make_client()
-    with patch("app.api.sync._run_sync") as run_mock:
+    fake_repo = _FakeJobsRepo()
+    with patch("app.api.sync.jobs_repo", lambda: fake_repo):
         resp = client.post("/api/sync/trigger?source=BigQuery")
     assert resp.status_code == 200, resp.text
-    run_mock.assert_called_once_with(None, "bigquery")
+    assert fake_repo.enqueue_calls[0]["payload"]["source"] == "bigquery"
 
 
 def test_trigger_rejects_unknown_source():
     """An unknown source_type fails fast with 422 — never silently rebuilds
-    nothing."""
+    nothing, and never reaches the job queue."""
     client = _make_client()
-    with patch("app.api.sync._run_sync") as run_mock:
+    fake_repo = _FakeJobsRepo()
+    with patch("app.api.sync.jobs_repo", lambda: fake_repo):
         resp = client.post("/api/sync/trigger?source=snowflake")
     assert resp.status_code == 422, resp.text
-    assert not run_mock.called
+    assert not fake_repo.enqueue_calls
 
 
 def test_cli_admin_sync_passes_source_query_param():
