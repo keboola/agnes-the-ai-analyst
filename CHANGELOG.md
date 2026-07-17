@@ -34,6 +34,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   and after — a co-session runs under the grant *intersection* and egress is
   brokered, so the ceiling was behavioral manipulation, not data escalation.
 
+### Fixed
+
+- **`POST /api/sync/trigger` could report 200 "triggered" for a job it
+  didn't create.** The handler used to peek for an in-flight `data-refresh`
+  job *before* calling `enqueue()`; two near-simultaneous triggers could
+  both see "nothing in flight" and both get 200, even though the job
+  queue's own idempotency dedup meant only one job actually existed.
+  `JobsRepository.enqueue()`/`JobsPgRepository.enqueue()` (both backends)
+  now return a `"deduped"` key alongside the row — `True` when the call
+  collapsed onto an existing queued/running job, `False` for a fresh
+  insert — and the trigger handler branches on that instead of a
+  pre-check, closing the race: exactly one of two concurrent triggers now
+  gets 200, the other 409, always sharing the same `job_id`.
+
 ## [0.74.106] - 2026-07-17
 
 ### Fixed

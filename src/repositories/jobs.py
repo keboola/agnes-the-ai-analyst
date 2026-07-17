@@ -156,6 +156,16 @@ class JobsRepository:
         unchanged — no new insert (dedup). See the module docstring for
         why this check lives here rather than in a DB constraint, and
         why it's guarded by the module-level ``_JOBS_LOCK``.
+
+        The returned dict always carries a ``"deduped"`` boolean key —
+        ``True`` when the row came back via the idempotency dedup path
+        (an existing queued/running job, not a fresh insert), ``False``
+        for a brand-new row. This is response metadata added on the way
+        out, NOT a ``jobs`` table column — callers that need to tell
+        "I just created this job" apart from "this call collapsed onto
+        one already in flight" (e.g. ``POST /api/sync/trigger`` deciding
+        between 200 and 409) should branch on it instead of racily
+        pre-checking for an in-flight job before calling ``enqueue()``.
         """
         with _JOBS_LOCK:
             if idempotency_key is not None:
@@ -167,6 +177,7 @@ class JobsRepository:
                 ).fetchone()
                 existing_row = self._row_to_dict(existing)
                 if existing_row is not None:
+                    existing_row["deduped"] = True
                     return existing_row
 
             job_id = uuid.uuid4().hex
@@ -189,6 +200,7 @@ class JobsRepository:
             )
             row = self.get(job_id)
             assert row is not None  # just inserted under our own transaction
+            row["deduped"] = False
             return row
 
     def get(self, job_id: str) -> Optional[Dict[str, Any]]:
