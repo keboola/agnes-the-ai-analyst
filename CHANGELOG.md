@@ -16,9 +16,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   request-body write into `git http-backend`'s stdin fail on the already-closed
   pipe transport (uvloop `RuntimeError: … the handler is closed`; plain asyncio
   `BrokenPipeError`/`ConnectionResetError`), which bubbled up as a spurious
-  "git http-backend failed" ERROR with a full traceback. The closed-pipe case
-  is now caught in `_run_git_http_backend`, the subprocess is reaped, and the
-  event is logged as a client-disconnect WARNING instead.
+  "git http-backend failed" ERROR with a full traceback. Stdin write failures
+  are now non-fatal per CGI convention: the child's response is still read and
+  served if it produced one (e.g. a backend that rejects the request without
+  draining the body), and only when the child also produced no output is the
+  event logged as a client-disconnect WARNING instead of an ERROR.
 
 ## [0.74.108] - 2026-07-17
 

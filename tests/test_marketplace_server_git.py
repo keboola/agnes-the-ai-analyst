@@ -717,6 +717,34 @@ class TestRunGitHttpBackendStdinPipeClosed:
 
         assert captured_proc["proc"].returncode is not None, "subprocess was left unreaped after the stdin pipe broke"
 
+    def test_early_responding_child_still_gets_its_response_served(self, monkeypatch):
+        """A backend that rejects the request — writes a full CGI response
+        and exits WITHOUT draining a large body — is not a client
+        disconnect: its response must be served, not discarded (stdin write
+        failures are non-fatal per CGI convention)."""
+        import asyncio
+        import sys
+
+        from app.marketplace_server import git_router
+
+        stub = "import sys\nsys.stdout.buffer.write(b'Status: 403 Forbidden\\r\\n\\r\\ndenied')\nsys.stdout.flush()\n"
+        monkeypatch.setattr(
+            git_router,
+            "_GIT_HTTP_BACKEND",
+            (sys.executable, "-c", stub),
+        )
+
+        body = b"B" * (10 * 1024 * 1024)
+
+        async def run():
+            status, headers, stream = await git_router._run_git_http_backend(env={}, body=body)
+            chunks = [chunk async for chunk in stream]
+            return status, b"".join(chunks)
+
+        status, response_body = asyncio.run(asyncio.wait_for(run(), timeout=10))
+        assert status == 403
+        assert response_body == b"denied"
+
     def test_route_logs_client_disconnect_as_warning_not_error(self, git_env, monkeypatch, caplog):
         import logging
 

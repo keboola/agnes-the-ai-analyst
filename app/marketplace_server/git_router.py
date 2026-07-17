@@ -54,10 +54,12 @@ _GIT_HTTP_BACKEND = ("git", "http-backend")
 
 class _StdinPipeClosed(Exception):
     """The child's stdin pipe closed before the request body could be
-    written — the subprocess exited or closed stdin without consuming the
-    body, which in practice happens when the HTTP client disconnects
-    mid-transfer. Benign; the route handler logs it as a warning instead
-    of an ERROR traceback."""
+    written AND the child produced no response output — the transport was
+    torn down without the subprocess ever serving the request, which in
+    practice happens when the HTTP client disconnects mid-transfer. (A
+    child that rejects the request and responds without draining stdin is
+    NOT this case — its response is served normally.) Benign; the route
+    handler logs it as a warning instead of an ERROR traceback."""
 
 
 def token_from_basic_auth(auth_header: Optional[str]) -> Optional[str]:
@@ -216,26 +218,27 @@ async def _run_git_http_backend(env: dict, body: bytes) -> tuple[int, list[tuple
     )
     assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
 
+    stdin_error: Optional[Exception] = None
     try:
         proc.stdin.write(body)
         await proc.stdin.drain()
-        proc.stdin.close()
     except (RuntimeError, BrokenPipeError, ConnectionResetError) as exc:
-        # The stdin pipe transport is already closed — the child exited or
-        # closed its stdin before consuming the body, which happens when the
-        # HTTP client disconnects mid-transfer. uvloop raises RuntimeError
-        # ("unable to perform operation on <WriteUnixTransport closed=True>;
-        # the handler is closed") from write(); plain asyncio surfaces
-        # BrokenPipeError/ConnectionResetError from drain(). Nothing below
-        # runs, so reap the child here and raise the typed error the route
-        # handler logs as a client disconnect instead of an ERROR traceback.
-        if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-        await proc.wait()
-        raise _StdinPipeClosed(str(exc)) from exc
+        # The stdin pipe transport closed under us — the child exited or
+        # closed its stdin without consuming the body. uvloop raises
+        # RuntimeError ("unable to perform operation on <WriteUnixTransport
+        # closed=True>; the handler is closed") from write(); plain asyncio
+        # surfaces BrokenPipeError/ConnectionResetError from drain(). Per
+        # CGI convention this is NOT fatal by itself: a backend that
+        # rejects a request (e.g. Status: 403) may legitimately respond and
+        # exit before draining a large body, and its response must still be
+        # served. Record the error and fall through to read stdout; only if
+        # the child also produced no output do we classify the request as a
+        # client disconnect (see below).
+        stdin_error = exc
+    try:
+        proc.stdin.close()
+    except (RuntimeError, BrokenPipeError, ConnectionResetError, OSError):
+        pass
 
     # Start draining stderr immediately, concurrently with everything below —
     # see `_drain_stderr` for why this must not happen sequentially after
@@ -278,6 +281,13 @@ async def _run_git_http_backend(env: dict, body: bytes) -> tuple[int, list[tuple
         # Exception already converts this into a 500 via _server_error().
         await proc.wait()
         await stderr_task
+        if stdin_error is not None:
+            # The stdin pipe broke AND the child produced nothing — the
+            # transport was torn down before the request could even be fed
+            # to the child, which is what a mid-transfer HTTP client
+            # disconnect looks like. Benign; the route handler logs this as
+            # a WARNING instead of an ERROR traceback.
+            raise _StdinPipeClosed(str(stdin_error)) from stdin_error
         stderr = b"".join(stderr_chunks)
         logger.error(
             "git http-backend produced no output before exiting %s: %s",
