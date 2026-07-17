@@ -360,6 +360,20 @@ def _cleanup_legacy_rc_blocks(home: Path, words: set[str]) -> list[Path]:
     return cleaned
 
 
+def _has_legacy_block(home: Path, words: set[str]) -> bool:
+    """True when any rc/profile file still carries a marked block for ``words``."""
+    for rc in _rc_paths(home):
+        if not rc.exists():
+            continue
+        try:
+            content = rc.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if any(_markers(w)[0] in content for w in words):
+            return True
+    return False
+
+
 def _warn_if_shadowing_function(home: Path, word: str) -> None:
     """Warn when an rc file defines an unmarked ``function <word>``.
 
@@ -424,18 +438,14 @@ def install_launcher_shortcut(workspace: Path, *, no_shortcut: bool = False, qui
         bin_dir = _bin_dir(home)
         chosen, target = _choose_target(workspace.name, bin_dir)
 
-        cleaned = _cleanup_legacy_rc_blocks(home, _cleanup_words(workspace.name, chosen))
-        for rc in cleaned:
-            typer.echo(
-                f"  Note     : removed the legacy launcher shell function from {rc.name} "
-                "— the launcher is now a script on PATH.",
-                err=True,
-            )
-
         if chosen is None or target is None:
+            # Deliberately do NOT touch legacy rc blocks here: stripping a
+            # still-working legacy launcher without installing the
+            # replacement would leave the user with no launcher at all.
             typer.echo(
                 "  Warning  : could not pick a launcher name that does not collide "
-                "with an existing command; skipping shortcut.",
+                "with an existing command; skipping shortcut (any legacy shell-"
+                "function launcher is left in place).",
                 err=True,
             )
             return
@@ -449,6 +459,17 @@ def install_launcher_shortcut(workspace: Path, *, no_shortcut: bool = False, qui
         target.write_text(script, encoding="utf-8")
         if sys.platform != "win32":
             target.chmod(0o755)
+
+        # Only after the replacement script is in place, remove the legacy
+        # rc-function blocks — a write failure above leaves the old launcher
+        # working.
+        cleaned = _cleanup_legacy_rc_blocks(home, _cleanup_words(workspace.name, chosen))
+        for rc in cleaned:
+            typer.echo(
+                f"  Note     : removed the legacy launcher shell function from {rc.name} "
+                "— the launcher is now a script on PATH.",
+                err=True,
+            )
 
         _warn_if_shadowing_function(home, chosen)
         if shutil.which(chosen) is None:
@@ -476,25 +497,17 @@ def migrate_launcher_shortcut(workspace: Path, *, quiet: bool = True) -> str:
     ``agnes init --no-shortcut`` users stay untouched.
 
     Returns ``"absent"`` (no evidence, nothing done), ``"migrated"``
-    (legacy rc block found; script installed, block removed) or
-    ``"converged"`` (script already present, re-asserted).
+    (legacy rc block found; script installed, block removed),
+    ``"converged"`` (script already present, re-asserted) or ``"blocked"``
+    (legacy block present but the install skipped — e.g. both candidate
+    names collide — so the legacy launcher was deliberately left working).
     """
     home = _home()
     words = _cleanup_words(workspace.name, None)
     if not words:
         return "absent"
 
-    had_legacy = False
-    for rc in _rc_paths(home):
-        if not rc.exists():
-            continue
-        try:
-            content = rc.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if any(_markers(w)[0] in content for w in words):
-            had_legacy = True
-            break
+    had_legacy = _has_legacy_block(home, words)
 
     ext = _script_ext()
     has_script = any((candidate := _bin_dir(home) / f"{w}{ext}").exists() and _script_is_ours(candidate) for w in words)
@@ -503,4 +516,8 @@ def migrate_launcher_shortcut(workspace: Path, *, quiet: bool = True) -> str:
         return "absent"
 
     install_launcher_shortcut(workspace, quiet=quiet)
-    return "migrated" if had_legacy else "converged"
+    if had_legacy:
+        # The install only removes legacy blocks after the replacement
+        # script landed; a block still present means the install skipped.
+        return "migrated" if not _has_legacy_block(home, words) else "blocked"
+    return "converged"
