@@ -395,6 +395,64 @@ See [ADR Decision 1](ADR-corporate-memory-v1.md) for the full reasoning.
 
 ---
 
+## Background Jobs
+
+A durable job queue (the `jobs` table, present on both backends —
+`src/repositories/jobs.py` / `jobs_pg.py`, routed through the
+`jobs_repo()` factory) backs a worker runtime for the heaviest,
+most contention-prone recurring work; the rest of the Services table
+above stays on direct synchronous HTTP calls from the scheduler.
+
+**Schema** (migration v92 / Alembic `0039_jobs_v92`): `id`, `kind`,
+`payload_json`, `status` (`queued`/`running`/`done`/`failed`), `priority`,
+`run_after`, `attempts`/`max_attempts`, `lease_expires_at`/`leased_by`/
+`lease_token`, `idempotency_key`, `error`, plus `created_at`/`started_at`/
+`finished_at`. `idempotency_key` dedup is enforced in
+`JobsRepository.enqueue()` via an in-process lock on DuckDB (which has no
+partial-index support) and via a partial unique index + `ON CONFLICT` on
+Postgres — same dedup behavior, different mechanism per backend.
+
+**Worker loop** (`app/worker/runtime.py`, started from `app/main.py`'s
+lifespan when the process's `AGNES_ROLE` includes the worker plane): two
+lanes share one asyncio loop — heavy (concurrency 1) and light
+(concurrency 2). Each lane slot repeats `claim_next()` → runs the kind's
+handler in a thread while a heartbeat extends the lease →
+`complete()`/`fail()`. A fresh-per-claim `lease_token` (not just
+`worker_id`) guards every call so a stale slot can't clobber a fresh
+claim of the same job by another slot in the same process. A separate
+sweep task reclaims exhausted/expired leases (`reap_exhausted()`), and
+shutdown drains in-flight jobs within a bound instead of hard-killing
+them.
+
+**Kinds registry** (`app/worker/kinds.py::register_all_kinds()`,
+`app/worker/registry.py`): five kinds today — `data-refresh` and
+`jira-refresh` (heavy lane), `marketplaces-sync`, `session-collector`,
+and `corporate-memory` (light lane). Each handler is a thin adapter over
+the function already backing the equivalent HTTP endpoint — no logic is
+duplicated between the queued and HTTP-triggered call sites.
+
+**Cross-process rebuild lease**: `SyncOrchestrator`'s `_rebuild_lock` is
+an in-process `threading.Lock` — invisible across processes. In a
+role-split topology (a dedicated `api` process handling
+`/api/sync/trigger` + the Jira webhook, and a separate `worker` process
+running enqueued jobs) both can independently reach `rebuild()`/
+`rebuild_source()`'s critical section and race on `analytics.duckdb`.
+`src/db_pg.py::rebuild_lease()` wraps that section in a Postgres
+advisory lock (no-op on the DuckDB backend, already single-process by
+the startup guard) so the two processes serialize instead of racing.
+
+**REST/CLI/MCP**: `app/api/jobs.py` (`POST /api/jobs`,
+`GET /api/jobs/{id}`, `GET /api/jobs`), `agnes admin jobs
+enqueue|show|list`, and the `admin_job_enqueue`/`admin_job_get`/
+`admin_jobs_list` MCP tools — all gated by `require_admin` (the
+scheduler's shared-secret bearer resolves to a synthetic admin user, so
+no special-casing is needed).
+
+Which scheduler rows moved to the queue vs. stayed synchronous HTTP, and
+why: [`jobs-classification.md`](jobs-classification.md).
+
+---
+
 ## Security
 
 ### Query Sandbox (`app/api/query.py`)
