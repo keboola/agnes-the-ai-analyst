@@ -71,6 +71,10 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/admin/store/lint-dismiss": ("admin store lint-dismiss", "admin_store_lint_dismiss"),
     # Per-user MCP credential connectivity check (self-service connect page).
     "/api/mcp/sources/{source_id}/my-secret/test": ("mcp my-secret test", "my_secret_test"),
+    # Wave-2B job queue REST surface (Task 5) — `/api/jobs` carries both list
+    # (GET) and enqueue (POST); `/api/jobs/{job_id}` is the detail view.
+    "/api/jobs": ("admin jobs list", "admin_jobs_list"),
+    "/api/jobs/{job_id}": ("admin jobs show", "admin_job_get"),
 }
 
 
