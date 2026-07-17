@@ -252,7 +252,14 @@ python -m scripts.migrate_duckdb_to_pg --only users --verbose
 ```
 
 The CLI returns exit code 1 if any post-copy validation fails (row count
-mismatch or PK-set checksum diverged).
+mismatch or PK-set checksum diverged), and exit code 2 when the source
+DuckDB file does not exist — a missing source during an operator-driven
+cutover means a mis-mounted volume, not a fresh install. The
+docker-compose `data-migrate` one-shot passes `--missing-source-ok`,
+which turns the missing-source case into a logged no-op (exit 0) so a
+brand-new data volume (fresh Postgres-backend deployment, no prior
+DuckDB) can boot compose from scratch. The flag cannot be combined with
+`--reset-target` (a one-time cutover requires an existing source).
 
 ## Backend choice for tests
 

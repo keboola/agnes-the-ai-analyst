@@ -584,6 +584,42 @@ class TestSearch:
         assert results
         assert results[0]["confidence"] in ("high", "medium", "low")
 
+    def test_search_response_labels_lexical_only_retrieval(self, seeded_app, monkeypatch):
+        """#898: without the embeddings extra the ranking silently degrades to
+        lexical-only — the response must say so instead of leaving clients to
+        read server logs."""
+        import src.ingest.retrieval as retrieval
+
+        monkeypatch.setattr(retrieval, "embedding_capability", lambda: False)
+        c = seeded_app["client"]
+        self._seed_corpus_with_chunk(seeded_app, "Degraded", "the magic keyword appears here", grant=True)
+        resp = c.get(
+            "/api/collections/search",
+            params={"q": "magic keyword"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["retrieval"] == "lexical_only"
+
+    def test_search_response_labels_hybrid_retrieval(self, seeded_app, monkeypatch):
+        """#898: with an embedding model available the response labels the
+        ranking as hybrid."""
+        import src.ingest.retrieval as retrieval
+
+        monkeypatch.setattr(retrieval, "embedding_capability", lambda: True)
+        # Keep ranking deterministic without a real model — the label reflects
+        # capability; the blend handles a None query vector as lexical scores.
+        monkeypatch.setattr(retrieval, "embed_query", lambda _q: None)
+        c = seeded_app["client"]
+        self._seed_corpus_with_chunk(seeded_app, "Hybrid", "the magic keyword appears here", grant=True)
+        resp = c.get(
+            "/api/collections/search",
+            params={"q": "magic keyword"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["retrieval"] == "hybrid"
+
     def test_search_fail_closed_excludes_ungranted(self, seeded_app):
         c = seeded_app["client"]
         # Collection is NOT granted to analyst1.

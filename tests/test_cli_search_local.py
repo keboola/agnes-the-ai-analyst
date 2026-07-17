@@ -109,6 +109,8 @@ def test_mcp_knowledge_search_falls_back_on_transport_error(workspace):
         result = mcp_server.knowledge_search("monthly invoices")
     assert result["source"] == "local"
     assert result["results"] and result["results"][0]["chunk_id"] == "ck1"
+    # #898: the offline response labels the LOCAL ranking mode too.
+    assert result["retrieval"] in ("hybrid", "lexical_only")
 
 
 def test_mcp_knowledge_search_does_not_fall_back_on_http_error():

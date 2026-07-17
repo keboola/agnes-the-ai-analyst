@@ -556,6 +556,69 @@ def test_rebuild_rollups_daily_fact_identical_across_backends(usage_repo):
     assert [tuple(r) for r in rows] == [("curated", "skill", "myplug", "design", 3)]
 
 
+def test_rebuild_rollups_stale_entity_removed_identically_across_backends(usage_repo):
+    """Devin Review finding on PR #909 (BUG_...0001 / BUG_...0002): the ON
+    CONFLICT DO UPDATE rewrite on the DuckDB side must still remove a
+    marketplace item's daily-fact and sliding-window rows once its source
+    event is gone (entity unapproved, event corrected/deleted) — the same
+    behavior the Postgres sibling gets for free from its DELETE-then-INSERT.
+    Seeds two distinct curated plugins (not a builtin tool — see
+    test_builtin_excluded in test_usage_rollups.py — which never enters
+    these tables at all and would make the "stale" side a no-op), rebuilds,
+    purges one plugin's only event, rebuilds again, and asserts the stale
+    plugin's rows are gone from BOTH tables on BOTH backends (not just that
+    the crash doesn't recur — see test_usage_rollups.py for that guarantee
+    on the DuckDB side alone)."""
+    repo, conn, backend = usage_repo
+    _seed_curated_plugin(repo, conn, backend, "myplug")
+    _seed_curated_plugin(repo, conn, backend, "otherplug", marketplace_id="mp2")
+    today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+    _seed_full_event(
+        repo,
+        conn,
+        backend,
+        event_id="ep-keep",
+        occurred_at=today,
+        tool_name="Skill",
+        skill_name="myplug:design",
+        session_file="keep.jsonl",
+    )
+    _seed_full_event(
+        repo,
+        conn,
+        backend,
+        event_id="ep-stale",
+        occurred_at=today,
+        tool_name="Skill",
+        skill_name="otherplug:gone",
+        session_file="stale.jsonl",
+    )
+    repo.rebuild_rollups(since_day=today.date())
+
+    def _names(table, extra_where=""):
+        sql = f"SELECT name FROM {table} WHERE 1=1 {extra_where}"
+        if backend == "duckdb":
+            return {r[0] for r in conn.execute(sql).fetchall()}
+        with repo._engine.connect() as c:
+            return {r[0] for r in c.execute(sa.text(sql)).fetchall()}
+
+    assert _names("usage_marketplace_item_daily") == {"design", "myplug", "gone", "otherplug"}
+    assert _names("usage_marketplace_item_window", "AND period_label='last_7d'") == {
+        "design",
+        "myplug",
+        "gone",
+        "otherplug",
+    }
+
+    repo.purge_for_session("stale.jsonl")
+    repo.rebuild_rollups(since_day=today.date())
+
+    daily_names = _names("usage_marketplace_item_daily")
+    window_names = _names("usage_marketplace_item_window", "AND period_label='last_7d'")
+    assert daily_names == {"design", "myplug"}, f"stale entity must be gone from daily fact table, got {daily_names}"
+    assert window_names == {"design", "myplug"}, f"stale entity must be gone from window table, got {window_names}"
+
+
 def test_rebuild_rollups_since_day_none_is_full_rebuild(usage_repo):
     """since_day=None must cover ALL history, not just the last 7 days — the
     #728 semantics fix (docstring already promised this; code defaulted to

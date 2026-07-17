@@ -28,6 +28,7 @@ from connectors.keboola.storage_api import (
     _slice_sort_key,
     get_temp_root,
     sweep_orphaned_scratch,
+    warn_if_scratch_survived,
 )
 
 
@@ -1034,6 +1035,29 @@ class TestSweepOrphanedScratch:
         assert removed == 1
         assert not old.exists()
         assert fresh.exists()
+
+
+# ---- warn_if_scratch_survived ----------------------------------------------
+
+
+class TestWarnIfScratchSurvived:
+    """`ignore_cleanup_errors=True` on the owning TemporaryDirectory silently
+    swallows a cleanup failure (PROD incident 2026-07-16: two 12 GiB dirs
+    survived with nothing in the logs explaining why). This is the visibility
+    backstop — it does not delete anything, only logs."""
+
+    def test_logs_warning_when_dir_survives(self, tmp_path, caplog):
+        survivor = tmp_path / "kbc-export-foo-abc123"
+        survivor.mkdir()
+        with caplog.at_level("WARNING", logger="connectors.keboola.storage_api"):
+            warn_if_scratch_survived(str(survivor))
+        assert any("still present after TemporaryDirectory cleanup" in r.message for r in caplog.records)
+
+    def test_no_warning_when_dir_is_gone(self, tmp_path, caplog):
+        cleaned = tmp_path / "kbc-export-bar-def456"
+        with caplog.at_level("WARNING", logger="connectors.keboola.storage_api"):
+            warn_if_scratch_survived(str(cleaned))
+        assert caplog.records == []
 
 
 # ---- get_table_info --------------------------------------------------------

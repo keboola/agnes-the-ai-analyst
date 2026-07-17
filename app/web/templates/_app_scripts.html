@@ -238,7 +238,7 @@
       // first key to teach the shortcut on the fly.
       (function () {
         // Admin-only — short-circuit if the nav isn't there.
-        if (!document.getElementById('adminNavMenu')) return;
+        if (!document.getElementById('adminMenu')) return;
         const MAP = {
           't': '/admin/tables',          // (data packages)
           'a': '/admin/access',           // resource access
@@ -310,11 +310,11 @@
 
       // v55 admin command palette — Cmd/Ctrl-K opens a fuzzy-search
       // overlay over the same set of routes the admin nav exposes,
-      // plus a few common actions. Admin-only (gated on adminNavMenu
+      // plus a few common actions. Admin-only (gated on adminMenu
       // presence). Esc to close; arrows + Enter to navigate; the same
       // typing-into-input safeguards as the g+letter handler.
       (function () {
-        if (!document.getElementById('adminNavMenu')) return;
+        if (!document.getElementById('adminMenu')) return;
         const ITEMS = [
           { label: 'Tables / Data packages',      hint: 'admin · g t',  href: '/admin/tables' },
           { label: 'Resource access',             hint: 'admin · g a',  href: '/admin/access' },
@@ -562,34 +562,5 @@
           tabs[idx].click();
           tabs[idx].focus();
         });
-      })();
-
-      // Persist each admin-nav <details data-section=...> open/closed
-      // state in localStorage so reopening the dropdown restores the
-      // sections the admin last had collapsed. Sections default open
-      // when no entry exists (matches Jinja's `open` attribute).
-      (function () {
-        const KEY = 'agnes-admin-nav-collapsed-sections';
-        let collapsed = new Set();
-        try {
-          const raw = localStorage.getItem(KEY);
-          if (raw) collapsed = new Set(JSON.parse(raw));
-        } catch (_) { /* corrupt JSON or storage disabled — fall back to defaults */ }
-
-        function _persist() {
-          try { localStorage.setItem(KEY, JSON.stringify(Array.from(collapsed))); }
-          catch (_) { /* storage full / private mode — silently no-op */ }
-        }
-
-        document.querySelectorAll('details.app-nav-menu-group[data-section]')
-          .forEach((det) => {
-            const name = det.dataset.section;
-            if (collapsed.has(name)) det.open = false;
-            det.addEventListener('toggle', () => {
-              if (det.open) collapsed.delete(name);
-              else collapsed.add(name);
-              _persist();
-            });
-          });
       })();
     </script>

@@ -172,6 +172,29 @@ def sweep_orphaned_scratch(
     return removed
 
 
+def warn_if_scratch_survived(path: str) -> None:
+    """Log a warning if a ``kbc-export-*`` staging dir is still present after
+    its owning ``with tempfile.TemporaryDirectory(...)`` block exited.
+
+    Callers pass ``ignore_cleanup_errors=True`` to that context manager so a
+    cleanup failure never masks the export's real exception — but that flag
+    silently swallows the failure too, so a leaked dir was previously
+    indistinguishable from a hard-kill orphan and the only operator-visible
+    signal was the disk slowly filling (see PROD incident 2026-07-16: two
+    12 GiB dirs survived with nothing in the logs explaining why). This makes
+    that failure mode visible; :func:`sweep_orphaned_scratch` still owns
+    actual reclamation once the age threshold passes.
+    """
+    if os.path.isdir(path):
+        logger.warning(
+            "kbc-export scratch dir %s still present after TemporaryDirectory "
+            "cleanup (ignore_cleanup_errors swallowed the failure) — it will "
+            "be reclaimed by the next sweep_orphaned_scratch() pass once it "
+            "ages past AGNES_SCRATCH_MAX_AGE_SEC",
+            path,
+        )
+
+
 FILE_TYPE_CSV = "csv"
 FILE_TYPE_PARQUET = "parquet"
 _VALID_FILE_TYPES = {FILE_TYPE_CSV, FILE_TYPE_PARQUET}

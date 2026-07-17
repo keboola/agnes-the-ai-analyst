@@ -34,12 +34,15 @@ def test_api_guide_renders_for_non_admin(seeded_app):
 
 
 def test_documentation_section_in_admin_menu(seeded_app):
-    """Admin dropdown carries a Documentation section linking guide + Swagger + ReDoc."""
+    """The Admin mega-menu carries a Documentation section linking guide +
+    Swagger + ReDoc (a column group in the header's admin mega-menu)."""
     client = seeded_app["client"]
     r = client.get("/dashboard", headers=_auth(seeded_app["admin_token"]))
     assert r.status_code == 200
     body = r.text
-    assert 'data-section="documentation"' in body
+    # Documentation is a section within the admin mega-menu panel.
+    assert 'id="adminMenuPanel"' in body
+    assert ">Documentation<" in body
     assert 'href="/documentation/api"' in body
     assert ">API Guide<" in body
     assert 'href="/docs"' in body
