@@ -110,6 +110,13 @@ class JobsPgRepository:
         unchanged — no new insert (dedup), race-safe under concurrent
         callers. Mirrors ``JobsRepository.enqueue`` (dedup *behavior*,
         not the underlying mechanism — see the module docstring).
+
+        The returned dict always carries a ``"deduped"`` boolean key —
+        ``True`` when the row came back via the idempotency dedup path
+        (an existing queued/running job, not a fresh insert), ``False``
+        for a brand-new row. This is response metadata added on the way
+        out, NOT a ``jobs`` table column — see ``JobsRepository.enqueue``
+        for why callers should branch on it instead of a racy pre-check.
         """
         now = datetime.now(timezone.utc)
 
@@ -148,6 +155,7 @@ class JobsPgRepository:
         max_fallback_retries = 3
         with self._engine.begin() as conn:
             row = _try_insert(conn)
+            deduped = False
             attempt = 0
             while row is None:
                 # Lost the INSERT race: another transaction holds a
@@ -169,6 +177,7 @@ class JobsPgRepository:
                     .first()
                 )
                 if row is not None:
+                    deduped = True
                     break
                 # Race window: between our INSERT losing the ON CONFLICT
                 # race and this SELECT running, the winning row left
@@ -187,8 +196,14 @@ class JobsPgRepository:
                         "on this key prevented both insert and lookup from succeeding"
                     )
                 row = _try_insert(conn)
+                # If this retry succeeds, `row` is a fresh insert (RETURNING
+                # *), so `deduped` correctly stays False; if it misses again,
+                # the loop re-enters and either sets deduped=True via the
+                # SELECT above or raises past max_fallback_retries.
         assert row is not None  # inserted (first try or a retry), or the conflicting row was found
-        return self._decode(dict(row))
+        result = self._decode(dict(row))
+        result["deduped"] = deduped
+        return result
 
     def get(self, job_id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
