@@ -253,6 +253,24 @@ class SystemSecretsRepository:
         ).fetchone()
         return row is not None
 
+    def list_names_with_prefix(self, prefix: str) -> list[str]:
+        """Names of every row whose ``name`` starts with ``prefix``, sorted.
+
+        Powers the ``env_overlay/`` namespace used by
+        ``app.secrets.persist_overlay_token`` (wave 2C task 6) — the caller
+        needs to discover which env vars are vault-managed without knowing
+        the full set up front (it's admin-driven: marketplace PATs, the
+        E2B/Anthropic chat keys, the initial-workspace template PAT). Uses
+        ``position(... IN ...)`` rather than ``LIKE`` so the prefix is
+        matched literally — ``LIKE`` would need ``%``/``_`` escaping since
+        ``env_overlay/`` itself contains an underscore. Does not decrypt.
+        """
+        rows = self.conn.execute(
+            "SELECT name FROM system_secrets WHERE position(? IN name) = 1 ORDER BY name",
+            [prefix],
+        ).fetchall()
+        return [r[0] for r in rows]
+
 
 # ---------------------------------------------------------------------------
 # Repository — per-user source secrets (mcp_user_secrets table)
