@@ -306,6 +306,33 @@ def test_ws_disconnect_detaches_but_does_not_kill(fake_provider_client: TestClie
         loop.close()
 
 
+def test_ws_stream_closes_4503_on_coordination_unavailable(fake_provider_client: TestClient, monkeypatch):
+    """A coordination backend blip (e.g. Redis unreachable) during ticket
+    consume must close the WS with 4503, not propagate an uncaught
+    ``CoordinationUnavailable`` out of the WS handler — FastAPI's HTTP
+    exception handler does not cover the WS scope, so an unhandled raise
+    here would drop the connection ungracefully with a traceback."""
+    from starlette.websockets import WebSocketDisconnect
+
+    import app.api.chat as chat_mod
+    from app.coordination.base import CoordinationUnavailable
+
+    created = fake_provider_client.post("/api/chat/sessions", json={"surface": "web"}).json()
+    chat_id = created["id"]
+    ticket_resp = fake_provider_client.post(f"/api/chat/sessions/{chat_id}/ticket").json()
+    ws_url = ticket_resp["ws_url"]
+
+    def _raise(_ticket: str):
+        raise CoordinationUnavailable("redis blip")
+
+    monkeypatch.setattr(chat_mod, "_consume_ticket", _raise)
+
+    with pytest.raises(WebSocketDisconnect) as excinfo:
+        with fake_provider_client.websocket_connect(ws_url) as ws:
+            ws.receive_json()
+    assert excinfo.value.code == 4503
+
+
 def test_sessions_list_exposes_paused(fake_provider_client: TestClient):
     """GET /api/chat/sessions includes 'paused': true for paused sessions."""
     created = fake_provider_client.post("/api/chat/sessions", json={"surface": "web"}).json()

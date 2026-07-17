@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -23,33 +22,32 @@ from app.chat.readiness import (
     test_e2b_key,
     test_wif_credentials,
 )
+from app.coordination.base import CoordinationUnavailable
+from app.coordination.factory import coordination
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/chat", tags=["admin-chat"])
 
 
-# In-memory ticket store for admin tail-WS auth.  Mirrors the chat-WS pattern
-# in `app/api/chat.py`: a short-TTL one-shot token gates the WebSocket open.
+# WS auth tickets for the admin tail route ride the coordination backend
+# (single-use KV with TTL) — same mechanism as the chat-WS ticket pattern in
+# `app/api/chat.py`: a short-TTL one-shot token gates the WebSocket open.
 # Without this, the tail route streamed any session's run.log to any
-# anonymous WS caller — a confidentiality bypass.
-_ADMIN_TAIL_TICKETS: dict[str, tuple[str, float]] = {}  # ticket -> (admin_user_id, expires_at)
+# anonymous WS caller — a confidentiality bypass. Riding the coordination
+# backend (rather than a module-level dict) makes tickets visible across
+# replicas when `coordination.backend=redis` is configured.
 _ADMIN_TICKET_TTL_SEC = 60
+_ADMIN_TICKET_KEY_PREFIX = "admin-tail-ticket:"
 
 
 def _issue_admin_ticket(user_id: str) -> str:
     ticket = secrets.token_urlsafe(32)
-    _ADMIN_TAIL_TICKETS[ticket] = (user_id, time.time() + _ADMIN_TICKET_TTL_SEC)
+    coordination().kv_set(f"{_ADMIN_TICKET_KEY_PREFIX}{ticket}", user_id, ttl_s=_ADMIN_TICKET_TTL_SEC)
     return ticket
 
 
 def _consume_admin_ticket(ticket: str) -> Optional[str]:
-    rec = _ADMIN_TAIL_TICKETS.pop(ticket, None)
-    if rec is None:
-        return None
-    user_id, expires_at = rec
-    if time.time() > expires_at:
-        return None
-    return user_id
+    return coordination().kv_delete(f"{_ADMIN_TICKET_KEY_PREFIX}{ticket}")
 
 
 @router.get("")
@@ -266,8 +264,14 @@ async def tail_ticket(
 @router.websocket("/{chat_id}/tail")
 async def admin_tail(ws: WebSocket, chat_id: str, ticket: str = ""):
     # Ticket auth BEFORE accept() — invalid callers get close(4401) without
-    # ever seeing protocol-upgrade success.
-    user_id = _consume_admin_ticket(ticket)
+    # ever seeing protocol-upgrade success. A coordination-backend blip
+    # (e.g. Redis unreachable) surfaces as 4503 rather than propagating an
+    # uncaught exception out of the WS handler.
+    try:
+        user_id = _consume_admin_ticket(ticket)
+    except CoordinationUnavailable:
+        await ws.close(code=4503, reason="coordination_unavailable")
+        return
     if user_id is None:
         await ws.close(code=4401, reason="invalid_or_expired_ticket")
         return
