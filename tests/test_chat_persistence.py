@@ -6,8 +6,6 @@ tests/test_chat_db_migration.py) are:
   - ``duckdb.connect(":memory:")``   to open an in-memory connection
   - ``_ensure_schema(conn)``         to migrate it to the current version
 """
-from datetime import datetime, timezone
-from pathlib import Path
 
 import duckdb
 import pytest
@@ -22,6 +20,7 @@ from app.chat.types import Surface
 # Fixture
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def repo() -> ChatRepository:
     conn = duckdb.connect(":memory:")
@@ -32,6 +31,7 @@ def repo() -> ChatRepository:
 # ---------------------------------------------------------------------------
 # Sessions
 # ---------------------------------------------------------------------------
+
 
 def test_create_and_get_session(repo: ChatRepository):
     s = repo.create_session(user_email="u@x", surface=Surface.WEB, title="t")
@@ -54,7 +54,9 @@ def test_list_sessions_by_user_recent_first(repo: ChatRepository):
 
 def test_get_slack_dm_session_by_channel(repo: ChatRepository):
     s = repo.create_session(
-        user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C123",
+        user_email="u@x",
+        surface=Surface.SLACK_DM,
+        slack_channel_id="C123",
     )
     again = repo.get_slack_dm_session("C123")
     assert again is not None and again.id == s.id
@@ -63,8 +65,10 @@ def test_get_slack_dm_session_by_channel(repo: ChatRepository):
 
 def test_get_slack_thread_session(repo: ChatRepository):
     s = repo.create_session(
-        user_email="u@x", surface=Surface.SLACK_THREAD,
-        slack_channel_id="C1", slack_thread_ts="123.456",
+        user_email="u@x",
+        surface=Surface.SLACK_THREAD,
+        slack_channel_id="C1",
+        slack_thread_ts="123.456",
     )
     again = repo.get_slack_thread_session("C1", "123.456")
     assert again is not None and again.id == s.id
@@ -145,13 +149,18 @@ def test_hard_delete_user_sessions(repo: ChatRepository):
 # Messages
 # ---------------------------------------------------------------------------
 
+
 def test_append_and_list_messages(repo: ChatRepository):
     s = repo.create_session(user_email="u@x", surface=Surface.WEB)
     m1 = repo.append_message(session_id=s.id, role="user", content="hi")
     m2 = repo.append_message(
-        session_id=s.id, role="assistant", content="hello",
+        session_id=s.id,
+        role="assistant",
+        content="hello",
         tool_calls=[{"tool": "list_catalog", "args": {}}],
-        tokens_in=5, tokens_out=3, model="claude-haiku-4-5-20251001",
+        tokens_in=5,
+        tokens_out=3,
+        model="claude-haiku-4-5-20251001",
     )
     msgs = repo.list_messages(s.id)
     assert [m.id for m in msgs] == [m1.id, m2.id]
@@ -172,10 +181,13 @@ def test_list_messages_after_cursor(repo: ChatRepository):
 # Workdirs
 # ---------------------------------------------------------------------------
 
+
 def test_workdir_upsert_and_fetch(repo: ChatRepository):
     repo.upsert_workdir(
-        user_email="u@x", marketplace_sha="abc",
-        initial_workspace_sha="def", agnes_version="0.55.0",
+        user_email="u@x",
+        marketplace_sha="abc",
+        initial_workspace_sha="def",
+        agnes_version="0.55.0",
     )
     w = repo.get_workdir("u@x")
     assert w is not None
@@ -183,12 +195,36 @@ def test_workdir_upsert_and_fetch(repo: ChatRepository):
     assert w.agnes_version_at_init == "0.55.0"
 
 
+def test_workdir_repeated_upsert_same_key_updates_in_place(repo: ChatRepository):
+    """Regression 2026-07-17: `INSERT OR REPLACE` deletes-then-inserts the
+    conflicting row internally on DuckDB, hitting the same PRIMARY KEY index
+    assertion as UsageRepository.upsert_summary (see test_usage_rollups.py).
+    Switched to INSERT ... ON CONFLICT DO UPDATE — a second upsert for the
+    same user_email must not raise and must leave exactly one, updated row."""
+    repo.upsert_workdir(
+        user_email="u@x",
+        marketplace_sha="abc",
+        initial_workspace_sha="def",
+        agnes_version="0.55.0",
+    )
+    repo.upsert_workdir(
+        user_email="u@x",
+        marketplace_sha="xyz",
+        initial_workspace_sha="def",
+        agnes_version="0.56.0",
+    )
+    w = repo.get_workdir("u@x")
+    assert w is not None
+    assert w.marketplace_sha == "xyz"
+    assert w.agnes_version_at_init == "0.56.0"
+    n = repo._conn.execute("SELECT COUNT(*) FROM user_workdirs WHERE user_email = 'u@x'").fetchone()[0]
+    assert n == 1
+
+
 def test_daily_anthropic_tokens(repo: ChatRepository):
     s = repo.create_session(user_email="u@x", surface=Surface.WEB)
-    repo.append_message(session_id=s.id, role="assistant", content="x",
-                         tokens_in=100, tokens_out=50)
-    repo.append_message(session_id=s.id, role="assistant", content="y",
-                         tokens_in=200, tokens_out=80)
+    repo.append_message(session_id=s.id, role="assistant", content="x", tokens_in=100, tokens_out=50)
+    repo.append_message(session_id=s.id, role="assistant", content="y", tokens_in=200, tokens_out=80)
     tin, tout = repo.daily_anthropic_tokens("u@x")
     assert tin == 300 and tout == 130
 
@@ -242,8 +278,12 @@ def test_fork_session_as_co_session(tmp_path):
     repo = ChatRepository(conn)
     s0 = repo.create_session(user_email="o@x.com", surface=Surface.WEB)
     s1 = repo.fork_session_as_co_session(
-        s0.id, owner_email="o@x.com", owner_user_id="u-o",
-        invitee_email="c@x.com", invitee_user_id="u-c", seed_summary="prior context",
+        s0.id,
+        owner_email="o@x.com",
+        owner_user_id="u-o",
+        invitee_email="c@x.com",
+        invitee_user_id="u-c",
+        seed_summary="prior context",
     )
     # S0 untouched.
     assert repo.get_session(s0.id).is_co_session is False
@@ -269,7 +309,7 @@ def test_hard_delete_removes_participants_first(tmp_path):
     repo.append_message(session_id=s.id, role="user", content="bye", sender_email="gone@x.com")
     n = repo.hard_delete_user_sessions("gone@x.com")
     assert n == 1
-    remaining = conn.execute(
-        "SELECT COUNT(*) FROM chat_session_participants WHERE session_id = ?", [s.id]
-    ).fetchone()[0]
+    remaining = conn.execute("SELECT COUNT(*) FROM chat_session_participants WHERE session_id = ?", [s.id]).fetchone()[
+        0
+    ]
     assert remaining == 0
