@@ -250,6 +250,7 @@ def test_claim_next_sets_running_lease_and_increments_attempts(repo):
     assert claimed["id"] == job["id"]
     assert claimed["status"] == "running"
     assert claimed["leased_by"] == "w1"
+    assert claimed["lease_token"], "claim_next must mint a lease_token"
     assert claimed["attempts"] == 1
     assert claimed["started_at"] is not None
     assert claimed["lease_expires_at"] is not None
@@ -308,6 +309,7 @@ def test_claim_next_reclaims_expired_lease_and_preserves_started_at(repo):
     assert second["leased_by"] == "w2"
     assert second["attempts"] == 2
     assert second["started_at"] == started_at_1
+    assert second["lease_token"] != first["lease_token"], "a reclaim must mint a fresh lease_token"
 
 
 def test_claim_next_does_not_reclaim_at_max_attempts(repo):
@@ -321,40 +323,40 @@ def test_claim_next_does_not_reclaim_at_max_attempts(repo):
 def test_heartbeat_extends_lease_for_owner(repo):
     repo.enqueue("hb", {})
     claimed = repo.claim_next(kinds=["hb"], worker_id="w1", lease_seconds=1)
-    ok = repo.heartbeat(claimed["id"], "w1", lease_seconds=9999)
+    ok = repo.heartbeat(claimed["id"], "w1", claimed["lease_token"], lease_seconds=9999)
     assert ok is True
     refreshed = repo.get(claimed["id"])
     assert refreshed["lease_expires_at"] > claimed["lease_expires_at"]
 
 
-def test_heartbeat_false_for_wrong_worker(repo):
+def test_heartbeat_false_for_wrong_token(repo):
     claimed_job = repo.enqueue("hb2", {})
     claimed = repo.claim_next(kinds=["hb2"], worker_id="w1")
-    assert repo.heartbeat(claimed["id"], "w2") is False
+    assert repo.heartbeat(claimed["id"], "w2", "not-the-real-token") is False
     # unaffected
     assert repo.get(claimed_job["id"])["leased_by"] == "w1"
 
 
 def test_heartbeat_false_for_unknown_or_not_running_job(repo):
-    assert repo.heartbeat("does-not-exist", "w1") is False
+    assert repo.heartbeat("does-not-exist", "w1", "no-such-token") is False
     never_claimed = repo.enqueue("hb3", {})
-    assert repo.heartbeat(never_claimed["id"], "anyone") is False
+    assert repo.heartbeat(never_claimed["id"], "anyone", "no-such-token") is False
 
 
 def test_complete_marks_done_for_owner(repo):
     repo.enqueue("done_kind", {})
     claimed = repo.claim_next(kinds=["done_kind"], worker_id="w1")
-    repo.complete(claimed["id"], "w1")
+    repo.complete(claimed["id"], "w1", claimed["lease_token"])
     row = repo.get(claimed["id"])
     assert row["status"] == "done"
     assert row["finished_at"] is not None
     assert row["lease_expires_at"] is None
 
 
-def test_complete_is_noop_for_stale_worker(repo):
+def test_complete_is_noop_for_wrong_token(repo):
     repo.enqueue("done_kind2", {})
     claimed = repo.claim_next(kinds=["done_kind2"], worker_id="w1")
-    repo.complete(claimed["id"], "w-stale")
+    repo.complete(claimed["id"], "w1", "wrong-token")
     row = repo.get(claimed["id"])
     assert row["status"] == "running"
     assert row["finished_at"] is None
@@ -364,20 +366,21 @@ def test_fail_with_retry_requeues(repo):
     repo.enqueue("retry_kind", {}, max_attempts=5)
     claimed = repo.claim_next(kinds=["retry_kind"], worker_id="w1")
     assert claimed["attempts"] == 1
-    repo.fail(claimed["id"], "w1", "boom", retry_in_seconds=30)
+    repo.fail(claimed["id"], "w1", claimed["lease_token"], "boom", retry_in_seconds=30)
     row = repo.get(claimed["id"])
     assert row["status"] == "queued"
     assert row["run_after"] is not None
     assert row["error"] == "boom"
     assert row["lease_expires_at"] is None
     assert row["leased_by"] is None
+    assert row["lease_token"] is None
 
 
 def test_fail_at_max_attempts_finalizes(repo):
     repo.enqueue("fail_kind", {}, max_attempts=1)
     claimed = repo.claim_next(kinds=["fail_kind"], worker_id="w1")
     assert claimed["attempts"] == 1
-    repo.fail(claimed["id"], "w1", "boom", retry_in_seconds=30)
+    repo.fail(claimed["id"], "w1", claimed["lease_token"], "boom", retry_in_seconds=30)
     row = repo.get(claimed["id"])
     assert row["status"] == "failed"
     assert row["finished_at"] is not None
@@ -387,15 +390,15 @@ def test_fail_at_max_attempts_finalizes(repo):
 def test_fail_without_retry_in_seconds_finalizes_even_with_attempts_remaining(repo):
     repo.enqueue("no_retry_kind", {}, max_attempts=5)
     claimed = repo.claim_next(kinds=["no_retry_kind"], worker_id="w1")
-    repo.fail(claimed["id"], "w1", "boom")
+    repo.fail(claimed["id"], "w1", claimed["lease_token"], "boom")
     row = repo.get(claimed["id"])
     assert row["status"] == "failed"
 
 
-def test_fail_is_noop_for_stale_worker(repo):
+def test_fail_is_noop_for_wrong_token(repo):
     repo.enqueue("fail_kind2", {}, max_attempts=5)
     claimed = repo.claim_next(kinds=["fail_kind2"], worker_id="w1")
-    repo.fail(claimed["id"], "w-stale", "boom", retry_in_seconds=30)
+    repo.fail(claimed["id"], "w1", "wrong-token", "boom", retry_in_seconds=30)
     row = repo.get(claimed["id"])
     assert row["status"] == "running"
     assert row["error"] is None
@@ -443,7 +446,7 @@ def test_reap_exhausted_ignores_queued_and_done_jobs(repo):
     repo.enqueue("queued_kind", {})
     done_job = repo.enqueue("done_kind3", {})
     claimed = repo.claim_next(kinds=["done_kind3"], worker_id="w1")
-    repo.complete(claimed["id"], "w1")
+    repo.complete(claimed["id"], "w1", claimed["lease_token"])
     assert repo.reap_exhausted() == 0
     assert repo.get(done_job["id"])["status"] == "done"
 
@@ -482,8 +485,8 @@ def test_heartbeat_after_reclaim_never_extends_new_owners_lease(repo):
     assert reclaimed["leased_by"] == "w2"
     lease_before = reclaimed["lease_expires_at"]
 
-    # w1, unaware it was reclaimed, sends a stale heartbeat.
-    ok = repo.heartbeat(job["id"], "w1", lease_seconds=9999)
+    # w1, unaware it was reclaimed, sends a stale heartbeat using its OLD token.
+    ok = repo.heartbeat(job["id"], "w1", stale["lease_token"], lease_seconds=9999)
     assert ok is False
 
     row = repo.get(job["id"])
@@ -499,15 +502,15 @@ def test_complete_after_reclaim_is_noop_and_reclaim_never_claims_done_job(repo):
     reclaimed = repo.claim_next(kinds=["complete_vs_reclaim"], worker_id="w2", lease_seconds=120)
     assert reclaimed is not None
 
-    # w1 finishes its (already reclaimed) work late and calls complete().
-    repo.complete(job["id"], "w1")
+    # w1 finishes its (already reclaimed) work late and calls complete() with its OLD token.
+    repo.complete(job["id"], "w1", stale["lease_token"])
     row = repo.get(job["id"])
     assert row["status"] == "running"  # unaffected — w1 is no longer the owner
     assert row["leased_by"] == "w2"
     assert row["finished_at"] is None
 
-    # the legitimate owner (w2) completing it IS honored.
-    repo.complete(job["id"], "w2")
+    # the legitimate owner (w2) completing it with the CURRENT token IS honored.
+    repo.complete(job["id"], "w2", reclaimed["lease_token"])
     row2 = repo.get(job["id"])
     assert row2["status"] == "done"
     assert row2["finished_at"] is not None
@@ -515,6 +518,89 @@ def test_complete_after_reclaim_is_noop_and_reclaim_never_claims_done_job(repo):
     # a 'done' job is never claimable again — not queued, and not a
     # reclaimable 'running' job with an expired lease.
     assert repo.claim_next(kinds=["complete_vs_reclaim"], worker_id="w3") is None
+
+
+# ---------------------------------------------------------------------------
+# same-worker reclaim — Critical: all lane slots in ONE worker process share
+# a single worker_id (hostname:pid). A worker_id-only guard cannot tell a
+# stale slot's late call apart from a same-process reclaim of the same job
+# by a DIFFERENT slot — a same-worker double-execution bug (empirically
+# reproduced, `fail()` even led to a third concurrent execution via the
+# requeue it issued). lease_token — minted fresh on every claim, including a
+# same-worker reclaim — is the guard these tests lock down.
+# ---------------------------------------------------------------------------
+
+
+def test_same_worker_reclaim_mints_a_fresh_lease_token(repo):
+    job = repo.enqueue("self_reclaim_token", {}, max_attempts=5)
+    stale = repo.claim_next(kinds=["self_reclaim_token"], worker_id="shared-worker", lease_seconds=-5)
+    assert stale is not None
+    reclaimed = repo.claim_next(kinds=["self_reclaim_token"], worker_id="shared-worker", lease_seconds=120)
+    assert reclaimed is not None
+    assert reclaimed["leased_by"] == stale["leased_by"] == "shared-worker"
+    assert reclaimed["lease_token"] != stale["lease_token"]
+    assert repo.get(job["id"])["lease_token"] == reclaimed["lease_token"]
+
+
+def test_same_worker_stale_complete_after_same_worker_reclaim_is_noop(repo):
+    job = repo.enqueue("self_reclaim_complete", {}, max_attempts=5)
+    stale = repo.claim_next(kinds=["self_reclaim_complete"], worker_id="shared-worker", lease_seconds=-5)
+    reclaimed = repo.claim_next(kinds=["self_reclaim_complete"], worker_id="shared-worker", lease_seconds=120)
+    assert reclaimed["lease_token"] != stale["lease_token"]
+
+    # The stale slot, unaware it was reclaimed by ANOTHER slot of the same
+    # process (same worker_id!), finishes late and calls complete() with
+    # its OLD token.
+    repo.complete(job["id"], "shared-worker", stale["lease_token"])
+    row = repo.get(job["id"])
+    assert row["status"] == "running", "stale same-worker complete() must not clobber the live (reclaimed) claim"
+    assert row["lease_token"] == reclaimed["lease_token"]
+
+    # the legitimate (reclaiming) slot completing it with the CURRENT token IS honored.
+    repo.complete(job["id"], "shared-worker", reclaimed["lease_token"])
+    row2 = repo.get(job["id"])
+    assert row2["status"] == "done"
+
+
+def test_same_worker_stale_fail_after_same_worker_reclaim_is_noop(repo):
+    job = repo.enqueue("self_reclaim_fail", {}, max_attempts=5)
+    stale = repo.claim_next(kinds=["self_reclaim_fail"], worker_id="shared-worker", lease_seconds=-5)
+    reclaimed = repo.claim_next(kinds=["self_reclaim_fail"], worker_id="shared-worker", lease_seconds=120)
+    assert reclaimed["lease_token"] != stale["lease_token"]
+
+    # The stale slot's handler raises late and calls fail() (with a retry)
+    # using its OLD token — must not requeue the live claim out from under
+    # the reclaiming slot (this was the path that led to a THIRD concurrent
+    # execution in the empirical repro: the stale fail() requeued the job,
+    # a third slot claimed it, while the reclaiming slot's handler was
+    # still running).
+    repo.fail(job["id"], "shared-worker", stale["lease_token"], "stale failure", retry_in_seconds=30)
+    row = repo.get(job["id"])
+    assert row["status"] == "running", "stale same-worker fail() must not requeue/clobber the live claim"
+    assert row["error"] is None
+    assert row["lease_token"] == reclaimed["lease_token"]
+
+    # the legitimate (reclaiming) slot's fail() with the CURRENT token IS honored.
+    repo.fail(job["id"], "shared-worker", reclaimed["lease_token"], "real failure", retry_in_seconds=30)
+    row2 = repo.get(job["id"])
+    assert row2["status"] == "queued"
+    assert row2["error"] == "real failure"
+
+
+def test_same_worker_heartbeat_with_old_token_returns_false_after_reclaim(repo):
+    job = repo.enqueue("self_reclaim_hb", {}, max_attempts=5)
+    stale = repo.claim_next(kinds=["self_reclaim_hb"], worker_id="shared-worker", lease_seconds=-5)
+    reclaimed = repo.claim_next(kinds=["self_reclaim_hb"], worker_id="shared-worker", lease_seconds=120)
+    assert reclaimed["lease_token"] != stale["lease_token"]
+    lease_before = reclaimed["lease_expires_at"]
+
+    ok = repo.heartbeat(job["id"], "shared-worker", stale["lease_token"], lease_seconds=9999)
+    assert ok is False
+
+    row = repo.get(job["id"])
+    assert row["leased_by"] == "shared-worker"  # same worker_id both times — token is what differs
+    assert row["lease_token"] == reclaimed["lease_token"]
+    assert row["lease_expires_at"] == lease_before  # untouched by the stale heartbeat
 
 
 def test_concurrent_claim_never_double_claims_two_jobs_two_threads(repo_factory):
