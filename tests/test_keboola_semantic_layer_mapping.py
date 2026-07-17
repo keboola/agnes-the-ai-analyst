@@ -462,3 +462,59 @@ class TestResolveRelationship:
 
         assert relationship is None
         assert skip_reason == "unsupported_relationship_type"
+
+
+from connectors.keboola.semantic_layer import parse_on_clause, resolve_join_aliases
+
+
+class TestParseOnClause:
+    def test_parses_standard_shape(self):
+        assert parse_on_clause('o."customer_id" = c."id"') == ("o", "customer_id", "c", "id")
+
+    def test_handles_extra_whitespace(self):
+        assert parse_on_clause('o."customer_id"   =   c."id"') == ("o", "customer_id", "c", "id")
+
+    def test_returns_none_for_unrecognized_shape(self):
+        assert parse_on_clause('o.customer_id = c.id') is None
+        assert parse_on_clause('some garbage') is None
+
+
+class TestResolveJoinAliases:
+    def test_resolves_when_only_one_pairing_matches_known_columns(self):
+        # to_columns (the metric's own table) has "id"; from_columns (the
+        # joined table) has "customer_id" — only alias1=o/from, alias2=c/to
+        # is consistent.
+        on = 'o."customer_id" = c."id"'
+        from_columns = {"customer_id", "name", "email"}
+        to_columns = {"id", "order_date", "amount"}
+
+        result = resolve_join_aliases(on, from_columns, to_columns)
+
+        assert result == ("c", "o")  # (to_alias, from_alias)
+
+    def test_resolves_reversed_operand_order(self):
+        on = 'c."id" = o."customer_id"'
+        from_columns = {"customer_id", "name"}
+        to_columns = {"id", "order_date"}
+
+        result = resolve_join_aliases(on, from_columns, to_columns)
+
+        assert result == ("c", "o")
+
+    def test_returns_none_when_both_pairings_match(self):
+        # Both tables happen to have both column names — genuinely ambiguous.
+        on = 'o."x" = c."y"'
+        from_columns = {"x", "y"}
+        to_columns = {"x", "y"}
+
+        assert resolve_join_aliases(on, from_columns, to_columns) is None
+
+    def test_returns_none_when_neither_pairing_matches(self):
+        on = 'o."missing_a" = c."missing_b"'
+        from_columns = {"customer_id"}
+        to_columns = {"id"}
+
+        assert resolve_join_aliases(on, from_columns, to_columns) is None
+
+    def test_returns_none_for_unparseable_on_clause(self):
+        assert resolve_join_aliases("garbage", {"a"}, {"b"}) is None

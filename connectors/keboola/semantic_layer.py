@@ -456,3 +456,57 @@ def resolve_relationship(
         return None, "unverified_relationship_direction"
 
     return relationship, None
+
+
+# Matches the live-verified semantic-relationship.on shape exactly:
+# `<alias>."<column>" = <alias>."<column>"`. Verified live (2026-07-17):
+# 29/29 sampled relationships matched this pattern with no variation.
+_ON_CLAUSE_RE = re.compile(
+    r'^\s*(\w+)\s*\.\s*"([^"]+)"\s*=\s*(\w+)\s*\.\s*"([^"]+)"\s*$'
+)
+
+
+def parse_on_clause(on: str) -> Optional[tuple[str, str, str, str]]:
+    """Parse a semantic-relationship.on string into (alias1, col1, alias2, col2).
+
+    Returns None if `on` doesn't match the live-verified shape — callers
+    must treat that as "can't resolve, skip" rather than a hard error.
+    """
+    m = _ON_CLAUSE_RE.match(on)
+    if not m:
+        return None
+    return m.group(1), m.group(2), m.group(3), m.group(4)
+
+
+def resolve_join_aliases(
+    on: str,
+    from_columns: set[str],
+    to_columns: set[str],
+) -> Optional[tuple[str, str]]:
+    """Determine which of the two aliases in `on` belongs to the `to`
+    (metric's own) table vs. the `from` (joined) table, by matching each
+    side's column name against the real, already-known column sets of
+    both tables (column_metadata_repo(), populated by the profiler).
+
+    Returns (to_alias, from_alias) when EXACTLY ONE of the two possible
+    pairings is consistent with both tables' real schemas. Returns None —
+    "can't resolve with confidence" — when the on-clause doesn't parse,
+    when BOTH pairings are consistent (genuinely ambiguous, e.g. both
+    tables share a column name used in the join), or when NEITHER pairing
+    is consistent (e.g. column metadata is missing or stale).
+    """
+    parsed = parse_on_clause(on)
+    if parsed is None:
+        return None
+    alias1, col1, alias2, col2 = parsed
+
+    # Candidate A: alias1 is the `to` side, alias2 is the `from` side.
+    candidate_a = col1 in to_columns and col2 in from_columns
+    # Candidate B: alias1 is the `from` side, alias2 is the `to` side.
+    candidate_b = col1 in from_columns and col2 in to_columns
+
+    if candidate_a and not candidate_b:
+        return alias1, alias2
+    if candidate_b and not candidate_a:
+        return alias2, alias1
+    return None
