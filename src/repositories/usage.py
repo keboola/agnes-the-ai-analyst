@@ -1314,6 +1314,40 @@ class UsageRepository:
             [_MARKETPLACE_30D_TRACKER, now],
         )
 
+    def _delete_stale_by_anti_join(
+        self,
+        *,
+        table: str,
+        column_defs: str,
+        key_columns: str,
+        where_clause: str,
+        where_params: list,
+        fresh_keys: list,
+    ) -> None:
+        """Anti-join DELETE of ``table`` rows whose key isn't in ``fresh_keys``.
+
+        Loads ``fresh_keys`` into a temp table via `executemany` instead of
+        inlining them as a `(VALUES ...)` literal — a full rebuild
+        (``since_day=None``) can produce tens of thousands of keys, and
+        inlining that many bound parameters into one SQL statement risks a
+        very large query text / parameter vector. The temp table scales to
+        any key count via DuckDB's normal bulk-insert path.
+        """
+        self.conn.execute("DROP TABLE IF EXISTS _rollup_fresh_keys")
+        self.conn.execute(f"CREATE TEMP TABLE _rollup_fresh_keys ({column_defs})")
+        if fresh_keys:
+            placeholders = ", ".join("?" for _ in key_columns.split(", "))
+            self.conn.executemany(f"INSERT INTO _rollup_fresh_keys VALUES ({placeholders})", fresh_keys)
+        self.conn.execute(
+            f"""
+            DELETE FROM {table}
+            WHERE {where_clause}
+              AND ({key_columns}) NOT IN (SELECT {key_columns} FROM _rollup_fresh_keys)
+            """,
+            where_params,
+        )
+        self.conn.execute("DROP TABLE _rollup_fresh_keys")
+
     def _rebuild_window(
         self, period_label: str, cutoff_day, curated_plugins: set, flea_entities: dict, flea_plugins: set
     ) -> None:
@@ -1343,17 +1377,13 @@ class UsageRepository:
         # this can't delete-then-reinsert the same key either.
         if buckets:
             fresh_keys = list(buckets.keys())  # (source, type_, parent, name)
-            placeholders = ", ".join("(?, ?, ?, ?)" for _ in fresh_keys)
-            flat_params = [v for key in fresh_keys for v in key]
-            self.conn.execute(
-                f"""
-                DELETE FROM usage_marketplace_item_window
-                WHERE period_label = ?
-                  AND (source, type, parent_plugin, name) NOT IN (
-                      SELECT * FROM (VALUES {placeholders}) AS t(source, type, parent_plugin, name)
-                  )
-                """,
-                [period_label] + flat_params,
+            self._delete_stale_by_anti_join(
+                table="usage_marketplace_item_window",
+                column_defs="source VARCHAR, type VARCHAR, parent_plugin VARCHAR, name VARCHAR",
+                key_columns="source, type, parent_plugin, name",
+                where_clause="period_label = ?",
+                where_params=[period_label],
+                fresh_keys=fresh_keys,
             )
             self.conn.executemany(
                 """
@@ -1487,17 +1517,13 @@ class UsageRepository:
             # can't delete-then-reinsert the same key either.
             if daily_buckets:
                 fresh_keys = list(daily_buckets.keys())  # (day, source, type_, parent, name)
-                placeholders = ", ".join("(?, ?, ?, ?, ?)" for _ in fresh_keys)
-                flat_params = [v for key in fresh_keys for v in key]
-                self.conn.execute(
-                    f"""
-                    DELETE FROM usage_marketplace_item_daily
-                    WHERE day >= ?
-                      AND (day, source, type, parent_plugin, name) NOT IN (
-                          SELECT * FROM (VALUES {placeholders}) AS t(day, source, type, parent_plugin, name)
-                      )
-                    """,
-                    [since_day] + flat_params,
+                self._delete_stale_by_anti_join(
+                    table="usage_marketplace_item_daily",
+                    column_defs="day DATE, source VARCHAR, type VARCHAR, parent_plugin VARCHAR, name VARCHAR",
+                    key_columns="day, source, type, parent_plugin, name",
+                    where_clause="day >= ?",
+                    where_params=[since_day],
+                    fresh_keys=fresh_keys,
                 )
                 self.conn.executemany(
                     """
