@@ -5,6 +5,7 @@ Three tests per the plan:
 - kill session (admin DELETE returns 200)
 - non-admin forbidden (403)
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -20,7 +21,6 @@ from app.auth.dependencies import get_current_user
 from app.chat.config import ChatConfig
 from app.chat.manager import ChatManager
 from app.chat.persistence import ChatRepository
-from app.chat.types import Surface
 
 
 TEST_ADMIN = {"id": "admin1", "email": "admin@test.com", "is_admin": True}
@@ -127,6 +127,7 @@ def logged_in_user():
 # Tests
 # ---------------------------------------------------------------------------
 
+
 def test_admin_lists_active_sessions(api_client: TestClient, logged_in_admin):
     """Admin GET /admin/chat returns 200 with sessions list.
 
@@ -134,7 +135,6 @@ def test_admin_lists_active_sessions(api_client: TestClient, logged_in_admin):
     a WebSocket attach (see ChatManager.attach). Here we inject a mock live
     session directly into the manager to test the endpoint shape.
     """
-    import asyncio
     from datetime import datetime, timezone
     from unittest.mock import MagicMock
 
@@ -179,6 +179,7 @@ def test_non_admin_forbidden(api_client_non_admin: TestClient, logged_in_user):
 # admin_tail WebSocket — ticket-based auth (architect finding #2)
 # ---------------------------------------------------------------------------
 
+
 def test_admin_tail_rejects_anonymous_ws(api_client: TestClient, logged_in_admin):
     """No ticket → WS closes with 4401 before any frame is sent.
 
@@ -200,18 +201,14 @@ def test_admin_tail_accepts_valid_ticket(api_client: TestClient, logged_in_admin
     tk = api_client.get(f"/admin/chat/{c['id']}/tail-ticket")
     assert tk.status_code == 200
     ticket = tk.json()["ticket"]
-    with api_client.websocket_connect(
-        f"/admin/chat/{c['id']}/tail?ticket={ticket}"
-    ) as ws:
+    with api_client.websocket_connect(f"/admin/chat/{c['id']}/tail?ticket={ticket}") as ws:
         frame = ws.receive_json()
         # No run.log on disk for a freshly-minted session → no_log frame.
         # Either no_log or line — both prove the WS opened (accept-after-auth).
         assert frame.get("type") in ("no_log", "line")
 
 
-def test_admin_tail_rejects_non_admin_ticket_request(
-    api_client_non_admin: TestClient, logged_in_user
-):
+def test_admin_tail_rejects_non_admin_ticket_request(api_client_non_admin: TestClient, logged_in_user):
     """Non-admin cannot mint a tail-ticket."""
     # Non-admin can still POST a session for themselves
     c = api_client_non_admin.post("/api/chat/sessions", json={"surface": "web"}).json()
@@ -219,19 +216,53 @@ def test_admin_tail_rejects_non_admin_ticket_request(
     assert r.status_code == 403
 
 
-def test_admin_tail_rejects_expired_or_unknown_ticket(
-    api_client: TestClient, logged_in_admin
-):
+def test_admin_tail_rejects_expired_or_unknown_ticket(api_client: TestClient, logged_in_admin):
     """A bogus ticket value closes the WS with 4401."""
     from starlette.websockets import WebSocketDisconnect
 
     c = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()
     with pytest.raises(WebSocketDisconnect) as excinfo:
-        with api_client.websocket_connect(
-            f"/admin/chat/{c['id']}/tail?ticket=not-a-real-ticket"
-        ) as ws:
+        with api_client.websocket_connect(f"/admin/chat/{c['id']}/tail?ticket=not-a-real-ticket") as ws:
             ws.receive_json()
     assert excinfo.value.code == 4401
+
+
+def test_admin_tail_ticket_expires_after_ttl(api_client: TestClient, logged_in_admin, monkeypatch):
+    """The admin tail ticket now rides the coordination backend's TTL — once
+    it elapses, the ticket is gone even though it was never explicitly
+    consumed (same contract as the chat-WS ticket in app/api/chat.py)."""
+    import time
+
+    import app.api.admin_chat as admin_chat_mod
+
+    monkeypatch.setattr(admin_chat_mod, "_ADMIN_TICKET_TTL_SEC", 1)
+    ticket = admin_chat_mod._issue_admin_ticket("admin1")
+    time.sleep(1.3)
+    assert admin_chat_mod._consume_admin_ticket(ticket) is None
+
+
+def test_admin_tail_closes_4503_on_coordination_unavailable(api_client: TestClient, logged_in_admin, monkeypatch):
+    """A coordination backend blip (e.g. Redis unreachable) during ticket
+    consume must close the WS with 4503, not propagate an uncaught
+    ``CoordinationUnavailable`` out of the WS handler."""
+    from starlette.websockets import WebSocketDisconnect
+
+    import app.api.admin_chat as admin_chat_mod
+    from app.coordination.base import CoordinationUnavailable
+
+    c = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()
+    tk = api_client.get(f"/admin/chat/{c['id']}/tail-ticket")
+    ticket = tk.json()["ticket"]
+
+    def _raise(_ticket: str):
+        raise CoordinationUnavailable("redis blip")
+
+    monkeypatch.setattr(admin_chat_mod, "_consume_admin_ticket", _raise)
+
+    with pytest.raises(WebSocketDisconnect) as excinfo:
+        with api_client.websocket_connect(f"/admin/chat/{c['id']}/tail?ticket={ticket}") as ws:
+            ws.receive_json()
+    assert excinfo.value.code == 4503
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +271,8 @@ def test_admin_tail_rejects_expired_or_unknown_ticket(
 
 
 def test_admin_chat_html_route_renders_for_admin(
-    api_client: TestClient, logged_in_admin,
+    api_client: TestClient,
+    logged_in_admin,
 ):
     """GET /admin/chat with Accept: text/html returns the dashboard shell.
 
@@ -254,7 +286,8 @@ def test_admin_chat_html_route_renders_for_admin(
 
 
 def test_admin_chat_json_still_works_for_programmatic_caller(
-    api_client: TestClient, logged_in_admin,
+    api_client: TestClient,
+    logged_in_admin,
 ):
     """JSON callers still receive the sessions list (no regression on B.3)."""
     r = api_client.get("/admin/chat", headers={"Accept": "application/json"})
@@ -264,11 +297,14 @@ def test_admin_chat_json_still_works_for_programmatic_caller(
 
 
 def test_admin_chat_html_route_forbidden_for_non_admin(
-    api_client_non_admin: TestClient, logged_in_user,
+    api_client_non_admin: TestClient,
+    logged_in_user,
 ):
     """Non-admin caller gets 403 from /admin/chat regardless of Accept."""
     r = api_client_non_admin.get(
-        "/admin/chat", headers={"Accept": "text/html"}, follow_redirects=False,
+        "/admin/chat",
+        headers={"Accept": "text/html"},
+        follow_redirects=False,
     )
     assert r.status_code in (302, 307, 403)
 
@@ -280,7 +316,8 @@ def test_admin_chat_html_route_forbidden_for_non_admin(
 
 
 def test_admin_debug_returns_bq_bytes_zero_for_fresh_session(
-    api_client: TestClient, logged_in_admin,
+    api_client: TestClient,
+    logged_in_admin,
 ):
     """A freshly-created session has no BQ scan attributed yet → bq_bytes == 0."""
     c = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()
@@ -294,7 +331,8 @@ def test_admin_debug_returns_bq_bytes_zero_for_fresh_session(
 
 
 def test_admin_debug_reflects_charged_bq_bytes(
-    api_client: TestClient, logged_in_admin,
+    api_client: TestClient,
+    logged_in_admin,
 ):
     """After accumulate_session_bq_bytes runs, the endpoint reports the total."""
     from app.api.query import _per_session_bq_bytes
@@ -311,7 +349,8 @@ def test_admin_debug_reflects_charged_bq_bytes(
 
 
 def test_admin_debug_forbidden_for_non_admin(
-    api_client_non_admin: TestClient, logged_in_user,
+    api_client_non_admin: TestClient,
+    logged_in_user,
 ):
     """Debug endpoint is admin-only (guards counter introspection)."""
     r = api_client_non_admin.get("/admin/chat/some-id/debug")
