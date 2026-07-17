@@ -134,6 +134,8 @@ __all__ = [
     "knowledge_digests_repo",
     # Chat sandbox secret broker tickets
     "ticket_repo",
+    # Job queue (wave-2B worker runtime foundation)
+    "jobs_repo",
 ]
 
 
@@ -454,6 +456,11 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.ticket", "TicketRepository"),
         PG: ("src.repositories.ticket_pg", "TicketPgRepository"),
     },
+    # Job queue (wave-2B worker runtime foundation)
+    "jobs": {
+        DUCKDB: ("src.repositories.jobs", "JobsRepository"),
+        PG: ("src.repositories.jobs_pg", "JobsPgRepository"),
+    },
 }
 
 
@@ -719,3 +726,8 @@ def knowledge_digests_repo() -> Any:
 # chat sandbox secret broker tickets
 def ticket_repo() -> Any:
     return _build("ticket")
+
+
+# job queue (wave-2B worker runtime foundation)
+def jobs_repo() -> Any:
+    return _build("jobs")
