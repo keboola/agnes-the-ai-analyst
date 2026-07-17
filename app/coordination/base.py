@@ -62,8 +62,8 @@ class CoordinationBackend(ABC):
     # -- Counters (rate limits, quotas) --------------------------------------
 
     @abstractmethod
-    def incr(self, key: str, *, ttl_s: int) -> int:
-        """Increment ``key`` and return the new value.
+    def incr(self, key: str, *, amount: int = 1, ttl_s: int) -> int:
+        """Increment ``key`` by ``amount`` and return the new value.
 
         ``ttl_s`` is applied ONLY when this call creates the key (i.e. the
         key didn't exist, or its previous TTL had already expired) — later
@@ -71,6 +71,13 @@ class CoordinationBackend(ABC):
         caller encodes the rate-limit window into the key name (e.g. a
         per-minute bucket suffix); this method has no notion of windows
         beyond that.
+
+        ``amount`` defaults to ``1`` (the common rate-limiting "count one
+        event" case). A quota that accumulates a variable-sized delta per
+        event (e.g. LLM tokens spent on a turn) passes the delta directly.
+        ``amount=0`` is a valid, deliberate no-op increment — a "peek" at
+        the current value (creating the key with value ``0`` and the given
+        TTL if it didn't already exist) without a real event occurring.
         """
 
     # -- Leases (leader election, singleton sweeps) --------------------------
