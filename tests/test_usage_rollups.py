@@ -359,6 +359,31 @@ class TestMarketplaceItemWindow:
     """Sliding-window snapshot — distinct_users is TRUE distinct across the
     window (not sum-of-daily-distincts)."""
 
+    def test_refreshed_at_updates_on_conflict(self, tmp_path, monkeypatch):
+        """Devin Review finding on PR #909: switching to ON CONFLICT DO
+        UPDATE must still bump `refreshed_at` for an existing key — the
+        prior DELETE-then-INSERT path always got a fresh
+        DEFAULT current_timestamp on every rebuild, so an existing key that's
+        merely upserted (not freshly inserted) must not keep its original
+        timestamp forever."""
+        import time
+
+        conn = _fresh_db(tmp_path, monkeypatch)
+        _seed_curated_plugin(conn, "myplug")
+        today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id="e1")
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        first = conn.execute("SELECT refreshed_at FROM usage_marketplace_item_window WHERE name='design'").fetchone()[0]
+
+        time.sleep(0.01)
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id="e2")
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        second = conn.execute("SELECT refreshed_at FROM usage_marketplace_item_window WHERE name='design'").fetchone()[
+            0
+        ]
+
+        assert second > first, "refreshed_at must advance when an existing key is upserted, not just inserted"
+
     def test_stale_key_removed_when_source_event_deleted(self, tmp_path, monkeypatch):
         """Same anti-join-delete regression as usage_tool_daily (PR #909
         parity finding), for the sliding-window snapshot table. Uses two

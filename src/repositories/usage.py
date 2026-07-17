@@ -1362,7 +1362,8 @@ class UsageRepository:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (period_label, source, type, parent_plugin, name) DO UPDATE SET
                     invocations = EXCLUDED.invocations,
-                    distinct_users = EXCLUDED.distinct_users
+                    distinct_users = EXCLUDED.distinct_users,
+                    refreshed_at = now()
                 """,
                 [
                     (period_label, source, type_, parent, name, v["count"], len(v["users"]))
