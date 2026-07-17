@@ -177,6 +177,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   handler doesn't cover the WS scope, so a coordination backend blip (e.g.
   Redis unreachable) previously dropped the connection ungracefully with a
   traceback.
+- Daily Anthropic token-spend cap (`app/chat/manager.py::_daily_token_totals`)
+  no longer resets to 0 on a process restart under the default `memory`
+  coordination backend. The coordination-counter check introduced for this
+  cap had no DB fallback, so any restart (a routine mid-day deploy included)
+  silently re-opened a user's full daily budget even though `chat_messages`
+  still held the day's real spend. A `(0, 0)` counter reading now triggers a
+  one-time-per-day seed from the DB aggregate
+  (`ChatRepository.daily_anthropic_tokens`) before the cap is evaluated,
+  guarded by a short coordination-backend lease so two concurrent requests
+  racing on the same miss can't double-seed the counter.
 
 ### Changed
 - Chat WS auth tickets (`_issue_ticket`/`_consume_ticket` in `app/api/chat.py`,
@@ -215,7 +225,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   and error responses under the default `memory` backend. Per-user
   concurrency (`_active_count_for_user`) stays process-local this wave —
   it becomes lease-derived once per-session routing leases exist (later in
-  wave-2C).
+  wave-2C). **Disclosure:** the hourly message-rate cap moved from the old
+  sliding window to a fixed UTC-hour window as part of this change, which
+  allows up to ~2x the configured rate in a short burst straddling an hour
+  boundary (a full quota just before `:00`, another full quota just after)
+  — standard fixed-window limiter behavior, looser rather than stricter
+  than what it replaced.
 - `CoordinationBackend.incr` gained an `amount` keyword (default `1`,
   backward compatible) so a counter can accumulate a variable-sized delta
   per event (e.g. tokens spent on one chat turn) instead of only a flat

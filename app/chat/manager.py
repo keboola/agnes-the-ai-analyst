@@ -39,6 +39,13 @@ _PRICE_OUT_PER_MTOK = 15.0
 _MSG_WINDOW_TTL_SEC = 2 * 3600  # hour bucket + 1h headroom
 _DAILY_TOKENS_TTL_SEC = 25 * 3600  # day bucket + 1h headroom
 
+# Lease guarding the once-per-(user, date) DB seed in
+# _seed_daily_tokens_from_db_if_needed (see its docstring). Only needs to
+# outlive one DB read + two coordination incr() calls, not the whole day
+# bucket — a holder that crashes mid-seed self-heals on the very next
+# message (lease expires, another request tries again).
+_DAILY_TOKENS_SEED_LEASE_TTL_SEC = 15
+
 # Leader-lease name + TTL for the paused-sandbox TTL sweep inside
 # _reap_once (wave-2C task 3). ~90s: comfortably longer than a single
 # sweep normally takes (so a healthy replica's own `lease_release` in the
@@ -221,14 +228,21 @@ class ChatManager:
         query result, whereas every process now reads and writes the same
         shared counter.
 
-        FLUSHALL / restart story: if the coordination backend has lost its
-        state (Redis FLUSHALL, a freshly started replica with no prior
-        history), this reads back as "0 spent today" — the daily cap is
-        temporarily looser until the day's usage re-accumulates from
-        scratch. Acceptable: this is a soft cost guardrail, not a billing
-        ledger — ``chat_messages`` (queried by
-        ``ChatRepository.daily_anthropic_tokens``, still used for
-        dashboards/reporting) remains the durable source of truth.
+        FLUSHALL / restart story: a lost counter (Redis FLUSHALL, or — the
+        common case under the default ``memory`` backend — ANY process
+        restart, including a routine mid-day deploy) reads back from the
+        bare peek as "0 spent today" even though ``chat_messages`` may hold
+        real spend for the day. Left unhandled, that would silently
+        re-open the full daily budget until the day's usage re-accumulates
+        from scratch — exactly the bug this method closes: a ``(0, 0)``
+        peek is not trusted at face value, it triggers a one-time-per-day
+        fallback seed from the DB aggregate
+        (``ChatRepository.daily_anthropic_tokens``, still the durable
+        source of truth used for dashboards/reporting — see
+        ``_seed_daily_tokens_from_db_if_needed`` for the full mechanism and
+        its double-seed race guard) before the caller ever sees the
+        totals, so a restart-lost counter re-inherits today's true spend
+        instead of starting over at zero.
         """
         key_in, key_out = self._daily_token_keys(user_email)
         try:
@@ -240,7 +254,82 @@ class ChatManager:
                 user_email,
             )
             return (0, 0)
+        if tokens_in == 0 and tokens_out == 0:
+            tokens_in, tokens_out = self._seed_daily_tokens_from_db_if_needed(user_email, key_in, key_out)
         return tokens_in, tokens_out
+
+    def _seed_daily_tokens_from_db_if_needed(self, user_email: str, key_in: str, key_out: str) -> tuple[int, int]:
+        """Seed `key_in`/`key_out` from the DB aggregate the first time
+        `_daily_token_totals` sees a ``(0, 0)`` counter reading for a given
+        (user, UTC date) — see that method's FLUSHALL / restart story.
+
+        A ``(0, 0)`` reading is ambiguous: it could be a fresh coordination
+        backend that has genuinely never recorded any spend for this user
+        today (nothing to seed), or a real restart that just lost non-zero
+        history. The counter value alone can't distinguish the two, so
+        every ``(0, 0)`` reading is treated as a potential miss — but the
+        DB is consulted at most ONCE per (user, date): a separate TTL-KV
+        marker (``chat-tokens-seeded:{user}:{date}``, not the counter
+        itself — an aggregate of exactly 0 is a legitimate steady state
+        for an idle user and must not force a re-query on every one of
+        their messages for the rest of the day) is set right after the DB
+        read regardless of what the aggregate was, and checked before any
+        further attempt.
+
+        Race: two requests can both observe the marker absent for the same
+        first-ever miss and both try to seed, which would double-count the
+        DB aggregate onto the counter. A short-lived seed lease
+        (``chat-tokens-seed:{user}:{date}``,
+        ``_DAILY_TOKENS_SEED_LEASE_TTL_SEC``) makes exactly one of them
+        perform the DB read + counter seed + marker write; the loser does
+        not wait on the winner — it returns the ``(0, 0)`` it already
+        peeked. That's a one-message, self-correcting blip (the very next
+        message from this user reads the now-seeded counter), not a lost
+        enforcement window, and matches this whole mechanism's existing
+        "soft cost guardrail, not a billing ledger" posture.
+
+        Coordination-backend outage during the seed attempt (lease
+        acquire, the DB read, or either ``incr``) is treated the same as
+        an ordinary miss: return ``(0, 0)`` and let the caller's own
+        ``CoordinationUnavailable`` handling (already in
+        ``_daily_token_totals``) or the next call retry.
+        """
+        date_bucket = datetime.now(timezone.utc).strftime("%Y%m%d")
+        seeded_marker_key = f"chat-tokens-seeded:{user_email}:{date_bucket}"
+        seed_lease_name = f"chat-tokens-seed:{user_email}:{date_bucket}"
+        try:
+            if coordination().kv_get(seeded_marker_key) is not None:
+                return (0, 0)  # already checked the DB for this day-bucket
+        except CoordinationUnavailable:
+            return (0, 0)
+
+        holder = default_holder_id()
+        try:
+            acquired = coordination().lease_acquire(seed_lease_name, holder, ttl_s=_DAILY_TOKENS_SEED_LEASE_TTL_SEC)
+        except CoordinationUnavailable:
+            return (0, 0)
+        if not acquired:
+            # Another request is (or just finished) seeding this bucket —
+            # don't block on it; the next check will see the result.
+            return (0, 0)
+        try:
+            # Re-check under the lease: another request may have finished
+            # seeding and set the marker between our first kv_get and
+            # acquiring the lease.
+            if coordination().kv_get(seeded_marker_key) is not None:
+                return (0, 0)
+            agg_in, agg_out = self._repo.daily_anthropic_tokens(user_email)
+            tokens_in = coordination().incr(key_in, amount=agg_in, ttl_s=_DAILY_TOKENS_TTL_SEC) if agg_in else 0
+            tokens_out = coordination().incr(key_out, amount=agg_out, ttl_s=_DAILY_TOKENS_TTL_SEC) if agg_out else 0
+            coordination().kv_set(seeded_marker_key, "1", ttl_s=_DAILY_TOKENS_TTL_SEC)
+            return tokens_in, tokens_out
+        except CoordinationUnavailable:
+            return (0, 0)
+        finally:
+            try:
+                coordination().lease_release(seed_lease_name, holder)
+            except CoordinationUnavailable:
+                pass
 
     def _record_daily_tokens(self, user_email: str, tokens_in: Optional[int], tokens_out: Optional[int]) -> None:
         """Add one completed turn's token delta to `user_email`'s running
@@ -275,6 +364,15 @@ class ChatManager:
         """Coordination-backend counter key for `sender`'s hourly message-rate
         window, bucketed by UTC hour (fixed window, not the previous
         per-process sliding window — see ``send_user_message``).
+
+        Disclosure: fixed UTC-hour windows, not sliding — a sender can send
+        up to the full ``rate_messages_per_hour`` quota right before an hour
+        boundary (e.g. at :59) and another full quota right after it (at
+        :00), so up to ~2x the configured hourly rate can land in a short
+        burst straddling the boundary. This is standard fixed-window
+        limiter behavior (traded for statelessness across restarts/replicas
+        via the coordination backend) and is a looser, not stricter, bound
+        than the sliding window it replaced.
 
         FLUSHALL / restart story: a lost counter just means the current
         hour's count restarts at zero — a sender gets a fresh full quota
