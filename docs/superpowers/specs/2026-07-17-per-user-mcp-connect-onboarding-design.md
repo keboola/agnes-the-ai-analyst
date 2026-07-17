@@ -47,6 +47,15 @@ Deferred, with the design leaving room for each:
   upstream can revoke it. The page says so explicitly.
 - **Expiry reminders / rotation policy.** `Test connection` covers the
   "is it still valid" question on demand.
+- **Grant-gating the existing `GET`/`PUT`/`DELETE …/my-secret` endpoints.**
+  These are `get_current_user`-gated but not grant-gated today, so any signed-in
+  user can already learn `has_secret` + `source_scope` (not the token, not
+  `connect_hint`) for an arbitrary `source_id`. This is pre-existing and the new
+  `test` endpoint *is* grant-gated. Deliberate decision: **accept the current
+  exposure for this PR** (it reveals only whether a credential exists and the
+  source's scope) and track a follow-up to route all four `my-secret` endpoints
+  through the same grant check the page and `test` use. Not folded in here to
+  keep the PR scoped.
 
 ## Design
 
@@ -85,10 +94,22 @@ must come from the source, not from the page — a Notion source and a CRM sourc
 need different instructions, and this repo is vendor-neutral, so no source name
 may be baked into the template. `mcp_sources` has no field for this today, so add
 a nullable `connect_hint` text column (see §2 for the migration). The card
-renders the source's `connect_hint` when set (Jinja-escaped — it is admin-entered
-free text; if it contains a URL, autolink it rather than rendering raw HTML), and
-falls back to a generic line when null. It is admin-editable in the MCP source
-detail UI (`admin_mcp_source_detail.html`) and settable on source create/update.
+renders the source's `connect_hint` when set, and falls back to a generic line
+when null. It is admin-editable in the MCP source detail UI
+(`admin_mcp_source_detail.html`) and settable on source create/update.
+
+**Rendering — reuse the existing safe pipeline, do not hand-roll autolink.**
+`connect_hint` is admin-entered free text rendered to end users — the same threat
+class as curator-authored marketplace copy, for which this codebase already has a
+settled answer: `app/markdown_render.py::render_safe` (markdown-it with
+`html=False`, `linkify=False`, then an `nh3` ammonia allowlist that strips raw
+HTML, `javascript:`/`data:` URLs, and `on*` handlers). Its module docstring
+explicitly rejects bare-string autolinking as "attack surface without value."
+Render `connect_hint` through `render_safe` and inject with `| safe`, exactly as
+`app/api/marketplace.py` does for `description`. Do **not** add a bespoke
+escape-then-autolink filter — that reintroduces the order-of-operations XSS the
+existing pipeline was written to avoid. A hint author who wants a clickable link
+writes an explicit markdown link; `nh3` enforces the scheme allowlist.
 
 Deep link: `/me/connections?source=<id>` highlights and scrolls to that source.
 This is the target of the agent's remedy message.
@@ -201,11 +222,21 @@ mistake; the mutation test in *Testing* is what guards it.
 3. **Grant check.** Require that the caller's groups hold a `tool_grants` row for
    at least one tool on this source (the `enforce_passthrough_access`-equivalent
    the real invoke path applies). Without it the endpoint bypasses the grant gate
-   that every other passthrough surface treats as load-bearing.
-4. **Rate limit.** Reuse `check_rate_limit` with a `(source_id, user_id)` bucket.
-   Each call opens a fresh connection — and for `transport='stdio'` spawns a
-   subprocess — so an unthrottled caller can exhaust local resources and hammer
-   the upstream into its own lockout.
+   that every other passthrough surface treats as load-bearing. **Use the same
+   shared helper as the page** — derive the caller's visible source set from
+   `_visible_passthrough_tools` (`app/api/mcp_passthrough.py`), not a second
+   hand-rolled grant intersection. There is no source-level grant method
+   (`tool_registry` exposes only per-tool checks), so both surfaces must route
+   through the one helper or they will drift.
+4. **Rate limit.** Call `check_rate_limit` with a `(source_id, user_id)` bucket
+   **and an explicit positive cap** — a module-level constant in the new
+   endpoint's file (e.g. `_TEST_CONNECTION_RATE_LIMIT_PM`). This is load-bearing:
+   `check_rate_limit` treats a `None`/`<=0` cap as *disabled*
+   (`app/api/mcp_policy.py`), and `mcp_sources` has **no** `rate_limit_pm` column
+   (only `tool_registry` does, per-tool), so passing "the source's limit" would
+   silently no-op the gate. Each call opens a fresh connection — and for
+   `transport='stdio'` spawns a subprocess — so an unthrottled caller can exhaust
+   local resources and hammer the upstream into its own lockout.
 5. `enforce_per_user_credential` → fail-closed `403` + remedy for an unconnected
    caller, with no upstream call at all.
 
@@ -214,11 +245,14 @@ schemas are not returned — a count is enough.
 
 **Sanitizing the failure message.** The admin endpoint it resembles returns
 `str(exc)` raw and untruncated; that is acceptable behind `require_admin` but not
-here. For this endpoint, before returning *or logging*: truncate to a fixed
-length, and **redact the caller's own token substring** — some upstreams echo the
-presented credential back in a 401 body. The token is known server-side at error
-time, so an exact-substring redact is cheap and closes the likely leak vector.
-Strip internal host/port detail a lower-trust analyst would not otherwise see.
+here. For this endpoint, before returning *or logging*, in this order: **(1)
+redact the caller's own token substring from the full error string first**, then
+**(2) truncate to a fixed length.** The order matters — truncating first could
+cut the token across the boundary so the substring match misses it and a fragment
+leaks. Some upstreams echo the presented credential back in a 401 body; the token
+is known server-side at error time, so an exact-substring redact is cheap and
+closes the likely leak vector. Also strip internal host/port detail a lower-trust
+analyst would not otherwise see.
 
 Per the sync-map, a new REST endpoint is **BLOCKING** on a CLI command and an
 MCP tool that reach it:
@@ -237,8 +271,11 @@ MCP tool that reach it:
 > `<public_url>/me/connections?source=<source id>` and add your token, then try
 > again.
 
-When no public URL is configured, degrade to today's CLI hint rather than emit a
-broken link. The message is built in one place so the transports cannot drift.
+When no public URL is configured, degrade to today's CLI hint
+(`Run 'agnes mcp my-secret set <source>' to connect your own account.`) rather
+than emit a broken link. Both the web-first and the fallback strings live as
+single constants in the message builder so every transport emits identical text
+and cannot drift.
 
 **The exception must carry the id, not just the label.** Today
 `PerUserCredentialMissing` holds a single `source_label`, and the raise site
@@ -322,10 +359,12 @@ result rather than telling the user to check a page.
 - Page source list is grant-filtered: a user with no grant on a per_user source
   does not see that source (name or hint) at all.
 - Per-source `connect_hint`: the card renders the source's hint when set and the
-  generic fallback when null; a hint containing a URL is autolinked, not rendered
-  as raw HTML (escaping test). Schema-ladder test stays green (`_v91_to_v92` and
-  the Alembic revision reach the same version); `mcp_sources` repo pair round-trips
-  the new field on both backends.
+  generic fallback when null; rendered through `render_safe`, so a hint containing
+  a `javascript:` (or `data:`) scheme or an inline `<script>`/`on*` handler is
+  **not** clickable or executable in the output — assert the dangerous token is
+  stripped, not just that a plain URL renders. Schema-ladder test stays green
+  (`_v91_to_v92` and the Alembic revision reach the same version); `mcp_sources`
+  repo pair round-trips the new field on both backends.
 - `GET …/my-secret` returns `updated_at`; null when not connected; reflects a
   rotation after a second `PUT`.
 - Cross-engine coverage for the new repo read method — extend
@@ -335,9 +374,10 @@ result rather than telling the user to check a page.
   source → 400; no grant → 403; over rate limit → 429; no personal credential →
   403 with the remedy.
 - Test endpoint happy path → `ok: true` with a tool count.
-- Test endpoint upstream failure → `ok: false`, message truncated and with the
-  caller's token redacted (assert the token string does not appear in the
-  response body or the log record).
+- Test endpoint upstream failure → `ok: false`, message with the caller's token
+  redacted **then** truncated (assert the token string does not appear in the
+  response body or the log record, including the case where the token sits near
+  the truncation boundary).
 - **Mutation test for the plumbing trap:** call the client function without
   `caller_user_id` against a `per_user` source *for a user who has a stored
   credential*, and assert it does not silently succeed off the shared credential.
@@ -358,6 +398,12 @@ result rather than telling the user to check a page.
 | New `mcp_sources.connect_hint` column | DuckDB `_v91_to_v92` + Alembic revision reaching the same schema (`tests/test_db_schema_version.py`); `mcp_sources` repo pair read/write (static sweep covers it) | BLOCKING |
 | New web page | extends `base_page.html`, CSS in `head_extra`, chrome context | BLOCKING |
 | User-visible behaviour | `## [Unreleased]` CHANGELOG bullet | BLOCKING |
+
+CHANGELOG bullet (under **Added**), roughly: "Self-service per-user MCP
+credential management — a `/me/connections` page to connect, replace, test, and
+remove your own token for `per_user` MCP sources; a `POST …/my-secret/test`
+endpoint with matching `agnes mcp my-secret test` CLI and MCP tool; and an
+actionable, web-linked error when an unconnected caller invokes a per_user tool."
 
 No new `ResourceType`: every endpoint here is per-caller (`get_current_user`),
 not admin-gated or entity-scoped. One migration: the `connect_hint` column
