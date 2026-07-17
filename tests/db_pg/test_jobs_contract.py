@@ -10,6 +10,7 @@ Follows the pattern established in ``test_ticket_contract.py``.
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -164,3 +165,34 @@ def test_list_respects_limit(repo):
         repo.enqueue("bulk", {"i": i})
     assert len(repo.list(kind="bulk", limit=2)) == 2
     assert len(repo.list(kind="bulk", limit=50)) == 5
+
+
+def test_concurrent_enqueue_same_key_dedups_to_exactly_one_row(repo):
+    """Regression test for the PG dedup race: 8 threads enqueue the same
+    ``idempotency_key`` concurrently. Under a plain SELECT-then-INSERT on
+    Postgres (READ COMMITTED), concurrent transactions can each miss the
+    others' uncommitted row and all insert — empirically confirmed to
+    produce 8 rows. Exactly one row must exist afterward, on both
+    backends (the DuckDB path exercises the repository's in-process lock
+    instead of a cross-transaction race).
+    """
+    n = 8
+    barrier = threading.Barrier(n)
+    errors: list[BaseException] = []
+
+    def worker(i: int) -> None:
+        try:
+            barrier.wait(timeout=5)
+            repo.enqueue("send_email", {"i": i}, idempotency_key="race-key")
+        except BaseException as exc:  # noqa: BLE001 - surfaced via errors list
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not errors, f"enqueue raised under concurrency: {errors}"
+    matching = repo.list(kind="send_email", limit=50)
+    assert len(matching) == 1
