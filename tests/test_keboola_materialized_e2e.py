@@ -4,6 +4,7 @@ parquet appears -> manifest serves it -> CLI agnes pull would download it.
 Skipped unless KBC_TEST_URL + KBC_TEST_TOKEN + KBC_TEST_BUCKET +
 KBC_TEST_TABLE are present.
 """
+
 import os
 from pathlib import Path
 
@@ -43,19 +44,29 @@ def test_register_trigger_manifest_path(seeded_app, monkeypatch, tmp_path):
     auth = {"Authorization": f"Bearer {token}"}
 
     # Register.
-    r = c.post("/api/admin/register-table", headers=auth, json={
-        "name": "smoke_subset",
-        "source_type": "keboola",
-        "query_mode": "materialized",
-        "source_query": (
-            f'SELECT * FROM kbc."{KBC_BUCKET}"."{KBC_TABLE}" LIMIT 5'
-        ),
-    })
+    r = c.post(
+        "/api/admin/register-table",
+        headers=auth,
+        json={
+            "name": "smoke_subset",
+            "source_type": "keboola",
+            "query_mode": "materialized",
+            "source_query": (f'SELECT * FROM kbc."{KBC_BUCKET}"."{KBC_TABLE}" LIMIT 5'),
+        },
+    )
     assert r.status_code == 201
 
-    # Trigger sync.
+    # Trigger sync — enqueues a `data-refresh` job (wave-2B job queue)
+    # instead of running inline via BackgroundTasks. This TestClient never
+    # enters the app's lifespan, so no worker loop is running to claim it;
+    # run the same handler the worker would, directly, to keep this E2E
+    # test's synchronous "trigger then assert parquet exists" shape.
     r = c.post("/api/sync/trigger", headers=auth)
     assert r.status_code in (200, 202)
+    assert r.json().get("job_id")
+    from app.worker.kinds import _run_data_refresh
+
+    _run_data_refresh({"tables": None, "source": None})
 
     # Parquet must exist.
     parquet = Path(tmp_path) / "extracts" / "keboola" / "data" / "smoke_subset.parquet"

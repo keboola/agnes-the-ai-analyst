@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, List
 
-from fastapi import APIRouter, Body, Depends, HTTPException, BackgroundTasks, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 import duckdb
 
@@ -28,6 +28,7 @@ from src.repositories import (
     connection_secrets_repo,
     data_packages_repo,
     file_corpora_repo,
+    jobs_repo,
     memory_domains_repo,
     profile_repo,
     source_connections_repo,
@@ -46,29 +47,32 @@ router = APIRouter(prefix="/api/sync", tags=["sync"])
 # for its file lock — the first sync stalls, the second crashes, and the
 # `/api/health` check times out long enough that Docker flips the
 # container to `unhealthy`, which (behind a `reverse_proxy` upstream)
-# bricks external traffic until contention drains. The singleton-ness is
-# enforced both in the trigger handler (return 409 fast, before the work
-# is scheduled) and in `_run_sync` itself (defense in depth, in case
-# something bypasses the handler).
+# bricks external traffic until contention drains.
+#
+# wave-2B: `POST /api/sync/trigger` no longer calls `_run_sync` inline via
+# `BackgroundTasks` — it enqueues a `data-refresh` job (see `trigger_sync`
+# below) that the worker loop's job handler
+# (`app.worker.kinds._run_data_refresh`) executes, possibly in a different
+# OS process on a role-split deployment. `_sync_lock` is therefore no
+# longer the "is a sync in progress" signal for the trigger handler (the
+# job queue's idempotency dedup is — see `_find_in_flight_data_refresh_job`)
+# — it is now purely defense-in-depth INSIDE `_run_sync` against two
+# invocations racing within the SAME process (e.g. a same-process worker
+# lane plus any lingering direct caller), same role it always had there.
 _sync_lock = threading.Lock()
 
-# Race-protection: the trigger handler returns 200 BEFORE the background task
-# acquires ``_sync_lock``. In that ~few-hundred-ms gap, ``/api/sync/status``
-# would honestly report ``locked=False`` — and the host-side
-# ``agnes-auto-upgrade.sh`` defer probe (which polls this endpoint) would
-# proceed with ``docker compose up -d`` and SIGKILL the still-spawning
-# extractor / materialized worker. Mid-sync container kill is the exact
-# class of corruption the WAL replay auto-recovery is meant to be a
-# safety net for, not a routine occurrence.
-#
-# Fix: stamp the trigger time alongside the lock. ``/api/sync/status`` also
-# returns ``locked=True`` for ``_TRIGGER_HOLD_SEC`` seconds after the most
-# recent trigger, even if the background task hasn't yet acquired the lock.
-# The window is short enough that an operator-issued ``/api/sync/trigger``
-# followed by an immediate ``GET /api/sync/status`` is consistent
-# (locked=True), but long enough to cover the schedule → background-task
-# spawn latency. Defense in depth: the real lock still gates the
-# extractor subprocess.
+# Race-protection for ``GET /api/sync/status`` (the host-side
+# ``agnes-auto-upgrade.sh`` defer probe, which polls this endpoint to avoid
+# `docker compose up -d` SIGKILLing a mid-flight extractor). In the default
+# single-container topology the worker loop runs in THIS SAME process, so
+# `_sync_lock` still reflects real in-process sync activity once the worker
+# claims the enqueued job — but that claim can now lag the trigger by up to
+# a worker poll interval (previously: the few-hundred-ms gap between the
+# trigger handler returning 200 and `BackgroundTasks` invoking `_run_sync`).
+# Stamping `_recent_trigger_at` at trigger time still narrows that window
+# for the common case (operator triggers, immediately polls status), even
+# though it can no longer promise the tight bound the original comment
+# described. ``_TRIGGER_HOLD_SEC`` is the width of that best-effort window.
 _TRIGGER_HOLD_SEC = 30
 _recent_trigger_at: float = 0.0  # monotonic clock; 0 = never triggered
 
@@ -494,7 +498,7 @@ def _run_materialized_pass(
 def _run_sync(
     tables: Optional[List[str]] = None,
     source_type_filter: Optional[str] = None,
-):
+) -> Optional[bool]:
     """Run extractor as subprocess + orchestrator rebuild.
 
     Reads table configs from DuckDB (in main process which has the shared
@@ -517,8 +521,28 @@ def _run_sync(
     reads, so a scoped rebuild leaves the other source's extract untouched.
 
     Singleton: only one invocation runs at a time per process (see
-    `_sync_lock` module-level). The trigger handler also fast-fails with
-    409 when the lock is held, so this branch is defense in depth.
+    `_sync_lock` module-level docstring for the wave-2B update to this
+    guard's role).
+
+    Returns:
+        ``True`` if the sync ran to completion with no fatal exception and
+        no per-table failure recorded in ``collected_errors``; ``False`` if
+        a fatal exception was caught (subprocess timeout or otherwise) OR
+        any per-table failure was recorded; ``None`` if this call
+        short-circuited because another ``_run_sync`` already held
+        ``_sync_lock`` in this same process (a no-op, not a failure — the
+        in-flight run produces its own outcome).
+
+        This function used to swallow every failure internally (log +
+        best-effort webhook notify) and return nothing — fine for the old
+        `BackgroundTasks` path, which had no result to report anywhere, but
+        dishonest for the wave-2B `data-refresh` job path: without a real
+        return value, ``app.worker.kinds._run_data_refresh`` could never
+        tell the worker a sync failed, so the job always finalized
+        ``'done'`` even on a fatal or partial failure (review carry-over,
+        wave-2B W2B-4/7). ``_run_data_refresh`` raises ``RuntimeError`` when
+        this returns ``False`` so the job's failure/retry semantics apply;
+        it treats ``None`` the same as ``True`` (no-op, not a failure).
     """
     import json as _json
     import sys as _sys
@@ -529,7 +553,7 @@ def _run_sync(
             file=_sys.stderr,
             flush=True,
         )
-        return
+        return None
 
     # Accumulates per-table failures across the sync (materialized pass +
     # extractor) so both the per-table operator alert below and the fatal-path
@@ -1060,6 +1084,11 @@ sys.exit(compute_exit_code(result, len(configs)))
             except Exception:
                 logger.exception("sync-failure notifier raised on per-table path")
 
+        # Honest outcome for the `data-refresh` job path (see docstring):
+        # a clean run (no fatal exception below, no per-table failures
+        # collected above) is the only case that returns True.
+        return not collected_errors
+
     except subprocess.TimeoutExpired as e:
         # Outer-handler fallback for any subprocess.run call site (e.g.
         # custom-connectors below) that didn't already catch its own
@@ -1075,6 +1104,7 @@ sys.exit(compute_exit_code(result, len(configs)))
             notify_sync_failure(failed_tables=collected_errors, fatal=e)
         except Exception:
             logger.exception("sync-failure notifier raised on timeout path")
+        return False
     except Exception as e:
         print(f"[SYNC] FAILED: {e}", file=_sys.stderr, flush=True)
         traceback.print_exc()
@@ -1087,6 +1117,7 @@ sys.exit(compute_exit_code(result, len(configs)))
             notify_sync_failure(failed_tables=collected_errors, fatal=e)
         except Exception:
             logger.exception("sync-failure notifier raised on fatal path")
+        return False
     finally:
         _sync_lock.release()
 
@@ -1617,11 +1648,11 @@ def sync_status():
 
     Returns:
         ``{"locked": bool}`` — True if `_sync_lock` is currently held by
-        a `_run_sync` invocation, OR a sync was triggered within the
-        last ``_TRIGGER_HOLD_SEC`` seconds (so the FastAPI background
-        task hasn't yet acquired the lock). Without the trigger-hold
-        window, an auto-upgrade probe firing in the gap between the
-        trigger handler's 200 response and the background task's
+        a `_run_sync` invocation, OR a `data-refresh` job was triggered
+        within the last ``_TRIGGER_HOLD_SEC`` seconds (so the worker loop
+        hasn't yet claimed it and acquired the lock). Without the
+        trigger-hold window, an auto-upgrade probe firing in the gap
+        between the trigger handler's response and the worker's
         ``_sync_lock.acquire()`` would see ``locked=False`` and proceed
         with ``up -d`` — killing the just-spawning extractor.
     """
@@ -1634,10 +1665,41 @@ def sync_status():
 
 # ---- Trigger ----
 
+#: Shared idempotency key for every `data-refresh` job enqueued from this
+#: process — the scheduler (services/scheduler/__main__.py) enqueues its
+#: cadence-driven `data-refresh` row under the SAME key, so an operator's
+#: manual trigger and the next scheduled tick dedup into one queued/running
+#: job instead of racing two extractor subprocesses.
+_DATA_REFRESH_IDEMPOTENCY_KEY = "sync"
+
+
+def _find_in_flight_data_refresh_job() -> Optional[dict]:
+    """Peek for an already queued/running ``data-refresh`` job sharing
+    ``_DATA_REFRESH_IDEMPOTENCY_KEY``, before calling ``enqueue()``.
+
+    ``JobsRepository.enqueue``'s own dedup (see its docstring) would return
+    that same existing row anyway — this pre-check exists only so the
+    trigger handler can tell "I just created a new job" apart from "this
+    request deduped into one already in flight" and shape the response /
+    status code accordingly.
+
+    Racy by construction: another thread/process can enqueue the job
+    between this check and the ``enqueue()`` call in ``trigger_sync``
+    below. That race is benign — every caller still gets back the SAME
+    ``job_id`` (the deduped row); the only thing that can be imprecise is
+    whether one of two near-simultaneous callers is told "triggered"
+    instead of "already in progress".
+    """
+    repo = jobs_repo()
+    for status in ("running", "queued"):
+        for row in repo.list(kind="data-refresh", status=status, limit=10):
+            if row.get("idempotency_key") == _DATA_REFRESH_IDEMPOTENCY_KEY:
+                return row
+    return None
+
 
 @router.post("/trigger")
 def trigger_sync(
-    background_tasks: BackgroundTasks,
     body: Optional[Any] = Body(None),
     source: Optional[str] = Query(
         None,
@@ -1647,7 +1709,17 @@ def trigger_sync(
     ),
     user: dict = Depends(require_admin),
 ):
-    """Trigger data sync from configured source. Admin only. Runs in background.
+    """Trigger data sync from configured source. Admin only.
+
+    Enqueues a ``data-refresh`` job (``src/repositories/jobs.py``, worker
+    runtime wave-2B) instead of running the sync inline via
+    ``BackgroundTasks`` — the worker loop (in-process by default; a
+    dedicated ``worker`` role/process on split deployments) claims and
+    executes it. This is the SAME queue + idempotency key
+    (``"sync"``) the scheduler's cadence-driven trigger uses
+    (``services/scheduler/__main__.py``), so a manual trigger and the next
+    scheduled tick collapse into one in-flight job instead of racing two
+    extractor subprocesses.
 
     Body accepts three shapes (all optional — empty body / `null` syncs
     every registered table):
@@ -1669,12 +1741,16 @@ def trigger_sync(
     untouched. Useful on dual-source deployments where a BQ refresh
     should not pay the cost of re-extracting every Keboola table.
 
-    Returns 409 if a previously-triggered sync is still running. Two
-    concurrent extractor subprocesses fight for the same `extract.duckdb`
-    file lock — that contention starves uvicorn, makes `/api/health` time
-    out, flips the container to `unhealthy`, and (behind a `reverse_proxy`
-    upstream like the bundled Caddy overlay) bricks external traffic
-    until contention drains. Fast-fail here keeps that from happening.
+    Returns 409 (``detail={"error": "sync_already_in_progress", "job_id":
+    ...}``) if a ``data-refresh`` job is already queued or running under
+    the shared ``"sync"`` idempotency key — this status code is kept
+    (rather than 200 ``already_running``) because `agnes admin sync`
+    (``cli/commands/admin.py``) and the admin web UI
+    (``app/web/templates/admin_sync.html``) both branch on 409 today for a
+    friendlier "already running" message; both now also get ``job_id`` in
+    the body. On success (a new job was enqueued), the response keeps its
+    existing shape plus ``job_id`` so a caller can poll
+    ``GET /api/jobs/{job_id}``.
     """
     if body is None:
         tables: Optional[List[str]] = None
@@ -1714,15 +1790,39 @@ def trigger_sync(
                 detail=(f"source must be one of {sorted(_VALID_SOURCE_TYPES)}, got {source!r}"),
             )
 
-    if _sync_lock.locked():
+    _t0 = time.monotonic()
+    resource = ((tables[0] if len(tables) == 1 else f"{len(tables)} tables") if tables else "all_tables")[:256]
+
+    # NOTE: the old `if _sync_lock.locked(): raise HTTPException(409, ...)`
+    # fast-fail that used to live here is gone. `_sync_lock` now only ever
+    # gets acquired inside `_run_sync` itself (see its module-level
+    # docstring), which the WORKER calls from its own job handler
+    # (`app.worker.kinds._run_data_refresh`) — potentially in a different
+    # process than this one on a role-split deployment. Checking THIS
+    # process's `_sync_lock` here would say "not locked" even while a
+    # worker elsewhere is mid-sync, so it can no longer serve as the
+    # "already in progress" signal. The job queue's own idempotency dedup
+    # (below) is the authoritative source of that signal now.
+    existing = _find_in_flight_data_refresh_job()
+    job = jobs_repo().enqueue(
+        "data-refresh",
+        {"tables": tables, "source": source},
+        idempotency_key=_DATA_REFRESH_IDEMPOTENCY_KEY,
+    )
+    already_in_progress = existing is not None and existing["id"] == job["id"]
+
+    if already_in_progress:
         try:
             audit_repo().log(
                 user_id=user.get("id"),
                 action="sync.trigger",
-                resource=((tables[0] if len(tables) == 1 else f"{len(tables)} tables") if tables else "all_tables")[
-                    :256
-                ],
-                params={"requested_at": datetime.now(timezone.utc).isoformat(), "tables": tables, "source": source},
+                resource=resource,
+                params={
+                    "requested_at": datetime.now(timezone.utc).isoformat(),
+                    "tables": tables,
+                    "source": source,
+                    "job_id": job["id"],
+                },
                 result="error.in_progress",
                 client_kind=client_kind_from_user(user),
             )
@@ -1730,22 +1830,30 @@ def trigger_sync(
             logger.exception("audit_log write failed for sync.trigger (in_progress); continuing")
         raise HTTPException(
             status_code=409,
-            detail="sync_already_in_progress",
+            detail={"error": "sync_already_in_progress", "job_id": job["id"]},
         )
-    _t0 = time.monotonic()
-    # Stamp the trigger time so `/api/sync/status` reports locked=True
-    # for the next ``_TRIGGER_HOLD_SEC`` even though the background
-    # task hasn't yet acquired ``_sync_lock``. Closes the race window
-    # the host-side ``agnes-auto-upgrade.sh`` defer probe was hitting.
+
+    # Stamp the trigger time so `/api/sync/status` reports locked=True for
+    # the next ``_TRIGGER_HOLD_SEC`` seconds. Best-effort now, not a precise
+    # race-cover: in the default single-container topology the worker loop
+    # runs in THIS process, so `_run_sync` (called from the job handler)
+    # still acquires the module-level `_sync_lock` here once the worker
+    # claims the job — but that claim can now lag the enqueue by up to a
+    # worker poll interval, not the few-hundred-ms `BackgroundTasks` dispatch
+    # gap this window was originally sized for.
     global _recent_trigger_at
     _recent_trigger_at = _t0
-    background_tasks.add_task(_run_sync, tables, source)
     try:
         audit_repo().log(
             user_id=user.get("id"),
             action="sync.trigger",
-            resource=((tables[0] if len(tables) == 1 else f"{len(tables)} tables") if tables else "all_tables")[:256],
-            params={"requested_at": datetime.now(timezone.utc).isoformat(), "tables": tables, "source": source},
+            resource=resource,
+            params={
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "tables": tables,
+                "source": source,
+                "job_id": job["id"],
+            },
             result="success",
             duration_ms=int((time.monotonic() - _t0) * 1000),
             client_kind=client_kind_from_user(user),
@@ -1756,7 +1864,8 @@ def trigger_sync(
         "status": "triggered",
         "tables": tables or "all",
         "source": source or "all",
-        "message": "Data sync started in background. Check /api/health for progress.",
+        "job_id": job["id"],
+        "message": "Data sync enqueued. Check GET /api/jobs/{job_id} or /api/health for progress.",
     }
 
 
