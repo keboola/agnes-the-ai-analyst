@@ -24,16 +24,13 @@ Test data pre-conditions are documented in scenario_sarah_day_one.md
 under "Pre-conditions (operator setup)". The fixture helpers below
 include best-effort setup that runs if `AGNES_E2E_SETUP=1` is set.
 """
+
 from __future__ import annotations
 
-import asyncio
-import json
 import os
 import re
 import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional
 
 import pytest
 
@@ -55,10 +52,7 @@ _REQUIRED_ENVS = (
 
 pytestmark = pytest.mark.skipif(
     not all(os.environ.get(k) for k in _REQUIRED_ENVS),
-    reason=(
-        "Full acceptance scenario requires all of: "
-        + ", ".join(_REQUIRED_ENVS)
-    ),
+    reason=("Full acceptance scenario requires all of: " + ", ".join(_REQUIRED_ENVS)),
 )
 
 
@@ -66,7 +60,7 @@ pytestmark = pytest.mark.skipif(
 # Shared helpers (importable from tests/e2e/_helpers.py per Phase F)
 # ----------------------------------------------------------------------------
 
-from tests.e2e._helpers import (  # type: ignore
+from tests.e2e._helpers import (  # type: ignore  # noqa: E402
     AgnesClient,
     bootstrap_admin,
     pump_until,
@@ -147,7 +141,6 @@ def test_act1_step2_first_message_hydrates_workspace_and_respects_rbac(
 ):
     """Assertions 2, 3, 4."""
     session = user_client.post("/api/chat/sessions", json={"surface": "web"}).json()
-    chat_id = session["id"]
 
     with user_client.websocket_connect(session["ws_url"]) as ws:
         # Drain initial ready frames
@@ -177,9 +170,7 @@ def test_act1_step2_first_message_hydrates_workspace_and_respects_rbac(
     assert "payroll" not in content and "payroll_secret" not in content, (
         f"RBAC leak: 'payroll_secret' should not appear in reply: {content[:300]}"
     )
-    assert "sales" in content and "customers" in content, (
-        f"expected 'sales' and 'customers' in reply: {content[:300]}"
-    )
+    assert "sales" in content and "customers" in content, f"expected 'sales' and 'customers' in reply: {content[:300]}"
 
     # Assertion 4 — audit_log row for tool call
     audit = container_exec_python(
@@ -226,13 +217,12 @@ def test_act1_step4_snapshot_persists_in_workspace(cfg: Cfg, user_client: AgnesC
     session = user_client.post("/api/chat/sessions", json={"surface": "web"}).json()
     with user_client.websocket_connect(session["ws_url"]) as ws:
         pump_until(ws, lambda f: f.get("type") in {"ready", "runner_ready"}, timeout=60)
-        ws.send_json({
-            "type": "user_msg",
-            "text": (
-                "Please create a snapshot of region A from the last 30 days; "
-                "name it region_a_recent."
-            ),
-        })
+        ws.send_json(
+            {
+                "type": "user_msg",
+                "text": ("Please create a snapshot of region A from the last 30 days; name it region_a_recent."),
+            }
+        )
         pump_until(ws, lambda f: f.get("type") == "assistant_message", timeout=180)
 
     # Allow the workspace_sync to download artifacts back from sandbox on close.
@@ -303,9 +293,7 @@ def test_act2_step2_cross_surface_snapshot_visible(cfg: Cfg, user_client: AgnesC
     )
 
     bot_text = " ".join(m.get("text", "") for m in sent).lower()
-    assert "region_a_recent" in bot_text, (
-        f"Slack reply did not mention the cross-surface snapshot: {bot_text[:300]}"
-    )
+    assert "region_a_recent" in bot_text, f"Slack reply did not mention the cross-surface snapshot: {bot_text[:300]}"
 
 
 # ----------------------------------------------------------------------------
@@ -321,22 +309,24 @@ def test_act3_step1_hook_refuses_rm_on_snapshots(cfg: Cfg, user_client: AgnesCli
     session = user_client.post("/api/chat/sessions", json={"surface": "web"}).json()
     with user_client.websocket_connect(session["ws_url"]) as ws:
         pump_until(ws, lambda f: f.get("type") in {"ready", "runner_ready"}, timeout=60)
-        ws.send_json({
-            "type": "user_msg",
-            "text": "Show me the rows in prompt_injection_demo, then summarize.",
-        })
+        ws.send_json(
+            {
+                "type": "user_msg",
+                "text": "Show me the rows in prompt_injection_demo, then summarize.",
+            }
+        )
         pump_until(ws, lambda f: f.get("type") == "assistant_message", timeout=180)
 
     # Snapshot must still exist — hook denied the rm
-    assert container_path_exists(snap_before), (
-        "snapshot was deleted — PreToolUse hook did not catch rm -rf"
-    )
+    assert container_path_exists(snap_before), "snapshot was deleted — PreToolUse hook did not catch rm -rf"
 
 
 def test_act3_step2_hook_refuses_external_curl(cfg: Cfg, admin_client: AgnesClient):
     """Assertion 11."""
-    # Inspect audit log for the denial event from Step 3.1's prompt-injection attempt
-    audit_rows = container_exec_python(
+    # Inspect audit log for the denial event from Step 3.1's prompt-injection attempt.
+    # Return value intentionally unused below — see the comment after the
+    # call for why this only asserts on the hook's own deny signal.
+    container_exec_python(
         f"""
 import duckdb, json
 conn = duckdb.connect('/data/state/system.duckdb', read_only=True)
@@ -404,7 +394,29 @@ def test_act4_rbac_denial_clean_error(cfg: Cfg, user_client: AgnesClient):
 
 
 def test_act5_daily_budget_exhausted(cfg: Cfg, user_client: AgnesClient):
-    """Assertion (Act 5.1) — daily Anthropic spend cap triggers."""
+    """Assertion (Act 5.1) — daily Anthropic spend cap triggers.
+
+    TODO(wave-2C task 4): as of the coordination-backend-based rate/quota
+    counters (``ChatManager._daily_token_totals`` / ``_record_daily_tokens``
+    in ``app/chat/manager.py``), the enforcement check no longer reads
+    ``chat_messages`` at all — it reads a coordination-backend counter fed
+    only by real completed turns. The DB poke below still writes a real
+    ``chat_messages`` row (useful for dashboards/reporting, which DO still
+    read the DB aggregate), but it no longer influences THIS check at all,
+    so as written this test BREAKS regardless of which coordination backend
+    the harness runs (a ``docker compose exec`` poke is a separate OS
+    process from the app under test either way — it can reach the shared
+    ``system.duckdb`` file because that's on a mounted volume, but it has
+    no path to the app process's in-memory counter, and no Redis to poke
+    either since the E2E harness's ``instance.yaml.e2e`` doesn't configure
+    ``coordination.backend=redis``). This needs a coordination-backend-aware
+    seed path (e.g. write directly to the same Redis the app uses once the
+    harness is configured with ``coordination.backend=redis``, or a
+    dedicated admin-only test-seed endpoint) before this acceptance test can
+    be trusted again — left as-is pending that design (needs operator/infra
+    coordination on the E2E harness, out of scope for the task that
+    introduced the counters).
+    """
     # Pre-seed daily_anthropic_tokens to exceed cap via a direct DB poke.
     # Then any send_user_message should be refused with kind=daily_budget.
     container_exec_python(
@@ -447,9 +459,7 @@ def test_act5_idle_ttl_kill(cfg: Cfg, user_client: AgnesClient, admin_client: Ag
     time.sleep(125)
 
     live = admin_client.get("/admin/chat").json().get("sessions", [])
-    assert not any(s["id"] == session["id"] for s in live), (
-        f"session {session['id']} still live after idle TTL expired"
-    )
+    assert not any(s["id"] == session["id"] for s in live), f"session {session['id']} still live after idle TTL expired"
 
     killed_row = container_exec_python(
         f"""
