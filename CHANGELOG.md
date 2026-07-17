@@ -198,6 +198,38 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 - The one-word workspace launcher installed by `agnes init` is now an executable script in `~/.local/bin` (`<word>.cmd` on Windows) instead of a shell function appended to `~/.zshrc` / `~/.bashrc` / PowerShell profiles. Scripts are visible to `which`, work from non-interactive shells, and on Windows are immune to the default `ExecutionPolicy Restricted` (which silently blocked the old profile function from loading). The collision guard now also refuses to shadow any existing executable on PATH (a workspace named `Node` gets `nodeai`, not `node`). `agnes init` and a new `agnes update` convergence step automatically remove the legacy marked rc-function blocks and install the script — never before the replacement script is in place; users who opted out via `agnes init --no-shortcut` are left untouched. `scripts/dev/agnes-client-reset.sh` removes marker-carrying launcher scripts on reset.
+### Added
+
+- **Durable job queue + worker runtime.** A `jobs` table (both DuckDB and
+  Postgres backends) backs a new out-of-band execution path: `POST
+  /api/jobs` enqueues `{kind, payload?, idempotency_key?}` (202 + job row;
+  unknown `kind` → 400 listing the registered kinds), `GET
+  /api/jobs/{job_id}` and `GET /api/jobs?status=&kind=&limit=` read it
+  back — gated by `require_admin` (accepts the scheduler's shared-secret
+  token), with CLI (`agnes admin jobs enqueue|show|list`) and MCP
+  (`admin_job_enqueue`, `admin_job_get`, `admin_jobs_list`) surfaces. A
+  worker runtime (`app/worker/runtime.py`) claims rows via a
+  lease/heartbeat/retry lifecycle across two lanes — heavy (`data-refresh`,
+  `jira-refresh`) and light (`marketplaces-sync`, `session-collector`,
+  `corporate-memory`) — with five kinds registered
+  (`app/worker/kinds.py::register_all_kinds()`, called from
+  `app/main.py`'s lifespan), each a thin adapter over the existing handler
+  behind its HTTP counterpart. The scheduler now enqueues these kinds via
+  `/api/jobs` instead of calling their endpoints inline; `POST
+  /api/sync/trigger` enqueues a `data-refresh` job instead of running the
+  extractor synchronously; and the Jira webhook path
+  (`connectors/jira/service.py`) enqueues `jira-refresh` instead of
+  rebuilding the orchestrator inline, so a burst of webhook events
+  collapses into one queued rebuild. See
+  [`docs/jobs-classification.md`](docs/jobs-classification.md) for which
+  scheduler rows moved to the queue and which stay synchronous HTTP, and
+  the "Background Jobs" section in
+  [`docs/architecture.md`](docs/architecture.md) for the runtime design.
+- Process roles (`AGNES_ROLE=api|gateway|worker|all`) with startup guards for
+  multi-process topologies, `/healthz` + `/readyz` LB probes (write-canary with
+  hysteresis), lease-guarded startup seeds, and an experimental m-tier
+  role-split compose profile (`docker-compose.mtier.yml`).
+
 ### Fixed
 
 - **`POST /api/sync/trigger` could report 200 "triggered" for a job it
@@ -211,6 +243,33 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   insert — and the trigger handler branches on that instead of a
   pre-check, closing the race: exactly one of two concurrent triggers now
   gets 200, the other 409, always sharing the same `job_id`.
+- **Orchestrator rebuilds now serialize across processes on Postgres, and a
+  jira-refresh dedup gap that could strand a webhook update is closed.**
+  In a role-split topology (a dedicated `api` process handling
+  `/api/sync/trigger` + the Jira webhook, and a separate `worker` process
+  running enqueued jobs), `SyncOrchestrator`'s `_rebuild_lock` is a
+  `threading.Lock` — invisible across processes — so a job-triggered
+  rebuild and an HTTP-triggered rebuild could hit `analytics.duckdb`
+  concurrently, a known DuckDB corruption class. `rebuild()`/
+  `rebuild_source()` now also acquire a new `src/db_pg.py:rebuild_lease()`
+  (a Postgres advisory lock, no-op on the DuckDB backend where the
+  startup guard already enforces single-process) around the same
+  critical section. Separately, `connectors/jira/service.py`'s webhook
+  path enqueues a coalescing `jira-refresh-followup` job whenever its
+  primary `jira-refresh` enqueue dedups onto an already-`running` job —
+  that running job may have already read pre-write data, so without the
+  follow-up the write would sit stale until the next webhook.
+- **Worker shutdown drain no longer leaves stray heartbeats running or
+  lets a DB error abort shutdown.** An abandoned (drain-timed-out)
+  in-flight job's heartbeat task was left uncancelled, so it kept
+  extending that job's lease after `worker_loop` had already returned and
+  handed the job off to lease-expiry recovery. Separately, a
+  `complete()`/`fail()` failure while finalizing a different in-flight
+  job during the drain could propagate out of `worker_loop`'s shutdown
+  path and abort the rest of lifespan shutdown (including closing the
+  system DB). Both paths now cancel/await the heartbeat task and
+  log-and-continue on a finalization error, matching the existing
+  hardening pattern used elsewhere in the runtime.
 
 ## [0.74.106] - 2026-07-17
 
@@ -245,19 +304,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   is unaffected and intentionally unchanged (documented in `usage_pg.py` —
   this is a DuckDB engine bug workaround, not a general anti-pattern fix).
   `src/repositories/usage.py`.
-### Added
-
-- **Five job kinds registered on the wave-2B worker queue** (`app/worker/kinds.py`, `register_all_kinds()`, called from `app/main.py`'s lifespan before the worker loop starts): `data-refresh` and `jira-refresh` (heavy lane), `marketplaces-sync`, `session-collector`, and `corporate-memory` (light lane). Each handler is a thin adapter delegating to the existing function behind its HTTP counterpart (`/api/sync/trigger`, `/api/marketplaces/sync-all`, `/api/admin/run-session-collector`, `/api/admin/run-corporate-memory`) or, for `jira-refresh`, `SyncOrchestrator().rebuild_source("jira")` — no logic duplicated.
-- **`/api/jobs` REST + CLI + MCP surface for the wave-2B job queue** (`app/api/jobs.py`): `POST /api/jobs` enqueues a job (`{kind, payload?, idempotency_key?}` → 202 `{job}`; unknown `kind` → 400 listing the registered `JOB_KINDS`), `GET /api/jobs/{job_id}` fetches one, `GET /api/jobs?status=&kind=&limit=` lists. Gated by `require_admin`, which already accepts the scheduler's shared-secret token. CLI: `agnes admin jobs enqueue|show|list`. MCP: `admin_job_enqueue`, `admin_job_get`, `admin_jobs_list`.
-
-### Changed
-
-- **Jira webhook incremental transform now enqueues `jira-refresh` instead of rebuilding the orchestrator inline.** `connectors/jira/service.py:trigger_incremental_transform` previously called `SyncOrchestrator().rebuild_source("jira")` synchronously after every webhook event; it now calls `jobs_repo().enqueue("jira-refresh", {}, idempotency_key="jira-refresh")`, so a burst of webhook events collapses into a single queued rebuild instead of one rebuild per event. The parquet write (`transform_single_issue`) stays inline — only the analytics-view rebuild moved to the queue.
-
-### Fixed
-
-- **Orchestrator rebuilds now serialize across processes on Postgres, and a jira-refresh dedup gap that could strand a webhook update is closed.** In a role-split topology (a dedicated `api` process handling `/api/sync/trigger` + the Jira webhook, and a separate `worker` process running enqueued jobs), `SyncOrchestrator`'s `_rebuild_lock` is a `threading.Lock` — invisible across processes — so a job-triggered rebuild and an HTTP-triggered rebuild could hit `analytics.duckdb` concurrently, a known DuckDB corruption class. `rebuild()`/`rebuild_source()` now also acquire a new `src/db_pg.py:rebuild_lease()` (a Postgres advisory lock, no-op on the DuckDB backend where the startup guard already enforces single-process) around the same critical section. Separately, `connectors/jira/service.py`'s webhook path enqueues a coalescing `jira-refresh-followup` job whenever its primary `jira-refresh` enqueue dedups onto an already-`running` job — that running job may have already read pre-write data, so without the follow-up the write would sit stale until the next webhook.
-- **Worker shutdown drain no longer leaves stray heartbeats running or lets a DB error abort shutdown.** An abandoned (drain-timed-out) in-flight job's heartbeat task was left uncancelled, so it kept extending that job's lease after `worker_loop` had already returned and handed the job off to lease-expiry recovery. Separately, a `complete()`/`fail()` failure while finalizing a different in-flight job during the drain could propagate out of `worker_loop`'s shutdown path and abort the rest of lifespan shutdown (including closing the system DB). Both paths now cancel/await the heartbeat task and log-and-continue on a finalization error, matching the existing hardening pattern used elsewhere in the runtime.
 
 ## [0.74.105] - 2026-07-16
 
@@ -318,12 +364,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   and being granted correctly. Users who already installed either plugin
   pick the skill up on the next `agnes refresh-marketplace` (or session
   start).
-### Added
-
-- Process roles (`AGNES_ROLE=api|gateway|worker|all`) with startup guards for
-  multi-process topologies, `/healthz` + `/readyz` LB probes (write-canary with
-  hysteresis), lease-guarded startup seeds, and an experimental m-tier
-  role-split compose profile (`docker-compose.mtier.yml`).
 
 ## [0.74.100] - 2026-07-16
 
