@@ -372,7 +372,10 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
     llm_auth = getattr(getattr(request.app.state, "chat_config", None), "llm_auth", "api_key")
     wif_mode = llm_auth == "workload_identity" and not use_dispatcher
     if use_dispatcher:
-        dispatcher_key = os.environ.get("LLM_DISPATCHER_API_KEY", "")
+        # strip() guards against trailing newlines/spaces from secret managers
+        # (same normalization the URL gets above) — an invisible \n in the key
+        # is a hard-to-debug dispatcher 401.
+        dispatcher_key = os.environ.get("LLM_DISPATCHER_API_KEY", "").strip()
         if not dispatcher_key:
             # Misconfiguration (URL set, key missing) fails loud at the
             # dispatcher with a 401 — log it server-side so the operator sees

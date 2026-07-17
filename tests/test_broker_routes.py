@@ -484,6 +484,14 @@ class _UrlCapturingClient(_HeaderCapturingClient):
 
 
 def _post_broker_anthropic(broker_app, subpath, ticket_label):
+    # Clear captured state from earlier tests so every assertion proves THIS
+    # request was forwarded — stale class attributes could otherwise satisfy
+    # the URL/header checks even if the broker never made the outbound call.
+    # NB: headers live on the BASE class (its request() assigns
+    # `_HeaderCapturingClient._captured` explicitly); resetting via the
+    # subclass would shadow that attribute and break the read-back.
+    _HeaderCapturingClient._captured = {}
+    _UrlCapturingClient._captured_url = ""
     tok = ticket_repo().mint(ticket_label, "main", ttl_seconds=60)
 
     async def _run():
@@ -576,9 +584,11 @@ def test_dispatcher_optin_takes_precedence_over_wif(broker_app, monkeypatch):
 
 
 def test_dispatcher_optin_empty_key_logs_warning(broker_app, monkeypatch, caplog):
-    """URL set but key unset is a deployment misconfig: the request still goes
-    to the dispatcher (which 401s — fail loud, no fallback), and the broker
-    logs a server-side warning naming the cause."""
+    """URL set but key unset is a deployment misconfig: the request is still
+    forwarded to the dispatcher (no fallback) and the broker logs a
+    server-side warning naming the cause. This test asserts the forwarding
+    and the warning; the eventual 401 is the real dispatcher's behavior, not
+    something the fake outbound client here reproduces."""
     import logging
 
     import app.api.broker as broker_mod
