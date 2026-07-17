@@ -53,7 +53,16 @@ def resolve_backend_name() -> str:
     return (raw or "memory").strip().lower()
 
 
-def _redis_url() -> str:
+def resolve_redis_url() -> str:
+    """Effective Redis connection URL — env overrides instance.yaml.
+
+    Shared by :func:`_build` (this module) and any other caller that needs
+    the same Redis endpoint the coordination backend itself connects to
+    (e.g. ``app.auth.rate_limit`` wiring slowapi's ``storage_uri`` to the
+    same Redis instance when the coordination backend is ``redis``) —
+    duplicating the env/yaml resolution logic in a second place would let
+    the two drift.
+    """
     from app.instance_config import get_value
 
     raw = os.environ.get("AGNES_REDIS_URL") or get_value("redis", "url", default=_DEFAULT_REDIS_URL)
@@ -67,7 +76,7 @@ def _build() -> CoordinationBackend:
         from app.coordination.redis_backend import RedisCoordinationBackend
 
         client = redis_lib.Redis.from_url(
-            _redis_url(),
+            resolve_redis_url(),
             decode_responses=True,
             socket_timeout=_REDIS_SOCKET_TIMEOUT_S,
             socket_connect_timeout=_REDIS_SOCKET_CONNECT_TIMEOUT_S,
