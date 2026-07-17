@@ -489,9 +489,7 @@ class UsagePgRepository:
         where_sql, params = self._export_where(filters)
         with self._engine.connect() as conn:
             res = conn.execute(
-                sa.text(
-                    f"SELECT * FROM usage_events WHERE {where_sql} ORDER BY occurred_at"
-                ),
+                sa.text(f"SELECT * FROM usage_events WHERE {where_sql} ORDER BY occurred_at"),
                 params,
             )
             cols = list(res.keys())
@@ -1453,10 +1451,18 @@ class UsagePgRepository:
 
     def rebuild_rollups(self, *, since_day: "date | None" = None, force_30d: bool = False) -> None:
         """PG mirror of UsageRepository.rebuild_rollups — identical semantics,
-        one transaction via ``engine.begin()``."""
+        one transaction via ``engine.begin()``.
+
+        Intentionally still DELETE-then-bulk-INSERT here (unlike the DuckDB
+        sibling's ON CONFLICT DO UPDATE): that rewrite works around a DuckDB
+        1.5.4-only PRIMARY KEY index assertion bug, not a general SQL
+        anti-pattern. Postgres has no equivalent issue with this pattern.
+        """
         with self._engine.begin() as conn:
             if since_day is None:
-                row = conn.execute(sa.text("SELECT MIN(CAST((occurred_at AT TIME ZONE 'UTC') AS DATE)) FROM usage_events")).fetchone()
+                row = conn.execute(
+                    sa.text("SELECT MIN(CAST((occurred_at AT TIME ZONE 'UTC') AS DATE)) FROM usage_events")
+                ).fetchone()
                 since_day = row[0] if row and row[0] else datetime.now(timezone.utc).date()
 
             curated_plugins, flea_entities, flea_plugins = self._curated_flea_lookup(conn)

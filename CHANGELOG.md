@@ -10,6 +10,40 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.74.106] - 2026-07-17
+
+### Fixed
+
+- **Keboola export scratch dirs could leak silently, filling the data disk.**
+  `materialize_query` / `_extract_via_legacy` pass `ignore_cleanup_errors=True`
+  to their owning `TemporaryDirectory` so a cleanup failure never masks the
+  export's real exception — but that flag also silently swallows the failure,
+  so a leaked `kbc-export-*` dir was indistinguishable from a hard-kill
+  orphan and the only signal was the disk slowly filling (observed live:
+  disk climbed from 32% to 91% in under two hours on a 15-minute materialize
+  cadence, repeatedly failing table syncs on ENOSPC). Added
+  `warn_if_scratch_survived()`, called right after each export's
+  `TemporaryDirectory` block exits — logs a warning naming the surviving dir
+  instead of leaving operators to discover it via `df -h`.
+  `connectors/keboola/storage_api.py`, `connectors/keboola/extractor.py`.
+- **`UsageRepository.rebuild_rollups()` could crash the whole app process on DuckDB.**
+  The `usage_tool_daily` / `usage_marketplace_item_daily` / `usage_marketplace_item_window`
+  rollup producers deleted a day/period range then bulk-reinserted overlapping
+  keys within the same transaction; on DuckDB 1.5.4 this could hit an internal
+  PRIMARY KEY index assertion ("duplicate key") that aborted the process
+  uncatchably rather than raising a Python exception, taking down the whole
+  instance on the next scheduler tick whenever a key at the rolling window's
+  boundary got deleted and reinserted in the same commit. Switched all three
+  producers to `INSERT ... ON CONFLICT DO UPDATE`, which never deletes the row
+  so it can't hit that path — paired with a targeted anti-join `DELETE` (only
+  keys *absent* from the freshly computed set, never one about to be
+  upserted) so a stale row whose source event was deleted/corrected still
+  gets cleaned up, matching the previous DELETE-then-reinsert behavior
+  without reintroducing the same-key delete+reinsert crash. Postgres sibling
+  is unaffected and intentionally unchanged (documented in `usage_pg.py` —
+  this is a DuckDB engine bug workaround, not a general anti-pattern fix).
+  `src/repositories/usage.py`.
+
 ## [0.74.105] - 2026-07-16
 
 ### Fixed
