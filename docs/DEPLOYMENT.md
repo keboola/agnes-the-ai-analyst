@@ -237,6 +237,18 @@ The app refuses to start otherwise, naming what is missing. Probes:
 hysteresis; point LB health checks here). `/api/health` is unchanged.
 Try it: `./scripts/dev/mtier-smoke.sh`.
 
+The `worker` role runs the durable job queue's worker runtime instead of
+handling HTTP traffic: two lanes — heavy (`data-refresh`, `jira-refresh`)
+and light (`marketplaces-sync`, `session-collector`, `corporate-memory`)
+— each claim rows off the `jobs` table with a lease + retry lifecycle and
+run the corresponding handler. The scheduler now enqueues these kinds via
+`POST /api/jobs` and returns immediately instead of calling their HTTP
+endpoint and waiting; a handful of cheap or not-yet-migrated rows still
+call their endpoint synchronously (full split in
+[`jobs-classification.md`](jobs-classification.md)). Inspect the queue
+with `agnes admin jobs list` (`--status`/`--kind` to filter) or
+`agnes admin jobs show <job_id>` for one row.
+
 ## Cloud-chat host requirements
 
 Agnes can serve a zero-install web chat and Slack DM bot at `/chat`. The
