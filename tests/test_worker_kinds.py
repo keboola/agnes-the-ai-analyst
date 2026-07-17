@@ -238,3 +238,54 @@ class TestJiraWebhookEnqueues:
 
         rows = jobs_repo().list(kind="jira-refresh")
         assert len(rows) == 1
+
+    def test_webhook_during_running_refresh_enqueues_coalescing_followup(self, jobs_db, monkeypatch):
+        """A webhook whose parquet write lands while a jira-refresh job is
+        already RUNNING must not be dropped: that running job may have
+        started (and read parquet) before this write, so the dedup above
+        (which matches 'queued' or 'running') would otherwise silently
+        swallow it. A follow-up job (distinct idempotency key) must be
+        queued to guarantee a rebuild strictly after this write."""
+        from connectors.jira.service import trigger_incremental_transform
+        from src.repositories import jobs_repo
+
+        monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda: None)
+        monkeypatch.setattr(
+            "connectors.jira.incremental_transform.transform_single_issue",
+            lambda issue_key, deleted=False: True,
+        )
+
+        # Simulate a jira-refresh job already RUNNING (e.g. claimed by the
+        # worker before this webhook's parquet write landed).
+        jobs_repo().enqueue("jira-refresh", {}, idempotency_key="jira-refresh")
+        claimed = jobs_repo().claim_next(kinds=["jira-refresh"], worker_id="test-worker")
+        assert claimed is not None and claimed["status"] == "running"
+
+        trigger_incremental_transform("KSP-1", deleted=False)
+
+        rows = jobs_repo().list(kind="jira-refresh")
+        assert len(rows) == 2
+        by_key = {r["idempotency_key"]: r for r in rows}
+        assert by_key["jira-refresh"]["status"] == "running"
+        assert by_key["jira-refresh-followup"]["status"] == "queued"
+
+    def test_second_webhook_mid_run_dedups_onto_followup(self, jobs_db, monkeypatch):
+        """A second webhook while the primary is still running must dedup
+        onto the same follow-up row, not create a third."""
+        from connectors.jira.service import trigger_incremental_transform
+        from src.repositories import jobs_repo
+
+        monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda: None)
+        monkeypatch.setattr(
+            "connectors.jira.incremental_transform.transform_single_issue",
+            lambda issue_key, deleted=False: True,
+        )
+
+        jobs_repo().enqueue("jira-refresh", {}, idempotency_key="jira-refresh")
+        jobs_repo().claim_next(kinds=["jira-refresh"], worker_id="test-worker")
+
+        trigger_incremental_transform("KSP-1", deleted=False)
+        trigger_incremental_transform("KSP-2", deleted=False)
+
+        rows = jobs_repo().list(kind="jira-refresh")
+        assert len(rows) == 2  # still exactly 1 running + 1 queued follow-up
