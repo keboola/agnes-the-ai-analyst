@@ -92,7 +92,23 @@ async def run_with_lease(
 
     While not holding the lease: poll `coordination().lease_acquire`
     every ``ttl_s / 3`` seconds. On success, call `start()` and switch to
-    the renew phase.
+    the renew phase. If `start()` raises, this holder never actually
+    began delivering the singleton work, so holding onto the lease would
+    starve every other replica for no benefit: log the failure, best-effort
+    `coordination().lease_release` the lease immediately (so a healthier
+    replica can pick it up right away rather than waiting out this
+    holder's `ttl_s`), back off for ``ttl_s`` seconds (so a `start()` that
+    fails deterministically — e.g. a persistently unreachable upstream —
+    doesn't spin this replica in a hot acquire/fail loop), then re-enter
+    the acquire loop.
+
+    All three `coordination()` lease calls (`lease_acquire`, `lease_renew`,
+    `lease_release`) run via `asyncio.to_thread` — the Redis backend makes
+    a blocking socket call per invocation, and this loop's own sleeps are
+    the only other thing sharing the event loop with everything else the
+    process is serving; without the offload, a slow/hung Redis round-trip
+    on this heartbeat would stall unrelated request handling for the
+    whole process.
 
     While holding the lease: sleep ``ttl_s / 3`` then call
     `coordination().lease_renew`. A `False` return means the lease was
@@ -123,7 +139,7 @@ async def run_with_lease(
         while True:
             if not held:
                 try:
-                    acquired = coordination().lease_acquire(name, holder_id, ttl_s=ttl_s)
+                    acquired = await asyncio.to_thread(coordination().lease_acquire, name, holder_id, ttl_s=ttl_s)
                 except CoordinationUnavailable:
                     logger.warning(
                         "lease %r: coordination backend unavailable while acquiring; retrying in %.1fs",
@@ -138,12 +154,32 @@ async def run_with_lease(
                 held = True
                 unavailable_since = None
                 logger.info("lease %r: acquired by %s", name, holder_id)
-                await _invoke(start)
+                try:
+                    await _invoke(start)
+                except Exception:
+                    # start() never got the singleton work running, so
+                    # holding the lease buys nothing except starving every
+                    # other replica -> release it immediately (best-effort;
+                    # a backend outage here just means the lease expires on
+                    # its own ttl_s instead) and back off before retrying so
+                    # a deterministically-failing start() doesn't spin this
+                    # replica in a hot acquire/fail loop.
+                    logger.exception(
+                        "lease %r: start() failed after acquiring; releasing lease and backing off %ds before retrying",
+                        name,
+                        ttl_s,
+                    )
+                    held = False
+                    try:
+                        await asyncio.to_thread(coordination().lease_release, name, holder_id)
+                    except CoordinationUnavailable:
+                        pass
+                    await asyncio.sleep(ttl_s)
                 continue
 
             await asyncio.sleep(renew_interval)
             try:
-                renewed = coordination().lease_renew(name, holder_id, ttl_s=ttl_s)
+                renewed = await asyncio.to_thread(coordination().lease_renew, name, holder_id, ttl_s=ttl_s)
             except CoordinationUnavailable:
                 now = time.monotonic()
                 if unavailable_since is None:
@@ -181,7 +217,7 @@ async def run_with_lease(
         if held:
             await _invoke(stop)
             try:
-                coordination().lease_release(name, holder_id)
+                await asyncio.to_thread(coordination().lease_release, name, holder_id)
             except CoordinationUnavailable:
                 pass
         raise
