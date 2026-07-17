@@ -456,7 +456,10 @@ def install_launcher_shortcut(workspace: Path, *, no_shortcut: bool = False, qui
         else:
             script = _posix_script(chosen, raw_word, workspace)
         bin_dir.mkdir(parents=True, exist_ok=True)
-        target.write_text(script, encoding="utf-8")
+        # newline="" disables universal-newline translation: the Windows body
+        # already carries explicit \r\n, and default text mode on Windows
+        # would double them to \r\r\n.
+        target.write_text(script, encoding="utf-8", newline="")
         if sys.platform != "win32":
             target.chmod(0o755)
 
