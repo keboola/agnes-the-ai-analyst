@@ -391,6 +391,124 @@ def test_shutdown_drain_times_out_and_abandons_slow_handler(worker_db, monkeypat
     assert row["status"] == "running", "abandoned in-flight job must NOT be finalized by a timed-out drain"
 
 
+def test_shutdown_drain_timeout_cancels_abandoned_heartbeat(worker_db, monkeypatch):
+    """An abandoned (drain-timed-out) job's heartbeat task must be
+    cancelled (not left running) before worker_loop returns — otherwise
+    it keeps extending the lease of a job the loop no longer owns, after
+    the worker process has already told the caller shutdown is done."""
+    from app.worker import runtime
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from src.repositories import jobs_repo
+
+    monkeypatch.setenv("AGNES_WORKER_DRAIN_TIMEOUT_S", "0.2")
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def very_slow_handler(payload: dict) -> None:
+        started.set()
+        # Held open past the drain timeout; released once the test has
+        # observed the timeout behavior so the (non-daemon) thread doesn't
+        # block interpreter shutdown.
+        release.wait(timeout=5)
+
+    register_kind(JobKind(name="very_slow_hb_test", handler=very_slow_handler, lane=LIGHT_LANE, lease_seconds=30))
+    repo = jobs_repo()
+    job = repo.enqueue("very_slow_hb_test", {})
+
+    captured: dict[str, object] = {}
+    real_drain = runtime._drain_in_flight
+
+    async def _capturing_drain(in_flight, worker_id):
+        # Snapshot the in-flight entries (there's exactly one) before the
+        # real drain runs, then let it do its normal timeout/cancel work.
+        captured["entries"] = dict(in_flight)
+        await real_drain(in_flight, worker_id)
+
+    monkeypatch.setattr(runtime, "_drain_in_flight", _capturing_drain)
+
+    async def _drive() -> None:
+        task = asyncio.create_task(runtime.worker_loop(worker_id="test-worker", poll_interval_s=0.05))
+        deadline = time.monotonic() + 2.0
+        while not started.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert started.is_set(), "handler never started"
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert task.done()
+        release.set()
+        await asyncio.sleep(0.05)
+
+    asyncio.run(_drive())
+
+    entries = captured.get("entries")
+    assert entries, "drain should have seen the in-flight job"
+    entry = entries[job["id"]]
+    assert entry.hb_task.cancelled() or entry.hb_task.done(), (
+        "abandoned entry's heartbeat task must be cancelled/done once worker_loop returns, "
+        "or it keeps extending a lease the loop no longer owns"
+    )
+
+    row = repo.get(job["id"])
+    assert row["status"] == "running", "abandoned in-flight job must NOT be finalized by a timed-out drain"
+
+
+def test_shutdown_drain_finalization_error_does_not_escape_worker_loop(worker_db, monkeypatch):
+    """A DB exception raised by complete()/fail() while finalizing an
+    in-flight job during the shutdown drain must be logged and swallowed,
+    not propagated — otherwise it would abort the rest of the caller's
+    lifespan shutdown (including closing the system DB) with the drain
+    only partway through finalizing the other in-flight jobs."""
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+    from src.repositories.jobs import JobsRepository
+
+    monkeypatch.setenv("AGNES_WORKER_DRAIN_TIMEOUT_S", "5")
+
+    started = threading.Event()
+    finish = threading.Event()
+
+    def quick_handler(payload: dict) -> None:
+        started.set()
+        finish.wait(timeout=5)
+
+    register_kind(JobKind(name="finalize_boom_test", handler=quick_handler, lane=LIGHT_LANE, lease_seconds=30))
+    repo = jobs_repo()
+    job = repo.enqueue("finalize_boom_test", {})
+
+    def boom_complete(self, job_id, worker_id, lease_token) -> None:
+        raise RuntimeError("simulated DB failure during drain finalization")
+
+    monkeypatch.setattr(JobsRepository, "complete", boom_complete)
+
+    async def _drive() -> None:
+        task = asyncio.create_task(worker_loop(worker_id="test-worker", poll_interval_s=0.05))
+        deadline = time.monotonic() + 2.0
+        while not started.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert started.is_set(), "handler never started"
+        task.cancel()
+        # Let the handler finish while the drain is waiting on it, so it
+        # lands in `_done` and the drain takes the complete() path.
+        finish.set()
+        # If the fix regresses, the complete() RuntimeError raised inside
+        # the drain's `finally` block replaces the CancelledError as what
+        # propagates out of worker_loop, so this suppress would NOT catch
+        # it and asyncio.run(_drive()) below would fail with the
+        # RuntimeError instead of completing cleanly.
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert task.done()
+        assert task.cancelled(), "worker_loop must finish via its own cancellation, not an escaped finalization error"
+
+    asyncio.run(_drive())
+
+    row = repo.get(job["id"])
+    assert row["status"] == "running", "job whose complete() raised must not end up falsely marked done"
+
+
 def test_worker_loop_reaps_stuck_jobs(worker_db):
     """The reap sweep is wired into worker_loop itself, independent of
     whether any handler is registered for the stuck job's kind."""
