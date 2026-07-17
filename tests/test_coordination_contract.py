@@ -279,3 +279,53 @@ class TestRedisUnavailable:
         backend = self._unreachable_backend()
         with pytest.raises(CoordinationUnavailable):
             backend.publish("chan", "x")
+
+
+class TestRedisSubscribeFailureLeavesNoState:
+    """A failed Redis-level SUBSCRIBE must not poison local subscriber
+    state — see the ``subscribe()`` docstring/comment in
+    ``app.coordination.redis_backend``. Before the fix, the handler was
+    registered into ``self._subscribers[channel]`` before the real
+    ``self._pubsub.subscribe(channel)`` call; if that raised, the local
+    entry stayed behind, so every future ``subscribe()`` call for that
+    channel saw ``is_new_channel=False`` and the Redis-level SUBSCRIBE was
+    never retried — the channel was silently broken forever."""
+
+    def test_transient_failure_then_retry_succeeds(self, monkeypatch):
+        client = fakeredis.FakeStrictRedis(decode_responses=True)
+        redis_backend = RedisCoordinationBackend(client)
+        try:
+            redis_backend._ensure_listener()
+            real_subscribe = redis_backend._pubsub.subscribe
+            calls = {"count": 0}
+
+            def _flaky_subscribe(channel):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise ConnectionError("transient network error")
+                return real_subscribe(channel)
+
+            monkeypatch.setattr(redis_backend._pubsub, "subscribe", _flaky_subscribe)
+
+            received: list[str] = []
+            with pytest.raises(CoordinationUnavailable):
+                redis_backend.subscribe("chan-flaky", received.append)
+
+            # The failed subscribe must leave NO local state behind — no
+            # channel entry, no handler, no unsubscribe callable was even
+            # returned to the caller.
+            assert "chan-flaky" not in redis_backend._subscribers
+
+            # A second subscribe() call must retry the Redis-level
+            # SUBSCRIBE (not believe the channel already live) and succeed,
+            # with messages actually delivered — the channel is not
+            # poisoned.
+            unsubscribe = redis_backend.subscribe("chan-flaky", received.append)
+            try:
+                assert calls["count"] == 2
+                redis_backend.publish("chan-flaky", "hello")
+                _wait_for(lambda: received == ["hello"])
+            finally:
+                unsubscribe()
+        finally:
+            redis_backend.close()

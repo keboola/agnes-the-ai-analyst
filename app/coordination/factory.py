@@ -28,7 +28,14 @@ _instance: CoordinationBackend | None = None
 _DEFAULT_REDIS_URL = "redis://localhost:6379/0"
 
 
-def _backend_name() -> str:
+def resolve_backend_name() -> str:
+    """Effective coordination backend name — env overrides instance.yaml.
+
+    Shared by :func:`_build` (this module) and
+    ``app.startup_guards._coordination_backend`` (a thin wrapper around this
+    function), so both call sites resolve the backend the exact same way
+    instead of maintaining duplicate resolution logic.
+    """
     from app.instance_config import get_value
 
     raw = os.environ.get("AGNES_COORDINATION_BACKEND") or get_value("coordination", "backend", default="memory")
@@ -43,7 +50,7 @@ def _redis_url() -> str:
 
 
 def _build() -> CoordinationBackend:
-    if _backend_name() == "redis":
+    if resolve_backend_name() == "redis":
         import redis as redis_lib
 
         from app.coordination.redis_backend import RedisCoordinationBackend

@@ -30,14 +30,19 @@ def _use_pg() -> bool:
 
 
 def _coordination_backend() -> str:
-    """Effective coordination backend — same resolution as
-    ``app.coordination.factory._backend_name`` (env overrides instance.yaml)
-    so this guard reacts to the exact backend the process will actually use,
-    not just the yaml-only view of it."""
-    from app.instance_config import get_value
+    """Effective coordination backend — thin wrapper around
+    :func:`app.coordination.factory.resolve_backend_name` (env overrides
+    instance.yaml) so this guard reacts to the exact backend the process
+    will actually use, not just the yaml-only view of it.
 
-    raw = os.environ.get("AGNES_COORDINATION_BACKEND") or get_value("coordination", "backend", default="memory")
-    return (raw or "memory").strip().lower()
+    Kept as its own module-level function (rather than inlining the call at
+    every use site) so tests can monkeypatch
+    ``app.startup_guards._coordination_backend`` directly — see
+    ``tests/test_startup_guards.py``.
+    """
+    from app.coordination.factory import resolve_backend_name
+
+    return resolve_backend_name()
 
 
 def _workers() -> int:
