@@ -426,3 +426,178 @@ def test_build_jobs_honors_keboola_semantic_layer_refresh_env_override(monkeypat
 
     jobs = {name: schedule for name, schedule, *_ in build_jobs()}
     assert jobs["keboola-semantic-layer-refresh"] == "every 1h"
+
+
+# ---------------------------------------------------------------------------
+# Wave-2B job-queue migration (Task 6): data-refresh, marketplaces,
+# session-collector, corporate-memory now enqueue via POST /api/jobs
+# instead of calling their old synchronous endpoint. Every other row must
+# be untouched — see docs/jobs-classification.md for the full breakdown.
+# ---------------------------------------------------------------------------
+
+
+class TestEnqueueMigratedJobs:
+    """The four rows must target /api/jobs with the documented kind +
+    fixed idempotency_key body."""
+
+    @pytest.mark.parametrize(
+        "name,expected_body",
+        [
+            ("data-refresh", {"kind": "data-refresh", "idempotency_key": "sync"}),
+            (
+                "marketplaces",
+                {"kind": "marketplaces-sync", "idempotency_key": "marketplaces-sync"},
+            ),
+            (
+                "session-collector",
+                {"kind": "session-collector", "idempotency_key": "session-collector"},
+            ),
+            (
+                "corporate-memory",
+                {"kind": "corporate-memory", "idempotency_key": "corporate-memory"},
+            ),
+        ],
+    )
+    def test_migrated_row_posts_to_jobs_queue(self, name, expected_body):
+        from services.scheduler.__main__ import build_jobs
+
+        target = next(j for j in build_jobs() if j[0] == name)
+        _, _schedule, endpoint, method, _timeout, json_body = target
+        assert endpoint == "/api/jobs"
+        assert method == "POST"
+        assert json_body == expected_body
+
+    @pytest.mark.parametrize(
+        "name",
+        ["data-refresh", "marketplaces", "session-collector", "corporate-memory"],
+    )
+    def test_migrated_row_uses_short_enqueue_timeout(self, name):
+        """Enqueueing just inserts a row and returns 202 — the work no
+        longer runs inside this HTTP call, so the old long per-job timeouts
+        (120s-900s) are replaced with a short one."""
+        from services.scheduler.__main__ import build_jobs
+
+        target = next(j for j in build_jobs() if j[0] == name)
+        assert target[4] == 30
+
+    def test_migrated_rows_are_6_tuples_others_stay_5_tuples(self):
+        """Only the four migrated jobs carry a 6th (json_body) element;
+        every other row keeps its original 5-tuple shape."""
+        from services.scheduler.__main__ import build_jobs
+
+        migrated = {"data-refresh", "marketplaces", "session-collector", "corporate-memory"}
+        for j in build_jobs():
+            if j[0] in migrated:
+                assert len(j) == 6, f"{j[0]} must be a 6-tuple (with json_body)"
+            else:
+                assert len(j) == 5, f"{j[0]} must stay a 5-tuple (unmigrated)"
+
+    def test_call_api_forwards_json_body_to_httpx_post(self, monkeypatch):
+        """_call_api must actually send the enqueue body as the request's
+        JSON payload, not just carry it around in the tuple."""
+        from services.scheduler import __main__ as sched
+
+        captured = {}
+
+        class _FakeResp:
+            status_code = 202
+            text = ""
+
+        def _fake_post(url, headers=None, timeout=None, json=None):
+            captured["json"] = json
+            return _FakeResp()
+
+        monkeypatch.setattr(sched.httpx, "post", _fake_post)
+        ok = sched._call_api("/api/jobs", "POST", 30, json_body={"kind": "data-refresh", "idempotency_key": "sync"})
+        assert ok is True
+        assert captured["json"] == {"kind": "data-refresh", "idempotency_key": "sync"}
+
+    def test_call_api_sends_no_body_when_json_body_omitted(self, monkeypatch):
+        """Non-migrated jobs must keep sending no request body — passing
+        json=None to httpx.post is a no-op, matching pre-change behavior."""
+        from services.scheduler import __main__ as sched
+
+        captured = {}
+
+        class _FakeResp:
+            status_code = 200
+            text = ""
+
+        def _fake_post(url, headers=None, timeout=None, json=None):
+            captured["json"] = json
+            return _FakeResp()
+
+        monkeypatch.setattr(sched.httpx, "post", _fake_post)
+        ok = sched._call_api("/api/admin/run-blocked-purge", "POST", 600)
+        assert ok is True
+        assert captured["json"] is None
+
+    def test_run_job_forwards_json_body_to_call_api(self, monkeypatch):
+        """_run_job (invoked per-tick by the executor) must pass its
+        json_body argument through to _call_api unchanged."""
+        import threading
+
+        from services.scheduler import __main__ as sched
+
+        captured = {}
+
+        def _fake_call_api(endpoint, method, timeout, json_body=None):
+            captured["json_body"] = json_body
+            return True
+
+        monkeypatch.setattr(sched, "_call_api", _fake_call_api)
+        last_run: dict[str, str | None] = {"data-refresh": None}
+        in_flight: set[str] = {"data-refresh"}
+        sched._run_job(
+            "data-refresh",
+            "/api/jobs",
+            "POST",
+            30,
+            "2026-01-01T00:00:00",
+            last_run,
+            in_flight,
+            threading.Lock(),
+            json_body={"kind": "data-refresh", "idempotency_key": "sync"},
+        )
+        assert captured["json_body"] == {"kind": "data-refresh", "idempotency_key": "sync"}
+
+
+class TestUnmigratedRowsUnchanged:
+    """Snapshot-style guard: every scheduler row NOT in the wave-2B migrated
+    set must keep its pre-existing (endpoint, method) target. A failure here
+    means either an unintended migration or an unrelated endpoint edit —
+    either way, review it."""
+
+    _EXPECTED_UNMIGRATED = {
+        "health-check": ("/api/health", "GET"),
+        "script-runner": ("/api/scripts/run-due", "POST"),
+        "session-processor:verification": (
+            "/api/admin/run-session-processor?processor=verification",
+            "POST",
+        ),
+        "session-processor:usage": (
+            "/api/admin/run-session-processor?processor=usage",
+            "POST",
+        ),
+        "store-blocked-purge": ("/api/admin/run-blocked-purge", "POST"),
+        "store-reap-stuck-reviews": ("/api/admin/run-reap-stuck-reviews", "POST"),
+        "store-lint-audit": ("/api/admin/store/lint-audit", "POST"),
+        "bq-metadata-refresh": ("/api/admin/run-bq-metadata-refresh", "POST"),
+        "keboola-semantic-layer-refresh": (
+            "/api/admin/run-keboola-semantic-layer-refresh",
+            "POST",
+        ),
+        "usage-prune": ("/api/admin/usage/prune", "POST"),
+        "jira-sla-poll": ("/api/admin/run-jira-sla-poll", "POST"),
+        "jira-consistency-check": ("/api/admin/run-jira-consistency-check", "POST"),
+        "knowledge-packaging": ("/api/admin/run-knowledge-packaging", "POST"),
+        "knowledge-digests": ("/api/admin/run-knowledge-digests", "POST"),
+        "initial-workspace": ("/api/admin/initial-workspace/sync-if-configured", "POST"),
+    }
+
+    def test_unmigrated_rows_endpoint_and_method_unchanged(self):
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {j[0]: (j[2], j[3]) for j in build_jobs()}
+        for name, expected in self._EXPECTED_UNMIGRATED.items():
+            assert jobs[name] == expected, f"{name} endpoint/method drifted: {jobs[name]!r} != {expected!r}"
