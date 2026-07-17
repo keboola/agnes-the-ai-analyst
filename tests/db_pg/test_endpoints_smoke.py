@@ -1483,6 +1483,17 @@ KNOWN_UNTESTED = {
     # tests/test_api_knowledge_digests_distribution.py (manifest kind:"digest"
     # entries, 401/403/404/200, staleness md5 change-token).
     "GET /api/knowledge/digests/{digest_id}/content",
+    # Wave-2B job queue REST surface (Task 5) — POST /api/jobs requires a body
+    # (`kind`) and enqueue behavior depends on the process-wide `JOB_KINDS`
+    # registry (empty outside the app lifespan's `register_all_kinds()`, so
+    # tests register their own fake kinds), so it has no place in this
+    # parameter-free smoke sweep. Behaviour (401/403, enqueue/get/list,
+    # unknown-kind 400, idempotency dedup) covered in tests/test_jobs_api.py;
+    # jobs_repo() dual-backend parity already covered by
+    # tests/db_pg/test_jobs_contract.py.
+    "POST /api/jobs",
+    "GET /api/jobs",
+    "GET /api/jobs/{job_id}",
     "GET /api/collections/{collection_id}",
     "DELETE /api/collections/{collection_id}",
     "POST /api/collections/{collection_id}/files",
