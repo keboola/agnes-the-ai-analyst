@@ -10,6 +10,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Security
+
+- **Jira attachment download: SSRF via the webhook-supplied URL (audit L3).**
+  `download_attachment` fetched `attachment.content` straight from the webhook
+  payload — caller-supplied — with redirects followed and no host check, so an
+  HMAC-valid webhook for a nonexistent issue could reach the fetch-failure
+  fallback and make the server GET an arbitrary internal URL (blind; the body
+  landed under `/data`). The content URL is now checked against an explicit
+  **host allowlist** (the configured Jira domain + `api.atlassian.com`, https
+  only, `urlsplit`-parsed so `https://jira.example.com@evil.tld/` resolves to
+  the real host) before any HTTP call. An allowlist rather than a private-IP
+  denylist: a denylist would wrongly break a self-hosted Jira on a private
+  address.
+- **Co-session seed embedded the owner-chosen session title undelimited
+  (audit L5).** The intersection seed interpolated the source session's title
+  raw into a `role="system"` message read by the *invitee's* agent, so an owner
+  could give their own instruction text system-role authority in a session
+  shared with a higher-grant colleague. The title is now length-capped, wrapped
+  in `<untrusted_title>` markers, tag-defanged so a crafted title can't close
+  the wrapper, and explicitly labelled as data-never-instructions (mirrors the
+  `<untrusted_notes>` boundary in the corporate-memory curator). Bounded before
+  and after — a co-session runs under the grant *intersection* and egress is
+  brokered, so the ceiling was behavioral manipulation, not data escalation.
+
 ## [0.74.105] - 2026-07-16
 
 ### Fixed
