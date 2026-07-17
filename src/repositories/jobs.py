@@ -1,4 +1,4 @@
-"""DuckDB-backed repository for the ``jobs`` table (durable job queue, v92).
+"""DuckDB-backed repository for the ``jobs`` table (durable job queue, v93).
 
 Foundation for the wave-2B worker runtime. This module now also covers
 the claim/lease/complete/fail lifecycle (worker loop itself is a later
@@ -16,15 +16,31 @@ Claim/lease/complete/fail semantics (shared contract with
   ``started_at`` ONLY if it was still NULL (a reclaim preserves the
   job's original first-start timestamp).
 - ``heartbeat()`` extends the lease and returns ``False`` (no-op) if the
-  job is no longer ``'running'`` or is held by a different worker — the
-  caller uses that signal to abandon a job that was reclaimed out from
-  under it.
+  job is no longer ``'running'`` or the caller's ``lease_token`` no
+  longer matches the row's current one — the caller uses that signal to
+  abandon a job that was reclaimed out from under it.
 - ``complete()``/``fail()`` are no-ops (raise-free) when the job is not
-  ``'running'`` under that exact ``worker_id``. This matters for the
+  ``'running'`` under that exact ``lease_token``. This matters for the
   same reclaim race: a stale worker that finishes its (already
   reclaimed) job late must not clobber the new owner's state — the
-  ``WHERE id = ? AND leased_by = ? AND status = 'running'`` guard on the
-  mutating statement makes this atomic without needing a prior read.
+  ``WHERE id = ? AND lease_token = ? AND status = 'running'`` guard on
+  the mutating statement makes this atomic without needing a prior read.
+
+Same-worker double-execution note: ``heartbeat()``/``complete()``/
+``fail()`` guard on ``lease_token``, NOT ``leased_by``/``worker_id``. All
+lane slots inside one worker *process* share the same ``worker_id``
+(``hostname:pid`` — see ``app/worker/runtime.py:default_worker_id``), so
+after a stale slot's lease expires, ANOTHER slot of the SAME process can
+reclaim the job under the *identical* ``worker_id``. A guard keyed on
+``leased_by = worker_id`` cannot tell the two slots apart, so the stale
+slot's late ``complete()``/``fail()`` would flip (or requeue) the live
+claim out from under the new slot — empirically reproduced, with
+``fail()`` even triggering a third concurrent execution via the requeue
+it issued. ``claim_next()`` mints a fresh ``uuid4`` ``lease_token`` on
+*every* claim (including a same-worker reclaim of its own abandoned
+lease), so the guard distinguishes claims even when ``worker_id`` is
+identical. ``worker_id``/``leased_by`` remain as parameters/columns for
+audit and logging only — they are never part of the atomicity guard.
 - ``fail()`` with ``retry_in_seconds`` set and attempts remaining
   requeues (``status='queued'``, ``run_after=now+retry``, lease
   cleared, ``error`` recorded); otherwise (attempts exhausted, or no
@@ -210,12 +226,20 @@ class JobsRepository:
 
         Eligible = ``status='queued'`` with ``run_after`` unset or due, OR
         a ``'running'`` job whose lease has expired and which hasn't yet
-        exhausted its attempts (crash-recovery reclaim). Ordered by
-        ``priority DESC, created_at ASC``. See the module docstring for
+        exhausted its attempts (crash-recovery reclaim — including a
+        same-worker reclaim, i.e. another slot of the same process; see
+        the module docstring's same-worker double-execution note). Ordered
+        by ``priority DESC, created_at ASC``. See the module docstring for
         why the read-then-write here is guarded by the module-level
         ``_JOBS_LOCK`` rather than relying on DuckDB's single-writer
         model alone (that guarantee is about cross-process/transaction
         safety, not concurrent threads sharing one connection object).
+
+        Mints and stores a fresh ``lease_token`` (uuid4 hex) on every
+        claim — including a reclaim of a job this same ``worker_id``
+        already held — so ``heartbeat()``/``complete()``/``fail()`` can
+        tell this claim apart from any other, even one under the
+        identical ``worker_id``.
         """
         if not kinds:
             return None
@@ -236,92 +260,99 @@ class JobsRepository:
             job = self._row_to_dict(row)
             if job is None:
                 return None
+            lease_token = uuid.uuid4().hex
             lease_expires_at = now + timedelta(seconds=lease_seconds)
             self.conn.execute(
                 """UPDATE jobs
                    SET status = 'running',
                        leased_by = ?,
+                       lease_token = ?,
                        started_at = COALESCE(started_at, ?),
                        attempts = attempts + 1,
                        lease_expires_at = ?
                    WHERE id = ?""",
-                [worker_id, now, lease_expires_at, job["id"]],
+                [worker_id, lease_token, now, lease_expires_at, job["id"]],
             )
             return self.get(job["id"])
 
-    def heartbeat(self, job_id: str, worker_id: str, lease_seconds: int = 120) -> bool:
+    def heartbeat(self, job_id: str, worker_id: str, lease_token: str, lease_seconds: int = 120) -> bool:
         """Extend the lease on a running job. Returns ``False`` (no-op) if
-        the job is no longer ``'running'`` or is held by a different
-        worker — the caller uses that to abandon a job reclaimed out
-        from under it."""
+        the job is no longer ``'running'`` or ``lease_token`` no longer
+        matches the row's current one (reclaimed — possibly by another
+        slot of this SAME ``worker_id``; see the module docstring) — the
+        caller uses that to abandon a job reclaimed out from under it.
+        ``worker_id`` is accepted for audit/logging only; it is not part
+        of the atomicity guard."""
         with _JOBS_LOCK:
             now = datetime.now(timezone.utc)
             lease_expires_at = now + timedelta(seconds=lease_seconds)
             claimed = self.conn.execute(
                 """UPDATE jobs SET lease_expires_at = ?
-                   WHERE id = ? AND leased_by = ? AND status = 'running'
+                   WHERE id = ? AND lease_token = ? AND status = 'running'
                    RETURNING id""",
-                [lease_expires_at, job_id, worker_id],
+                [lease_expires_at, job_id, lease_token],
             ).fetchall()
             return bool(claimed)
 
-    def complete(self, job_id: str, worker_id: str) -> None:
+    def complete(self, job_id: str, worker_id: str, lease_token: str) -> None:
         """Mark a running job done. No-op (raise-free) if the job is not
-        currently ``'running'`` under this exact ``worker_id`` — a stale
-        worker finishing a job that was already reclaimed must not
-        clobber the new owner's state."""
+        currently ``'running'`` under this exact ``lease_token`` — a
+        stale slot finishing a job that was already reclaimed (even by
+        another slot of the SAME ``worker_id``) must not clobber the new
+        owner's state. ``worker_id`` is accepted for audit/logging only."""
         with _JOBS_LOCK:
             now = datetime.now(timezone.utc)
             self.conn.execute(
                 """UPDATE jobs
                    SET status = 'done', finished_at = ?, lease_expires_at = NULL
-                   WHERE id = ? AND leased_by = ? AND status = 'running'""",
-                [now, job_id, worker_id],
+                   WHERE id = ? AND lease_token = ? AND status = 'running'""",
+                [now, job_id, lease_token],
             )
 
     def fail(
         self,
         job_id: str,
         worker_id: str,
+        lease_token: str,
         error: str,
         *,
         retry_in_seconds: Optional[int] = None,
     ) -> None:
         """Record a failure. No-op (raise-free) if the job is not
-        currently ``'running'`` under this exact ``worker_id`` (see
-        ``complete()``).
+        currently ``'running'`` under this exact ``lease_token`` (see
+        ``complete()``). ``worker_id`` is accepted for audit/logging only.
 
         If attempts remain (``attempts < max_attempts``) AND
         ``retry_in_seconds`` is given, requeues the job (``'queued'``,
-        ``run_after=now+retry_in_seconds``, lease cleared, ``error``
-        recorded). Otherwise finalizes to ``'failed'`` with
+        ``run_after=now+retry_in_seconds``, lease + lease_token cleared,
+        ``error`` recorded). Otherwise finalizes to ``'failed'`` with
         ``finished_at`` set.
         """
         with _JOBS_LOCK:
             now = datetime.now(timezone.utc)
             job = self.conn.execute(
                 """SELECT attempts, max_attempts FROM jobs
-                   WHERE id = ? AND leased_by = ? AND status = 'running'""",
-                [job_id, worker_id],
+                   WHERE id = ? AND lease_token = ? AND status = 'running'""",
+                [job_id, lease_token],
             ).fetchone()
             if job is None:
-                return  # stale worker (already reclaimed) — no-op
+                return  # stale claim (already reclaimed) — no-op
             attempts, max_attempts = job
             if attempts < max_attempts and retry_in_seconds is not None:
                 run_after = now + timedelta(seconds=retry_in_seconds)
                 self.conn.execute(
                     """UPDATE jobs
                        SET status = 'queued', run_after = ?, lease_expires_at = NULL,
-                           leased_by = NULL, error = ?
-                       WHERE id = ? AND leased_by = ? AND status = 'running'""",
-                    [run_after, error, job_id, worker_id],
+                           leased_by = NULL, lease_token = NULL, error = ?
+                       WHERE id = ? AND lease_token = ? AND status = 'running'""",
+                    [run_after, error, job_id, lease_token],
                 )
             else:
                 self.conn.execute(
                     """UPDATE jobs
                        SET status = 'failed', finished_at = ?, lease_expires_at = NULL, error = ?
-                       WHERE id = ? AND leased_by = ? AND status = 'running'""",
-                    [now, error, job_id, worker_id],
+                       WHERE id = ? AND lease_token = ? AND status = 'running'""",
+                    [now, error, job_id, lease_token],
                 )
 
     def reap_exhausted(self, now: Optional[datetime] = None) -> int:
