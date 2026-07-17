@@ -276,6 +276,45 @@
     accent-color: var(--ds-primary);
 }
 
+/* ── Stack tabs — light segmented control (prototype .segmented)
+   instead of the dark hero-tinted bar. ───────────────────────────── */
+[data-theme="paper"] .stack-tabs {
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    box-shadow: var(--ds-shadow-sm);
+}
+
+[data-theme="paper"] .stack-tabs button {
+    color: var(--ds-text-secondary);
+}
+
+[data-theme="paper"] .stack-tabs button .tab-icon {
+    color: var(--ds-text-muted);
+}
+
+[data-theme="paper"] .stack-tabs button:hover {
+    color: var(--ds-text-primary);
+    background: var(--ds-surface-dim);
+    border-color: var(--ds-border);
+}
+
+[data-theme="paper"] .stack-tabs button.is-active {
+    background: var(--ds-surface-dim);
+    border-color: var(--ds-border);
+    color: var(--ds-text-primary);
+    font-weight: 600;
+}
+
+[data-theme="paper"] .stack-tabs button.is-active .tab-icon {
+    color: var(--ds-primary-dark);
+}
+
+[data-theme="paper"] .stack-tabs button .count {
+    background: var(--ds-bg);
+    border: 1px solid var(--ds-border);
+    color: var(--ds-text-muted);
+}
+
 /* ── Tables — quiet chrome, wash header ───────────────────────── */
 [data-theme="paper"] .data-table th {
     background: var(--ds-surface-dim);

@@ -66,12 +66,18 @@ to `[data-theme="paper"]`; the rail chrome CSS is
 7. **Motion:** use `--ds-motion-{fast,med,slow}` +
    `--ds-ease-{standard,enter}`; honor `prefers-reduced-motion` on
    anything that moves.
-8. **Both chromes must keep working.** Nav destinations, grant gating
-   (`can_chat`), admin sections, `data-tour` anchors, and the JS id
-   contract (`#global-search`, `#userMenu`, `#themeToggle`) exist in
-   BOTH `_app_header.html` and `_app_rail.html` — if you touch one,
-   mirror the other (`tests/test_ui_layout_theme.py::TestRailOptIn`
-   asserts the rail side).
+8. **Both chromes must keep working.** Grant gating (`can_chat`),
+   admin sections, `data-tour` anchors, and the JS id contract
+   (`#global-search`, `#userMenu`, `#themeToggle`) exist in BOTH
+   `_app_header.html` and `_app_rail.html` — if you touch one, mirror
+   the other (`tests/test_ui_layout_theme.py::TestRailOptIn` asserts
+   the rail side). The two chromes deliberately differ in IA: topnav
+   keeps the flat link row (Home · Chat · Marketplace · Data Packages
+   · Library · Memory); the rail uses the prototype IA — Chat,
+   My Stack (→ `/catalog?tab=my`), and Catalog with the content
+   surfaces as subcategories (Data Packages, Plugins, Library,
+   Memory). New content surfaces join the rail as another
+   `.rail-sub-i` under Catalog, not as a new top-level item.
 9. **Verify visually.** After any UI change, run the app with both
    configs and screenshot: default (nothing set) and
    `AGNES_INSTANCE_THEME=paper AGNES_UI_LAYOUT=rail`. A page that
