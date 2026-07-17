@@ -361,3 +361,34 @@ class JobsPgRepository:
                     ),
                     {"now": now, "error": error, "id": job_id, "worker_id": worker_id},
                 )
+
+    def reap_exhausted(self, now: Optional[datetime] = None) -> int:
+        """Finalize stuck ``'running'`` jobs whose lease has expired AND
+        which have already exhausted their attempts. Mirrors
+        ``JobsRepository.reap_exhausted`` — see that module's docstring for
+        the full rationale (``claim_next()``'s reclaim path requires
+        ``attempts < max_attempts``, so an exhausted job's expired lease is
+        otherwise never converged). No ``FOR UPDATE`` needed: the WHERE
+        clause's own predicates (``status='running' AND lease_expires_at <
+        :now AND attempts >= max_attempts``) are exactly the terminal
+        condition being applied, so a concurrent claim_next()/heartbeat()
+        racing this UPDATE under READ COMMITTED just changes how many rows
+        match, not whether the match is correct.
+        """
+        now = now or datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """UPDATE jobs
+                       SET status = 'failed',
+                           finished_at = :now,
+                           lease_expires_at = NULL,
+                           error = 'lease expired after max attempts'
+                       WHERE status = 'running'
+                         AND lease_expires_at < :now
+                         AND attempts >= max_attempts
+                       RETURNING id"""
+                ),
+                {"now": now},
+            ).fetchall()
+        return len(rows)
