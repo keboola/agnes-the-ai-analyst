@@ -287,7 +287,7 @@ def sync_semantic_layer(
     from app.datasource_secrets import datasource_secret
     from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
     from connectors.keboola.metastore_client import MetastoreApiError, MetastoreClient
-    from src.repositories import table_registry_repo, metric_repo
+    from src.repositories import table_registry_repo, metric_repo, glossary_repo
 
     url = keboola_url or os.environ.get("KEBOOLA_STACK_URL", "")
     token = keboola_token or datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
@@ -324,6 +324,9 @@ def sync_semantic_layer(
         "skipped_unresolved_table": 0,
         "skipped_foreign_alias": 0,
         "skipped_embedded_comment": 0,
+        "glossary_created_or_updated": 0,
+        "glossary_pruned": 0,
+        "skipped_missing_term": 0,
     }
     if not models:
         return empty_result
@@ -339,6 +342,7 @@ def sync_semantic_layer(
         datasets = metastore.list_items("semantic-dataset", model_uuid)
         metrics = metastore.list_items("semantic-metric", model_uuid)
         constraints = metastore.list_items("semantic-constraint", model_uuid)
+        glossary_items = metastore.list_items("semantic-glossary", model_uuid)
     except (MetastoreApiError, requests.RequestException) as e:
         logger.error("Keboola Metastore fetch failed (model %s): %s", model_uuid, e)
         return {"status": "error", "error": f"Metastore fetch failed: {e}"}
@@ -394,6 +398,44 @@ def sync_semantic_layer(
                 repo.delete(m["id"])
                 pruned += 1
 
+    glossary_repository = glossary_repo()
+    used_glossary_ids: set[str] = set()
+    seen_glossary_ids: set[str] = set()
+    skipped_missing_term = 0
+
+    for item in glossary_items:
+        row, skip_reason = build_glossary_row(item, model_uuid, used_glossary_ids)
+        if row is None:
+            if skip_reason == "missing_term":
+                skipped_missing_term += 1
+            else:
+                logger.warning(
+                    "Keboola glossary item skipped (%s): %r",
+                    skip_reason,
+                    (item.get("attributes") or {}).get("term"),
+                )
+            continue
+        glossary_repository.create(**row)
+        seen_glossary_ids.add(row["id"])
+
+    existing_glossary = [
+        g for g in glossary_repository.list(limit=100000) if g.get("source") == "keboola_semantic_layer"
+    ]
+    glossary_pruned = 0
+    if not seen_glossary_ids and existing_glossary:
+        # Same safety valve as the metric prune above: a successful-but-empty
+        # glossary response must not wipe every previously-imported term.
+        logger.warning(
+            "Keboola glossary: upstream returned zero usable terms while %d "
+            "existing rows are present; skipping prune to avoid a full wipe.",
+            len(existing_glossary),
+        )
+    else:
+        for g in existing_glossary:
+            if g["id"] not in seen_glossary_ids:
+                glossary_repository.delete(g["id"])
+                glossary_pruned += 1
+
     return {
         "status": "ok",
         "created_or_updated": len(seen_ids),
@@ -401,6 +443,9 @@ def sync_semantic_layer(
         "skipped_unresolved_table": skipped_unresolved_table,
         "skipped_foreign_alias": skipped_foreign_alias,
         "skipped_embedded_comment": skipped_embedded_comment,
+        "glossary_created_or_updated": len(seen_glossary_ids),
+        "glossary_pruned": glossary_pruned,
+        "skipped_missing_term": skipped_missing_term,
     }
 
 
