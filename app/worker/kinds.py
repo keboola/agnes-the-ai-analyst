@@ -85,9 +85,15 @@ def _run_data_refresh(payload: dict) -> None:
     fast-returns if another sync is already in flight (see its
     docstring). That fast-fail is harmless here too: the worker's HEAVY
     lane already runs at concurrency 1, so within a single worker process
-    two ``data-refresh`` jobs can never be mid-handler simultaneously —
-    the lock only guards against the legacy HTTP trigger path (or a
-    second worker process sharing the same DATA_DIR) racing a queued job.
+    two ``data-refresh`` jobs can never be mid-handler simultaneously.
+    ``_sync_lock`` is a plain ``threading.Lock`` — it is invisible across
+    processes, so it does NOT guard against the legacy HTTP trigger path
+    running in a separate ``api`` process (or a second worker process)
+    racing this one. Cross-process serialization of the actual rebuild
+    critical section is handled independently, inside
+    ``SyncOrchestrator.rebuild()``/``rebuild_source()``, via
+    ``src.db_pg.rebuild_lease()`` (a Postgres advisory lock; no-op on the
+    DuckDB backend, where a single-process startup guard already applies).
     """
     from app.api.sync import _run_sync
 
