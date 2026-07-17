@@ -168,6 +168,18 @@ else
     [ -e "$HOME/.local/bin/agnes" ] && run "rm -f \"$HOME/.local/bin/agnes\""
 fi
 
+# Launcher scripts installed by `agnes init` into ~/.local/bin. Only remove
+# files carrying our ownership marker — never a user's own same-named script.
+step "Remove Agnes launcher scripts from ~/.local/bin"
+if [ -d "$HOME/.local/bin" ]; then
+    for f in "$HOME/.local/bin"/*; do
+        [ -f "$f" ] || continue
+        if grep -q '>>> agnes launcher:' "$f" 2>/dev/null; then
+            run "rm -f \"$f\""
+        fi
+    done
+fi
+
 # ---------------------------------------------------------------------------
 # 4. Filesystem state directories.
 # ---------------------------------------------------------------------------
