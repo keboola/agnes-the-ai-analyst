@@ -1465,13 +1465,21 @@ CREATE TABLE IF NOT EXISTS store_lint_entity_state (
 -- the worker loop are later tasks in the same wave.
 --
 -- idempotency_key dedup note: a *partial* unique index
--- (`... WHERE idempotency_key IS NOT NULL`) would let a duplicate key be
--- reused once the earlier job leaves queued/running, but DuckDB does not
--- support partial indexes ("Not implemented Error: Creating partial
--- indexes is not supported currently"). Dedup is therefore enforced in
--- the repository's `enqueue()` (both engines, for symmetric behavior)
--- rather than at the DB level — the CONTRACT is the dedup behavior, not
--- the index. `idx_jobs_idem` below is a plain (non-unique) lookup index.
+-- (`... WHERE idempotency_key IS NOT NULL AND status IN ('queued',
+-- 'running')`) would let a duplicate key be reused once the earlier job
+-- leaves queued/running, but DuckDB does not support partial indexes
+-- ("Not implemented Error: Creating partial indexes is not supported
+-- currently"). Dedup is therefore enforced in JobsRepository.enqueue()
+-- (guarded by an in-process lock — safe under DuckDB's single-writer
+-- model) rather than at the DB level. `idx_jobs_idem` below is a plain
+-- (non-unique) lookup index on this side.
+--
+-- The Postgres ladder (migrations/versions/0039_jobs_v92.py /
+-- src/models/jobs.py) is asymmetric here: it DOES create `idx_jobs_idem`
+-- as a partial unique index, because a plain SELECT-then-INSERT in
+-- JobsPgRepository would race under READ COMMITTED (two concurrent
+-- transactions can both miss each other's uncommitted row). The CONTRACT
+-- shared by both backends is the dedup *behavior*, not the index shape.
 CREATE TABLE IF NOT EXISTS jobs (
     id                VARCHAR PRIMARY KEY,
     kind              VARCHAR NOT NULL,
@@ -5927,7 +5935,9 @@ def _v92_to_v93(conn: duckdb.DuckDBPyConnection) -> None:
     See the ``jobs`` block in ``_SYSTEM_SCHEMA`` above for why
     ``idx_jobs_idem`` is a plain index rather than a partial unique index
     (DuckDB does not support partial indexes) — idempotency dedup is
-    enforced in ``JobsRepository.enqueue()`` instead.
+    enforced in ``JobsRepository.enqueue()`` instead. The Postgres ladder
+    uses a real partial unique index for this same column; see that
+    docstring block for why the two ladders are intentionally asymmetric.
 
     Renumbered from v92 to v93 after upstream's mcp_sources.connect_hint
     migration (#919) claimed schema v92 first.
