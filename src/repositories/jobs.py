@@ -323,3 +323,39 @@ class JobsRepository:
                        WHERE id = ? AND leased_by = ? AND status = 'running'""",
                     [now, error, job_id, worker_id],
                 )
+
+    def reap_exhausted(self, now: Optional[datetime] = None) -> int:
+        """Finalize stuck ``'running'`` jobs whose lease has expired AND
+        which have already exhausted their attempts.
+
+        ``claim_next()``'s crash-recovery reclaim only picks up an expired
+        lease while ``attempts < max_attempts`` (see its docstring) — a job
+        whose LAST attempt's lease expires is not reclaimable by design
+        (there's no attempt budget left to hand out), so without this sweep
+        it would stay ``'running'`` forever, invisible to any retry or
+        completion path. Called once per worker-loop poll cycle
+        (``app/worker/runtime.py``), independent of lane activity, so a
+        single worker process converges every stuck job regardless of which
+        lane produced it.
+
+        Mirrors ``fail()``'s finalize branch (same terminal shape: status,
+        finished_at, lease_expires_at, error) but reached via elapsed-lease
+        detection rather than a live worker calling ``fail()`` — no worker
+        is holding this job anymore, hence no ``worker_id``/``leased_by``
+        guard on the WHERE clause. Returns the number of jobs reaped.
+        """
+        with _JOBS_LOCK:
+            now = now or datetime.now(timezone.utc)
+            rows = self.conn.execute(
+                """UPDATE jobs
+                   SET status = 'failed',
+                       finished_at = ?,
+                       lease_expires_at = NULL,
+                       error = 'lease expired after max attempts'
+                   WHERE status = 'running'
+                     AND lease_expires_at < ?
+                     AND attempts >= max_attempts
+                   RETURNING id""",
+                [now, now],
+            ).fetchall()
+            return len(rows)
