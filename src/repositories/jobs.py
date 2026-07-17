@@ -14,15 +14,24 @@ support partial indexes ("Not implemented Error: Creating partial indexes
 is not supported currently"), so dedup is enforced here instead: before
 inserting, ``enqueue()`` looks for an existing row with the same
 ``idempotency_key`` whose status is still ``'queued'`` or ``'running'``
-and returns it unchanged if found. ``jobs_pg.py`` mirrors this same
-app-level check (rather than a PG-only partial unique index) so both
-backends have identical dedup semantics — the CONTRACT is the dedup
-*behavior*, not the index.
+and returns it unchanged if found.
+
+``jobs_pg.py`` now uses a real partial unique index + ``ON CONFLICT`` on
+Postgres instead (a plain SELECT-then-INSERT there is racy under READ
+COMMITTED — two concurrent transactions can both miss each other's
+uncommitted row). DuckDB's single-writer model doesn't have that
+cross-transaction race, but the check-then-insert here is still not
+atomic across *threads* sharing one connection, so ``_lock`` (mirroring
+the ``_rebuild_lock`` pattern in ``src/orchestrator.py``) serializes the
+whole critical section. The CONTRACT shared with the PG side is the
+dedup *behavior* (matching key + queued/running status returns the
+existing row, no insert), not the mechanism.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -33,6 +42,7 @@ import duckdb
 class JobsRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
         self.conn = conn
+        self._lock = threading.Lock()
 
     @staticmethod
     def _decode(d: Dict[str, Any]) -> Dict[str, Any]:
@@ -70,40 +80,42 @@ class JobsRepository:
         If ``idempotency_key`` matches an existing job whose status is
         still ``'queued'`` or ``'running'``, that row is returned
         unchanged — no new insert (dedup). See the module docstring for
-        why this check lives here rather than in a DB constraint.
+        why this check lives here rather than in a DB constraint, and
+        why it's guarded by ``self._lock``.
         """
-        if idempotency_key is not None:
-            existing = self.conn.execute(
-                """SELECT * FROM jobs
-                   WHERE idempotency_key = ? AND status IN ('queued', 'running')
-                   ORDER BY created_at LIMIT 1""",
-                [idempotency_key],
-            ).fetchone()
-            existing_row = self._row_to_dict(existing)
-            if existing_row is not None:
-                return existing_row
+        with self._lock:
+            if idempotency_key is not None:
+                existing = self.conn.execute(
+                    """SELECT * FROM jobs
+                       WHERE idempotency_key = ? AND status IN ('queued', 'running')
+                       ORDER BY created_at LIMIT 1""",
+                    [idempotency_key],
+                ).fetchone()
+                existing_row = self._row_to_dict(existing)
+                if existing_row is not None:
+                    return existing_row
 
-        job_id = uuid.uuid4().hex
-        now = datetime.now(timezone.utc)
-        self.conn.execute(
-            """INSERT INTO jobs
-               (id, kind, payload_json, status, priority, run_after,
-                attempts, max_attempts, idempotency_key, created_at)
-               VALUES (?, ?, ?, 'queued', ?, ?, 0, ?, ?, ?)""",
-            [
-                job_id,
-                kind,
-                json.dumps(payload or {}),
-                priority,
-                run_after,
-                max_attempts,
-                idempotency_key,
-                now,
-            ],
-        )
-        row = self.get(job_id)
-        assert row is not None  # just inserted under our own transaction
-        return row
+            job_id = uuid.uuid4().hex
+            now = datetime.now(timezone.utc)
+            self.conn.execute(
+                """INSERT INTO jobs
+                   (id, kind, payload_json, status, priority, run_after,
+                    attempts, max_attempts, idempotency_key, created_at)
+                   VALUES (?, ?, ?, 'queued', ?, ?, 0, ?, ?, ?)""",
+                [
+                    job_id,
+                    kind,
+                    json.dumps(payload or {}),
+                    priority,
+                    run_after,
+                    max_attempts,
+                    idempotency_key,
+                    now,
+                ],
+            )
+            row = self.get(job_id)
+            assert row is not None  # just inserted under our own transaction
+            return row
 
     def get(self, job_id: str) -> Optional[Dict[str, Any]]:
         row = self.conn.execute("SELECT * FROM jobs WHERE id = ?", [job_id]).fetchone()
