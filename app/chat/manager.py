@@ -19,6 +19,9 @@ from app.chat.profiles import get_profile
 from app.chat.provider import SandboxHandle, SandboxProvider
 from app.chat.types import ChatSession, SessionState, Surface
 from app.chat.workdir import WorkdirManager
+from app.coordination.base import CoordinationUnavailable
+from app.coordination.factory import coordination
+from app.coordination.leases import default_holder_id
 from src.repositories import ticket_repo, usage_repo, users_repo
 
 logger = logging.getLogger(__name__)
@@ -32,6 +35,15 @@ _PRICE_OUT_PER_MTOK = 15.0
 # every keystroke is wasteful — a 60-second stale window is acceptable
 # given the daily-cap semantics.
 _DAILY_CACHE_TTL_SEC = 60
+
+# Leader-lease name + TTL for the paused-sandbox TTL sweep inside
+# _reap_once (wave-2C task 3). ~90s: comfortably longer than a single
+# sweep normally takes (so a healthy replica's own `lease_release` in the
+# `finally` clears it long before expiry) but short enough that a replica
+# that crashes mid-sweep self-heals within one extra reaper tick or two
+# (the reaper runs every 60s — see `_idle_reaper_loop`), not minutes.
+_PAUSED_SWEEP_LEASE_NAME = "paused-sandbox-sweep"
+_PAUSED_SWEEP_LEASE_TTL_SEC = 90
 
 # Chat sandbox secret broker (2026-07-14 incident hardening): bumped whenever
 # the ticket_push stdin frame contract changes. ChatManager only ever
@@ -1467,12 +1479,51 @@ class ChatManager:
 
         # Paused-TTL sweep: destroy sandboxes that have been paused too long.
         # Works purely from repo rows — catches pre-restart leftovers too.
-        paused_cutoff = now - timedelta(seconds=self._config.paused_ttl_seconds)
-        for session in self._repo.list_paused_sessions(paused_before=paused_cutoff):
+        #
+        # Cross-process singleton guard (wave-2C task 3): unlike the
+        # idle/active reaping above (which only ever touches THIS replica's
+        # in-memory `_live` sessions), this sweep reads the shared
+        # `chat_sessions` table directly — every replica of a multi-replica
+        # deployment would otherwise race to destroy the same paused
+        # sandboxes on the same ~60s tick (harmless-but-wasteful duplicate
+        # `destroy()` calls against the sandbox provider). A single
+        # non-blocking `lease_acquire` per tick — not the full
+        # acquire/renew/reacquire loop in app/coordination/leases.py's
+        # `run_with_lease` — is the right granularity here: this work has
+        # no long-lived "start"/"stop" state to bracket, just "did this
+        # replica win this tick's coin flip". A replica that loses simply
+        # tries again next tick (60s later — see `_idle_reaper_loop` — well
+        # under any reasonable staleness tolerance for a TTL sweep).
+        #
+        # FLUSHALL story: the lease is only ever held for the duration of
+        # one sweep (released in the `finally` below, or self-healing via
+        # `_PAUSED_SWEEP_LEASE_TTL_SEC` if a replica dies mid-sweep) — there
+        # is no persistent "held" state to lose if the coordination backend
+        # loses its own state, so a backend outage just means every replica
+        # skips (or every replica proceeds, under `memory` mode) until the
+        # backend recovers; nothing to reacquire across a restart.
+        try:
+            acquired_sweep_lease = coordination().lease_acquire(
+                _PAUSED_SWEEP_LEASE_NAME, default_holder_id(), ttl_s=_PAUSED_SWEEP_LEASE_TTL_SEC
+            )
+        except CoordinationUnavailable:
+            logger.warning("paused-sandbox sweep: coordination backend unavailable; skipping this tick")
+            acquired_sweep_lease = False
+        if acquired_sweep_lease:
             try:
-                await self._provider.destroy(sandbox_id=session.sandbox_id)
-            except Exception:
-                logger.debug("destroy sandbox %s failed (already gone?)", session.sandbox_id)
-            self._repo.clear_sandbox_ref(session.id)
-            # Drop any in-memory entry
-            self._live.pop(session.id, None)
+                paused_cutoff = now - timedelta(seconds=self._config.paused_ttl_seconds)
+                for session in self._repo.list_paused_sessions(paused_before=paused_cutoff):
+                    try:
+                        await self._provider.destroy(sandbox_id=session.sandbox_id)
+                    except Exception:
+                        logger.debug("destroy sandbox %s failed (already gone?)", session.sandbox_id)
+                    self._repo.clear_sandbox_ref(session.id)
+                    # Drop any in-memory entry
+                    self._live.pop(session.id, None)
+            finally:
+                try:
+                    coordination().lease_release(_PAUSED_SWEEP_LEASE_NAME, default_holder_id())
+                except CoordinationUnavailable:
+                    pass
+        else:
+            logger.debug("paused-sandbox sweep: lease held elsewhere this tick; skipping")

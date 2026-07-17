@@ -190,6 +190,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `app/api/admin_chat.py`) migrated to the same coordination-backend
   mechanism (`admin-tail-ticket:` key prefix, same 60s TTL, same single-use
   `kv_set`/`kv_delete` semantics) instead of its own module-level dict.
+- Slack Socket Mode (`app/main.py`), the Telegram long-poll loop
+  (`services/telegram_bot/bot.py`), and the paused-sandbox TTL sweep
+  (`app/chat/manager.py`) now run behind leader leases
+  (`app/coordination/leases.py::run_with_lease`, plus a lighter
+  acquire-per-tick pattern for the sweep) so only one replica of each
+  singleton consumer is active at a time under a multi-replica
+  `coordination.backend=redis` deployment. Under the default `memory`
+  backend the lease is process-local and always immediately acquired, so
+  single-process behavior is unchanged.
 
 ## [0.74.107] - 2026-07-17
 
