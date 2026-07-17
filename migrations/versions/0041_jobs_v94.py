@@ -29,6 +29,15 @@ intentionally asymmetric here: the CONTRACT is the dedup *behavior*
 (matching key + queued/running status returns the existing row, no
 insert), not the index shape.
 
+``lease_token`` is a fresh uuid4 minted by ``claim_next()`` on every
+claim (including a same-worker reclaim). ``heartbeat()``/``complete()``/
+``fail()`` guard on ``lease_token = ? AND status = 'running'`` rather
+than ``leased_by = ?`` — all lane slots in one worker process share the
+same ``leased_by`` (worker_id = hostname:pid), so a worker_id-only guard
+cannot distinguish a stale slot's late call from a same-process reclaim
+of the same job by a DIFFERENT slot (empirically reproduced
+double-execution bug). ``leased_by`` is kept for audit/logging only.
+
 Renumbered from 0040_jobs_v93 to 0041_jobs_v94 after upstream's
 0040_glossary_terms_v93 (#920) landed first and claimed schema v93 + the
 0040 slot.
@@ -56,6 +65,7 @@ def upgrade() -> None:
         sa.Column("max_attempts", sa.Integer(), server_default=sa.text("3"), nullable=False),
         sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("leased_by", sa.String(), nullable=True),
+        sa.Column("lease_token", sa.String(), nullable=True),
         sa.Column("idempotency_key", sa.String(), nullable=True),
         sa.Column("error", sa.String(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
