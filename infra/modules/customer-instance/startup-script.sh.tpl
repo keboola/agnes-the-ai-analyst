@@ -379,7 +379,10 @@ chmod 0444 "$DISP_DIR/policies.yaml"
 # data disk > key already in .env (adopted into the keyfile so it survives
 # the NEXT recreate) > mint fresh.
 # --- dispatcher-pg-password begin (extracted + executed by tests/test_startup_dispatcher_pg_password.py) ---
-DISPATCHER_PG_PASSWORD_FILE="$DATA_MNT/dispatcher-postgres/.pg-password"
+# The keyfile must NOT live inside $DATA_MNT/dispatcher-postgres — that
+# directory is bind-mounted as the container's PGDATA, and postgres:16-alpine's
+# initdb aborts on first boot if PGDATA contains anything but "lost+found".
+DISPATCHER_PG_PASSWORD_FILE="$DATA_MNT/state/dispatcher-pg-password"
 DISPATCHER_PG_PASSWORD=""
 if [ -f "$DISPATCHER_PG_PASSWORD_FILE" ]; then
     DISPATCHER_PG_PASSWORD=$(tr -d '[:space:]' < "$DISPATCHER_PG_PASSWORD_FILE" || true)
@@ -391,11 +394,14 @@ if [ -z "$DISPATCHER_PG_PASSWORD" ]; then
     DISPATCHER_PG_PASSWORD=$(openssl rand -hex 24)
 fi
 
-# Ledger data on the persistent disk. postgres:16-alpine's entrypoint runs
-# as root and chowns its data dir to uid 70 on first init itself.
-mkdir -p "$DATA_MNT/dispatcher-postgres"
+mkdir -p "$DATA_MNT/state"
 (umask 077; printf '%s\n' "$DISPATCHER_PG_PASSWORD" > "$DISPATCHER_PG_PASSWORD_FILE")
 chmod 600 "$DISPATCHER_PG_PASSWORD_FILE"
+
+# Ledger data on the persistent disk, kept separate from the keyfile above.
+# postgres:16-alpine's entrypoint runs as root and chowns its data dir to
+# uid 70 on first init itself.
+mkdir -p "$DATA_MNT/dispatcher-postgres"
 # --- dispatcher-pg-password end ---
 
 # Quoted heredoc: the $${...} below are resolved by docker compose from

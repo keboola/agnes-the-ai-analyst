@@ -11,11 +11,13 @@ These tests pin the startup-script contract (same shape as
 
 * the password is minted once and written into ``/opt/agnes/.env`` for the
   dispatcher/ledger-postgres containers to pick up;
-* its durable home is the persistent DATA disk
-  (``$DATA_MNT/dispatcher-postgres/.pg-password``) — ``/opt/agnes/.env`` lives
-  on the boot disk, which a VM recreate wipes, so re-minting on every boot
-  would desync the password from the surviving (persistent-disk) database and
-  lock the dispatcher out of its own ledger;
+* its durable home is the persistent DATA disk, kept outside the Postgres
+  data dir itself (``$DATA_MNT/state/dispatcher-pg-password`` — NOT
+  ``$DATA_MNT/dispatcher-postgres``, which is bind-mounted as PGDATA and
+  must stay empty for ``initdb``) — ``/opt/agnes/.env`` lives on the boot
+  disk, which a VM recreate wipes, so re-minting on every boot would desync
+  the password from the surviving (persistent-disk) database and lock the
+  dispatcher out of its own ledger;
 * a password already present in ``.env`` (e.g. from before this fix shipped)
   is adopted into the keyfile instead of being clobbered by a fresh mint.
 
@@ -70,7 +72,7 @@ def _run_block(
     data_mnt.mkdir(exist_ok=True)
     if env_content is not None:
         (app_dir / ".env").write_text(env_content)
-    keyfile = data_mnt / "dispatcher-postgres" / ".pg-password"
+    keyfile = data_mnt / "state" / "dispatcher-pg-password"
     if keyfile_content is not None:
         keyfile.parent.mkdir(parents=True, exist_ok=True)
         keyfile.write_text(keyfile_content)
@@ -98,6 +100,18 @@ def test_fresh_boot_mints_password_and_persists_it(tmp_path):
     assert keyfile.read_text().strip() == password
     mode = stat.S_IMODE(keyfile.stat().st_mode)
     assert mode == 0o600, f"keyfile must be 0600, got {oct(mode)}"
+
+
+def test_keyfile_is_not_inside_the_postgres_data_dir(tmp_path):
+    """postgres:16-alpine's initdb aborts on first boot if PGDATA (bind-mounted
+    from $DATA_MNT/dispatcher-postgres) contains anything but "lost+found" —
+    the keyfile must live outside that directory or the ledger DB never
+    starts on a fresh machine."""
+    _, keyfile, _ = _run_block(tmp_path)
+    pgdata = tmp_path / "data" / "dispatcher-postgres"
+    assert pgdata not in keyfile.parents and keyfile != pgdata, (
+        f"keyfile {keyfile} must not live inside the Postgres data dir {pgdata}"
+    )
 
 
 def test_reboot_preserves_existing_keyfile(tmp_path):
