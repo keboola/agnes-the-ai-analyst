@@ -229,8 +229,11 @@ def _windows_script(word: str, raw_word: str, workspace: Path) -> str:
                 launch_cmd = f'call "{launcher}" --permission-mode auto %*'
             break
     # `_markers` returns shell-comment form ("# >>> ..."); strip the leading
-    # "# " so the .cmd file carries a clean `rem >>> ... <<<` line.
-    return f"@echo off\r\nrem {open_marker.removeprefix('# ')}\r\n{launch_cmd}\r\n"
+    # "# ". The comment must use `::` (label form), NOT `rem`: cmd.exe
+    # tokenizes `>`/`<` as redirection even on rem lines, so
+    # `rem >>> ... <<<` errors on every launch, while a top-level label
+    # line is skipped without redirection parsing.
+    return f"@echo off\r\n:: {open_marker.removeprefix('# ')}\r\n{launch_cmd}\r\n"
 
 
 def _choose_target(workspace_name: str, bin_dir: Path) -> tuple[str, Path] | tuple[None, None]:
