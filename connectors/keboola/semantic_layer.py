@@ -347,7 +347,7 @@ def sync_semantic_layer(
     from app.datasource_secrets import datasource_secret
     from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
     from connectors.keboola.metastore_client import MetastoreApiError, MetastoreClient
-    from src.repositories import table_registry_repo, metric_repo
+    from src.repositories import table_registry_repo, metric_repo, column_metadata_repo
 
     url = keboola_url or os.environ.get("KEBOOLA_STACK_URL", "")
     token = keboola_token or datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
@@ -384,6 +384,9 @@ def sync_semantic_layer(
         "skipped_unresolved_table": 0,
         "skipped_foreign_alias": 0,
         "skipped_embedded_comment": 0,
+        "skipped_ambiguous_relationship": 0,
+        "skipped_unsupported_relationship_type": 0,
+        "skipped_unverified_relationship_direction": 0,
     }
     if not models:
         return empty_result
@@ -399,21 +402,38 @@ def sync_semantic_layer(
         datasets = metastore.list_items("semantic-dataset", model_uuid)
         metrics = metastore.list_items("semantic-metric", model_uuid)
         constraints = metastore.list_items("semantic-constraint", model_uuid)
+        relationships = metastore.list_items("semantic-relationship", model_uuid)
     except (MetastoreApiError, requests.RequestException) as e:
         logger.error("Keboola Metastore fetch failed (model %s): %s", model_uuid, e)
         return {"status": "error", "error": f"Metastore fetch failed: {e}"}
 
     table_lookup = table_lookup_from_registry(table_registry_repo().list_by_source("keboola"))
     dataset_lookup = dataset_lookup_by_table_id(datasets)
+    relationship_lookup = relationship_lookup_by_dataset(relationships)
+    column_metadata = column_metadata_repo()
+    column_lookup = {
+        name: {c["column_name"] for c in column_metadata.list_for_table(name)} for name in set(table_lookup.values())
+    }
 
     repo = metric_repo()
     seen_ids: set[str] = set()
     skipped_unresolved_table = 0
     skipped_foreign_alias = 0
     skipped_embedded_comment = 0
+    skipped_ambiguous_relationship = 0
+    skipped_unsupported_relationship_type = 0
+    skipped_unverified_relationship_direction = 0
 
     for item in metrics:
-        row, skip_reason = build_metric_row(item, table_lookup, dataset_lookup, constraints, model_uuid)
+        row, skip_reason = build_metric_row(
+            item,
+            table_lookup,
+            dataset_lookup,
+            constraints,
+            model_uuid,
+            relationship_lookup=relationship_lookup,
+            column_lookup=column_lookup,
+        )
         if row is None:
             if skip_reason == "unresolved_table":
                 skipped_unresolved_table += 1
@@ -421,6 +441,12 @@ def sync_semantic_layer(
                 skipped_foreign_alias += 1
             elif skip_reason == "embedded_sql_comment":
                 skipped_embedded_comment += 1
+            elif skip_reason == "ambiguous_relationship":
+                skipped_ambiguous_relationship += 1
+            elif skip_reason == "unsupported_relationship_type":
+                skipped_unsupported_relationship_type += 1
+            elif skip_reason == "unverified_relationship_direction":
+                skipped_unverified_relationship_direction += 1
             else:
                 logger.warning(
                     "Keboola semantic metric skipped (%s): %r",
@@ -461,6 +487,9 @@ def sync_semantic_layer(
         "skipped_unresolved_table": skipped_unresolved_table,
         "skipped_foreign_alias": skipped_foreign_alias,
         "skipped_embedded_comment": skipped_embedded_comment,
+        "skipped_ambiguous_relationship": skipped_ambiguous_relationship,
+        "skipped_unsupported_relationship_type": skipped_unsupported_relationship_type,
+        "skipped_unverified_relationship_direction": skipped_unverified_relationship_direction,
     }
 
 
