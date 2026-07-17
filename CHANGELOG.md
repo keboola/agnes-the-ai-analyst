@@ -52,6 +52,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   used `ON CONFLICT DO UPDATE` (native syntax, no equivalent bug), so this
   also removes a semantic difference between the two backends' SQL shape.
   `src/repositories/usage.py`, `app/chat/persistence.py`.
+### Added
+
+- Keboola glossary import: `semantic-glossary` Metastore items sync into a new `glossary_terms` table (DuckDB + Postgres), tagged `source='keboola_semantic_layer'` and upsert+pruned each `keboola-semantic-layer-refresh` run alongside metrics — no new scheduler job. Relevance-ranked search (`GET /api/glossary/search`, `agnes glossary search`, the `glossary_search` MCP tool) uses DuckDB FTS BM25 with an ILIKE fallback, mirroring the corporate-memory knowledge search.
 
 ## [0.74.110] - 2026-07-17
 
