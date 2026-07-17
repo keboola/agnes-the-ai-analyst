@@ -195,15 +195,19 @@ class TestMarketplaceItemDaily:
 
     def test_stale_key_removed_when_source_event_deleted(self, tmp_path, monkeypatch):
         """Same anti-join-delete regression as usage_tool_daily (PR #909
-        parity finding), for the marketplace daily fact table."""
+        parity finding), for the marketplace daily fact table. Uses two
+        distinct curated plugins (not a builtin tool — see
+        test_builtin_excluded — which never enters this table at all and
+        would make the "stale" side a no-op)."""
         conn = _fresh_db(tmp_path, monkeypatch)
         _seed_curated_plugin(conn, "myplug")
+        _seed_curated_plugin(conn, "otherplug")
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
         _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id="e-keep")
-        _seed_event(conn, occurred_at=today, tool_name="Bash", event_id="e-stale")
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="otherplug:gone", event_id="e-stale")
         UsageRepository(conn).rebuild_rollups(since_day=today.date())
         names = {r[0] for r in conn.execute("SELECT name FROM usage_marketplace_item_daily").fetchall()}
-        assert "design" in names
+        assert names == {"design", "myplug", "gone", "otherplug"}
 
         conn.execute("DELETE FROM usage_events WHERE id = ?", ["e-stale"])
         UsageRepository(conn).rebuild_rollups(since_day=today.date())
@@ -357,12 +361,16 @@ class TestMarketplaceItemWindow:
 
     def test_stale_key_removed_when_source_event_deleted(self, tmp_path, monkeypatch):
         """Same anti-join-delete regression as usage_tool_daily (PR #909
-        parity finding), for the sliding-window snapshot table."""
+        parity finding), for the sliding-window snapshot table. Uses two
+        distinct curated plugins (not a builtin tool — see
+        test_builtin_excluded — which never enters this table at all and
+        would make the "stale" side a no-op)."""
         conn = _fresh_db(tmp_path, monkeypatch)
         _seed_curated_plugin(conn, "myplug")
+        _seed_curated_plugin(conn, "otherplug")
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
         _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id="e-keep")
-        _seed_event(conn, occurred_at=today, tool_name="Bash", event_id="e-stale")
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="otherplug:gone", event_id="e-stale")
         UsageRepository(conn).rebuild_rollups(since_day=today.date())
         names = {
             r[0]
@@ -370,7 +378,7 @@ class TestMarketplaceItemWindow:
                 "SELECT name FROM usage_marketplace_item_window WHERE period_label='last_7d'"
             ).fetchall()
         }
-        assert "design" in names
+        assert names == {"design", "myplug", "gone", "otherplug"}
 
         conn.execute("DELETE FROM usage_events WHERE id = ?", ["e-stale"])
         UsageRepository(conn).rebuild_rollups(since_day=today.date())
