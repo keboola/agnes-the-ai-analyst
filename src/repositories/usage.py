@@ -1108,10 +1108,20 @@ class UsageRepository:
         return len(rows)
 
     def upsert_summary(self, summary: dict, *, processor_version: int) -> None:
-        """INSERT OR REPLACE on session_file PK."""
+        """Upsert on session_file PK.
+
+        INCIDENT 2026-07-17: ``INSERT OR REPLACE`` deterministically hit the
+        same DuckDB 1.5.4 PRIMARY KEY index assertion as the DELETE-then-
+        bulk-INSERT rollup producers fixed in #909 (`INSERT OR REPLACE`
+        deletes-then-inserts the conflicting row internally — the same
+        crash trigger) — twice, on two different session_file keys, ~24h
+        apart, taking down the whole app process both times. Switched to
+        `INSERT ... ON CONFLICT DO UPDATE`, which updates the existing row
+        in place instead of deleting it.
+        """
         self.conn.execute(
             """
-            INSERT OR REPLACE INTO usage_session_summary
+            INSERT INTO usage_session_summary
                 (session_file, session_id, username, started_at, ended_at,
                  active_seconds, wall_seconds, user_messages, assistant_messages,
                  tool_calls, tool_errors, skill_invocations, subagent_dispatches,
@@ -1119,6 +1129,30 @@ class UsageRepository:
                  primary_model, input_tokens, output_tokens, cache_read_tokens,
                  cache_creation_tokens, processor_version, user_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (session_file) DO UPDATE SET
+                session_id = EXCLUDED.session_id,
+                username = EXCLUDED.username,
+                started_at = EXCLUDED.started_at,
+                ended_at = EXCLUDED.ended_at,
+                active_seconds = EXCLUDED.active_seconds,
+                wall_seconds = EXCLUDED.wall_seconds,
+                user_messages = EXCLUDED.user_messages,
+                assistant_messages = EXCLUDED.assistant_messages,
+                tool_calls = EXCLUDED.tool_calls,
+                tool_errors = EXCLUDED.tool_errors,
+                skill_invocations = EXCLUDED.skill_invocations,
+                subagent_dispatches = EXCLUDED.subagent_dispatches,
+                mcp_calls = EXCLUDED.mcp_calls,
+                slash_commands = EXCLUDED.slash_commands,
+                distinct_tools = EXCLUDED.distinct_tools,
+                distinct_skills = EXCLUDED.distinct_skills,
+                primary_model = EXCLUDED.primary_model,
+                input_tokens = EXCLUDED.input_tokens,
+                output_tokens = EXCLUDED.output_tokens,
+                cache_read_tokens = EXCLUDED.cache_read_tokens,
+                cache_creation_tokens = EXCLUDED.cache_creation_tokens,
+                processor_version = EXCLUDED.processor_version,
+                user_id = EXCLUDED.user_id
             """,
             [
                 summary["session_file"],

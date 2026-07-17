@@ -23,6 +23,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   runs inside the cleanup block; a child that produced no output is still
   reported as a 500 with its stderr and exit code logged.
   `app/marketplace_server/git_router.py` (race introduced in #887).
+### Fixed
+
+- **`INSERT OR REPLACE` could crash the whole app process on DuckDB, same class of bug as #909.**
+  `UsageRepository.upsert_summary` (`usage_session_summary`, hit every ~10
+  minutes by the usage session processor) and `ChatRepository.upsert_workdir`
+  (`user_workdirs`) both used `INSERT OR REPLACE`, which deletes-then-inserts
+  the conflicting row internally on DuckDB 1.5.4 — the same PRIMARY KEY index
+  assertion that #909 fixed for the rollup producers, just via a different
+  SQL surface. Observed live twice more in production within 24h of #909
+  shipping, on two different `session_file` keys, each time invalidating the
+  shared connection for every subsequent query until the process restarted.
+  Switched both to `INSERT ... ON CONFLICT DO UPDATE`, which updates the
+  existing row in place instead of deleting it. Postgres siblings already
+  used `ON CONFLICT DO UPDATE` (native syntax, no equivalent bug), so this
+  also removes a semantic difference between the two backends' SQL shape.
+  `src/repositories/usage.py`, `app/chat/persistence.py`.
 
 ## [0.74.108] - 2026-07-17
 

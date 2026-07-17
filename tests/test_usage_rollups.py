@@ -105,6 +105,39 @@ def _seed_event(
     )
 
 
+class TestUpsertSummary:
+    """upsert_summary — the per-session_file PK upsert the usage session
+    processor calls on every tick (~every 10 min) for every session it
+    touches."""
+
+    def test_repeated_upsert_same_key_updates_in_place(self, tmp_path, monkeypatch):
+        """Regression 2026-07-17: `INSERT OR REPLACE` deletes-then-inserts
+        the conflicting row internally on DuckDB 1.5.4, hitting the same
+        PRIMARY KEY index assertion as the DELETE-then-bulk-INSERT rollup
+        producers (#909) — it crashed the whole app process in production
+        twice, on two different session_file keys, ~24h apart. Switched to
+        INSERT ... ON CONFLICT DO UPDATE. Two upserts of the same
+        session_file must not raise and must leave exactly one row with the
+        latest values."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        repo = UsageRepository(conn)
+        base = {
+            "session_file": "alice/s1.jsonl",
+            "session_id": "s1",
+            "username": "alice",
+            "started_at": datetime.now(timezone.utc),
+            "tool_calls": 3,
+        }
+        repo.upsert_summary(base, processor_version=1)
+        repo.upsert_summary({**base, "tool_calls": 7}, processor_version=2)
+
+        rows = conn.execute(
+            "SELECT tool_calls, processor_version FROM usage_session_summary WHERE session_file = ?",
+            [base["session_file"]],
+        ).fetchall()
+        assert rows == [(7, 2)]
+
+
 class TestRebuildRollupsToolDaily:
     """Legacy rollup still ticks — must keep its behaviour after v46."""
 
