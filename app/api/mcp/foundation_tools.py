@@ -154,6 +154,9 @@ def register_foundation_tools(
 
         Returns ranked chunks with citations (``filename``, ``ordinal``, ``text``,
         ``score``). Optionally restrict to one collection via ``collection_id``.
+        The response's ``retrieval`` field says how results were ranked:
+        ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded
+        mode when the server has no embedding model installed.
 
         Args:
             query: Natural-language or keyword query.
@@ -182,6 +185,9 @@ def register_foundation_tools(
         all RBAC-filtered. Results are typed ``chunk | knowledge | table``;
         a ``table`` hit means structured data: pivot to SQL via the ``query``
         tool with the hit's ``table_id`` instead of reading text chunks.
+        The response's ``retrieval`` field labels the chunk engine's mode:
+        ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded
+        mode when the server has no embedding model installed.
 
         Args:
             query: Natural-language or keyword query.
@@ -242,7 +248,10 @@ def register_foundation_tools(
             table_id: Table ID from the catalog.
             rows:     How many sample rows to return (default 5, max 50).
 
-        Returns ``{"schema": {...}, "sample": {"columns": [...], "rows": [...]}}``.
+        Returns ``{"schema": {...}, "sample": {"table_id": ..., "rows": [...],
+        "source": ...}}`` where ``sample.rows`` is a list of ``{column: value}``
+        objects (empty when the table has no rows — there is no ``columns``
+        key; column names come from ``schema.columns``).
         """
         rows = min(max(1, rows), 50)
         async with httpx.AsyncClient() as c:
@@ -719,7 +728,6 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-
     @mcp.tool()
     async def admin_knowledge_digest_get(digest_id: str) -> dict:
         """Show one maintained digest's full detail (admin only).
@@ -743,7 +751,6 @@ def register_foundation_tools(
             )
             r.raise_for_status()
             return r.json()
-
 
     @mcp.tool()
     async def admin_knowledge_digest_create(
@@ -789,7 +796,6 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-
     @mcp.tool()
     async def admin_knowledge_digest_update(
         digest_id: str,
@@ -831,7 +837,6 @@ def register_foundation_tools(
             )
             r.raise_for_status()
             return r.json()
-
 
     @mcp.tool()
     async def admin_knowledge_digest_delete(digest_id: str) -> dict:

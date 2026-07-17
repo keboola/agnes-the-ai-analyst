@@ -808,3 +808,45 @@ def test_update_degrades_on_corrupt_config(monkeypatch, tmp_path):
     assert ws_ran == []
     entry = json.loads(result.output)
     assert any(s["stage"] == "config" and s["status"] == "error" for s in entry["steps"]), entry
+
+
+# --- _step_launcher ---------------------------------------------------------
+
+
+def test_step_launcher_migrates_legacy_block(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("cli.lib.shortcut.shutil.which", lambda cmd: None)
+    workspace = tmp_path / "MyWorkspace"
+    workspace.mkdir()
+    (home / ".zshrc").write_text(
+        "# >>> agnes launcher: myworkspace <<<\nfunction myworkspace {\n  cd x\n}\n# <<< agnes launcher: myworkspace >>>\n",
+        encoding="utf-8",
+    )
+
+    report: list[dict] = []
+    upd._step_launcher(workspace, report=report)
+
+    assert report == [{"stage": "launcher", "status": "ok", "detail": "migrated"}]
+    assert "agnes launcher" not in (home / ".zshrc").read_text(encoding="utf-8")
+    assert (home / ".local" / "bin" / "myworkspace").exists()
+
+
+def test_step_launcher_noop_without_evidence(monkeypatch, tmp_path):
+    """No legacy block, no script → nothing installed. Preserves the
+    `agnes init --no-shortcut` opt-out across `agnes update` runs."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("cli.lib.shortcut.shutil.which", lambda cmd: None)
+    workspace = tmp_path / "MyWorkspace"
+    workspace.mkdir()
+
+    report: list[dict] = []
+    upd._step_launcher(workspace, report=report)
+
+    assert report == [{"stage": "launcher", "status": "ok", "detail": "absent"}]
+    assert not (home / ".local" / "bin").exists()

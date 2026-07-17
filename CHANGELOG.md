@@ -22,6 +22,139 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   to direct Anthropic on dispatcher failure. Unset ⇒ behavior unchanged. The
   broker logs a warning when the URL is set without the key.
   `app/api/broker.py`, documented in `config/.env.template`.
+## [0.74.107] - 2026-07-17
+
+### Security
+
+- **Jira attachment download: SSRF via the webhook-supplied URL (audit L3).**
+  `download_attachment` fetched `attachment.content` straight from the webhook
+  payload — caller-supplied — with redirects followed and no host check, so an
+  HMAC-valid webhook for a nonexistent issue could reach the fetch-failure
+  fallback and make the server GET an arbitrary internal URL (blind; the body
+  landed under `/data`). The content URL is now checked against an explicit
+  **host allowlist** (the configured Jira domain + `api.atlassian.com`, https
+  only, `urlsplit`-parsed so `https://jira.example.com@evil.tld/` resolves to
+  the real host) before any HTTP call. An allowlist rather than a private-IP
+  denylist: a denylist would wrongly break a self-hosted Jira on a private
+  address.
+- **Co-session seed embedded the owner-chosen session title undelimited
+  (audit L5).** The intersection seed interpolated the source session's title
+  raw into a `role="system"` message read by the *invitee's* agent, so an owner
+  could give their own instruction text system-role authority in a session
+  shared with a higher-grant colleague. The title is now length-capped, wrapped
+  in `<untrusted_title>` markers, tag-defanged so a crafted title can't close
+  the wrapper, and explicitly labelled as data-never-instructions (mirrors the
+  `<untrusted_notes>` boundary in the corporate-memory curator). Bounded before
+  and after — a co-session runs under the grant *intersection* and egress is
+  brokered, so the ceiling was behavioral manipulation, not data escalation.
+
+### Changed
+- The one-word workspace launcher installed by `agnes init` is now an executable script in `~/.local/bin` (`<word>.cmd` on Windows) instead of a shell function appended to `~/.zshrc` / `~/.bashrc` / PowerShell profiles. Scripts are visible to `which`, work from non-interactive shells, and on Windows are immune to the default `ExecutionPolicy Restricted` (which silently blocked the old profile function from loading). The collision guard now also refuses to shadow any existing executable on PATH (a workspace named `Node` gets `nodeai`, not `node`). `agnes init` and a new `agnes update` convergence step automatically remove the legacy marked rc-function blocks and install the script — never before the replacement script is in place; users who opted out via `agnes init --no-shortcut` are left untouched. `scripts/dev/agnes-client-reset.sh` removes marker-carrying launcher scripts on reset.
+
+## [0.74.106] - 2026-07-17
+
+### Fixed
+
+- **Keboola export scratch dirs could leak silently, filling the data disk.**
+  `materialize_query` / `_extract_via_legacy` pass `ignore_cleanup_errors=True`
+  to their owning `TemporaryDirectory` so a cleanup failure never masks the
+  export's real exception — but that flag also silently swallows the failure,
+  so a leaked `kbc-export-*` dir was indistinguishable from a hard-kill
+  orphan and the only signal was the disk slowly filling (observed live:
+  disk climbed from 32% to 91% in under two hours on a 15-minute materialize
+  cadence, repeatedly failing table syncs on ENOSPC). Added
+  `warn_if_scratch_survived()`, called right after each export's
+  `TemporaryDirectory` block exits — logs a warning naming the surviving dir
+  instead of leaving operators to discover it via `df -h`.
+  `connectors/keboola/storage_api.py`, `connectors/keboola/extractor.py`.
+- **`UsageRepository.rebuild_rollups()` could crash the whole app process on DuckDB.**
+  The `usage_tool_daily` / `usage_marketplace_item_daily` / `usage_marketplace_item_window`
+  rollup producers deleted a day/period range then bulk-reinserted overlapping
+  keys within the same transaction; on DuckDB 1.5.4 this could hit an internal
+  PRIMARY KEY index assertion ("duplicate key") that aborted the process
+  uncatchably rather than raising a Python exception, taking down the whole
+  instance on the next scheduler tick whenever a key at the rolling window's
+  boundary got deleted and reinserted in the same commit. Switched all three
+  producers to `INSERT ... ON CONFLICT DO UPDATE`, which never deletes the row
+  so it can't hit that path — paired with a targeted anti-join `DELETE` (only
+  keys *absent* from the freshly computed set, never one about to be
+  upserted) so a stale row whose source event was deleted/corrected still
+  gets cleaned up, matching the previous DELETE-then-reinsert behavior
+  without reintroducing the same-key delete+reinsert crash. Postgres sibling
+  is unaffected and intentionally unchanged (documented in `usage_pg.py` —
+  this is a DuckDB engine bug workaround, not a general anti-pattern fix).
+  `src/repositories/usage.py`.
+
+## [0.74.105] - 2026-07-16
+
+### Fixed
+
+- **`agnes pull` no longer aborts when a table's display name contains spaces or punctuation.** The stack sync used a table/package/domain label verbatim as an on-disk path segment; a display name like `Agnes audit log` failed the strict path-segment guard with `unsafe path segment: 'Agnes audit log'` and, because the check ran inside the server-map comprehension (before the per-table `try/except`), aborted the entire sync so `sync_state.json` was never written. Path segments are now sanitized (unsafe runs → `_`, already-safe names preserved verbatim), a genuinely un-nameable row is logged and skipped instead of raising, and the pre-existing `.`/`..` traversal pass-through is closed.
+
+## [0.74.104] - 2026-07-16
+
+### Added
+
+- **Admin hub page (`GET /admin`)** — a settings-style landing page that indexes
+  every `/admin` surface grouped by domain (Activity Center, Users & Access,
+  Data Packages, Sources, Agent Experience, Server, Documentation). It's the
+  scalable home for administration as the surface grows, and the header's Admin
+  menu links to it. Gated by `require_admin` like every other `/admin` route.
+
+### Changed
+
+- **Redesigned the app header into a single compact row** (~57px) at all
+  desktop/laptop widths: product name, primary navigation, then global search,
+  Admin, help, and user profile on one line. When the navigation runs out of
+  room the lowest-priority items collapse into a **"More" overflow menu**
+  (priority-plus, in `app.js`) before anything shrinks or clips; only on mobile
+  (<640px) does it intentionally wrap to two rows. Header height is now a single
+  `--app-header-height` token so sticky sub-toolbars offset off it instead of
+  hard-coded pixels.
+- **Admin is now a first-class header entry for admins** — its own trigger that
+  opens a multi-column **mega-menu** (every admin domain visible at once, versus
+  the previous one-at-a-time accordion) with a link to the new `/admin` hub. It
+  is no longer buried in the user-profile dropdown, which is slimmed back to
+  personal items (Profile, AI Connector, My activity, Logout, Theme). All routes
+  and permissions are unchanged — every `/admin/*` route is still gated by
+  `require_admin`; this is a discoverability/IA change only.
+
+## [0.74.103] - 2026-07-16
+
+### Fixed
+
+- **Fresh Postgres-backend deployments can boot compose from scratch.** On a brand-new `data` volume the `data-migrate` one-shot in `docker-compose.postgres.yml` found no `system.duckdb` to migrate from, exited 2, and wedged the boot — `app` and `scheduler` gate on it via `service_completed_successfully`. The compose command now passes a new `--missing-source-ok` flag: `python -m scripts.migrate_duckdb_to_pg` treats the missing source as "nothing to migrate" (logged no-op, exit 0), so a fresh deployment proceeds straight to the alembic-seeded PG. Operator-driven runs WITHOUT the flag keep exiting 2 — during a real cutover a missing `system.duckdb` means a mis-mounted volume, not a fresh install — and the flag is rejected in combination with `--reset-target`. Covered by a static compose contract test plus a docker-gated e2e that boots the real overlay chain on fresh volumes (`pytest tests/test_e2e_docker_postgres_fresh.py -m docker`).
+
+## [0.74.102] - 2026-07-16
+
+### Fixed
+
+- **`agnes init` and the recommended launch command no longer trip Claude Code's auto-mode classifier during analyst setup.** `agnes refresh-marketplace --bootstrap` (marketplace clone + plugin install) was soft-denied as "Untrusted Code Integration" under `--permission-mode auto`; `agnes init` now declares the configured marketplace host as trusted internal infrastructure in the user-scope `~/.claude/settings.json` (`autoMode.environment`), derived from config at runtime — never hardcoded. Separately, the `/home` onboarding page's recommended launch command now pre-approves `uv tool install` (setup step 1) via `Bash(uv tool install:*)` in `--allowedTools`, so it no longer requires an interactive permission prompt. Existing installs pick up the trust on their next `agnes init`; wiring it into `agnes update` for installs that never re-run init is a tracked follow-up.
+
+## [0.74.101] - 2026-07-16
+
+### Fixed
+
+- Built-in marketplace plugins (`agnes-analyst`, `agnes-operator`) now ship
+  their `SKILL.md` at the canonical `plugins/<name>/skills/<name>/SKILL.md`
+  path instead of the plugin root. At the root the file was discovered by
+  nothing: Claude Code loaded no skill from the installed plugin, and
+  `list_inner_skills()` returned `[]`, so both plugins contributed zero
+  skills to the marketplace listing and the served feed despite installing
+  and being granted correctly. Users who already installed either plugin
+  pick the skill up on the next `agnes refresh-marketplace` (or session
+  start).
+
+## [0.74.100] - 2026-07-16
+
+### Added
+
+- **Search responses now label the retrieval mode** (#898): `GET /api/collections/search`, `GET /api/knowledge/search`, and the MCP tools `collections_search` / `knowledge_search` (both transports, including the stdio offline fallback) carry a `retrieval: "hybrid" | "lexical_only"` field. Previously the lexical-only degradation that kicks in without the `agnes[embeddings]` extra was visible only in a server-side log line, so a client could not tell semantic-scored results from degraded ones.
+
+### Fixed
+
+- Catalog `fetch_via` hint for internal tables (`agnes_audit`, `agnes_sessions`, `agnes_telemetry`) no longer claims "already local" (#898) — on a fresh workspace no local view exists until the usage export lands in the pull manifest, so the old hint misrouted clients into a failing local query. It now points at the auto-routing `agnes query`.
+- MCP `describe` docstrings (stdio + server-side foundation tool) now document the actual sample shape (#898): `sample.rows` is a list of `{column: value}` objects and there is no `sample.columns` key — the docstring previously promised `{"columns": [...], "rows": [...]}`, which broke agents parsing the documented shape on empty tables.
 
 ## [0.74.99] - 2026-07-16
 

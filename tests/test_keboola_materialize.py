@@ -397,6 +397,53 @@ def test_materialize_query_sliced_parquet_tempdir_cleaned_on_exception(tmp_path)
     assert not (output_dir / "will_fail_sliced.parquet").exists()
 
 
+def test_materialize_query_warns_on_survived_scratch_when_exception_raised(tmp_path, monkeypatch):
+    """Regression (agnes-reviewer-architecture finding on PR #909): the
+    scratch-survived warning was originally placed as a plain statement after
+    the ``with tempfile.TemporaryDirectory(...)`` block — any exception
+    raised inside the block (the exact ENOSPC / mid-write failure this
+    warning exists to surface) skips straight past it. Verify the warning
+    check actually runs when the export raises, by making the tempdir
+    genuinely survive (ignore_cleanup_errors swallowing a forced cleanup
+    failure) and asserting the warning fires."""
+    import connectors.keboola.storage_api as sapi
+
+    warned: list[str] = []
+    monkeypatch.setattr(sapi, "warn_if_scratch_survived", lambda path: warned.append(path))
+    monkeypatch.setattr(kbe, "warn_if_scratch_survived", sapi.warn_if_scratch_survived, raising=False)
+
+    def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
+        return {
+            "job_id": 1,
+            "file_id": 2,
+            "rows": 1,
+            "file_info": {"id": 2, "url": "https://fake/manifest", "isSliced": True},
+            "file_type": "parquet",
+        }
+
+    def boom_download_slices(file_info, dest_dir):
+        raise OSError(28, "No space left on device")
+
+    client = MagicMock()
+    client.prepare_export.side_effect = fake_prepare
+    client.download_file_slices.side_effect = boom_download_slices
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    with pytest.raises(OSError, match="No space left"):
+        kbe.materialize_query(
+            table_id="will_fail_sliced_2",
+            bucket="in.c-test",
+            source_table="t",
+            source_query=None,
+            storage_client=client,
+            output_dir=output_dir,
+        )
+
+    assert warned, "warn_if_scratch_survived must be checked even when the export raises"
+
+
 # ---- AGNES_TEMP_DIR routing -------------------------------------------------
 
 

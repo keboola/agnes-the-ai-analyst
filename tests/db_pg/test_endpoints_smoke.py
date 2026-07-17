@@ -1575,6 +1575,7 @@ KNOWN_UNTESTED = {
     "GET /api/connectors/manifest",
     "GET /api/connectors/params",
     # HTML admin pages — covered by separate UI test suite
+    "GET /admin",  # admin hub — tests/test_web_admin_hub.py
     "GET /admin/access",
     "GET /admin/activity",
     "GET /admin/adoption",

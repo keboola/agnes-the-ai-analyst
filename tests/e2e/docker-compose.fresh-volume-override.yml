@@ -1,0 +1,33 @@
+# Test-only override for the fresh-volume boot e2e
+# (tests/test_e2e_docker_postgres_fresh.py). Loaded LAST in the chain
+#
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml \
+#       -f tests/e2e/docker-compose.fresh-volume-override.yml ...
+#
+# Two adaptations so the production overlay chain runs hermetically on a
+# laptop / CI runner:
+#
+#   1. Drop the ``env_file: .env`` requirement — the harness must not
+#      depend on (or leak) a developer's real .env; everything the
+#      exercised services need is injected by the test via the process
+#      environment (POSTGRES_PASSWORD, AGNES_TAG).
+#   2. ``postgres_data`` binds to /data/postgres on customer-instance VMs;
+#      that path doesn't exist locally — fall back to a plain Docker
+#      named volume (same pattern docker-compose.postgres.yml documents
+#      for local dev).
+
+services:
+  app:
+    env_file: !reset []
+  extract:
+    env_file: !reset []
+  scheduler:
+    env_file: !reset []
+  telegram-bot:
+    env_file: !reset []
+  ws-gateway:
+    env_file: !reset []
+
+volumes:
+  postgres_data: !override
+    driver: local

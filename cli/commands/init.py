@@ -50,10 +50,13 @@ import typer
 from cli.client import api_get
 from cli.config import _config_dir, save_config, save_token
 from cli.error_render import render_error
+from cli.lib.automode import ensure_marketplace_trusted
 from cli.lib.commands import install_claude_commands
 from cli.lib.hooks import install_claude_hooks
 from cli.lib.initial_workspace import apply_override, probe_status
+from cli.lib.marketplace import configured_marketplace_host
 from cli.lib.pull import PullResult, _override_server_env, run_pull
+from cli.lib.session_paths import user_settings_path
 from cli.lib.shortcut import install_launcher_shortcut
 
 
@@ -262,10 +265,10 @@ def init(
         False,
         "--no-shortcut",
         help=(
-            "Skip writing the one-word launcher shortcut to ~/.zshrc / "
-            "~/.bashrc (POSIX) or PowerShell $PROFILE (Windows). By default "
-            "`agnes init` appends an idempotent shell function named after "
-            "the workspace folder so you can launch from any terminal."
+            "Skip installing the one-word launcher script into ~/.local/bin "
+            "(POSIX) or ~/.local/bin/<word>.cmd (Windows). By default "
+            "`agnes init` installs an executable script named after the "
+            "workspace folder so you can launch from any terminal."
         ),
     ),
 ):
@@ -788,6 +791,23 @@ def init(
     install_claude_commands(workspace)
 
     # ------------------------------------------------------------------
+    # Declare the marketplace host as trusted internal infrastructure for
+    # Claude Code's auto-mode classifier, in the USER-scope ~/.claude/
+    # settings.json (NOT the workspace settings above — the classifier reads
+    # `autoMode` only from user/managed settings). Without this the classifier
+    # soft-denies `agnes refresh-marketplace --bootstrap` as "Untrusted Code
+    # Integration". The host is derived from the configured server (saved via
+    # save_config above), never hardcoded. Best-effort: a failure here must
+    # never break init.
+    # ------------------------------------------------------------------
+    try:
+        marketplace_host = configured_marketplace_host()
+        if marketplace_host and ensure_marketplace_trusted(user_settings_path(), marketplace_host):
+            typer.echo(f"Registered {marketplace_host} as trusted internal infrastructure for Claude Code auto mode.")
+    except Exception as exc:  # noqa: BLE001 — best-effort, never break init
+        typer.echo(f"warn: could not register auto-mode trust: {exc}", err=True)
+
+    # ------------------------------------------------------------------
     # Always chmod +x hook scripts that landed on disk, regardless of
     # which path seeded the workspace. In DEFAULT mode the hooks come
     # from `install_claude_hooks` above; in OVERRIDE mode they come
@@ -959,9 +979,10 @@ def init(
     # action (`/agnes-private`) — never something the tooling does for them.
 
     # ------------------------------------------------------------------
-    # Install the one-word launcher shortcut. Runs in BOTH default and
-    # override modes — the workspace launcher (bin/<word>) is seeded by
-    # the IWT in override mode; default mode falls back to
+    # Install the one-word launcher script into ~/.local/bin (also cleans
+    # up legacy rc-function blocks). Runs in BOTH default and override
+    # modes — the workspace launcher (bin/<word>) is seeded by the IWT in
+    # override mode; default mode falls back to
     # `claude --permission-mode auto`. Best-effort; never aborts init.
     # ------------------------------------------------------------------
     install_launcher_shortcut(workspace, no_shortcut=no_shortcut)

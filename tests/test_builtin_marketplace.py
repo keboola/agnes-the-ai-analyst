@@ -46,7 +46,13 @@ def test_builtin_marketplace_json_present():
 
 
 def test_builtin_plugin_dirs_exist():
-    """Both plugin directories are present under plugins/."""
+    """Both plugin directories are present under plugins/.
+
+    The SKILL.md must live at ``skills/<name>/SKILL.md`` — the canonical
+    Claude Code plugin layout, and the only one both Claude Code and
+    ``list_inner_skills`` discover. A SKILL.md at the plugin root loads
+    nowhere (see test_builtin_plugin_skills_are_discoverable).
+    """
     from src.marketplace import _BUILTIN_CONTENT_DIR
 
     for slug in ("agnes-analyst", "agnes-operator"):
@@ -54,8 +60,27 @@ def test_builtin_plugin_dirs_exist():
         assert plugin_dir.is_dir(), f"Plugin dir missing: {plugin_dir}"
         plugin_json = plugin_dir / ".claude-plugin" / "plugin.json"
         assert plugin_json.is_file(), f"plugin.json missing: {plugin_json}"
-        skill_md = plugin_dir / "SKILL.md"
+        skill_md = plugin_dir / "skills" / slug / "SKILL.md"
         assert skill_md.is_file(), f"SKILL.md missing: {skill_md}"
+        assert not (plugin_dir / "SKILL.md").exists(), (
+            f"SKILL.md must not sit at the plugin root: {plugin_dir / 'SKILL.md'}"
+        )
+
+
+def test_builtin_plugin_skills_are_discoverable():
+    """The bundled plugins expose their skill through the same enumeration
+    the marketplace listing and the served feed use.
+
+    Regression guard: both plugins shipped their SKILL.md at the plugin root,
+    so list_inner_skills() returned [] — the plugins installed fine but
+    contributed no skill to any surface.
+    """
+    from src.marketplace import _BUILTIN_CONTENT_DIR
+    from src.marketplace_listing import list_inner_skills
+
+    for slug in ("agnes-analyst", "agnes-operator"):
+        plugin_dir = _BUILTIN_CONTENT_DIR / "plugins" / slug
+        assert list_inner_skills(plugin_dir) == [slug]
 
 
 # ---------------------------------------------------------------------------

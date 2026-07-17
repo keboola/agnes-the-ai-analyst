@@ -172,3 +172,25 @@ def test_search_normalization_handles_single_candidate(e2e_env):
     assert res
     assert res[0]["score"] > 0
     assert res[0]["confidence"] == "low"  # a single-file corpus can't discriminate
+
+
+def test_retrieval_mode_never_loads_the_model(monkeypatch):
+    """#898 review follow-up: labeling a response must not pay the model
+    instantiation/download cost — `retrieval_mode` goes through the
+    `embedding_capability` probe, never `_load_model`."""
+    import src.ingest.embeddings as embeddings
+    from src.ingest.retrieval import retrieval_mode
+
+    def _boom():
+        raise AssertionError("retrieval_mode must not trigger a model load")
+
+    monkeypatch.setattr(embeddings, "_load_model", _boom)
+
+    monkeypatch.setattr(embeddings, "_model", None)  # unresolved → import probe
+    assert retrieval_mode() in ("hybrid", "lexical_only")
+
+    monkeypatch.setattr(embeddings, "_model", False)  # resolved: known-absent
+    assert retrieval_mode() == "lexical_only"
+
+    monkeypatch.setattr(embeddings, "_model", object())  # resolved: loaded model
+    assert retrieval_mode() == "hybrid"

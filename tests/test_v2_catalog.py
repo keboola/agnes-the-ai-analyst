@@ -160,6 +160,35 @@ class TestServerOnlyCatalog:
             conn.close()
             v2_catalog._table_rows_cache.clear()
 
+    def test_internal_table_fetch_via_does_not_claim_already_local(self, reload_db):
+        """#898: internal tables (agnes_audit & co.) live in the server state
+        backend and have no local view until the usage export lands in the
+        pull manifest — "already local" misroutes a fresh workspace into a
+        failing local query. The hint must point at the auto-routing
+        `agnes query` instead."""
+        from app.api import v2_catalog
+        from src.repositories.table_registry import TableRegistryRepository
+
+        conn = reload_db.get_system_db()
+        try:
+            v2_catalog._table_rows_cache.clear()
+            TableRegistryRepository(conn).register(
+                id="agnes_audit",
+                name="Agnes audit log",
+                source_type="internal",
+                bucket="",
+                source_table="audit_log",
+                query_mode="internal",
+            )
+            admin = _make_admin(conn)
+            data = v2_catalog.build_catalog(conn, admin)
+            row = next(t for t in data["tables"] if t["id"] == "agnes_audit")
+            assert "already local" not in row["fetch_via"], row["fetch_via"]
+            assert "agnes query" in row["fetch_via"]
+        finally:
+            conn.close()
+            v2_catalog._table_rows_cache.clear()
+
     def test_regular_local_table_still_reports_already_local(self, reload_db):
         # No over-correction: a normally-distributed local table keeps its
         # "already local" hint and reports server_only=False.
