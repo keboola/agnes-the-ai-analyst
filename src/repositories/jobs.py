@@ -21,11 +21,23 @@ Postgres instead (a plain SELECT-then-INSERT there is racy under READ
 COMMITTED — two concurrent transactions can both miss each other's
 uncommitted row). DuckDB's single-writer model doesn't have that
 cross-transaction race, but the check-then-insert here is still not
-atomic across *threads* sharing one connection, so ``_lock`` (mirroring
-the ``_rebuild_lock`` pattern in ``src/orchestrator.py``) serializes the
-whole critical section. The CONTRACT shared with the PG side is the
-dedup *behavior* (matching key + queued/running status returns the
-existing row, no insert), not the mechanism.
+atomic across *threads* sharing one connection, so ``_ENQUEUE_LOCK``
+serializes the whole critical section.
+
+``_ENQUEUE_LOCK`` is a MODULE-level lock (mirroring the ``_rebuild_lock``
+pattern in ``src/orchestrator.py``, which is also module-level), not a
+``self._lock`` on the repository instance. The factory
+(``src.repositories.jobs_repo()``) builds a fresh ``JobsRepository``
+per call, all wrapping the *same* underlying connection
+(``get_system_db()``) — an instance-level lock would give each caller
+its own, unshared ``threading.Lock()`` and serialize nothing (empirically
+confirmed: 8 threads, each with its own repo instance, produced 8 rows
+for one idempotency key). A module-level lock is shared by every
+instance regardless of how many separate ``JobsRepository`` objects
+wrap the connection, so it actually protects the critical section. The
+CONTRACT shared with the PG side is the dedup *behavior* (matching key +
+queued/running status returns the existing row, no insert), not the
+mechanism.
 """
 
 from __future__ import annotations
@@ -38,11 +50,15 @@ from typing import Any, Dict, List, Optional
 
 import duckdb
 
+#: Serializes the enqueue() check-then-insert critical section across ALL
+#: JobsRepository instances (see module docstring for why this must be
+#: module-level, not per-instance).
+_ENQUEUE_LOCK = threading.Lock()
+
 
 class JobsRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
         self.conn = conn
-        self._lock = threading.Lock()
 
     @staticmethod
     def _decode(d: Dict[str, Any]) -> Dict[str, Any]:
@@ -81,9 +97,9 @@ class JobsRepository:
         still ``'queued'`` or ``'running'``, that row is returned
         unchanged — no new insert (dedup). See the module docstring for
         why this check lives here rather than in a DB constraint, and
-        why it's guarded by ``self._lock``.
+        why it's guarded by the module-level ``_ENQUEUE_LOCK``.
         """
-        with self._lock:
+        with _ENQUEUE_LOCK:
             if idempotency_key is not None:
                 existing = self.conn.execute(
                     """SELECT * FROM jobs
