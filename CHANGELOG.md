@@ -277,6 +277,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 - **Five job kinds registered on the wave-2B worker queue** (`app/worker/kinds.py`, `register_all_kinds()`, called from `app/main.py`'s lifespan before the worker loop starts): `data-refresh` and `jira-refresh` (heavy lane), `marketplaces-sync`, `session-collector`, and `corporate-memory` (light lane). Each handler is a thin adapter delegating to the existing function behind its HTTP counterpart (`/api/sync/trigger`, `/api/marketplaces/sync-all`, `/api/admin/run-session-collector`, `/api/admin/run-corporate-memory`) or, for `jira-refresh`, `SyncOrchestrator().rebuild_source("jira")` — no logic duplicated.
+- **`/api/jobs` REST + CLI + MCP surface for the wave-2B job queue** (`app/api/jobs.py`): `POST /api/jobs` enqueues a job (`{kind, payload?, idempotency_key?}` → 202 `{job}`; unknown `kind` → 400 listing the registered `JOB_KINDS`), `GET /api/jobs/{job_id}` fetches one, `GET /api/jobs?status=&kind=&limit=` lists. Gated by `require_admin`, which already accepts the scheduler's shared-secret token. CLI: `agnes admin jobs enqueue|show|list`. MCP: `admin_job_enqueue`, `admin_job_get`, `admin_jobs_list`.
 
 ### Changed
 

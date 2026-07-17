@@ -675,6 +675,22 @@ checks against.
 - /api/admin/knowledge-digests
 - /api/admin/knowledge-digests/{digest_id}
 
+### `/api/jobs` — Job queue (wave-2B worker runtime)
+
+- /api/jobs
+- /api/jobs/{job_id}
+
+Enqueue (`POST /api/jobs`), fetch (`GET /api/jobs/{job_id}`), and list
+(`GET /api/jobs?status=&kind=&limit=`) jobs on the durable job queue
+(`src/repositories/jobs.py`). `kind` must be registered in the server's
+`JOB_KINDS` registry (`app/worker/registry.py`, populated by
+`register_all_kinds()` at startup) — an unrecognized kind 400s with the
+list of currently-registered kinds. Gated by `require_admin`, which also
+accepts the scheduler's shared-secret bearer token
+(`app/auth/scheduler_token.py`) since that token resolves to a synthetic
+user in the `Admin` group. CLI: `agnes admin jobs enqueue|show|list`. MCP:
+`admin_job_enqueue`, `admin_job_get`, `admin_jobs_list`.
+
 ### `/api/admin/mcp-sources` — MCP source management
 
 - /api/admin/mcp-sources
