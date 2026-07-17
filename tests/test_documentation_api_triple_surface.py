@@ -69,6 +69,8 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/admin/store/lint-findings": ("admin store lint-findings", "admin_store_lint_findings"),
     "/api/admin/store/lint-audit": ("admin store lint-audit", "admin_store_lint_audit"),
     "/api/admin/store/lint-dismiss": ("admin store lint-dismiss", "admin_store_lint_dismiss"),
+    # Per-user MCP credential connectivity check (self-service connect page).
+    "/api/mcp/sources/{source_id}/my-secret/test": ("mcp my-secret test", "my_secret_test"),
 }
 
 

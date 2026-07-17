@@ -59,6 +59,9 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "admin_knowledge_digest_create",
     "admin_knowledge_digest_update",
     "admin_knowledge_digest_delete",
+    # Per-user MCP credential connectivity check (triple-surface with
+    # /api/mcp/sources/{id}/my-secret/test + `agnes mcp my-secret test`).
+    "my_secret_test",
 )
 
 
@@ -861,5 +864,29 @@ def register_foundation_tools(
             )
             r.raise_for_status()
         return {"deleted": digest_id}
+
+    @mcp.tool()
+    async def my_secret_test(source_id: str) -> dict:
+        """Verify your own stored credential for a per_user MCP source.
+
+        Runs a live connectivity check against the upstream under YOUR
+        credential (not the shared one). Returns ``{ok, tool_count, message}``.
+        If you are not connected, this returns a 403 whose message tells you
+        where to add your token.
+
+        Args:
+            source_id: The MCP source id (``src_*``).
+
+        Mirrors ``POST /api/mcp/sources/{id}/my-secret/test`` and
+        ``agnes mcp my-secret test``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/mcp/sources/{source_id}/my-secret/test",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
 
     return list(FOUNDATION_TOOL_NAMES)
