@@ -115,6 +115,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   to direct Anthropic on dispatcher failure. Unset ⇒ behavior unchanged. The
   broker logs a warning when the URL is set without the key.
   `app/api/broker.py`, documented in `config/.env.template`.
+### Fixed
+- `ws_stream`/`ws_join` (`app/api/chat.py`) and `admin_tail`
+  (`app/api/admin_chat.py`) now catch `CoordinationUnavailable` around the
+  ticket-consume call and close the WebSocket with code 4503 instead of
+  letting the exception propagate uncaught — FastAPI's HTTP exception
+  handler doesn't cover the WS scope, so a coordination backend blip (e.g.
+  Redis unreachable) previously dropped the connection ungracefully with a
+  traceback.
+
 ### Changed
 - Chat WS auth tickets (`_issue_ticket`/`_consume_ticket` in `app/api/chat.py`,
   covering both the primary stream route and the co-drive `/join` route) now
@@ -123,6 +132,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   default `memory` backend; configuring `coordination.backend=redis` makes
   tickets visible across replicas, closing the single-worker HA gap noted in
   the previous comment.
+- Admin tail-WS ticket auth (`_issue_admin_ticket`/`_consume_admin_ticket` in
+  `app/api/admin_chat.py`) migrated to the same coordination-backend
+  mechanism (`admin-tail-ticket:` key prefix, same 60s TTL, same single-use
+  `kv_set`/`kv_delete` semantics) instead of its own module-level dict.
 
 ## [0.74.107] - 2026-07-17
 
