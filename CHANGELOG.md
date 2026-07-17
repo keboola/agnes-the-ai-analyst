@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.74.109] - 2026-07-17
+
 ### Fixed
 
 - Git marketplace channel: an HTTP client disconnecting mid-transfer made the
