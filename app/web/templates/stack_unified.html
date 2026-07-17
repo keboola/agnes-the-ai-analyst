@@ -1,0 +1,220 @@
+{% extends "base_ds.html" %}
+{# Unified My Stack — the #896 prototype IA: ONE personal-collection
+   surface across kinds (Data · Plugins · Memory) instead of per-page
+   stack tabs. Served at /stack; the rail chrome's "My Stack" entry
+   points here. Data + Memory render server-side (stack resolver);
+   Plugins hydrate from /api/marketplace/items?tab=my.
+
+   Shares the .uc-* card vocabulary with catalog_unified.html — keep
+   the two in sync when touching either. #}
+{% block title %}My Stack — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block container_modifier %}container--wide{% endblock %}
+
+{% block head_extra %}
+<style>
+  .uc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 6px; }
+  .uc-head h1 { font-size: 24px; margin: 0 0 4px; }
+  .uc-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 64ch; }
+  .uc-kindtabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--ds-border); margin: 16px 0 18px; }
+  .uc-kindtab { display: flex; align-items: center; gap: 7px; border: none; background: none; cursor: pointer; padding: 9px 14px; font-size: 14px; font-weight: 500; font-family: inherit; color: var(--ds-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .uc-kindtab:hover { color: var(--ds-text-primary); }
+  .uc-kindtab.on { color: var(--ds-text-primary); font-weight: 600; border-bottom-color: var(--ds-primary); }
+  .uc-dot { width: 9px; height: 9px; border-radius: 3px; display: inline-block; flex-shrink: 0; }
+  .uc-dot-data { background: var(--ds-kind-data); }
+  .uc-dot-plugins { background: var(--ds-kind-plugin); }
+  .uc-dot-memory { background: var(--ds-kind-memory); }
+  .uc-count { font-size: 11px; background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-pill); padding: 1px 7px; color: var(--ds-text-muted); }
+  .uc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; align-items: start; }
+  .uc-card { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+  .uc-top { display: flex; align-items: center; gap: 10px; }
+  .uc-tico { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; font-size: 16px; flex-shrink: 0; }
+  .uc-tico-data { background: var(--ds-kind-data-soft); }
+  .uc-tico-plugins { background: var(--ds-kind-plugin-soft); }
+  .uc-tico-memory { background: var(--ds-kind-memory-soft); }
+  .uc-title { min-width: 0; }
+  .uc-title h3 { font-size: 14.5px; line-height: 1.3; margin: 0; }
+  .uc-title h3 a { color: inherit; text-decoration: none; }
+  .uc-title h3 a:hover { color: var(--ds-primary-dark); }
+  .uc-cap { font-size: 11.5px; color: var(--ds-text-secondary); margin-top: 1px; display: flex; align-items: center; gap: 6px; }
+  .uc-desc { font-size: 13px; color: var(--ds-text-secondary); line-height: 1.5; flex: 1; margin: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .uc-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .uc-meta { font-size: 12px; color: var(--ds-text-muted); }
+  .uc-act { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--ds-border); background: var(--ds-surface); color: var(--ds-text-primary); font-size: 12.5px; font-weight: 600; padding: 6px 12px; border-radius: 8px; cursor: pointer; font-family: inherit; text-decoration: none; }
+  .uc-act:hover { background: var(--ds-surface-dim); }
+  .uc-required { font-size: 11px; font-weight: 600; color: var(--ds-warn-ink); background: var(--ds-warn-bg); border: 1px solid var(--ds-warn-line); border-radius: var(--ds-radius-pill); padding: 3px 10px; }
+  .uc-empty { border: 1px dashed var(--ds-border); border-radius: 12px; padding: 40px 20px; text-align: center; color: var(--ds-text-secondary); grid-column: 1 / -1; }
+  .uc-empty h3 { margin: 0 0 6px; color: var(--ds-text-primary); }
+  /* "Same knowledge everywhere" band — points at the AI-connector
+     setup, mirroring the prototype's connect strip. */
+  .stk-connect { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-top: 26px; background: var(--ds-agnes-soft); border: 1px solid var(--ds-agnes-line); border-radius: 12px; padding: 16px 18px; }
+  .stk-connect b { color: var(--ds-text-primary); }
+  .stk-connect p { margin: 2px 0 0; font-size: 13px; color: var(--ds-text-secondary); }
+  .stk-connect .uc-act.primary { background: var(--ds-primary); border-color: var(--ds-primary); color: var(--ds-text-inverse); border-radius: var(--ds-radius-pill); padding: 8px 18px; }
+  .stk-connect .uc-act.primary:hover { background: var(--ds-primary-dark); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="uc-head">
+  <div>
+    <h1>My Stack</h1>
+    <p class="lede">Personalize what {{ instance_brand_short or 'Agnes' }} knows and can use for you — the knowledge and tools your answers draw on. Add more from the <a href="/catalog">Catalog</a>.</p>
+  </div>
+</div>
+
+<div class="uc-kindtabs" role="tablist" aria-label="Stack kinds">
+  <button class="uc-kindtab on" data-kind="data" role="tab" aria-selected="true"><span class="uc-dot uc-dot-data"></span>Data<span class="uc-count">{{ data_entries|length }}</span></button>
+  <button class="uc-kindtab" data-kind="plugins" role="tab" aria-selected="false"><span class="uc-dot uc-dot-plugins"></span>Plugins<span class="uc-count" id="stk-count-plugins">—</span></button>
+  <button class="uc-kindtab" data-kind="memory" role="tab" aria-selected="false"><span class="uc-dot uc-dot-memory"></span>Memory<span class="uc-count">{{ memory_entries|length }}</span></button>
+</div>
+
+<div class="uc-grid" data-kind-view="data">
+  {% for e in data_entries %}
+  <article class="uc-card">
+    <div class="uc-top">
+      <span class="uc-tico uc-tico-data">{{ e.icon or '📦' }}</span>
+      <div class="uc-title">
+        <h3><a href="{{ e.drilldown_url }}">{{ e.name }}</a></h3>
+        <div class="uc-cap"><span class="uc-dot uc-dot-data"></span>Data package · {{ e.status or 'prod' }}</div>
+      </div>
+    </div>
+    <p class="uc-desc">{{ e.description }}</p>
+    <div class="uc-foot">
+      <span class="uc-meta">{{ e.meta }}</span>
+      {% if e.requirement == 'required' %}
+      <span class="uc-required" title="Set up by your admin — used automatically and can't be removed.">Required</span>
+      {% else %}
+      <button class="uc-act" data-remove="data_package" data-id="{{ e.id }}">Remove</button>
+      {% endif %}
+    </div>
+  </article>
+  {% else %}
+  <div class="uc-empty"><h3>Your stack is empty</h3><p>Browse the <a href="/catalog">Catalog</a> and click <b>+ Add to stack</b>. Required packages appear here automatically.</p></div>
+  {% endfor %}
+</div>
+
+<div class="uc-grid" data-kind-view="plugins" hidden>
+  <div class="uc-empty" data-loading><h3>Loading your plugins…</h3></div>
+</div>
+
+<div class="uc-grid" data-kind-view="memory" hidden>
+  {% for d in memory_entries %}
+  <article class="uc-card">
+    <div class="uc-top">
+      <span class="uc-tico uc-tico-memory">🧠</span>
+      <div class="uc-title">
+        <h3><a href="/memory/d/{{ d.slug }}">{{ d.name }}</a></h3>
+        <div class="uc-cap"><span class="uc-dot uc-dot-memory"></span>Memory domain</div>
+      </div>
+    </div>
+    <p class="uc-desc">{{ d.description or 'Curated organizational knowledge domain.' }}</p>
+    <div class="uc-foot">
+      <span class="uc-meta"></span>
+      {% if d.requirement == 'required' %}
+      <span class="uc-required" title="Set up by your admin — used automatically and can't be removed.">Required</span>
+      {% else %}
+      <button class="uc-act" data-remove="memory_domain" data-id="{{ d.id }}">Remove</button>
+      {% endif %}
+    </div>
+  </article>
+  {% else %}
+  <div class="uc-empty"><h3>No memory domains in your stack</h3><p>Browse <a href="/catalog?kind=memory">Catalog → Memory</a> to see what's available.</p></div>
+  {% endfor %}
+</div>
+
+<div class="stk-connect">
+  <div>
+    <b>Same knowledge and skills, everywhere.</b>
+    <p>Connect once — your stack works inside Claude Code, Cursor, and VS Code with the same trusted knowledge you use here.</p>
+  </div>
+  <a class="uc-act primary" href="/me/ai-connector">Connect once →</a>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+
+  // Declared up top — activate() can fire loadPlugins() via the
+  // ?kind= deep link before a lower `let` would be initialized (TDZ).
+  let pluginsLoaded = false;
+
+  const tabs = document.querySelectorAll('.uc-kindtab');
+  const views = document.querySelectorAll('[data-kind-view]');
+  function activate(kind, push) {
+    tabs.forEach(t => {
+      const on = t.dataset.kind === kind;
+      t.classList.toggle('on', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    views.forEach(v => { v.hidden = v.dataset.kindView !== kind; });
+    if (push) {
+      const url = new URL(window.location);
+      url.searchParams.set('kind', kind);
+      history.replaceState(null, '', url);
+    }
+    if (kind === 'plugins') loadPlugins();
+  }
+  tabs.forEach(t => t.addEventListener('click', () => activate(t.dataset.kind, true)));
+
+  // Remove (data packages + memory domains) — same API as the classic
+  // catalog stack tab; required entries never render a Remove button.
+  document.querySelectorAll('[data-remove]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        const url = '/api/stack/subscription/' + encodeURIComponent(btn.dataset.remove) +
+                    '/' + encodeURIComponent(btn.dataset.id);
+        const resp = await fetch(url, { method: 'DELETE', credentials: 'same-origin' });
+        if (!resp.ok && resp.status !== 204) throw new Error('HTTP ' + resp.status);
+        const cardEl = btn.closest('.uc-card');
+        if (cardEl) cardEl.remove();
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = 'Retry remove';
+      }
+    });
+  });
+
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+  }
+
+  async function loadPlugins() {
+    if (pluginsLoaded) return;
+    pluginsLoaded = true;
+    const grid = document.querySelector('[data-kind-view="plugins"]');
+    try {
+      const r = await fetch('/api/marketplace/items?tab=my&page_size=100', { credentials: 'same-origin' });
+      const body = r.ok ? await r.json() : { items: [] };
+      const items = body.items || [];
+      document.getElementById('stk-count-plugins').textContent = String(items.length);
+      if (!items.length) {
+        grid.innerHTML = '<div class="uc-empty"><h3>No plugins in your stack</h3><p>Browse <a href="/catalog?kind=plugins">Catalog → Plugins</a> to add some.</p></div>';
+        return;
+      }
+      grid.innerHTML = items.map(i =>
+        '<article class="uc-card"><div class="uc-top">' +
+        '<span class="uc-tico uc-tico-plugins">🧩</span>' +
+        '<div class="uc-title"><h3><a href="' + esc(i.detail_url || '/marketplace') + '">' + esc(i.name) + '</a></h3>' +
+        '<div class="uc-cap"><span class="uc-dot uc-dot-plugins"></span>Plugin · ' + esc(i.source || '') + '</div></div></div>' +
+        '<p class="uc-desc">' + esc(i.description || '') + '</p>' +
+        '<div class="uc-foot"><span class="uc-meta">' + esc(i.type || 'plugin') + '</span>' +
+        '<a class="uc-act" href="' + esc(i.detail_url || '/marketplace') + '">Manage →</a></div></article>'
+      ).join('');
+    } catch (e) {
+      console.error('unified stack: plugins hydration failed', e);
+      grid.innerHTML = '<div class="uc-empty"><h3>Could not load plugins</h3></div>';
+    }
+  }
+
+  // Boot last — after every const above is initialized (TDZ).
+  const urlKind = new URLSearchParams(window.location.search).get('kind');
+  if (urlKind && urlKind !== 'data') activate(urlKind, false);
+  loadPlugins();
+})();
+</script>
+{% endblock %}

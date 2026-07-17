@@ -53,9 +53,9 @@
 
     {% set _path = request.url.path %}
     {% set _home = home_route or '/dashboard' %}
-    {% set _tab = request.query_params.get('tab') if request.query_params is defined else none %}
-    {% set _on_stack = (_path == '/catalog' and _tab == 'my') or (_path == '/marketplace' and _tab == 'my') %}
-    {% set _in_catalog = (_path.startswith('/catalog') or _path.startswith('/marketplace') or _path.startswith('/library') or _path == '/corporate-memory') and not _on_stack %}
+    {% set _kind = request.query_params.get('kind') if request.query_params is defined else none %}
+    {% set _on_stack = _path == '/stack' %}
+    {% set _in_catalog = _path.startswith('/catalog') or _path.startswith('/marketplace') or _path.startswith('/library') or _path == '/corporate-memory' %}
 
     {% if can_chat %}
     <a class="rail-newchat" href="/chat" data-tour="nav-chat-new">
@@ -76,7 +76,7 @@
             {% if _home == '/dashboard' %}Dashboard{% else %}Home{% endif %}
         </a>
         {% endif %}
-        <a class="rail-i {% if _on_stack %}on{% endif %}" href="/catalog?tab=my" data-tour="nav-stack">
+        <a class="rail-i {% if _on_stack %}on{% endif %}" href="/stack" data-tour="nav-stack">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 8.5 12 4l9 4.5-9 4.5-9-4.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
             My Stack
         </a>
@@ -85,13 +85,15 @@
             Catalog
         </a>
         {# Catalog subcategories — the content surfaces folded under
-           one Catalog destination (prototype IA). Always visible so
-           each surface stays one click away; actives track per path. #}
+           one Catalog destination (prototype IA). Each targets a kind
+           tab of the unified /catalog page; the old standalone pages
+           stay routed (deep links keep working) and light up the same
+           subcategory. #}
         <div class="rail-sub">
-            <a class="rail-sub-i {% if _path.startswith('/catalog') and not _on_stack %}on{% endif %}" href="/catalog">Data Packages</a>
-            <a class="rail-sub-i {% if _path.startswith('/marketplace') and not _on_stack %}on{% endif %}" href="/marketplace" data-tour="nav-marketplace">Plugins</a>
-            <a class="rail-sub-i {% if _path.startswith('/library') %}on{% endif %}" href="/library" data-tour="nav-library">Library</a>
-            <a class="rail-sub-i {% if _path == '/corporate-memory' %}on{% endif %}" href="/corporate-memory" data-tour="nav-memory">Memory</a>
+            <a class="rail-sub-i {% if (_path.startswith('/catalog') and (_kind or 'data') == 'data') %}on{% endif %}" href="/catalog?kind=data">Data Packages</a>
+            <a class="rail-sub-i {% if (_path.startswith('/catalog') and _kind == 'plugins') or _path.startswith('/marketplace') %}on{% endif %}" href="/catalog?kind=plugins" data-tour="nav-marketplace">Plugins</a>
+            <a class="rail-sub-i {% if (_path.startswith('/catalog') and _kind == 'library') or _path.startswith('/library') %}on{% endif %}" href="/catalog?kind=library" data-tour="nav-library">Library</a>
+            <a class="rail-sub-i {% if (_path.startswith('/catalog') and _kind == 'memory') or _path == '/corporate-memory' %}on{% endif %}" href="/catalog?kind=memory" data-tour="nav-memory">Memory</a>
         </div>
     </div>
 

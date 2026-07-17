@@ -1,0 +1,331 @@
+{% extends "base_ds.html" %}
+{# Unified Catalog — the #896 prototype IA: ONE browse surface for
+   everything reusable, with kind tabs (Data · Plugins · Memory ·
+   Recipes · Library) over a single card grid. Rendered by /catalog
+   when the instance runs the rail layout; topnav instances keep the
+   classic catalog.html (see the branch in router.catalog).
+
+   Data/Memory/Library cards render server-side (entries /
+   memory_cards / library_cards from the route); Plugins + Recipes
+   hydrate client-side from /api/marketplace/items and /api/recipes.
+   Deep link: ?kind=data|plugins|memory|recipes|library. #}
+{% block title %}Catalog — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block container_modifier %}container--wide{% endblock %}
+
+{% block head_extra %}
+<style>
+  /* Layout mirrors the prototype's catalog band: header row, search,
+     horizontal kind tabs with colored dots, 2-col card grid. All
+     colors via --ds-* tokens (kind colors: --ds-kind-*). */
+  .uc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 6px; }
+  .uc-head h1 { font-size: 24px; margin: 0 0 4px; }
+  .uc-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 64ch; }
+  .uc-search { display: flex; align-items: center; gap: 9px; padding: 9px 14px; background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 12px; color: var(--ds-text-muted); margin: 16px 0 14px; }
+  .uc-search input { background: none; border: none; outline: none; color: var(--ds-text-primary); font-size: 14px; width: 100%; font-family: inherit; }
+  .uc-kindtabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--ds-border); margin-bottom: 18px; }
+  .uc-kindtab { display: flex; align-items: center; gap: 7px; border: none; background: none; cursor: pointer; padding: 9px 14px; font-size: 14px; font-weight: 500; font-family: inherit; color: var(--ds-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .uc-kindtab:hover { color: var(--ds-text-primary); }
+  .uc-kindtab.on { color: var(--ds-text-primary); font-weight: 600; border-bottom-color: var(--ds-primary); }
+  .uc-dot { width: 9px; height: 9px; border-radius: 3px; display: inline-block; flex-shrink: 0; }
+  .uc-dot-data { background: var(--ds-kind-data); }
+  .uc-dot-plugins { background: var(--ds-kind-plugin); }
+  .uc-dot-memory { background: var(--ds-kind-memory); }
+  .uc-dot-recipes { background: var(--ds-kind-recipe); }
+  .uc-dot-library { background: var(--ds-kind-library); }
+  .uc-count { font-size: 11px; background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-pill); padding: 1px 7px; color: var(--ds-text-muted); }
+  .uc-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  @media (max-width: 900px) { .uc-grid { grid-template-columns: 1fr; } }
+  .uc-card { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; transition: transform var(--ds-motion-fast) var(--ds-ease-standard), box-shadow var(--ds-motion-fast) var(--ds-ease-standard); }
+  .uc-card:hover { transform: translateY(-2px); box-shadow: var(--ds-shadow-md); }
+  @media (prefers-reduced-motion: reduce) { .uc-card, .uc-card:hover { transition: none; transform: none; } }
+  .uc-top { display: flex; align-items: center; gap: 10px; }
+  .uc-tico { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; font-size: 16px; flex-shrink: 0; }
+  .uc-tico-data { background: var(--ds-kind-data-soft); }
+  .uc-tico-plugins { background: var(--ds-kind-plugin-soft); }
+  .uc-tico-memory { background: var(--ds-kind-memory-soft); }
+  .uc-tico-recipes { background: var(--ds-kind-recipe-soft); }
+  .uc-tico-library { background: var(--ds-kind-library-soft); }
+  .uc-title { min-width: 0; }
+  .uc-title h3 { font-size: 14.5px; line-height: 1.3; margin: 0; }
+  .uc-title h3 a { color: inherit; text-decoration: none; }
+  .uc-title h3 a:hover { color: var(--ds-primary-dark); }
+  .uc-cap { font-size: 11.5px; color: var(--ds-text-secondary); margin-top: 1px; display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .uc-desc { font-size: 13px; color: var(--ds-text-secondary); line-height: 1.5; flex: 1; margin: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .uc-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .uc-meta { font-size: 12px; color: var(--ds-text-muted); }
+  .uc-act { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--ds-border); background: var(--ds-surface); color: var(--ds-text-primary); font-size: 12.5px; font-weight: 600; padding: 6px 12px; border-radius: 8px; cursor: pointer; font-family: inherit; text-decoration: none; }
+  .uc-act:hover { background: var(--ds-surface-dim); }
+  .uc-act.primary { background: var(--ds-primary); border-color: var(--ds-primary); color: var(--ds-text-inverse); }
+  .uc-act.primary:hover { background: var(--ds-primary-dark); }
+  .uc-instack { font-size: 12px; font-weight: 600; color: var(--ds-accent-success-ink); background: var(--ds-accent-success-bg); border: 1px solid var(--ds-accent-success-line); border-radius: var(--ds-radius-pill); padding: 3px 10px; }
+  .uc-required { font-size: 11px; font-weight: 600; color: var(--ds-warn-ink); background: var(--ds-warn-bg); border: 1px solid var(--ds-warn-line); border-radius: var(--ds-radius-pill); padding: 3px 10px; }
+  .uc-empty { border: 1px dashed var(--ds-border); border-radius: 12px; padding: 40px 20px; text-align: center; color: var(--ds-text-secondary); grid-column: 1 / -1; }
+  .uc-empty h3 { margin: 0 0 6px; color: var(--ds-text-primary); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="uc-head">
+  <div>
+    <h1>Catalog</h1>
+    <p class="lede">Reuse the skills, plugins, and data your colleagues already built — so you don't start from scratch. Add what your work needs to <a href="/stack">My Stack</a>.</p>
+  </div>
+  <a class="uc-act" href="/store/new" style="flex-shrink:0">+ Submit a skill or plugin</a>
+</div>
+
+<div class="uc-search">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.7"/><path d="m16.5 16.5 4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+  <input type="search" id="uc-search-input" placeholder="Search data, plugins, memory, recipes…" autocomplete="off" spellcheck="false">
+</div>
+
+<div class="uc-kindtabs" role="tablist" aria-label="Catalog kinds">
+  <button class="uc-kindtab on" data-kind="data" role="tab" aria-selected="true"><span class="uc-dot uc-dot-data"></span>Data<span class="uc-count">{{ entries|length }}</span></button>
+  <button class="uc-kindtab" data-kind="plugins" role="tab" aria-selected="false"><span class="uc-dot uc-dot-plugins"></span>Plugins<span class="uc-count" id="uc-count-plugins">—</span></button>
+  <button class="uc-kindtab" data-kind="memory" role="tab" aria-selected="false"><span class="uc-dot uc-dot-memory"></span>Memory<span class="uc-count">{{ memory_cards|length }}</span></button>
+  <button class="uc-kindtab" data-kind="recipes" role="tab" aria-selected="false"><span class="uc-dot uc-dot-recipes"></span>Recipes<span class="uc-count" id="uc-count-recipes">—</span></button>
+  <button class="uc-kindtab" data-kind="library" role="tab" aria-selected="false"><span class="uc-dot uc-dot-library"></span>Library<span class="uc-count">{{ library_cards|length }}</span></button>
+</div>
+
+{# ── Data packages (server-rendered) ── #}
+<div class="uc-grid" data-kind-view="data">
+  {% for e in entries %}
+  <article class="uc-card" data-search="{{ (e.name ~ ' ' ~ e.description) | lower }}">
+    <div class="uc-top">
+      <span class="uc-tico uc-tico-data">{{ e.icon or '📦' }}</span>
+      <div class="uc-title">
+        <h3><a href="{{ e.drilldown_url }}">{{ e.name }}</a></h3>
+        <div class="uc-cap"><span class="uc-dot uc-dot-data"></span>Data package · {{ e.status or 'prod' }}{% if e.category %} · {{ e.category }}{% endif %}</div>
+      </div>
+    </div>
+    <p class="uc-desc">{{ e.description }}</p>
+    <div class="uc-foot">
+      <span class="uc-meta">{{ e.meta }}</span>
+      {% if e.requirement == 'required' %}
+      <span class="uc-required">Required</span>
+      {% elif e.in_stack %}
+      <span class="uc-instack" data-instack="{{ e.id }}">✓ In stack</span>
+      {% else %}
+      <button class="uc-act primary" data-add-pkg="{{ e.id }}">+ Add to stack</button>
+      {% endif %}
+    </div>
+  </article>
+  {% else %}
+  <div class="uc-empty"><h3>No Data Packages yet</h3><p>{% if is_admin %}Register tables, then bundle them into a Data Package on <a href="/admin/tables">/admin/tables</a>.{% else %}Ask your admin to publish the first Data Package.{% endif %}</p></div>
+  {% endfor %}
+</div>
+
+{# ── Plugins (client-hydrated from /api/marketplace/items) ── #}
+<div class="uc-grid" data-kind-view="plugins" hidden>
+  <div class="uc-empty" data-loading><h3>Loading plugins…</h3></div>
+</div>
+
+{# ── Memory domains (server-rendered) ── #}
+<div class="uc-grid" data-kind-view="memory" hidden>
+  {% for d in memory_cards %}
+  <article class="uc-card" data-search="{{ (d.name ~ ' ' ~ d.description) | lower }}">
+    <div class="uc-top">
+      <span class="uc-tico uc-tico-memory">🧠</span>
+      <div class="uc-title">
+        <h3><a href="/memory/d/{{ d.slug }}">{{ d.name }}</a></h3>
+        <div class="uc-cap"><span class="uc-dot uc-dot-memory"></span>Memory · {{ d.items_count }} item{{ 's' if d.items_count != 1 else '' }}</div>
+      </div>
+    </div>
+    <p class="uc-desc">{{ d.description or 'Curated organizational knowledge domain.' }}</p>
+    <div class="uc-foot">
+      <span class="uc-meta">{{ d.items_count }} item{{ 's' if d.items_count != 1 else '' }}</span>
+      <a class="uc-act" href="/memory/d/{{ d.slug }}">Open →</a>
+    </div>
+  </article>
+  {% else %}
+  <div class="uc-empty"><h3>No memory domains yet</h3><p>Curated knowledge will appear here once published.</p></div>
+  {% endfor %}
+</div>
+
+{# ── Recipes (client-hydrated from /api/recipes) ── #}
+<div class="uc-grid" data-kind-view="recipes" hidden>
+  <div class="uc-empty" data-loading><h3>Loading recipes…</h3></div>
+</div>
+
+{# ── Library collections (server-rendered) ── #}
+<div class="uc-grid" data-kind-view="library" hidden>
+  {% for c in library_cards %}
+  <article class="uc-card" data-search="{{ (c.name ~ ' ' ~ c.description) | lower }}">
+    <div class="uc-top">
+      <span class="uc-tico uc-tico-library">📚</span>
+      <div class="uc-title">
+        <h3><a href="/library/{{ c.slug }}">{{ c.name }}</a></h3>
+        <div class="uc-cap"><span class="uc-dot uc-dot-library"></span>Library · {{ c.file_count }} file{{ 's' if c.file_count != 1 else '' }}</div>
+      </div>
+    </div>
+    <p class="uc-desc">{{ c.description or 'File collection — searchable documents.' }}</p>
+    <div class="uc-foot">
+      <span class="uc-meta">{{ c.file_count }} file{{ 's' if c.file_count != 1 else '' }}</span>
+      <a class="uc-act" href="/library/{{ c.slug }}">Open →</a>
+    </div>
+  </article>
+  {% else %}
+  <div class="uc-empty"><h3>No collections yet</h3><p>Uploaded file collections will appear here.</p></div>
+  {% endfor %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+
+  // Hydration guards — declared up top: activate() runs before the
+  // loader definitions below, and a `let` further down would still be
+  // in its temporal dead zone when the ?kind= deep link fires.
+  let pluginsLoaded = false;
+  let recipesLoaded = false;
+
+  // ── Kind tabs + ?kind= deep link ──────────────────────────────────
+  const tabs = document.querySelectorAll('.uc-kindtab');
+  const views = document.querySelectorAll('[data-kind-view]');
+  function activate(kind, push) {
+    let found = false;
+    tabs.forEach(t => {
+      const on = t.dataset.kind === kind;
+      t.classList.toggle('on', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      if (on) found = true;
+    });
+    if (!found) return;
+    views.forEach(v => { v.hidden = v.dataset.kindView !== kind; });
+    if (push) {
+      const url = new URL(window.location);
+      url.searchParams.set('kind', kind);
+      history.replaceState(null, '', url);
+    }
+    if (kind === 'plugins') loadPlugins();
+    if (kind === 'recipes') loadRecipes();
+    applySearch();
+  }
+  tabs.forEach(t => t.addEventListener('click', () => activate(t.dataset.kind, true)));
+
+  // ── Search (filters the active grid client-side) ──────────────────
+  const searchInput = document.getElementById('uc-search-input');
+  function applySearch() {
+    const q = (searchInput.value || '').trim().toLowerCase();
+    document.querySelectorAll('[data-kind-view]:not([hidden]) .uc-card').forEach(c => {
+      c.hidden = q ? !(c.dataset.search || '').includes(q) : false;
+    });
+  }
+  searchInput.addEventListener('input', applySearch);
+
+  // ── Data package add-to-stack (same API as the classic catalog) ───
+  document.querySelectorAll('[data-add-pkg]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        const resp = await fetch('/api/stack/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ resource_type: 'data_package', resource_id: btn.dataset.addPkg }),
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const chip = document.createElement('span');
+        chip.className = 'uc-instack';
+        chip.textContent = '✓ In stack';
+        btn.replaceWith(chip);
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = 'Retry add';
+      }
+    });
+  });
+
+  // ── Client-hydrated kinds ──────────────────────────────────────────
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+  }
+  function card(kind, href, icon, title, cap, desc, meta, act) {
+    return '<article class="uc-card" data-search="' + esc((title + ' ' + (desc || '')).toLowerCase()) + '">' +
+      '<div class="uc-top"><span class="uc-tico uc-tico-' + kind + '">' + icon + '</span>' +
+      '<div class="uc-title"><h3><a href="' + esc(href) + '">' + esc(title) + '</a></h3>' +
+      '<div class="uc-cap"><span class="uc-dot uc-dot-' + kind + '"></span>' + esc(cap) + '</div></div></div>' +
+      '<p class="uc-desc">' + esc(desc) + '</p>' +
+      '<div class="uc-foot"><span class="uc-meta">' + esc(meta) + '</span>' +
+      '<a class="uc-act" href="' + esc(href) + '">' + act + '</a></div></article>';
+  }
+
+  async function loadPlugins() {
+    if (pluginsLoaded) return;
+    pluginsLoaded = true;
+    const grid = document.querySelector('[data-kind-view="plugins"]');
+    try {
+      const [cur, flea] = await Promise.all([
+        fetch('/api/marketplace/items?tab=curated&page_size=100', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : { items: [] }),
+        fetch('/api/marketplace/items?tab=flea&page_size=100', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : { items: [] }),
+      ]);
+      const rows = [];
+      (cur.items || []).forEach(i => rows.push({ i, src: 'Curated' }));
+      (flea.items || []).forEach(i => rows.push({ i, src: 'Flea Market' }));
+      document.getElementById('uc-count-plugins').textContent = String(rows.length);
+      if (!rows.length) {
+        grid.innerHTML = '<div class="uc-empty"><h3>No plugins yet</h3><p>Curated marketplaces and community submissions will appear here.</p></div>';
+        return;
+      }
+      grid.innerHTML = rows.map(({ i, src }) => card(
+        'plugins',
+        i.detail_url || i.url || '/marketplace',
+        '🧩',
+        i.name || i.title || 'Plugin',
+        'Plugin · ' + src + (i.category ? ' · ' + i.category : ''),
+        i.description || '',
+        (i.type || 'plugin'),
+        'Open →'
+      )).join('');
+      applySearch();
+    } catch (e) {
+      console.error('unified catalog: plugins hydration failed', e);
+      grid.innerHTML = '<div class="uc-empty"><h3>Could not load plugins</h3></div>';
+    }
+  }
+
+  async function loadRecipes() {
+    if (recipesLoaded) return;
+    recipesLoaded = true;
+    const grid = document.querySelector('[data-kind-view="recipes"]');
+    try {
+      const r = await fetch('/api/recipes', { credentials: 'same-origin' });
+      const body = r.ok ? await r.json() : { items: [] };
+      const items = body.items || [];
+      document.getElementById('uc-count-recipes').textContent = String(items.length);
+      if (!items.length) {
+        grid.innerHTML = '<div class="uc-empty"><h3>No recipes yet</h3><p>Admin-curated query templates will appear here.</p></div>';
+        return;
+      }
+      grid.innerHTML = items.map(i => card(
+        'recipes',
+        '/catalog/r/' + encodeURIComponent(i.slug || i.id),
+        '📑',
+        i.name || i.title || 'Recipe',
+        'Recipe · query template',
+        i.description || '',
+        (i.updated_at || ''),
+        'Open →'
+      )).join('');
+      applySearch();
+    } catch (e) {
+      console.error('unified catalog: recipes hydration failed', e);
+      grid.innerHTML = '<div class="uc-empty"><h3>Could not load recipes</h3></div>';
+    }
+  }
+
+  // ── Boot — LAST, after every const above is initialized (the
+  // ?kind= deep link calls into loaders that use them; running this
+  // earlier hits the temporal dead zone). Eager-hydrate the
+  // client-side kinds so tab counts show on load (the prototype shows
+  // all counts upfront); grids stay hidden until their tab opens.
+  const urlKind = new URLSearchParams(window.location.search).get('kind');
+  if (urlKind && urlKind !== 'data') activate(urlKind, false);
+  loadPlugins();
+  loadRecipes();
+})();
+</script>
+{% endblock %}

@@ -1299,6 +1299,27 @@ async def catalog(
     # emits `direct_tables[]` so existing CLI clients with `table`-typed
     # RBAC grants keep working (BC, not a web surface).
 
+    # Unified Catalog (rail layout / #896 prototype IA): one page with
+    # kind tabs — Data · Plugins · Memory · Recipes · Library — instead
+    # of separate destinations. Data/Memory/Library render server-side
+    # here; Plugins + Recipes hydrate client-side from their existing
+    # APIs. Topnav instances keep the classic catalog.html unchanged.
+    if get_ui_layout() == "rail":
+        memory_cards = _unified_memory_cards()
+        library_cards = _unified_library_cards(user, conn)
+        ctx = _build_context(
+            request,
+            user=user,
+            is_admin=is_admin_view,
+            entries=entries,
+            stack_entries=stack_entries_adapted,
+            source_type_chips=source_type_chips,
+            total_registered_tables=total_registered_tables,
+            memory_cards=memory_cards,
+            library_cards=library_cards,
+        )
+        return templates.TemplateResponse(request, "catalog_unified.html", ctx)
+
     ctx = _build_context(
         request,
         user=user,
@@ -1308,6 +1329,131 @@ async def catalog(
         total_registered_tables=total_registered_tables,
     )
     return templates.TemplateResponse(request, "catalog.html", ctx)
+
+
+def _unified_memory_cards() -> list:
+    """Memory domains adapted for the unified catalog grid (light:
+    name/slug/description/items_count — the per-item richness stays on
+    /memory/d/<slug>). Mirrors the /corporate-memory browse data."""
+    cards: list = []
+    try:
+        domains_repo = memory_domains_repo()
+        for d in domains_repo.list(limit=10000):
+            try:
+                items = domains_repo.list_items_of_domain(d["id"], limit=10000)
+            except Exception:
+                items = []
+            cards.append(
+                {
+                    "id": d["id"],
+                    "name": d.get("name") or d.get("slug"),
+                    "description": d.get("description") or "",
+                    "slug": d.get("slug"),
+                    "items_count": len(items),
+                }
+            )
+    except Exception as e:
+        logger.warning("unified catalog: could not enumerate memory domains: %s", e)
+    return cards
+
+
+def _unified_library_cards(user: dict, conn) -> list:
+    """File collections adapted for the unified catalog grid — same RBAC
+    scoping as the /library page (admin sees all)."""
+    from src.rbac import get_accessible_ids
+    from app.resource_types import ResourceType
+
+    cards: list = []
+    try:
+        is_admin = is_user_admin(user["id"], conn)
+        accessible_ids = get_accessible_ids(user, ResourceType.COLLECTION.value, conn)
+        allowed = None if accessible_ids is None else set(accessible_ids)
+        cf_repo = corpus_files_repo()
+        for col in file_corpora_repo().list():
+            if not is_admin and allowed is not None and col["id"] not in allowed:
+                continue
+            try:
+                file_count = len(cf_repo.list_for_corpus(col["id"]))
+            except Exception:
+                file_count = 0
+            cards.append(
+                {
+                    "id": col["id"],
+                    "name": col.get("name") or col.get("slug"),
+                    "description": col.get("description") or "",
+                    "slug": col.get("slug"),
+                    "file_count": file_count,
+                }
+            )
+    except Exception as e:
+        logger.warning("unified catalog: could not enumerate collections: %s", e)
+    return cards
+
+
+@router.get("/stack", response_class=HTMLResponse)
+async def my_stack_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Unified My Stack (rail layout / #896 prototype IA) — everything
+    the caller has opted into, across kinds: Data (data packages),
+    Plugins (curated subscriptions + flea installs, hydrated
+    client-side from /api/marketplace/items?tab=my), Memory (memory
+    domains). One personal-collection surface instead of per-page
+    stack tabs. Reachable under any layout; the rail's "My Stack"
+    entry points here."""
+    from app.services.stack_resolver import StackResolver
+    from app.resource_types import ResourceType
+
+    resolver = StackResolver(conn)
+    pkg_repo = data_packages_repo()
+
+    def _adapt_pkg(e):
+        slug = None
+        try:
+            full = pkg_repo.get(e.id)
+            if full:
+                slug = full.get("slug")
+        except Exception:
+            slug = None
+        return _data_package_entry_dict(
+            e,
+            drilldown_url=f"/catalog/p/{slug}" if slug else f"/catalog#{e.id}",
+        )
+
+    data_entries = [_adapt_pkg(e) for e in resolver.stack(user["id"], ResourceType.DATA_PACKAGE)]
+
+    memory_entries: list = []
+    try:
+        domains_repo = memory_domains_repo()
+        for e in resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN):
+            slug = None
+            try:
+                d = domains_repo.get(e.id)
+                if d:
+                    slug = d.get("slug")
+            except Exception:
+                slug = None
+            memory_entries.append(
+                {
+                    "id": e.id,
+                    "name": e.name,
+                    "description": e.description or "",
+                    "requirement": e.requirement,
+                    "slug": slug,
+                }
+            )
+    except Exception as e:
+        logger.warning("/stack: could not resolve memory stack: %s", e)
+
+    ctx = _build_context(
+        request,
+        user=user,
+        data_entries=data_entries,
+        memory_entries=memory_entries,
+    )
+    return templates.TemplateResponse(request, "stack_unified.html", ctx)
 
 
 @router.get("/catalog/p/{slug}", response_class=HTMLResponse)

@@ -119,23 +119,55 @@ class TestRailOptIn:
             'id="global-search"',
             'id="userMenu"',
             'id="themeToggle"',
-            # prototype IA: My Stack deep-link + Catalog parent
-            'href="/catalog?tab=my"',
+            # prototype IA: My Stack page + Catalog parent
+            'href="/stack"',
             'data-tour="nav-stack"',
             'data-tour="nav-catalog"',
-            # content surfaces as Catalog subcategories
+            # content surfaces as Catalog subcategories (kind tabs of
+            # the unified /catalog page)
             'class="rail-sub"',
             'data-tour="nav-marketplace"',
             'data-tour="nav-library"',
             'data-tour="nav-memory"',
-            'href="/marketplace"',
+            'href="/catalog?kind=plugins"',
+            'href="/catalog?kind=library"',
+            'href="/catalog?kind=memory"',
             'href="/catalog"',
-            'href="/library"',
-            'href="/corporate-memory"',
             # default brand lockup: the orb + wordmark
             'class="rail-orb"',
         ):
             assert anchor in text, f"rail chrome is missing {anchor}"
+
+    def test_rail_catalog_renders_unified_page(self, web_client, admin_cookie, monkeypatch):
+        """Under the rail layout /catalog is the unified browse surface
+        (kind tabs over one grid); /stack is the unified personal
+        collection."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/catalog", cookies=admin_cookie)
+        assert resp.status_code == 200
+        for anchor in (
+            'data-kind="data"',
+            'data-kind="plugins"',
+            'data-kind="memory"',
+            'data-kind="recipes"',
+            'data-kind="library"',
+            'class="uc-kindtabs"',
+        ):
+            assert anchor in resp.text, f"unified catalog is missing {anchor}"
+
+        resp = web_client.get("/stack", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert "My Stack" in resp.text
+        assert 'data-kind="plugins"' in resp.text
+
+    def test_topnav_catalog_keeps_classic_page(self, web_client, admin_cookie, monkeypatch):
+        """Default layout must keep the classic catalog.html — the
+        unified page is rail-only."""
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        resp = web_client.get("/catalog", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'class="uc-kindtabs"' not in resp.text
+        assert "stack-tabs" in resp.text
 
     def test_paper_theme_stamped(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
