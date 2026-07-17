@@ -1150,7 +1150,17 @@ async def lifespan(app):
     # single-container operators. Same task-create/cancel placement as the
     # canary task above (started here, in the uvicorn worker process, not
     # create_app() — the --reload master must not touch the DB).
+    from app.worker.kinds import register_all_kinds
     from app.worker.runtime import default_worker_id, worker_loop
+
+    # Populate the process-wide JOB_KINDS registry before the loop starts
+    # claiming work — a lane slot that claims a job whose kind isn't yet
+    # registered fails it outright (see `_lane_slot`'s "no registered
+    # handler" branch). Registration itself is cheap (dict population, no
+    # I/O) and idempotent, so it runs unconditionally here, not gated by
+    # `role_enabled(Role.WORKER)` below — a non-worker process importing
+    # this module (e.g. a one-off script) gets a harmless no-op registry.
+    register_all_kinds()
 
     _worker_task = None
     if role_enabled(Role.WORKER):
