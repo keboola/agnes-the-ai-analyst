@@ -942,7 +942,13 @@ def test_shortcut_windows_writes_cmd_shim(tmp_path, monkeypatch):
 
     shim = _bin(home) / "myworkspace.cmd"
     assert shim.exists()
-    content = shim.read_text(encoding="utf-8")
+    # newline="" reads the raw bytes' line endings: the shim must carry
+    # exactly \r\n (write_text without newline="" would double to \r\r\n on
+    # Windows via universal-newline translation).
+    content = shim.read_text(encoding="utf-8", newline="")
+    assert "\r\r" not in content
+    assert "\r\n" in content
+    content = content.replace("\r\n", "\n")
     assert content.startswith("@echo off")
     # `::` label-comment, NOT `rem`: cmd.exe applies redirection parsing to
     # rem lines, so `rem >>> ... <<<` would error on every launch.
