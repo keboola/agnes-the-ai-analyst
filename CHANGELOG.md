@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- Marketplace git smart-HTTP: a `git http-backend` subprocess that exited (or
+  closed its stdin) before the request body was written — e.g. an `info/refs`
+  GET, which never reads stdin — crashed the request with an unhandled
+  `RuntimeError: … the handler is closed` (uvloop transport write-after-close),
+  returning a traceback 500 and leaking the child process. The stdin
+  write/drain/close is now guarded (empty bodies skip the write entirely) and
+  runs inside the cleanup block; a child that produced no output is still
+  reported as a 500 with its stderr and exit code logged.
+  `app/marketplace_server/git_router.py` (race introduced in #887).
+
 ## [0.74.108] - 2026-07-17
 
 ### Added

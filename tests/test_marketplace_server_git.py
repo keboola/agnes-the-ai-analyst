@@ -580,6 +580,145 @@ class TestRunGitHttpBackendCleansUpOnHeaderReadFailure:
         )
 
 
+class TestRunGitHttpBackendStdinClosedEarly:
+    """A `git http-backend` child that exits (or closes its stdin) before the
+    parent finishes writing the request body must not blow up the request.
+
+    Production regression: on uvloop, writing to a pipe transport whose
+    peer already closed raises `RuntimeError: unable to perform operation on
+    <WriteUnixTransport closed=True ...>; the handler is closed`. The write
+    used to sit *outside* the cleanup try-block, so a fast-exiting child
+    (e.g. an `info/refs` GET that never reads stdin) turned into an
+    unhandled-traceback 500 and leaked the subprocess + stderr-drain task.
+    A failed body write is not fatal by itself — the child may have already
+    produced its full response, and a genuine crash is caught by the
+    empty-header-block check with stderr + exit code in the log.
+    """
+
+    @staticmethod
+    def _proxy_with_closed_stdin(real_proc):
+        """Wrap a real subprocess, replacing `stdin` with a transport that
+        behaves like uvloop's WriteUnixTransport after the peer closed."""
+
+        class _ClosedStdin:
+            def write(self, data):
+                raise RuntimeError(
+                    "unable to perform operation on <WriteUnixTransport "
+                    "closed=True reading=False 0x0>; the handler is closed"
+                )
+
+            async def drain(self):
+                raise RuntimeError(
+                    "unable to perform operation on <WriteUnixTransport "
+                    "closed=True reading=False 0x0>; the handler is closed"
+                )
+
+            def close(self):
+                raise RuntimeError(
+                    "unable to perform operation on <WriteUnixTransport "
+                    "closed=True reading=False 0x0>; the handler is closed"
+                )
+
+        class _Proxy:
+            stdin = _ClosedStdin()
+
+            def __getattr__(self, name):
+                return getattr(real_proc, name)
+
+        return _Proxy()
+
+    def test_closed_stdin_transport_still_serves_the_response(self, monkeypatch):
+        import asyncio
+        import sys
+
+        from app.marketplace_server import git_router
+
+        # A child that emits its full CGI response without ever reading
+        # stdin (models `git http-backend` serving an info/refs GET), while
+        # the stdin transport already reports the-handler-is-closed.
+        stub = "import sys\nsys.stdout.buffer.write(b'Status: 200 OK\\r\\n\\r\\nrefs-body')\nsys.stdout.flush()\n"
+        monkeypatch.setattr(
+            git_router,
+            "_GIT_HTTP_BACKEND",
+            (sys.executable, "-c", stub),
+        )
+
+        real_create_subprocess_exec = asyncio.create_subprocess_exec
+
+        async def wrapping_create_subprocess_exec(*args, **kwargs):
+            proc = await real_create_subprocess_exec(*args, **kwargs)
+            return self._proxy_with_closed_stdin(proc)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", wrapping_create_subprocess_exec)
+
+        async def run():
+            status, headers, stream = await git_router._run_git_http_backend(env={}, body=b"0000want deadbeef\n")
+            chunks = [chunk async for chunk in stream]
+            return status, b"".join(chunks)
+
+        status, body = asyncio.run(asyncio.wait_for(run(), timeout=10))
+        assert status == 200
+        assert body == b"refs-body"
+
+    def test_child_that_never_reads_large_body_and_crashes_reports_500_path(self, monkeypatch):
+        """Child exits without reading stdin *and* without producing output:
+        the (broken-pipe) body write must be swallowed, and the failure must
+        surface as the diagnosable no-output RuntimeError (→ 500 with stderr
+        + exit code logged), not as a raw transport error."""
+        import asyncio
+        import sys
+
+        from app.marketplace_server import git_router
+
+        stub = "import sys\nsys.stdin.close()\nsys.stderr.write('fatal: bad env\\n')\nsys.exit(128)\n"
+        monkeypatch.setattr(
+            git_router,
+            "_GIT_HTTP_BACKEND",
+            (sys.executable, "-c", stub),
+        )
+
+        async def run():
+            # Body larger than the OS pipe buffer so the write/drain path
+            # definitely hits the closed pipe rather than parking the whole
+            # payload in kernel buffers.
+            await git_router._run_git_http_backend(env={}, body=b"x" * (10 * 1024 * 1024))
+
+        with pytest.raises(RuntimeError, match="no output"):
+            asyncio.run(asyncio.wait_for(run(), timeout=10))
+
+    def test_empty_body_skips_stdin_write_entirely(self, monkeypatch):
+        """GET info/refs has no request body — nothing should be written to
+        stdin at all, so even a write-hostile transport can't break it."""
+        import asyncio
+        import sys
+
+        from app.marketplace_server import git_router
+
+        stub = "import sys\nsys.stdout.buffer.write(b'Status: 200 OK\\r\\n\\r\\nrefs-body')\nsys.stdout.flush()\n"
+        monkeypatch.setattr(
+            git_router,
+            "_GIT_HTTP_BACKEND",
+            (sys.executable, "-c", stub),
+        )
+
+        real_create_subprocess_exec = asyncio.create_subprocess_exec
+
+        async def wrapping_create_subprocess_exec(*args, **kwargs):
+            proc = await real_create_subprocess_exec(*args, **kwargs)
+            return TestRunGitHttpBackendStdinClosedEarly._proxy_with_closed_stdin(proc)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", wrapping_create_subprocess_exec)
+
+        async def run():
+            status, headers, stream = await git_router._run_git_http_backend(env={}, body=b"")
+            chunks = [chunk async for chunk in stream]
+            return status, b"".join(chunks)
+
+        status, body = asyncio.run(asyncio.wait_for(run(), timeout=10))
+        assert status == 200
+        assert body == b"refs-body"
+
+
 class TestBuildCgiEnvContentLength:
     """CONTENT_LENGTH must reflect the buffered body actually sent to the
     subprocess's stdin, not the client's Content-Length header — a chunked
