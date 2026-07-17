@@ -96,3 +96,22 @@ def test_search_ilike_matches_term_or_definition(repo):
     results = repo.search("churn")
     ids = {r["id"] for r in results}
     assert ids == {"a", "b"}
+
+
+def test_search_ranks_by_bm25_when_fts_available(tmp_path):
+    """DuckDB-only: BM25 should rank an exact-term match above a
+    definition-only mention, even when alphabetical order disagrees."""
+    from src.db import _ensure_schema
+    from src.repositories.glossary import GlossaryRepository
+
+    conn = duckdb.connect(str(tmp_path / "duck.duckdb"))
+    _ensure_schema(conn)
+    repo = GlossaryRepository(conn)
+
+    repo.create(id="a", term="Aardvark Metric", definition="Mentions churn in passing.")
+    repo.create(id="b", term="Churn Rate", definition="The core definition of churn.")
+
+    results = repo.search("churn")
+    ids = [r["id"] for r in results]
+    assert ids[0] == "b"  # term match ranks first under BM25, despite "Aardvark" < "Churn" alphabetically
+    conn.close()
