@@ -354,7 +354,13 @@ class _FakeJobsRepo:
 
     def enqueue(self, kind, payload, *, idempotency_key=None, **kwargs):
         self.enqueue_calls.append({"kind": kind, "payload": payload, "idempotency_key": idempotency_key})
-        return {"id": "fake-job-id", "kind": kind, "status": "queued", "idempotency_key": idempotency_key}
+        return {
+            "id": "fake-job-id",
+            "kind": kind,
+            "status": "queued",
+            "idempotency_key": idempotency_key,
+            "deduped": False,
+        }
 
 
 def test_trigger_threads_source_into_run_sync():
