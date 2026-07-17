@@ -226,6 +226,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   fallback on Postgres-state instances, the system DB on DuckDB-state
   instances). Slack's issuance/redeem throttle logs stay on DuckDB
   unconditionally either way — only the ephemeral code moves.
+- `.env_overlay` secrets (marketplace PATs, the initial-workspace template
+  PAT, the chat-sandbox E2B/Anthropic keys — every caller of
+  `app.secrets.persist_overlay_token`) now write to the control-plane vault
+  (`system_secrets` table, namespaced `env_overlay/<name>`) instead of the
+  `.env_overlay` file when `AGNES_VAULT_KEY` is configured, and publish an
+  `env-overlay-changed` coordination event so every api/worker/gateway
+  replica re-reads that key and refreshes its own `os.environ` — an admin
+  rotating a token from one replica now propagates everywhere without a
+  restart. A periodic sweep piggybacked on the existing state-checkpoint
+  loop (`app/main.py::_state_checkpoint_loop`) re-applies every
+  vault-managed token as a belt-and-braces catch-all for a missed event (up
+  to `AGNES_STATE_CHECKPOINT_INTERVAL_S`, default 300s). The legacy file
+  path is unchanged when `AGNES_VAULT_KEY` is unset (keyless/S-tier
+  installs) — logs a one-time warning and behaves exactly as before. At
+  boot, the legacy file loads first and any vault-stored token for the same
+  name wins over it.
 
 ## [0.74.107] - 2026-07-17
 
