@@ -385,3 +385,80 @@ class TestBuildMetricRowSkipsEmbeddedComment:
 
         assert row is None
         assert skip_reason == "embedded_sql_comment"
+
+
+from connectors.keboola.semantic_layer import relationship_lookup_by_dataset, resolve_relationship
+
+
+def _relationship_item(name, from_id, to_id, on, rel_type="left", model_uuid="model-1"):
+    return {
+        "type": "semantic-relationship",
+        "id": f"id-{name}",
+        "attributes": {
+            "name": name, "from": from_id, "to": to_id, "on": on,
+            "type": rel_type, "modelUUID": model_uuid,
+        },
+    }
+
+
+class TestRelationshipLookupByDataset:
+    def test_indexes_by_both_from_and_to(self):
+        rel = _relationship_item(
+            "orders_to_customers", "in.c-a.orders", "in.c-a.customers", 'o."customer_id" = c."id"'
+        )
+        lookup = relationship_lookup_by_dataset([rel])
+        assert lookup["in.c-a.orders"] == [rel["attributes"]]
+        assert lookup["in.c-a.customers"] == [rel["attributes"]]
+
+    def test_empty_items_yields_empty_lookup(self):
+        assert relationship_lookup_by_dataset([]) == {}
+
+
+class TestResolveRelationship:
+    def test_resolves_when_dataset_is_verified_to_side(self):
+        rel_attrs = _relationship_item(
+            "o_to_c", "in.c-a.orders", "in.c-a.customers", 'o."customer_id" = c."id"'
+        )["attributes"]
+        lookup = {"in.c-a.customers": [rel_attrs], "in.c-a.orders": [rel_attrs]}
+
+        relationship, skip_reason = resolve_relationship("in.c-a.customers", lookup)
+
+        assert skip_reason is None
+        assert relationship == rel_attrs
+
+    def test_skips_when_dataset_is_unverified_from_side(self):
+        rel_attrs = _relationship_item(
+            "o_to_c", "in.c-a.orders", "in.c-a.customers", 'o."customer_id" = c."id"'
+        )["attributes"]
+        lookup = {"in.c-a.customers": [rel_attrs], "in.c-a.orders": [rel_attrs]}
+
+        relationship, skip_reason = resolve_relationship("in.c-a.orders", lookup)
+
+        assert relationship is None
+        assert skip_reason == "unverified_relationship_direction"
+
+    def test_skips_when_no_relationship_touches_dataset(self):
+        relationship, skip_reason = resolve_relationship("in.c-a.unrelated", {})
+        assert relationship is None
+        assert skip_reason == "ambiguous_relationship"
+
+    def test_skips_when_multiple_relationships_touch_dataset(self):
+        rel1 = _relationship_item("r1", "in.c-a.orders", "in.c-a.customers", 'o."x" = c."y"')["attributes"]
+        rel2 = _relationship_item("r2", "in.c-a.payments", "in.c-a.customers", 'p."x" = c."z"')["attributes"]
+        lookup = {"in.c-a.customers": [rel1, rel2]}
+
+        relationship, skip_reason = resolve_relationship("in.c-a.customers", lookup)
+
+        assert relationship is None
+        assert skip_reason == "ambiguous_relationship"
+
+    def test_skips_unsupported_relationship_type(self):
+        rel_attrs = _relationship_item(
+            "o_to_c", "in.c-a.orders", "in.c-a.customers", 'o."x" = c."y"', rel_type="inner"
+        )["attributes"]
+        lookup = {"in.c-a.customers": [rel_attrs]}
+
+        relationship, skip_reason = resolve_relationship("in.c-a.customers", lookup)
+
+        assert relationship is None
+        assert skip_reason == "unsupported_relationship_type"

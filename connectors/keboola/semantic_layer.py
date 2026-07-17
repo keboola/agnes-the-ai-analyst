@@ -402,3 +402,57 @@ def sync_semantic_layer(
         "skipped_foreign_alias": skipped_foreign_alias,
         "skipped_embedded_comment": skipped_embedded_comment,
     }
+
+
+def relationship_lookup_by_dataset(relationship_items: list[dict]) -> dict[str, list[dict]]:
+    """Index semantic-relationship attributes by every tableId that appears
+    on either side (from or to), so a metric's dataset can be looked up
+    against every relationship touching it in O(1).
+
+    A relationship's attributes dict is stored under BOTH its from and to
+    tableId keys — resolve_relationship() below determines which side
+    (verified vs. unverified direction) the caller's dataset sits on.
+    """
+    lookup: dict[str, list[dict]] = {}
+    for item in relationship_items:
+        attrs = item.get("attributes") or {}
+        from_id = attrs.get("from")
+        to_id = attrs.get("to")
+        if from_id:
+            lookup.setdefault(from_id, []).append(attrs)
+        if to_id:
+            lookup.setdefault(to_id, []).append(attrs)
+    return lookup
+
+
+def resolve_relationship(
+    dataset_table_id: str,
+    relationship_lookup: dict[str, list[dict]],
+) -> tuple[Optional[dict], Optional[str]]:
+    """Resolve exactly one semantic-relationship for a metric's dataset,
+    restricted to the ONE live-verified-safe case (docs/superpowers/specs/
+    2026-07-17-keboola-relationship-metrics-design.md):
+
+    - exactly one relationship touches this dataset (from OR to side) —
+      zero or multiple candidates return "ambiguous_relationship";
+    - that relationship's type == "left" — the only value observed live;
+      anything else returns "unsupported_relationship_type";
+    - the dataset is on the relationship's "to" side — the only direction
+      verified live to compose FROM t LEFT JOIN joined correctly; a
+      dataset on the "from" side returns "unverified_relationship_direction"
+      rather than assuming the reverse direction behaves the same way.
+
+    Returns (relationship_attrs, None) on success, (None, skip_reason)
+    otherwise. Never raises, never guesses.
+    """
+    candidates = relationship_lookup.get(dataset_table_id, [])
+    if len(candidates) != 1:
+        return None, "ambiguous_relationship"
+
+    relationship = candidates[0]
+    if relationship.get("type") != "left":
+        return None, "unsupported_relationship_type"
+    if relationship.get("to") != dataset_table_id:
+        return None, "unverified_relationship_direction"
+
+    return relationship, None
