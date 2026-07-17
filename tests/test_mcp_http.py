@@ -197,8 +197,8 @@ class TestToolRegistration:
             # `agnes admin connection list`.
             "admin_source_connections_list",
             # Job management for scheduler — list, get, enqueue tasks.
-            # Triple-surface with GET /api/admin/jobs + POST /api/admin/jobs/enqueue +
-            # `agnes admin jobs`.
+            # Triple-surface with GET /api/jobs + GET /api/jobs/{job_id} +
+            # POST /api/jobs + `agnes admin jobs`.
             "admin_jobs_list",
             "admin_job_get",
             "admin_job_enqueue",
