@@ -654,12 +654,17 @@ def test_daily_token_budget_uses_shared_coordination_counter(tmp_path):
     """Wave-2C task 4: the daily-spend check no longer hits the DB aggregate
     on every send — it reads coordination-backend counters that
     ``_record_daily_tokens`` keeps up to date as turns complete (see
-    ``ChatManager._daily_token_totals``). Two consecutive sends must not
-    call ``repo.daily_anthropic_tokens`` at all, and — the actual point of
-    routing this through the coordination backend — a second ChatManager
-    instance (standing in for another app process) must see the same
-    running total once a turn's tokens are recorded, not an independent
-    zero.
+    ``ChatManager._daily_token_totals``). The very first check of the day
+    for a user is a ``(0, 0)`` counter reading, which is ambiguous (fresh
+    quota vs. restart-lost history — see
+    ``ChatManager._seed_daily_tokens_from_db_if_needed``) so it DOES consult
+    ``repo.daily_anthropic_tokens`` once as a fallback seed; a second,
+    same-day send must NOT call it again (the per-day "seeded" marker skips
+    the DB round trip once a bucket has been checked). And — the actual
+    point of routing this through the coordination backend — a second
+    ChatManager instance (standing in for another app process) must see the
+    same running total once a turn's tokens are recorded, not an
+    independent zero.
     """
     from datetime import datetime, timezone
     from unittest.mock import patch
@@ -703,8 +708,9 @@ def test_daily_token_budget_uses_shared_coordination_counter(tmp_path):
         with patch.object(repo, "daily_anthropic_tokens", wraps=repo.daily_anthropic_tokens) as mock_fn:
             await mgr.send_user_message(s.id, "msg1")
             await mgr.send_user_message(s.id, "msg2")
-            assert mock_fn.call_count == 0, (
-                f"expected the DB aggregate never consulted (coordination counter instead); "
+            assert mock_fn.call_count == 1, (
+                f"expected the DB aggregate consulted exactly once (the first-ever miss's "
+                f"restart-fallback seed), never again once the day-bucket is marked seeded; "
                 f"got {mock_fn.call_count} calls"
             )
 
@@ -720,6 +726,137 @@ def test_daily_token_budget_uses_shared_coordination_counter(tmp_path):
         assert mgr2._daily_token_totals("u@x") == (1000, 2000)
 
     asyncio.run(_run())
+
+
+def test_daily_token_totals_seeds_from_db_after_restart(tmp_path):
+    """Restart-forgets-spend regression (review finding): a process restart
+    under the default ``memory`` coordination backend wipes the running
+    daily-token counters. Without a DB fallback this silently reset a
+    user's spend to 0, re-opening the full daily budget on a routine
+    mid-day deploy even though ``chat_messages`` still held the real
+    spend. Record real spend directly in the DB (the durable source of
+    truth), simulate a restart by wiping the coordination backend, then
+    confirm the very next check seeds from the DB aggregate
+    (``ChatRepository.daily_anthropic_tokens``) and still blocks an
+    over-budget user instead of handing them a fresh, forgotten quota.
+    """
+    from datetime import datetime, timezone
+
+    from app.chat.manager import LiveSession
+    from app.chat.types import SessionState
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = MagicMock()
+    provider.spawn = AsyncMock()
+    cfg = ChatConfig(
+        enabled=True,
+        concurrency_per_user=5,
+        daily_anthropic_spend_usd=1.0,  # low cap — 100k output tokens blows well past it
+        max_session_tokens=10**9,
+        rate_messages_per_hour=10**6,
+    )
+    mgr = ChatManager(provider=provider, workdir_mgr=workdir_mgr, repo=repo, config=cfg)
+
+    async def _seed_history():
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        # A turn's tokens landed in chat_messages before the "restart" —
+        # this is what ChatRepository.daily_anthropic_tokens still sees.
+        repo.append_message(
+            session_id=s.id,
+            role="assistant",
+            content="hi",
+            tokens_in=0,
+            tokens_out=100_000,
+        )
+        return s
+
+    s = asyncio.run(_seed_history())
+    assert repo.daily_anthropic_tokens("u@x") == (0, 100_000)
+
+    # Simulate a process restart: the memory coordination backend's
+    # running counters (and any "seeded" marker) are wiped. The DB row
+    # above is untouched — it lives in a separate, durable store.
+    reset_coordination_for_tests()
+
+    async def _check_after_restart():
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        mgr._live[s.id] = LiveSession(
+            chat_id=s.id,
+            user_email="u@x",
+            state=SessionState.ACTIVE,
+            handle=FakeHandle(),
+            started_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
+            sinks=[SinkEntry(participant_email="u@x", sink=ws)],
+        )
+        with pytest.raises(RuntimeError, match="daily_budget_exhausted"):
+            await mgr.send_user_message(s.id, "msg-after-restart")
+
+    asyncio.run(_check_after_restart())
+
+    # The seed is durable for the rest of the day-bucket, not just the one
+    # check: the running counter itself now reflects the DB aggregate.
+    assert mgr._daily_token_totals("u@x") == (0, 100_000)
+
+
+def test_daily_token_totals_seed_race_has_single_winner(tmp_path):
+    """Double-seed race regression: two requests racing on the exact same
+    first-ever ``(0, 0)`` miss must not both seed the coordination counter
+    from the DB aggregate — that would double-count today's real spend.
+    The short-lived seed lease
+    (``ChatManager._seed_daily_tokens_from_db_if_needed``) must make
+    exactly one of them perform the seed; the persisted counter must land
+    on the DB aggregate exactly once, never doubled, regardless of which
+    thread "wins".
+    """
+    import threading
+
+    from app.coordination.factory import coordination
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = MagicMock()
+    provider.spawn = AsyncMock()
+    mgr = ChatManager(provider=provider, workdir_mgr=workdir_mgr, repo=repo, config=ChatConfig(enabled=True))
+
+    async def _seed_history():
+        s = await mgr.create_session(user_email="race@x", surface=Surface.WEB)
+        repo.append_message(session_id=s.id, role="assistant", content="hi", tokens_in=500, tokens_out=700)
+
+    asyncio.run(_seed_history())
+    assert repo.daily_anthropic_tokens("race@x") == (500, 700)
+
+    barrier = threading.Barrier(2)
+    results: list[tuple[int, int]] = []
+    results_lock = threading.Lock()
+
+    def _check():
+        barrier.wait(timeout=5)
+        result = mgr._daily_token_totals("race@x")
+        with results_lock:
+            results.append(result)
+
+    threads = [threading.Thread(target=_check) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert len(results) == 2
+
+    key_in, key_out = mgr._daily_token_keys("race@x")
+    final_in = coordination().incr(key_in, amount=0, ttl_s=60)
+    final_out = coordination().incr(key_out, amount=0, ttl_s=60)
+    assert (final_in, final_out) == (500, 700), (
+        f"expected the counter seeded exactly once from the DB aggregate (500, 700); "
+        f"got ({final_in}, {final_out}) — looks double-seeded"
+    )
 
 
 def test_double_crash_dies_after_three(manager: ChatManager):
