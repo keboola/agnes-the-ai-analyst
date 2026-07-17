@@ -205,194 +205,195 @@ def materialize_query(
         dir=get_temp_root(),
         ignore_cleanup_errors=True,
     )
-    with _tmp_ctx as tmpdir:
-        full_table_id = f"{bucket}.{source_table}"
+    try:
+        with _tmp_ctx as tmpdir:
+            full_table_id = f"{bucket}.{source_table}"
 
-        if export_filter.file_type == FILE_TYPE_PARQUET:
-            # Native parquet path. Storage API serves Snowflake UNLOAD
-            # output directly. Two shapes to handle:
-            #
-            # 1. **Single file** (small exports): file_info.url points at
-            #    one signed URL; download to tmp_parquet and we're done.
-            # 2. **Sliced** (large exports — Snowflake UNLOAD respects
-            #    MAX_FILE_SIZE, default 16 MiB, so anything past that
-            #    arrives as a manifest of N parquet slices). Each slice
-            #    is itself a complete parquet file with its own footer;
-            #    naively concatenating them like CSV would be invalid.
-            #    We download all slices into the per-call tempdir, then
-            #    DuckDB-COPY across `read_parquet([slice1, slice2, ...])`
-            #    into one consolidated tmp_parquet. DuckDB streams row
-            #    groups during this consolidation — peak memory is one
-            #    row group (~1 MiB), not the full table.
-            stats = storage_client.prepare_export(
-                full_table_id,
-                export_filter=export_filter,
-            )
-            file_info = stats["file_info"]
-            if file_info.get("isSliced"):
-                slice_dir = Path(tmpdir) / "slices"
-                slice_paths = storage_client.download_file_slices(file_info, slice_dir)
-                if not slice_paths:
-                    raise RuntimeError(f"sliced parquet export for {full_table_id} yielded no slices")
-                quoted = ", ".join("'" + str(p).replace("'", "''") + "'" for p in slice_paths)
-                safe_tmp = str(tmp_parquet).replace("'", "''")
-                conv = _open_consolidation_conn()
-                try:
-                    conv.execute(f"COPY (SELECT * FROM read_parquet([{quoted}])) TO '{safe_tmp}' (FORMAT PARQUET)")
-                finally:
-                    conv.close()
-            else:
-                storage_client.download_file(file_info, tmp_parquet)
-                stats["bytes"] = tmp_parquet.stat().st_size if tmp_parquet.exists() else 0
-
-            if not tmp_parquet.exists() or tmp_parquet.stat().st_size == 0:
-                logger.warning(
-                    "Storage API parquet export for %s returned no data (filter may be too restrictive)",
+            if export_filter.file_type == FILE_TYPE_PARQUET:
+                # Native parquet path. Storage API serves Snowflake UNLOAD
+                # output directly. Two shapes to handle:
+                #
+                # 1. **Single file** (small exports): file_info.url points at
+                #    one signed URL; download to tmp_parquet and we're done.
+                # 2. **Sliced** (large exports — Snowflake UNLOAD respects
+                #    MAX_FILE_SIZE, default 16 MiB, so anything past that
+                #    arrives as a manifest of N parquet slices). Each slice
+                #    is itself a complete parquet file with its own footer;
+                #    naively concatenating them like CSV would be invalid.
+                #    We download all slices into the per-call tempdir, then
+                #    DuckDB-COPY across `read_parquet([slice1, slice2, ...])`
+                #    into one consolidated tmp_parquet. DuckDB streams row
+                #    groups during this consolidation — peak memory is one
+                #    row group (~1 MiB), not the full table.
+                stats = storage_client.prepare_export(
                     full_table_id,
+                    export_filter=export_filter,
                 )
-                # Empty placeholder parquet so the orchestrator doesn't
-                # choke on a missing file.
-                _open_consolidation_conn().execute(
-                    f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{tmp_parquet}' (FORMAT PARQUET)"
-                ).close()
-            else:
-                # Typed-parquet fix for the native-parquet path (verified
-                # live, 2026-07-15): Storage API's Snowflake UNLOAD serves
-                # every column as VARCHAR regardless of the source's real
-                # type — a genuinely numeric column (e.g. a revenue metric
-                # aggregated over it) came back as a DuckDB VARCHAR,
-                # requiring callers to TRY_CAST before aggregating. The
-                # legacy CSV extraction path (_extract_via_legacy) already
-                # fixes the equivalent problem via
-                # KeboolaClient.get_pyarrow_schema() + apply_schema_to_table
-                # (parquet_io.py, the "v27 typed-parquet fix") — that
-                # mechanism operates on a generic pyarrow.Table with no
-                # CSV-specific coupling, so it's reused here rather than
-                # reimplemented. `storage_client.base` always has the form
-                # `<url>/v2/storage` (see KeboolaStorageClient.__init__),
-                # so stripping that known suffix recovers the plain
-                # Keboola URL without depending on the keboola_url/token
-                # kwargs being set — sync.py's preferred call shape passes
-                # a pre-built storage_client and may leave those unset.
-                #
-                # `isinstance(..., str)` guards against a test double /
-                # unusual caller whose `.token`/`.base` aren't real strings
-                # (e.g. a MagicMock, which is truthy but not a str) — skip
-                # typing rather than attempt a KeboolaClient call with
-                # garbage credentials. Real `KeboolaStorageClient` instances
-                # always have string `.token`/`.base`, so this is a no-op
-                # in production.
-                pyarrow_schema = None
-                if isinstance(getattr(storage_client, "token", None), str) and isinstance(
-                    getattr(storage_client, "base", None), str
-                ):
-                    from connectors.keboola.client import KeboolaClient
-                    from connectors.keboola.parquet_io import apply_schema_to_table
-
-                    try:
-                        metadata_client = KeboolaClient(
-                            token=storage_client.token,
-                            url=storage_client.base.removesuffix("/v2/storage"),
-                        )
-                        pyarrow_schema = metadata_client.get_pyarrow_schema(full_table_id)
-                    except Exception as e:
-                        logger.warning(
-                            "Keboola schema unavailable for %s (%s); materialized parquet "
-                            "keeps Storage API's native (often all-VARCHAR) types",
-                            full_table_id,
-                            e,
-                        )
-                        pyarrow_schema = None
-
-                if pyarrow_schema is not None:
-                    # Memory tradeoff: this retype reads the whole consolidated
-                    # parquet into one pyarrow.Table and rewrites it, so peak
-                    # memory scales with the materialized result size — unlike
-                    # the streaming DuckDB consolidation above. It mirrors the
-                    # legacy CSV path's established v27 mechanism; a streaming
-                    # DuckDB retype would be preferable for very large
-                    # materialized tables (future perf work).
-                    import pyarrow.parquet as pq
-
-                    # Retype into a sibling temp then atomically replace, and
-                    # degrade gracefully: a failure in this local read/rewrite
-                    # (I/O error, or an unexpected apply_schema_to_table failure)
-                    # must not turn an otherwise-successful materialize into a
-                    # hard failure — keep the native (untyped) parquet, matching
-                    # the schema-fetch fallback above.
-                    typed_tmp = f"{tmp_parquet}.typed"
-                    try:
-                        typed_table = apply_schema_to_table(pq.read_table(tmp_parquet), pyarrow_schema)
-                        pq.write_table(typed_table, typed_tmp, compression="snappy")
-                        os.replace(typed_tmp, tmp_parquet)
-                    except Exception as e:
-                        logger.warning(
-                            "Keboola typed-parquet retype failed for %s (%s); keeping native (untyped) parquet",
-                            full_table_id,
-                            e,
-                        )
-                        if os.path.exists(typed_tmp):
-                            os.remove(typed_tmp)
-        else:
-            # Legacy CSV path. Kept for the explicit `{"file_type":"csv"}`
-            # opt-in. Slower (CSV parse + parquet rewrite) and
-            # memory-heavier (DuckDB pulls the CSV into a buffer with
-            # max_line_size headroom), but doesn't depend on Storage
-            # API parquet support if a future project backend lacks it.
-            csv_path = Path(tmpdir) / f"{table_id}.csv"
-            stats = storage_client.export_table(
-                full_table_id,
-                csv_path,
-                export_filter=export_filter,
-            )
-            if not csv_path.exists() or csv_path.stat().st_size == 0:
-                logger.warning(
-                    "Storage API CSV export for %s returned no data (filter may be too restrictive)",
-                    full_table_id,
-                )
-                _open_consolidation_conn().execute(
-                    f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{tmp_parquet}' (FORMAT PARQUET)"
-                ).close()
-            else:
-                # CSV → parquet via DuckDB. `all_varchar=True` matches the
-                # legacy client's behavior — preserves the source's exact
-                # character data without DuckDB's type inference rewriting
-                # numeric-looking strings (e.g. "Non-Manager") as NULL.
-                #
-                # `max_line_size=64MB` overrides DuckDB's default 2 MB cap
-                # on any single CSV line. Keboola tables that store
-                # embedded JSON / SQL transformation bodies routinely
-                # have multi-MB cells (e.g. `kbc_component_configuration`
-                # rows ship full Snowflake transformation SQL inline as
-                # a JSON column value); the default 2 MB ceiling rejects
-                # them with `Maximum line size of 2000000 bytes
-                # exceeded`. 64 MB is generous enough to absorb any
-                # reasonable embedded blob; DuckDB allocates a single
-                # buffer of this size per worker thread.
-                #
-                # `quote='"', escape='"'` pin the RFC-4180 dialect Keboola
-                # Storage API exports use (delimiter ',', quote '"', embedded
-                # quotes doubled). Without this, DuckDB's dialect sniffer can
-                # misdetect the escape char on cells holding embedded
-                # JSON/SQL text with their own quoting, producing a false
-                # `CSV Error on Line: N` — pinning removes the guesswork.
-                safe_csv = str(csv_path).replace("'", "''")
-                safe_tmp = str(tmp_parquet).replace("'", "''")
-                try:
+                file_info = stats["file_info"]
+                if file_info.get("isSliced"):
+                    slice_dir = Path(tmpdir) / "slices"
+                    slice_paths = storage_client.download_file_slices(file_info, slice_dir)
+                    if not slice_paths:
+                        raise RuntimeError(f"sliced parquet export for {full_table_id} yielded no slices")
+                    quoted = ", ".join("'" + str(p).replace("'", "''") + "'" for p in slice_paths)
+                    safe_tmp = str(tmp_parquet).replace("'", "''")
                     conv = _open_consolidation_conn()
-                    conv.execute(
-                        f"COPY (SELECT * FROM read_csv('{safe_csv}', "
-                        f"all_varchar=true, max_line_size=67108864, "
-                        f"quote='\"', escape='\"')) "
-                        f"TO '{safe_tmp}' (FORMAT PARQUET)"
-                    )
-                    conv.close()
-                except Exception:
-                    if tmp_parquet.exists():
-                        tmp_parquet.unlink()
-                    raise
+                    try:
+                        conv.execute(f"COPY (SELECT * FROM read_parquet([{quoted}])) TO '{safe_tmp}' (FORMAT PARQUET)")
+                    finally:
+                        conv.close()
+                else:
+                    storage_client.download_file(file_info, tmp_parquet)
+                    stats["bytes"] = tmp_parquet.stat().st_size if tmp_parquet.exists() else 0
 
-    warn_if_scratch_survived(_tmp_ctx.name)
+                if not tmp_parquet.exists() or tmp_parquet.stat().st_size == 0:
+                    logger.warning(
+                        "Storage API parquet export for %s returned no data (filter may be too restrictive)",
+                        full_table_id,
+                    )
+                    # Empty placeholder parquet so the orchestrator doesn't
+                    # choke on a missing file.
+                    _open_consolidation_conn().execute(
+                        f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{tmp_parquet}' (FORMAT PARQUET)"
+                    ).close()
+                else:
+                    # Typed-parquet fix for the native-parquet path (verified
+                    # live, 2026-07-15): Storage API's Snowflake UNLOAD serves
+                    # every column as VARCHAR regardless of the source's real
+                    # type — a genuinely numeric column (e.g. a revenue metric
+                    # aggregated over it) came back as a DuckDB VARCHAR,
+                    # requiring callers to TRY_CAST before aggregating. The
+                    # legacy CSV extraction path (_extract_via_legacy) already
+                    # fixes the equivalent problem via
+                    # KeboolaClient.get_pyarrow_schema() + apply_schema_to_table
+                    # (parquet_io.py, the "v27 typed-parquet fix") — that
+                    # mechanism operates on a generic pyarrow.Table with no
+                    # CSV-specific coupling, so it's reused here rather than
+                    # reimplemented. `storage_client.base` always has the form
+                    # `<url>/v2/storage` (see KeboolaStorageClient.__init__),
+                    # so stripping that known suffix recovers the plain
+                    # Keboola URL without depending on the keboola_url/token
+                    # kwargs being set — sync.py's preferred call shape passes
+                    # a pre-built storage_client and may leave those unset.
+                    #
+                    # `isinstance(..., str)` guards against a test double /
+                    # unusual caller whose `.token`/`.base` aren't real strings
+                    # (e.g. a MagicMock, which is truthy but not a str) — skip
+                    # typing rather than attempt a KeboolaClient call with
+                    # garbage credentials. Real `KeboolaStorageClient` instances
+                    # always have string `.token`/`.base`, so this is a no-op
+                    # in production.
+                    pyarrow_schema = None
+                    if isinstance(getattr(storage_client, "token", None), str) and isinstance(
+                        getattr(storage_client, "base", None), str
+                    ):
+                        from connectors.keboola.client import KeboolaClient
+                        from connectors.keboola.parquet_io import apply_schema_to_table
+
+                        try:
+                            metadata_client = KeboolaClient(
+                                token=storage_client.token,
+                                url=storage_client.base.removesuffix("/v2/storage"),
+                            )
+                            pyarrow_schema = metadata_client.get_pyarrow_schema(full_table_id)
+                        except Exception as e:
+                            logger.warning(
+                                "Keboola schema unavailable for %s (%s); materialized parquet "
+                                "keeps Storage API's native (often all-VARCHAR) types",
+                                full_table_id,
+                                e,
+                            )
+                            pyarrow_schema = None
+
+                    if pyarrow_schema is not None:
+                        # Memory tradeoff: this retype reads the whole consolidated
+                        # parquet into one pyarrow.Table and rewrites it, so peak
+                        # memory scales with the materialized result size — unlike
+                        # the streaming DuckDB consolidation above. It mirrors the
+                        # legacy CSV path's established v27 mechanism; a streaming
+                        # DuckDB retype would be preferable for very large
+                        # materialized tables (future perf work).
+                        import pyarrow.parquet as pq
+
+                        # Retype into a sibling temp then atomically replace, and
+                        # degrade gracefully: a failure in this local read/rewrite
+                        # (I/O error, or an unexpected apply_schema_to_table failure)
+                        # must not turn an otherwise-successful materialize into a
+                        # hard failure — keep the native (untyped) parquet, matching
+                        # the schema-fetch fallback above.
+                        typed_tmp = f"{tmp_parquet}.typed"
+                        try:
+                            typed_table = apply_schema_to_table(pq.read_table(tmp_parquet), pyarrow_schema)
+                            pq.write_table(typed_table, typed_tmp, compression="snappy")
+                            os.replace(typed_tmp, tmp_parquet)
+                        except Exception as e:
+                            logger.warning(
+                                "Keboola typed-parquet retype failed for %s (%s); keeping native (untyped) parquet",
+                                full_table_id,
+                                e,
+                            )
+                            if os.path.exists(typed_tmp):
+                                os.remove(typed_tmp)
+            else:
+                # Legacy CSV path. Kept for the explicit `{"file_type":"csv"}`
+                # opt-in. Slower (CSV parse + parquet rewrite) and
+                # memory-heavier (DuckDB pulls the CSV into a buffer with
+                # max_line_size headroom), but doesn't depend on Storage
+                # API parquet support if a future project backend lacks it.
+                csv_path = Path(tmpdir) / f"{table_id}.csv"
+                stats = storage_client.export_table(
+                    full_table_id,
+                    csv_path,
+                    export_filter=export_filter,
+                )
+                if not csv_path.exists() or csv_path.stat().st_size == 0:
+                    logger.warning(
+                        "Storage API CSV export for %s returned no data (filter may be too restrictive)",
+                        full_table_id,
+                    )
+                    _open_consolidation_conn().execute(
+                        f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{tmp_parquet}' (FORMAT PARQUET)"
+                    ).close()
+                else:
+                    # CSV → parquet via DuckDB. `all_varchar=True` matches the
+                    # legacy client's behavior — preserves the source's exact
+                    # character data without DuckDB's type inference rewriting
+                    # numeric-looking strings (e.g. "Non-Manager") as NULL.
+                    #
+                    # `max_line_size=64MB` overrides DuckDB's default 2 MB cap
+                    # on any single CSV line. Keboola tables that store
+                    # embedded JSON / SQL transformation bodies routinely
+                    # have multi-MB cells (e.g. `kbc_component_configuration`
+                    # rows ship full Snowflake transformation SQL inline as
+                    # a JSON column value); the default 2 MB ceiling rejects
+                    # them with `Maximum line size of 2000000 bytes
+                    # exceeded`. 64 MB is generous enough to absorb any
+                    # reasonable embedded blob; DuckDB allocates a single
+                    # buffer of this size per worker thread.
+                    #
+                    # `quote='"', escape='"'` pin the RFC-4180 dialect Keboola
+                    # Storage API exports use (delimiter ',', quote '"', embedded
+                    # quotes doubled). Without this, DuckDB's dialect sniffer can
+                    # misdetect the escape char on cells holding embedded
+                    # JSON/SQL text with their own quoting, producing a false
+                    # `CSV Error on Line: N` — pinning removes the guesswork.
+                    safe_csv = str(csv_path).replace("'", "''")
+                    safe_tmp = str(tmp_parquet).replace("'", "''")
+                    try:
+                        conv = _open_consolidation_conn()
+                        conv.execute(
+                            f"COPY (SELECT * FROM read_csv('{safe_csv}', "
+                            f"all_varchar=true, max_line_size=67108864, "
+                            f"quote='\"', escape='\"')) "
+                            f"TO '{safe_tmp}' (FORMAT PARQUET)"
+                        )
+                        conv.close()
+                    except Exception:
+                        if tmp_parquet.exists():
+                            tmp_parquet.unlink()
+                        raise
+    finally:
+        warn_if_scratch_survived(_tmp_ctx.name)
 
     # Row count from the parquet, not from `stats["rows"]` — Storage API
     # sometimes omits totalRowsCount on small results, and the parquet is

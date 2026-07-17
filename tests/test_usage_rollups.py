@@ -137,6 +137,26 @@ class TestRebuildRollupsToolDaily:
         assert len(rows) == 1
         assert rows[0][0] == 2
 
+    def test_stale_key_removed_when_source_event_deleted(self, tmp_path, monkeypatch):
+        """Regression (agnes-reviewer-parity finding on PR #909): switching to
+        ON CONFLICT DO UPDATE must not silently retain a rollup row forever
+        once its only source event is gone (e.g. a corrected/deleted usage
+        event). The anti-join delete only removes keys ABSENT from the fresh
+        set, so it can coexist with the ON CONFLICT upsert without
+        delete-then-reinserting the same key."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+        _seed_event(conn, occurred_at=today, tool_name="Bash", event_id="e-stale")
+        _seed_event(conn, occurred_at=today, tool_name="Edit", event_id="e-keep")
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        tools = {r[0] for r in conn.execute("SELECT tool_name FROM usage_tool_daily").fetchall()}
+        assert tools == {"Bash", "Edit"}
+
+        conn.execute("DELETE FROM usage_events WHERE id = ?", ["e-stale"])
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        tools = {r[0] for r in conn.execute("SELECT tool_name FROM usage_tool_daily").fetchall()}
+        assert tools == {"Edit"}, "stale Bash row must be removed once its source event is deleted"
+
     def test_distinct_users(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
@@ -172,6 +192,23 @@ class TestMarketplaceItemDaily:
             "WHERE type='skill' ORDER BY name"
         ).fetchall()
         assert rows == [("curated", "skill", "myplug", "design", 3)]
+
+    def test_stale_key_removed_when_source_event_deleted(self, tmp_path, monkeypatch):
+        """Same anti-join-delete regression as usage_tool_daily (PR #909
+        parity finding), for the marketplace daily fact table."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        _seed_curated_plugin(conn, "myplug")
+        today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id="e-keep")
+        _seed_event(conn, occurred_at=today, tool_name="Bash", event_id="e-stale")
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        names = {r[0] for r in conn.execute("SELECT name FROM usage_marketplace_item_daily").fetchall()}
+        assert "design" in names
+
+        conn.execute("DELETE FROM usage_events WHERE id = ?", ["e-stale"])
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        names = {r[0] for r in conn.execute("SELECT name FROM usage_marketplace_item_daily").fetchall()}
+        assert names == {"design", "myplug"}, "stale entries must be removed once their source events are gone"
 
     def test_curated_plugin_row_aggregates_children(self, tmp_path, monkeypatch):
         """Plugin-level row sums child invocations (skills + agents) for the
@@ -317,6 +354,33 @@ class TestMarketplaceItemDaily:
 class TestMarketplaceItemWindow:
     """Sliding-window snapshot — distinct_users is TRUE distinct across the
     window (not sum-of-daily-distincts)."""
+
+    def test_stale_key_removed_when_source_event_deleted(self, tmp_path, monkeypatch):
+        """Same anti-join-delete regression as usage_tool_daily (PR #909
+        parity finding), for the sliding-window snapshot table."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        _seed_curated_plugin(conn, "myplug")
+        today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id="e-keep")
+        _seed_event(conn, occurred_at=today, tool_name="Bash", event_id="e-stale")
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        names = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM usage_marketplace_item_window WHERE period_label='last_7d'"
+            ).fetchall()
+        }
+        assert "design" in names
+
+        conn.execute("DELETE FROM usage_events WHERE id = ?", ["e-stale"])
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        names = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM usage_marketplace_item_window WHERE period_label='last_7d'"
+            ).fetchall()
+        }
+        assert names == {"design", "myplug"}, "stale entries must be removed once their source events are gone"
 
     def test_true_distinct_users_across_days(self, tmp_path, monkeypatch):
         """Alice invokes the same skill on day 1 and day 5 — daily fact rows

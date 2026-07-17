@@ -1337,10 +1337,24 @@ class UsageRepository:
         # re-INSERT of overlapping keys in the same transaction can hit an
         # internal PRIMARY KEY index assertion (duplicate-key false positive)
         # that aborts the process uncatchably. INSERT ... ON CONFLICT DO
-        # UPDATE never deletes the row, so it never hits that path. Rows for
-        # entities that no longer have any events in the window are only
-        # cleared when the whole bucket set is empty.
+        # UPDATE never deletes the row, so it never hits that path. Stale
+        # keys (no longer present in `buckets`) are removed via an anti-join
+        # against the fresh key set, never a key about to be upserted, so
+        # this can't delete-then-reinsert the same key either.
         if buckets:
+            fresh_keys = list(buckets.keys())  # (source, type_, parent, name)
+            placeholders = ", ".join("(?, ?, ?, ?)" for _ in fresh_keys)
+            flat_params = [v for key in fresh_keys for v in key]
+            self.conn.execute(
+                f"""
+                DELETE FROM usage_marketplace_item_window
+                WHERE period_label = ?
+                  AND (source, type, parent_plugin, name) NOT IN (
+                      SELECT * FROM (VALUES {placeholders}) AS t(source, type, parent_plugin, name)
+                  )
+                """,
+                [period_label] + flat_params,
+            )
             self.conn.executemany(
                 """
                 INSERT INTO usage_marketplace_item_window
@@ -1398,6 +1412,27 @@ class UsageRepository:
             # boundary day held a key that got deleted and reinserted in the
             # same commit. INSERT ... ON CONFLICT DO UPDATE never deletes the
             # row, so it can't hit that path.
+            #
+            # Stale keys (an event was deleted/corrected so a (day, tool,
+            # source) combo no longer has any qualifying events) still need
+            # removing to match Postgres semantics — but only keys ABSENT
+            # from the freshly computed set, never one that's about to be
+            # upserted, so this can never delete-then-reinsert the same key
+            # in one transaction (the crash trigger above).
+            self.conn.execute(
+                """
+                DELETE FROM usage_tool_daily
+                WHERE day >= ?
+                  AND (day, tool_name, source) NOT IN (
+                      SELECT CAST(occurred_at AS DATE) AS day, tool_name, source
+                      FROM usage_events
+                      WHERE CAST(occurred_at AS DATE) >= ?
+                        AND tool_name IS NOT NULL
+                      GROUP BY day, tool_name, source
+                  )
+                """,
+                [since_day, since_day],
+            )
             self.conn.execute(
                 """
                 INSERT INTO usage_tool_daily
@@ -1444,8 +1479,25 @@ class UsageRepository:
             )
             # Same DELETE-then-bulk-INSERT-of-overlapping-keys hazard as
             # usage_tool_daily above — see that comment. ON CONFLICT DO
-            # UPDATE avoids the delete+reinsert-same-key path entirely.
+            # UPDATE avoids the delete+reinsert-same-key path entirely. Stale
+            # keys (no longer present in daily_buckets — an event was
+            # deleted/corrected) are removed via an anti-join against the
+            # fresh key set below, never a key about to be upserted, so this
+            # can't delete-then-reinsert the same key either.
             if daily_buckets:
+                fresh_keys = list(daily_buckets.keys())  # (day, source, type_, parent, name)
+                placeholders = ", ".join("(?, ?, ?, ?, ?)" for _ in fresh_keys)
+                flat_params = [v for key in fresh_keys for v in key]
+                self.conn.execute(
+                    f"""
+                    DELETE FROM usage_marketplace_item_daily
+                    WHERE day >= ?
+                      AND (day, source, type, parent_plugin, name) NOT IN (
+                          SELECT * FROM (VALUES {placeholders}) AS t(day, source, type, parent_plugin, name)
+                      )
+                    """,
+                    [since_day] + flat_params,
+                )
                 self.conn.executemany(
                     """
                     INSERT INTO usage_marketplace_item_daily
