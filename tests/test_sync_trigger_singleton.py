@@ -13,6 +13,7 @@ the scheduler's cadence-driven trigger). These tests cover:
 - The trigger handler's enqueue + dedup behavior via a fake `jobs_repo()`.
 """
 
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -83,14 +84,21 @@ class _FakeJobsRepo:
     """Stands in for `src.repositories.jobs_repo()` — mirrors the real
     `JobsRepository.enqueue()` dedup contract (matching kind +
     idempotency_key with status queued/running returns the existing row
-    unchanged) without touching a real DuckDB/Postgres connection, so the
-    trigger handler's branch logic (new job vs. deduped job) can be tested
-    deterministically."""
+    unchanged, with `"deduped": True`; a fresh insert carries
+    `"deduped": False`) without touching a real DuckDB/Postgres
+    connection, so the trigger handler's branch logic (new job vs.
+    deduped job, now driven entirely by `enqueue()`'s own return value —
+    no separate pre-check) can be tested deterministically."""
 
     def __init__(self, existing_job: dict | None = None):
         self.existing_job = existing_job
         self.enqueue_calls: list[dict] = []
         self._next_id = 0
+        # Mirrors the real repos' atomic check-then-insert critical
+        # section (DuckDB's `_JOBS_LOCK`, PG's `ON CONFLICT`) — needed so
+        # the concurrency test below exercises a genuinely race-free
+        # dedup, not an artifact of this fake being unsynchronized.
+        self._lock = threading.Lock()
 
     def list(self, *, kind=None, status=None, limit=50):
         job = self.existing_job
@@ -99,23 +107,31 @@ class _FakeJobsRepo:
         return []
 
     def enqueue(self, kind, payload, *, idempotency_key=None, **kwargs):
-        self.enqueue_calls.append({"kind": kind, "payload": payload, "idempotency_key": idempotency_key})
-        job = self.existing_job
-        if (
-            job is not None
-            and job["kind"] == kind
-            and job.get("idempotency_key") == idempotency_key
-            and job["status"] in ("queued", "running")
-        ):
-            return job
-        self._next_id += 1
-        return {
-            "id": f"new-job-{self._next_id}",
-            "kind": kind,
-            "status": "queued",
-            "idempotency_key": idempotency_key,
-            "payload_json": payload,
-        }
+        with self._lock:
+            self.enqueue_calls.append({"kind": kind, "payload": payload, "idempotency_key": idempotency_key})
+            job = self.existing_job
+            if (
+                job is not None
+                and job["kind"] == kind
+                and job.get("idempotency_key") == idempotency_key
+                and job["status"] in ("queued", "running")
+            ):
+                return {**job, "deduped": True}
+            self._next_id += 1
+            new_job = {
+                "id": f"new-job-{self._next_id}",
+                "kind": kind,
+                "status": "queued",
+                "idempotency_key": idempotency_key,
+                "payload_json": payload,
+                "deduped": False,
+            }
+            # Real enqueue() persists the fresh row, so it's visible to the
+            # very next call sharing this key — mirror that here so two
+            # racing callers against the SAME fake repo instance dedup
+            # against each other, not both against a frozen `None`.
+            self.existing_job = new_job
+            return new_job
 
 
 def _make_client():
@@ -219,6 +235,56 @@ def test_second_trigger_during_queued_dedups_to_same_job_id():
 
     assert second.status_code == 409
     assert second.json()["detail"]["job_id"] == job_id
+
+
+def test_concurrent_triggers_are_race_free():
+    """Regression test for the racy pre-check bug: the OLD handler peeked
+    for an in-flight job (`_find_in_flight_data_refresh_job()`) BEFORE
+    calling `enqueue()`. Two callers hitting that peek at the same moment
+    could both see "nothing in flight" and both get told 200 "triggered",
+    even though `enqueue()`'s own dedup meant only one job actually
+    existed. The fixed handler branches on the SAME `enqueue()` call's
+    `"deduped"` return value, so this race cannot happen — exactly one of
+    two concurrent triggers gets 200, the other gets 409, and both carry
+    the same `job_id`.
+
+    Threaded against one shared `_FakeJobsRepo` (lock-guarded exactly
+    like the real DuckDB/PG repos' atomic dedup section) with a
+    `Barrier` to force the two `POST /api/sync/trigger` calls to overlap.
+    """
+    fake_repo = _FakeJobsRepo(existing_job=None)
+    client = _make_client()
+    n = 2
+    barrier = threading.Barrier(n)
+    results: list[int] = [None, None]  # type: ignore[list-item]
+    job_ids: list[str] = [None, None]  # type: ignore[list-item]
+    errors: list[BaseException] = []
+
+    def fire(i: int) -> None:
+        try:
+            barrier.wait(timeout=5)
+            resp = client.post("/api/sync/trigger")
+            results[i] = resp.status_code
+            body = resp.json()
+            job_ids[i] = body["job_id"] if resp.status_code == 200 else body["detail"]["job_id"]
+        except BaseException as exc:  # noqa: BLE001 - surfaced via errors list
+            errors.append(exc)
+
+    with patch("app.api.sync.jobs_repo", lambda: fake_repo):
+        threads = [threading.Thread(target=fire, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+    assert not errors, f"trigger raised under concurrency: {errors}"
+    # Sum invariant: exactly one 200 (the caller that actually created the
+    # job) and one 409 (the caller whose enqueue() deduped) — never two
+    # 200s (the bug this test guards against) and never two 409s (someone
+    # has to have created the job in the first place).
+    assert sorted(results) == [200, 409]
+    # Both callers must agree on which job is in flight.
+    assert job_ids[0] == job_ids[1]
 
 
 # ---- body shape acceptance -------------------------------------------------
