@@ -338,6 +338,87 @@ else
     COMPOSE_FILE_VALUE="docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml"
 fi
 
+%{ if dispatcher_enabled ~}
+# --- 4b. Opt-in LLM dispatcher (token-arbitrage PoC) ---
+# Runs as extra compose services (docker-compose.dispatcher.yml below —
+# module-owned, NOT extracted from the Agnes image) in the same compose
+# project: the app reaches it as http://dispatcher:8600 over compose DNS
+# and nothing is exposed beyond the host loopback. The lifecycle rides the
+# existing scripts for free: agnes-auto-upgrade honors COMPOSE_FILE from
+# .env (pull + up include the overlay), and agnes-state-applier only ever
+# targets named services with --no-deps, so it neither touches nor removes
+# the dispatcher (neither script runs `compose down`/--remove-orphans).
+DISP_DIR="$APP_DIR/dispatcher"
+mkdir -p "$DISP_DIR"
+
+# Both fetches fail LOUDLY (no ||-fallback, same posture as the Keboola
+# token): an enabled dispatcher without its key or Vertex credentials would
+# 401/500 every chat request — better a visible boot failure than a
+# silently broken PoC.
+DISPATCHER_KEY=$(gcloud secrets versions access latest --secret=${dispatcher_key_secret})
+gcloud secrets versions access latest --secret=${dispatcher_vertex_sa_secret} > "$DISP_DIR/vertex-sa.json"
+
+echo "${dispatcher_policies_b64}" | base64 -d > "$DISP_DIR/policies.yaml"
+cat > "$DISP_DIR/keys.yaml" <<KEYSEOF
+keys:
+  "$DISPATCHER_KEY": agnes
+KEYSEOF
+
+# The dispatcher image runs as uid 10001 (non-root): key material readable
+# only by that uid, the policy file by anyone.
+chown 10001 "$DISP_DIR/keys.yaml" "$DISP_DIR/vertex-sa.json"
+chmod 0400 "$DISP_DIR/keys.yaml" "$DISP_DIR/vertex-sa.json"
+chmod 0444 "$DISP_DIR/policies.yaml"
+
+# Ledger postgres password — mint on first boot, preserve across reboots
+# (same read-back-from-.env pattern as SCHEDULER_API_TOKEN above).
+DISPATCHER_PG_PASSWORD=""
+if [ -f "$APP_DIR/.env" ]; then
+    DISPATCHER_PG_PASSWORD=$(grep -E '^DISPATCHER_PG_PASSWORD=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
+fi
+if [ -z "$DISPATCHER_PG_PASSWORD" ]; then
+    DISPATCHER_PG_PASSWORD=$(openssl rand -hex 24)
+fi
+
+# Ledger data on the persistent disk. postgres:16-alpine's entrypoint runs
+# as root and chowns its data dir to uid 70 on first init itself.
+mkdir -p "$DATA_MNT/dispatcher-postgres"
+
+# Quoted heredoc: the $${...} below are resolved by docker compose from
+# /opt/agnes/.env at `compose up` time, not by this shell.
+cat > "$APP_DIR/docker-compose.dispatcher.yml" <<'DISPYAML'
+services:
+  dispatcher:
+    image: $${DISPATCHER_IMAGE}
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://dispatcher:$${DISPATCHER_PG_PASSWORD}@dispatcher-pg:5432/dispatcher
+      GOOGLE_APPLICATION_CREDENTIALS: /config/vertex-sa.json
+    volumes:
+      - /opt/agnes/dispatcher:/config:ro
+    ports:
+      - "127.0.0.1:8600:8600" # host-side debugging; the app uses compose DNS
+    depends_on:
+      dispatcher-pg:
+        condition: service_healthy
+  dispatcher-pg:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: dispatcher
+      POSTGRES_PASSWORD: $${DISPATCHER_PG_PASSWORD}
+      POSTGRES_DB: dispatcher
+    volumes:
+      - /data/dispatcher-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dispatcher"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+DISPYAML
+
+COMPOSE_FILE_VALUE="$COMPOSE_FILE_VALUE:docker-compose.dispatcher.yml"
+%{ endif ~}
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
 DATA_DIR=$DATA_MNT
@@ -366,6 +447,12 @@ ${env_name}=$${${env_name}}
 %{ endfor ~}
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 DATABASE_URL=postgresql+psycopg://agnes:$POSTGRES_PASSWORD@postgres:5432/agnes
+%{ if dispatcher_enabled ~}
+DISPATCHER_IMAGE=${dispatcher_image}
+DISPATCHER_PG_PASSWORD=$DISPATCHER_PG_PASSWORD
+LLM_DISPATCHER_URL=http://dispatcher:8600
+LLM_DISPATCHER_API_KEY=$DISPATCHER_KEY
+%{ endif ~}
 COMPOSE_FILE=$COMPOSE_FILE_VALUE
 $CADDY_TLS_LINE
 $AGNES_TEMP_DIR_LINE

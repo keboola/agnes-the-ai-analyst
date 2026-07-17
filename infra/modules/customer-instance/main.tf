@@ -67,6 +67,15 @@ locals {
   per_instance_oauth_secrets = toset(flatten([
     for k, v in local.per_vm_oauth : [v.id, v.secret]
   ]))
+
+  # Opt-in LLM dispatcher (token-arbitrage PoC): secrets the VM SA needs
+  # read access to when ANY instance in this module call enables it. The
+  # flag is per-VM (dev-first rollouts), the config is module-wide.
+  dispatcher_any_enabled = anytrue([for inst in local.all_instances : inst.dispatcher_enabled])
+  dispatcher_secrets = local.dispatcher_any_enabled ? toset(compact([
+    var.dispatcher_key_secret,
+    var.dispatcher_vertex_sa_secret,
+  ])) : toset([])
 }
 
 # --- Secrets ---
@@ -154,6 +163,17 @@ resource "google_secret_manager_secret_iam_member" "vm_runtime_env" {
   for_each  = var.runtime_secret_env
   project   = var.gcp_project_id
   secret_id = each.key
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
+# Dispatcher secrets (API key + Vertex SA key JSON) — read-only, and only
+# when some instance actually enables the dispatcher. Both secrets must
+# already exist (created out-of-band, like the OAuth clients above).
+resource "google_secret_manager_secret_iam_member" "vm_dispatcher" {
+  for_each  = local.dispatcher_secrets
+  project   = var.gcp_project_id
+  secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.vm.email}"
 }
@@ -338,6 +358,11 @@ resource "google_compute_instance" "vm" {
     enable_watchdog                 = var.enable_watchdog
     alert_webhook_url               = var.alert_webhook_url
     watchdog_files_b64              = local.watchdog_files_b64
+    dispatcher_enabled              = each.value.dispatcher_enabled
+    dispatcher_image                = var.dispatcher_image
+    dispatcher_key_secret           = var.dispatcher_key_secret
+    dispatcher_vertex_sa_secret     = var.dispatcher_vertex_sa_secret
+    dispatcher_policies_b64         = base64encode(var.dispatcher_policies)
   })
 
   service_account {
@@ -357,6 +382,19 @@ resource "google_compute_instance" "vm" {
   #   terraform apply -replace='module.agnes.google_compute_instance.vm["agnes-prod"]'
   lifecycle {
     ignore_changes = [metadata_startup_script]
+
+    # Enabling the dispatcher without its module-wide config would boot a VM
+    # whose startup script fails loudly halfway (missing secret name renders
+    # an empty --secret= arg). Catch it at plan time instead.
+    precondition {
+      condition = !each.value.dispatcher_enabled || (
+        var.dispatcher_image != "" &&
+        var.dispatcher_policies != "" &&
+        var.dispatcher_key_secret != "" &&
+        var.dispatcher_vertex_sa_secret != ""
+      )
+      error_message = "dispatcher_enabled=true on instance ${each.value.name} requires dispatcher_image, dispatcher_policies, dispatcher_key_secret and dispatcher_vertex_sa_secret to be set on the module."
+    }
   }
 
   # Ensure VM SA has read access to required secrets BEFORE the VM boots — otherwise
@@ -366,6 +404,7 @@ resource "google_compute_instance" "vm" {
     google_secret_manager_secret_iam_member.vm_runtime,
     google_secret_manager_secret_iam_member.vm_runtime_env,
     google_secret_manager_secret_iam_member.vm_oauth,
+    google_secret_manager_secret_iam_member.vm_dispatcher,
     google_secret_manager_secret_version.jwt,
   ]
 }

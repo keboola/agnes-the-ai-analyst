@@ -10,6 +10,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- `customer-instance` Terraform module can now deploy the opt-in LLM
+  dispatcher (token-arbitrage PoC) alongside Agnes. Per-VM flag
+  `dispatcher_enabled` on `prod_instance` / `dev_instances` (dev-first
+  rollouts), module-wide config `dispatcher_image` (pin a `:<sha>` tag),
+  `dispatcher_policies` (deployment-owned routing YAML content),
+  `dispatcher_key_secret` and `dispatcher_vertex_sa_secret` (Secret Manager
+  names; module grants the VM SA scoped secretAccessor, fetches fail loudly
+  at boot). The startup script writes `/opt/agnes/dispatcher/{policies,keys,
+  vertex-sa}` plus a `docker-compose.dispatcher.yml` overlay (dispatcher +
+  dedicated ledger postgres on the persistent disk) appended to
+  `COMPOSE_FILE`, and sets `LLM_DISPATCHER_URL=http://dispatcher:8600` +
+  `LLM_DISPATCHER_API_KEY` in `/opt/agnes/.env` so the chat broker's
+  dispatcher opt-in (0.74.108) engages. Disabled instances render a
+  byte-identical startup script — the feature is fully inert unless enabled.
+
 ## [0.74.108] - 2026-07-17
 
 ### Added
