@@ -112,7 +112,19 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
             try:
                 from src.repositories import jobs_repo
 
-                jobs_repo().enqueue("jira-refresh", {}, idempotency_key="jira-refresh")
+                result = jobs_repo().enqueue("jira-refresh", {}, idempotency_key="jira-refresh")
+                # Invariant: every parquet write (above, via transform_single_issue)
+                # must be followed by a rebuild that starts AFTER it. Dedup above
+                # matches against status IN ('queued', 'running') — if it collapsed
+                # onto a job that is already RUNNING, that job may have started (and
+                # read parquet) BEFORE this write landed, so this write would
+                # otherwise sit stale until some future webhook happens to fire.
+                # Enqueue a coalescing follow-up (distinct idempotency key, so it
+                # doesn't dedup against the primary) to guarantee a rebuild strictly
+                # after this write. Repeated webhooks mid-run all dedup onto this
+                # same follow-up row, bounding the pile-up at 1 running + 1 queued.
+                if result.get("status") == "running":
+                    jobs_repo().enqueue("jira-refresh", {}, idempotency_key="jira-refresh-followup")
             except Exception as enqueue_err:
                 logger.warning(f"Failed to enqueue jira-refresh job: {enqueue_err}")
         else:
