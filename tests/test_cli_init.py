@@ -853,6 +853,49 @@ def test_install_warns_on_foreign_shadowing_function(tmp_path, monkeypatch, caps
     assert "shadow" in capsys.readouterr().err.lower()
 
 
+def test_shortcut_collision_skip_preserves_legacy_block(tmp_path, monkeypatch):
+    """When both candidate script names are foreign, the install must skip
+    WITHOUT stripping a still-working legacy rc-function launcher — removing
+    it would leave the user with no launcher at all."""
+    home, workspace = _make_shortcut_env(tmp_path, monkeypatch, "linux")
+    _bin(home).mkdir(parents=True)
+    (_bin(home) / "myworkspace").write_text("user\n")
+    (_bin(home) / "myworkspaceai").write_text("user\n")
+    legacy = (
+        "# >>> agnes launcher: myworkspace <<<\n"
+        "function myworkspace {\n  cd x\n}\n"
+        "# <<< agnes launcher: myworkspace >>>\n"
+    )
+    (home / ".zshrc").write_text(legacy, encoding="utf-8")
+
+    from cli.lib.shortcut import install_launcher_shortcut
+
+    install_launcher_shortcut(workspace)
+
+    assert (home / ".zshrc").read_text(encoding="utf-8") == legacy
+    assert (_bin(home) / "myworkspace").read_text() == "user\n"
+
+
+def test_migrate_blocked_when_collision_prevents_install(tmp_path, monkeypatch):
+    """Legacy block + both names foreign → migrate reports 'blocked' and the
+    legacy launcher keeps working."""
+    home, workspace = _make_shortcut_env(tmp_path, monkeypatch, "linux")
+    _bin(home).mkdir(parents=True)
+    (_bin(home) / "myworkspace").write_text("user\n")
+    (_bin(home) / "myworkspaceai").write_text("user\n")
+    legacy = (
+        "# >>> agnes launcher: myworkspace <<<\n"
+        "function myworkspace {\n  cd x\n}\n"
+        "# <<< agnes launcher: myworkspace >>>\n"
+    )
+    (home / ".zshrc").write_text(legacy, encoding="utf-8")
+
+    from cli.lib.shortcut import migrate_launcher_shortcut
+
+    assert migrate_launcher_shortcut(workspace) == "blocked"
+    assert (home / ".zshrc").read_text(encoding="utf-8") == legacy
+
+
 def test_migrate_absent_is_noop(tmp_path, monkeypatch):
     """No legacy block and no script → migrate must not install anything —
     preserves the `agnes init --no-shortcut` opt-out."""
