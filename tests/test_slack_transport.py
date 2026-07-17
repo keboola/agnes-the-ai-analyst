@@ -322,9 +322,10 @@ def test_socket_gate_fails_closed(monkeypatch, workers, app_tok, bot_tok, sdk, n
 def test_start_slack_socket_transport_happy(monkeypatch):
     """The dispatcher only comes up via the slack-socket-mode leader lease
     (app/coordination/leases.py). Under the default memory backend the
-    lease is always immediately acquired, so start() still fires before
-    _start_slack_socket_transport returns — same externally observable
-    contract as before the lease existed."""
+    lease is always immediately acquirable, and start() fires shortly after
+    _start_slack_socket_transport returns — but not necessarily by the time
+    it returns: lease_acquire now runs off-loop via asyncio.to_thread (#Important-2),
+    so this only polls for start() rather than asserting it synchronously."""
     from types import SimpleNamespace
     import app.main as main_mod
     from app.coordination.factory import reset_coordination_for_tests
@@ -353,9 +354,13 @@ def test_start_slack_socket_transport_happy(monkeypatch):
 
     import asyncio
     import contextlib
+    import time
 
     async def _run():
         await main_mod._start_slack_socket_transport(app)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and started != ["start"]:
+            await asyncio.sleep(0.01)
         assert started == ["start"]
         assert isinstance(app.state.slack_socket_dispatcher, FakeDispatcher)
         # Shutdown path: cancel the lease task like the lifespan teardown
