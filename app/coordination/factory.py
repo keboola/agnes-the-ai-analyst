@@ -27,6 +27,17 @@ _instance: CoordinationBackend | None = None
 
 _DEFAULT_REDIS_URL = "redis://localhost:6379/0"
 
+#: Bounded socket timeouts for the redis-py client (seconds). Every lease
+#: heartbeat (acquire/renew/release — see app/coordination/leases.py) runs
+#: on a continuous cadence off the asyncio event loop via `asyncio.to_thread`;
+#: without a cap, a hung/slow Redis TCP connection would block that
+#: worker thread indefinitely instead of surfacing as a timely
+#: `redis.exceptions.TimeoutError` (which `RedisCoordinationBackend` turns
+#: into `CoordinationUnavailable` — see its docstring) that the lease loop
+#: already knows how to tolerate/recover from.
+_REDIS_SOCKET_TIMEOUT_S = 3.0
+_REDIS_SOCKET_CONNECT_TIMEOUT_S = 3.0
+
 
 def resolve_backend_name() -> str:
     """Effective coordination backend name — env overrides instance.yaml.
@@ -55,7 +66,12 @@ def _build() -> CoordinationBackend:
 
         from app.coordination.redis_backend import RedisCoordinationBackend
 
-        client = redis_lib.Redis.from_url(_redis_url(), decode_responses=True)
+        client = redis_lib.Redis.from_url(
+            _redis_url(),
+            decode_responses=True,
+            socket_timeout=_REDIS_SOCKET_TIMEOUT_S,
+            socket_connect_timeout=_REDIS_SOCKET_CONNECT_TIMEOUT_S,
+        )
         return RedisCoordinationBackend(client)
 
     from app.coordination.memory import MemoryCoordinationBackend

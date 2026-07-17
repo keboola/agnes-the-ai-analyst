@@ -1503,8 +1503,16 @@ class ChatManager:
         # skips (or every replica proceeds, under `memory` mode) until the
         # backend recovers; nothing to reacquire across a restart.
         try:
-            acquired_sweep_lease = coordination().lease_acquire(
-                _PAUSED_SWEEP_LEASE_NAME, default_holder_id(), ttl_s=_PAUSED_SWEEP_LEASE_TTL_SEC
+            # asyncio.to_thread: this runs on the same event loop as every
+            # other request this replica serves, on a continuous ~60s tick
+            # (see _idle_reaper_loop above) — a blocking Redis round-trip
+            # here (real backend, not `memory`) must not stall unrelated
+            # traffic while it waits on the socket.
+            acquired_sweep_lease = await asyncio.to_thread(
+                coordination().lease_acquire,
+                _PAUSED_SWEEP_LEASE_NAME,
+                default_holder_id(),
+                ttl_s=_PAUSED_SWEEP_LEASE_TTL_SEC,
             )
         except CoordinationUnavailable:
             logger.warning("paused-sandbox sweep: coordination backend unavailable; skipping this tick")
@@ -1522,7 +1530,7 @@ class ChatManager:
                     self._live.pop(session.id, None)
             finally:
                 try:
-                    coordination().lease_release(_PAUSED_SWEEP_LEASE_NAME, default_holder_id())
+                    await asyncio.to_thread(coordination().lease_release, _PAUSED_SWEEP_LEASE_NAME, default_holder_id())
                 except CoordinationUnavailable:
                     pass
         else:
