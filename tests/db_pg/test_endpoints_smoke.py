@@ -1660,6 +1660,9 @@ KNOWN_UNTESTED = {
     "GET /setup",
     "GET /setup-advanced",
     "GET /slack/bind",
+    # Unified My Stack page (rail-layout IA, #896) — rendering covered by
+    # tests/test_ui_layout_theme.py::TestRailOptIn.
+    "GET /stack",
     "GET /store/examples",
     "GET /store/new",
     "GET /webhooks/jira/health",
