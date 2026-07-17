@@ -1,9 +1,35 @@
 """DuckDB-backed repository for the ``jobs`` table (durable job queue, v92).
 
-Foundation for the wave-2B worker runtime. This task covers
-enqueue/get/list + idempotency dedup only; the claim/lease lifecycle and
-the worker loop that actually consumes queued jobs are later tasks in the
-same wave.
+Foundation for the wave-2B worker runtime. This module now also covers
+the claim/lease/complete/fail lifecycle (worker loop itself is a later
+task in the same wave).
+
+Claim/lease/complete/fail semantics (shared contract with
+``jobs_pg.py``):
+
+- ``claim_next()`` atomically claims the oldest eligible queued job of
+  the given kinds — ``status='queued'`` with ``run_after`` unset or due,
+  ORDER BY ``priority DESC, created_at ASC`` — OR reclaims a ``'running'``
+  job whose lease has expired (crash recovery), as long as
+  ``attempts < max_attempts``. The claim sets ``status='running'``,
+  ``leased_by``, ``attempts += 1``, a fresh ``lease_expires_at``, and
+  ``started_at`` ONLY if it was still NULL (a reclaim preserves the
+  job's original first-start timestamp).
+- ``heartbeat()`` extends the lease and returns ``False`` (no-op) if the
+  job is no longer ``'running'`` or is held by a different worker — the
+  caller uses that signal to abandon a job that was reclaimed out from
+  under it.
+- ``complete()``/``fail()`` are no-ops (raise-free) when the job is not
+  ``'running'`` under that exact ``worker_id``. This matters for the
+  same reclaim race: a stale worker that finishes its (already
+  reclaimed) job late must not clobber the new owner's state — the
+  ``WHERE id = ? AND leased_by = ? AND status = 'running'`` guard on the
+  mutating statement makes this atomic without needing a prior read.
+- ``fail()`` with ``retry_in_seconds`` set and attempts remaining
+  requeues (``status='queued'``, ``run_after=now+retry``, lease
+  cleared, ``error`` recorded); otherwise (attempts exhausted, or no
+  ``retry_in_seconds`` given) it finalizes to ``'failed'`` with
+  ``finished_at`` set.
 
 Idempotency-key dedup note: the schema could in principle enforce
 uniqueness with a *partial* unique index
@@ -21,10 +47,10 @@ Postgres instead (a plain SELECT-then-INSERT there is racy under READ
 COMMITTED — two concurrent transactions can both miss each other's
 uncommitted row). DuckDB's single-writer model doesn't have that
 cross-transaction race, but the check-then-insert here is still not
-atomic across *threads* sharing one connection, so ``_ENQUEUE_LOCK``
+atomic across *threads* sharing one connection, so ``_JOBS_LOCK``
 serializes the whole critical section.
 
-``_ENQUEUE_LOCK`` is a MODULE-level lock (mirroring the ``_rebuild_lock``
+``_JOBS_LOCK`` is a MODULE-level lock (mirroring the ``_rebuild_lock``
 pattern in ``src/orchestrator.py``, which is also module-level), not a
 ``self._lock`` on the repository instance. The factory
 (``src.repositories.jobs_repo()``) builds a fresh ``JobsRepository``
@@ -38,6 +64,15 @@ wrap the connection, so it actually protects the critical section. The
 CONTRACT shared with the PG side is the dedup *behavior* (matching key +
 queued/running status returns the existing row, no insert), not the
 mechanism.
+
+The SAME lock (not a second, independent one) guards ``claim_next()``,
+``heartbeat()``, ``complete()``, and ``fail()`` too: DuckDB connections
+are not safe for concurrent ``execute()`` calls from multiple threads,
+so every multi-statement (or otherwise non-trivially-atomic) critical
+section touching this shared connection must serialize against every
+other one — two separate locks would each protect their own section
+while leaving them free to interleave with each other on the connection
+object itself.
 """
 
 from __future__ import annotations
@@ -45,18 +80,25 @@ from __future__ import annotations
 import json
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import duckdb
 
-#: Serializes the enqueue() check-then-insert critical section across ALL
-#: JobsRepository instances (see module docstring for why this must be
-#: module-level, not per-instance).
-_ENQUEUE_LOCK = threading.Lock()
+#: Serializes every mutating critical section (enqueue, claim_next,
+#: heartbeat, complete, fail) across ALL JobsRepository instances (see
+#: module docstring for why this must be module-level, not per-instance).
+_JOBS_LOCK = threading.Lock()
 
 
 class JobsRepository:
+    #: Worker-runtime lane identifiers (Task 3 registers job kinds against
+    #: one of these). Plain string constants — duplicated (not imported)
+    #: on ``JobsPgRepository`` per the method/attribute-mirroring rule so
+    #: neither backend module depends on the other.
+    HEAVY_LANE = "heavy"
+    LIGHT_LANE = "light"
+
     def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
         self.conn = conn
 
@@ -97,9 +139,9 @@ class JobsRepository:
         still ``'queued'`` or ``'running'``, that row is returned
         unchanged — no new insert (dedup). See the module docstring for
         why this check lives here rather than in a DB constraint, and
-        why it's guarded by the module-level ``_ENQUEUE_LOCK``.
+        why it's guarded by the module-level ``_JOBS_LOCK``.
         """
-        with _ENQUEUE_LOCK:
+        with _JOBS_LOCK:
             if idempotency_key is not None:
                 existing = self.conn.execute(
                     """SELECT * FROM jobs
@@ -156,3 +198,128 @@ class JobsRepository:
         params.append(limit)
         rows = self.conn.execute(sql, params).fetchall()
         return self._rows_to_dicts(rows)
+
+    def claim_next(
+        self,
+        *,
+        kinds: List[str],
+        worker_id: str,
+        lease_seconds: int = 120,
+    ) -> Optional[Dict[str, Any]]:
+        """Atomically claim the oldest eligible queued job of ``kinds``.
+
+        Eligible = ``status='queued'`` with ``run_after`` unset or due, OR
+        a ``'running'`` job whose lease has expired and which hasn't yet
+        exhausted its attempts (crash-recovery reclaim). Ordered by
+        ``priority DESC, created_at ASC``. See the module docstring for
+        why the read-then-write here is guarded by the module-level
+        ``_JOBS_LOCK`` rather than relying on DuckDB's single-writer
+        model alone (that guarantee is about cross-process/transaction
+        safety, not concurrent threads sharing one connection object).
+        """
+        if not kinds:
+            return None
+        with _JOBS_LOCK:
+            now = datetime.now(timezone.utc)
+            placeholders = ",".join(["?"] * len(kinds))
+            row = self.conn.execute(
+                f"""SELECT * FROM jobs
+                    WHERE kind IN ({placeholders})
+                      AND (
+                        (status = 'queued' AND (run_after IS NULL OR run_after <= ?))
+                        OR (status = 'running' AND lease_expires_at < ? AND attempts < max_attempts)
+                      )
+                    ORDER BY priority DESC, created_at ASC
+                    LIMIT 1""",
+                [*kinds, now, now],
+            ).fetchone()
+            job = self._row_to_dict(row)
+            if job is None:
+                return None
+            lease_expires_at = now + timedelta(seconds=lease_seconds)
+            self.conn.execute(
+                """UPDATE jobs
+                   SET status = 'running',
+                       leased_by = ?,
+                       started_at = COALESCE(started_at, ?),
+                       attempts = attempts + 1,
+                       lease_expires_at = ?
+                   WHERE id = ?""",
+                [worker_id, now, lease_expires_at, job["id"]],
+            )
+            return self.get(job["id"])
+
+    def heartbeat(self, job_id: str, worker_id: str, lease_seconds: int = 120) -> bool:
+        """Extend the lease on a running job. Returns ``False`` (no-op) if
+        the job is no longer ``'running'`` or is held by a different
+        worker — the caller uses that to abandon a job reclaimed out
+        from under it."""
+        with _JOBS_LOCK:
+            now = datetime.now(timezone.utc)
+            lease_expires_at = now + timedelta(seconds=lease_seconds)
+            claimed = self.conn.execute(
+                """UPDATE jobs SET lease_expires_at = ?
+                   WHERE id = ? AND leased_by = ? AND status = 'running'
+                   RETURNING id""",
+                [lease_expires_at, job_id, worker_id],
+            ).fetchall()
+            return bool(claimed)
+
+    def complete(self, job_id: str, worker_id: str) -> None:
+        """Mark a running job done. No-op (raise-free) if the job is not
+        currently ``'running'`` under this exact ``worker_id`` — a stale
+        worker finishing a job that was already reclaimed must not
+        clobber the new owner's state."""
+        with _JOBS_LOCK:
+            now = datetime.now(timezone.utc)
+            self.conn.execute(
+                """UPDATE jobs
+                   SET status = 'done', finished_at = ?, lease_expires_at = NULL
+                   WHERE id = ? AND leased_by = ? AND status = 'running'""",
+                [now, job_id, worker_id],
+            )
+
+    def fail(
+        self,
+        job_id: str,
+        worker_id: str,
+        error: str,
+        *,
+        retry_in_seconds: Optional[int] = None,
+    ) -> None:
+        """Record a failure. No-op (raise-free) if the job is not
+        currently ``'running'`` under this exact ``worker_id`` (see
+        ``complete()``).
+
+        If attempts remain (``attempts < max_attempts``) AND
+        ``retry_in_seconds`` is given, requeues the job (``'queued'``,
+        ``run_after=now+retry_in_seconds``, lease cleared, ``error``
+        recorded). Otherwise finalizes to ``'failed'`` with
+        ``finished_at`` set.
+        """
+        with _JOBS_LOCK:
+            now = datetime.now(timezone.utc)
+            job = self.conn.execute(
+                """SELECT attempts, max_attempts FROM jobs
+                   WHERE id = ? AND leased_by = ? AND status = 'running'""",
+                [job_id, worker_id],
+            ).fetchone()
+            if job is None:
+                return  # stale worker (already reclaimed) — no-op
+            attempts, max_attempts = job
+            if attempts < max_attempts and retry_in_seconds is not None:
+                run_after = now + timedelta(seconds=retry_in_seconds)
+                self.conn.execute(
+                    """UPDATE jobs
+                       SET status = 'queued', run_after = ?, lease_expires_at = NULL,
+                           leased_by = NULL, error = ?
+                       WHERE id = ? AND leased_by = ? AND status = 'running'""",
+                    [run_after, error, job_id, worker_id],
+                )
+            else:
+                self.conn.execute(
+                    """UPDATE jobs
+                       SET status = 'failed', finished_at = ?, lease_expires_at = NULL, error = ?
+                       WHERE id = ? AND leased_by = ? AND status = 'running'""",
+                    [now, error, job_id, worker_id],
+                )
