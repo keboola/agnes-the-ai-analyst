@@ -441,14 +441,17 @@ async def _start_slack_socket_transport(app) -> None:
             await dispatcher.start()
             app.state.slack_socket_dispatcher = dispatcher
         except Exception:
-            # Matches the pre-lease behavior: a connect failure leaves this
-            # replica HTTP-only rather than crashing or retrying in a hot
-            # loop. The lease loop still considers the lease "held" (start()
-            # didn't raise past this point) — that's fine, it mirrors today's
-            # no-retry-on-start-failure trait rather than introducing new
-            # retry semantics as part of this change.
-            logger.exception("Slack Socket Mode disabled: start() failed")
+            # Log here (so the failure is attributed to Slack Socket Mode
+            # specifically) then re-raise: a connect failure must propagate
+            # to run_with_lease, which releases the lease and backs off
+            # before retrying (see app/coordination/leases.py). Swallowing
+            # it here would leave this replica believing it holds the
+            # lease — and renewing it forever — while never actually
+            # delivering events, starving every other (possibly healthy)
+            # gateway replica.
+            logger.exception("Slack Socket Mode start() failed")
             app.state.slack_socket_dispatcher = None
+            raise
 
     async def _stop() -> None:
         dispatcher = getattr(app.state, "slack_socket_dispatcher", None)
@@ -465,10 +468,14 @@ async def _start_slack_socket_transport(app) -> None:
         run_with_lease("slack-socket-mode", default_holder_id(), ttl_s=15, start=_start, stop=_stop),
         name="slack-socket-lease",
     )
-    # Yield one scheduler tick so the memory-mode fast-path (always-acquire)
-    # actually runs start() before this function returns to the lifespan —
-    # preserves the pre-lease contract that Slack Socket Mode is live by the
-    # time app startup finishes, for the common single-process deployment.
+    # Yield one scheduler tick so the lease task gets a chance to run before
+    # this function returns to the lifespan. This does NOT guarantee the
+    # dispatcher's start() (the socket connect) has completed by the time we
+    # return — lease_acquire/renew/release all hop off-loop via
+    # asyncio.to_thread (see app/coordination/leases.py), so completion now
+    # depends on real thread scheduling, not just one tick. Startup simply
+    # kicks the lease loop off without waiting for the connect to finish;
+    # the dispatcher comes up asynchronously shortly after.
     await asyncio.sleep(0)
 
 
