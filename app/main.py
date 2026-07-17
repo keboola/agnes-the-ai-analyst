@@ -258,6 +258,7 @@ from app.api.admin_bigquery_test import router as admin_bigquery_test_router
 from app.api.admin_keboola_test import router as admin_keboola_test_router
 from app.api.jira_webhooks import router as jira_webhooks_router
 from app.api.metrics import router as metrics_router
+from app.api.glossary import router as glossary_router
 from app.api.metadata import router as metadata_router
 from app.api.query_hybrid import router as query_hybrid_router
 from app.api.cli_artifacts import router as cli_artifacts_router
@@ -1585,6 +1586,7 @@ def create_app() -> FastAPI:
     app.include_router(me_stats_router)
     app.include_router(jira_webhooks_router)
     app.include_router(metrics_router)
+    app.include_router(glossary_router)
     app.include_router(metadata_router)
     app.include_router(query_hybrid_router)
     app.include_router(cli_artifacts_router)
