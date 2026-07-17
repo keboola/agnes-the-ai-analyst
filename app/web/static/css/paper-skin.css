@@ -17,10 +17,15 @@
  *     brand primary, so categories can't be mistaken for actions.
  */
 
-/* ── Type — heavy headline, calm body ─────────────────────────── */
+/* ── Type — heavy headline, calm body (prototype: Inter 15px/1.55,
+   antialiased) ─────────────────────────────────────────────────── */
 [data-theme="paper"] body {
     font-family: var(--ds-font);
+    font-size: 15px;
+    line-height: 1.55;
     -webkit-font-smoothing: antialiased;
+    background: var(--ds-bg);
+    color: var(--ds-text-primary);
 }
 
 [data-theme="paper"] h1 {

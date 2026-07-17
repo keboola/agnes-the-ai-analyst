@@ -47,6 +47,14 @@ html[data-ui-layout="rail"] .rail-logo svg {
     width: auto;
 }
 
+html[data-ui-layout="rail"] .rail-orb {
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+    display: block;
+    filter: drop-shadow(0 2px 6px rgba(109, 40, 217, 0.22));
+}
+
 html[data-ui-layout="rail"] .rail-logo-txt {
     font-size: 18px;
     font-weight: 650;
@@ -99,7 +107,45 @@ html[data-ui-layout="rail"] .rail-i {
 }
 
 html[data-ui-layout="rail"] .rail-i svg {
+    width: 19px;
+    height: 19px;
     flex-shrink: 0;
+}
+
+/* Catalog subcategories — indented tree under the Catalog item. */
+html[data-ui-layout="rail"] .rail-sub {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    margin: 1px 0 2px 22px;
+    padding-left: 9px;
+    border-left: 1px solid var(--ds-border);
+}
+
+html[data-ui-layout="rail"] .rail-sub-i {
+    display: block;
+    padding: 6px 10px;
+    border-radius: 7px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ds-text-secondary);
+    text-decoration: none;
+}
+
+html[data-ui-layout="rail"] .rail-sub-i:hover {
+    background: var(--ds-surface-dim);
+    color: var(--ds-text-primary);
+}
+
+html[data-ui-layout="rail"] .rail-sub-i.on {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    font-weight: 600;
+}
+
+html[data-ui-layout="rail"] .rail-sub-i:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
 }
 
 html[data-ui-layout="rail"] .rail-i:hover {

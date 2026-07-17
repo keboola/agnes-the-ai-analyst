@@ -2,24 +2,60 @@
    AGNES_UI_LAYOUT=rail). Renders INSTEAD of _app_header.html via the
    switch in base_ds.html; topnav instances never load this partial.
 
-   Mirrors _app_header.html exactly in behavior contract:
+   IA (issue #896 prototype): three primary destinations — Chat,
+   My Stack, Catalog — with the content surfaces (Data Packages,
+   Plugins/Marketplace, Library, Memory) as subcategories under
+   Catalog. "My Stack" deep-links to the personal-collection tab
+   (/catalog?tab=my). The topnav chrome keeps its flat link row —
+   this IA applies only to the rail layout.
+
+   Mirrors _app_header.html in behavior contract:
      - same auth gating (session.user), chat grant gating (can_chat),
        admin gating (session.user.is_admin);
-     - same destinations + is-active rules;
+     - same destinations (as Catalog subcategories) + is-active rules;
      - same data-tour hooks so the product tour keeps its anchors;
      - same element ids for JS wiring (#global-search, #userMenu*,
-       #themeToggle) — app.js + global_search.js are id-driven and
-       work unchanged.
+       #themeToggle) — app.js + global_search.js work unchanged.
    Styles live in app/web/static/css/rail.css (.rail-* prefix),
    activated by html[data-ui-layout="rail"]. #}
 {% if session.user %}
 <nav class="rail" aria-label="Primary">
     <a class="rail-logo" href="{{ home_route or '/dashboard' }}" aria-label="Home" data-tour="nav-home">
-        {% if config.LOGO_SVG %}{{ config.LOGO_SVG | safe }}{% else %}<span class="rail-logo-txt">{{ config.INSTANCE_NAME or 'Agnes' }}</span>{% endif %}
+        {% if config.LOGO_SVG %}{{ config.LOGO_SVG | safe }}{% else %}
+        <svg class="rail-orb" viewBox="0 0 32 32" width="30" height="30" aria-hidden="true" focusable="false">
+            <defs>
+                <linearGradient id="agnesOrbGrad" x1="6" y1="4" x2="26" y2="28" gradientUnits="userSpaceOnUse">
+                    <stop offset="0" stop-color="#7ff0c8"/>
+                    <stop offset=".46" stop-color="#33c1a8"/>
+                    <stop offset="1" stop-color="#6d28d9"/>
+                </linearGradient>
+                <radialGradient id="agnesOrbSheen" cx="11" cy="9" r="15" gradientUnits="userSpaceOnUse">
+                    <stop offset="0" stop-color="#ffffff" stop-opacity=".55"/>
+                    <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+                </radialGradient>
+                <clipPath id="agnesOrbClip"><circle cx="16" cy="16" r="14"/></clipPath>
+            </defs>
+            <circle cx="16" cy="16" r="14" fill="url(#agnesOrbGrad)"/>
+            <g clip-path="url(#agnesOrbClip)">
+                <path d="M0 19 C 8 14, 12 22, 18 18 S 28 15, 34 20 L 34 34 L 0 34 Z" fill="#ffffff" opacity=".16"/>
+                <path d="M0 22.5 C 9 17.5, 13 25, 20 21 S 30 19.5, 34 23.5" stroke="#ffffff" stroke-opacity=".38" stroke-width="1" fill="none"/>
+                <path d="M9 12 L 15 9.6 L 21 13.6" stroke="#ffffff" stroke-opacity=".5" stroke-width=".6" fill="none"/>
+                <circle cx="9" cy="12" r="1" fill="#ffffff"/>
+                <circle cx="15" cy="9.6" r="1.15" fill="#ffffff"/>
+                <circle cx="21" cy="13.6" r="1" fill="#eaf7ff"/>
+                <ellipse cx="12" cy="10" rx="9.5" ry="7" fill="url(#agnesOrbSheen)"/>
+            </g>
+            <circle cx="16" cy="16" r="14" fill="none" stroke="#ffffff" stroke-opacity=".3" stroke-width="1"/>
+        </svg>
+        <span class="rail-logo-txt">{{ (instance_brand_short or instance_brand or config.INSTANCE_NAME or 'Agnes') | lower }}</span>
+        {% endif %}
     </a>
 
     {% set _path = request.url.path %}
     {% set _home = home_route or '/dashboard' %}
+    {% set _tab = request.query_params.get('tab') if request.query_params is defined else none %}
+    {% set _on_stack = (_path == '/catalog' and _tab == 'my') or (_path == '/marketplace' and _tab == 'my') %}
+    {% set _in_catalog = (_path.startswith('/catalog') or _path.startswith('/marketplace') or _path.startswith('/library') or _path == '/corporate-memory') and not _on_stack %}
 
     {% if can_chat %}
     <a class="rail-newchat" href="/chat" data-tour="nav-chat-new">
@@ -29,32 +65,34 @@
     {% endif %}
 
     <div class="rail-nav">
-        <a class="rail-i {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}on{% endif %}" href="{{ _home }}">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 10.5 12 4l9 6.5V20a1 1 0 0 1-1 1h-5.5v-6h-5v6H4a1 1 0 0 1-1-1v-9.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            {% if _home == '/dashboard' %}Dashboard{% else %}Home{% endif %}
-        </a>
         {% if can_chat %}
         <a class="rail-i {% if _path == '/chat' or _path.startswith('/chat/') %}on{% endif %}" href="/chat" data-tour="nav-chat">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 12a8 8 0 0 1-8 8H4l2.3-2.9A8 8 0 1 1 21 12Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
             Chat
         </a>
+        {% else %}
+        <a class="rail-i {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}on{% endif %}" href="{{ _home }}">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 10.5 12 4l9 6.5V20a1 1 0 0 1-1 1h-5.5v-6h-5v6H4a1 1 0 0 1-1-1v-9.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            {% if _home == '/dashboard' %}Dashboard{% else %}Home{% endif %}
+        </a>
         {% endif %}
-        <a class="rail-i {% if _path == '/marketplace' or _path.startswith('/marketplace/') %}on{% endif %}" href="/marketplace" data-tour="nav-marketplace">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 8h16l-1.2 11a2 2 0 0 1-2 1.8H7.2a2 2 0 0 1-2-1.8L4 8Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8.5 10V6.5a3.5 3.5 0 0 1 7 0V10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-            Marketplace
+        <a class="rail-i {% if _on_stack %}on{% endif %}" href="/catalog?tab=my" data-tour="nav-stack">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 8.5 12 4l9 4.5-9 4.5-9-4.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            My Stack
         </a>
-        <a class="rail-i {% if _path.startswith('/catalog') %}on{% endif %}" href="/catalog" data-tour="nav-catalog">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7.5" ry="2.8" stroke="currentColor" stroke-width="1.7"/><path d="M4.5 5.5v13c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8v-13" stroke="currentColor" stroke-width="1.7"/><path d="M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8" stroke="currentColor" stroke-width="1.7"/></svg>
-            Data Packages
+        <a class="rail-i {% if _in_catalog %}on{% endif %}" href="/catalog" data-tour="nav-catalog">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M4 6l1 13a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1l1-13M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            Catalog
         </a>
-        <a class="rail-i {% if _path.startswith('/library') %}on{% endif %}" href="/library" data-tour="nav-library">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5v14Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            Library
-        </a>
-        <a class="rail-i {% if _path == '/corporate-memory' %}on{% endif %}" href="/corporate-memory" data-tour="nav-memory">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4a4 4 0 0 0-4 4 3.5 3.5 0 0 0-2 6.3A3.5 3.5 0 0 0 8.5 20H12M12 4a4 4 0 0 1 4 4 3.5 3.5 0 0 1 2 6.3A3.5 3.5 0 0 1 15.5 20H12M12 4v16" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            Memory
-        </a>
+        {# Catalog subcategories — the content surfaces folded under
+           one Catalog destination (prototype IA). Always visible so
+           each surface stays one click away; actives track per path. #}
+        <div class="rail-sub">
+            <a class="rail-sub-i {% if _path.startswith('/catalog') and not _on_stack %}on{% endif %}" href="/catalog">Data Packages</a>
+            <a class="rail-sub-i {% if _path.startswith('/marketplace') and not _on_stack %}on{% endif %}" href="/marketplace" data-tour="nav-marketplace">Plugins</a>
+            <a class="rail-sub-i {% if _path.startswith('/library') %}on{% endif %}" href="/library" data-tour="nav-library">Library</a>
+            <a class="rail-sub-i {% if _path == '/corporate-memory' %}on{% endif %}" href="/corporate-memory" data-tour="nav-memory">Memory</a>
+        </div>
     </div>
 
     {# Global search — same combobox contract as the header
@@ -88,7 +126,7 @@
        .app-nav-menu-group sections. #}
     <details class="rail-admin" data-tour="nav-admin" {% if _admin_active %}open{% endif %}>
         <summary class="rail-i rail-admin-summary {% if _admin_active %}on{% endif %}">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10.3 4.3a2 2 0 0 1 3.4 0l.6 1a2 2 0 0 0 2.2.9l1.1-.3a2 2 0 0 1 2.4 2.4l-.3 1.1a2 2 0 0 0 .9 2.2l1 .6a2 2 0 0 1 0 3.4l-1 .6a2 2 0 0 0-.9 2.2l.3 1.1a2 2 0 0 1-2.4 2.4l-1.1-.3a2 2 0 0 0-2.2.9l-.6 1a2 2 0 0 1-3.4 0l-.6-1a2 2 0 0 0-2.2-.9l-1.1.3a2 2 0 0 1-2.4-2.4l.3-1.1a2 2 0 0 0-.9-2.2l-1-.6a2 2 0 0 1 0-3.4l1-.6a2 2 0 0 0 .9-2.2l-.3-1.1a2 2 0 0 1 2.4-2.4l1.1.3a2 2 0 0 0 2.2-.9l.6-1Z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10.3 4.3a2 2 0 0 1 3.4 0l.6 1a2 2 0 0 0 2.2.9l1.1-.3a2 2 0 0 1 2.4 2.4l-.3 1.1a2 2 0 0 0 .9 2.2l1 .6a2 2 0 0 1 0 3.4l-1 .6a2 2 0 0 0-.9 2.2l.3 1.1a2 2 0 0 1-2.4 2.4l-1.1-.3a2 2 0 0 0-2.2.9l-.6 1a2 2 0 0 1-3.4 0l-.6-1a2 2 0 0 0-2.2-.9l-1.1.3a2 2 0 0 1-2.4-2.4l.3-1.1a2 2 0 0 0-.9-2.2l-1-.6a2 2 0 0 1 0-3.4l1-.6a2 2 0 0 0 .9-2.2l-.3-1.1a2 2 0 0 1 2.4-2.4l1.1.3a2 2 0 0 0 2.2-.9l.6-1Z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/></svg>
             Admin
         </summary>
         <div class="rail-admin-groups">
@@ -145,7 +183,7 @@
 
     <div class="rail-foot">
         <button type="button" class="rail-i rail-tour" data-tour-start>
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M9.5 9.2a2.6 2.6 0 1 1 3.4 2.5c-.6.2-.9.6-.9 1.2v.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="16.4" r="1" fill="currentColor"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M9.5 9.2a2.6 2.6 0 1 1 3.4 2.5c-.6.2-.9.6-.9 1.2v.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="16.4" r="1" fill="currentColor"/></svg>
             Take a tour
         </button>
 

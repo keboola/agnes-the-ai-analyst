@@ -48,6 +48,14 @@
     {% for s in custom_scripts | default([]) if s.placement == 'head_start' %}
     {{ s.html | safe }}
     {% endfor %}
+    {# Paper theme ships Inter (the #896 prototype's typeface) from
+       Google Fonts — opt-in only: no external font request unless the
+       instance sets theme=paper. Other themes keep the system stack. #}
+    {% if (instance_theme | default('blue')) == 'paper' %}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    {% endif %}
     <link rel="icon" type="image/svg+xml" href="{{ static_url('favicon.svg') }}">
     <title>{% block title %}{{ config.INSTANCE_NAME or 'Agnes' }}{% endblock %}</title>
 

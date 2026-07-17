@@ -673,19 +673,28 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
   });
 
   // ── Tab switching ──────────────────────────────────────────────────────
-  document.querySelectorAll('.stack-tabs button').forEach(b => {
-    b.addEventListener('click', () => {
-      const tab = b.dataset.tab;
-      document.querySelectorAll('.stack-tabs button').forEach(x => {
-        x.classList.toggle('is-active', x === b);
-        x.setAttribute('aria-selected', x === b ? 'true' : 'false');
-      });
-      document.querySelectorAll('[data-view]').forEach(v => {
-        v.hidden = v.dataset.view !== tab;
-      });
-      if (tab === 'recipes') loadRecipesTab();
+  function activateTab(tab) {
+    const btn = document.querySelector(`.stack-tabs button[data-tab="${tab}"]`);
+    if (!btn) return;
+    document.querySelectorAll('.stack-tabs button').forEach(x => {
+      x.classList.toggle('is-active', x === btn);
+      x.setAttribute('aria-selected', x === btn ? 'true' : 'false');
     });
+    document.querySelectorAll('[data-view]').forEach(v => {
+      v.hidden = v.dataset.view !== tab;
+    });
+    if (tab === 'recipes') loadRecipesTab();
+  }
+  document.querySelectorAll('.stack-tabs button').forEach(b => {
+    b.addEventListener('click', () => activateTab(b.dataset.tab));
   });
+  // Deep-link support — /catalog?tab=my|recipes opens on that tab
+  // (mirrors /marketplace?tab=…). Lets external nav (e.g. the rail
+  // chrome's "My Stack" entry) land directly on a view.
+  {
+    const urlTab = new URLSearchParams(window.location.search).get('tab');
+    if (urlTab && urlTab !== 'browse') activateTab(urlTab);
+  }
 
   // v53 Recipes tab — fetch on first open then cache for the page
   // lifetime. Renders compact cards (no Add-to-stack) so users can

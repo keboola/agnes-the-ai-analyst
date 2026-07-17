@@ -108,7 +108,8 @@ class TestRailOptIn:
         assert 'data-ui-layout="rail"' in resp.text
 
     def test_rail_keeps_nav_contract(self, web_client, admin_cookie, monkeypatch):
-        """Rail must carry the same primary destinations + JS/id contract
+        """Rail must carry the prototype IA (My Stack + Catalog with the
+        content surfaces as subcategories) and the same JS/id contract
         as the header: global search combobox, user menu, theme toggle,
         tour anchors."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
@@ -118,14 +119,21 @@ class TestRailOptIn:
             'id="global-search"',
             'id="userMenu"',
             'id="themeToggle"',
-            'data-tour="nav-marketplace"',
+            # prototype IA: My Stack deep-link + Catalog parent
+            'href="/catalog?tab=my"',
+            'data-tour="nav-stack"',
             'data-tour="nav-catalog"',
+            # content surfaces as Catalog subcategories
+            'class="rail-sub"',
+            'data-tour="nav-marketplace"',
             'data-tour="nav-library"',
             'data-tour="nav-memory"',
             'href="/marketplace"',
             'href="/catalog"',
             'href="/library"',
             'href="/corporate-memory"',
+            # default brand lockup: the orb + wordmark
+            'class="rail-orb"',
         ):
             assert anchor in text, f"rail chrome is missing {anchor}"
 
