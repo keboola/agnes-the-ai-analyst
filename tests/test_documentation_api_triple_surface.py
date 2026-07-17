@@ -71,6 +71,11 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/admin/store/lint-dismiss": ("admin store lint-dismiss", "admin_store_lint_dismiss"),
     # Per-user MCP credential connectivity check (self-service connect page).
     "/api/mcp/sources/{source_id}/my-secret/test": ("mcp my-secret test", "my_secret_test"),
+    # Keboola glossary import (2026-07-17 design). Search is the primary
+    # agent-facing access pattern and carries the triple-surface contract;
+    # list/get-by-id are CLI-reachable (`agnes glossary show`) but have no
+    # MCP analogue and are _EXEMPT below.
+    "/api/glossary/search": ("glossary search", "glossary_search"),
 }
 
 
@@ -319,6 +324,22 @@ _EXEMPT: dict[str, str] = {
         "scheduler-driven Keboola semantic layer (Metastore) sync trigger — "
         "admin/scheduler maintenance op, mirrors the run-bq-metadata-refresh / "
         "run-knowledge-digests exemptions; no analyst CLI/MCP analogue"
+    ),
+    # Keboola glossary import (2026-07-17 design). `/api/glossary/search`
+    # carries the triple-surface contract in _COHORT; list and get-by-id are
+    # thin REST reads with no dedicated MCP tool (an agent resolves a term by
+    # searching, not by listing or fetching a known id) — `agnes glossary
+    # show` covers the get-by-id case for interactive CLI use.
+    "/api/glossary": (
+        "list-all glossary terms — thin REST read, no MCP analogue (an agent "
+        "resolves terminology via glossary_search, not by paging the full "
+        "list); no dedicated CLI list command either, mirrors the search-first "
+        "access pattern of /api/knowledge/search"
+    ),
+    "/api/glossary/{glossary_id}": (
+        "get-by-id glossary read, reachable via `agnes glossary show` — no "
+        "MCP analogue (glossary_search is the agent-facing tool; an agent "
+        "resolves a term by searching, not by a known id)"
     ),
 }
 

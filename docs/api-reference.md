@@ -982,6 +982,17 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 
 - /api/debug/throw
 
+### `/api/glossary` — Keboola-imported business-term glossary (user-facing)
+
+Read/search over `glossary_terms`, populated by the Keboola semantic-layer
+importer (`keboola-semantic-layer-refresh` job) — see
+`docs/superpowers/specs/2026-07-17-keboola-glossary-import-design.md`.
+Relevance-ranked search uses DuckDB FTS BM25 with an ILIKE fallback.
+
+- /api/glossary
+- /api/glossary/search
+- /api/glossary/{glossary_id}
+
 ### `/api/health` — Health checks
 
 - /api/health
