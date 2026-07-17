@@ -40,6 +40,13 @@ services:
     environment:
       AGNES_ROLE: api
       CONFIG_DIR: /app/mtier-config
+      # coordination.backend=redis (see instance.mtier.yaml) but
+      # resolve_redis_url() (app/coordination/factory.py) falls back to
+      # redis://localhost:6379/0 absent this override — inside a container
+      # "localhost" is the container itself, not the compose `redis`
+      # service, so every redis-backed coordination call (leases, rate
+      # limiter storage) would silently fail without this.
+      AGNES_REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       SESSION_SECRET: ${SESSION_SECRET}
@@ -59,6 +66,7 @@ services:
     environment:
       AGNES_ROLE: api
       CONFIG_DIR: /app/mtier-config
+      AGNES_REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       SESSION_SECRET: ${SESSION_SECRET}
@@ -78,6 +86,7 @@ services:
     environment:
       AGNES_ROLE: gateway
       CONFIG_DIR: /app/mtier-config
+      AGNES_REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       SESSION_SECRET: ${SESSION_SECRET}
@@ -97,6 +106,7 @@ services:
     environment:
       AGNES_ROLE: worker
       CONFIG_DIR: /app/mtier-config
+      AGNES_REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       SESSION_SECRET: ${SESSION_SECRET}
