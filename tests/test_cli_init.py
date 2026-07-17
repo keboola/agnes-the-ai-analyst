@@ -588,7 +588,8 @@ def test_shortcut_installs_executable_script_into_local_bin(tmp_path, monkeypatc
     assert os.access(script, os.X_OK)
     content = script.read_text(encoding="utf-8")
     assert content.startswith("#!/bin/sh\n")
-    assert "# >>> agnes launcher: myworkspace <<<" in content
+    assert "\n# >>> agnes launcher: myworkspace <<<\n" in content
+    assert "# # >>>" not in content  # marker embedded verbatim, no double comment
     assert f'cd "{workspace}" && exec claude --permission-mode auto "$@"' in content
     assert not (home / ".zshrc").exists()
     assert not (home / ".bashrc").exists()
@@ -795,26 +796,24 @@ def test_shortcut_never_shadows_agnes_cli(tmp_path, monkeypatch):
 
 def test_install_removes_legacy_rc_blocks(tmp_path, monkeypatch):
     """Old marked function blocks are stripped from ~/.zshrc and ~/.bashrc on
-    install; user lines survive."""
+    install; user lines survive. The .zshrc variant has the blank line the
+    legacy writer inserted; the .bashrc variant sits flush under a user line
+    — stripping must not glue user lines together in either layout."""
     home, workspace = _make_shortcut_env(tmp_path, monkeypatch, "linux")
-    legacy = (
-        "# user line above\n"
-        "\n# >>> agnes launcher: myworkspace <<<\n"
+    block = (
+        "# >>> agnes launcher: myworkspace <<<\n"
         'function myworkspace {\n  cd "/old/path" && claude --permission-mode auto "$@"\n}\n'
         "# <<< agnes launcher: myworkspace >>>\n"
-        "# user line below\n"
     )
-    (home / ".zshrc").write_text(legacy, encoding="utf-8")
-    (home / ".bashrc").write_text(legacy, encoding="utf-8")
+    (home / ".zshrc").write_text(f"# user line above\n\n{block}# user line below\n", encoding="utf-8")
+    (home / ".bashrc").write_text(f"# user line above\n{block}# user line below\n", encoding="utf-8")
 
     from cli.lib.shortcut import install_launcher_shortcut
 
     install_launcher_shortcut(workspace)
 
-    for rc in (home / ".zshrc", home / ".bashrc"):
-        content = rc.read_text(encoding="utf-8")
-        assert "agnes launcher" not in content
-        assert "# user line above" in content and "# user line below" in content
+    assert (home / ".zshrc").read_text(encoding="utf-8") == "# user line above\n# user line below\n"
+    assert (home / ".bashrc").read_text(encoding="utf-8") == "# user line above\n# user line below\n"
     assert (_bin(home) / "myworkspace").exists()
 
 
