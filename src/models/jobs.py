@@ -13,6 +13,11 @@ arbiter). DuckDB has no partial-index support, so its sibling
 (``src/db.py``) keeps this a plain index and enforces dedup in
 ``JobsRepository.enqueue()`` instead — see the migration's module
 docstring for the full rationale for this asymmetry.
+
+``lease_token`` is the same-worker double-execution guard: a fresh
+uuid4 minted by ``claim_next()`` on every claim. See the migration's
+module docstring for why ``heartbeat()``/``complete()``/``fail()`` guard
+on it instead of ``leased_by``.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ class Job(Base):
     max_attempts: Mapped[int] = mapped_column(Integer, server_default=text("3"), nullable=False)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     leased_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String, nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String, nullable=True)
     error: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
