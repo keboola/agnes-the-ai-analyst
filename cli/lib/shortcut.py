@@ -132,7 +132,7 @@ def _launcher_word(workspace_name: str) -> str:
 
     Sanitizes via ``_sanitized_word`` so a folder name with spaces, dots or
     parentheses can never produce an invalid script name.  Clean names
-    (e.g. ``FoundryAI`` → ``foundryai``) are unaffected, so the
+    (e.g. ``MyTeamAI`` → ``myteamai``) are unaffected, so the
     ``bin/<word>`` IWT convention still resolves.  Returns ``""`` when the
     name has no alphanumeric characters at all (caller skips + warns).
 
