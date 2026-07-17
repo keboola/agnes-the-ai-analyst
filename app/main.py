@@ -515,6 +515,7 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
     writes at the mercy of a cross-version WAL replay. CHECKPOINT runs in
     a worker thread — it can block while DuckDB flushes a large WAL.
     """
+    from app.secrets import reapply_all_overlay_tokens_from_vault
     from src.db import checkpoint_operational_db, checkpoint_system_db
 
     while True:
@@ -529,6 +530,17 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
             # checkpoint_*_db already swallow DB errors; this guards the loop
             # itself (e.g. to_thread failure) so it never dies.
             logger.exception("state-checkpoint tick failed; loop continues")
+        try:
+            # Belt-and-braces piggyback (wave 2C task 6): re-apply every
+            # env_overlay/* vault row to os.environ on every tick. Covers a
+            # replica that missed the env-overlay-changed pub/sub event (e.g.
+            # it wasn't subscribed yet, or a Redis FLUSHALL dropped it) — see
+            # app.secrets.persist_overlay_token's FLUSHALL note. Cheap:
+            # no-ops instantly when the vault isn't configured, otherwise one
+            # small indexed table scan plus a handful of decrypts.
+            await asyncio.to_thread(reapply_all_overlay_tokens_from_vault)
+        except Exception:
+            logger.exception("vault overlay periodic re-read failed; loop continues")
 
 
 def _on_cache_invalidate(message: str) -> None:
@@ -563,6 +575,29 @@ def _on_cache_invalidate(message: str) -> None:
             v2_catalog.invalidate_for_table(table, _publish=False)
     else:
         logger.warning("cache-invalidate: unknown scope %r", scope)
+
+
+def _on_env_overlay_changed(env_name: str) -> None:
+    """Coordination-backend subscriber for the ``env-overlay-changed``
+    channel (wave 2C task 6) — re-reads ``env_name``'s current value from
+    the control-plane vault and re-applies it to THIS process's
+    ``os.environ``, so an admin rotating a marketplace PAT / chat-sandbox
+    key on one api-serving replica propagates to every other
+    api/worker/gateway replica without a restart.
+
+    ``message`` is the bare env var name (see
+    ``app.secrets.persist_overlay_token``'s vault-write path) — unlike
+    ``cache-invalidate`` there's no JSON envelope to parse. Log-and-continue:
+    a lookup failure here (vault key rotated mid-flight, transient DB
+    hiccup) must not crash the subscriber dispatch loop — the periodic
+    belt-and-braces sweep in ``_state_checkpoint_loop`` will retry.
+    """
+    from app.secrets import reapply_overlay_token_from_vault
+
+    try:
+        reapply_overlay_token_from_vault(env_name)
+    except Exception:
+        logger.exception("env-overlay-changed handler failed for %s (non-fatal)", env_name)
 
 
 @asynccontextmanager
@@ -703,6 +738,21 @@ async def lifespan(app):
     except Exception:
         logger.exception("cache-invalidate subscribe failed (non-fatal)")
         app.state.cache_invalidate_unsubscribe = None
+
+    # Subscribe this process to the coordination backend's env-overlay-changed
+    # channel (wave 2C task 6) — see app.secrets.persist_overlay_token and
+    # _on_env_overlay_changed above. Unconditional/non-role-gated for the same
+    # reason as cache-invalidate above: every role combination (api/worker/
+    # gateway/all) reads these env vars (ANTHROPIC_API_KEY, marketplace PATs,
+    # ...) somewhere. Harmless when the vault isn't configured (keyless
+    # S-tier) — this channel is simply never published to in that mode.
+    try:
+        from app.coordination.factory import coordination
+
+        app.state.env_overlay_unsubscribe = coordination().subscribe("env-overlay-changed", _on_env_overlay_changed)
+    except Exception:
+        logger.exception("env-overlay-changed subscribe failed (non-fatal)")
+        app.state.env_overlay_unsubscribe = None
 
     # Baked-data images (no scheduler) need master views built at boot.
     if role_enabled(Role.WORKER):
@@ -1314,6 +1364,14 @@ async def lifespan(app):
             _cache_invalidate_unsubscribe()
         except Exception:
             logger.exception("cache-invalidate unsubscribe failed (non-fatal)")
+    # Unsubscribe from the env-overlay-changed channel — see the subscribe
+    # call earlier in this function.
+    _env_overlay_unsubscribe = getattr(app.state, "env_overlay_unsubscribe", None)
+    if _env_overlay_unsubscribe is not None:
+        try:
+            _env_overlay_unsubscribe()
+        except Exception:
+            logger.exception("env-overlay-changed unsubscribe failed (non-fatal)")
     try:
         from src.observability import get_posthog
 
@@ -1639,6 +1697,20 @@ def create_app() -> FastAPI:
                 # ``os.environ[k] = v`` write semantics — set once at the UI,
                 # win consistently across restarts.
                 os.environ[k.strip()] = v.strip()
+
+    # Vault-mode overlay tokens (wave 2C task 6) — loaded AFTER the legacy
+    # file above so a vault row for the same env_name wins on conflict. This
+    # is the vault-mode analogue of the file load: an admin save under
+    # AGNES_VAULT_KEY goes straight to the vault (see
+    # app.secrets.persist_overlay_token), never touching the file, so this
+    # process must also read the vault to see it. No-ops when the vault
+    # isn't configured (keyless/S-tier) or has no env_overlay/* rows yet.
+    try:
+        from app.secrets import reapply_all_overlay_tokens_from_vault
+
+        reapply_all_overlay_tokens_from_vault()
+    except Exception:
+        logger.exception("vault overlay token load failed at boot (non-fatal)")
 
     # Load instance config on startup
     try:
