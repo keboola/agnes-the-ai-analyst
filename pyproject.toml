@@ -158,6 +158,16 @@ dependencies = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.1",
     "alembic>=1.13",
+    # Multi-process coordination backend (app/coordination/redis_backend.py):
+    # leases, TTL kv, counters, pub/sub for the `redis` coordination.backend
+    # option (three-plane deployments). Floor 5.0 — the first line with the
+    # modern `Redis.from_url` + `GETDEL` + WATCH/MULTI/EXEC pipeline surface
+    # this module relies on. Core dep, not an extra: mirrors the dual-backend
+    # discipline already applied to sqlalchemy/psycopg/alembic just above —
+    # both coordination backends (memory default, redis for multi-process)
+    # must always be importable, same rationale as always shipping the PG
+    # driver even though DuckDB is the default state backend.
+    "redis>=5.0",
 ]
 
 [project.optional-dependencies]
@@ -245,6 +255,14 @@ dev = [
     # Ideal for laptop/sandbox dev environments where installing PG
     # system-wide is not an option.
     "pixeltable-pgserver>=0.5.1",
+    # In-memory Redis-protocol fake (no real Redis server / Docker needed)
+    # for `tests/test_coordination_contract.py` — the redis-backed half of
+    # the coordination backend contract matrix runs against
+    # `fakeredis.FakeStrictRedis`, a drop-in for the redis-py client
+    # interface `app/coordination/redis_backend.py` consumes (GETDEL,
+    # pipeline/WATCH — deliberately no Lua scripting dependency, see that
+    # module's docstring).
+    "fakeredis>=2.20",
 ]
 
 [project.scripts]
@@ -296,6 +314,7 @@ dev-dependencies = [
     "testcontainers[postgres]>=4",
     "pytest-postgresql>=6",
     "pixeltable-pgserver>=0.5.1",
+    "fakeredis>=2.20",
 ]
 # Override the urllib3<2.0.0 ceiling kbcstorage 0.9.5 declares (upstream
 # hasn't relaxed it as of 2026-05-12 but the SDK works fine against
