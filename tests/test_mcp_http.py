@@ -218,6 +218,10 @@ class TestToolRegistration:
             "admin_store_lint_findings",
             "admin_store_lint_audit",
             "admin_store_lint_dismiss",
+            # Per-user MCP credential connectivity check — an analyst's Claude
+            # verifies their own stored token. Triple-surface with POST
+            # /api/mcp/sources/{id}/my-secret/test + `agnes mcp my-secret test`.
+            "my_secret_test",
         }
 
     def test_no_client_only_tools(self):

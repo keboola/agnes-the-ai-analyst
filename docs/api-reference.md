@@ -1046,6 +1046,7 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/mcp/passthrough/tools/{tool_id}/call
 - /api/mcp/query-table/{table_id}
 - /api/mcp/sources/{source_id}/my-secret
+- /api/mcp/sources/{source_id}/my-secret/test
 
 ### `/api/mcp-connect` — Headless MCP client setup
 

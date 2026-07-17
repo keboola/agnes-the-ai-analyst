@@ -5873,8 +5873,15 @@ def _v90_to_v91(conn: duckdb.DuckDBPyConnection) -> None:
 def _v91_to_v92(conn: duckdb.DuckDBPyConnection) -> None:
     """v92: mcp_sources.connect_hint — per-source, admin-authored instructions
     telling a user where to obtain their personal token for a per_user source.
-    Rendered through app/markdown_render.render_safe on the connect page."""
-    conn.execute("ALTER TABLE mcp_sources ADD COLUMN IF NOT EXISTS connect_hint VARCHAR")
+    Rendered through app/markdown_render.render_safe on the connect page.
+
+    Guarded on table existence: minimal-fixture migration tests replay the
+    ladder from an intermediate version onto a DB that never created
+    ``mcp_sources`` (it is created at v64). On a real ladder the table always
+    exists by v92, so the guard only no-ops those partial replays."""
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'mcp_sources'").fetchone()
+    if exists:
+        conn.execute("ALTER TABLE mcp_sources ADD COLUMN IF NOT EXISTS connect_hint VARCHAR")
     conn.execute("UPDATE schema_version SET version = 92")
 
 
