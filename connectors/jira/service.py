@@ -16,6 +16,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -147,6 +148,37 @@ class JiraService:
     def auth(self) -> tuple[str, str]:
         """Get HTTP Basic auth tuple."""
         return (self.email, self.api_token)
+
+    def _attachment_url_allowed(self, url: str) -> bool:
+        """Is ``url`` a legitimate Jira attachment host? (SSRF guard, audit L3)
+
+        ``attachment.content`` arrives in the **webhook payload**, i.e. it is
+        caller-supplied: an HMAC-valid webhook for a nonexistent issue reaches
+        the fetch-failure fallback and would otherwise make the server GET any
+        URL the caller names (blind SSRF — the body lands under ``/data``).
+
+        Guard with an explicit **host allowlist** rather than a private-IP
+        denylist: legitimate attachments only ever live on the configured Jira
+        host (or Atlassian's cloud API), and a denylist would wrongly break a
+        self-hosted Jira that legitimately sits on a private address.
+
+        Parses with ``urlsplit`` and compares ``hostname`` so userinfo tricks
+        (``https://jira.example.com@evil.com/``) resolve to the real host.
+        """
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            return False
+        # base_url is https-only, so legitimate content URLs are too.
+        if parts.scheme != "https":
+            return False
+        host = (parts.hostname or "").lower()
+        if not host:
+            return False
+        allowed = {"api.atlassian.com"}
+        if self.domain:
+            allowed.add(self.domain.lower())
+        return host in allowed
 
     def is_configured(self) -> bool:
         """Check if Jira service is properly configured."""
@@ -432,6 +464,14 @@ class JiraService:
 
         if not content_url:
             logger.warning(f"Attachment {filename} has no content URL")
+            return None
+
+        # SSRF guard (audit L3): content_url comes from the webhook payload, so
+        # it is caller-supplied. Only ever fetch from the configured Jira host.
+        if not self._attachment_url_allowed(content_url):
+            logger.error(
+                f"Refusing attachment download from non-Jira URL for {filename!r}: {content_url!r}",
+            )
             return None
 
         # Skip large attachments
