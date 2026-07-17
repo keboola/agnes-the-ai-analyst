@@ -32,6 +32,8 @@ import time
 from collections import deque
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from app.instance_config import get_public_url
+
 # ---------------------------------------------------------------------------
 # Mutating gate
 # ---------------------------------------------------------------------------
@@ -101,20 +103,35 @@ def enforce_passthrough_access(tool: Dict[str, Any], caller_user_id: Optional[st
     check_rate_limit(tool_id, caller_user_id or "", tool.get("rate_limit_pm"))
 
 
+# Remedy message templates. Web-first when a public URL is configured so a
+# user in web chat / Cowork gets a clickable path; CLI fallback otherwise so an
+# unset public URL degrades gracefully instead of emitting a broken link. Both
+# live here as constants so every transport emits identical text.
+_REMEDY_WEB = (
+    "You are not connected to {label!r}. Open {base}/me/connections?source={sid} and add your token, then try again."
+)
+_REMEDY_CLI = "You are not connected to {label!r}. Run `agnes mcp my-secret set {sid}` to connect your own account."
+
+
 class PerUserCredentialMissing(Exception):
     """Raised when a ``scope='per_user'`` source is invoked by an identified
     caller who has not stored their own credential.
 
-    ``source_label`` is the human-facing source name (or id) for the remedy
-    message.
+    ``source_label`` is the human-facing source name for the sentence;
+    ``source_id`` is the opaque primary key used to build the deep link
+    (``/me/connections?source=<id>``) — never the name, which would break the
+    id-based page lookup and leak into browser history / referrers.
     """
 
-    def __init__(self, source_label: str):
+    def __init__(self, source_label: str, source_id: str):
         self.source_label = source_label
-        super().__init__(
-            f"no personal credential for source {source_label!r}. Run "
-            f"`agnes mcp my-secret set {source_label}` to connect your own account."
-        )
+        self.source_id = source_id
+        base = get_public_url()
+        if base:
+            msg = _REMEDY_WEB.format(label=source_label, base=base, sid=source_id)
+        else:
+            msg = _REMEDY_CLI.format(label=source_label, sid=source_id)
+        super().__init__(msg)
 
 
 def enforce_per_user_credential(source: Dict[str, Any], caller_user_id: Optional[str]) -> None:
@@ -141,7 +158,10 @@ def enforce_per_user_credential(source: Dict[str, Any], caller_user_id: Optional
     from src.repositories import per_user_secrets_repo
 
     if not per_user_secrets_repo().get(source["id"], caller_user_id):
-        raise PerUserCredentialMissing(source.get("name") or source["id"])
+        raise PerUserCredentialMissing(
+            source_label=source.get("name") or source["id"],
+            source_id=source["id"],
+        )
 
 
 # ---------------------------------------------------------------------------

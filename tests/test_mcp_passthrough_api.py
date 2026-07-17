@@ -382,6 +382,26 @@ def test_invoke_per_user_no_secret_returns_403_and_does_not_forward(seeded_app):
     mock.assert_not_called()
 
 
+def test_invoke_per_user_no_secret_403_carries_web_deep_link(seeded_app, monkeypatch):
+    """With a public URL configured, the 403 remedy that reaches the caller
+    (and therefore the agent) is the web-first deep link to the connect page —
+    keyed by source id."""
+    import app.api.mcp_policy as policy
+
+    monkeypatch.setattr(policy, "get_public_url", lambda: "https://agnes.example", raising=False)
+    _seed_per_user_passthrough_tool()
+    client = seeded_app["client"]
+    with _patch_upstream_call(text="LEAK") as mock:
+        r = client.post(
+            "/api/mcp/passthrough/tools/pu-upstream.lookup/call",
+            headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+            json={"arguments": {}},
+        )
+    assert r.status_code == 403, r.text
+    assert "https://agnes.example/me/connections?source=src_pu_pt" in r.json()["detail"]
+    mock.assert_not_called()
+
+
 def _list_names(caller_id, seed_analyst="analyst1"):
     """Register the seeded passthrough tools on a bare FastMCP, install the
     grant filter with a fixed caller, and return the tool names tools/list
