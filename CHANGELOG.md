@@ -163,6 +163,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   to direct Anthropic on dispatcher failure. Unset ⇒ behavior unchanged. The
   broker logs a warning when the URL is set without the key.
   `app/api/broker.py`, documented in `config/.env.template`.
+### Changed
+- Chat WS auth tickets (`_issue_ticket`/`_consume_ticket` in `app/api/chat.py`,
+  covering both the primary stream route and the co-drive `/join` route) now
+  ride the coordination backend (`coordination().kv_set`/`kv_delete`) instead
+  of a module-level dict. Same single-use, 60s-TTL semantics under the
+  default `memory` backend; configuring `coordination.backend=redis` makes
+  tickets visible across replicas, closing the single-worker HA gap noted in
+  the previous comment.
 
 ## [0.74.107] - 2026-07-17
 
