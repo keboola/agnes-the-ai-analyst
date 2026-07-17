@@ -55,8 +55,9 @@ router = APIRouter(prefix="/api/sync", tags=["sync"])
 # (`app.worker.kinds._run_data_refresh`) executes, possibly in a different
 # OS process on a role-split deployment. `_sync_lock` is therefore no
 # longer the "is a sync in progress" signal for the trigger handler (the
-# job queue's idempotency dedup is — see `_find_in_flight_data_refresh_job`)
-# — it is now purely defense-in-depth INSIDE `_run_sync` against two
+# job queue's idempotency dedup is — reported via `enqueue()`'s
+# `"deduped"` return key, see `JobsRepository.enqueue`'s docstring) — it
+# is now purely defense-in-depth INSIDE `_run_sync` against two
 # invocations racing within the SAME process (e.g. a same-process worker
 # lane plus any lingering direct caller), same role it always had there.
 _sync_lock = threading.Lock()
@@ -1673,31 +1674,6 @@ def sync_status():
 _DATA_REFRESH_IDEMPOTENCY_KEY = "sync"
 
 
-def _find_in_flight_data_refresh_job() -> Optional[dict]:
-    """Peek for an already queued/running ``data-refresh`` job sharing
-    ``_DATA_REFRESH_IDEMPOTENCY_KEY``, before calling ``enqueue()``.
-
-    ``JobsRepository.enqueue``'s own dedup (see its docstring) would return
-    that same existing row anyway — this pre-check exists only so the
-    trigger handler can tell "I just created a new job" apart from "this
-    request deduped into one already in flight" and shape the response /
-    status code accordingly.
-
-    Racy by construction: another thread/process can enqueue the job
-    between this check and the ``enqueue()`` call in ``trigger_sync``
-    below. That race is benign — every caller still gets back the SAME
-    ``job_id`` (the deduped row); the only thing that can be imprecise is
-    whether one of two near-simultaneous callers is told "triggered"
-    instead of "already in progress".
-    """
-    repo = jobs_repo()
-    for status in ("running", "queued"):
-        for row in repo.list(kind="data-refresh", status=status, limit=10):
-            if row.get("idempotency_key") == _DATA_REFRESH_IDEMPOTENCY_KEY:
-                return row
-    return None
-
-
 @router.post("/trigger")
 def trigger_sync(
     body: Optional[Any] = Body(None),
@@ -1751,6 +1727,18 @@ def trigger_sync(
     the body. On success (a new job was enqueued), the response keeps its
     existing shape plus ``job_id`` so a caller can poll
     ``GET /api/jobs/{job_id}``.
+
+    The 200-vs-409 decision is made from ``enqueue()``'s own ``"deduped"``
+    return key (see ``JobsRepository.enqueue`` docstring), not a
+    pre-``enqueue()`` peek at the job queue. A separate peek-then-enqueue
+    is inherently racy: two concurrent triggers can both see "no in-flight
+    job" during the peek, then both call ``enqueue()`` — the loser's call
+    dedups server-side (returns the winner's row), but a pre-check-based
+    handler has no way to tell it apart from "I just created this job",
+    so it would incorrectly report 200 "triggered" for a job it didn't
+    create. Branching on the return value of the SAME ``enqueue()`` call
+    that produced ``job`` is race-free: only the caller whose row was
+    actually inserted (``deduped=False``) gets 200.
     """
     if body is None:
         tables: Optional[List[str]] = None
@@ -1801,15 +1789,16 @@ def trigger_sync(
     # process than this one on a role-split deployment. Checking THIS
     # process's `_sync_lock` here would say "not locked" even while a
     # worker elsewhere is mid-sync, so it can no longer serve as the
-    # "already in progress" signal. The job queue's own idempotency dedup
-    # (below) is the authoritative source of that signal now.
-    existing = _find_in_flight_data_refresh_job()
+    # "already in progress" signal. `enqueue()`'s own `"deduped"` return
+    # key is the authoritative source of that signal now — a pre-check
+    # peek here would race a concurrent trigger between the peek and this
+    # very `enqueue()` call (see the docstring above).
     job = jobs_repo().enqueue(
         "data-refresh",
         {"tables": tables, "source": source},
         idempotency_key=_DATA_REFRESH_IDEMPOTENCY_KEY,
     )
-    already_in_progress = existing is not None and existing["id"] == job["id"]
+    already_in_progress = job["deduped"]
 
     if already_in_progress:
         try:

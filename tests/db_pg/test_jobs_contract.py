@@ -136,6 +136,9 @@ def test_enqueue_returns_queued_row(repo):
     assert row["attempts"] == 0
     assert row["max_attempts"] == 3
     assert row["created_at"] is not None
+    # "deduped" is response metadata (not a jobs column) — a fresh insert
+    # always reports False. See JobsRepository.enqueue's docstring.
+    assert row["deduped"] is False
 
 
 def test_enqueue_defaults_payload_to_empty_dict(repo):
@@ -174,6 +177,19 @@ def test_idempotency_dedup_returns_same_job_while_queued(repo):
     assert second["payload_json"] == {"to": "c@example.com"}
     # only one row was actually created
     assert len(repo.list(kind="send_email")) == 1
+    # "deduped" reports which call actually inserted vs. which call hit
+    # the idempotency dedup — this is what POST /api/sync/trigger
+    # branches on to decide 200 vs. 409 race-free (see app/api/sync.py).
+    assert first["deduped"] is False
+    assert second["deduped"] is True
+
+
+def test_enqueue_deduped_false_for_distinct_keys(repo):
+    """No collision -> both calls report a fresh insert, never `deduped`."""
+    a = repo.enqueue("send_email", {}, idempotency_key="fresh-key-a")
+    b = repo.enqueue("send_email", {}, idempotency_key="fresh-key-b")
+    assert a["deduped"] is False
+    assert b["deduped"] is False
 
 
 def test_no_dedup_without_idempotency_key(repo):
@@ -661,11 +677,15 @@ def test_concurrent_enqueue_same_key_dedups_to_exactly_one_row(repo_factory):
     n = 8
     barrier = threading.Barrier(n)
     errors: list[BaseException] = []
+    results: list[dict] = []
+    results_lock = threading.Lock()
 
     def worker(i: int) -> None:
         try:
             barrier.wait(timeout=5)
-            repo_factory().enqueue("send_email", {"i": i}, idempotency_key="race-key")
+            row = repo_factory().enqueue("send_email", {"i": i}, idempotency_key="race-key")
+            with results_lock:
+                results.append(row)
         except BaseException as exc:  # noqa: BLE001 - surfaced via errors list
             errors.append(exc)
 
@@ -678,6 +698,15 @@ def test_concurrent_enqueue_same_key_dedups_to_exactly_one_row(repo_factory):
     assert not errors, f"enqueue raised under concurrency: {errors}"
     matching = repo_factory().list(kind="send_email", limit=50)
     assert len(matching) == 1
+
+    # Exactly one of the 8 concurrent callers actually inserted the row
+    # (`deduped=False`); the other 7 all collapsed onto it
+    # (`deduped=True`). This is the same signal `POST /api/sync/trigger`
+    # uses to decide 200 vs. 409 without a racy pre-check.
+    assert len(results) == n
+    deduped_flags = [r["deduped"] for r in results]
+    assert deduped_flags.count(False) == 1
+    assert deduped_flags.count(True) == n - 1
 
 
 # ---------------------------------------------------------------------------
@@ -761,6 +790,10 @@ def test_pg_enqueue_retries_insert_when_fallback_select_misses(pg_engine, monkey
     assert second["id"] != winner["id"]
     assert second["status"] == "queued"
     assert second["payload_json"] == {"who": "second"}
+    # The retry succeeded as a fresh INSERT (not a dedup hit) — even
+    # though this call initially lost the ON CONFLICT race, it ends up
+    # being the one that actually created a row.
+    assert second["deduped"] is False
 
     # Both rows now exist: the original (now done) and the new retried insert.
     all_matching = repo.list(kind="send_email", limit=50)
