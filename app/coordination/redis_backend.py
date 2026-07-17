@@ -226,6 +226,19 @@ class RedisCoordinationBackend(CoordinationBackend):
             try:
                 self._pubsub.subscribe(channel)
             except _REDIS_ERRORS as exc:
+                # Roll back the local registration we just made: if the
+                # Redis-level SUBSCRIBE never succeeded, no local state may
+                # survive. Otherwise this channel would look already-live to
+                # every future subscribe() call (is_new_channel=False) and
+                # the SUBSCRIBE would never be retried — a permanently
+                # broken channel with a handler that never fires, and the
+                # caller received no unsubscribe callable to clean it up.
+                with self._subscribers_lock:
+                    handlers = self._subscribers.get(channel)
+                    if handlers and handler in handlers:
+                        handlers.remove(handler)
+                    if not self._subscribers.get(channel):
+                        self._subscribers.pop(channel, None)
                 raise CoordinationUnavailable(f"redis subscribe failed: {exc}") from exc
 
         def _unsubscribe() -> None:
