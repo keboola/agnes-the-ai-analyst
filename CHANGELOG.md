@@ -149,6 +149,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   is unaffected and intentionally unchanged (documented in `usage_pg.py` —
   this is a DuckDB engine bug workaround, not a general anti-pattern fix).
   `src/repositories/usage.py`.
+### Added
+
+- **Five job kinds registered on the wave-2B worker queue** (`app/worker/kinds.py`, `register_all_kinds()`, called from `app/main.py`'s lifespan before the worker loop starts): `data-refresh` and `jira-refresh` (heavy lane), `marketplaces-sync`, `session-collector`, and `corporate-memory` (light lane). Each handler is a thin adapter delegating to the existing function behind its HTTP counterpart (`/api/sync/trigger`, `/api/marketplaces/sync-all`, `/api/admin/run-session-collector`, `/api/admin/run-corporate-memory`) or, for `jira-refresh`, `SyncOrchestrator().rebuild_source("jira")` — no logic duplicated.
+
+### Changed
+
+- **Jira webhook incremental transform now enqueues `jira-refresh` instead of rebuilding the orchestrator inline.** `connectors/jira/service.py:trigger_incremental_transform` previously called `SyncOrchestrator().rebuild_source("jira")` synchronously after every webhook event; it now calls `jobs_repo().enqueue("jira-refresh", {}, idempotency_key="jira-refresh")`, so a burst of webhook events collapses into a single queued rebuild instead of one rebuild per event. The parquet write (`transform_single_issue`) stays inline — only the analytics-view rebuild moved to the queue.
+
 ### Fixed
 
 - **Worker shutdown drain no longer leaves stray heartbeats running or lets a DB error abort shutdown.** An abandoned (drain-timed-out) in-flight job's heartbeat task was left uncancelled, so it kept extending that job's lease after `worker_loop` had already returned and handed the job off to lease-expiry recovery. Separately, a `complete()`/`fail()` failure while finalizing a different in-flight job during the drain could propagate out of `worker_loop`'s shutdown path and abort the rest of lifespan shutdown (including closing the system DB). Both paths now cancel/await the heartbeat task and log-and-continue on a finalization error, matching the existing hardening pattern used elsewhere in the runtime.
