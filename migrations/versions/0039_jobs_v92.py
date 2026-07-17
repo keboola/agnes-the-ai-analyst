@@ -7,14 +7,27 @@ This table + ``JobsRepository``/``JobsPgRepository`` cover enqueue/get/list
 + idempotency dedup only; the claim/lease lifecycle and worker loop are
 later tasks in the same wave (wave-2B: job queue + worker runtime).
 
-``idx_jobs_idem`` is a plain (non-unique) index, not a partial unique
-index. A partial unique index (``WHERE idempotency_key IS NOT NULL``)
-would let a duplicate key be reused once the earlier job leaves
-queued/running, but DuckDB does not support partial indexes ("Not
-implemented Error: Creating partial indexes is not supported currently").
-For structural parity between the two ladders, dedup is enforced in the
-repository's ``enqueue()`` on both engines instead of at the DB level —
-the CONTRACT is the dedup behavior, not the index.
+``idx_jobs_idem`` is a *partial unique* index on Postgres:
+``WHERE idempotency_key IS NOT NULL AND status IN ('queued', 'running')``.
+A duplicate key can be reused once the earlier job leaves queued/running
+(the index simply stops covering that row), but two concurrent enqueues
+of the same key while a queued/running row exists cannot both insert —
+Postgres's unique-index conflict check makes that atomic, which a plain
+SELECT-then-INSERT in application code cannot (READ COMMITTED lets two
+transactions both miss each other's uncommitted row; 8 concurrent
+enqueues of the same key produced 8 rows before this fix). See
+``JobsPgRepository.enqueue()`` for the matching ``INSERT ... ON CONFLICT
+... DO NOTHING`` that uses this index as its arbiter.
+
+The DuckDB ladder (``src/db.py``) deliberately keeps ``idx_jobs_idem`` as
+a **plain** (non-unique, non-partial) index — DuckDB does not support
+partial indexes ("Not implemented Error: Creating partial indexes is not
+supported currently") — and continues to enforce dedup in
+``JobsRepository.enqueue()`` with a lock guarding the check-then-insert,
+safe under DuckDB's single-writer model. The two ladders are
+intentionally asymmetric here: the CONTRACT is the dedup *behavior*
+(matching key + queued/running status returns the existing row, no
+insert), not the index shape.
 """
 
 import sqlalchemy as sa
@@ -46,7 +59,13 @@ def upgrade() -> None:
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.create_index("idx_jobs_claim", "jobs", ["status", "priority", "run_after"])
-    op.create_index("idx_jobs_idem", "jobs", ["idempotency_key"])
+    op.create_index(
+        "idx_jobs_idem",
+        "jobs",
+        ["idempotency_key"],
+        unique=True,
+        postgresql_where=sa.text("idempotency_key IS NOT NULL AND status IN ('queued', 'running')"),
+    )
 
 
 def downgrade() -> None:
