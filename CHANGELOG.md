@@ -10,7 +10,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.74.109] - 2026-07-17
+## [0.74.112] - 2026-07-17
 
 ### Added
 
@@ -28,6 +28,49 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `LLM_DISPATCHER_API_KEY` in `/opt/agnes/.env` so the chat broker's
   dispatcher opt-in (0.74.108) engages. Disabled instances render a
   byte-identical startup script — the feature is fully inert unless enabled.
+  The dispatcher ledger Postgres password is minted once and persisted on
+  the same persistent data disk as the ledger data it protects (falls back
+  to reading an existing boot-disk `.env` value for migration, then mints
+  fresh only if neither exists), so a VM recreate never desyncs the
+  password from the surviving database.
+
+## [0.74.111] - 2026-07-17
+
+### Fixed
+
+- **`INSERT OR REPLACE` could crash the whole app process on DuckDB, same class of bug as #909.**
+  `UsageRepository.upsert_summary` (`usage_session_summary`, hit every ~10
+  minutes by the usage session processor) and `ChatRepository.upsert_workdir`
+  (`user_workdirs`) both used `INSERT OR REPLACE`, which deletes-then-inserts
+  the conflicting row internally on DuckDB 1.5.4 — the same PRIMARY KEY index
+  assertion that #909 fixed for the rollup producers, just via a different
+  SQL surface. Observed live twice more in production within 24h of #909
+  shipping, on two different `session_file` keys, each time invalidating the
+  shared connection for every subsequent query until the process restarted.
+  Switched both to `INSERT ... ON CONFLICT DO UPDATE`, which updates the
+  existing row in place instead of deleting it. Postgres siblings already
+  used `ON CONFLICT DO UPDATE` (native syntax, no equivalent bug), so this
+  also removes a semantic difference between the two backends' SQL shape.
+  `src/repositories/usage.py`, `app/chat/persistence.py`.
+
+## [0.74.110] - 2026-07-17
+
+### Internal
+- Tests: `agnes init` / launcher tests can no longer write into the developer's real home — all in-process and subprocess init invocations redirect `HOME` into tmp, and a `tests/conftest.py` autouse guard fails any test that mutates the real shell rc files (legacy-block cleanup) or drops launcher scripts into the real `~/.local/bin`.
+
+## [0.74.109] - 2026-07-17
+
+### Fixed
+
+- Marketplace git smart-HTTP: a `git http-backend` subprocess that exited (or
+  closed its stdin) before the request body was written — e.g. an `info/refs`
+  GET, which never reads stdin — crashed the request with an unhandled
+  `RuntimeError: … the handler is closed` (uvloop transport write-after-close),
+  returning a traceback 500 and leaking the child process. The stdin
+  write/drain/close is now guarded (empty bodies skip the write entirely) and
+  runs inside the cleanup block; a child that produced no output is still
+  reported as a 500 with its stderr and exit code logged.
+  `app/marketplace_server/git_router.py` (race introduced in #887).
 
 ## [0.74.108] - 2026-07-17
 

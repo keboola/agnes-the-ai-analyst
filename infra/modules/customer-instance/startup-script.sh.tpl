@@ -370,10 +370,21 @@ chown 10001 "$DISP_DIR/keys.yaml" "$DISP_DIR/vertex-sa.json"
 chmod 0400 "$DISP_DIR/keys.yaml" "$DISP_DIR/vertex-sa.json"
 chmod 0444 "$DISP_DIR/policies.yaml"
 
-# Ledger postgres password — mint on first boot, preserve across reboots
-# (same read-back-from-.env pattern as SCHEDULER_API_TOKEN above).
+# Ledger postgres password. Same durability concern as AGNES_VAULT_KEY above:
+# /opt/agnes/.env lives on the BOOT disk, which a VM recreate wipes, but the
+# ledger Postgres data dir lives on the persistent DATA disk and only honors
+# POSTGRES_PASSWORD on first initdb — a recreate that re-mints the password
+# would desync it from the surviving database, locking the dispatcher out of
+# its own ledger. Precedence mirrors the vault key: existing keyfile on the
+# data disk > key already in .env (adopted into the keyfile so it survives
+# the NEXT recreate) > mint fresh.
+# --- dispatcher-pg-password begin (extracted + executed by tests/test_startup_dispatcher_pg_password.py) ---
+DISPATCHER_PG_PASSWORD_FILE="$DATA_MNT/dispatcher-postgres/.pg-password"
 DISPATCHER_PG_PASSWORD=""
-if [ -f "$APP_DIR/.env" ]; then
+if [ -f "$DISPATCHER_PG_PASSWORD_FILE" ]; then
+    DISPATCHER_PG_PASSWORD=$(tr -d '[:space:]' < "$DISPATCHER_PG_PASSWORD_FILE" || true)
+fi
+if [ -z "$DISPATCHER_PG_PASSWORD" ] && [ -f "$APP_DIR/.env" ]; then
     DISPATCHER_PG_PASSWORD=$(grep -E '^DISPATCHER_PG_PASSWORD=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
 fi
 if [ -z "$DISPATCHER_PG_PASSWORD" ]; then
@@ -383,6 +394,9 @@ fi
 # Ledger data on the persistent disk. postgres:16-alpine's entrypoint runs
 # as root and chowns its data dir to uid 70 on first init itself.
 mkdir -p "$DATA_MNT/dispatcher-postgres"
+(umask 077; printf '%s\n' "$DISPATCHER_PG_PASSWORD" > "$DISPATCHER_PG_PASSWORD_FILE")
+chmod 600 "$DISPATCHER_PG_PASSWORD_FILE"
+# --- dispatcher-pg-password end ---
 
 # Quoted heredoc: the $${...} below are resolved by docker compose from
 # /opt/agnes/.env at `compose up` time, not by this shell.
