@@ -12,11 +12,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-- `mcp_sources.connect_hint` (schema v92) — an admin-authored, per-source
-  field with instructions for where an analyst obtains their personal token
-  for a `per_user` source. Exposed via the admin MCP source API
-  (`connect_hint` on create/update/get) and a new "Connect hint" field on
-  the admin MCP source detail page.
+- Self-service per-user MCP credential management. A new `/me/connections`
+  page lets any signed-in user connect, replace, test, and remove their own
+  token for the `per_user` MCP sources they are granted — no operator in the
+  loop. Backed by a new `POST /api/mcp/sources/{id}/my-secret/test`
+  connectivity check (gated by scope + grant + rate limit + credential, and
+  reachable via `agnes mcp my-secret test` and the `my_secret_test` MCP tool),
+  an `updated_at` field on the `my-secret` status, and a per-source
+  `connect_hint` (schema v92) that tells the user where to obtain their token
+  (admin-authored, rendered through the safe markdown pipeline). When an
+  unconnected caller invokes a `per_user` tool, the error is now an actionable,
+  web-linked remedy pointing at the connect page (falling back to the CLI hint
+  when no public URL is configured).
 
 ## [0.74.112] - 2026-07-17
 
