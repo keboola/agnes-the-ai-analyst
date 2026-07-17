@@ -2017,3 +2017,76 @@ def test_legacy_resume_destroys_old_sandbox_before_clearing(tmp_path):
         mgr._spawn_live.assert_awaited_once()
 
     asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Wave-2C task 3: paused-sandbox sweep leader lease
+# ---------------------------------------------------------------------------
+
+from app.chat.manager import _PAUSED_SWEEP_LEASE_NAME  # noqa: E402
+from app.coordination.factory import coordination, reset_coordination_for_tests  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_coordination_for_sweep_tests():
+    reset_coordination_for_tests()
+    yield
+    reset_coordination_for_tests()
+
+
+def _paused_expired_session(mgr):
+    """Create a session whose sandbox_paused_at is already past the TTL —
+    the exact repo-row shape _reap_once's paused sweep looks for."""
+    from datetime import datetime as _dt, timedelta, timezone as _tz
+
+    session = mgr._repo.create_session(user_email="sweep@test.com", surface=Surface.WEB)
+    mgr._repo.set_sandbox_ref(session.id, sandbox_id="sbx-sweep", runner_pid=123)
+    mgr._repo.set_sandbox_paused_at(
+        session.id,
+        _dt.now(_tz.utc) - timedelta(seconds=mgr._config.paused_ttl_seconds + 1),
+    )
+    return session
+
+
+def test_paused_sweep_skips_when_lease_held_elsewhere(tmp_path):
+    """If another replica holds the paused-sandbox-sweep lease, this
+    replica's _reap_once must NOT destroy/clear the sandbox this tick —
+    it should defer to whoever holds the lease and try again next tick."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        session = _paused_expired_session(mgr)
+
+        # Simulate another replica already holding the sweep lease.
+        assert coordination().lease_acquire(_PAUSED_SWEEP_LEASE_NAME, "other-replica", ttl_s=90)
+
+        await mgr._reap_once()
+
+        row = mgr._repo.get_session(session.id)
+        assert row.sandbox_id == "sbx-sweep", "sweep must have skipped — lease held elsewhere"
+        assert "sbx-sweep" not in mgr._provider.destroyed
+
+    asyncio.run(_run())
+
+
+def test_paused_sweep_runs_when_lease_acquired_and_releases_after(tmp_path):
+    """The normal (uncontended) path: this replica acquires the lease,
+    performs the sweep, and releases the lease afterwards — a subsequent
+    acquirer must not have to wait out the TTL."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        session = _paused_expired_session(mgr)
+
+        await mgr._reap_once()
+
+        row = mgr._repo.get_session(session.id)
+        assert row.sandbox_id is None, "sweep must have destroyed/cleared the expired sandbox"
+        assert "sbx-sweep" in mgr._provider.destroyed
+
+        # Released, not just expired — a fresh acquirer gets it immediately.
+        assert coordination().lease_acquire(_PAUSED_SWEEP_LEASE_NAME, "someone-else", ttl_s=90) is True
+
+    asyncio.run(_run())
