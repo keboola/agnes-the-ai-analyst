@@ -19,6 +19,7 @@ from app.chat.persistence import ChatRepository
 from app.chat.profiles import get_profile
 from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR, list_recognized_commands, merged_skills
 from app.chat.types import Surface
+from app.coordination.base import CoordinationUnavailable
 from app.coordination.factory import coordination
 from app.resource_types import ResourceType
 
@@ -235,7 +236,11 @@ async def archive_session(
 
 @router.websocket("/sessions/{chat_id}/stream")
 async def ws_stream(ws: WebSocket, chat_id: str, ticket: str):
-    consumed = _consume_ticket(ticket)
+    try:
+        consumed = _consume_ticket(ticket)
+    except CoordinationUnavailable:
+        await ws.close(code=4503, reason="coordination_unavailable")
+        return
     if consumed is None or consumed[0] != chat_id:
         await ws.close(code=4401, reason="invalid_or_expired_ticket")
         return
@@ -308,7 +313,11 @@ async def ws_join(ws: WebSocket, session_id: str, ticket: str):
     This is the ONLY path that calls add_sink for web co-drive joiners.
     The primary owner always connects via ws_stream (which calls attach).
     """
-    consumed = _consume_ticket(ticket)
+    try:
+        consumed = _consume_ticket(ticket)
+    except CoordinationUnavailable:
+        await ws.close(code=4503, reason="coordination_unavailable")
+        return
     if consumed is None or consumed[0] != session_id:
         await ws.close(code=4401, reason="invalid_or_expired_ticket")
         return
