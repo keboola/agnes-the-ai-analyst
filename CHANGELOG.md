@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- `mcp_sources.connect_hint` (schema v92) — an admin-authored, per-source
+  field with instructions for where an analyst obtains their personal token
+  for a `per_user` source. Exposed via the admin MCP source API
+  (`connect_hint` on create/update/get) and a new "Connect hint" field on
+  the admin MCP source detail page.
+
 ## [0.74.112] - 2026-07-17
 
 ### Added

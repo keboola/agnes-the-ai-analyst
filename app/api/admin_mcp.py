@@ -117,6 +117,7 @@ class CreateMCPSourceRequest(BaseModel):
     auth_secret_env: Optional[str] = None
     enabled: bool = True
     scope: Optional[str] = None  # 'shared' (default) | 'per_user'
+    connect_hint: Optional[str] = None
 
     @field_validator("transport")
     @classmethod
@@ -147,6 +148,7 @@ class UpdateMCPSourceRequest(BaseModel):
     auth_secret_env: Optional[str] = None
     enabled: Optional[bool] = None
     scope: Optional[str] = None
+    connect_hint: Optional[str] = None
 
     @field_validator("transport")
     @classmethod
@@ -264,6 +266,7 @@ def _serialize_source(row: Dict[str, Any], *, has_vault_secret: bool = False) ->
         "auth_secret_env": row.get("auth_secret_env"),
         "enabled": bool(row.get("enabled")) if row.get("enabled") is not None else True,
         "scope": row.get("scope") or "shared",
+        "connect_hint": row.get("connect_hint"),
         "has_vault_secret": has_vault_secret,
         "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
         "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
@@ -312,6 +315,7 @@ def _merge_source_patch(existing: Dict[str, Any], patch: UpdateMCPSourceRequest)
             bool(existing.get("enabled")) if existing.get("enabled") is not None else True,
         ),
         "scope": data.get("scope", existing.get("scope") or "shared"),
+        "connect_hint": data.get("connect_hint", existing.get("connect_hint")),
     }
 
 
@@ -399,6 +403,7 @@ async def create_mcp_source(
             auth_secret_env=payload.auth_secret_env,
             enabled=payload.enabled,
             scope=payload.scope or "shared",
+            connect_hint=payload.connect_hint,
         )
     except ValueError as exc:
         # transport/command/url validation errors from the repo
