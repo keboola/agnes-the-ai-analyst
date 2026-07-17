@@ -135,6 +135,27 @@ class TestIncr:
             t.join()
         assert backend.kv_get("c4") == "20"
 
+    def test_incr_amount_accumulates_variable_deltas(self, backend):
+        """Quota-style usage: `amount` carries a per-event delta (e.g. tokens
+        spent on one turn) rather than always counting a flat +1 event."""
+        assert backend.incr("c5", amount=5, ttl_s=60) == 5
+        assert backend.incr("c5", amount=3, ttl_s=60) == 8
+        assert backend.incr("c5", amount=0, ttl_s=60) == 8
+
+    def test_incr_amount_zero_is_a_peek(self, backend):
+        """`amount=0` creates the key at 0 (with the given TTL) without
+        counting a real event — used to read the current window total
+        without perturbing it."""
+        assert backend.incr("c6", amount=0, ttl_s=60) == 0
+        assert backend.incr("c6", ttl_s=60) == 1
+        assert backend.incr("c6", amount=0, ttl_s=60) == 1
+
+    def test_incr_default_amount_is_one(self, backend):
+        """Omitting `amount` must behave exactly like the pre-existing
+        flat +1-per-call contract (rate-limit counters)."""
+        assert backend.incr("c7", ttl_s=60) == 1
+        assert backend.incr("c7", ttl_s=60) == 2
+
 
 class TestLease:
     def test_acquire_succeeds_when_free(self, backend):
