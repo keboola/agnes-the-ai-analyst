@@ -59,6 +59,18 @@ Job-queue + worker metrics (task 2):
   emitted it — see above). Summing these across `replica` (or `role`)
   N-counts the true depth; use `max() by (kind)` instead. See
   `docs/observability.md` for the operator-facing version of this note.
+- `agnes_jobs_oldest_queued_age_seconds` (queue-lag) is computed inside the
+  SAME `_QueuedJobsCollector.collect()` pass, off the SAME bounded
+  `jobs_repo().list(status="queued")` rows `agnes_jobs_queued` already
+  fetched — no second DB hit. Per kind: `now - min(created_at)` over that
+  scan. Same global-value caveat as `agnes_jobs_queued` (identical across
+  replica/role; use `max() by (kind)`, never `sum()`). One extra wrinkle:
+  `list()` orders `created_at DESC`, so a capped scan's window holds the
+  NEWEST rows — when `agnes_jobs_queued_capped=1`, the true oldest row(s)
+  may have been scanned out of the window, so this value can UNDERSTATE the
+  real oldest-queued age (uncapped, it's exact). Rows with a missing/`None`
+  `created_at` are skipped for this computation (still counted toward
+  `agnes_jobs_queued` itself).
 - Every `record_*`/`begin_job_running`/`end_job_running` helper below
   swallows its own exceptions (log + return) — the worker loop calls these
   as pure side effects around job execution, and a metrics bug must never
@@ -120,6 +132,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Response
 from prometheus_client import (
@@ -362,13 +375,22 @@ def end_job_running(kind: str, lane: str) -> None:
 
 
 class _QueuedJobsCollector:
-    """Scrape-time collector for `agnes_jobs_queued` (+ `_capped` sibling).
+    """Scrape-time collector for `agnes_jobs_queued` (+ `_capped` sibling)
+    and `agnes_jobs_oldest_queued_age_seconds`.
 
     See the module docstring for the full design rationale. `collect()` is
     called by `REGISTRY.collect()` (via `generate_latest()`) on every
     `/metrics` scrape — it queries `jobs_repo().list(status="queued")`
     directly, bounded by `_QUEUED_SCAN_LIMIT`, and MUST NOT raise: any
     failure here would otherwise 500 the entire `/metrics` response.
+
+    `agnes_jobs_oldest_queued_age_seconds` reuses the SAME bounded query as
+    `agnes_jobs_queued` (no second DB hit) — per kind, it's
+    `now - min(created_at)` over the rows in that scan. Caveat: `list()`
+    orders `created_at DESC`, so the bounded window holds the NEWEST rows;
+    if the scan is capped (`agnes_jobs_queued_capped=1`), the true oldest
+    row(s) may have been scanned out of the window and this value can
+    UNDERSTATE the real oldest-queued age. Uncapped, it's exact.
     """
 
     def collect(self):
@@ -389,10 +411,27 @@ class _QueuedJobsCollector:
         capped = len(rows) > _QUEUED_SCAN_LIMIT
         rows = rows[:_QUEUED_SCAN_LIMIT]
 
+        now = datetime.now(timezone.utc)
         counts: dict[str, int] = {}
+        oldest_created_at: dict[str, datetime] = {}
         for row in rows:
             kind = _bounded_kind(row.get("kind") or "unknown")
             counts[kind] = counts.get(kind, 0) + 1
+
+            created_at = row.get("created_at")
+            if created_at is None:
+                continue
+            # DuckDB returns a naive TIMESTAMP (the value was written as
+            # UTC — see JobsRepository.enqueue); Postgres's `DateTime
+            # (timezone=True)` column returns a tz-aware one. Normalize
+            # both to aware-UTC before comparing/subtracting.
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            else:
+                created_at = created_at.astimezone(timezone.utc)
+            current_oldest = oldest_created_at.get(kind)
+            if current_oldest is None or created_at < current_oldest:
+                oldest_created_at[kind] = created_at
 
         queued_family = GaugeMetricFamily(
             "agnes_jobs_queued",
@@ -415,6 +454,21 @@ class _QueuedJobsCollector:
         )
         capped_family.add_metric([role, replica], 1.0 if capped else 0.0)
         yield capped_family
+
+        oldest_age_family = GaugeMetricFamily(
+            "agnes_jobs_oldest_queued_age_seconds",
+            "Age in seconds of the oldest queued job, by kind (now - min(created_at) over "
+            "the same bounded agnes_jobs_queued scan — see agnes_jobs_queued_capped for the "
+            "undercount caveat, which also means this value can UNDERSTATE the true oldest "
+            "age when capped). Global queue-lag reading: every replica samples the same "
+            "shared queue, so this value is identical across replica/role. Use max() by "
+            "(kind), never sum() — summing is meaningless for an age value and N-counts the "
+            "same reading by the number of scraped replicas.",
+            labels=["kind", "role", "replica"],
+        )
+        for kind, created_at in oldest_created_at.items():
+            oldest_age_family.add_metric([kind, role, replica], (now - created_at).total_seconds())
+        yield oldest_age_family
 
 
 # Registered once at import time. Safe because REGISTRY has auto_describe=False
