@@ -306,6 +306,45 @@ unreachable Redis surfaces as a prompt `CoordinationUnavailable` (which
 callers already handle — e.g. a graceful WS close with code 4503) instead
 of blocking a lease-heartbeat thread indefinitely.
 
+### Metrics (Prometheus)
+
+Every role process exposes `GET /metrics` (`app/observability/metrics.py`)
+in the standard Prometheus text exposition format — **unauthenticated,
+internal-scrape-only**, the same posture as `/healthz`/`/readyz`. Put it
+behind the same TLS-terminating-reverse-proxy boundary that already keeps
+those two probes internal; **never expose `/metrics` on the public
+internet.** Series cover HTTP requests (`agnes_http_*`), the job queue and
+worker runtime (`agnes_jobs_*`, `agnes_job_*`, `agnes_worker_*`),
+coordination-backend health (`agnes_coordination_*`), and readiness
+(`agnes_readiness`) — full series table, label reference, and the
+sum-vs-max aggregation guidance for the global-queue-depth gauges live in
+[`observability.md`](observability.md) → *Prometheus `/metrics`*.
+
+The `mtier` Compose profile wires up a working example: a `prometheus`
+service (`deploy/prometheus/prometheus.yml`) scrapes all four role
+containers (`api1`/`api2`/`gateway`/`worker`) at `/metrics` every 15s by
+Compose DNS name, plus a `cadvisor` service
+(`gcr.io/cadvisor/cadvisor`) for container-level cpu/mem/network metrics.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml \
+  -f docker-compose.mtier.yml --profile mtier up
+# Prometheus UI/API: http://localhost:9090
+# cAdvisor UI:        http://localhost:8081
+```
+
+**macOS caveat:** Docker Desktop runs the daemon inside its own hidden
+Linux VM, so cAdvisor's host bind mounts (`/rootfs`, `/sys`,
+`/var/lib/docker`, …) resolve to that VM's filesystem rather than the Mac
+host. cAdvisor still starts and gets scraped — enough to exercise the
+Prometheus wiring locally — but the reported cpu/mem/disk figures are
+unreliable on macOS. Treat cAdvisor data as authoritative on Linux hosts
+(customer VMs) only.
+
+A production deployment that skips the `mtier` profile should still scrape
+`/metrics` on every role instance at a similar interval — nothing about
+the endpoint itself is tied to Compose.
+
 ## Cloud-chat host requirements
 
 Agnes can serve a zero-install web chat and Slack DM bot at `/chat`. The
