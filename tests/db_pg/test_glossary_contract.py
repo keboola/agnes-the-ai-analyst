@@ -68,6 +68,25 @@ def test_create_then_get_roundtrip(repo):
     assert fetched["definition"] == "Revenue normalized to a monthly cadence."
 
 
+def test_create_with_empty_see_also_roundtrips(repo):
+    """Regression: ``see_also=[]`` (the common case — a term the Keboola
+    importer sees with no seeAlso list) binds to a Postgres
+    ``character varying[]`` column via psycopg3 with no explicit type, which
+    can raise 'cannot determine type of empty array' if the driver can't
+    infer an OID. Exercises both backends via the parametrized ``repo``
+    fixture."""
+    row = repo.create(
+        id="kb/model-1/no_see_also",
+        term="Standalone Term",
+        definition="A term with no related terms.",
+        see_also=[],
+    )
+    assert row["see_also"] == []
+
+    fetched = repo.get("kb/model-1/no_see_also")
+    assert fetched["see_also"] == []
+
+
 def test_create_upserts_on_conflict(repo):
     repo.create(id="kb/m/x", term="X", definition="first")
     repo.create(id="kb/m/x", term="X", definition="second")
