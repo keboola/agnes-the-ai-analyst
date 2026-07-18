@@ -1490,7 +1490,7 @@ CREATE TABLE IF NOT EXISTS glossary_terms (
 -- model) rather than at the DB level. `idx_jobs_idem` below is a plain
 -- (non-unique) lookup index on this side.
 --
--- The Postgres ladder (migrations/versions/0040_jobs_v93.py /
+-- The Postgres ladder (migrations/versions/0041_jobs_v94.py /
 -- src/models/jobs.py) is asymmetric here: it DOES create `idx_jobs_idem`
 -- as a partial unique index, because a plain SELECT-then-INSERT in
 -- JobsPgRepository would race under READ COMMITTED (two concurrent
