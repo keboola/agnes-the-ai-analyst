@@ -171,6 +171,22 @@ class LiveSession:
     # turns can never interleave partial JSON lines on the shared stdin
     # (spec §6.2).
     _stdin_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Serializes _broadcast's stamp+send critical section per session. 9
+    # call sites can invoke _broadcast for the SAME LiveSession from
+    # different asyncio Tasks (e.g. two co-drive participants' turns landing
+    # concurrently, or a crash-respawn `ready` racing the pump task) — the
+    # seq stamp itself is atomic, but the `await sink.send_json(...)` right
+    # after it is an unprotected yield point, so without this lock a
+    # higher-seq frame from one Task can win the race and reach a sink
+    # before an in-flight lower-seq frame from another Task, breaking the
+    # "seq order == delivery order" invariant the future replay mechanism
+    # (wave-2F task 3) depends on. Holding this lock across the whole
+    # stamp+send loop also incidentally fixes a pre-existing hazard:
+    # Starlette's ``WebSocket.send_json`` is not safe to call concurrently
+    # on the same socket from two Tasks. Uncontended in the common
+    # single-flow case, so this has no observable effect on memory-mode
+    # tests.
+    _broadcast_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Live participant emails for co-sessions. Populated by attach() from
     # chat_session_participants WHERE left_at IS NULL; updated by leave_session()
     # when a participant leaves. Empty for non-co sessions.
@@ -1169,15 +1185,24 @@ class ChatManager:
         ``_pump_subprocess_to_ws`` appending to ``live.turn_buffer`` after
         this returns) see the stamped version too, so a later turn-buffer
         replay carries the original seq/id rather than getting re-stamped.
+
+        The stamp + fan-out loop runs under ``live._broadcast_lock`` (see its
+        field docstring) so seq assignment and delivery are serialized per
+        session — two concurrent Tasks calling ``_broadcast`` for the same
+        ``live`` can never have the later-stamped (higher-seq) frame win the
+        race to a sink. The lock is released before the dead-sink cleanup
+        below, which is unrelated to ordering and would otherwise hold it
+        across the (also-unrelated) ``_on_all_sinks_gone`` bookkeeping.
         """
-        stamp_frame(live.chat_id, frame)
         dead: list[SinkEntry] = []
-        for entry in list(live.sinks):
-            try:
-                await entry.sink.send_json(frame)
-            except Exception:
-                logger.warning("sink send failed for %s", live.chat_id)
-                dead.append(entry)
+        async with live._broadcast_lock:
+            stamp_frame(live.chat_id, frame)
+            for entry in list(live.sinks):
+                try:
+                    await entry.sink.send_json(frame)
+                except Exception:
+                    logger.warning("sink send failed for %s", live.chat_id)
+                    dead.append(entry)
         for entry in dead:
             if entry in live.sinks:
                 live.sinks.remove(entry)
