@@ -114,24 +114,44 @@ class TestMetricsEndpoint:
         # with two very different filenames must collapse onto ONE
         # path_template label ("/cli/wheel/{wheel_name}"), not two distinct
         # raw-path labels. That's the cardinality guard the brief calls out.
-        before = _path_templates("agnes_http_requests_total")
+        #
+        # Like test_job_duration_histogram_has_hours_scale_bucket, this test
+        # does not depend on cross-test ordering: it records the counter value
+        # before and after, then asserts on the delta. This ensures the test
+        # is self-contained under pytest -n auto (pytest-xdist), where other
+        # tests in the same worker may already have recorded requests to
+        # /cli/wheel/{wheel_name}, polluting the REGISTRY state.
+        before = (
+            _counter_value(
+                "agnes_http_requests_total",
+                method="GET",
+                path_template="/cli/wheel/{wheel_name}",
+                status="404",
+            )
+            or 0.0
+        )
 
         r1 = app_client.get("/cli/wheel/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.whl")
         r2 = app_client.get("/cli/wheel/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.whl")
         assert r1.status_code == 404
         assert r2.status_code == 404
 
-        after = _path_templates("agnes_http_requests_total")
-        new_labels = after - before
-        assert new_labels == {"/cli/wheel/{wheel_name}"}
-
-        value = _counter_value(
+        after = _counter_value(
             "agnes_http_requests_total",
             method="GET",
             path_template="/cli/wheel/{wheel_name}",
             status="404",
         )
-        assert value is not None and value >= 2.0
+        assert after == before + 2.0
+
+        # Cardinality guard: verify no raw /cli/wheel/* paths appear as labels.
+        # If raw paths leaked, we'd see path_template values like
+        # "/cli/wheel/aaaaa...whl" instead of just "/cli/wheel/{wheel_name}".
+        for sample in _samples("agnes_http_requests_total"):
+            path = sample.labels.get("path_template")
+            # A raw path would be /cli/wheel/ followed by a filename (no {})
+            if path and path.startswith("/cli/wheel/") and "{" not in path:
+                assert False, f"raw path must not appear as label, got: {path}"
 
     def test_unmatched_paths_collapse_not_leak_raw_path(self, app_client):
         # Whatever the app does with a totally bogus, high-entropy path (route
