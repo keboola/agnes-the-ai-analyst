@@ -12,6 +12,7 @@ see tests/test_chat_manager.py.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -22,10 +23,10 @@ from src.db import _ensure_schema
 from tests.chat_fakes import FakeHandle, FakeWS
 
 from app.chat.config import ChatConfig
-from app.chat.frame_seq import FrameSequencer, stamp_frame
-from app.chat.manager import ChatManager
+from app.chat.frame_seq import _SEQ_TTL_SEC, FrameSequencer, stamp_frame
+from app.chat.manager import ChatManager, LiveSession, SinkEntry
 from app.chat.persistence import ChatRepository
-from app.chat.types import Surface
+from app.chat.types import SessionState, Surface
 from app.chat.workdir import WorkdirManager
 from app.coordination.factory import reset_coordination_for_tests
 
@@ -224,3 +225,109 @@ def test_emit_path_seq_independent_across_sessions(tmp_path: Path):
         await attach_b
 
     asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# _broadcast concurrency — per-session lock serializes stamp+send
+# ---------------------------------------------------------------------------
+
+
+def _make_bare_live(chat_id: str) -> LiveSession:
+    """A minimal LiveSession for exercising ``ChatManager._broadcast``
+    directly, without going through the full spawn/attach lifecycle (which
+    ``_broadcast`` doesn't need — it only reads/mutates
+    ``chat_id``/``sinks``/``state``)."""
+    now = datetime.now(timezone.utc)
+    return LiveSession(
+        chat_id=chat_id,
+        user_email="u@x",
+        state=SessionState.ACTIVE,
+        handle=None,
+        started_at=now,
+        last_activity=now,
+    )
+
+
+class _SlowSink:
+    """Records the ``seq`` of every frame it receives, in arrival order.
+
+    The FIRST call to ``send_json`` yields control for a while (simulating
+    a slow WS write); every subsequent call returns immediately. Fired
+    concurrently against ``ChatManager._broadcast`` for the SAME session,
+    this is exactly the race the Important finding describes: the first
+    ``_broadcast`` call stamps seq=1 and then blocks on a slow send, giving
+    every other concurrently-scheduled ``_broadcast`` call a chance to stamp
+    a higher seq and finish first — unless the per-session lock forces them
+    to queue behind the slow one instead.
+    """
+
+    def __init__(self) -> None:
+        self.received_seqs: list[int] = []
+        self._first = True
+
+    async def send_json(self, data: dict) -> None:
+        if self._first:
+            self._first = False
+            await asyncio.sleep(0.05)
+        self.received_seqs.append(data["seq"])
+
+
+def test_broadcast_serializes_stamp_and_send_under_concurrency(tmp_path: Path):
+    """N concurrent ``_broadcast`` calls for one LiveSession must deliver
+    frames to the sink in strictly increasing seq order — i.e. seq
+    assignment order always matches delivery order, even when the first
+    call's send is slow and later calls' sends are instant. This is the
+    invariant the future replay mechanism (wave-2F task 3) depends on."""
+    manager = _make_manager(tmp_path)
+    live = _make_bare_live("concurrent-session-1")
+    sink = _SlowSink()
+    live.sinks = [SinkEntry(participant_email="u@x", sink=sink)]
+
+    n = 8
+
+    async def _run():
+        await asyncio.gather(*[manager._broadcast(live, {"type": "token", "n": i}) for i in range(n)])
+
+    asyncio.run(_run())
+
+    assert sink.received_seqs == list(range(1, n + 1)), (
+        "frames must arrive in strictly increasing seq order == send order"
+    )
+
+
+# ---------------------------------------------------------------------------
+# seq counter TTL — must outlive a session's full (possibly paused) lifetime
+# ---------------------------------------------------------------------------
+
+
+def test_seq_ttl_exceeds_paused_plus_active_session_lifetime():
+    """The seq counter's TTL must comfortably outlive
+    ``paused_ttl_seconds + max_session_seconds`` under default config —
+    otherwise a session paused close to (or an operator-configured session
+    living longer than) the old 6h TTL would see the counter expire and
+    reset to seq=1 mid-life, producing a duplicate seq/id."""
+    cfg = ChatConfig()
+    assert _SEQ_TTL_SEC >= cfg.paused_ttl_seconds + cfg.max_session_seconds
+    # The old value (6h) was sized only for the ACTIVE half of a session's
+    # life and did not survive a single default paused_ttl_seconds (7 days).
+    assert _SEQ_TTL_SEC >= 8 * 24 * 3600
+
+
+def test_frame_sequencer_passes_hardened_ttl_to_coordination_incr(monkeypatch):
+    """``FrameSequencer.next_seq`` must hand the hardened ``_SEQ_TTL_SEC``
+    (not some smaller/legacy value) to ``coordination().incr`` — simulates a
+    long-lived session by asserting the TTL actually used, rather than
+    relying on wall-clock time passing in the test."""
+    captured: dict[str, int] = {}
+
+    class _FakeCoordination:
+        def incr(self, key: str, *, amount: int = 1, ttl_s: int) -> int:
+            captured["ttl_s"] = ttl_s
+            return amount or 1
+
+    monkeypatch.setattr("app.chat.frame_seq.coordination", lambda: _FakeCoordination())
+
+    FrameSequencer("chat_longlived").next_seq()
+
+    assert captured["ttl_s"] == _SEQ_TTL_SEC
+    assert captured["ttl_s"] >= ChatConfig().paused_ttl_seconds
