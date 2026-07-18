@@ -464,12 +464,96 @@ moved to the E2B template (`e2b.toml`).
 Sandbox billing is visible in the operator's E2B dashboard. Agnes does
 not yet surface per-session E2B cost in its own admin UI.
 
-### Single-worker constraint
+### Multi-replica chat HA (wave-2F)
 
-ChatManager state is in-memory. Agnes refuses to enable chat when
-`UVICORN_WORKERS > 1` — ensure your Docker Compose / systemd /
-Terraform unit launches a single uvicorn worker when `chat.enabled:
-true`. HA support is a future spec.
+ChatManager state used to be strictly in-memory, so Agnes refused to
+enable chat whenever `UVICORN_WORKERS > 1` or a role-split topology was in
+play. That single-worker constraint is gone as of wave-2F: chat is allowed
+on any multi-process topology once its state is coordination-backed
+instead of process-local.
+
+**Gate-lift condition.** Multi-replica/multi-worker chat requires all
+three of:
+
+- `coordination.backend: redis` (a shared, cross-process coordination
+  store — see [Coordination backend](#coordination-backend) above);
+- Postgres app-state (`DATABASE_URL` / `database.backend`), already
+  required by `app/startup_guards.py::validate_deployment` for any
+  multi-process topology; and
+- explicit `JWT_SECRET_KEY` / `SESSION_SECRET` (same guard).
+
+Under the default `coordination.backend: memory`, `chat.enabled: true`
+with `UVICORN_WORKERS > 1` or a role split is still refused outright —
+process-local ChatManager state can't be shared across workers, so the
+refusal is unchanged there. Once `redis` is configured, the rest of the
+multi-process contract above is already satisfied by construction, and
+`app/main.py` starts a real `ChatManager` on every `Role.GATEWAY` process.
+
+**What makes this safe.** Every piece of ChatManager state that used to be
+a process-local Python dict now rides the coordination backend:
+
+- **Routing leases** (`app/chat/routing.py`) — one `chat:{chat_id}` lease
+  names which gateway replica currently owns a session's live sandbox/
+  runner. Claimed when a session goes live, renewed on the existing
+  ~60s idle-reaper heartbeat, released on teardown.
+- **Frame envelope + replay** (`app/chat/frame_seq.py`,
+  `app/chat/replay.py`) — every outbound frame carries a monotonic `seq`
+  and is appended to a bounded `chat-out:{chat_id}` stream (`MAXLEN`
+  1000). A WS reconnect sends the highest `seq` it last saw as
+  `?last_seq=`; the gateway either replays the gap in order or, if the
+  gap can't be confidently closed (stream reset, or the watermark evicted
+  past `MAXLEN`), sends a `full_refresh` control frame and the client
+  reloads persisted history instead of risking a silent gap.
+- **Inbound command routing** (`app/chat/inbound.py`) — a message or
+  command (`/agnes` slash command, Slack event, `kill`/`cancel`) that
+  lands on a gateway which does **not** own the session's routing lease is
+  published to a `chat-in:{chat_id}` coordination stream instead of
+  spawning a second runner; the owning gateway's inbound-consumer task
+  delivers it to the local runner in order.
+- **Claim-then-respawn takeover** (`app/chat/manager.py`,
+  `ChatManager.attach` / `_takeover_foreign_session`) — a WS reconnect
+  landing on a gateway that doesn't own the lease steals it, destroys the
+  old sandbox, spawns a fresh runner, and replays the last few user turns
+  for continuity.
+- **Desktop/browser notifications** absorbed into the same coordination
+  fabric (per-user pub/sub channel `notify:{user}`) — see
+  [`architecture.md`](architecture.md)'s Coordination Backend section.
+
+**v1 trade-off — in-flight turn is lost on takeover.** Claim-then-respawn
+is *not* a live handoff: it destroys the old sandbox and starts a fresh
+one. Any turn that was in flight on the old gateway at the moment of
+takeover is lost — the client sees the new runner start clean, same as a
+plain process restart already implies. This is an accepted v1 limitation,
+not a bug; a live cross-process handoff would need a persisted
+relay-protocol-version column and is deferred (tracked as a follow-up, not
+scheduled).
+
+**Operator guidance: replicas over workers.** Prefer **N × single-worker
+gateway replicas** behind a load balancer over a single gateway process
+with `UVICORN_WORKERS > 1`. Each uvicorn worker is a separate OS process
+with its own `ChatManager` and its own routing-lease identity
+(`app.chat.routing.this_gateway_id()` is `<hostname>:<pid>` — every worker
+in the same container shares the hostname but has a distinct pid, so they
+still count as distinct gateways to the routing-lease mechanism). A load
+balancer that round-robins across an in-process multi-worker gateway
+picks a *different worker* on every reconnect with no way to prefer the
+one that already owns the lease — every reconnect becomes a takeover,
+needlessly losing in-flight turns. Running N replicas, each a single
+worker, keeps the same total capacity but makes "the gateway that owns
+this session" a property the load balancer *can* act on (see below), where
+per-worker round-robin inside one process cannot.
+
+**WebSocket affinity is recommended, not required.** Session-routing
+leases plus claim-then-respawn takeover mean the chat feature is
+*correct* with zero LB stickiness — any replica can serve any session,
+taking over the lease as needed. But every takeover pays the v1 cost
+above (fresh sandbox, lost in-flight turn), so **configuring WS/session
+affinity at the load balancer** (e.g. cookie- or IP-hash-based sticky
+sessions, so a client's reconnect tends to land back on the gateway that
+already owns its session) meaningfully reduces how often that cost is
+paid. Put plainly: **no stickiness is REQUIRED for correctness — affinity
+is RECOMMENDED for UX** (fewer needless takeovers, fewer dropped in-flight
+turns on an ordinary reconnect).
 
 ## Related documentation
 

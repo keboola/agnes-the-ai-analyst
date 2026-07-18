@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # M-tier smoke: boots the role-split profile, asserts probes + kill-one-api
-# continuity + redis coordination plumbing + FLUSHALL chaos resilience.
+# continuity + redis coordination plumbing + FLUSHALL chaos resilience +
+# chat/gateway-role WS-ticket + restart continuity (infra path — see §4).
 # Local/dev harness — needs docker; not run in unit CI.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -28,6 +29,57 @@ hit_auth_token() {
 
 readyz_is_ready() {
   curl -fsS -m 2 localhost:8080/readyz 2>/dev/null | grep -Eq '"status":[[:space:]]*"ready"'
+}
+
+# --- Chat/gateway WS-ticket helpers (§4 below) ---------------------------
+# app/api/chat.py's `_issue_ticket`/`_consume_ticket` are just
+# `coordination().kv_set`/`kv_delete` — plain redis SET/GETDEL on key
+# `ws-ticket:{token}` with a 60s TTL (see app/coordination/redis_backend.py
+# `kv_set`/`kv_delete`). Minting one directly via redis-cli stands in for a
+# real `POST /api/chat/sessions` call (which needs an authenticated,
+# chat-RBAC-granted user this harness doesn't seed — see §4's comment for
+# why the rest of a live session is out of reach here).
+CHAT_SMOKE_ID="smoke-chat-$$"
+
+mint_ws_ticket() {
+  # $1 = token
+  local payload
+  payload=$(printf '{"chat_id":"%s","user_email":"smoke-nobody@example.com"}' "$CHAT_SMOKE_ID")
+  "${COMPOSE[@]}" exec -T redis redis-cli SET "ws-ticket:${1}" "$payload" EX 60 >/dev/null
+}
+
+ticket_still_present() {
+  # $1 = token; true (exit 0) iff the key still exists in redis.
+  "${COMPOSE[@]}" exec -T redis redis-cli EXISTS "ws-ticket:${1}" 2>/dev/null | tr -d '\r' | grep -q '^1$'
+}
+
+ws_handshake_101() {
+  # $1 = token. Prints 1 if the WS route accepted the upgrade (HTTP 101),
+  # else 0. Exec'd from api1 (a DIFFERENT role container than gateway) so
+  # the ticket consume is genuinely cross-container over the shared redis
+  # backend — the app image already has curl (see the prometheus check
+  # above / Dockerfile). `ws.accept()` (app/api/chat.py::ws_stream) runs
+  # BEFORE `ChatManager.attach()`, so 101 is observable even though
+  # chat.enabled=false here makes app.state.chat_manager None on every
+  # role — attach() then raises right after (mgr is None) and the
+  # connection drops, which is expected in this reduced harness, not a
+  # failure of the ticket/coordination path under test. `-D -` dumps raw
+  # response headers to stdout so the 101 status line is captured even if
+  # curl's own state machine gets confused reading bytes after a protocol
+  # upgrade (a known curl quirk on 101 responses); `--max-time` bounds the
+  # hang since curl never sees a graceful HTTP close on an upgraded
+  # connection.
+  local key hdrs
+  key=$(openssl rand -base64 16)
+  hdrs=$("${COMPOSE[@]}" exec -T api1 curl -sS -D - -o /dev/null --http1.1 --max-time 3 \
+    -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+    -H 'Sec-WebSocket-Version: 13' -H "Sec-WebSocket-Key: ${key}" \
+    "http://gateway:8000/api/chat/sessions/${CHAT_SMOKE_ID}/stream?ticket=${1}&last_seq=42" 2>/dev/null || true)
+  if printf '%s' "$hdrs" | grep -q "101 Switching Protocols"; then
+    echo 1
+  else
+    echo 0
+  fi
 }
 
 # --- 1. Config plumbing: redis URL must reach every role container ------
@@ -203,4 +255,75 @@ done
 [ "$fresh_ok" -eq 1 ] || { echo "FAIL: no fresh LIMITS:* key reappeared in redis after FLUSHALL"; exit 1; }
 echo "post-FLUSHALL coordination write OK (redis repopulated within ${i}s; keys=$fresh_count)"
 
-echo "MTIER SMOKE OK (kill failures: $fails/20, flushall failures: $loop_fails/20, post-flushall tracebacks: ${tb_count:-0})"
+# --- 4. Chat/gateway-role WS-ticket + restart continuity (infra path) ----
+# Full chat.enabled=true live-session coverage (spawn a runner, exchange
+# turns, observe the reconnect replay/full_refresh control frame — wave-2F
+# tasks 1-5, see docs/architecture.md and docs/DEPLOYMENT.md's chat HA
+# sections) needs a real ANTHROPIC_API_KEY + E2B_API_KEY + a built
+# e2b_template_id, plus an authenticated user with a chat-RBAC grant — none
+# of which this harness configures (config/instance.mtier.yaml has no
+# `chat:` section at all, same reason section 2's comment above gives for
+# omitting the sweep-lease check). Per Q7 (owner decision — see
+# tests/test_chat_e2b_provider.py's module docstring) there is no
+# MockE2BProvider / non-e2b test provider to substitute; `e2b` is the only
+# chat.provider app/main.py accepts in production. So rather than a live
+# session, this section drives the real running route handler
+# (app/api/chat.py::ws_stream) to prove the cross-replica INFRA a live
+# session rides on:
+#
+#   1. Ticket mint+consume: mint a `ws-ticket:*` key directly in redis
+#      (see the helpers above) and confirm a WS handshake against
+#      `gateway`, issued from a DIFFERENT container (api1), reaches
+#      `ws.accept()` (HTTP 101) — a genuinely cross-replica ticket consume
+#      over the shared redis coordination backend.
+#   2. Single-use semantics: the same (now-deleted) ticket must NOT reach
+#      101 a second time.
+#   3. Gateway-role kill/restart continuity: kill the `gateway` container,
+#      restart it, and confirm a freshly-minted ticket's WS handshake
+#      succeeds against it again — the container-level recovery half of
+#      the claim-then-respawn takeover story.
+#
+# Deliberately NOT covered here (needs a live spawned sandbox): the
+# reconnect-with-last_seq replay / full_refresh control frame itself, and
+# the claim-then-respawn takeover logic in ChatManager. Also note: Caddy's
+# example config for this harness (deploy/caddy/Caddyfile.mtier) load-
+# balances only api1/api2 today — it does not front the `gateway` role —
+# so "through the proxy" here means reachability via the compose-internal
+# network from a peer container, not literally through :8080. A real
+# multi-replica deployment needs its own LB rule routing chat/notification
+# WS paths to the gateway role (see docs/DEPLOYMENT.md's chat HA section).
+echo "checking chat WS ticket mint/consume + gateway-role restart continuity..."
+token1=$(openssl rand -hex 20)
+mint_ws_ticket "$token1"
+[ "$(ws_handshake_101 "$token1")" = "1" ] || { echo "FAIL: WS handshake did not reach 101 with a freshly-minted ticket"; exit 1; }
+echo "chat WS ticket-consume + gateway accept OK (101 observed, cross-container via api1->gateway)"
+
+if ticket_still_present "$token1"; then
+  echo "FAIL: ws-ticket:${token1} still present in redis after a WS connect attempt (not consumed)"
+  exit 1
+fi
+echo "ticket single-use OK (consumed from redis on first use)"
+
+if [ "$(ws_handshake_101 "$token1")" = "1" ]; then
+  echo "FAIL: a consumed ticket was accepted a second time"
+  exit 1
+fi
+echo "ticket replay-rejection OK (second use did not reach 101)"
+
+echo "killing gateway to check role-restart continuity..."
+"${COMPOSE[@]}" kill gateway
+"${COMPOSE[@]}" up -d gateway
+gw_ready=0
+for i in $(seq 1 60); do
+  "${COMPOSE[@]}" exec -T gateway curl -fsS -m 2 localhost:8000/readyz 2>/dev/null | grep -Eq '"status":[[:space:]]*"ready"' \
+    && { gw_ready=1; break; }
+  sleep 2
+done
+[ "$gw_ready" -eq 1 ] || { echo "FAIL: gateway did not become ready again after restart"; exit 1; }
+
+token2=$(openssl rand -hex 20)
+mint_ws_ticket "$token2"
+[ "$(ws_handshake_101 "$token2")" = "1" ] || { echo "FAIL: WS handshake did not reach 101 against the restarted gateway"; exit 1; }
+echo "chat WS reconnect-after-gateway-restart OK (101 observed against the restarted gateway)"
+
+echo "MTIER SMOKE OK (kill failures: $fails/20, flushall failures: $loop_fails/20, post-flushall tracebacks: ${tb_count:-0}, chat WS infra: ok)"

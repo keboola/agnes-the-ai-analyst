@@ -382,6 +382,30 @@ Docker Compose service.
 
 **Desktop/browser notifications** (formerly the standalone `ws_gateway` service, TCP 8765 + a Unix-socket HTTP dispatch): absorbed into the main app (wave-2F task 6). The WS endpoint (`/api/notifications/ws`, same JWT auth, per-user connection limit, heartbeat ping/pong) lives in `app/api/notifications_ws.py` and serves only on `Role.GATEWAY` processes; producers (e.g. the Telegram bot) call `app/notifications.py::publish_notification(user, payload)`, which publishes on the coordination pub/sub channel `notify:{user}` — replacing the old in-memory `connections` dict + Unix socket, and making delivery work across replicas when `coordination.backend=redis`.
 
+**Multi-replica chat HA** (wave-2F): `ChatManager` state — previously a
+single process's in-memory dicts — is now coordination-backed so chat can
+run on any number of `Role.GATEWAY` replicas once `coordination.backend:
+redis`. A **routing lease** (`app/chat/routing.py`, key `chat:{chat_id}`)
+names the one gateway currently hosting a session's live sandbox, claimed
+on spawn and renewed on the idle-reaper heartbeat. Every outbound frame
+carries a monotonic `seq` (`app/chat/frame_seq.py`) and is appended to a
+bounded **replay stream** (`app/chat/replay.py`, `chat-out:{chat_id}`), so
+a WS reconnect with `?last_seq=` gets exactly the missed frames, or a
+`full_refresh` control frame if the gap can't be closed. Commands that
+land on a non-owning gateway (a webhook behind a load balancer, an
+`/agnes` slash command) are forwarded over an **inbound stream**
+(`app/chat/inbound.py`, `chat-in:{chat_id}`) to the owning gateway instead
+of racing a second runner. A reconnect that lands on a gateway which
+doesn't hold the lease **claims (steals) it and takes over**
+(`ChatManager._takeover_foreign_session`): destroy the old sandbox, spawn
+a fresh runner, replay recent turns for continuity — not a live handoff,
+so any turn in flight on the old gateway at that moment is lost (accepted
+v1 trade-off). Desktop/browser notifications (above) ride the same
+coordination fabric. Full operator-facing detail — the gate-lift
+condition, and why N single-worker replicas beat `UVICORN_WORKERS > 1` on
+a gateway — lives in [`DEPLOYMENT.md`](DEPLOYMENT.md) → *Multi-process →
+Multi-replica chat HA*.
+
 ### Corporate-memory privacy boundary
 
 `is_personal` on `knowledge_items` is enforced as an authorization rule at every read site, not a UI hint:
