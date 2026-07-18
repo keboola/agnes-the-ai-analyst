@@ -195,3 +195,78 @@ class TestMetricsEndpoint:
         from app.observability.metrics import REGISTRY
 
         assert REGISTRY is not _GLOBAL_REGISTRY
+
+    def test_500_error_recorded_when_exception_propagates(self, tmp_path, monkeypatch):
+        """Verify that HTTP 500 metric is recorded even when an exception propagates
+        through the middleware (rather than returning a response object).
+
+        The outermost _observe_http_metrics middleware must record the 500 metric
+        before re-raising, so that exceptions in inner middleware/handlers don't
+        skip observability.
+        """
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret")
+
+        # Create a minimal app with just the middleware we care about, plus a
+        # test route that raises.
+        app = FastAPI()
+
+        # Import and attach the same middleware from create_app.
+        import time as _time
+
+        from app.observability.metrics import METRICS_PATH, UNMATCHED_PATH, observe_http
+
+        @app.middleware("http")
+        async def _observe_http_metrics(request, call_next):
+            if request.url.path == METRICS_PATH:
+                return await call_next(request)
+            start = _time.monotonic()
+            try:
+                response = await call_next(request)
+                duration = _time.monotonic() - start
+                route = request.scope.get("route")
+                path_template = route.path if route is not None else UNMATCHED_PATH
+                observe_http(request.method, path_template, response.status_code, duration)
+                return response
+            except Exception:
+                duration = _time.monotonic() - start
+                route = request.scope.get("route")
+                path_template = route.path if route is not None else UNMATCHED_PATH
+                observe_http(request.method, path_template, 500, duration)
+                raise
+
+        @app.get("/test-error")
+        def test_error_route():
+            raise RuntimeError("Intentional test error")
+
+        client = TestClient(app, raise_server_exceptions=False)
+
+        from app.observability.metrics import replica_id
+
+        before = (
+            _counter_value(
+                "agnes_http_requests_total",
+                method="GET",
+                path_template="/test-error",
+                status="500",
+                replica=replica_id(),
+            )
+            or 0.0
+        )
+
+        # Make request to the error route — should get a 500 response.
+        response = client.get("/test-error")
+        assert response.status_code == 500
+
+        # Verify the 500 metric was recorded.
+        after = _counter_value(
+            "agnes_http_requests_total",
+            method="GET",
+            path_template="/test-error",
+            status="500",
+            replica=replica_id(),
+        )
+        assert after == before + 1.0
