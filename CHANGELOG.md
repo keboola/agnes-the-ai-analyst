@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.74.114] - 2026-07-18
+
 ### Security
 
 - The `GET`/`PUT`/`DELETE /api/mcp/sources/{id}/my-secret` endpoints now require
