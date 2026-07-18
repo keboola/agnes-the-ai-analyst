@@ -483,6 +483,33 @@ class TestMetricsSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Glossary
+# ---------------------------------------------------------------------------
+
+
+class TestGlossarySmoke:
+    COVERED_ROUTES = {
+        "GET /api/glossary",
+        "GET /api/glossary/search",
+        "GET /api/glossary/{glossary_id}",
+    }
+
+    def test_glossary_list(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/glossary", headers=_admin_headers(seeded_app_both))
+        assert r.status_code == 200
+
+    def test_glossary_search(self, seeded_app_both):
+        r = seeded_app_both["client"].get(
+            "/api/glossary/search", params={"q": "revenue"}, headers=_admin_headers(seeded_app_both)
+        )
+        assert r.status_code == 200
+
+    def test_glossary_get_by_id(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/glossary/does-not-exist", headers=_admin_headers(seeded_app_both))
+        assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # Memory
 # ---------------------------------------------------------------------------
 

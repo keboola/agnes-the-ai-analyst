@@ -35,3 +35,9 @@ def test_streamable_exposes_all_foundation_tools(seeded_app):
     assert mcp is not None, "streamable MCP instance was not mounted (check SERVER_URL/AGNES_BASE_URL in env)"
 
     assert set(FOUNDATION_TOOL_NAMES) <= _tool_names(mcp)
+
+
+def test_glossary_search_is_a_foundation_tool():
+    from app.api.mcp.foundation_tools import FOUNDATION_TOOL_NAMES
+
+    assert "glossary_search" in FOUNDATION_TOOL_NAMES
