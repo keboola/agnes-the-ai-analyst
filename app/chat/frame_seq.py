@@ -25,10 +25,11 @@ seen. Historical messages reconstructed from ``chat_messages`` in
 client tolerates frames without ``seq``/``id`` — see ``docs`` note on the
 web client side (``app/web/static/js/chat.js``).
 
-This task (wave-2F task 2) is envelope-only: it does not build a replay
-stream. A future task (wave-2F task 3) is expected to use
-``FrameSequencer`` / the ``chat-seq:{chat_id}`` counter key to answer
-"replay everything after seq N" on reconnect.
+This task (wave-2F task 2) was envelope-only: it did not build a replay
+stream. Wave-2F task 3 (``app.chat.replay``) builds on it — every stamped
+frame is also appended to a bounded coordination-backend stream
+(``chat-out:{chat_id}``), and ``peek_seq`` (below) plus that stream answer
+"replay everything after seq N" on WS reconnect.
 """
 
 from __future__ import annotations
@@ -82,6 +83,22 @@ class FrameSequencer:
     def next_seq(self) -> int:
         """Return the next monotonic seq number for this session (1-based)."""
         return coordination().incr(f"chat-seq:{self._chat_id}", ttl_s=_SEQ_TTL_SEC)
+
+
+def peek_seq(chat_id: str) -> int:
+    """Return the current seq counter value for ``chat_id`` WITHOUT
+    incrementing it (0 if no frame has ever been stamped for this session).
+
+    Uses ``coordination().incr(..., amount=0, ...)`` — a documented no-op
+    "peek" increment (see ``CoordinationBackend.incr``), not a special
+    read-only primitive of its own. Used by the reconnect-replay path
+    (wave-2F task 3, ``app.chat.replay``) to detect a counter that was
+    reset out from under a client's remembered ``last_seq`` (e.g. a
+    coordination-backend ``FLUSHALL``): if the peeked value is LOWER than
+    the client's ``last_seq``, the counter restarted and the client must
+    fall back to a full history refresh rather than trust a replay.
+    """
+    return coordination().incr(f"chat-seq:{chat_id}", amount=0, ttl_s=_SEQ_TTL_SEC)
 
 
 def stamp_frame(chat_id: str, frame: dict) -> dict:
