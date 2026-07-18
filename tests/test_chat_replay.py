@@ -128,6 +128,27 @@ class TestStreamContract:
         assert entry_id
         assert isinstance(entry_id, str)
 
+    def test_stream_read_sorts_by_seq_despite_out_of_order_append(self, backend):
+        """MINOR fix (2026-07-18): append_frame now runs OUTSIDE
+        ChatManager._broadcast_lock (see app.chat.manager._broadcast), so
+        two concurrent broadcasts for the same session can complete their
+        appends in an order that doesn't match their (locked) stamps.
+        stream_read must correct for that on read, sorting by the frame's
+        own ``seq`` field rather than trusting append order."""
+        backend.stream_append("s7", {"seq": 5}, maxlen=100)
+        backend.stream_append("s7", {"seq": 3}, maxlen=100)
+        backend.stream_append("s7", {"seq": 4}, maxlen=100)
+        entries = backend.stream_read("s7")
+        assert [e["seq"] for e in entries] == [3, 4, 5]
+
+    def test_after_seq_filter_applies_after_sorting_out_of_order_appends(self, backend):
+        backend.stream_append("s8", {"seq": 5}, maxlen=100)
+        backend.stream_append("s8", {"seq": 2}, maxlen=100)
+        backend.stream_append("s8", {"seq": 4}, maxlen=100)
+        backend.stream_append("s8", {"seq": 1}, maxlen=100)
+        entries = backend.stream_read("s8", after_seq=2)
+        assert [e["seq"] for e in entries] == [4, 5]
+
 
 # ---------------------------------------------------------------------------
 # app.chat.replay.append_frame / replay_since — unit level
@@ -237,6 +258,59 @@ class TestReplaySince:
             monkeypatch.setattr(coordination(), "stream_append", _raise)
             frame = stamp_frame("chat_g", {"type": "token"})
             await append_frame("chat_g", frame)  # must not raise
+
+        asyncio.run(_run())
+
+    def test_private_stamped_frame_hole_does_not_trigger_full_refresh(self):
+        """IMPORTANT fix (2026-07-18): a frame that consumes a seq via
+        stamp_frame but is never appended to the stream (e.g. the per-sink
+        ``ready``/``runner_not_ready`` frames ChatManager._seat_sink /
+        add_sink / app.api.chat send directly to exactly one connection —
+        never broadcast, so never handed to append_frame) creates a
+        legitimate hole in the stream's seq numbering. That hole must not
+        false-positive a full_refresh: the client never received that
+        frame live in the first place (it was private to a different
+        connection), so there is nothing for THIS client to recover — the
+        available entries should simply be replayed as-is."""
+
+        async def _run():
+            f1 = stamp_frame("chat_h", {"type": "token", "text": "t1"})
+            await append_frame("chat_h", f1)  # seq=1, appended
+            stamp_frame("chat_h", {"type": "ready"})  # seq=2, PRIVATE — never appended
+            f3 = stamp_frame("chat_h", {"type": "token", "text": "t3"})
+            await append_frame("chat_h", f3)  # seq=3, appended
+
+            outcome = await replay_since("chat_h", 1)
+            assert outcome.full_refresh is False
+            assert [f["seq"] for f in outcome.frames] == [3]
+            assert outcome.frames[0]["text"] == "t3"
+
+        asyncio.run(_run())
+
+    def test_genuine_eviction_below_maxlen_window_still_triggers_full_refresh(self):
+        """Complements the private-frame-hole test above: a hole from a
+        private frame is harmless, but last_seq pointing BELOW the
+        retained MAXLEN window is a genuine, unrecoverable gap and must
+        still trigger full_refresh — the eviction-based check
+        (last_seq + 1 < min_retained_seq) must not become so permissive
+        that it stops catching real evictions."""
+
+        async def _run():
+            import app.chat.replay as replay_mod
+
+            original_maxlen = replay_mod.STREAM_MAXLEN
+            replay_mod.STREAM_MAXLEN = 3
+            try:
+                for i in range(6):
+                    frame = stamp_frame("chat_i", {"type": "token", "text": f"t{i}"})
+                    await append_frame("chat_i", frame)
+                # Only seq 4,5,6 retained (maxlen=3); last_seq=1 needs seq 2,
+                # long since evicted.
+                outcome = await replay_since("chat_i", 1)
+                assert outcome.full_refresh is True
+                assert outcome.frames == []
+            finally:
+                replay_mod.STREAM_MAXLEN = original_maxlen
 
         asyncio.run(_run())
 
@@ -505,6 +579,132 @@ class TestWsReconnectIntegration:
             ws2 = _RouteWS(manager)
             await chat_mod.ws_stream(ws2, s.id, ticket, last_seq=last_seq)
             assert ws2.sent[0]["type"] == "full_refresh"
+
+            await manager.kill(s.id, reason="test_done")
+            handle.emit_eof()
+
+        asyncio.run(_run())
+
+    def test_frame_broadcast_during_seat_and_replay_window_is_not_lost(self, tmp_path: Path):
+        """CRITICAL fix repro (2026-07-18): the reconnect path used to
+        compute the gap replay (a snapshot of replay_since) BEFORE
+        attach() seated the reconnecting connection as a live sink. A
+        frame broadcast in that window landed in neither the snapshot
+        (already read) nor live delivery (not seated yet) — silently
+        lost, with no way for the client to detect the gap.
+
+        This reproduces the exact window: monkeypatch ``replay_since`` (as
+        called from ``app.api.chat._flush_gap_replay``) to broadcast a
+        fresh frame the instant it's invoked — which, under the fix, runs
+        strictly AFTER ``attach()`` has already seated the gate as a live
+        sink, so the race frame must reach the gate's buffer directly
+        rather than depend on the stream read racing it. Asserts the frame
+        is received exactly once (no loss, no duplicate) and that overall
+        delivery to the socket is seq-ordered (no reordering introduced by
+        the gate's buffer/replay merge)."""
+        manager = _make_manager(tmp_path)
+
+        async def _run():
+            handle = FakeHandle()
+            manager._provider.spawn = AsyncMock(return_value=handle)
+
+            s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+            ws1 = FakeWS()
+            await manager.attach(s.id, ws1)
+            await asyncio.sleep(0.02)
+            handle.emit({"type": "token", "text": "a"})
+            await asyncio.sleep(0.02)
+            handle.emit({"type": "done"})  # clears turn_buffer
+            await asyncio.sleep(0.05)
+
+            seqs_seen = [m["seq"] for m in ws1.sent if isinstance(m.get("seq"), int)]
+            last_seq = max(seqs_seen)  # client is fully caught up
+
+            await manager.detach_sink(s.id, ws1)
+
+            ticket = chat_mod._issue_ticket(s.id, "u@x")
+            ws2 = _RouteWS(manager)
+
+            original_replay_since = chat_mod.replay_since
+
+            async def _racing_replay_since(chat_id, ls):
+                # Simulate a broadcast landing exactly in the window this
+                # bug used to leave open — by the time this runs (called
+                # from _flush_gap_replay), attach() has ALREADY seated the
+                # gate as a live sink (the fix), so this broadcast must not
+                # be lost.
+                await manager._broadcast(manager._live[s.id], {"type": "token", "text": "race"})
+                return await original_replay_since(chat_id, ls)
+
+            chat_mod.replay_since = _racing_replay_since
+            try:
+                await chat_mod.ws_stream(ws2, s.id, ticket, last_seq=last_seq)
+            finally:
+                chat_mod.replay_since = original_replay_since
+
+            race_frames = [f for f in ws2.sent if f.get("text") == "race"]
+            assert len(race_frames) == 1, f"race frame lost or duplicated: {ws2.sent}"
+
+            # No out-of-order delivery at the socket: seq must be
+            # non-decreasing across everything sent to the reconnecting
+            # client.
+            seqs = [f["seq"] for f in ws2.sent if isinstance(f.get("seq"), int)]
+            assert seqs == sorted(seqs), f"frames delivered out of seq order: {seqs}"
+
+            await manager.kill(s.id, reason="test_done")
+            handle.emit_eof()
+
+        asyncio.run(_run())
+
+    def test_race_frame_during_mid_turn_reconnect_is_not_lost(self, tmp_path: Path):
+        """Same CRITICAL race as above, but during a MID-TURN reconnect
+        (turn_buffer non-empty at seat time) — the gate must merge the
+        turn_buffer resend, the race frame, and the reconnect's own
+        `ready` frame into one seq-ordered, duplicate-free delivery."""
+        manager = _make_manager(tmp_path)
+
+        async def _run():
+            handle = FakeHandle()
+            manager._provider.spawn = AsyncMock(return_value=handle)
+
+            s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+            ws1 = FakeWS()
+            await manager.attach(s.id, ws1)
+            await asyncio.sleep(0.02)
+            handle.emit({"type": "token", "text": "a"})
+            await asyncio.sleep(0.02)
+            handle.emit({"type": "token", "text": "b"})
+            await asyncio.sleep(0.05)
+            # Turn still in flight.
+            assert manager._live[s.id].turn_buffer
+
+            seqs_seen = [m["seq"] for m in ws1.sent if isinstance(m.get("seq"), int)]
+            last_seq = max(seqs_seen)
+
+            await manager.detach_sink(s.id, ws1)
+
+            ticket = chat_mod._issue_ticket(s.id, "u@x")
+            ws2 = _RouteWS(manager)
+
+            original_replay_since = chat_mod.replay_since
+
+            async def _racing_replay_since(chat_id, ls):
+                await manager._broadcast(manager._live[s.id], {"type": "token", "text": "race"})
+                return await original_replay_since(chat_id, ls)
+
+            chat_mod.replay_since = _racing_replay_since
+            try:
+                await chat_mod.ws_stream(ws2, s.id, ticket, last_seq=last_seq)
+            finally:
+                chat_mod.replay_since = original_replay_since
+
+            race_frames = [f for f in ws2.sent if f.get("text") == "race"]
+            assert len(race_frames) == 1, f"race frame lost or duplicated: {ws2.sent}"
+            seqs = [f["seq"] for f in ws2.sent if isinstance(f.get("seq"), int)]
+            assert seqs == sorted(seqs), f"frames delivered out of seq order: {seqs}"
+            # No duplicate seqs anywhere in the delivery (turn_buffer resend
+            # + race broadcast + reconnect ready must not double-count).
+            assert len(seqs) == len(set(seqs)), f"duplicate seq in delivery: {seqs}"
 
             await manager.kill(s.id, reason="test_done")
             handle.emit_eof()
