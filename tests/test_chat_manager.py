@@ -194,7 +194,11 @@ def test_attach_pumps_tokens_to_ws(manager: ChatManager):
         await asyncio.sleep(0.05)
         handle.emit({"type": "token", "text": "Hi"})
         await asyncio.sleep(0.05)
-        assert {"type": "token", "text": "Hi"} in ws.sent
+        # Frames now also carry seq/id (wave-2F task 2 envelope) — assert on
+        # the original fields via subset containment rather than exact dict
+        # equality so this test doesn't couple to the envelope's shape.
+        tokens = [m for m in ws.sent if m.get("type") == "token"]
+        assert any(m.get("text") == "Hi" for m in tokens)
 
         await manager.kill(s.id, reason="test_done")
         handle.emit_eof()
