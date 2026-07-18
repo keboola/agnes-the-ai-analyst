@@ -18,6 +18,7 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
+from app.job_correlation import stamp_request_id
 from app.utils import get_data_dir as _get_data_dir
 from src.audit_helpers import client_kind_from_user
 from src.rbac import get_accessible_tables
@@ -1795,7 +1796,7 @@ def trigger_sync(
     # very `enqueue()` call (see the docstring above).
     job = jobs_repo().enqueue(
         "data-refresh",
-        {"tables": tables, "source": source},
+        stamp_request_id({"tables": tables, "source": source}),
         idempotency_key=_DATA_REFRESH_IDEMPOTENCY_KEY,
     )
     already_in_progress = job["deduped"]
