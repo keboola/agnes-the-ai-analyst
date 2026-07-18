@@ -39,7 +39,7 @@ import app.api.chat as chat_mod  # noqa: E402
 from app.chat.config import ChatConfig  # noqa: E402
 from app.chat.manager import ChatManager  # noqa: E402
 from app.chat.persistence import ChatRepository  # noqa: E402
-from app.chat.replay import ReplayOutcome, append_frame, replay_since  # noqa: E402
+from app.chat.replay import GapReplayGate, ReplayOutcome, append_frame, replay_since  # noqa: E402
 from app.chat.frame_seq import stamp_frame  # noqa: E402
 from app.chat.types import Surface  # noqa: E402
 from app.chat.workdir import WorkdirManager  # noqa: E402
@@ -708,5 +708,98 @@ class TestWsReconnectIntegration:
 
             await manager.kill(s.id, reason="test_done")
             handle.emit_eof()
+
+        asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# GapReplayGate — flush-vs-concurrent-send atomicity (IMPORTANT fix,
+# 2026-07-18, narrower race than the CRITICAL one exercised above)
+# ---------------------------------------------------------------------------
+
+
+class _SteppingFakeWS:
+    """A fake sink whose ``send_json`` actually yields control to the event
+    loop (unlike ``tests.chat_fakes.FakeWS``, which appends synchronously
+    with no ``await`` point at all — that's exactly why the existing
+    ``TestWsReconnectIntegration`` races above never caught this narrower
+    bug: with a synchronous sink, ``GapReplayGate.release``'s flush loop
+    runs atomically in practice even when the implementation doesn't
+    guarantee it). Optionally pauses mid-send on a chosen ``seq`` so a
+    test can deterministically inject a concurrent ``send_json`` call into
+    the middle of a still-in-progress ``release`` flush."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+        self.pause_before_seq: Optional[int] = None
+        self.paused = asyncio.Event()
+        self.resume = asyncio.Event()
+
+    async def send_json(self, data: dict) -> None:
+        await asyncio.sleep(0)  # a real yield point, unlike FakeWS
+        if data.get("seq") == self.pause_before_seq:
+            self.paused.set()
+            await self.resume.wait()
+        self.sent.append(data)
+
+    async def close(self) -> None:
+        pass
+
+
+class TestGapReplayGateFlushAtomicity:
+    def test_concurrent_send_during_release_flush_does_not_interleave(self):
+        """IMPORTANT fix repro (2026-07-18): the first version of
+        ``release`` flipped ``_buffering = False`` BEFORE its await-heavy
+        flush loop (``for ... await self._real.send_json(frame)``) ran.
+        From that flip until the loop finished, a concurrent
+        ``gate.send_json`` (a live frame arriving via
+        ``ChatManager._broadcast`` while release() is still mid-flush)
+        would see ``_buffering is False`` and write straight to the real
+        sink — landing in the middle of the still-in-progress ordered
+        flush.
+
+        Repro: buffer holds seq [5, 6]. While release() is paused right
+        before sending seq 6, a live seq 7 arrives via a concurrent
+        ``send_json`` call. Under the old code this produced socket order
+        [5, 7, 6] — the client's dedup-by-seq logic would then drop 6 as a
+        stale duplicate: a silent gap. This asserts strictly increasing
+        seq order with no drop and no duplicate: (5, 6, 7)."""
+
+        async def _run():
+            ws = _SteppingFakeWS()
+            ws.pause_before_seq = 6
+            gate = GapReplayGate(ws)
+
+            # Buffered while "seating" (still buffering) — mirrors
+            # _flush_gap_replay's contract: whatever lands in the buffer
+            # before release() is invoked.
+            await gate.send_json({"type": "token", "seq": 5, "text": "f5"})
+            await gate.send_json({"type": "token", "seq": 6, "text": "f6"})
+
+            release_task = asyncio.create_task(gate.release())
+
+            # release() has sent seq 5 and is paused right before sending
+            # seq 6 (inside the fake sink's send_json).
+            await ws.paused.wait()
+            assert [f["seq"] for f in ws.sent] == [5]
+
+            # A live frame (seq 7) arrives from a concurrent broadcast
+            # while the flush is still in progress — exactly the window
+            # ChatManager._broadcast can hit via gate.send_json.
+            live_send_task = asyncio.create_task(gate.send_json({"type": "token", "seq": 7, "text": "f7"}))
+            # Give the concurrent send a chance to run (it only needs to
+            # acquire the gate's lock and append — no socket I/O while
+            # buffering) before letting seq 6 finish sending.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+            ws.resume.set()  # let release() finish sending seq 6
+
+            await release_task
+            await live_send_task
+
+            seqs = [f["seq"] for f in ws.sent]
+            assert seqs == [5, 6, 7], f"out of order or dropped: {ws.sent}"
+            assert len(seqs) == len(set(seqs)), f"duplicate seq in delivery: {seqs}"
 
         asyncio.run(_run())
