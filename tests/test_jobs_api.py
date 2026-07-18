@@ -67,7 +67,10 @@ class TestEnqueueJob:
         job = resp.json()["job"]
         assert job["kind"] == fake_kind
         assert job["status"] == "queued"
-        assert job["payload"] == {"x": 1}
+        # `_enqueued_by_request` is stamped in by `app.job_correlation.stamp_request_id`
+        # (Task 4, log correlation) — the caller's payload plus that one reserved key.
+        assert job["payload"]["x"] == 1
+        assert job["payload"]["_enqueued_by_request"]
         assert job["attempts"] == 0
         assert job["id"]
 
@@ -137,7 +140,9 @@ class TestGetJob:
         job = resp.json()["job"]
         assert job["id"] == job_id
         assert job["kind"] == fake_kind
-        assert job["payload"] == {"a": "b"}
+        # See test_admin_enqueue_returns_202 for why `_enqueued_by_request` is present too.
+        assert job["payload"]["a"] == "b"
+        assert job["payload"]["_enqueued_by_request"]
         assert job["status"] == "queued"
         assert "created_at" in job
 
