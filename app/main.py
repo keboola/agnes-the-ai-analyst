@@ -59,6 +59,19 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from app.middleware.request_id import RequestIdMiddleware
 
 
+def _chat_coordination_backend() -> str:
+    """Thin wrapper around :func:`app.coordination.factory.resolve_backend_name`
+    so the multi-worker/multi-replica chat gate and the Slack Socket Mode
+    preflight (below) resolve the backend the same way every other
+    coordination-aware call site does, and so tests can monkeypatch this one
+    function (``app.main._chat_coordination_backend``) instead of reaching
+    into ``app.coordination.factory``.
+    """
+    from app.coordination.factory import resolve_backend_name
+
+    return resolve_backend_name()
+
+
 def _chat_jwt_secret_ok(chat_config) -> bool:
     """Refuse ``chat.enabled=true`` deployments that lack a real
     ``JWT_SECRET_KEY`` (unset or shorter than 32 bytes).
@@ -428,6 +441,7 @@ async def _start_slack_socket_transport(app) -> None:
         workers=workers,
         app_token=app_token,
         bot_token=bot_token,
+        backend=_chat_coordination_backend(),
     )
     if not ok:
         logger.error("Slack Socket Mode disabled: %s", reason)
@@ -1132,10 +1146,22 @@ async def lifespan(app):
                     app.state.chat_config.provider,
                 )
                 app.state.chat_manager = None
-            elif int(os.environ.get("UVICORN_WORKERS", "1")) > 1:
+            elif int(os.environ.get("UVICORN_WORKERS", "1")) > 1 and _chat_coordination_backend() != "redis":
+                # Multi-worker/multi-replica chat needs its state (tickets,
+                # session-routing leases + takeover, frame replay, inbound
+                # command streams, notifications) shared across processes —
+                # only the redis coordination backend provides that (and
+                # app.startup_guards.validate_deployment already refuses to
+                # boot that combo without Postgres app-state + explicit
+                # secrets, so reaching here with backend=="redis" means the
+                # rest of the multi-process contract is already satisfied).
+                # The default ``memory`` backend keeps process-local state,
+                # so a second worker would silently miss tickets/leases
+                # owned by its sibling — same unsafe posture as before.
                 logger.error(
-                    "chat.enabled=true but UVICORN_WORKERS > 1 — "
-                    "cloud chat requires a single-worker deployment; "
+                    "chat.enabled=true but UVICORN_WORKERS > 1 and "
+                    "coordination.backend != 'redis' — multi-worker/replica "
+                    "cloud chat requires the redis coordination backend; "
                     "chat_manager disabled"
                 )
                 app.state.chat_manager = None
@@ -1234,12 +1260,21 @@ async def lifespan(app):
                 )
                 mgr.start_idle_reaper()
                 app.state.chat_manager = mgr
+                from app.roles import is_all_in_one as _chat_is_all_in_one
+
+                _chat_topology = (
+                    "single-process"
+                    if int(os.environ.get("UVICORN_WORKERS", "1")) <= 1 and _chat_is_all_in_one()
+                    else "multi-worker/replica (coordination.backend=redis)"
+                )
                 logger.info(
                     "chat.enabled: ChatManager started (provider=e2b, "
-                    "template=%s, idle_ttl=%ds, concurrency_per_user=%d)",
+                    "template=%s, idle_ttl=%ds, concurrency_per_user=%d, "
+                    "topology=%s)",
                     app.state.chat_config.e2b_template_id,
                     app.state.chat_config.idle_ttl_seconds,
                     app.state.chat_config.concurrency_per_user,
+                    _chat_topology,
                 )
         else:
             app.state.chat_manager = None
