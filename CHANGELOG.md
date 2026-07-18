@@ -122,6 +122,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   retention and webhook alerting as the existing `system.duckdb` path.
   DuckDB-only deployments are unaffected. Once the DuckLake catalog lands
   it lives in the same Postgres instance, so this dump already covers it.
+- `scripts/ops/agnes-auto-upgrade.sh` now does a sequential `/readyz`-gated
+  rolling recreate when it detects a role-split (m-tier) topology (dedicated
+  `worker` + `gateway` services alongside 2+ named `api` replicas in the
+  resolved compose config — set `COMPOSE_FILE`/`COMPOSE_PROFILES` in
+  `/opt/agnes/.env` to opt in): pulls the new image, recreates
+  `worker`+`gateway` first, then walks the `api` replicas **one at a time**,
+  waiting for each to report `/readyz` ready before touching the next. A
+  replica that never becomes ready within a bounded timeout aborts the whole
+  rollout (webhook alert, non-zero exit) **without** recreating the
+  remaining replicas, which stay on the previous image and keep serving.
+  Single-container deployments keep the exact one-shot `docker compose up
+  -d` recreate. Its sync-in-flight defer probe also now queries `GET
+  /api/jobs?kind=data-refresh&status=running` (authenticated with
+  `SCHEDULER_API_TOKEN`, alongside the existing `/api/sync/status` check) so
+  it defers correctly when sync runs in a separate worker container.
 
 ### Fixed
 
