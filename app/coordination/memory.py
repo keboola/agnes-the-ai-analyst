@@ -172,6 +172,13 @@ class MemoryCoordinationBackend(CoordinationBackend):
             if stream is None:
                 return []
             entries = list(stream)
+        # Sorted by the frame's own "seq" field (2026-07-18 hardening,
+        # stable sort preserves append order for ties/missing seq) —
+        # append_frame now runs OUTSIDE ChatManager._broadcast_lock, so two
+        # concurrent broadcasts for the same session can complete their
+        # appends in a different order than their stamps. Readers rely on
+        # this method for ordering, not raw append order.
+        entries.sort(key=lambda e: e.get("seq", 0))
         if after_seq is None:
             return entries
         return [e for e in entries if e.get("seq", 0) > after_seq]
