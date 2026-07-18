@@ -2400,6 +2400,86 @@ def test_spawn_continues_when_routing_lease_contended(manager: ChatManager):
     asyncio.run(_run())
 
 
+def test_renew_outage_keeps_serving_but_genuine_steal_tears_down(manager: ChatManager, monkeypatch):
+    """Critical-3: `renew_session` returning False is ambiguous by design
+    (see app.chat.routing's module docstring) — it collapses "another
+    gateway genuinely stole the lease" and "the coordination backend is
+    unreachable right now" into the same False. `_renew_routing_leases`
+    must disambiguate with a second, independent `owner_of` read and only
+    tear the local session down when that read POSITIVELY shows a
+    different, concrete gateway holding it.
+
+    Scenario A: the coordination backend itself is unreachable (both
+    `lease_renew` and `lease_owner` raise `CoordinationUnavailable`, which
+    `app.chat.routing` degrades to False/None respectively) — there is no
+    positive proof of loss, so the session must keep being served locally.
+
+    Scenario B: a genuine steal — a different, concrete gateway actually
+    holds the lease (claimed for real against the same shared coordination
+    backend) — renew fails AND `owner_of` positively names someone else.
+    This must tear the session down.
+
+    Load-bearing: reverting the Critical-3 fix in
+    `ChatManager._renew_routing_leases` (`git stash`) makes Scenario A fail
+    — the session is torn down on the bare coordination outage even
+    though nobody actually took it over.
+    """
+    import app.chat.routing as routing_mod
+    from app.chat import routing
+    from app.coordination.base import CoordinationUnavailable
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        assert s.id in manager._live
+
+        # --- Scenario A: coordination-backend outage. Both renew_session
+        # and owner_of degrade the same way — no way to positively
+        # attribute the failed renew to a genuine steal, so this must NOT
+        # tear the session down.
+        class _BrokenBackend:
+            def lease_renew(self, *a, **k):
+                raise CoordinationUnavailable("boom")
+
+            def lease_owner(self, *a, **k):
+                raise CoordinationUnavailable("boom")
+
+        with monkeypatch.context() as m:
+            m.setattr(routing_mod, "coordination", lambda: _BrokenBackend())
+            await manager._renew_routing_leases()
+
+        assert s.id in manager._live, (
+            "a renew failure that degrades from a coordination-backend outage "
+            "(not a positively-confirmed steal) must NOT tear the session down"
+        )
+        assert manager._live[s.id].state != SessionState.DEAD
+
+        # --- Scenario B: genuine steal against the REAL (memory) backend —
+        # a different, concrete gateway actually now holds the lease.
+        gw = routing.this_gateway_id()
+        assert routing.owner_of(s.id) == gw, "sanity: still ours after the outage blip in Scenario A"
+        routing.release_session(s.id, gw)
+        assert routing.claim_session(s.id, "other-gateway:999", ttl_s=60) is True
+
+        await manager._renew_routing_leases()
+
+        assert s.id not in manager._live, (
+            "a renew failure WITH owner_of positively showing a different gateway must tear the session down"
+        )
+
+        handle.killed = True
+        try:
+            await asyncio.wait_for(attach_task, timeout=1.0)
+        except asyncio.TimeoutError:
+            attach_task.cancel()
+
+    asyncio.run(_run())
+
+
 def test_routing_lease_calls_offloaded_to_thread(manager: ChatManager):
     """Important finding: _claim_routing_lease/_renew_routing_leases must
     run the coordination-backend lease call via asyncio.to_thread, not
