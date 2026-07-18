@@ -195,6 +195,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `AGNES_VAULT_KEY`, so a role-split deployment through this module tripped
   `app/startup_guards.py`'s multi-process guard, which hard-fails without
   `SESSION_SECRET` set explicitly.
+- `scripts/ops/agnes-auto-upgrade.sh`'s role-split rolling recreate no
+  longer proceeds to recreate `api` replicas when the initial `worker`+
+  `gateway` recreate itself hard-fails. `set -e` doesn't propagate out of a
+  function called as an `if` test, so a failing `docker compose up -d
+  --no-deps worker gateway` was silently swallowed and the rollout rolled
+  the api replicas forward anyway, against a worker/gateway pair that never
+  came up. The initial recreate's exit status is now checked explicitly —
+  a failure alerts via the existing webhook and aborts the rollout before
+  any api replica is touched, the same abort posture as a persistent
+  `/readyz` failure.
 
 ### Changed
 
