@@ -270,8 +270,9 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
         raise
     except Exception as exc:
         logger.exception("worker %s: job %s (kind=%s) failed", worker_id, job["id"], job["kind"])
-        obs_metrics.record_job_duration(job["kind"], "failed", time.monotonic() - started_at)
-        obs_metrics.record_job_failure(job["kind"], type(exc).__name__)
+        # Persist the outcome before recording it in metrics — if `.fail()`
+        # itself raises, this propagates without ever having reported an
+        # outcome that was never actually persisted.
         await asyncio.to_thread(
             _jobs_repo().fail,
             job["id"],
@@ -280,9 +281,12 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
             str(exc),
             retry_in_seconds=kind.retry_in_seconds,
         )
+        obs_metrics.record_job_duration(job["kind"], "failed", time.monotonic() - started_at)
+        obs_metrics.record_job_failure(job["kind"], type(exc).__name__)
     else:
-        obs_metrics.record_job_duration(job["kind"], "done", time.monotonic() - started_at)
+        # Same ordering rationale as the failure branch above.
         await asyncio.to_thread(_jobs_repo().complete, job["id"], worker_id, lease_token)
+        obs_metrics.record_job_duration(job["kind"], "done", time.monotonic() - started_at)
     finally:
         if not handed_off:
             obs_metrics.end_job_running(job["kind"], kind.lane)
@@ -438,6 +442,10 @@ async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -
                 continue
             exc = fut.exception()
             duration = time.monotonic() - entry.started_at
+            # Persist first, record metrics only after the persist call
+            # actually succeeds — same ordering rationale as `_run_one`
+            # (a failed `.fail()`/`.complete()` write must not still report
+            # an outcome that never made it to the DB).
             try:
                 if exc is not None:
                     logger.exception(
@@ -447,8 +455,6 @@ async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -
                         entry.kind_name,
                         exc_info=exc,
                     )
-                    obs_metrics.record_job_duration(entry.kind_name, "failed", duration)
-                    obs_metrics.record_job_failure(entry.kind_name, type(exc).__name__)
                     await asyncio.to_thread(
                         _jobs_repo().fail,
                         job_id,
@@ -457,9 +463,11 @@ async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -
                         str(exc),
                         retry_in_seconds=entry.retry_in_seconds,
                     )
+                    obs_metrics.record_job_duration(entry.kind_name, "failed", duration)
+                    obs_metrics.record_job_failure(entry.kind_name, type(exc).__name__)
                 else:
-                    obs_metrics.record_job_duration(entry.kind_name, "done", duration)
                     await asyncio.to_thread(_jobs_repo().complete, job_id, entry.worker_id, entry.lease_token)
+                    obs_metrics.record_job_duration(entry.kind_name, "done", duration)
             except asyncio.CancelledError:
                 raise
             except Exception:
