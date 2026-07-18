@@ -148,6 +148,43 @@ services:
     depends_on: [api1, api2]
     profiles: [mtier]
 
+  # Wave 2D (observability): scrapes every role's unauthenticated
+  # `GET /metrics` (app/observability/metrics.py) plus cadvisor below.
+  # Config lives outside the repo's app image so it can be edited without a
+  # rebuild — see deploy/prometheus/prometheus.yml. Host port 9090 is for
+  # local debugging of the Prometheus UI/API only; it is not required by
+  # scripts/dev/mtier-smoke.sh, which scrapes it from inside the compose
+  # network by DNS name (see that script for why).
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+    depends_on: [api1, api2, gateway, worker]
+    profiles: [mtier]
+
+  # Container resource-usage metrics (cpu/mem/network per container),
+  # scraped by prometheus above as job "cadvisor". The bind mounts and
+  # `privileged: true` below are the standard Linux cAdvisor recipe
+  # (rootfs + cgroups + docker state).
+  #
+  # macOS caveat: Docker Desktop runs the daemon inside its own hidden
+  # Linux VM, so these host paths resolve to that VM's filesystem, not the
+  # Mac's — cAdvisor still starts and scrapes (enough to exercise the
+  # Prometheus wiring end-to-end locally), but the reported cpu/mem/disk
+  # figures are unreliable on macOS and should not be trusted. Treat
+  # cAdvisor data as authoritative on Linux hosts (customer VMs) only.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports: ["8081:8080"]
+    profiles: [mtier]
+
   # Additive depends_on merge onto docker-compose.postgres.yml's
   # `data-migrate` definition — see the duckdb-seed comment above.
   data-migrate:
