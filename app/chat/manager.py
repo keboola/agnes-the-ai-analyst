@@ -630,7 +630,7 @@ class ChatManager:
             active_since=_t.monotonic(),
         )
         self._live[chat_id] = live
-        self._claim_routing_lease(chat_id)
+        await self._claim_routing_lease(chat_id)
         self._repo.set_sandbox_ref(chat_id, sandbox_id=handle.sandbox_id, runner_pid=handle.pid)
         # Broker: push the session's initial main+mcp tickets before the
         # session is considered ready to serve messages.
@@ -857,7 +857,7 @@ class ChatManager:
             participant_emails=emails,
         )
         self._live[session.id] = live
-        self._claim_routing_lease(session.id)
+        await self._claim_routing_lease(session.id)
         self._repo.set_sandbox_paused_at(session.id, None)
         # This branch only runs when session.id IS a known-current-protocol
         # session (the legacy branch above returns early), but the runner's
@@ -1511,7 +1511,7 @@ class ChatManager:
         live = self._live.pop(chat_id, None)
         if live is None:
             return
-        self._release_routing_lease(chat_id)
+        await self._release_routing_lease(chat_id)
         live.state = SessionState.DEAD
         # Partial-save: if a turn was in flight, persist the accumulated token
         # text as an interrupted assistant message so it's not lost.
@@ -1620,24 +1620,38 @@ class ChatManager:
     # lease), so behavior there is unchanged from before routing leases
     # existed.
 
-    def _claim_routing_lease(self, chat_id: str) -> None:
-        if not routing.claim_session(chat_id, routing.this_gateway_id(), ttl_s=_ROUTING_LEASE_TTL_SEC):
+    async def _claim_routing_lease(self, chat_id: str) -> None:
+        # asyncio.to_thread: routing.claim_session's coordination().lease_acquire
+        # is a blocking Redis round-trip (WATCH/MULTI/EXEC) under the redis
+        # backend — running it synchronously here would stall this replica's
+        # entire event loop once per live session spawn. Same rationale as the
+        # paused-sandbox-sweep lease acquire in _reap_once below.
+        gateway_id = routing.this_gateway_id()
+        claimed = await asyncio.to_thread(routing.claim_session, chat_id, gateway_id, ttl_s=_ROUTING_LEASE_TTL_SEC)
+        if not claimed:
+            owner = await asyncio.to_thread(routing.owner_of, chat_id)
             logger.warning(
                 "routing lease for %s not claimed (held by %s) — serving it locally anyway; "
                 "cross-gateway takeover is not yet enforced (wave-2F task 1)",
                 chat_id,
-                routing.owner_of(chat_id),
+                owner,
             )
 
-    def _release_routing_lease(self, chat_id: str) -> None:
-        routing.release_session(chat_id, routing.this_gateway_id())
+    async def _release_routing_lease(self, chat_id: str) -> None:
+        # asyncio.to_thread: see _claim_routing_lease above.
+        await asyncio.to_thread(routing.release_session, chat_id, routing.this_gateway_id())
 
-    def _renew_routing_leases(self) -> None:
+    async def _renew_routing_leases(self) -> None:
+        # asyncio.to_thread: see _claim_routing_lease above — this runs once
+        # per non-DEAD live session on every ~60s reaper tick, so a blocking
+        # renew per session under the redis backend would otherwise stall the
+        # event loop repeatedly on every tick.
         gateway_id = routing.this_gateway_id()
         for chat_id, live in list(self._live.items()):
             if live.state == SessionState.DEAD:
                 continue
-            if not routing.renew_session(chat_id, gateway_id, ttl_s=_ROUTING_LEASE_TTL_SEC):
+            renewed = await asyncio.to_thread(routing.renew_session, chat_id, gateway_id, ttl_s=_ROUTING_LEASE_TTL_SEC)
+            if not renewed:
                 logger.warning(
                     "routing lease for %s lost (expired or claimed by another gateway) — "
                     "continuing to serve it locally; cross-gateway takeover is not yet "
@@ -1678,7 +1692,7 @@ class ChatManager:
         now = datetime.now(timezone.utc)
         now_mono = time.monotonic()
 
-        self._renew_routing_leases()
+        await self._renew_routing_leases()
 
         to_pause: list[str] = []
         to_kill: list[tuple[str, str]] = []
@@ -1785,6 +1799,20 @@ class ChatManager:
                     self._repo.clear_sandbox_ref(session.id)
                     # Drop any in-memory entry
                     self._live.pop(session.id, None)
+                    # This sweep destroys the sandbox directly rather than
+                    # going through kill() (the usual _release_routing_lease
+                    # call site), so without an explicit release here the
+                    # routing lease would only self-heal at its own TTL
+                    # (_ROUTING_LEASE_TTL_SEC, ~180s) instead of freeing
+                    # immediately. Best-effort: a release failure must not
+                    # break the rest of the sweep.
+                    try:
+                        await self._release_routing_lease(session.id)
+                    except Exception:
+                        logger.debug(
+                            "routing lease release failed for %s during paused-sandbox sweep",
+                            session.id,
+                        )
             finally:
                 try:
                     await asyncio.to_thread(coordination().lease_release, _PAUSED_SWEEP_LEASE_NAME, default_holder_id())
