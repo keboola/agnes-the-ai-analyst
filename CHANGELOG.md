@@ -68,6 +68,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   once per-session routing leases exist), request-id correlation across
   processes, and Redis HA (single instance is the supported stance, not a
   gap).
+- **Prometheus `/metrics` on every role** (`app/observability/metrics.py`):
+  an unauthenticated, internal-scrape-only endpoint (same posture as
+  `/healthz`/`/readyz` — operators must not expose it publicly) exporting
+  HTTP request metrics (`agnes_http_requests_total`,
+  `agnes_http_request_duration_seconds`), job-queue and worker-runtime
+  metrics (`agnes_jobs_queued`/`_capped`, `agnes_jobs_running`,
+  `agnes_job_duration_seconds`, `agnes_job_claims_total`,
+  `agnes_job_failures_total`, `agnes_worker_lane_active`), coordination
+  backend health (`agnes_coordination_up`,
+  `agnes_coordination_backend_info`), and readiness
+  (`agnes_readiness`, the same signal `/readyz` reports). Every series
+  carries `role`/`replica` labels; `agnes_jobs_queued`/`_capped` are
+  global values every replica samples identically (use `max()`, not
+  `sum()` — see `docs/observability.md`), the rest are genuinely additive
+  per-replica state. A new `app/job_correlation.py` stamps the
+  originating HTTP request's `request_id` onto a job payload at enqueue
+  time and re-binds it for the duration of the worker's handler
+  invocation, so log lines emitted while a job runs carry the
+  `request_id` of the request that triggered it. The `mtier` Compose
+  profile (`docker-compose.mtier.yml`) adds `prometheus` (scrapes all
+  four role containers, `deploy/prometheus/prometheus.yml`) and
+  `cadvisor` (container resource metrics) services for a working local
+  example. See [`observability.md`](docs/observability.md) → *Prometheus
+  `/metrics`* and [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) → *Multi-process*
+  → *Metrics (Prometheus)*.
 
 ### Fixed
 

@@ -445,6 +445,19 @@ class TestJobQueueMetrics:
         # default prometheus_client buckets top out around 10s, which would
         # dump everything into +Inf. Assert an explicit bucket boundary at
         # or beyond one hour (3600s) exists, distinct from the +Inf bucket.
+        #
+        # A `Histogram` with label dimensions emits zero samples until
+        # `.labels(...)` is first called for some concrete label
+        # combination — record one observation ourselves so this test does
+        # not depend on `test_record_job_duration_observes_histogram` (or
+        # any other test) having already done so first. Under `pytest -n
+        # auto` (pytest-xdist's default `load` distribution), individual
+        # tests — even from the same class — are not guaranteed to land on
+        # the same worker process, and `REGISTRY` is a per-process
+        # singleton, so relying on cross-test ordering here was flaky.
+        from app.observability.metrics import record_job_duration
+
+        record_job_duration("hours_scale_bucket_kind", "done", 0.05)
         bucket_bounds = set()
         for sample in _samples("agnes_job_duration_seconds_bucket"):
             le = sample.labels.get("le")
