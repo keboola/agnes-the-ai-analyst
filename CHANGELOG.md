@@ -159,15 +159,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `/healthz`/`/readyz` — operators must not expose it publicly) exporting
   HTTP request metrics (`agnes_http_requests_total`,
   `agnes_http_request_duration_seconds`), job-queue and worker-runtime
-  metrics (`agnes_jobs_queued`/`_capped`, `agnes_jobs_running`,
+  metrics (`agnes_jobs_queued`/`_capped`, `agnes_jobs_oldest_queued_age_seconds`
+  (queue-lag — `now - min(created_at)` per kind, sampled off the same
+  bounded scan `agnes_jobs_queued` already runs), `agnes_jobs_running`,
   `agnes_job_duration_seconds`, `agnes_job_claims_total`,
   `agnes_job_failures_total`, `agnes_worker_lane_active`), coordination
   backend health (`agnes_coordination_up`,
   `agnes_coordination_backend_info`), and readiness
   (`agnes_readiness`, the same signal `/readyz` reports). Every series
-  carries `role`/`replica` labels; `agnes_jobs_queued`/`_capped` are
-  global values every replica samples identically (use `max()`, not
-  `sum()` — see `docs/observability.md`), the rest are genuinely additive
+  carries `role`/`replica` labels; `agnes_jobs_queued`/`_capped`/
+  `agnes_jobs_oldest_queued_age_seconds` are global values every replica
+  samples identically (use `max()`, not `sum()` — see
+  `docs/observability.md`), the rest are genuinely additive
   per-replica state. A new `app/job_correlation.py` stamps the
   originating HTTP request's `request_id` onto a job payload at enqueue
   time and re-binds it for the duration of the worker's handler
