@@ -270,3 +270,209 @@ class TestMetricsEndpoint:
             replica=replica_id(),
         )
         assert after == before + 1.0
+
+
+@pytest.fixture
+def jobs_db(tmp_path, monkeypatch):
+    """Fresh system.duckdb under a tmp DATA_DIR — jobs_repo() resolves to the
+    DuckDB backend here (mirrors the ``worker_db`` fixture in
+    ``tests/test_worker_runtime.py``)."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("AGNES_DB_URL", raising=False)
+    from src.db import close_system_db, get_system_db
+
+    get_system_db()
+    yield
+    close_system_db()
+
+
+@pytest.fixture(autouse=True)
+def _clean_job_kinds_registry_for_metrics_tests():
+    """Isolate ``JOB_KINDS`` (a process-wide dict) across tests in this
+    module too — ``_bounded_kind`` reads it to decide the ``other`` bucket,
+    so a kind registered by an earlier test must not leak into this one's
+    assertions."""
+    from app.worker.registry import JOB_KINDS
+
+    JOB_KINDS.clear()
+    yield
+    JOB_KINDS.clear()
+
+
+class TestJobQueueMetrics:
+    """Task 2: job-queue + worker runtime metrics on the same dedicated
+    REGISTRY (queue-depth via a scrape-time Collector, everything else via
+    plain Gauge/Histogram/Counter mutated by app/worker/runtime.py)."""
+
+    def test_queued_gauge_reflects_enqueued_jobs_by_kind(self, jobs_db):
+        from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+        from src.repositories import jobs_repo
+
+        register_kind(JobKind(name="metrics_test_kind_a", handler=lambda p: None, lane=LIGHT_LANE))
+        register_kind(JobKind(name="metrics_test_kind_b", handler=lambda p: None, lane=LIGHT_LANE))
+
+        repo = jobs_repo()
+        for _ in range(3):
+            repo.enqueue("metrics_test_kind_a", {})
+        for _ in range(2):
+            repo.enqueue("metrics_test_kind_b", {})
+
+        assert _counter_value("agnes_jobs_queued", kind="metrics_test_kind_a") == 3.0
+        assert _counter_value("agnes_jobs_queued", kind="metrics_test_kind_b") == 2.0
+
+    def test_queued_gauge_buckets_unregistered_kind_as_other(self, jobs_db):
+        from src.repositories import jobs_repo
+
+        # No register_kind() call for this kind — JOB_KINDS is empty
+        # (cleared by the autouse fixture), so it must collapse to "other"
+        # rather than becoming its own unbounded label value.
+        jobs_repo().enqueue("totally_unregistered_kind", {})
+
+        assert _counter_value("agnes_jobs_queued", kind="other") == 1.0
+        assert _counter_value("agnes_jobs_queued", kind="totally_unregistered_kind") is None
+
+    def test_queued_collector_survives_jobs_repo_error(self, monkeypatch):
+        """A broken jobs_repo() (e.g. DB not initialized) must not 500 the
+        whole /metrics endpoint — collect() catches it, bumps
+        agnes_metrics_collector_errors_total, and yields nothing for this
+        metric on this scrape."""
+        import src.repositories as repos_module
+
+        from app.observability.metrics import REGISTRY
+
+        before = 0.0
+        for metric in REGISTRY.collect():
+            for sample in metric.samples:
+                if (
+                    sample.name == "agnes_metrics_collector_errors_total"
+                    and sample.labels.get("collector") == "jobs_queued"
+                ):
+                    before = sample.value
+
+        def boom():
+            raise RuntimeError("db is not available")
+
+        monkeypatch.setattr(repos_module, "jobs_repo", boom)
+
+        # generate_latest() must not raise — this is the actual /metrics
+        # code path (REGISTRY.collect() drives every registered collector,
+        # including the custom queued-jobs one).
+        from prometheus_client import generate_latest
+
+        text = generate_latest(REGISTRY).decode()
+        assert "agnes_http_requests_total" in text  # other metrics still present
+
+        after = _counter_value("agnes_metrics_collector_errors_total", collector="jobs_queued")
+        assert after == before + 1.0
+
+    def test_queued_collector_via_metrics_endpoint_survives_error(self, app_client, monkeypatch):
+        """Same as above, but through the real /metrics HTTP endpoint."""
+        import src.repositories as repos_module
+
+        def boom():
+            raise RuntimeError("db is not available")
+
+        monkeypatch.setattr(repos_module, "jobs_repo", boom)
+
+        r = app_client.get("/metrics")
+        assert r.status_code == 200
+        assert "agnes_http_requests_total" in r.text
+
+    def test_queued_capped_flag_reflects_scan_cap(self, jobs_db, monkeypatch):
+        from app.observability import metrics as obs_metrics
+        from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+        from src.repositories import jobs_repo
+
+        monkeypatch.setattr(obs_metrics, "_QUEUED_SCAN_LIMIT", 5)
+        register_kind(JobKind(name="metrics_capped_kind", handler=lambda p: None, lane=LIGHT_LANE))
+        repo = jobs_repo()
+        for _ in range(8):
+            repo.enqueue("metrics_capped_kind", {})
+
+        assert _counter_value("agnes_jobs_queued_capped") == 1.0
+
+    def test_queued_not_capped_when_under_limit(self, jobs_db, monkeypatch):
+        from app.observability import metrics as obs_metrics
+        from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+        from src.repositories import jobs_repo
+
+        monkeypatch.setattr(obs_metrics, "_QUEUED_SCAN_LIMIT", 500)
+        register_kind(JobKind(name="metrics_uncapped_kind", handler=lambda p: None, lane=LIGHT_LANE))
+        jobs_repo().enqueue("metrics_uncapped_kind", {})
+
+        assert _counter_value("agnes_jobs_queued_capped") == 0.0
+
+    def test_record_job_claim_increments_counter(self):
+        from app.observability.metrics import record_job_claim
+        from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+
+        register_kind(JobKind(name="metrics_claim_kind", handler=lambda p: None, lane=LIGHT_LANE))
+        before = _counter_value("agnes_job_claims_total", kind="metrics_claim_kind") or 0.0
+        record_job_claim("metrics_claim_kind")
+        after = _counter_value("agnes_job_claims_total", kind="metrics_claim_kind")
+        assert after == before + 1.0
+
+    def test_record_job_failure_bounded_kind_and_reason(self):
+        from app.observability.metrics import record_job_failure
+
+        before = _counter_value("agnes_job_failures_total", kind="other", reason="RuntimeError") or 0.0
+        # Kind not registered anywhere -> bucketed to "other".
+        record_job_failure("some_unregistered_kind_xyz", "RuntimeError")
+        after = _counter_value("agnes_job_failures_total", kind="other", reason="RuntimeError")
+        assert after == before + 1.0
+
+    def test_record_job_failure_reason_falls_back_to_other(self):
+        from app.observability.metrics import record_job_failure
+
+        before = _counter_value("agnes_job_failures_total", kind="other", reason="other") or 0.0
+        record_job_failure("some_unregistered_kind_xyz", "")
+        after = _counter_value("agnes_job_failures_total", kind="other", reason="other")
+        assert after == before + 1.0
+
+    def test_record_job_duration_observes_histogram(self):
+        from app.observability.metrics import record_job_duration
+
+        record_job_duration("metrics_duration_kind", "done", 0.05)
+        count = None
+        for sample in _samples("agnes_job_duration_seconds_count"):
+            if sample.labels.get("outcome") == "done":
+                count = sample.value
+        assert count is not None and count >= 1.0
+
+    def test_begin_end_job_running_increments_and_decrements(self):
+        from app.observability.metrics import begin_job_running, end_job_running
+        from app.worker.registry import HEAVY_LANE, JobKind, register_kind
+
+        register_kind(JobKind(name="metrics_running_kind", handler=lambda p: None, lane=HEAVY_LANE))
+
+        before_running = _counter_value("agnes_jobs_running", kind="metrics_running_kind", lane=HEAVY_LANE) or 0.0
+        before_lane = _counter_value("agnes_worker_lane_active", lane=HEAVY_LANE) or 0.0
+
+        begin_job_running("metrics_running_kind", HEAVY_LANE)
+        assert (
+            _counter_value("agnes_jobs_running", kind="metrics_running_kind", lane=HEAVY_LANE) == before_running + 1.0
+        )
+        assert _counter_value("agnes_worker_lane_active", lane=HEAVY_LANE) == before_lane + 1.0
+
+        end_job_running("metrics_running_kind", HEAVY_LANE)
+        assert _counter_value("agnes_jobs_running", kind="metrics_running_kind", lane=HEAVY_LANE) == before_running
+        assert _counter_value("agnes_worker_lane_active", lane=HEAVY_LANE) == before_lane
+
+    def test_metrics_helpers_never_raise_on_broken_role_label(self, monkeypatch):
+        """Every record_*/begin/end helper must swallow its own exceptions
+        — a metrics bug must never propagate into the worker loop and fail
+        a job."""
+        import app.observability.metrics as obs_metrics
+
+        def boom():
+            raise RuntimeError("role_label exploded")
+
+        monkeypatch.setattr(obs_metrics, "role_label", boom)
+
+        # None of these may raise.
+        obs_metrics.record_job_claim("whatever")
+        obs_metrics.record_job_failure("whatever", "SomeError")
+        obs_metrics.record_job_duration("whatever", "done", 0.1)
+        obs_metrics.begin_job_running("whatever", "heavy")
+        obs_metrics.end_job_running("whatever", "heavy")
