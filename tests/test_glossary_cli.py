@@ -56,3 +56,17 @@ def test_glossary_show_not_found():
     with patch("cli.commands.glossary.api_get", return_value=fake):
         result = runner.invoke(app, ["glossary", "show", "x"])
     assert result.exit_code == 1
+    output = result.output + str(result.stderr_bytes or b"")
+    assert "not found" in output.lower()
+    # Command-UX standard: "not found" must hint the next step.
+    assert "agnes glossary search" in output
+
+
+def test_glossary_search_no_results_hints_next_step():
+    fake = _mock_response(200, {"query": "xyzzy", "terms": [], "count": 0})
+    with patch("cli.commands.glossary.api_get", return_value=fake):
+        result = runner.invoke(app, ["glossary", "search", "xyzzy"])
+    assert result.exit_code == 0
+    assert "No glossary terms found" in result.stdout
+    # Command-UX standard: "not found" must hint the next step.
+    assert "sync" in result.stdout.lower()

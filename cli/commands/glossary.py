@@ -30,6 +30,11 @@ def search_glossary(
 
     if not terms:
         typer.echo("No glossary terms found.")
+        typer.echo(
+            f"Try a broader query, or confirm the glossary is populated — "
+            f"it's filled by the Keboola semantic-layer sync, so an empty "
+            f"result for '{query}' may mean the sync hasn't run yet."
+        )
         return
 
     for t in terms:
@@ -45,6 +50,10 @@ def show_glossary_term(
     resp = api_get(f"/api/glossary/{glossary_id}")
     if resp.status_code == 404:
         typer.echo(f"Glossary term not found: {glossary_id}", err=True)
+        typer.echo(
+            "Try: agnes glossary search <query>  — the id must come from a search result, not a guessed slug.",
+            err=True,
+        )
         raise typer.Exit(1)
     if resp.status_code != 200:
         typer.echo(f"Failed: {resp.json().get('detail', resp.text)}", err=True)
