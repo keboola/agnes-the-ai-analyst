@@ -579,3 +579,251 @@ def test_memory_mode_never_triggers_takeover_on_reconnect(tmp_path, monkeypatch)
         await mgr.kill(chat_id, reason="test_done")
 
     asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Wave-2F final review F2: kill() racing a mid-flight respawn/takeover spawn
+# ---------------------------------------------------------------------------
+
+
+def _count_kills(handle: FakeHandle, counts: dict) -> None:
+    """Wrap ``handle.kill`` so the test can assert 'destroyed exactly once'."""
+    orig_kill = handle.kill
+
+    async def _counted(**kw):
+        counts[handle.sandbox_id] = counts.get(handle.sandbox_id, 0) + 1
+        await orig_kill(**kw)
+
+    handle.kill = _counted
+
+
+def test_kill_during_takeover_spawn_window_no_leaked_sandbox(two_gateways, monkeypatch):
+    """F2 headline regression: an /agnes-new–style archive+kill fired while
+    a takeover's fresh spawn is still in flight must not leak the
+    just-spawned sandbox or resurrect sandbox refs onto the archived row.
+
+    Pre-fix, ``kill()`` popped ``_live`` without the per-chat_id session
+    lock: it removed the takeover's state=NEW stub mid-spawn (nothing to
+    tear down yet — handle still None), and the completing spawn then
+    registered an ACTIVE handle and ``set_sandbox_ref``'d fresh refs onto
+    the already-archived row — an untracked, still-billable sandbox with
+    nothing left pointing at it. Post-fix, kill() waits on
+    ``_get_session_lock`` for the takeover to settle and then tears the
+    fully-registered session down normally (``_respawn_fresh``'s post-spawn
+    re-check is the second layer for respawn paths that don't hold the
+    lock — see test_kill_racing_lockless_respawn_destroys_orphan below).
+
+    Load-bearing: with BOTH F2 layers reverted (git stash), the takeover's
+    spawn wins the race — the row keeps the fresh sandbox_id and the new
+    handle is never killed — and this test fails.
+    """
+    mgr_a, mgr_b, provider = two_gateways
+    fake_tickets = _FakeTicketRepo()
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: fake_tickets)
+
+    async def _run():
+        _as_gateway(monkeypatch, "gw-a")
+        chat_id, handle_a = await _spawn_owned_session(mgr_a)
+
+        kill_counts: dict[str, int] = {}
+        orig_spawn = provider.spawn
+        spawn_started = asyncio.Event()
+        release_spawn = asyncio.Event()
+
+        async def _slow_spawn(**kw):
+            spawn_started.set()
+            await release_spawn.wait()
+            h = await orig_spawn(**kw)
+            _count_kills(h, kill_counts)
+            return h
+
+        provider.spawn = _slow_spawn
+
+        _as_gateway(monkeypatch, "gw-b")
+        ws_b = FakeWS()
+        attach_task = asyncio.create_task(mgr_b.attach(chat_id, ws_b))
+        await asyncio.wait_for(spawn_started.wait(), timeout=2.0)
+        live_mid = mgr_b._live.get(chat_id)
+        assert live_mid is not None and live_mid.state == SessionState.NEW, (
+            "precondition: kill must land inside the takeover's spawn window"
+        )
+
+        # /agnes-new on a non-owning-but-same-gateway path: archive + kill,
+        # exactly what services.slack_bot.commands._soft_archive_dm does.
+        mgr_b._repo.archive_session(chat_id)
+        kill_task = asyncio.create_task(mgr_b.kill(chat_id, reason="agnes_new"))
+        await asyncio.sleep(0.05)  # let kill() reach (and block on) the session lock
+        release_spawn.set()
+        results = await asyncio.gather(attach_task, kill_task, return_exceptions=True)
+        for r in results:
+            if isinstance(r, Exception):
+                raise r
+
+        new_handle = provider.spawned[-1]
+        assert new_handle is not handle_a
+        # The freshly-spawned sandbox was torn down exactly once, not leaked.
+        assert new_handle.killed, "the takeover's fresh sandbox must be destroyed, not leaked"
+        assert kill_counts.get(new_handle.sandbox_id) == 1, (
+            f"fresh sandbox must be destroyed exactly once, got {kill_counts}"
+        )
+        # No live entry survived on B; the archived row's refs stayed cleared.
+        assert mgr_b._live == {}
+        row = mgr_b._repo.get_session(chat_id)
+        assert row is None or row.sandbox_id is None, (
+            "kill racing the takeover spawn must not resurrect sandbox refs on the archived row"
+        )
+        # A's old sandbox: destroyed exactly once, by the takeover.
+        assert provider.destroyed.count(handle_a.sandbox_id) == 1
+
+    asyncio.run(_run())
+
+
+def test_kill_racing_lockless_respawn_destroys_orphan(two_gateways, monkeypatch):
+    """F2 defense-in-depth layer: ``_respawn_fresh`` reached WITHOUT the
+    per-chat_id session lock (the ``_resume_live`` path — inbound consumer
+    or send_user_message's already-live PAUSED branch) can still interleave
+    with kill(). After its spawn completes it must notice the LiveSession
+    was torn down mid-spawn (state DEAD / no longer the registered ``_live``
+    entry) and destroy the just-spawned sandbox instead of registering it
+    and ``set_sandbox_ref``-ing refs onto the killed row.
+
+    Load-bearing: reverting only the post-spawn re-check in
+    ``_respawn_fresh`` (git stash) makes this fail — the killed row gets
+    fresh sandbox refs back and the new sandbox is never destroyed.
+    """
+    mgr_a, _mgr_b, provider = two_gateways
+    fake_tickets = _FakeTicketRepo()
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: fake_tickets)
+
+    async def _run():
+        _as_gateway(monkeypatch, "gw-a")
+        chat_id, _handle = await _spawn_owned_session(mgr_a)
+        live = mgr_a._live[chat_id]
+
+        # Park the session, then make it "legacy" so _resume_live takes the
+        # _respawn_fresh branch (fresh spawn, not provider.resume).
+        await mgr_a._pause_live(live)
+        assert live.state == SessionState.PAUSED
+        mgr_a._known_protocol_sessions.discard(chat_id)
+
+        kill_counts: dict[str, int] = {}
+        orig_spawn = provider.spawn
+        spawn_started = asyncio.Event()
+        release_spawn = asyncio.Event()
+
+        async def _slow_spawn(**kw):
+            spawn_started.set()
+            await release_spawn.wait()
+            h = await orig_spawn(**kw)
+            _count_kills(h, kill_counts)
+            return h
+
+        provider.spawn = _slow_spawn
+
+        # The inbound-consumer resume path: holds only live._resume_lock,
+        # NOT the per-chat_id session lock kill() takes.
+        resume_task = asyncio.create_task(mgr_a._resume_live(live))
+        await asyncio.wait_for(spawn_started.wait(), timeout=2.0)
+
+        # kill() lands mid-spawn — the session lock is free, so it proceeds
+        # immediately: pops _live, marks DEAD, clears refs.
+        await mgr_a.kill(chat_id, reason="remote_kill")
+        assert chat_id not in mgr_a._live
+        assert live.state == SessionState.DEAD
+
+        release_spawn.set()
+        await resume_task
+
+        new_handle = provider.spawned[-1]
+        # The orphaned spawn was destroyed exactly once, never registered.
+        assert new_handle.killed, "the raced respawn's sandbox must be destroyed, not leaked"
+        assert kill_counts.get(new_handle.sandbox_id) == 1
+        assert live.handle is None, "a torn-down LiveSession must not get the raced handle registered"
+        assert mgr_a._live == {}
+        row = mgr_a._repo.get_session(chat_id)
+        assert row is not None and row.sandbox_id is None, (
+            "the raced respawn must not resurrect sandbox refs on the killed row"
+        )
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Wave-2F final review F3: takeover must not re-deliver retained inbound
+# entries (or re-execute stale control entries)
+# ---------------------------------------------------------------------------
+
+
+def test_takeover_seeds_inbound_cursor_skips_retained_entries(two_gateways, monkeypatch):
+    """F3: a fresh consumer (here: the one started by B's takeover) seeds
+    its dedup cursor from the current chat-in-seq counter instead of
+    reading the retained stream from 0. Pre-fix, the takeover re-fed every
+    retained (already-delivered) user message to the fresh runner — a
+    duplicate LLM answer per retained turn — and RE-EXECUTED retained
+    control entries, so a stale ``control:kill`` tore the just-taken-over
+    session right back down. Entries published AFTER the takeover must
+    still be delivered.
+
+    Load-bearing: with the seed reverted (git stash), B's session is
+    killed by the stale control entry (and/or "m1" reaches B's runner a
+    second time via the stream on top of the history replay) — this test
+    fails on both assertions.
+    """
+    mgr_a, mgr_b, provider = two_gateways
+    fake_tickets = _FakeTicketRepo()
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: fake_tickets)
+
+    from app.chat import inbound as inbound_mod
+
+    async def _run():
+        _as_gateway(monkeypatch, "gw-a")
+        chat_id, handle_a = await _spawn_owned_session(mgr_a)
+
+        # Forward a message from B: A's consumer delivers it, and the entry
+        # stays RETAINED in the chat-in:{chat_id} stream after delivery.
+        _as_gateway(monkeypatch, "gw-b")
+        await mgr_b.send_user_message(chat_id, "m1")
+        for _ in range(150):
+            if "m1" in _stdin_texts(handle_a):
+                break
+            await asyncio.sleep(0.02)
+        assert "m1" in _stdin_texts(handle_a), "precondition: A must deliver the forwarded turn"
+
+        # Freeze A's consumer (simulating the old owner wedged mid-handoff)
+        # and publish a control:kill it never executes — the stale-control
+        # hazard a takeover used to re-execute.
+        live_a = mgr_a._live[chat_id]
+        assert live_a.inbound_task is not None
+        live_a.inbound_task.cancel()
+        await asyncio.sleep(0.02)
+        await inbound_mod.publish_control(chat_id, "kill", reason="stale")
+
+        # B takes over: fresh LiveSession, fresh consumer, cursor seeded.
+        ws_b = FakeWS()
+        await mgr_b.attach(chat_id, ws_b)
+        live_b = mgr_b._live[chat_id]
+        handle_b = live_b.handle
+        assert handle_b is not None
+
+        # Give B's consumer time for its initial read (+ a poll tick).
+        await asyncio.sleep(0.3)
+
+        # The stale kill was NOT re-executed against the fresh session...
+        assert chat_id in mgr_b._live, "a retained stale control:kill must not tear the takeover down"
+        assert mgr_b._live[chat_id].state == SessionState.ACTIVE
+        # ...and the retained "m1" was NOT re-delivered from the stream —
+        # it reaches B's fresh runner exactly once, via _respawn_fresh's
+        # persisted-history replay.
+        assert _stdin_texts(handle_b).count("m1") == 1, f"retained stream entry re-delivered: {_stdin_texts(handle_b)}"
+
+        # A message published AFTER the takeover IS delivered.
+        await inbound_mod.publish_inbound(chat_id, "after-takeover")
+        for _ in range(150):
+            if "after-takeover" in _stdin_texts(handle_b):
+                break
+            await asyncio.sleep(0.02)
+        assert "after-takeover" in _stdin_texts(handle_b), "post-takeover publishes must still be delivered"
+
+        await mgr_b.kill(chat_id, reason="test_done")
+
+    asyncio.run(_run())
