@@ -9,18 +9,24 @@ on the process-wide :func:`app.coordination.factory.coordination` backend.
 
 This module only provides the primitives. :class:`app.chat.manager.ChatManager`
 is the actual consumer: it claims the lease when a session becomes live
-in its ``self._live`` registry (``_spawn_live`` / ``_resume_from_row``),
-renews it on the existing idle-reaper heartbeat (``_reap_once``, ~60s
-cadence), and releases it on teardown (``kill``). Deciding what to DO when
-a claim fails or a renew is lost (e.g. redirecting a client to the actual
-owning gateway) is out of scope for this task — see the wave-2F plan for
-the follow-up that adds real cross-gateway takeover/redirect. For now,
-every failure mode here is "log and continue serving locally": a lease
-loss under the default ``memory`` backend can never actually happen
-(single process, nothing else ever contends — see
+in its ``self._live`` registry (``_spawn_live`` / ``_resume_from_row`` /
+``_takeover_foreign_session``), renews it on the existing idle-reaper
+heartbeat (``_reap_once``, ~60s cadence), and releases it on teardown
+(``kill``). What ChatManager actually DOES with a claim failure or a lost
+renew has evolved across two tasks: task 1 (this module) only ever logged
+and kept serving locally. Wave-2F task 5 added real handling on both
+sides — a WS connect for a chat_id owned by a different, still-valid
+gateway now claims (steals) the lease and takes over via
+``ChatManager._takeover_foreign_session`` (destroy the old sandbox,
+respawn a fresh runner, replay recent turns — NOT a live handoff, see that
+method's docstring for why and its accepted trade-off), and a renew that
+comes back lost now tears the local session down
+(``ChatManager._teardown_lost_ownership``) instead of continuing to serve
+it. A lease loss under the default ``memory`` backend can still never
+actually happen (single process, nothing else ever contends — see
 ``app.coordination.leases``'s FLUSHALL/memory-mode docstring for the same
-invariant applied to the leader-lease helper), and under `redis` it is the
-documented, deliberately deferred gap this module's docstring points at.
+invariant applied to the leader-lease helper), so none of this is reachable
+there; under `redis` it is now live.
 
 FLUSHALL / CoordinationUnavailable posture: none of the four functions
 below ever raises :class:`~app.coordination.base.CoordinationUnavailable`
