@@ -18,6 +18,7 @@ from app.chat.frame_seq import stamp_frame
 from app.chat.manager import ChatManager, ConcurrencyCapHit, SessionNotFound
 from app.chat.persistence import ChatRepository
 from app.chat.profiles import get_profile
+from app.chat.replay import replay_since
 from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR, list_recognized_commands, merged_skills
 from app.chat.types import Surface
 from app.coordination.base import CoordinationUnavailable
@@ -235,8 +236,34 @@ async def archive_session(
     repo.archive_session(chat_id)
 
 
+async def _send_replay(ws: WebSocket, mgr: ChatManager, chat_id: str, last_seq: int) -> None:
+    """Replay any frames the client missed (or send a ``full_refresh``
+    control frame) BEFORE the caller seats ``ws`` as a live sink.
+
+    ``last_seq`` comes straight off the connect query string — a client
+    that has never seen a frame for this chat (first-ever open; history
+    for that case comes from ``GET /sessions/{id}/messages`` instead)
+    sends ``0`` or omits it, which ``replay_since`` treats as "nothing to
+    replay", not a gap (wave-2F task 3 — see ``app.chat.replay``).
+
+    Frames at or past ``mgr.turn_buffer_min_seq(chat_id)`` are dropped from
+    the replay: the caller's own ``attach()`` (right after this returns)
+    seats the sink via ``_seat_sink``, which unconditionally replays the
+    WHOLE in-flight turn buffer — sending those same frames here too would
+    double-deliver the tail of a mid-turn reconnect.
+    """
+    outcome = await replay_since(chat_id, last_seq)
+    if outcome.full_refresh:
+        await ws.send_json(stamp_frame(chat_id, {"type": "full_refresh"}))
+        return
+    turn_min = mgr.turn_buffer_min_seq(chat_id)
+    frames = outcome.frames if turn_min is None else [f for f in outcome.frames if f.get("seq", 0) < turn_min]
+    for frame in frames:
+        await ws.send_json(frame)
+
+
 @router.websocket("/sessions/{chat_id}/stream")
-async def ws_stream(ws: WebSocket, chat_id: str, ticket: str):
+async def ws_stream(ws: WebSocket, chat_id: str, ticket: str, last_seq: int = 0):
     try:
         consumed = _consume_ticket(ticket)
     except CoordinationUnavailable:
@@ -249,6 +276,10 @@ async def ws_stream(ws: WebSocket, chat_id: str, ticket: str):
 
     await ws.accept()
     mgr: ChatManager = ws.app.state.chat_manager
+    # wave-2F task 3: replay anything the client missed since last_seq (or
+    # signal full_refresh) before attach() seats ws and its own turn_buffer
+    # replay/`ready` frame resume live delivery.
+    await _send_replay(ws, mgr, chat_id_v, last_seq)
 
     async def reader_loop() -> None:
         try:
@@ -303,7 +334,7 @@ async def ws_stream(ws: WebSocket, chat_id: str, ticket: str):
 
 
 @router.websocket("/sessions/{session_id}/join")
-async def ws_join(ws: WebSocket, session_id: str, ticket: str):
+async def ws_join(ws: WebSocket, session_id: str, ticket: str, last_seq: int = 0):
     """WebSocket join route for co-drive participants.
 
     A participant who obtained a ticket via POST /api/chat/{id}/join-ticket
@@ -343,6 +374,10 @@ async def ws_join(ws: WebSocket, session_id: str, ticket: str):
         return
 
     await ws.accept()
+    # wave-2F task 3: same replay-before-live-resume as ws_stream, using
+    # the verified session_id (consumed[0] already checked == session_id
+    # above).
+    await _send_replay(ws, mgr, session_id, last_seq)
 
     async def joiner_reader_loop() -> None:
         try:
