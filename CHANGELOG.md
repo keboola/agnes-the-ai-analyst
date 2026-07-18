@@ -140,6 +140,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   example. See [`observability.md`](docs/observability.md) → *Prometheus
   `/metrics`* and [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) → *Multi-process*
   → *Metrics (Prometheus)*.
+- `infra/modules/customer-instance`'s daily backup script
+  (`agnes-db-backup.sh`) now also covers the on-VM Postgres side-car: when
+  `instance.yaml::database.backend == side_car` and the container is
+  actually running, it `pg_dump`s the control-plane DB into the same dated
+  backup dir and restore-canaries it (restore into a throwaway database,
+  run a trivial sanity query, drop) before declaring success — same 7-day
+  retention and webhook alerting as the existing `system.duckdb` path.
+  DuckDB-only deployments are unaffected. Once the DuckLake catalog lands
+  it lives in the same Postgres instance, so this dump already covers it.
 
 ### Fixed
 
