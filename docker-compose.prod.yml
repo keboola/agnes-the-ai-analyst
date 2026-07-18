@@ -13,7 +13,5 @@ services:
     image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
   telegram-bot:
     image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
-  ws-gateway:
-    image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
   # corporate-memory and session-collector were dropped in #176 —
   # the scheduler container drives them via /api/admin/run-* endpoints.
