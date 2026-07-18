@@ -287,6 +287,10 @@ class ChatManager:
         # spawn decision tree, held from the very first `self._live.get`
         # read through to the point a LiveSession with a real handle is
         # registered (spawn/resume/takeover all complete before release).
+        # send_user_message()'s "no local live session yet" resume-from-row/
+        # spawn decision takes the SAME lock (re-checking `self._live` after
+        # acquiring it) — see that method's docstring for the double-spawn
+        # window this closes between it and a concurrent attach().
         #
         # This replaces a narrower predecessor (`_takeover_locks`) that only
         # ever guarded `_takeover_foreign_session` — that split was exactly
@@ -2019,39 +2023,70 @@ class ChatManager:
         would need every local send to also round-trip through the shared
         stream, which is not worth it for this edge case — revisit if a
         second surface starts forwarding regularly.
+
+        Double-spawn fix: the "no local live session yet" branch below used
+        to run its own spawn/resume decision with NO serialization at all —
+        unlike ``attach()``, which folds its whole ACTIVE/PAUSED/takeover/
+        resume-from-row/spawn tree under ``self._get_session_lock(chat_id)``
+        (see that method's docstring for the double-spawn bug that lock
+        closes). A fresh chat_id (never attached) or a post-restart row with
+        no LiveSession yet could hit ``attach()`` (WS connect) and
+        ``send_user_message()`` (e.g. an inbound webhook) concurrently: both
+        would read ``self._live.get(chat_id)`` as ``None``, both would find
+        no foreign owner, and both would independently resume-from-row or
+        ``_spawn_live`` — two runners for one chat_id, one of them orphaned.
+        Wrapping the same decision in the same per-chat_id lock as
+        ``attach()`` — and RE-CHECKING ``self._live`` after acquiring it —
+        closes this the same way: whichever caller gets the lock second
+        simply observes the first caller's now-live (or now-resumed)
+        session instead of racing its own spawn. Lock ordering is preserved
+        (``_session_lock`` acquired before any ``_resume_lock`` acquisition
+        inside ``_resume_live``, never the reverse), matching ``attach()``'s
+        existing order, so no new deadlock is introduced.
         """
         live = self._live.get(chat_id)
         if live is None:
-            # Not local. Before racing to spawn/resume a (possibly
-            # duplicate) runner here, wave-2F task 4: find out whether a
-            # DIFFERENT gateway already owns this session's routing lease —
-            # if so, this message must be FORWARDED to it via the
-            # chat-in:{chat_id} coordination stream instead of spawning a
-            # second runner in this process. `owner is None` (unclaimed —
-            # a fresh session's attach() race, or a session that never
-            # started) or `owner == this_gw` (stale/edge case — e.g. this
-            # process's own lease outlived its LiveSession somehow) both
-            # fall through to the EXISTING resume/spawn/SessionNotFound
-            # story below, unchanged from before this task. Under the
-            # default `memory` backend `owner` can never differ from
-            # `this_gw` (single process — see app.chat.inbound's module
-            # docstring), so this branch is simply never taken there.
-            this_gw = routing.this_gateway_id()
-            owner = await asyncio.to_thread(routing.owner_of, chat_id)
-            if owner is not None and owner != this_gw:
-                await self._forward_inbound_message(chat_id, text, sender_email=sender_email)
-                return
-            # Post-restart: no LiveSession in memory, but repo row may have sandbox refs.
-            session = self._repo.get_session(chat_id)
-            if session is not None and session.sandbox_id is not None and session.runner_pid is not None:
-                live = await self._resume_from_row(session)
-                if live is None:
-                    # _resume_from_row cleared refs; try a fresh spawn
+            async with self._get_session_lock(chat_id):
+                # Re-check: attach() (or another send_user_message call) may
+                # have already spawned/resumed this session while we waited
+                # for the lock — use its result instead of racing a second
+                # spawn.
+                live = self._live.get(chat_id)
+                if live is not None and live.state == SessionState.PAUSED:
+                    # Vanishingly unlikely (attach()/_resume_from_row/_spawn_live
+                    # all leave state ACTIVE), but cheap to handle defensively.
+                    await self._resume_live(live)
+                elif live is None:
+                    # Not local. Before racing to spawn/resume a (possibly
+                    # duplicate) runner here, wave-2F task 4: find out whether a
+                    # DIFFERENT gateway already owns this session's routing lease —
+                    # if so, this message must be FORWARDED to it via the
+                    # chat-in:{chat_id} coordination stream instead of spawning a
+                    # second runner in this process. `owner is None` (unclaimed —
+                    # a fresh session's attach() race, or a session that never
+                    # started) or `owner == this_gw` (stale/edge case — e.g. this
+                    # process's own lease outlived its LiveSession somehow) both
+                    # fall through to the EXISTING resume/spawn/SessionNotFound
+                    # story below, unchanged from before this task. Under the
+                    # default `memory` backend `owner` can never differ from
+                    # `this_gw` (single process — see app.chat.inbound's module
+                    # docstring), so this branch is simply never taken there.
+                    this_gw = routing.this_gateway_id()
+                    owner = await asyncio.to_thread(routing.owner_of, chat_id)
+                    if owner is not None and owner != this_gw:
+                        await self._forward_inbound_message(chat_id, text, sender_email=sender_email)
+                        return
+                    # Post-restart: no LiveSession in memory, but repo row may have sandbox refs.
                     session = self._repo.get_session(chat_id)
-                    if session is not None:
-                        live = await self._spawn_live(session)
-            # After recovery attempt, re-fetch from _live
-            live = self._live.get(chat_id)
+                    if session is not None and session.sandbox_id is not None and session.runner_pid is not None:
+                        live = await self._resume_from_row(session)
+                        if live is None:
+                            # _resume_from_row cleared refs; try a fresh spawn
+                            session = self._repo.get_session(chat_id)
+                            if session is not None:
+                                live = await self._spawn_live(session)
+                    # After recovery attempt, re-fetch from _live
+                    live = self._live.get(chat_id)
         elif live.state == SessionState.PAUSED:
             # Resume on-demand: PAUSED live session (Slack DM after hours, web race).
             await self._resume_live(live)
