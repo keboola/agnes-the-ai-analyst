@@ -107,6 +107,30 @@ done
 [ "$coord_ok" -eq 1 ] || { echo "FAIL: no LIMITS:* keys appeared in redis within 90s of boot (coordination redis path not wired)"; exit 1; }
 echo "coordination-live OK (redis carries rate-limiter state; LIMITS:* keys=$count)"
 
+# --- 2.5 Prometheus scrape confirmation ----------------------------------
+# Wave 2D (observability): deploy/prometheus/prometheus.yml polls every
+# role container's `/metrics` (app/observability/metrics.py) every 15s by
+# Compose DNS name (api1/api2/gateway/worker:8000, plus cadvisor:8080).
+# Confirm via `up{job=~"agnes.*"}` on the Prometheus HTTP API, exec'd from
+# inside the compose network (the app image already has curl — see
+# Dockerfile) against the `prometheus` service's own DNS name, rather than
+# the host-published :9090 port — this also exercises the same Compose
+# DNS resolution the scrape targets themselves rely on, not just host
+# port forwarding.
+echo "checking prometheus scraped at least one agnes role target..."
+prom_ok=0
+for i in $(seq 1 30); do
+  resp=$("${COMPOSE[@]}" exec -T gateway curl -fsS -m 3 -G 'http://prometheus:9090/api/v1/query' \
+    --data-urlencode 'query=up{job=~"agnes.*"}' 2>/dev/null || true)
+  if printf '%s' "$resp" | grep -q '"value":\[[0-9.]*,"1"\]'; then
+    prom_ok=1
+    break
+  fi
+  sleep 2
+done
+[ "$prom_ok" -eq 1 ] || { echo "FAIL: no agnes-* prometheus target reported up==1 within 60s of boot"; exit 1; }
+echo "prometheus scrape OK (an agnes-* target reports up==1)"
+
 echo "killing api1 under traffic..."
 "${COMPOSE[@]}" kill api1
 fails=0
