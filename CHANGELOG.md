@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.74.114] - 2026-07-18
+
 ### Fixed
 
 - Cowork per-plugin zips (`GET /marketplace/cowork/<prefixed_name>.zip`) no
@@ -21,6 +23,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   'description' in SKILL.md must be at most 1024 characters").
   `COWORK_FORMAT_VERSION` bumped so cached ETags bust and clients re-download
   the corrected zip.
+
+### Security
+
+- The `GET`/`PUT`/`DELETE /api/mcp/sources/{id}/my-secret` endpoints now require
+  a grant on the source (the same `_visible_passthrough_tools` intersection the
+  connect page and `/test` use; admin short-circuits). Previously any signed-in
+  user could probe an arbitrary source's existence, scope, and connection
+  timestamp, or store a token against a source they had no grant on. Closes the
+  gap left when the self-service connect flow (#919) grant-gated the page and
+  `/test` but not these three sibling verbs.
 
 ## [0.74.113] - 2026-07-18
 
