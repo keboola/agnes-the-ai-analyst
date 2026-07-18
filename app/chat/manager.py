@@ -183,6 +183,17 @@ class LiveSession:
     # turns can never interleave partial JSON lines on the shared stdin
     # (spec §6.2).
     _stdin_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Serializes ChatManager._resume_live for this session. _resume_live is
+    # reachable from THREE concurrent call sites — attach() (WS reconnect),
+    # send_user_message's direct-owner path, and _inbound_consumer_loop
+    # (woken by another gateway's publish_inbound even while this session is
+    # PAUSED) — so two callers can race a single PAUSED session with no
+    # synchronization between them: both would spawn/resume a sandbox, one
+    # of the two resumed/spawned sandboxes is never referenced again (a
+    # leaked, still-billable resource), and the orphaned loser's pump/wait
+    # tasks are never cancelled. See _resume_live's docstring for the full
+    # mechanism and why acquiring this lock cannot deadlock.
+    _resume_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Serializes _broadcast's stamp+send critical section per session. 9
     # call sites can invoke _broadcast for the SAME LiveSession from
     # different asyncio Tasks (e.g. two co-drive participants' turns landing
@@ -806,63 +817,91 @@ class ChatManager:
     async def _resume_live(self, live: "LiveSession") -> None:
         """Resume a PAUSED in-memory session by reconnecting the sandbox.
 
+        Concurrency: this method is reachable from THREE concurrent call
+        sites — ``attach()`` (WS reconnect), ``send_user_message``'s
+        direct-owner path, and ``_inbound_consumer_loop`` (which wakes on
+        another gateway's ``publish_inbound`` even while this session is
+        PAUSED and calls this to resume before delivering). Without
+        serialization, two callers racing a single PAUSED session both pass
+        the state check, both spawn/resume a sandbox, and one of the two
+        results is never referenced again afterwards — a leaked, still
+        billable sandbox — while the loser's stale pump/wait tasks are left
+        running unmonitored. ``live._resume_lock`` (a plain per-LiveSession
+        ``asyncio.Lock``) serializes the whole method body; the ``if
+        live.state != PAUSED: return`` immediately after acquiring it is the
+        actual guard — a caller that loses the race for the lock finds the
+        session already ACTIVE (the winner finished while it waited) and
+        returns without doing any spawn/resume work.
+
+        No deadlock risk: none of ``attach()``/``send_user_message``/
+        ``_inbound_consumer_loop`` hold ``live._resume_lock`` (or any lock
+        this method needs) before calling in, and nothing this method calls
+        (``_respawn_fresh``, ``self._provider.resume``, ``_push_ticket_frame``)
+        re-enters ``_resume_live``, so the lock is acquired at most once per
+        call and never re-acquired while already held.
+
         AC-G-resume-legacy: a session this process has never itself pushed a
         current-protocol ticket to (``_known_protocol_sessions``) is never
         reconnected via resume() — an old runner might not understand the
         ``ticket_push`` stdin frame — so we force a fresh spawn instead.
         """
-        if live.chat_id not in self._known_protocol_sessions:
-            # Destroy the old (paused, billable) sandbox BEFORE respawning —
-            # _respawn_fresh overwrites sandbox_id via set_sandbox_ref, so
-            # without this the paused microVM is orphaned and leaks until its
-            # absolute TTL (mirror of the _resume_from_row legacy path; Devin
-            # review on #849).
+        async with live._resume_lock:
+            if live.state != SessionState.PAUSED:
+                # Another caller already resumed this session while we were
+                # waiting for the lock — nothing left to do.
+                return
+            if live.chat_id not in self._known_protocol_sessions:
+                # Destroy the old (paused, billable) sandbox BEFORE respawning —
+                # _respawn_fresh overwrites sandbox_id via set_sandbox_ref, so
+                # without this the paused microVM is orphaned and leaks until its
+                # absolute TTL (mirror of the _resume_from_row legacy path; Devin
+                # review on #849).
+                session = self._repo.get_session(live.chat_id)
+                if session is not None:
+                    await self._destroy_old_sandbox(session)
+                    self._repo.clear_sandbox_ref(live.chat_id)
+                # Revoke the paused session's old broker tickets BEFORE _respawn_fresh
+                # mints+pushes new ones — same as the non-legacy resume path below.
+                # revoke_session deletes by session_id, so revoking after the fresh
+                # mint would delete the ticket _respawn_fresh just pushed. Without
+                # this, the old tickets linger (redeemable) until their TTL even
+                # though the old sandbox is gone. (Devin review on #851)
+                ticket_repo().revoke_session(live.chat_id)
+                await self._respawn_fresh(live)
+                return
             session = self._repo.get_session(live.chat_id)
-            if session is not None:
-                await self._destroy_old_sandbox(session)
-                self._repo.clear_sandbox_ref(live.chat_id)
-            # Revoke the paused session's old broker tickets BEFORE _respawn_fresh
-            # mints+pushes new ones — same as the non-legacy resume path below.
-            # revoke_session deletes by session_id, so revoking after the fresh
-            # mint would delete the ticket _respawn_fresh just pushed. Without
-            # this, the old tickets linger (redeemable) until their TTL even
-            # though the old sandbox is gone. (Devin review on #851)
-            ticket_repo().revoke_session(live.chat_id)
-            await self._respawn_fresh(live)
-            return
-        session = self._repo.get_session(live.chat_id)
-        if session is None or session.sandbox_id is None or session.runner_pid is None:
-            await self._respawn_fresh(live)
-            return
-        import time as _t
+            if session is None or session.sandbox_id is None or session.runner_pid is None:
+                await self._respawn_fresh(live)
+                return
+            import time as _t
 
-        try:
-            handle = await self._provider.resume(
-                sandbox_id=session.sandbox_id,
-                runner_pid=session.runner_pid,
-                env={},
-            )
-        except Exception:
-            logger.warning("resume failed for %s — fresh spawn fallback", live.chat_id)
-            self._repo.clear_sandbox_ref(live.chat_id)
-            await self._respawn_fresh(live)
-            return
-        live.handle = handle
-        live.state = SessionState.ACTIVE
-        live.active_since = _t.monotonic()
-        # AC-G-resume-fresh: rotate tickets on every resume — the paused
-        # window may have exceeded their TTL — before any further message is
-        # forwarded. Revoke the old ones FIRST: revoke_session deletes by
-        # session_id, so revoking after the fresh mint would delete the
-        # tickets _push_ticket_frame just pushed.
-        ticket_repo().revoke_session(live.chat_id)
-        await self._push_ticket_frame(live)
-        pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
-        wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, live.session_dir or Path("/tmp")))
-        live.tasks = [pump_task, wait_task]
-        live.current_pump = pump_task
-        live.current_wait = wait_task
-        self._repo.set_sandbox_paused_at(live.chat_id, None)
+            try:
+                handle = await self._provider.resume(
+                    sandbox_id=session.sandbox_id,
+                    runner_pid=session.runner_pid,
+                    env={},
+                )
+            except Exception:
+                logger.warning("resume failed for %s — fresh spawn fallback", live.chat_id)
+                self._repo.clear_sandbox_ref(live.chat_id)
+                await self._respawn_fresh(live)
+                return
+            live.handle = handle
+            live.state = SessionState.ACTIVE
+            live.active_since = _t.monotonic()
+            # AC-G-resume-fresh: rotate tickets on every resume — the paused
+            # window may have exceeded their TTL — before any further message is
+            # forwarded. Revoke the old ones FIRST: revoke_session deletes by
+            # session_id, so revoking after the fresh mint would delete the
+            # tickets _push_ticket_frame just pushed.
+            ticket_repo().revoke_session(live.chat_id)
+            await self._push_ticket_frame(live)
+            pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
+            wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, live.session_dir or Path("/tmp")))
+            live.tasks = [pump_task, wait_task]
+            live.current_pump = pump_task
+            live.current_wait = wait_task
+            self._repo.set_sandbox_paused_at(live.chat_id, None)
 
     async def _destroy_old_sandbox(self, session: "ChatSession") -> None:
         """Best-effort teardown of a session's paused E2B sandbox before its
@@ -1569,7 +1608,7 @@ class ChatManager:
         asyncio state directly.
         """
         chat_id = live.chat_id
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         wake = asyncio.Event()
 
         def _on_notify(_message: str) -> None:
@@ -1622,6 +1661,29 @@ class ChatManager:
                     logger.debug("inbound consumer unsubscribe failed for %s", chat_id, exc_info=True)
 
     async def send_user_message(self, chat_id: str, text: str, *, sender_email: Optional[str] = None) -> None:
+        """Deliver ``text`` to ``chat_id``'s runner, forwarding to the owning
+        gateway if this process doesn't host the session (wave-2F task 4).
+
+        Ordering disclosure: direct-owner delivery (this method's local path,
+        via ``_deliver_local_user_message``) and stream-forwarded delivery
+        (``_inbound_consumer_loop``, fed by ``_forward_inbound_message`` on
+        other gateways) share no total order across each other. Only
+        forwarded messages flow through the ``chat-in:{chat_id}`` seq
+        stream; a message delivered locally on this gateway and one
+        forwarded from another gateway race on ``live._stdin_lock`` with no
+        defined relative order — whichever acquires it first is written to
+        the runner's stdin first, regardless of send time. Each of the two
+        paths is internally ordered (local sends serialize amongst
+        themselves; forwarded sends are delivered in stream seq order by
+        the single owning ``_inbound_consumer_loop``), just not against each
+        other. This is a narrow, accepted gap under the current sticky-WS
+        topology: a web client's WS is sticky to the owning gateway (so web
+        traffic is always local), and Slack is the only surface that
+        realistically forwards cross-gateway today. A cheap global order
+        would need every local send to also round-trip through the shared
+        stream, which is not worth it for this edge case — revisit if a
+        second surface starts forwarding regularly.
+        """
         live = self._live.get(chat_id)
         if live is None:
             # Not local. Before racing to spawn/resume a (possibly
