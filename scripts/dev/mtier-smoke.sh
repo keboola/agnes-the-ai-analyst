@@ -81,7 +81,9 @@ echo "checking redis reachability..."
 # `_chat_*_ok` startup guards), none of which this harness configures
 # (config/instance.mtier.yaml has no `chat:` section at all). Forcing
 # that on would pull in an E2B/Anthropic dependency this smoke doesn't
-# otherwise need just to get a key to scan for.
+# otherwise need just to get a key to scan for. Same reason: the
+# gateway-kill→sweep-lease-reappears continuity check is intentionally
+# omitted (sweep lease only fires when chat.enabled=true).
 #
 # Instead: app/auth/rate_limit.py points slowapi's Limiter storage at the
 # exact same resolve_redis_url() the coordination backend itself uses,
@@ -98,7 +100,7 @@ hit_auth_token
 hit_auth_token
 coord_ok=0
 for i in $(seq 1 45); do
-  count=$("${COMPOSE[@]}" exec -T redis redis-cli --scan --pattern 'LIMITS:*' 2>/dev/null | wc -l | tr -d ' ')
+  count=$("${COMPOSE[@]}" exec -T redis redis-cli --scan --pattern 'LIMITS:*' 2>/dev/null | wc -l | tr -d ' ' || true)
   if [ "${count:-0}" -gt 0 ]; then coord_ok=1; break; fi
   sleep 2
 done
@@ -130,7 +132,7 @@ done
 # (mixing a plain liveness probe with the redis-backed /auth/token path)
 # straight through the wipe and verify that story holds.
 echo "FLUSHALL chaos: wiping redis under traffic..."
-flushall_ts="$(date -u +%Y-%m-%dT%H:%M:%S)"
+flushall_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 loop_fails=0
 for i in $(seq 1 20); do
   curl -fsS -m 2 localhost:8080/healthz >/dev/null 2>&1 || loop_fails=$((loop_fails+1))
@@ -170,7 +172,7 @@ hit_auth_token
 hit_auth_token
 fresh_ok=0
 for i in $(seq 1 15); do
-  fresh_count=$("${COMPOSE[@]}" exec -T redis redis-cli --scan --pattern 'LIMITS:*' 2>/dev/null | wc -l | tr -d ' ')
+  fresh_count=$("${COMPOSE[@]}" exec -T redis redis-cli --scan --pattern 'LIMITS:*' 2>/dev/null | wc -l | tr -d ' ' || true)
   if [ "${fresh_count:-0}" -gt 0 ]; then fresh_ok=1; break; fi
   sleep 1
 done
