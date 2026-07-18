@@ -190,6 +190,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   /api/jobs?kind=data-refresh&status=running` (authenticated with
   `SCHEDULER_API_TOKEN`, alongside the existing `/api/sync/status` check) so
   it defers correctly when sync runs in a separate worker container.
+- `infra/modules/customer-instance/files/agnes-watchdog.sh` now scans every
+  agnes role container in the fleet instead of a single hardcoded `app`
+  — enumerated via `docker compose ps` (services matching `app`, `worker`,
+  `gateway`, `api<N>`; falls back to the legacy `agnes-app-1` name when
+  compose can't be resolved from the working directory). Every existing
+  incident signature (crash loop, zombie-DB, WAL salvage, index desync,
+  restart bursts, OOM, dead health endpoint) now runs per container, naming
+  it in the alert. New signature: coordination-backend unreachable — when
+  `coordination.backend: redis` is configured, 3+ `CoordinationUnavailable`
+  hits in one container's logs within a scan window alerts (gated on redis
+  actually being configured; threshold-gated so a single tolerated blip
+  doesn't fire, matching the existing streak-style signatures). Single-
+  container deployments are unaffected — the enumeration just finds the
+  one `app` container.
 
 ### Fixed
 
