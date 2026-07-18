@@ -248,13 +248,17 @@ class LiveSession:
     # (wave-2F task 4) — the ordering/dedup cursor for
     # ChatManager._inbound_consumer_loop. Lives on the LiveSession object
     # (not the coordination backend) so an in-process respawn resumes
-    # exactly where it left off; a genuine cross-gateway takeover
-    # (_takeover_foreign_session, wave-2F task 5) builds a brand new
-    # LiveSession with this at its default 0, so the new owner's consumer
-    # re-reads the WHOLE chat-in:{chat_id} stream from the start — an
-    # accepted at-least-once redelivery (never a loss), same posture as
-    # every other coordination-backend stream reader in this module (see
-    # app.chat.inbound's module docstring).
+    # exactly where it left off. A brand-new LiveSession starts at 0, and
+    # the consumer loop SEEDS the cursor from the current chat-in-seq
+    # counter before its first read (wave-2F final review F3): the
+    # chat-in:{chat_id} stream retains up to STREAM_MAXLEN
+    # already-delivered entries, so a cross-gateway takeover
+    # (_takeover_foreign_session) or post-restart resume that read from 0
+    # would re-feed every retained user message to the fresh runner
+    # (duplicate LLM answers) and RE-EXECUTE retained control entries (a
+    # stale kill would tear the fresh session right back down). The seed
+    # trades that for a narrow at-most-once window across an ownership
+    # change — see _inbound_consumer_loop's seeding comment.
     inbound_last_seq: int = 0
 
 
@@ -1140,6 +1144,33 @@ class ChatManager:
 
         session_dir = live.session_dir or self._workdir_mgr.prepare_session_dir(session.user_email, live.chat_id)
         new_handle = await self._spawn_runner(session, session_dir)
+        # Defense in depth (wave-2F final review F2): a kill() — or a
+        # lost-ownership teardown — can race this spawn window from a call
+        # path that does NOT hold the per-chat_id session lock
+        # (``_resume_live`` reached via the inbound consumer or
+        # send_user_message's already-live PAUSED branch; kill() itself now
+        # takes the session lock, which covers the attach()/takeover path,
+        # but cannot serialize against those). If this LiveSession was torn
+        # down mid-spawn (state flipped to DEAD, or it is no longer the
+        # registered ``_live`` entry for its chat_id), registering the
+        # just-spawned sandbox would resurrect sandbox refs onto an
+        # archived/killed row and leave the sandbox untracked (billable)
+        # forever — destroy it and bail instead.
+        if live.state == SessionState.DEAD or self._live.get(live.chat_id) is not live:
+            logger.warning(
+                "respawn for %s raced a teardown — destroying the just-spawned sandbox %s instead of registering it",
+                live.chat_id,
+                new_handle.sandbox_id,
+            )
+            try:
+                await new_handle.kill(grace_sec=1.0)
+            except Exception:
+                logger.exception("kill of orphaned respawn sandbox %s failed", new_handle.sandbox_id)
+                try:
+                    await self._provider.destroy(sandbox_id=new_handle.sandbox_id)
+                except Exception:
+                    logger.warning("destroy fallback for orphaned respawn sandbox %s failed", new_handle.sandbox_id)
+            return
         live.handle = new_handle
         live.state = SessionState.ACTIVE
         live.active_since = _t.monotonic()
@@ -1949,6 +1980,24 @@ class ChatManager:
                 # this one just has nothing left to wake.
                 pass
 
+        # Seed the dedup cursor from the CURRENT chat-in-seq counter before
+        # the first read (wave-2F final review F3). A brand-new LiveSession
+        # starts at inbound_last_seq=0, but the chat-in:{chat_id} stream
+        # RETAINS up to STREAM_MAXLEN already-delivered entries — a
+        # takeover (or any fresh consumer start for a session with history)
+        # that read from 0 would re-feed every retained user message to the
+        # fresh runner (duplicate LLM answers for turns the user already
+        # got) and RE-EXECUTE retained control entries (a stale kill would
+        # tear the just-taken-over session right back down). Accepted
+        # trade-off, deliberately documented: an entry published before
+        # this peek but never delivered by the previous owner (the narrow
+        # published-but-undelivered window around an ownership change) is
+        # skipped too — at-most-once across a takeover, in exchange for
+        # never replaying the retained stream. In-process respawns never
+        # re-enter here (this task survives pause/resume — see
+        # LiveSession.inbound_task), so a warm cursor is never clobbered.
+        if live.inbound_last_seq == 0:
+            live.inbound_last_seq = await asyncio.to_thread(inbound.peek_seq, chat_id)
         unsubscribe = inbound.subscribe_notify(chat_id, _on_notify)
         try:
             while True:
@@ -2297,6 +2346,35 @@ class ChatManager:
         await self._broadcast(live, {"type": "cancelled"})
 
     async def kill(self, chat_id: str, *, reason: str) -> None:
+        """Tear ``chat_id`` down (or forward a control:kill to its owner).
+
+        Locking (wave-2F final review F2): the whole body runs under
+        ``self._get_session_lock(chat_id)`` — the same per-chat_id lock
+        ``attach()`` and ``send_user_message()`` hold across their
+        spawn/resume/takeover decision trees. Without it, a kill landing
+        inside a takeover's spawn window popped the state=NEW stub from
+        ``self._live`` and tore down nothing (handle still None), after
+        which the completing spawn registered an ACTIVE handle and
+        ``set_sandbox_ref``'d it onto the already-archived row — a leaked,
+        untracked, billable sandbox. Under the lock, a kill racing an
+        in-flight attach/takeover simply waits for it to settle and then
+        tears the fully-registered session down normally. (The
+        ``_resume_live``-via-consumer respawn path doesn't hold this lock;
+        ``_respawn_fresh``'s post-spawn re-check is the second layer that
+        covers it.)
+
+        Deadlock audit: no caller of kill() holds this session lock —
+        REST/Slack teardown handlers, ``shutdown()``, the reaper
+        (``_reap_once``), ``_pause_live``'s failure fallback,
+        ``_respawn_co_runner``, ``_on_all_sinks_gone`` (fires kill as a
+        detached task), and the inbound consumer's ``control:kill`` branch
+        all call in lock-free; attach()/send_user_message (the lock's other
+        holders) never call kill() while holding it.
+        """
+        async with self._get_session_lock(chat_id):
+            await self._kill_locked(chat_id, reason=reason)
+
+    async def _kill_locked(self, chat_id: str, *, reason: str) -> None:
         # Spawn-time profile is no longer needed once the session is torn down;
         # drop it so the map doesn't grow unboundedly with studio usage.
         self._session_profiles.pop(chat_id, None)
