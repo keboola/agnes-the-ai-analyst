@@ -1,4 +1,4 @@
-"""Repository for `mcp_sources` (v61) — external MCP servers Agnes ingests from."""
+"""Repository for `mcp_sources` (v64 + v66 scope + v92 connect_hint) — external MCP servers Agnes ingests from."""
 
 from __future__ import annotations
 

@@ -44,6 +44,22 @@ class HasSecretResponse(BaseModel):
     updated_at: str | None = None  # ISO-8601 of last set; None when not connected
 
 
+def _require_source_grant(source_id: str, user: dict) -> None:
+    """403 unless the caller is granted at least one tool on ``source_id``.
+
+    Uses the same ``_visible_passthrough_tools`` intersection as the connect
+    page and the ``/test`` endpoint (admin short-circuits to all sources), so a
+    user can only read or manage their own credential for a source they're
+    actually entitled to use — an ungranted caller can't probe an arbitrary
+    source's existence / scope / connection timestamp, nor store a token
+    against it."""
+    from app.api.mcp_passthrough import _visible_passthrough_tools
+
+    granted_source_ids = {t["source_id"] for t in _visible_passthrough_tools(user)}
+    if source_id not in granted_source_ids:
+        raise HTTPException(status_code=403, detail="not_granted")
+
+
 @router.put("/{source_id}/my-secret", status_code=204)
 async def set_my_secret(
     source_id: str,
@@ -60,6 +76,7 @@ async def set_my_secret(
         raise HTTPException(status_code=400, detail="secret value required")
     if not mcp_sources_repo().get(source_id):
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    _require_source_grant(source_id, user)
     try:
         per_user_secrets_repo().upsert(source_id, user["id"], body.value)
     except VaultKeyNotConfiguredError as exc:
@@ -78,6 +95,7 @@ async def delete_my_secret(
     sources the next call falls through to the shared vault path."""
     if not mcp_sources_repo().get(source_id):
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    _require_source_grant(source_id, user)
     per_user_secrets_repo().delete(source_id, user["id"])
 
 
@@ -91,6 +109,7 @@ async def get_my_secret_status(
     source = mcp_sources_repo().get(source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    _require_source_grant(source_id, user)
     return HasSecretResponse(
         has_secret=per_user_secrets_repo().has(source_id, user["id"]),
         source_scope=(source.get("scope") or "shared"),
@@ -130,7 +149,6 @@ async def test_my_secret(source_id: str, user: dict = Depends(get_current_user))
     source → 403; over the rate limit → 429; no personal credential → 403 with
     the connect remedy. Only then does it introspect under the caller's token.
     """
-    from app.api.mcp_passthrough import _visible_passthrough_tools
     from app.api.mcp_policy import (
         PerUserCredentialMissing,
         RateLimited,
@@ -144,11 +162,7 @@ async def test_my_secret(source_id: str, user: dict = Depends(get_current_user))
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     if (source.get("scope") or "shared").lower() != "per_user":
         raise HTTPException(status_code=400, detail="source_scope_not_per_user")
-    # Grant check via the same helper the connect page uses — no second
-    # hand-rolled intersection (there is no source-level grant method).
-    granted_source_ids = {t["source_id"] for t in _visible_passthrough_tools(user)}
-    if source_id not in granted_source_ids:
-        raise HTTPException(status_code=403, detail="not_granted")
+    _require_source_grant(source_id, user)
     try:
         check_rate_limit(source_id, user["id"], _TEST_CONNECTION_RATE_LIMIT_PM)
     except RateLimited as exc:

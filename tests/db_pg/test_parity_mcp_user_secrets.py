@@ -27,11 +27,21 @@ def _vault_key(monkeypatch):
     monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode("ascii"))
 
 
-def _seed_source(scope: str = "per_user") -> str:
-    """Create an MCP source through the factory and return its id."""
-    from src.repositories import mcp_sources_repo
+def _seed_source(
+    scope: str = "per_user", grant_to: str | None = "analyst1", source_id: str = "notion"
+) -> str:
+    """Create an MCP source through the factory and return its id.
 
-    source_id = "notion"
+    Also seeds one passthrough tool granted to ``grant_to`` — the my-secret
+    endpoints require a grant on the source, so a non-admin caller must be
+    entitled to it. Set ``grant_to=None`` to leave the source ungranted."""
+    from src.repositories import (
+        mcp_sources_repo,
+        tool_registry_repo,
+        user_group_members_repo,
+        user_groups_repo,
+    )
+
     mcp_sources_repo().upsert(
         id=source_id,
         name="Notion",
@@ -39,7 +49,40 @@ def _seed_source(scope: str = "per_user") -> str:
         url="https://mcp.notion.example/v1",
         scope=scope,
     )
+    if grant_to is not None:
+        tools = tool_registry_repo()
+        tools.upsert(
+            tool_id=f"{source_id}.lookup",
+            source_id=source_id,
+            original_name="lookup",
+            exposed_name="lookup",
+            mode="passthrough",
+            description="grant target",
+        )
+        grp = user_groups_repo().create(name=f"grant-{source_id}", description=None)
+        tools.add_grant(f"{source_id}.lookup", grp["id"])
+        user_group_members_repo().add_member(grant_to, grp["id"], source="system_seed")
     return source_id
+
+
+def test_my_secret_requires_grant_on_both_backends(seeded_app_both):
+    """An authenticated caller with no grant on the source gets 403 on GET/PUT/
+    DELETE — they can't probe or manage a credential for a source they aren't
+    entitled to. Runs on both backends."""
+    client = seeded_app_both["client"]
+    token = seeded_app_both["analyst_token"]
+    source_id = _seed_source(scope="per_user", grant_to=None, source_id="ungranted_src")
+    for method, kwargs in (
+        ("get", {}),
+        ("put", {"json": {"value": "x"}}),
+        ("delete", {}),
+    ):
+        r = getattr(client, method)(
+            f"/api/mcp/sources/{source_id}/my-secret",
+            headers={"Authorization": f"Bearer {token}"},
+            **kwargs,
+        )
+        assert r.status_code == 403, f"{method}: {r.status_code} {r.text}"
 
 
 def test_get_status_no_secret_yet(seeded_app_both):
