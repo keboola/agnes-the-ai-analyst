@@ -7,6 +7,7 @@ import logging
 import re
 from typing import Any, Awaitable, Callable, Coroutine, Optional
 
+from app.chat import routing
 from services.slack_bot.binding import (
     bind_prompt,
     issue_verification_code,
@@ -99,6 +100,42 @@ def _is_attached(mgr, chat_id: str) -> bool:
     return any(live.chat_id == chat_id for live in mgr.list_live())
 
 
+async def _owned_by_other_gateway(chat_id: str) -> bool:
+    """True iff ``chat_id``'s routing lease is currently held by a
+    DIFFERENT, presumably-still-live gateway replica than this process
+    (wave-2F task 7 — thin Slack webhook producers).
+
+    A Slack HTTP webhook can land on ANY gateway replica behind the load
+    balancer, regardless of which replica actually owns (spawned/attached)
+    the session. Blindly calling ``ChatManager.attach`` here would hit its
+    "no local LiveSession, but the routing lease is held elsewhere" branch,
+    which is a cross-gateway TAKEOVER — it destroys the session's runner on
+    its current owner and respawns a fresh one on THIS replica (see
+    ``ChatManager.attach`` / ``_takeover_foreign_session`` docstrings). That
+    behavior exists for a reconnecting web WS, which really does need to be
+    local to whichever gateway now holds the socket — it is the wrong
+    behavior for a webhook that has no such requirement and would otherwise
+    silently steal (and interrupt) every session on every load-balanced
+    request.
+
+    Checking ownership first lets the handler skip attach/wait_until_live
+    entirely when a foreign owner is live and fall straight through to
+    ``ChatManager.send_user_message``, which already forwards the message
+    over the ``chat-in:{chat_id}`` coordination stream to whichever gateway
+    owns the session (``ChatManager._forward_inbound_message``) — no local
+    spawn, no takeover, no assumption that this process hosts the session.
+
+    Returns False (safe to attach locally) when the lease is unclaimed/
+    expired, held by this same gateway, or the coordination backend is
+    unavailable (``routing.owner_of`` already degrades to ``None`` in that
+    case) — all of those fall through to the existing local resume/spawn
+    path, unchanged.
+    """
+    this_gw = routing.this_gateway_id()
+    owner = await asyncio.to_thread(routing.owner_of, chat_id)
+    return owner is not None and owner != this_gw
+
+
 async def _handle_dm(app, event: dict) -> None:
     if event.get("channel_type") != "im" or event.get("bot_id"):
         return
@@ -146,31 +183,39 @@ async def _handle_dm(app, event: dict) -> None:
         surface=Surface.SLACK_DM,
         slack_channel_id=channel,
     )
-    # Attach a SlackSinkBridge if no pump is running for this session yet.
-    # The bridge forwards assistant_message frames to send_thread_reply so
-    # the user actually sees the answer in Slack.
-    if not _is_attached(mgr, session.id):
-        web_base = getattr(app.state, "public_url", "")
-        sink = SlackSinkBridge(
-            channel=channel,
-            thread_ts=thread_ts,
-            chat_id=session.id,
-            owner=user_email,
-            web_base=web_base,
-        )
-        _schedule(mgr.attach(session.id, sink))
-        # attach() never returns during a session's lifetime (it awaits the
-        # pump), so we can't await it — but it spawns the sandbox first, which
-        # takes several seconds. Wait (bounded) for the live session to register
-        # before injecting the turn; a fixed sleep raced attach() and dropped
-        # the user's first message with SessionNotFound.
-        if not await mgr.wait_until_live(session.id):
-            await send_thread_reply(
-                channel,
-                thread_ts,
-                "Agnes is still starting up — please resend your message in a few seconds.",
+    # wave-2F task 7: this HTTP webhook can land on ANY gateway replica, not
+    # necessarily the one that owns this session. Only attach/spawn locally
+    # when THIS replica would actually become (or already is) the owner —
+    # if a different, still-live gateway already owns it, skip straight to
+    # send_user_message (which forwards over the inbound coordination
+    # stream) instead of triggering attach()'s cross-gateway takeover. See
+    # _owned_by_other_gateway's docstring.
+    if not await _owned_by_other_gateway(session.id):
+        # Attach a SlackSinkBridge if no pump is running for this session yet.
+        # The bridge forwards assistant_message frames to send_thread_reply so
+        # the user actually sees the answer in Slack.
+        if not _is_attached(mgr, session.id):
+            web_base = getattr(app.state, "public_url", "")
+            sink = SlackSinkBridge(
+                channel=channel,
+                thread_ts=thread_ts,
+                chat_id=session.id,
+                owner=user_email,
+                web_base=web_base,
             )
-            return
+            _schedule(mgr.attach(session.id, sink))
+            # attach() never returns during a session's lifetime (it awaits the
+            # pump), so we can't await it — but it spawns the sandbox first, which
+            # takes several seconds. Wait (bounded) for the live session to register
+            # before injecting the turn; a fixed sleep raced attach() and dropped
+            # the user's first message with SessionNotFound.
+            if not await mgr.wait_until_live(session.id):
+                await send_thread_reply(
+                    channel,
+                    thread_ts,
+                    "Agnes is still starting up — please resend your message in a few seconds.",
+                )
+                return
     await mgr.send_user_message(session.id, text)
 
 
@@ -244,26 +289,30 @@ async def _handle_mention(app, event: dict) -> None:
     # 7. Strip our own mention token.
     clean = _strip_bot_mention(text, bot_user_id)
 
-    # 8. Attach (NOT awaited — keep the 3s ack budget).
-    if not _is_attached(mgr, session.id):
-        sink = SlackSinkBridge(
-            channel=channel,
-            thread_ts=thread_ts,
-            chat_id=session.id,
-            owner=user_email,
-            web_base=getattr(app.state, "public_url", ""),
-        )
-        _schedule(mgr.attach(session.id, sink))
-        # Bounded wait for the live session — attach() spawns the sandbox
-        # (seconds) before registering, so a fixed sleep raced it and dropped
-        # the first turn with SessionNotFound. attach() itself never returns.
-        if not await mgr.wait_until_live(session.id):
-            await send_ephemeral_to_user(
-                channel,
-                slack_user_id,
-                "Agnes is still starting up — please resend in a few seconds.",
+    # 8. Attach (NOT awaited — keep the 3s ack budget). wave-2F task 7: skip
+    # entirely when a different, still-live gateway already owns this
+    # session — see _owned_by_other_gateway's docstring for why attaching
+    # here would otherwise trigger a cross-gateway takeover.
+    if not await _owned_by_other_gateway(session.id):
+        if not _is_attached(mgr, session.id):
+            sink = SlackSinkBridge(
+                channel=channel,
+                thread_ts=thread_ts,
+                chat_id=session.id,
+                owner=user_email,
+                web_base=getattr(app.state, "public_url", ""),
             )
-            return
+            _schedule(mgr.attach(session.id, sink))
+            # Bounded wait for the live session — attach() spawns the sandbox
+            # (seconds) before registering, so a fixed sleep raced it and dropped
+            # the first turn with SessionNotFound. attach() itself never returns.
+            if not await mgr.wait_until_live(session.id):
+                await send_ephemeral_to_user(
+                    channel,
+                    slack_user_id,
+                    "Agnes is still starting up — please resend in a few seconds.",
+                )
+                return
 
     # 9. Inject the user turn. send_user_message(chat_id, text) — no sender_email
     #    (per-sender attribution arrives with Phase 5a's multi-sink refactor).
