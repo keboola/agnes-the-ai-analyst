@@ -601,7 +601,17 @@ class ChatManager:
         in add_sink() for late joiners that have no REST history-load step.
         The turn buffer IS replayed — a mid-turn reconnect picks up exactly
         the frames the runner already emitted (snapshot to avoid racing the
-        pump task)."""
+        pump task).
+
+        ``ws`` may be a raw sink or an ``app.chat.replay.GapReplayGate``
+        wrapper (2026-07-18 reconnect-race fix): ``app.api.chat``'s
+        ws_stream/ws_join routes seat a gate here BEFORE computing the
+        gap replay precisely so that a frame broadcast between this call
+        and the gap-replay send lands in the gate's buffer instead of
+        being silently lost — see that module and ``GapReplayGate`` for
+        the full mechanism. Either way this method only ever calls
+        ``send_json``/relies on duck typing, so it's unaffected either
+        way."""
         for frame in list(live.turn_buffer):
             await ws.send_json(frame)
         if is_primary:
@@ -681,7 +691,7 @@ class ChatManager:
         ``None`` if the session isn't live or has no in-flight turn.
 
         Used by the reconnect-replay path (wave-2F task 3,
-        ``app.api.chat._send_replay``) to avoid double-sending frames: a
+        ``app.api.chat._flush_gap_replay``) to avoid double-sending frames: a
         mid-turn reconnect's ``attach()`` call is about to replay the
         WHOLE turn buffer via ``_seat_sink`` regardless of what the client
         already saw (it has no notion of ``last_seq``), so the replay
@@ -1213,27 +1223,34 @@ class ChatManager:
         race to a sink. The lock is released before the dead-sink cleanup
         below, which is unrelated to ordering and would otherwise hold it
         across the (also-unrelated) ``_on_all_sinks_gone`` bookkeeping.
+
+        The chat-out replay-stream append (``append_frame``) deliberately
+        runs OUTSIDE this lock (2026-07-18 latency fix): it used to run
+        inside, which put a full coordination-backend round trip (a Redis
+        ``XADD``) between every streamed token and its delivery to sinks —
+        under the ``redis`` backend that serializes an entire session's
+        live token-by-token delivery behind Redis latency, for no
+        correctness benefit (append_frame is best-effort and independent
+        of delivery — see app.chat.replay's module docstring). Moving it
+        out means two concurrent ``_broadcast`` calls for the same session
+        can now complete their (unlocked) appends in a different order
+        than their (locked) stamps; both ``stream_read`` implementations
+        sort by the frame's own ``seq`` field to correct for that on read,
+        so this is safe for anything that reads the stream back (see
+        ``app.coordination.memory``/``app.coordination.redis_backend``).
         """
         dead: list[SinkEntry] = []
         async with live._broadcast_lock:
             stamp_frame(live.chat_id, frame)
-            # wave-2F task 3: append every stamped frame to the bounded
-            # chat-out replay stream BEFORE fanning out, so a client that
-            # reconnects can never observe a live frame whose seq the
-            # stream doesn't also have (append_frame is best-effort and
-            # never raises — see app.chat.replay's module docstring for
-            # why a stream-append failure must not block live delivery).
-            # Awaited under the same lock as the stamp so append order
-            # matches seq order — see this method's own lock-scope note
-            # above for why that invariant matters to a reconnecting
-            # replay reader.
-            await append_frame(live.chat_id, frame)
             for entry in list(live.sinks):
                 try:
                     await entry.sink.send_json(frame)
                 except Exception:
                     logger.warning("sink send failed for %s", live.chat_id)
                     dead.append(entry)
+        # wave-2F task 3, latency-fix note above: append AFTER the lock is
+        # released — never raises (best-effort, see append_frame).
+        await append_frame(live.chat_id, frame)
         for entry in dead:
             if entry in live.sinks:
                 live.sinks.remove(entry)
