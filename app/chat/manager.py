@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -67,6 +68,14 @@ _PAUSED_SWEEP_LEASE_TTL_SEC = 90
 # interval (app/coordination/leases.py) — a single missed reaper tick must
 # not lose the lease.
 _ROUTING_LEASE_TTL_SEC = 180
+
+# Upper bound on ChatManager._session_locks (see that field's docstring in
+# __init__ for the full reasoning): a per-chat_id asyncio.Lock registry
+# that used to grow forever. Generous headroom over any realistic number
+# of concurrently-relevant sessions on one gateway process — this only
+# starts trimming once tens of thousands of distinct chat_ids have ever
+# been attached here.
+_SESSION_LOCKS_MAX_ENTRIES = 10_000
 
 # Poll-fallback cadence for ChatManager._inbound_consumer_loop (wave-2F
 # task 4). The coordination-backend pub/sub notify (app.chat.inbound.
@@ -282,10 +291,10 @@ class ChatManager:
         # respawn vs. reconnect (AC-G-resume-legacy).
         self._known_protocol_sessions: set[str] = set()
         # Per-chat_id session lock (Critical-1 fix, wave-2F task 5
-        # hardening) — one per chat_id, created on first use, never removed.
-        # Guards attach()'s ENTIRE ACTIVE/PAUSED/takeover/resume-from-row/
-        # spawn decision tree, held from the very first `self._live.get`
-        # read through to the point a LiveSession with a real handle is
+        # hardening) — one per chat_id, created on first use. Guards
+        # attach()'s ENTIRE ACTIVE/PAUSED/takeover/resume-from-row/spawn
+        # decision tree, held from the very first `self._live.get` read
+        # through to the point a LiveSession with a real handle is
         # registered (spawn/resume/takeover all complete before release).
         # send_user_message()'s "no local live session yet" resume-from-row/
         # spawn decision takes the SAME lock (re-checking `self._live` after
@@ -316,7 +325,43 @@ class ChatManager:
         # `memory` coordination backend / single-gateway deployments (no
         # concurrent attach() for the same chat_id in practice there), same
         # as its predecessor.
-        self._session_locks: dict[str, asyncio.Lock] = {}
+        #
+        # Bounded registry (Devin review follow-up, wave-2F task 8): a
+        # naive "never removed" map grows by one entry for every chat_id
+        # ever attached, for the process's entire lifetime — an unbounded
+        # leak on a long-lived gateway with high session churn. Evicting
+        # eagerly inside `kill()` was considered and rejected: `kill()`
+        # does NOT take this lock at all (it mutates `self._live` directly),
+        # so an eviction there can only use `not lock.locked()` as its
+        # signal. That signal has a real gap — `asyncio.Lock.release()`
+        # sets `_locked = False` and *schedules* (via `call_soon`, not
+        # synchronously) the next waiter's resumption; in the window
+        # between that `release()` and the waiter actually resuming and
+        # re-setting `_locked = True`, `.locked()` reports `False` even
+        # though a waiter is about to take ownership. `asyncio.Lock`
+        # exposes no public "has pending waiters" query, so there is no
+        # race-free way to tell "genuinely idle" apart from "just released,
+        # a waiter is about to claim it" from outside the lock itself. If
+        # an eviction lands in that window, a queued waiter and a brand
+        # new `_get_session_lock(chat_id)` caller end up holding two
+        # different `Lock` objects for the same `chat_id` — exactly the
+        # double-spawn class this lock exists to prevent, just relocated a
+        # layer up. Rather than relying on a private `_waiters` attribute
+        # to close that gap (undocumented CPython internals, not part of
+        # the public asyncio API), this is bounded instead: an
+        # `OrderedDict` (`_get_session_lock` moves a key to the end on
+        # every access — LRU order) evicts its *oldest, currently-unlocked*
+        # entries once the map exceeds `_SESSION_LOCKS_MAX_ENTRIES`. Any
+        # entry that is `.locked()` at eviction time is left in place and
+        # retried on a later call, so contended locks are never touched.
+        # This still shares the same theoretical release/resume window
+        # above, but only when the map is already at the cap — i.e. it
+        # trades "eviction never happens" for "eviction (and its narrow
+        # residual race) only becomes possible once tens of thousands of
+        # distinct sessions have ever been attached on this process,"
+        # which bounds worst-case memory instead of chasing full
+        # eviction-time safety with no clean way to prove it.
+        self._session_locks: "OrderedDict[str, asyncio.Lock]" = OrderedDict()
 
     @staticmethod
     def _daily_token_keys(user_email: str) -> tuple[str, str]:
@@ -684,8 +729,37 @@ class ChatManager:
         """Return (creating on first use) the single per-chat_id lock that
         serializes attach()'s whole decision tree — see the docstring on
         ``self._session_locks`` in ``__init__`` for the double-spawn bug
-        this closes."""
-        return self._session_locks.setdefault(chat_id, asyncio.Lock())
+        this closes, and for why the registry is bounded via LRU eviction
+        rather than removed eagerly on kill()."""
+        lock = self._session_locks.get(chat_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_locks[chat_id] = lock
+        else:
+            self._session_locks.move_to_end(chat_id)
+        if len(self._session_locks) > _SESSION_LOCKS_MAX_ENTRIES:
+            self._evict_stale_session_locks()
+        return lock
+
+    def _evict_stale_session_locks(self) -> None:
+        """Trim ``self._session_locks`` back toward
+        ``_SESSION_LOCKS_MAX_ENTRIES`` once it grows past the cap.
+
+        Walks the map in LRU order (oldest-accessed first, per
+        ``OrderedDict`` + the ``move_to_end`` call in
+        ``_get_session_lock``) and drops entries whose lock is currently
+        unlocked, stopping as soon as the map is back under the cap. Any
+        entry that is ``.locked()`` is skipped and left for a later sweep
+        — see ``self._session_locks``'s docstring in ``__init__`` for why
+        eviction never touches a lock that looks (even momentarily) held.
+        """
+        target = _SESSION_LOCKS_MAX_ENTRIES
+        for chat_id in list(self._session_locks.keys()):
+            if len(self._session_locks) <= target:
+                return
+            lock = self._session_locks.get(chat_id)
+            if lock is not None and not lock.locked():
+                del self._session_locks[chat_id]
 
     async def attach(self, chat_id: str, ws, *, is_primary: bool = True) -> None:
         """Ensure the session is running and seat ws as a sink.
