@@ -19,6 +19,7 @@ from app.chat.frame_seq import stamp_frame
 from app.chat.persistence import ChatRepository
 from app.chat.profiles import get_profile
 from app.chat.provider import SandboxHandle, SandboxProvider
+from app.chat.replay import append_frame
 from app.chat.types import ChatSession, SessionState, Surface
 from app.chat.workdir import WorkdirManager
 from app.coordination.base import CoordinationUnavailable
@@ -674,6 +675,25 @@ class ChatManager:
         if not live.sinks:
             self._on_all_sinks_gone(live)
 
+    def turn_buffer_min_seq(self, chat_id: str) -> Optional[int]:
+        """Lowest ``seq`` currently held in ``chat_id``'s in-flight turn
+        buffer (see ``LiveSession.turn_buffer`` / ``_seat_sink``), or
+        ``None`` if the session isn't live or has no in-flight turn.
+
+        Used by the reconnect-replay path (wave-2F task 3,
+        ``app.api.chat._send_replay``) to avoid double-sending frames: a
+        mid-turn reconnect's ``attach()`` call is about to replay the
+        WHOLE turn buffer via ``_seat_sink`` regardless of what the client
+        already saw (it has no notion of ``last_seq``), so the replay
+        stream must not ALSO resend any frame at or past this seq — the
+        two would otherwise double-deliver the tail of an in-flight turn.
+        """
+        live = self._live.get(chat_id)
+        if live is None or not live.turn_buffer:
+            return None
+        seqs = [f["seq"] for f in live.turn_buffer if isinstance(f.get("seq"), int)]
+        return min(seqs) if seqs else None
+
     def _cancel_linger(self, live: "LiveSession") -> None:
         if live.linger_task is not None and not live.linger_task.done():
             live.linger_task.cancel()
@@ -1197,6 +1217,17 @@ class ChatManager:
         dead: list[SinkEntry] = []
         async with live._broadcast_lock:
             stamp_frame(live.chat_id, frame)
+            # wave-2F task 3: append every stamped frame to the bounded
+            # chat-out replay stream BEFORE fanning out, so a client that
+            # reconnects can never observe a live frame whose seq the
+            # stream doesn't also have (append_frame is best-effort and
+            # never raises — see app.chat.replay's module docstring for
+            # why a stream-append failure must not block live delivery).
+            # Awaited under the same lock as the stamp so append order
+            # matches seq order — see this method's own lock-scope note
+            # above for why that invariant matters to a reconnecting
+            # replay reader.
+            await append_frame(live.chat_id, frame)
             for entry in list(live.sinks):
                 try:
                     await entry.sink.send_json(frame)

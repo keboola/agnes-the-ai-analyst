@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from typing import Callable, Optional
 
 from app.coordination.base import CoordinationBackend
@@ -27,6 +28,18 @@ class MemoryCoordinationBackend(CoordinationBackend):
         # name -> (holder_id, expiry monotonic timestamp)
         self._leases: dict[str, tuple[str, float]] = {}
         self._subscribers: dict[str, list[Callable[[str], None]]] = {}
+        # key -> bounded deque of entries (oldest first); the deque's own
+        # maxlen does the eviction, so appends never need an explicit trim
+        # step. Sized from whatever `maxlen` the FIRST append for a key
+        # passes — later calls with a different `maxlen` are a caller bug
+        # (every real caller uses one fixed maxlen per key, e.g. the
+        # chat-out replay stream's constant) and are ignored rather than
+        # resized, to avoid silently discarding entries on a stray typo'd
+        # maxlen mid-stream.
+        self._streams: dict[str, deque[dict]] = {}
+        # key -> next entry id to hand out (monotonic per key, independent
+        # of any caller-supplied "seq" field inside the entry itself).
+        self._stream_ids: dict[str, int] = {}
 
     @staticmethod
     def _now() -> float:
@@ -139,3 +152,26 @@ class MemoryCoordinationBackend(CoordinationBackend):
 
     def ping(self) -> bool:
         return True
+
+    # -- Streams ------------------------------------------------------------------
+
+    def stream_append(self, key: str, entry: dict, *, maxlen: int) -> str:
+        with self._lock:
+            stream = self._streams.get(key)
+            if stream is None:
+                stream = deque(maxlen=maxlen)
+                self._streams[key] = stream
+            stream.append(entry)
+            next_id = self._stream_ids.get(key, 0) + 1
+            self._stream_ids[key] = next_id
+            return str(next_id)
+
+    def stream_read(self, key: str, after_seq: Optional[int] = None) -> list[dict]:
+        with self._lock:
+            stream = self._streams.get(key)
+            if stream is None:
+                return []
+            entries = list(stream)
+        if after_seq is None:
+            return entries
+        return [e for e in entries if e.get("seq", 0) > after_seq]
