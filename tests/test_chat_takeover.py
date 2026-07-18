@@ -20,6 +20,7 @@ Uses asyncio.run() per the project convention (no pytest-asyncio required)
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 from pathlib import Path
 
@@ -122,21 +123,61 @@ def two_gateways(tmp_path: Path) -> tuple[ChatManager, ChatManager, FakeProvider
     return mgr_a, mgr_b, provider
 
 
+#: Backs ``_as_gateway`` below. A plain ``monkeypatch.setattr(routing_mod,
+#: "this_gateway_id", lambda: gateway_id)`` replaces a SINGLE shared,
+#: mutable value: flipping it to "gw-b" for B's takeover doesn't just affect
+#: B's own call chain, it also retroactively changes what gateway A's
+#: still-running background ``_wait_for_exit_and_respawn`` task sees the
+#: NEXT time it happens to call ``this_gateway_id()`` — however long after
+#: A's own spawn that task next gets scheduled. If that scheduling lands
+#: after the flip to "gw-b" (a race that gets MORE, not less, likely under a
+#: loaded CI runner), A's crash-check wrongly reads itself AS "gw-b", finds
+#: ``owner_of() == this_gw``, and respawns a THIRD, orphaned sandbox — a
+#: split-brain artifact of the test harness's identity simulation, not of
+#: the ownership-check logic itself (real gateways never change their own
+#: identity mid-process).
+#:
+#: ``contextvars`` fixes this at the root: ``asyncio.create_task`` copies
+#: the CURRENT context at creation time, so every task spawned from within
+#: gateway A's call chain (including its pump/wait/inbound background
+#: tasks) keeps resolving to "gw-a" forever, regardless of what a LATER
+#: ``_as_gateway(monkeypatch, "gw-b")`` call sets in the test's own
+#: top-level context for gateway B's subsequent work.
+_gateway_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar("test_gateway_id", default="unset")
+
+
 def _as_gateway(monkeypatch: pytest.MonkeyPatch, gateway_id: str) -> None:
-    monkeypatch.setattr(routing_mod, "this_gateway_id", lambda: gateway_id)
+    monkeypatch.setattr(routing_mod, "this_gateway_id", _gateway_id_ctx.get)
+    _gateway_id_ctx.set(gateway_id)
 
 
 async def _spawn_owned_session(mgr: ChatManager) -> tuple[str, FakeHandle]:
     """Create + attach a session on ``mgr`` so it becomes the live ACTIVE
     owner — claims the routing lease under whatever gateway id is currently
-    patched onto app.chat.routing.this_gateway_id."""
+    patched onto app.chat.routing.this_gateway_id.
+
+    Polls rather than a single fixed sleep: ``ChatManager._spawn_live``
+    registers the ``LiveSession`` as ``state=ACTIVE`` in ``self._live``
+    BEFORE it awaits the routing-lease claim (``self._claim_routing_lease``,
+    which hops through ``asyncio.to_thread``), so a short fixed sleep can
+    observe ACTIVE state while the lease claim is still in flight. Under a
+    loaded CI runner (8 shards x pytest -n auto) that window can outlast a
+    fixed 50ms sleep — and callers' very next line is typically an assertion
+    on ``routing.owner_of``. Wait for both the live state AND the lease
+    itself to settle instead of guessing a duration.
+    """
     session = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
     ws = FakeWS()
     asyncio.create_task(mgr.attach(session.id, ws))
-    await asyncio.sleep(0.05)
-    live = mgr._live[session.id]
-    assert live.state == SessionState.ACTIVE
-    return session.id, live.handle
+    this_gw = routing.this_gateway_id()
+    for _ in range(200):  # up to ~2s
+        live = mgr._live.get(session.id)
+        if live is not None and live.state == SessionState.ACTIVE and routing.owner_of(session.id) == this_gw:
+            return session.id, live.handle
+        await asyncio.sleep(0.01)
+    raise AssertionError(
+        f"session {session.id} never reached ACTIVE with a claimed routing lease for gateway {this_gw!r}"
+    )
 
 
 def _stdin_texts(handle: FakeHandle) -> list[str]:
