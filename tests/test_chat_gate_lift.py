@@ -337,7 +337,20 @@ def test_slack_dm_owned_elsewhere_forwards_without_local_attach(monkeypatch):
 
 
 def test_slack_mention_owned_elsewhere_forwards_without_local_attach(monkeypatch):
-    """Same fix, channel-mention path (_handle_mention)."""
+    """Same fix, channel-mention path (_handle_mention).
+
+    Needs the same self-containment as ``_build_isolated_dm_app_state``
+    above: ``is_channel_allowlisted``/``lookup_user_email``/``can_access``
+    all resolve through ``src.repositories.*_repo()`` factories, which read
+    ``src.repositories.get_system_db()`` — NOT the ``conn`` object passed
+    around locally. Without redirecting that factory hook to this test's own
+    in-memory ``conn``, the allowlist/binding lookups silently miss (hitting
+    the real, process-persistent ``${DATA_DIR}/state/system.duckdb`` instead)
+    and the handler takes the "channel not allowlisted" ephemeral-deny branch
+    instead of the forward path this test exercises — which then crashes on
+    the monkeypatched non-async ``send_ephemeral_to_user`` stub. See that
+    helper's docstring for the full explanation.
+    """
     import duckdb
 
     from src.db import _ensure_schema
@@ -351,6 +364,7 @@ def test_slack_mention_owned_elsewhere_forwards_without_local_attach(monkeypatch
 
     conn = duckdb.connect(":memory:")
     _ensure_schema(conn)
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: conn)
     _seed_bound_chat_user(conn)
     _allow_channel(conn)
     mgr = _FakeMgr()
