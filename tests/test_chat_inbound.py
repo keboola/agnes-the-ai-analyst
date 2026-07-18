@@ -361,6 +361,190 @@ class TestCrossGatewayRouting:
 
         asyncio.run(_run())
 
+    def test_cross_gateway_kill_executed_by_owner(self, two_gateways, monkeypatch):
+        """FINDING 2 (multi-replica gate lift): kill() on a NON-owning
+        replica used to be a process-local no-op (`self._live.pop -> None ->
+        early return`) — the caller archived the row and revoked tickets
+        while the foreign owner's sandbox kept running. Now the non-owner
+        publishes a control:kill over the chat-in stream; the OWNER's
+        inbound consumer executes its local kill (sandbox destroyed exactly
+        once, by the owner; routing lease released), and the non-owner
+        archives the row locally (idempotent)."""
+        mgr_a, mgr_b = two_gateways
+
+        async def _run():
+            _as_gateway(monkeypatch, "gw-a")
+            chat_id, handle_a = await _spawn_owned_session(mgr_a)
+
+            kills: list[int] = []
+            orig_kill = handle_a.kill
+
+            async def _counting_kill(**kw):
+                kills.append(1)
+                await orig_kill(**kw)
+
+            handle_a.kill = _counting_kill
+
+            _as_gateway(monkeypatch, "gw-b")
+            await mgr_b.kill(chat_id, reason="user_archive")
+
+            # The non-owner never touched a sandbox itself.
+            mgr_b._provider.destroy.assert_not_called()
+            assert mgr_b._live.get(chat_id) is None
+            # DB archive done locally on the non-owner (idempotent).
+            assert mgr_b._repo.get_session(chat_id).archived is True
+
+            _as_gateway(monkeypatch, "gw-a")
+            await _wait_until(lambda: handle_a.killed)
+            assert sum(kills) == 1, "sandbox must be destroyed exactly once, by the owner"
+            await _wait_until(lambda: mgr_a._live.get(chat_id) is None)
+            # Owner's local kill released the routing lease.
+            assert routing_mod.owner_of(chat_id) is None
+            # And it never redelivers: give the (now-cancelled) consumer time.
+            await asyncio.sleep(0.1)
+            assert sum(kills) == 1
+
+        asyncio.run(_run())
+
+    def test_kill_with_no_owner_keeps_prior_local_noop(self, two_gateways, monkeypatch):
+        """No routing lease anywhere (orphan) → kill keeps today's behavior:
+        ticket hygiene + early return, no control entry published."""
+        _mgr_a, mgr_b = two_gateways
+
+        async def _run():
+            _as_gateway(monkeypatch, "gw-b")
+            await mgr_b.kill("chat-orphan", reason="user_archive")
+            assert inbound.read_new("chat-orphan", after_seq=0) == []
+
+        asyncio.run(_run())
+
+    def test_cross_gateway_cancel_reaches_owner_runner(self, two_gateways, monkeypatch):
+        """FINDING 3: cancel() on a NON-owning replica publishes a
+        control:cancel; the owner's consumer runs its local cancel, which
+        writes the `cancel` frame to the runner's stdin."""
+        mgr_a, mgr_b = two_gateways
+
+        def _cancel_frames(handle: FakeHandle) -> int:
+            return sum(1 for b in handle._stdin_buf if json.loads(b.decode("utf-8")).get("type") == "cancel")
+
+        async def _run():
+            _as_gateway(monkeypatch, "gw-a")
+            chat_id, handle_a = await _spawn_owned_session(mgr_a)
+
+            _as_gateway(monkeypatch, "gw-b")
+            await mgr_b.cancel(chat_id)
+            assert mgr_b._live.get(chat_id) is None
+
+            _as_gateway(monkeypatch, "gw-a")
+            await _wait_until(lambda: _cancel_frames(handle_a) == 1)
+            # Session stays live — cancel is not kill.
+            assert mgr_a._live.get(chat_id) is not None
+
+            await mgr_a.kill(chat_id, reason="test_done")
+
+        asyncio.run(_run())
+
+    def test_slack_stop_button_cancels_cross_replica(self, two_gateways, monkeypatch):
+        """The Slack Stop button POST (load-balanced, can land anywhere) goes
+        through interactivity._on_stop -> mgr.cancel — assert the whole path
+        now works when the click lands on the NON-owning replica."""
+        from types import SimpleNamespace
+
+        from services.slack_bot import interactivity as inter
+
+        mgr_a, mgr_b = two_gateways
+
+        def _cancel_frames(handle: FakeHandle) -> int:
+            return sum(1 for b in handle._stdin_buf if json.loads(b.decode("utf-8")).get("type") == "cancel")
+
+        async def _run():
+            _as_gateway(monkeypatch, "gw-a")
+            chat_id, handle_a = await _spawn_owned_session(mgr_a)
+
+            _as_gateway(monkeypatch, "gw-b")
+            monkeypatch.setattr(inter, "lookup_user_email", lambda repo, uid: "u@x")
+            app = SimpleNamespace(state=SimpleNamespace(chat_repo=mgr_b._repo, chat_manager=mgr_b))
+            it = inter.Interaction(
+                action_id=inter.blocks.ACTION_STOP,
+                slack_user_id="U1",
+                channel_id="D1",
+                response_url="https://hooks.slack/r1",
+                value={"chat_id": chat_id, "owner": "u@x"},
+            )
+            await inter._on_stop(app, it)
+
+            _as_gateway(monkeypatch, "gw-a")
+            await _wait_until(lambda: _cancel_frames(handle_a) == 1)
+
+            await mgr_a.kill(chat_id, reason="test_done")
+
+        asyncio.run(_run())
+
+    def test_forwarded_slack_message_reestablishes_slack_sink_on_owner(self, two_gateways, monkeypatch):
+        """FINDING 6 (forward side): a user message forwarded from a Slack
+        webhook on a NON-owning replica carries its Slack origin; the owner's
+        consumer must (re-)establish a SlackSinkBridge for that channel
+        before delivering — and must not stack duplicates."""
+        from services.slack_bot.sink import SlackSinkBridge
+
+        mgr_a, mgr_b = two_gateways
+
+        async def _run():
+            _as_gateway(monkeypatch, "gw-a")
+            chat_id, handle_a = await _spawn_owned_session(mgr_a)
+
+            _as_gateway(monkeypatch, "gw-b")
+            await mgr_b.send_user_message(chat_id, "hi", slack_origin={"channel": "D9", "thread_ts": "1.2"})
+
+            _as_gateway(monkeypatch, "gw-a")
+            await _wait_until(lambda: _stdin_texts(handle_a) == ["hi"])
+            live = mgr_a._live[chat_id]
+            bridges = [e.sink for e in live.sinks if isinstance(e.sink, SlackSinkBridge)]
+            assert len(bridges) == 1, "owner must seat a SlackSinkBridge for the forwarded Slack message"
+            assert bridges[0]._channel == "D9"
+
+            # Idempotent per (session, channel): a second forward reuses it.
+            _as_gateway(monkeypatch, "gw-b")
+            await mgr_b.send_user_message(chat_id, "again", slack_origin={"channel": "D9", "thread_ts": "1.2"})
+            _as_gateway(monkeypatch, "gw-a")
+            await _wait_until(lambda: _stdin_texts(handle_a) == ["hi", "again"])
+            assert sum(isinstance(e.sink, SlackSinkBridge) for e in live.sinks) == 1
+
+            await mgr_a.kill(chat_id, reason="test_done")
+
+        asyncio.run(_run())
+
+    def test_concurrency_cap_counts_sessions_across_gateways(self, two_gateways, monkeypatch):
+        """FINDING 5: the per-user concurrency cap is lease-derived — a
+        replica with NO local live sessions still sees the user's sessions
+        live on other gateways and enforces the cap (config cap = 2)."""
+        from app.chat.manager import ConcurrencyCapHit
+
+        mgr_a, mgr_b = two_gateways
+
+        async def _run():
+            _as_gateway(monkeypatch, "gw-a")
+            chat1, _h1 = await _spawn_owned_session(mgr_a)
+            # Non-empty so create_session's empty-session GC doesn't archive it.
+            await mgr_a.send_user_message(chat1, "keep me")
+            chat2, _h2 = await _spawn_owned_session(mgr_a)
+            assert mgr_a.active_count_for_user("u@x") == 2
+
+            _as_gateway(monkeypatch, "gw-b")
+            assert mgr_b.active_count_for_user("u@x") == 2, "leases must make A's sessions visible on B"
+            with pytest.raises(ConcurrencyCapHit):
+                await mgr_b.create_session(user_email="u@x", surface=Surface.WEB)
+
+            _as_gateway(monkeypatch, "gw-a")
+            await mgr_a.kill(chat1, reason="test_done")
+            await mgr_a.kill(chat2, reason="test_done")
+            # Leases released → count drops to zero on both replicas.
+            assert mgr_a.active_count_for_user("u@x") == 0
+            _as_gateway(monkeypatch, "gw-b")
+            assert mgr_b.active_count_for_user("u@x") == 0
+
+        asyncio.run(_run())
+
     def test_inbound_consumer_task_started_and_cancelled_on_kill(self, two_gateways, monkeypatch):
         mgr_a, _mgr_b = two_gateways
 

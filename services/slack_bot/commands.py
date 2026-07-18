@@ -129,6 +129,27 @@ async def _cmd_agnes(app, cmd: dict) -> None:
         )
         return
 
+    # Multi-replica gate lift: this slash-command webhook can land on ANY
+    # gateway replica. `_is_attached` below is process-local — when a
+    # DIFFERENT live gateway owns this session, it reads False here and
+    # the mgr.attach() call would fire ChatManager.attach's cross-gateway
+    # TAKEOVER (destroy the owner's sandbox + respawn locally) for a plain
+    # slash command. Same fix as services.slack_bot.events (wave-2F task
+    # 7): forward the message via send_user_message (routes over the
+    # chat-in:{chat_id} stream; slack_origin lets the owner re-establish
+    # its SlackSinkBridge) and ack the response_url — the reply lands in
+    # the DM via the owner's sink, not this single-shot response_url.
+    from services.slack_bot.events import _owned_by_other_gateway
+
+    if await _owned_by_other_gateway(session.id):
+        await mgr.send_user_message(
+            session.id,
+            text,
+            slack_origin={"channel": im_channel, "thread_ts": ""},
+        )
+        await send_ephemeral(response_url, "On it — Agnes will reply in your DM.")
+        return
+
     # Attach a one-shot ephemeral sink only if no permanent sink (web/DM)
     # is already pumping — response_url is single-shot and the persistent
     # sink keeps streaming on web/DM.
