@@ -21,6 +21,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   'description' in SKILL.md must be at most 1024 characters").
   `COWORK_FORMAT_VERSION` bumped so cached ETags bust and clients re-download
   the corrected zip.
+## [0.74.114] - 2026-07-18
+
 ### Security
 
 - The `GET`/`PUT`/`DELETE /api/mcp/sources/{id}/my-secret` endpoints now require
