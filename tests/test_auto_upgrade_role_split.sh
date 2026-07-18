@@ -29,6 +29,10 @@
 #   F. Fail-open: SCHEDULER_API_TOKEN is unset — the jobs probe must never
 #      even be attempted, and (with no other busy signal) the recreate
 #      proceeds normally.
+#   G. Role-split topology, worker+gateway recreate itself hard-fails
+#      (`docker compose up -d --no-deps worker gateway` exits non-zero) —
+#      the rollout must ABORT (non-zero exit + webhook alert) WITHOUT ever
+#      recreating any api replica.
 #
 # Run with: bash tests/test_auto_upgrade_role_split.sh
 set -euo pipefail
@@ -429,6 +433,42 @@ grep -qF "/api/jobs" "$transcript" \
 grep -qF "docker compose up -d" "$transcript" \
     || fail "F: the recreate must proceed when the token is absent and no other signal is busy"
 echo "OK: F — missing SCHEDULER_API_TOKEN skips the jobs probe (fails open) and the recreate proceeds"
+rm -rf "$tmp"
+
+# =====================================================================
+# Scenario G: role-split, worker+gateway recreate itself hard-fails. The
+# rollout must ABORT (non-zero exit + alert) WITHOUT ever recreating any
+# api replica — a failed worker/gateway recreate must not be papered over
+# by rolling the api replicas forward anyway.
+# =====================================================================
+run_scenario G
+rc=0
+TRANSCRIPT="$transcript" CURL_CALLED="$curl_called_file" \
+    READYZ_STATE_DIR="$readyz_state_dir" \
+    FAKE_TOPOLOGY=role_split \
+    FAKE_API_REPLICA_LIST=$'api1\napi2' \
+    FAKE_COMPOSE_UP_RC=1 \
+    AGNES_AUTO_UPGRADE_READYZ_INTERVAL=1 \
+    AGNES_AUTO_UPGRADE_READYZ_TIMEOUT=2 \
+    WEBHOOK_URL="https://example.invalid/webhook" \
+    PATH="$fake_bin:$PATH" \
+    bash "$sandboxed" && fail "G: script must exit non-zero when the worker/gateway recreate itself fails"
+
+grep -qF "docker compose up -d --no-deps worker gateway" "$transcript" \
+    || fail "G: the worker/gateway recreate must have been attempted"
+grep -qF "docker compose up -d --no-deps api1" "$transcript" \
+    && fail "G: api1 must NEVER be recreated when worker/gateway recreate hard-fails"
+grep -qF "docker compose up -d --no-deps api2" "$transcript" \
+    && fail "G: api2 must NEVER be recreated when worker/gateway recreate hard-fails"
+grep -qF "docker compose exec -T api1 curl" "$transcript" \
+    && fail "G: api1 readyz must never be polled — it was never touched"
+grep -q "curl-called" "$curl_called_file" \
+    || fail "G: a hard-failed worker/gateway recreate must fire the webhook alert"
+grep -qF "https://example.invalid/webhook" "$transcript" \
+    || fail "G: the alert POST must target WEBHOOK_URL"
+grep -q "ABORTED role-split rolling recreate — worker/gateway recreate failed" "$transcript" \
+    || fail "G: the abort must be logged with the worker/gateway-specific reason"
+echo "OK: G — worker/gateway recreate failure aborts the rollout, alerts, and never touches api replicas"
 rm -rf "$tmp"
 
 echo "OK"

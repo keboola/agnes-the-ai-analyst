@@ -302,9 +302,16 @@ send_rollout_alert() {
 # its own /readyz before the next is even touched. A replica that never
 # reports ready within the bounded timeout ABORTS the whole rollout —
 # alerts and returns non-zero WITHOUT recreating the remaining replicas,
-# which stay on the previous image and keep serving traffic.
+# which stay on the previous image and keep serving traffic. The initial
+# worker+gateway recreate gets the same abort posture: a hard failure
+# there (bad image, compose config error, daemon hiccup) must not fall
+# through into recreating api replicas against a worker/gateway pair that
+# never came up — alert and abort before touching any api replica.
 recreate_role_split() {
-    docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d --no-deps worker gateway
+    if ! docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d --no-deps worker gateway; then
+        send_rollout_alert "agnes-auto-upgrade: ABORTED role-split rolling recreate — worker/gateway recreate failed (docker compose up -d --no-deps worker gateway exited non-zero). Api replicas were not touched and remain on the previous image."
+        return 1
+    fi
 
     local svc
     for svc in "$@"; do
