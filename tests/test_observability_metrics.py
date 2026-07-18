@@ -403,6 +403,75 @@ class TestJobQueueMetrics:
 
         assert _counter_value("agnes_jobs_queued_capped") == 0.0
 
+    def test_oldest_queued_age_reflects_backdated_created_at(self, jobs_db):
+        """`agnes_jobs_oldest_queued_age_seconds` = now - min(created_at) per
+        kind, reusing the same bounded scan as `agnes_jobs_queued` (no
+        second DB hit). Backdate one job's `created_at` directly (jobs_repo
+        has no public API to control it at enqueue time) and assert the
+        reported age reflects the older row, not the newer one."""
+        from datetime import datetime, timedelta, timezone
+
+        from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+        from src.repositories import jobs_repo
+
+        register_kind(JobKind(name="metrics_age_kind", handler=lambda p: None, lane=LIGHT_LANE))
+
+        repo = jobs_repo()
+        older = repo.enqueue("metrics_age_kind", {})
+        repo.enqueue("metrics_age_kind", {})
+
+        backdated = datetime.now(timezone.utc) - timedelta(seconds=120)
+        repo.conn.execute("UPDATE jobs SET created_at = ? WHERE id = ?", [backdated, older["id"]])
+
+        age = _counter_value("agnes_jobs_oldest_queued_age_seconds", kind="metrics_age_kind")
+        assert age is not None
+        # Backdated by 120s — allow generous slack for test-runtime overhead,
+        # but it must reflect the OLDER row, not the freshly-enqueued one
+        # (which would read close to 0s).
+        assert 120.0 <= age < 130.0
+
+    def test_oldest_queued_age_absent_for_empty_queue(self, jobs_db):
+        """No queued jobs at all -> the series carries no sample for a kind
+        that was never enqueued, mirroring agnes_jobs_queued's own
+        empty-queue handling (collect() adds no metric for kinds with zero
+        rows rather than emitting a 0-valued series)."""
+        from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+
+        register_kind(JobKind(name="metrics_age_empty_kind", handler=lambda p: None, lane=LIGHT_LANE))
+
+        assert _counter_value("agnes_jobs_queued", kind="metrics_age_empty_kind") is None
+        assert _counter_value("agnes_jobs_oldest_queued_age_seconds", kind="metrics_age_empty_kind") is None
+
+    def test_oldest_queued_age_skips_rows_with_missing_created_at(self, monkeypatch):
+        """A row missing `created_at` (defensive guard — the `jobs` table
+        column is NOT NULL in practice, but the collector must not crash or
+        report a bogus age if a row ever comes back without one) is still
+        counted toward `agnes_jobs_queued` but excluded from the age
+        computation entirely."""
+        import src.repositories as repos_module
+        from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+
+        register_kind(JobKind(name="metrics_missing_created_at_kind", handler=lambda p: None, lane=LIGHT_LANE))
+
+        class _FakeJobsRepo:
+            def list(self, *, status=None, kind=None, limit=50):
+                return [
+                    {"kind": "metrics_missing_created_at_kind", "created_at": None},
+                    {"kind": "metrics_missing_created_at_kind", "created_at": None},
+                ]
+
+        monkeypatch.setattr(repos_module, "jobs_repo", lambda: _FakeJobsRepo())
+
+        from prometheus_client import generate_latest
+
+        from app.observability.metrics import REGISTRY
+
+        text = generate_latest(REGISTRY).decode()
+        assert "agnes_http_requests_total" in text  # collect() didn't raise
+
+        assert _counter_value("agnes_jobs_queued", kind="metrics_missing_created_at_kind") == 2.0
+        assert _counter_value("agnes_jobs_oldest_queued_age_seconds", kind="metrics_missing_created_at_kind") is None
+
     def test_record_job_claim_increments_counter(self):
         from app.observability.metrics import record_job_claim
         from app.worker.registry import LIGHT_LANE, JobKind, register_kind
