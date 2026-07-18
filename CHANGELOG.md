@@ -107,6 +107,73 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   'description' in SKILL.md must be at most 1024 characters").
   `COWORK_FORMAT_VERSION` bumped so cached ETags bust and clients re-download
   the corrected zip.
+### Added
+
+- **Swappable coordination backend for multi-process/multi-replica deployments**
+  (`app/coordination/`): `coordination.backend: memory|redis` in `instance.yaml`
+  (`AGNES_COORDINATION_BACKEND` env override) selects the `CoordinationBackend`
+  — a TTL key/value store, counters, leader leases, and pub/sub — behind
+  every cross-process coordination point in the app, pointed at Redis via
+  `redis.url`/`AGNES_REDIS_URL` when configured. `memory` (default) keeps
+  today's single-process, in-process behavior unchanged; `redis` makes the
+  same state visible across every replica and is itself now a third
+  multi-process trigger in `app/startup_guards.py`, alongside `DATABASE_URL`
+  and `UVICORN_WORKERS > 1`. It now backs: chat WS auth tickets and the
+  admin-tail WS ticket (`_issue_ticket`/`_consume_ticket`,
+  `_issue_admin_ticket`/`_consume_admin_ticket`, single-use, 60s TTL);
+  leader leases for Slack Socket Mode, the Telegram long-poll loop, and the
+  paused-sandbox TTL sweep (`app/coordination/leases.py::run_with_lease`,
+  exactly one active replica per singleton consumer, reacquired within the
+  lease TTL if the holder dies); shared per-IP auth-endpoint rate limiting
+  (slowapi `storage_uri` pointed at the same Redis instance) and chat
+  per-user hourly message / daily Anthropic token quotas (`incr` counters,
+  the latter seeded from the DB aggregate on a post-restart miss so a
+  mid-day deploy can't silently re-open a user's spent budget); cache-
+  invalidation pub/sub for the v2 catalog/schema/sample TTL caches (every
+  api replica drops its own matching entries on
+  `invalidate_for_table`/`invalidate_all` instead of serving stale data for
+  up to the TTL); CLI-auth login codes and Slack binding codes
+  (`cli-auth:`/`slack-bind:` KV prefixes, same TTLs and single-use
+  semantics, replacing `operational.duckdb` reads/writes — one fewer
+  always-RW DuckDB file across a multi-process topology); and
+  `.env_overlay` token rotation (marketplace/template PATs, chat-sandbox
+  E2B/Anthropic keys — written to the control-plane vault instead of the
+  file when `AGNES_VAULT_KEY` is configured, then broadcast via an
+  `env-overlay-changed` event so every api/worker/gateway replica refreshes
+  its own `os.environ`, with a periodic re-read piggybacked on the
+  existing state-checkpoint loop as a belt-and-braces catch-all for a
+  missed event). The Redis client uses bounded socket timeouts so a
+  hung/unreachable Redis surfaces as a timely `CoordinationUnavailable`
+  instead of blocking a lease-heartbeat thread indefinitely. A single
+  non-HA Redis is the supported deployment shape, and every consumer above
+  is designed to recover cleanly from a `FLUSHALL` — see
+  [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) → *Multi-process* for the
+  disposability invariant. Deliberately out of scope for this wave: chat
+  session/frame-stream routing and cross-gateway takeover, per-user chat
+  concurrency across replicas (stays process-local; becomes lease-derived
+  once per-session routing leases exist), request-id correlation across
+  processes, and Redis HA (single instance is the supported stance, not a
+  gap).
+
+### Fixed
+
+- `ws_stream`/`ws_join` (`app/api/chat.py`) and `admin_tail`
+  (`app/api/admin_chat.py`) now catch `CoordinationUnavailable` around the
+  ticket-consume call and close the WebSocket with code 4503 instead of
+  letting the exception propagate uncaught — FastAPI's HTTP exception
+  handler doesn't cover the WS scope, so a coordination backend blip (e.g.
+  Redis unreachable) previously dropped the connection ungracefully with a
+  traceback.
+
+### Changed
+
+- Chat per-user hourly message-rate limiting moved from a sliding-window
+  deque to a fixed UTC-hour window as part of switching its counter onto
+  the coordination backend. **Disclosure:** this allows up to ~2x the
+  configured rate in a short burst straddling an hour boundary (a full
+  quota just before `:00`, another full quota just after) — standard
+  fixed-window limiter behavior, looser rather than stricter than what it
+  replaced.
 
 ### Security
 
@@ -211,106 +278,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   to direct Anthropic on dispatcher failure. Unset ⇒ behavior unchanged. The
   broker logs a warning when the URL is set without the key.
   `app/api/broker.py`, documented in `config/.env.template`.
-### Fixed
-- `ws_stream`/`ws_join` (`app/api/chat.py`) and `admin_tail`
-  (`app/api/admin_chat.py`) now catch `CoordinationUnavailable` around the
-  ticket-consume call and close the WebSocket with code 4503 instead of
-  letting the exception propagate uncaught — FastAPI's HTTP exception
-  handler doesn't cover the WS scope, so a coordination backend blip (e.g.
-  Redis unreachable) previously dropped the connection ungracefully with a
-  traceback.
-- Daily Anthropic token-spend cap (`app/chat/manager.py::_daily_token_totals`)
-  no longer resets to 0 on a process restart under the default `memory`
-  coordination backend. The coordination-counter check introduced for this
-  cap had no DB fallback, so any restart (a routine mid-day deploy included)
-  silently re-opened a user's full daily budget even though `chat_messages`
-  still held the day's real spend. A `(0, 0)` counter reading now triggers a
-  one-time-per-day seed from the DB aggregate
-  (`ChatRepository.daily_anthropic_tokens`) before the cap is evaluated,
-  guarded by a short coordination-backend lease so two concurrent requests
-  racing on the same miss can't double-seed the counter.
-
-### Changed
-- Chat WS auth tickets (`_issue_ticket`/`_consume_ticket` in `app/api/chat.py`,
-  covering both the primary stream route and the co-drive `/join` route) now
-  ride the coordination backend (`coordination().kv_set`/`kv_delete`) instead
-  of a module-level dict. Same single-use, 60s-TTL semantics under the
-  default `memory` backend; configuring `coordination.backend=redis` makes
-  tickets visible across replicas, closing the single-worker HA gap noted in
-  the previous comment.
-- Admin tail-WS ticket auth (`_issue_admin_ticket`/`_consume_admin_ticket` in
-  `app/api/admin_chat.py`) migrated to the same coordination-backend
-  mechanism (`admin-tail-ticket:` key prefix, same 60s TTL, same single-use
-  `kv_set`/`kv_delete` semantics) instead of its own module-level dict.
-- Slack Socket Mode (`app/main.py`), the Telegram long-poll loop
-  (`services/telegram_bot/bot.py`), and the paused-sandbox TTL sweep
-  (`app/chat/manager.py`) now run behind leader leases
-  (`app/coordination/leases.py::run_with_lease`, plus a lighter
-  acquire-per-tick pattern for the sweep) so only one replica of each
-  singleton consumer is active at a time under a multi-replica
-  `coordination.backend=redis` deployment. Under the default `memory`
-  backend the lease is process-local and always immediately acquired, so
-  single-process behavior is unchanged.
-- Auth-endpoint rate limiting (`app/auth/rate_limit.py`) now points slowapi's
-  `Limiter` at the same Redis instance the coordination backend uses
-  (`storage_uri=app.coordination.factory.resolve_redis_url()`) when
-  `coordination.backend=redis`, so per-IP buckets are shared across every app
-  process instead of each replica keeping its own independent bucket (which
-  let a client multiply its effective limit by the replica count). Under the
-  default `memory` backend, construction is unchanged.
-- Chat per-user hourly message-rate limit and daily Anthropic token-spend cap
-  (`app/chat/manager.py`) now use coordination-backend counters
-  (`chat-msgs:{sender}:{hour}` / `chat-tokens:{user}:{date}:{in,out}`)
-  instead of process-local structures (a sliding-window deque and a
-  DB-aggregate-backed cache), so both quotas are enforced consistently
-  across every app process under `coordination.backend=redis`. Same limits
-  and error responses under the default `memory` backend. Per-user
-  concurrency (`_active_count_for_user`) stays process-local this wave —
-  it becomes lease-derived once per-session routing leases exist (later in
-  wave-2C). **Disclosure:** the hourly message-rate cap moved from the old
-  sliding window to a fixed UTC-hour window as part of this change, which
-  allows up to ~2x the configured rate in a short burst straddling an hour
-  boundary (a full quota just before `:00`, another full quota just after)
-  — standard fixed-window limiter behavior, looser rather than stricter
-  than what it replaced.
-- `CoordinationBackend.incr` gained an `amount` keyword (default `1`,
-  backward compatible) so a counter can accumulate a variable-sized delta
-  per event (e.g. tokens spent on one chat turn) instead of only a flat
-  +1-per-call; `amount=0` is a valid no-op "peek" at the current value.
-- v2 catalog/schema/sample TTL caches (`app/api/v2_catalog.py`) now broadcast
-  a `cache-invalidate` event via the coordination backend whenever
-  `invalidate_for_table`/`invalidate_all` runs (registry register/update/
-  unregister/rebuild), so every api-serving replica drops its own local
-  copies instead of serving a stale row/schema/sample for up to the TTL.
-  Every api-serving process subscribes at startup (`app/main.py` lifespan)
-  and unsubscribes on shutdown. Under the default `memory` backend this is a
-  same-process, in-memory fan-out — unchanged single-process behavior.
-- CLI-auth login codes (`app/api/cli_auth.py`) and Slack binding codes
-  (`services/slack_bot/binding.py`) now store the code itself in the
-  coordination backend's TTL key/value store (`cli-auth:` / `slack-bind:`
-  prefixes, same TTLs and single-use semantics as before) when
-  `coordination.backend=redis`, instead of the dedicated `operational.duckdb`
-  file — one fewer always-RW DuckDB file across a multi-process topology.
-  Under the default `memory` backend, storage is unchanged (`operational.duckdb`
-  fallback on Postgres-state instances, the system DB on DuckDB-state
-  instances). Slack's issuance/redeem throttle logs stay on DuckDB
-  unconditionally either way — only the ephemeral code moves.
-- `.env_overlay` secrets (marketplace PATs, the initial-workspace template
-  PAT, the chat-sandbox E2B/Anthropic keys — every caller of
-  `app.secrets.persist_overlay_token`) now write to the control-plane vault
-  (`system_secrets` table, namespaced `env_overlay/<name>`) instead of the
-  `.env_overlay` file when `AGNES_VAULT_KEY` is configured, and publish an
-  `env-overlay-changed` coordination event so every api/worker/gateway
-  replica re-reads that key and refreshes its own `os.environ` — an admin
-  rotating a token from one replica now propagates everywhere without a
-  restart. A periodic sweep piggybacked on the existing state-checkpoint
-  loop (`app/main.py::_state_checkpoint_loop`) re-applies every
-  vault-managed token as a belt-and-braces catch-all for a missed event (up
-  to `AGNES_STATE_CHECKPOINT_INTERVAL_S`, default 300s). The legacy file
-  path is unchanged when `AGNES_VAULT_KEY` is unset (keyless/S-tier
-  installs) — logs a one-time warning and behaves exactly as before. At
-  boot, the legacy file loads first and any vault-stored token for the same
-  name wins over it.
 
 ## [0.74.107] - 2026-07-17
 
