@@ -177,7 +177,16 @@ class CoordinationBackend(ABC):
     @abstractmethod
     def stream_read(self, key: str, after_seq: Optional[int] = None) -> list[dict]:
         """Return every entry currently retained in stream ``key`` whose
-        ``entry["seq"]`` is greater than ``after_seq``, oldest first.
+        ``entry["seq"]`` is greater than ``after_seq``, SORTED BY that
+        ``seq`` field (not raw append order).
+
+        The sort matters because ``stream_append`` calls for the same key
+        are not required to arrive in ``seq`` order — a caller may append
+        from multiple concurrent tasks without holding a lock across the
+        append itself (see ``app.chat.manager.ChatManager._broadcast``,
+        which stamps+sends under a lock but appends to the stream after
+        releasing it) — so implementations MUST sort on read rather than
+        trust append order.
 
         ``after_seq=None`` returns every retained entry. Never raises for
         "nothing retained" — a stream that was never appended to, or whose
