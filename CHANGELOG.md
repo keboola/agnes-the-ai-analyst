@@ -39,6 +39,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 - Session routing leases (`app/chat/routing.py`, wave-2F): any gateway replica can claim/renew/release/inspect ownership of a chat session via a `chat:{chat_id}` lease on the coordination backend (`claim_session`, `renew_session`, `release_session`, `owner_of`, `this_gateway_id`). `ChatManager` claims the lease when a session becomes live, renews it on the existing idle-reaper heartbeat, and releases it on teardown; under the default `memory` backend this is a no-op (single owner, as today). Added `CoordinationBackend.lease_owner` (both backends) to support the ownership lookup.
+- Monotonic frame envelope for outbound chat frames (`app/chat/frame_seq.py`, wave-2F): every frame sent to a chat sink (web WS, Slack, co-drive) now carries `seq` (monotonic int per session) and `id` (`{chat_id}:{seq}`), stamped centrally in `ChatManager._broadcast` plus the handful of per-sink `ready`/`runner_not_ready` sends that bypass it. The counter lives on the coordination backend (`chat-seq:{chat_id}`), so it survives a crash respawn instead of resetting. Purely additive — old frames without `seq` still render; the web client now tracks the last-seen `seq` per session but doesn't act on it yet (replay is a later task).
 
 ## [0.74.116] - 2026-07-18
 

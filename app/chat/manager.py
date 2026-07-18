@@ -15,6 +15,7 @@ from typing import Optional
 from app.chat import routing
 from app.chat.audit import hash_args, write_audit
 from app.chat.config import ChatConfig
+from app.chat.frame_seq import stamp_frame
 from app.chat.persistence import ChatRepository
 from app.chat.profiles import get_profile
 from app.chat.provider import SandboxHandle, SandboxProvider
@@ -590,7 +591,10 @@ class ChatManager:
             live.sinks.insert(0, SinkEntry(participant_email=live.user_email, sink=ws))
         else:
             live.sinks.append(SinkEntry(participant_email=live.user_email, sink=ws))
-        await ws.send_json({"type": "ready"})
+        # Sent directly to this one sink (not _broadcast — every other sink
+        # already has its own connection, no fan-out needed here), so it
+        # needs its own stamp (wave-2F task 2).
+        await ws.send_json(stamp_frame(live.chat_id, {"type": "ready"}))
 
     async def _spawn_live(self, session: "ChatSession") -> "LiveSession":
         """Spawn a fresh sandbox, register refs, start pump/wait tasks.
@@ -957,7 +961,11 @@ class ChatManager:
         for frame in list(live.turn_buffer):
             await sink.send_json(frame)
         live.sinks.append(SinkEntry(participant_email=participant_email, sink=sink))
-        await sink.send_json({"type": "ready"})
+        # Sent directly to this one sink (not _broadcast), so it needs its
+        # own stamp (wave-2F task 2). The history-replay frames above are
+        # reconstructed from persisted chat_messages, which predates seq
+        # entirely — left unstamped, per the additive/back-compat contract.
+        await sink.send_json(stamp_frame(chat_id, {"type": "ready"}))
 
     async def _spawn_runner(self, session: ChatSession, session_dir: Path):
         from app.auth.access import mint_session_jwt, mint_co_session_jwt
@@ -1150,7 +1158,19 @@ class ChatManager:
         """Send a frame to every sink, snapshotting the list first so a
         concurrent add/remove can't mutate it mid-iteration. Dead sinks are
         removed and closed after the loop. A failing sink never aborts the
-        broadcast to the others."""
+        broadcast to the others.
+
+        Stamps ``seq``/``id`` onto ``frame`` (wave-2F task 2 — see
+        app.chat.frame_seq) BEFORE fanning out, so this is the single seam
+        every runner frame and every manager-originated broadcast (ready /
+        error / cancelled / session_renamed) shares — Slack, web, and
+        co-drive sinks all see the same stamped envelope. ``frame`` is
+        mutated in place: callers that also stash it (e.g.
+        ``_pump_subprocess_to_ws`` appending to ``live.turn_buffer`` after
+        this returns) see the stamped version too, so a later turn-buffer
+        replay carries the original seq/id rather than getting re-stamped.
+        """
+        stamp_frame(live.chat_id, frame)
         dead: list[SinkEntry] = []
         for entry in list(live.sinks):
             try:
