@@ -91,6 +91,7 @@ import os
 import socket
 import time
 
+from app.job_correlation import bind_request_id, unbind_request_id
 from app.observability import metrics as obs_metrics
 from app.worker.registry import HEAVY_LANE, JOB_KINDS, LIGHT_LANE, JobKind
 
@@ -244,55 +245,73 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
     coroutine's cancellation (see module docstring).
     """
     lease_token = job["lease_token"]
-    hb_task = asyncio.create_task(
-        _heartbeat_loop(job["id"], worker_id, lease_token, kind.lease_seconds),
-        name=f"worker-heartbeat-{job['id']}",
-    )
-    handler_future = asyncio.ensure_future(asyncio.to_thread(kind.handler, job["payload_json"]))
-    handed_off = False
-    obs_metrics.begin_job_running(job["kind"], kind.lane)
-    started_at = time.monotonic()
+    # Bind the originating request-id (`_enqueued_by_request`, stamped at
+    # enqueue time by `app.job_correlation.stamp_request_id`) into the same
+    # `request_id_var` contextvar the request middleware uses, for the
+    # duration of running this job. `asyncio.create_task`/`asyncio.to_thread`
+    # both copy the *current* context at creation time, so this must happen
+    # before `hb_task`/`handler_future` are created below in order for the
+    # heartbeat task and the handler thread to see it. No-op (returns
+    # `None`) when the payload has no (or a malformed) `_enqueued_by_request`
+    # — never raises, so a missing/malformed key can't break job execution.
+    rid_token = bind_request_id(job.get("payload_json"))
     try:
-        await asyncio.shield(handler_future)
-    except asyncio.CancelledError:
-        handed_off = True
-        in_flight[job["id"]] = _InFlightJob(
-            job_id=job["id"],
-            kind_name=job["kind"],
-            worker_id=worker_id,
-            lease_token=lease_token,
-            retry_in_seconds=kind.retry_in_seconds,
-            handler_future=handler_future,
-            hb_task=hb_task,
-            lane=kind.lane,
-            started_at=started_at,
+        hb_task = asyncio.create_task(
+            _heartbeat_loop(job["id"], worker_id, lease_token, kind.lease_seconds),
+            name=f"worker-heartbeat-{job['id']}",
         )
-        raise
-    except Exception as exc:
-        logger.exception("worker %s: job %s (kind=%s) failed", worker_id, job["id"], job["kind"])
-        # Persist the outcome before recording it in metrics — if `.fail()`
-        # itself raises, this propagates without ever having reported an
-        # outcome that was never actually persisted.
-        await asyncio.to_thread(
-            _jobs_repo().fail,
-            job["id"],
-            worker_id,
-            lease_token,
-            str(exc),
-            retry_in_seconds=kind.retry_in_seconds,
-        )
-        obs_metrics.record_job_duration(job["kind"], "failed", time.monotonic() - started_at)
-        obs_metrics.record_job_failure(job["kind"], type(exc).__name__)
-    else:
-        # Same ordering rationale as the failure branch above.
-        await asyncio.to_thread(_jobs_repo().complete, job["id"], worker_id, lease_token)
-        obs_metrics.record_job_duration(job["kind"], "done", time.monotonic() - started_at)
+        handler_future = asyncio.ensure_future(asyncio.to_thread(kind.handler, job["payload_json"]))
+        handed_off = False
+        obs_metrics.begin_job_running(job["kind"], kind.lane)
+        started_at = time.monotonic()
+        try:
+            await asyncio.shield(handler_future)
+        except asyncio.CancelledError:
+            handed_off = True
+            in_flight[job["id"]] = _InFlightJob(
+                job_id=job["id"],
+                kind_name=job["kind"],
+                worker_id=worker_id,
+                lease_token=lease_token,
+                retry_in_seconds=kind.retry_in_seconds,
+                handler_future=handler_future,
+                hb_task=hb_task,
+                lane=kind.lane,
+                started_at=started_at,
+            )
+            raise
+        except Exception as exc:
+            logger.exception("worker %s: job %s (kind=%s) failed", worker_id, job["id"], job["kind"])
+            # Persist the outcome before recording it in metrics — if `.fail()`
+            # itself raises, this propagates without ever having reported an
+            # outcome that was never actually persisted.
+            await asyncio.to_thread(
+                _jobs_repo().fail,
+                job["id"],
+                worker_id,
+                lease_token,
+                str(exc),
+                retry_in_seconds=kind.retry_in_seconds,
+            )
+            obs_metrics.record_job_duration(job["kind"], "failed", time.monotonic() - started_at)
+            obs_metrics.record_job_failure(job["kind"], type(exc).__name__)
+        else:
+            # Same ordering rationale as the failure branch above.
+            await asyncio.to_thread(_jobs_repo().complete, job["id"], worker_id, lease_token)
+            obs_metrics.record_job_duration(job["kind"], "done", time.monotonic() - started_at)
+        finally:
+            if not handed_off:
+                obs_metrics.end_job_running(job["kind"], kind.lane)
+                hb_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await hb_task
     finally:
-        if not handed_off:
-            obs_metrics.end_job_running(job["kind"], kind.lane)
-            hb_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await hb_task
+        # Safe to reset unconditionally, including when handed off: the
+        # handler future already copied its own context at creation time
+        # (above), so resetting here doesn't affect a still-running
+        # handed-off handler — it only prevents this contextvar from
+        # leaking into whatever `_lane_slot` claims next in this same task.
+        unbind_request_id(rid_token)
 
 
 async def _lane_slot(

@@ -40,6 +40,7 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from app.job_correlation import stamp_request_id
 from src.repositories import audit_repo, jobs_repo
 
 logger = logging.getLogger(__name__)
@@ -112,7 +113,7 @@ async def enqueue_job(
 
     job = jobs_repo().enqueue(
         payload.kind,
-        payload.payload,
+        stamp_request_id(payload.payload),
         idempotency_key=payload.idempotency_key,
     )
     _audit(
