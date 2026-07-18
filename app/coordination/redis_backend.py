@@ -349,6 +349,13 @@ class RedisCoordinationBackend(CoordinationBackend):
                 # replay, don't crash" posture as a missing "seq" field.
                 continue
             entries.append(entry)
+        # Sorted by the frame's own "seq" field, not Redis XADD arrival
+        # order (2026-07-18 hardening) — append_frame now runs OUTSIDE
+        # ChatManager._broadcast_lock, so two concurrent XADDs for the same
+        # session's stream can land in a different order than their
+        # stamps. Stable sort preserves relative order for ties/missing
+        # seq.
+        entries.sort(key=lambda e: e.get("seq", 0))
         if after_seq is None:
             return entries
         return [e for e in entries if e.get("seq", 0) > after_seq]

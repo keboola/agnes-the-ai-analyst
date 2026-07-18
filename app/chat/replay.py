@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from typing import Optional
 
 from app.chat.frame_seq import peek_seq
 from app.coordination.base import CoordinationUnavailable
@@ -105,6 +106,26 @@ async def replay_since(chat_id: str, last_seq: int) -> ReplayOutcome:
     REST ``GET /sessions/{id}/messages`` load the client already does
     before opening the WS) — no replay is attempted and this is NOT a
     full_refresh; it is exactly correct to proceed straight to live.
+
+    full_refresh decision is EVICTION-based, not contiguity-based
+    (2026-07-18 hardening): some frames are deliberately stamped (consuming
+    a seq — see ``app.chat.frame_seq.stamp_frame``) but never appended to
+    this stream — the per-sink ``ready``/``runner_not_ready`` frames
+    ``ChatManager._seat_sink``/``add_sink``/``app.api.chat`` send directly
+    to exactly one connection are never broadcast, so they're never handed
+    to :func:`append_frame`. Those are legitimate holes in the stream's seq
+    numbering: a client that never received one of those frames (they were
+    private to a *different* connection) has nothing to recover — checking
+    ``entries[0].seq == last_seq + 1`` (strict contiguity) would false-
+    positive a ``full_refresh`` on every such hole even though nothing was
+    actually lost. The only thing that legitimately forces a full refresh
+    is EVICTION: frames that WERE broadcast (and so WOULD have reached this
+    client live) have aged out past ``STREAM_MAXLEN`` and can no longer be
+    proven delivered. That's ``last_seq + 1 < min_retained_seq`` — the
+    client's next-expected frame is older than anything the stream still
+    holds. A hole from a private frame never trips this: the oldest
+    retained entry doesn't move just because a seq number in between was
+    never appended.
     """
     if last_seq <= 0:
         return ReplayOutcome(frames=[], full_refresh=False)
@@ -126,22 +147,106 @@ async def replay_since(chat_id: str, last_seq: int) -> ReplayOutcome:
         return ReplayOutcome(frames=[], full_refresh=False)
 
     try:
-        entries = await asyncio.to_thread(
-            coordination().stream_read,
-            _stream_key(chat_id),
-            last_seq,
-        )
+        # Unfiltered read (no after_seq) — we need the OLDEST entry the
+        # stream still retains (min_retained_seq below) to make the
+        # eviction call, not just what's after last_seq. Both backends
+        # return entries sorted by their own "seq" field (see
+        # app.coordination.memory / app.coordination.redis_backend), so
+        # entries[0] is always the oldest-retained entry.
+        all_entries = await asyncio.to_thread(coordination().stream_read, _stream_key(chat_id))
     except CoordinationUnavailable:
         logger.warning("chat-out replay read failed for %s; skipping replay attempt", chat_id)
         return ReplayOutcome(frames=[], full_refresh=False)
 
-    # current_seq > last_seq, so at least one frame SHOULD be retained. An
-    # empty result, or one whose oldest entry isn't immediately after
-    # last_seq, means the frames we need were evicted past STREAM_MAXLEN
-    # (or the stream was reset, e.g. FLUSHALL cleared it while the counter
-    # itself either wasn't touched or was reset to the same relative
-    # offset) — a gap we cannot fill confidently.
-    if not entries or entries[0].get("seq") != last_seq + 1:
+    if not all_entries:
+        # current_seq > last_seq proves something WAS stamped since the
+        # client's baseline, yet the stream holds nothing at all retained.
+        # This can't be distinguished from a stream-level reset (a partial
+        # coordination-backend wipe that clears the stream but not the
+        # counter) — conservative: can't prove nothing was lost.
         return ReplayOutcome(frames=[], full_refresh=True)
 
-    return ReplayOutcome(frames=entries, full_refresh=False)
+    min_retained_seq = all_entries[0].get("seq", 0)
+    if last_seq + 1 < min_retained_seq:
+        # Genuine eviction: the oldest frame the client still needs has
+        # already aged out past STREAM_MAXLEN. No amount of holes-are-fine
+        # tolerance can recover this — the client must reload.
+        return ReplayOutcome(frames=[], full_refresh=True)
+
+    frames = [e for e in all_entries if e.get("seq", 0) > last_seq]
+    return ReplayOutcome(frames=frames, full_refresh=False)
+
+
+class GapReplayGate:
+    """Wraps a live sink during the reconnect gap-replay window (CRITICAL
+    fix, 2026-07-18 — closes the reconnect replay silent-gap race).
+
+    The bug: the reconnect path used to compute the gap replay (a snapshot
+    of ``replay_since``) and only AFTERWARDS seat the reconnecting
+    connection as a live sink via ``ChatManager.attach``/``add_sink``. Any
+    frame broadcast in that window landed in neither the snapshot (already
+    read) nor live delivery (not seated yet) — silently lost, and the
+    client has no way to detect the gap (it only dedups by seq, it can't
+    invent a missing frame).
+
+    The fix: seat the connection as a live sink FIRST — so nothing
+    broadcast from this point on can be lost — but route everything
+    through this gate instead of the socket directly, buffering it, until
+    the caller has finished computing and is ready to deliver the gap
+    replay. :meth:`release` then merges the buffered (live-during-the-
+    window) frames with the gap-replay frames the caller read from the
+    stream, sorts the combination by ``seq`` (a frame that was stamped but
+    never appended to the stream — see ``replay_since``'s module note —
+    can otherwise end up buffered "behind" a later, stream-sourced frame
+    that reaches the socket first), de-duplicates any frame that shows up
+    in both sources (the same broadcast can legitimately be seen by both:
+    appended to the stream AND delivered directly to this now-seated
+    sink), and sends the result in one consistent, gap-free, in-order pass
+    before going fully passthrough for the rest of the connection's life.
+    """
+
+    def __init__(self, real_sink) -> None:
+        self._real = real_sink
+        self._buffering = True
+        self._buffer: list[dict] = []
+
+    async def send_json(self, frame: dict) -> None:
+        if self._buffering:
+            self._buffer.append(frame)
+        else:
+            await self._real.send_json(frame)
+
+    async def close(self) -> None:
+        await self._real.close()
+
+    async def release(self, extra_frames: Optional[list[dict]] = None) -> None:
+        """Stop buffering and flush everything captured, in seq order.
+
+        ``extra_frames`` are the gap-replay frames the caller read from
+        the stream (older than anything seated live) — merged with
+        whatever landed in this gate's buffer while it was seating +
+        computing the replay, de-duplicated by ``seq`` where present, and
+        sorted so delivery order matches assignment order even when a
+        private (never-appended) frame's seq falls between two
+        stream-sourced ones. Frames without an int ``seq`` (e.g. add_sink's
+        unstamped persisted-history replay) sort before every seq'd frame,
+        preserving their relative arrival order via a stable sort.
+        """
+        pending, self._buffer = self._buffer, []
+        self._buffering = False
+        combined = list(extra_frames or []) + pending
+        seen_seqs: set[int] = set()
+        ordered: list[tuple[int, int, dict]] = []
+        for idx, frame in enumerate(combined):
+            seq = frame.get("seq")
+            if isinstance(seq, int):
+                if seq in seen_seqs:
+                    continue  # same frame surfaced via both sources
+                seen_seqs.add(seq)
+                sort_key = seq
+            else:
+                sort_key = -1  # unstamped frames sort first, tie-broken by idx
+            ordered.append((sort_key, idx, frame))
+        ordered.sort(key=lambda t: (t[0], t[1]))
+        for _, _, frame in ordered:
+            await self._real.send_json(frame)
