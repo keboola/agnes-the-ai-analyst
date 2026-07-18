@@ -110,6 +110,15 @@ class CoordinationBackend(ABC):
         holder; a no-op otherwise (e.g. the lease already expired and was
         stolen by another holder)."""
 
+    @abstractmethod
+    def lease_owner(self, name: str) -> Optional[str]:
+        """Return the ``holder_id`` currently holding lease ``name``, or
+        ``None`` if the lease is free (never acquired, released, or
+        expired). Read-only — does not affect the lease's TTL or otherwise
+        mutate it. Used by consumers that need to know who owns a lease
+        without contending for it themselves (e.g. session-routing lookups
+        — see ``app.chat.routing.owner_of``)."""
+
     # -- Pub/sub (cache invalidation) -----------------------------------------
 
     @abstractmethod
