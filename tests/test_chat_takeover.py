@@ -1,0 +1,385 @@
+"""Tests for cross-gateway claim-then-respawn takeover (wave-2F task 5).
+
+Two ``ChatManager`` instances sharing one ``ChatRepository`` (same DuckDB
+connection) AND one ``FakeProvider`` (same simulated E2B account) model two
+gateway replicas — the same "two simulated managers, one shared backend"
+convention ``tests/test_chat_routing.py`` and ``tests/test_chat_inbound.py``
+already established. ``app.chat.routing.this_gateway_id`` is monkeypatched
+around each manager's calls to give the two a distinct identity, since
+within one test process the real ``default_holder_id()`` (hostname:pid) is
+identical for both — sharing the provider (unlike test_chat_inbound.py,
+which never needs the non-owner gateway to actually touch a sandbox) is
+what lets these tests observe the SAME destroy()/spawn() call history no
+matter which manager made the call, mirroring a real deployment where both
+gateways talk to the same E2B account.
+
+Uses asyncio.run() per the project convention (no pytest-asyncio required)
+— see tests/test_chat_manager.py.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+
+import duckdb
+import pytest
+
+from src.db import _ensure_schema
+from tests.chat_fakes import FakeHandle, FakeProvider, FakeWS
+
+import app.chat.manager as manager_mod
+import app.chat.routing as routing_mod
+from app.chat import routing
+from app.chat.config import ChatConfig
+from app.chat.manager import ChatManager
+from app.chat.persistence import ChatRepository
+from app.chat.types import SessionState, Surface
+from app.chat.workdir import WorkdirManager
+from app.coordination.factory import reset_coordination_for_tests
+
+
+@pytest.fixture(autouse=True)
+def _reset_coordination():
+    """Routing leases live in the coordination-backend singleton, which
+    persists across tests unless reset — same rationale as
+    tests/test_chat_routing.py and tests/test_chat_inbound.py."""
+    reset_coordination_for_tests()
+    yield
+    reset_coordination_for_tests()
+
+
+class _FakeTicketRepo:
+    """Stand-in for src.repositories.ticket_repo() — records mint/revoke
+    calls instead of touching a real chat_broker_tickets table. Shared
+    between both simulated gateways (a real broker ticket table would be
+    shared too — it lives in the same DB both gateways talk to)."""
+
+    def __init__(self) -> None:
+        self.minted: list[tuple[str, str]] = []
+        self.revoked: list[str] = []
+
+    def mint(self, session_id: str, scope: str, ttl_seconds: int = 3600) -> str:
+        self.minted.append((session_id, scope))
+        return f"ticket-{scope}-{len(self.minted)}"
+
+    def revoke_session(self, session_id: str) -> None:
+        self.revoked.append(session_id)
+
+
+def _make_workdir_mgr(tmp_path: Path, repo: ChatRepository) -> WorkdirManager:
+    bundled = tmp_path / "bundled"
+    bundled.mkdir(parents=True)
+    (bundled / "CLAUDE.md").write_text("d")
+    return WorkdirManager(
+        data_dir=tmp_path / "data",
+        repo=repo,
+        bundled_template_dir=bundled,
+        server_url="https://example",
+        agnes_version="0.55.0",
+        get_marketplace_sha=lambda: "sha-1",
+        get_template_status=lambda: None,
+    )
+
+
+def _make_manager(tmp_path: Path, repo: ChatRepository, provider: FakeProvider) -> ChatManager:
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    mgr = ChatManager(
+        provider=provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=ChatConfig(
+            enabled=True,
+            concurrency_per_user=5,
+            on_detach="pause",
+            detach_linger_seconds=0,
+            paused_ttl_seconds=7 * 24 * 3600,
+            idle_ttl_seconds=10**9,
+        ),
+    )
+    # Bypass real filesystem workspace prep — irrelevant to the
+    # routing/lease/sandbox-lifecycle mechanics under test.
+    import unittest.mock as mock
+
+    mgr._workdir_mgr.ensure_user_workdir = mock.MagicMock()
+    mgr._workdir_mgr.prepare_session_dir = mock.MagicMock(return_value=Path("/tmp/fake-session-dir"))
+    return mgr
+
+
+@pytest.fixture
+def two_gateways(tmp_path: Path) -> tuple[ChatManager, ChatManager, FakeProvider]:
+    """Two independent ChatManager instances sharing one ChatRepository/
+    DuckDB connection and one FakeProvider — simulated gateway replicas A
+    and B talking to the same shared sandbox account. Neither manager's
+    ``_live`` dict is shared, matching two separate gateway PROCESSES."""
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    provider = FakeProvider()
+    mgr_a = _make_manager(tmp_path / "gw-a", repo, provider)
+    mgr_b = _make_manager(tmp_path / "gw-b", repo, provider)
+    return mgr_a, mgr_b, provider
+
+
+def _as_gateway(monkeypatch: pytest.MonkeyPatch, gateway_id: str) -> None:
+    monkeypatch.setattr(routing_mod, "this_gateway_id", lambda: gateway_id)
+
+
+async def _spawn_owned_session(mgr: ChatManager) -> tuple[str, FakeHandle]:
+    """Create + attach a session on ``mgr`` so it becomes the live ACTIVE
+    owner — claims the routing lease under whatever gateway id is currently
+    patched onto app.chat.routing.this_gateway_id."""
+    session = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+    ws = FakeWS()
+    asyncio.create_task(mgr.attach(session.id, ws))
+    await asyncio.sleep(0.05)
+    live = mgr._live[session.id]
+    assert live.state == SessionState.ACTIVE
+    return session.id, live.handle
+
+
+def _stdin_texts(handle: FakeHandle) -> list[str]:
+    out = []
+    for b in handle._stdin_buf:
+        frame = json.loads(b.decode("utf-8"))
+        if frame.get("type") == "user_msg":
+            out.append(frame["text"])
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The headline scenario: WS connect lands on B, session owned by A
+# ---------------------------------------------------------------------------
+
+
+def test_takeover_claims_lease_destroys_old_spawns_fresh_replays_context(two_gateways, monkeypatch):
+    """Session owned by gateway A (lease held, in A's _live); a connect
+    lands on gateway B → B claims the lease, destroys A's old sandbox,
+    spawns exactly one fresh runner, and replays recent turn context."""
+    mgr_a, mgr_b, provider = two_gateways
+    fake_tickets = _FakeTicketRepo()
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: fake_tickets)
+
+    # Spy on provider.resume — the runner-protocol ticket guard means a
+    # foreign takeover must NEVER attempt to reconnect the old runner.
+    resume_calls: list[dict] = []
+    orig_resume = provider.resume
+
+    async def _spy_resume(**kw):
+        resume_calls.append(kw)
+        return await orig_resume(**kw)
+
+    provider.resume = _spy_resume
+
+    async def _run():
+        _as_gateway(monkeypatch, "gw-a")
+        chat_id, handle_a = await _spawn_owned_session(mgr_a)
+        assert routing.owner_of(chat_id) == "gw-a"
+        assert fake_tickets.minted, "A's spawn should have pushed its own tickets"
+        tickets_before_takeover = len(fake_tickets.minted)
+
+        # A turn already happened and is persisted, so B's fresh runner has
+        # something concrete to replay.
+        mgr_a._repo.append_message(session_id=chat_id, role="user", content="hello before takeover")
+
+        _as_gateway(monkeypatch, "gw-b")
+        ws_b = FakeWS()
+        await mgr_b.attach(chat_id, ws_b)
+
+        # Ownership moved to B.
+        assert routing.owner_of(chat_id) == "gw-b"
+
+        # Exactly one fresh spawn happened for the takeover (A's original
+        # spawn + B's single takeover spawn = 2 total).
+        assert len(provider.spawned) == 2, (
+            f"expected A's original spawn + exactly one takeover spawn, got {len(provider.spawned)}"
+        )
+        live_b = mgr_b._live[chat_id]
+        assert live_b.state == SessionState.ACTIVE
+        handle_b = live_b.handle
+        assert handle_b is not handle_a
+        assert handle_b.sandbox_id != handle_a.sandbox_id
+
+        # The OLD sandbox was destroyed exactly once.
+        assert provider.destroyed.count(handle_a.sandbox_id) == 1
+
+        # The runner-protocol guard was respected: no foreign live-resume
+        # was ever attempted for this takeover.
+        assert resume_calls == [], "provider.resume must never be called for a foreign takeover"
+
+        # The repo row now points at B's fresh sandbox.
+        row = mgr_b._repo.get_session(chat_id)
+        assert row is not None
+        assert row.sandbox_id == handle_b.sandbox_id
+        assert row.runner_pid == handle_b.pid
+
+        # Old tickets were revoked and fresh ones minted for the new runner.
+        assert chat_id in fake_tickets.revoked
+        assert len(fake_tickets.minted) > tickets_before_takeover
+
+        # Recent turn context was replayed onto B's fresh runner's stdin.
+        assert "hello before takeover" in _stdin_texts(handle_b)
+
+        await mgr_b.kill(chat_id, reason="test_done")
+
+    asyncio.run(_run())
+
+
+def test_old_owner_renew_fails_tears_down_without_second_destroy(two_gateways, monkeypatch):
+    """After B's takeover, A's next routing-lease renew fails — A must tear
+    down its local LiveSession cleanly (cancel tasks, drop bookkeeping)
+    WITHOUT destroying the sandbox a second time and WITHOUT touching the
+    repo's sandbox_ref (which now belongs to B's fresh runner)."""
+    mgr_a, mgr_b, provider = two_gateways
+    fake_tickets = _FakeTicketRepo()
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: fake_tickets)
+
+    async def _run():
+        _as_gateway(monkeypatch, "gw-a")
+        chat_id, handle_a = await _spawn_owned_session(mgr_a)
+        live_a = mgr_a._live[chat_id]
+        a_tasks = list(live_a.tasks)
+        a_inbound_task = live_a.inbound_task
+        assert a_inbound_task is not None
+
+        _as_gateway(monkeypatch, "gw-b")
+        ws_b = FakeWS()
+        await mgr_b.attach(chat_id, ws_b)
+        handle_b = mgr_b._live[chat_id].handle
+        destroyed_after_takeover = list(provider.destroyed)
+        assert handle_a.sandbox_id in destroyed_after_takeover
+
+        # A's own reaper tick tries to renew and discovers the lease is gone.
+        _as_gateway(monkeypatch, "gw-a")
+        await mgr_a._renew_routing_leases()
+
+        # A stopped serving the session locally.
+        assert chat_id not in mgr_a._live
+        assert chat_id not in mgr_a._known_protocol_sessions
+
+        await asyncio.sleep(0.05)  # let cancellation propagate
+        assert all(t.done() for t in a_tasks), "A's pump/wait tasks must be cancelled on lost-ownership teardown"
+        assert a_inbound_task.cancelled() or a_inbound_task.done()
+
+        # No second destroy call — the sandbox was only ever destroyed once,
+        # by B's takeover.
+        assert provider.destroyed == destroyed_after_takeover
+
+        # B's fresh refs in the repo were NOT clobbered by A's teardown.
+        row = mgr_a._repo.get_session(chat_id)
+        assert row is not None
+        assert row.sandbox_id == handle_b.sandbox_id
+
+        _as_gateway(monkeypatch, "gw-b")
+        await mgr_b.kill(chat_id, reason="test_done")
+
+    asyncio.run(_run())
+
+
+def test_concurrent_takeover_attempts_on_same_gateway_serialized_single_spawn(two_gateways, monkeypatch):
+    """Two WS connects landing on B at (nearly) the same instant for the
+    same foreign-owned session must produce exactly ONE fresh spawn and ONE
+    destroy of the old sandbox — composes with the takeover lock the same
+    way _resume_lock composes with a same-process PAUSED-session race."""
+    mgr_a, mgr_b, provider = two_gateways
+    fake_tickets = _FakeTicketRepo()
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: fake_tickets)
+
+    async def _run():
+        _as_gateway(monkeypatch, "gw-a")
+        chat_id, handle_a = await _spawn_owned_session(mgr_a)
+
+        # Inject latency into spawn (only now, AFTER A's own spawn already
+        # completed) so B's two concurrent takeover attempts actually
+        # interleave instead of one finishing before the other starts.
+        orig_spawn = provider.spawn
+
+        async def _slow_spawn(**kw):
+            await asyncio.sleep(0.05)
+            return await orig_spawn(**kw)
+
+        provider.spawn = _slow_spawn
+
+        _as_gateway(monkeypatch, "gw-b")
+        ws1, ws2 = FakeWS(), FakeWS()
+        results = await asyncio.gather(
+            mgr_b.attach(chat_id, ws1),
+            mgr_b.attach(chat_id, ws2),
+            return_exceptions=True,
+        )
+        for r in results:
+            if isinstance(r, Exception):
+                raise r
+
+        # A's original spawn + exactly one takeover spawn on B.
+        assert len(provider.spawned) == 2
+        assert provider.destroyed.count(handle_a.sandbox_id) == 1
+        assert chat_id in mgr_b._live
+        live_b = mgr_b._live[chat_id]
+        # Both websockets should have been seated on the SAME live session.
+        assert {e.sink for e in live_b.sinks} == {ws1, ws2}
+
+        await mgr_b.kill(chat_id, reason="test_done")
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Memory backend / single-process: the non-owner branch is unreachable
+# ---------------------------------------------------------------------------
+
+
+def test_memory_mode_never_triggers_takeover_on_reconnect(tmp_path, monkeypatch):
+    """Single-process (default `memory` coordination backend) story: this
+    process's own routing.this_gateway_id() is the only holder any lease
+    it claims can ever have, so a reconnect for a session it once spawned
+    — even with no local LiveSession entry, simulating this same process
+    having "forgotten" it in-memory without ever releasing the lease (a
+    stale self-claim, e.g. the ``owner == this_gw`` edge case attach()'s
+    docstring calls out) — must fall through to the normal resume-from-row/
+    spawn story, NEVER the foreign-takeover path."""
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    provider = FakeProvider()
+    mgr = _make_manager(tmp_path, repo, provider)
+
+    async def _run():
+        chat_id, handle = await _spawn_owned_session(mgr)
+        this_gw = routing.this_gateway_id()
+        assert routing.owner_of(chat_id) == this_gw
+
+        # Park the sandbox (pause) so a later resume-from-row can succeed
+        # by reconnecting to it — mirrors a real post-restart resume.
+        live = mgr._live[chat_id]
+        await mgr._pause_live(live)
+        assert live.state == SessionState.PAUSED
+
+        # Simulate "no LiveSession in this process" (e.g. this exact process
+        # forgot its in-memory registry across a restart) WITHOUT releasing
+        # the routing lease — owner_of(chat_id) still resolves to this_gw,
+        # exactly the ``owner == this_gw`` edge case attach()'s docstring
+        # calls out.
+        mgr._live.pop(chat_id, None)
+        assert routing.owner_of(chat_id) == this_gw
+
+        async def _must_not_be_called(*a, **k):
+            raise AssertionError("_takeover_foreign_session must never be reached in single-process/memory mode")
+
+        monkeypatch.setattr(mgr, "_takeover_foreign_session", _must_not_be_called)
+
+        ws2 = FakeWS()
+        await mgr.attach(chat_id, ws2)
+
+        # Normal resume-from-row story worked: the SAME sandbox handle was
+        # reconnected, not destroyed-and-replaced.
+        assert chat_id in mgr._live
+        assert mgr._live[chat_id].state == SessionState.ACTIVE
+        assert mgr._live[chat_id].handle is handle
+        # No sandbox was ever destroyed — this is NOT a takeover.
+        assert provider.destroyed == []
+
+        await mgr.kill(chat_id, reason="test_done")
+
+    asyncio.run(_run())
