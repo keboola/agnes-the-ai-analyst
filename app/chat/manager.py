@@ -408,93 +408,12 @@ class ChatManager:
         its double-seed race guard) before the caller ever sees the
         totals, so a restart-lost counter re-inherits today's true spend
         instead of starting over at zero.
+
+        Implementation lives module-level (``daily_token_totals``) so the
+        api-role thin producer — a process with NO ChatManager — enforces
+        the exact same budget (wave-2F final review F1).
         """
-        key_in, key_out = self._daily_token_keys(user_email)
-        try:
-            tokens_in = coordination().incr(key_in, amount=0, ttl_s=_DAILY_TOKENS_TTL_SEC)
-            tokens_out = coordination().incr(key_out, amount=0, ttl_s=_DAILY_TOKENS_TTL_SEC)
-        except CoordinationUnavailable:
-            logger.warning(
-                "daily token budget check: coordination backend unavailable; treating %s as 0 spent today",
-                user_email,
-            )
-            return (0, 0)
-        if tokens_in == 0 and tokens_out == 0:
-            tokens_in, tokens_out = self._seed_daily_tokens_from_db_if_needed(user_email, key_in, key_out)
-        return tokens_in, tokens_out
-
-    def _seed_daily_tokens_from_db_if_needed(self, user_email: str, key_in: str, key_out: str) -> tuple[int, int]:
-        """Seed `key_in`/`key_out` from the DB aggregate the first time
-        `_daily_token_totals` sees a ``(0, 0)`` counter reading for a given
-        (user, UTC date) — see that method's FLUSHALL / restart story.
-
-        A ``(0, 0)`` reading is ambiguous: it could be a fresh coordination
-        backend that has genuinely never recorded any spend for this user
-        today (nothing to seed), or a real restart that just lost non-zero
-        history. The counter value alone can't distinguish the two, so
-        every ``(0, 0)`` reading is treated as a potential miss — but the
-        DB is consulted at most ONCE per (user, date): a separate TTL-KV
-        marker (``chat-tokens-seeded:{user}:{date}``, not the counter
-        itself — an aggregate of exactly 0 is a legitimate steady state
-        for an idle user and must not force a re-query on every one of
-        their messages for the rest of the day) is set right after the DB
-        read regardless of what the aggregate was, and checked before any
-        further attempt.
-
-        Race: two requests can both observe the marker absent for the same
-        first-ever miss and both try to seed, which would double-count the
-        DB aggregate onto the counter. A short-lived seed lease
-        (``chat-tokens-seed:{user}:{date}``,
-        ``_DAILY_TOKENS_SEED_LEASE_TTL_SEC``) makes exactly one of them
-        perform the DB read + counter seed + marker write; the loser does
-        not wait on the winner — it returns the ``(0, 0)`` it already
-        peeked. That's a one-message, self-correcting blip (the very next
-        message from this user reads the now-seeded counter), not a lost
-        enforcement window, and matches this whole mechanism's existing
-        "soft cost guardrail, not a billing ledger" posture.
-
-        Coordination-backend outage during the seed attempt (lease
-        acquire, the DB read, or either ``incr``) is treated the same as
-        an ordinary miss: return ``(0, 0)`` and let the caller's own
-        ``CoordinationUnavailable`` handling (already in
-        ``_daily_token_totals``) or the next call retry.
-        """
-        date_bucket = datetime.now(timezone.utc).strftime("%Y%m%d")
-        seeded_marker_key = f"chat-tokens-seeded:{user_email}:{date_bucket}"
-        seed_lease_name = f"chat-tokens-seed:{user_email}:{date_bucket}"
-        try:
-            if coordination().kv_get(seeded_marker_key) is not None:
-                return (0, 0)  # already checked the DB for this day-bucket
-        except CoordinationUnavailable:
-            return (0, 0)
-
-        holder = default_holder_id()
-        try:
-            acquired = coordination().lease_acquire(seed_lease_name, holder, ttl_s=_DAILY_TOKENS_SEED_LEASE_TTL_SEC)
-        except CoordinationUnavailable:
-            return (0, 0)
-        if not acquired:
-            # Another request is (or just finished) seeding this bucket —
-            # don't block on it; the next check will see the result.
-            return (0, 0)
-        try:
-            # Re-check under the lease: another request may have finished
-            # seeding and set the marker between our first kv_get and
-            # acquiring the lease.
-            if coordination().kv_get(seeded_marker_key) is not None:
-                return (0, 0)
-            agg_in, agg_out = self._repo.daily_anthropic_tokens(user_email)
-            tokens_in = coordination().incr(key_in, amount=agg_in, ttl_s=_DAILY_TOKENS_TTL_SEC) if agg_in else 0
-            tokens_out = coordination().incr(key_out, amount=agg_out, ttl_s=_DAILY_TOKENS_TTL_SEC) if agg_out else 0
-            coordination().kv_set(seeded_marker_key, "1", ttl_s=_DAILY_TOKENS_TTL_SEC)
-            return tokens_in, tokens_out
-        except CoordinationUnavailable:
-            return (0, 0)
-        finally:
-            try:
-                coordination().lease_release(seed_lease_name, holder)
-            except CoordinationUnavailable:
-                pass
+        return daily_token_totals(self._repo, user_email)
 
     def _record_daily_tokens(self, user_email: str, tokens_in: Optional[int], tokens_out: Optional[int]) -> None:
         """Add one completed turn's token delta to `user_email`'s running
@@ -647,16 +566,7 @@ class ChatManager:
             if s.user_email == user_email or user_email in co_emails:
                 n += 1
         try:
-            this_gw = routing.this_gateway_id()
-            candidates = {s.id: s for s in self._repo.list_sessions(user_email)}
-            for s in self._repo.list_sessions_for_participant(user_email):
-                candidates.setdefault(s.id, s)
-            for chat_id in candidates:
-                if chat_id in self._live:
-                    continue  # already governed by the local state predicate above
-                owner = routing.owner_of(chat_id)
-                if owner is not None and owner != this_gw:
-                    n += 1
+            n += count_foreign_lease_sessions(self._repo, user_email, skip_chat_ids=self._live)
         except Exception:
             logger.warning(
                 "cross-gateway session count for %s failed — falling back to the local count",
@@ -1876,24 +1786,11 @@ class ChatManager:
         before wave-2F task 4) so the forward-to-owner path
         (``_forward_inbound_message``) — which has no local ``LiveSession``
         for a session this gateway doesn't own — can emit the same event as
-        the direct-owner path without needing one.
+        the direct-owner path without needing one. Implementation lives
+        module-level (``emit_chat_message_event``) so the api-role thin
+        producer can emit it without a ChatManager (wave-2F final review F1).
         """
-        try:
-            user_id: Optional[str] = None
-            try:
-                row = users_repo().get_by_email(sender)
-                user_id = (row or {}).get("id")
-            except Exception:
-                # Identity resolution is best-effort; username still keys the event.
-                pass
-            usage_repo().emit_server_event(
-                event_type="chat.message",
-                user_id=user_id,
-                username=sender,
-                props={"surface": surface, "session_id": chat_id},
-            )
-        except Exception:
-            logger.warning("usage_events emit failed for chat.message (session %s)", chat_id)
+        emit_chat_message_event(chat_id=chat_id, surface=surface, sender=sender)
 
     async def _enforce_sender_limits(self, sender: str, chat_id: str, live: Optional["LiveSession"]) -> None:
         """Sender-keyed daily-budget / per-session-token / rate-limit gate
@@ -1906,70 +1803,20 @@ class ChatManager:
         ``None`` — the cap is still fully enforced (the sender still gets a
         raised, catchable exception), just without the extra WS error frame,
         since there is no local socket to put it on.
+
+        Implementation lives module-level (``enforce_sender_limits``) so
+        the api-role thin producer — a process with NO ChatManager — runs
+        the exact same gate (wave-2F final review F1); this wrapper only
+        adds the local-sink error broadcast the producer has no use for.
         """
-        # Enforce daily Anthropic spend cap — see _daily_token_totals.
-        tokens_in, tokens_out = self._daily_token_totals(sender)
-        spent_usd = tokens_in * _PRICE_IN_PER_MTOK / 1_000_000 + tokens_out * _PRICE_OUT_PER_MTOK / 1_000_000
-        if spent_usd >= self._config.daily_anthropic_spend_usd:
-            if live is not None:
-                await self._broadcast(
-                    live,
-                    {
-                        "type": "error",
-                        "kind": "daily_budget",
-                        "message": (
-                            f"Daily spend cap of ${self._config.daily_anthropic_spend_usd:.2f} reached. "
-                            "Try again tomorrow."
-                        ),
-                    },
-                )
-            raise RuntimeError("daily_budget_exhausted")
-        # Per-session token cap — operators set max_session_tokens in
-        # instance.yaml; previously the knob was dead config. Tokens already
-        # spent in this session are summed from chat_messages on every send;
-        # the session row itself is never UPDATEd (DuckDB 1.5.3 FK+index bug
-        # documented in persistence.py).
-        session_tokens = self._repo.session_total_tokens(chat_id)
-        if session_tokens >= self._config.max_session_tokens:
-            if live is not None:
-                await self._broadcast(
-                    live,
-                    {
-                        "type": "error",
-                        "kind": "max_session_tokens",
-                        "message": (
-                            f"Per-session token cap of {self._config.max_session_tokens} reached "
-                            f"(used {session_tokens}). Start a new chat session."
-                        ),
-                    },
-                )
-            raise RuntimeError("max_session_tokens_exhausted")
-        # Per-user message-rate cap keyed on the SENDER (SR-10), enforced via
-        # a coordination-backend fixed-window counter (see _msg_window_key) —
-        # atomic incr-then-compare: this attempt is unconditionally counted
-        # (matches how most fixed-window API rate limiters behave — an
-        # attempt made while already over the cap still consumes a slot in
-        # the window rather than being a free retry) and only rejected if
-        # the count including it exceeds the configured cap.
-        try:
-            attempt_count = coordination().incr(self._msg_window_key(sender), ttl_s=_MSG_WINDOW_TTL_SEC)
-        except CoordinationUnavailable:
-            logger.warning("message-rate check: coordination backend unavailable; allowing message for %s", sender)
-            attempt_count = 0
-        if attempt_count > self._config.rate_messages_per_hour:
-            if live is not None:
-                await self._broadcast(
-                    live,
-                    {
-                        "type": "error",
-                        "kind": "rate_limit",
-                        "message": (
-                            f"Rate limit hit: {self._config.rate_messages_per_hour} messages/hour. "
-                            "Slow down or wait an hour."
-                        ),
-                    },
-                )
-            raise RuntimeError("rate_limit_exceeded")
+        on_limit = None
+        if live is not None:
+
+            async def _notify(frame: dict) -> None:
+                await self._broadcast(live, frame)
+
+            on_limit = _notify
+        await enforce_sender_limits(self._repo, self._config, sender, chat_id, on_limit=on_limit)
 
     async def _deliver_local_user_message(self, live: "LiveSession", text: str) -> None:
         """Write ``text`` as a ``user_msg`` stdin frame to ``live``'s runner
@@ -2056,24 +1903,14 @@ class ChatManager:
         backend rejects the publish (surfaced to the caller as a clean,
         specific, catchable error — see that module's docstring for why
         this one is not swallowed like most coordination helpers here).
+
+        Implementation lives module-level (``produce_inbound_user_message``)
+        so an api-role process with NO ChatManager can run the identical
+        thin-producer path (wave-2F final review F1).
         """
-        session = self._repo.get_session(chat_id)
-        if session is None:
-            raise SessionNotFound(chat_id)
-        sender = sender_email or session.user_email
-        await self._enforce_sender_limits(sender, chat_id, live=None)
-        self._repo.append_message(
-            session_id=chat_id,
-            role="user",
-            content=text,
-            sender_email=sender_email or session.user_email,
+        await produce_inbound_user_message(
+            self._repo, self._config, chat_id, text, sender_email=sender_email, slack_origin=slack_origin
         )
-        self._emit_chat_message_event(
-            chat_id=chat_id,
-            surface=getattr(session.surface, "value", str(session.surface)),
-            sender=sender,
-        )
-        await inbound.publish_inbound(chat_id, text, slack=slack_origin)
 
     async def _inbound_consumer_loop(self, live: "LiveSession") -> None:
         """Feed ``chat-in:{chat_id}`` stream entries into this (owning)
@@ -2879,3 +2716,334 @@ class ChatManager:
                     pass
         else:
             logger.debug("paused-sandbox sweep: lease held elsewhere this tick; skipping")
+
+
+# --- api-role thin producer (chat-manager-free forward path) ----------------
+#
+# A Slack webhook (or any load-balanced HTTP request) can land on a process
+# that runs NO ChatManager at all: app/main.py only constructs one on
+# Role.GATEWAY processes, so ``app.state.chat_manager`` is ``None`` on every
+# api-role replica. Wave-2F final review F1: the Slack handlers there must
+# still work as thin PRODUCERS — resolve/create the session row, enforce the
+# same sender limits, persist the user message, and publish it to the
+# ``chat-in:{chat_id}`` stream for whichever gateway owns (or later takes
+# over) the session — without ever touching a ChatManager. An api replica is
+# never an owner, so a producer ALWAYS forwards; it never attaches or
+# spawns. These module-level functions are that path; ChatManager's own
+# sibling methods delegate to them so the two can never drift.
+#
+# Reach/ownership disclosure: a producer can only ever HAND OFF. Delivery
+# requires some gateway to own the session (its inbound consumer drains the
+# stream); a brand-new session created by a webhook on an api replica has no
+# owner until a gateway first attaches it, and the consumer's cursor seeding
+# (F3 — see ``ChatManager._inbound_consumer_loop``) deliberately skips
+# entries published before that first consumer start. The reference m-tier
+# topology therefore routes ``/api/slack/*`` to gateway-role upstreams
+# (deploy/caddy/Caddyfile.mtier; docs/DEPLOYMENT.md -> chat HA -> LB routing
+# rule) — this producer path is the graceful-degradation fallback for
+# webhooks that land on an api replica anyway, not the primary route.
+
+
+def daily_token_totals(repo: ChatRepository, user_email: str) -> tuple[int, int]:
+    """Module-level implementation behind ``ChatManager._daily_token_totals``
+    — see that method's docstring for the counter/TTL/FLUSHALL story."""
+    key_in, key_out = ChatManager._daily_token_keys(user_email)
+    try:
+        tokens_in = coordination().incr(key_in, amount=0, ttl_s=_DAILY_TOKENS_TTL_SEC)
+        tokens_out = coordination().incr(key_out, amount=0, ttl_s=_DAILY_TOKENS_TTL_SEC)
+    except CoordinationUnavailable:
+        logger.warning(
+            "daily token budget check: coordination backend unavailable; treating %s as 0 spent today",
+            user_email,
+        )
+        return (0, 0)
+    if tokens_in == 0 and tokens_out == 0:
+        tokens_in, tokens_out = _seed_daily_tokens_from_db_if_needed(repo, user_email, key_in, key_out)
+    return tokens_in, tokens_out
+
+
+def _seed_daily_tokens_from_db_if_needed(
+    repo: ChatRepository, user_email: str, key_in: str, key_out: str
+) -> tuple[int, int]:
+    """Seed `key_in`/`key_out` from the DB aggregate the first time
+    ``daily_token_totals`` sees a ``(0, 0)`` counter reading for a given
+    (user, UTC date) — see that function's FLUSHALL / restart story.
+
+    A ``(0, 0)`` reading is ambiguous: it could be a fresh coordination
+    backend that has genuinely never recorded any spend for this user
+    today (nothing to seed), or a real restart that just lost non-zero
+    history. The counter value alone can't distinguish the two, so
+    every ``(0, 0)`` reading is treated as a potential miss — but the
+    DB is consulted at most ONCE per (user, date): a separate TTL-KV
+    marker (``chat-tokens-seeded:{user}:{date}``, not the counter
+    itself — an aggregate of exactly 0 is a legitimate steady state
+    for an idle user and must not force a re-query on every one of
+    their messages for the rest of the day) is set right after the DB
+    read regardless of what the aggregate was, and checked before any
+    further attempt.
+
+    Race: two requests can both observe the marker absent for the same
+    first-ever miss and both try to seed, which would double-count the
+    DB aggregate onto the counter. A short-lived seed lease
+    (``chat-tokens-seed:{user}:{date}``,
+    ``_DAILY_TOKENS_SEED_LEASE_TTL_SEC``) makes exactly one of them
+    perform the DB read + counter seed + marker write; the loser does
+    not wait on the winner — it returns the ``(0, 0)`` it already
+    peeked. That's a one-message, self-correcting blip (the very next
+    message from this user reads the now-seeded counter), not a lost
+    enforcement window, and matches this whole mechanism's existing
+    "soft cost guardrail, not a billing ledger" posture.
+
+    Coordination-backend outage during the seed attempt (lease
+    acquire, the DB read, or either ``incr``) is treated the same as
+    an ordinary miss: return ``(0, 0)`` and let the caller's own
+    ``CoordinationUnavailable`` handling (already in
+    ``daily_token_totals``) or the next call retry.
+    """
+    date_bucket = datetime.now(timezone.utc).strftime("%Y%m%d")
+    seeded_marker_key = f"chat-tokens-seeded:{user_email}:{date_bucket}"
+    seed_lease_name = f"chat-tokens-seed:{user_email}:{date_bucket}"
+    try:
+        if coordination().kv_get(seeded_marker_key) is not None:
+            return (0, 0)  # already checked the DB for this day-bucket
+    except CoordinationUnavailable:
+        return (0, 0)
+
+    holder = default_holder_id()
+    try:
+        acquired = coordination().lease_acquire(seed_lease_name, holder, ttl_s=_DAILY_TOKENS_SEED_LEASE_TTL_SEC)
+    except CoordinationUnavailable:
+        return (0, 0)
+    if not acquired:
+        # Another request is (or just finished) seeding this bucket —
+        # don't block on it; the next check will see the result.
+        return (0, 0)
+    try:
+        # Re-check under the lease: another request may have finished
+        # seeding and set the marker between our first kv_get and
+        # acquiring the lease.
+        if coordination().kv_get(seeded_marker_key) is not None:
+            return (0, 0)
+        agg_in, agg_out = repo.daily_anthropic_tokens(user_email)
+        tokens_in = coordination().incr(key_in, amount=agg_in, ttl_s=_DAILY_TOKENS_TTL_SEC) if agg_in else 0
+        tokens_out = coordination().incr(key_out, amount=agg_out, ttl_s=_DAILY_TOKENS_TTL_SEC) if agg_out else 0
+        coordination().kv_set(seeded_marker_key, "1", ttl_s=_DAILY_TOKENS_TTL_SEC)
+        return tokens_in, tokens_out
+    except CoordinationUnavailable:
+        return (0, 0)
+    finally:
+        try:
+            coordination().lease_release(seed_lease_name, holder)
+        except CoordinationUnavailable:
+            pass
+
+
+async def enforce_sender_limits(
+    repo: ChatRepository,
+    config: ChatConfig,
+    sender: str,
+    chat_id: str,
+    *,
+    on_limit=None,
+) -> None:
+    """Sender-keyed daily-budget / per-session-token / rate-limit gate —
+    the module-level implementation behind
+    ``ChatManager._enforce_sender_limits`` (see that method's docstring).
+
+    ``on_limit`` is an optional ``async (frame: dict) -> None`` callback
+    invoked with the would-be error frame before the limit exception is
+    raised — the ChatManager wrapper broadcasts it to the local sinks; the
+    api-role thin producer passes nothing (no local socket to put it on).
+    The raised ``RuntimeError`` reasons are unchanged either way.
+    """
+    # Enforce daily Anthropic spend cap — see daily_token_totals.
+    tokens_in, tokens_out = daily_token_totals(repo, sender)
+    spent_usd = tokens_in * _PRICE_IN_PER_MTOK / 1_000_000 + tokens_out * _PRICE_OUT_PER_MTOK / 1_000_000
+    if spent_usd >= config.daily_anthropic_spend_usd:
+        if on_limit is not None:
+            await on_limit(
+                {
+                    "type": "error",
+                    "kind": "daily_budget",
+                    "message": (
+                        f"Daily spend cap of ${config.daily_anthropic_spend_usd:.2f} reached. Try again tomorrow."
+                    ),
+                }
+            )
+        raise RuntimeError("daily_budget_exhausted")
+    # Per-session token cap — operators set max_session_tokens in
+    # instance.yaml; previously the knob was dead config. Tokens already
+    # spent in this session are summed from chat_messages on every send;
+    # the session row itself is never UPDATEd (DuckDB 1.5.3 FK+index bug
+    # documented in persistence.py).
+    session_tokens = repo.session_total_tokens(chat_id)
+    if session_tokens >= config.max_session_tokens:
+        if on_limit is not None:
+            await on_limit(
+                {
+                    "type": "error",
+                    "kind": "max_session_tokens",
+                    "message": (
+                        f"Per-session token cap of {config.max_session_tokens} reached "
+                        f"(used {session_tokens}). Start a new chat session."
+                    ),
+                }
+            )
+        raise RuntimeError("max_session_tokens_exhausted")
+    # Per-user message-rate cap keyed on the SENDER (SR-10), enforced via
+    # a coordination-backend fixed-window counter (see _msg_window_key) —
+    # atomic incr-then-compare: this attempt is unconditionally counted
+    # (matches how most fixed-window API rate limiters behave — an
+    # attempt made while already over the cap still consumes a slot in
+    # the window rather than being a free retry) and only rejected if
+    # the count including it exceeds the configured cap.
+    try:
+        attempt_count = coordination().incr(ChatManager._msg_window_key(sender), ttl_s=_MSG_WINDOW_TTL_SEC)
+    except CoordinationUnavailable:
+        logger.warning("message-rate check: coordination backend unavailable; allowing message for %s", sender)
+        attempt_count = 0
+    if attempt_count > config.rate_messages_per_hour:
+        if on_limit is not None:
+            await on_limit(
+                {
+                    "type": "error",
+                    "kind": "rate_limit",
+                    "message": (
+                        f"Rate limit hit: {config.rate_messages_per_hour} messages/hour. Slow down or wait an hour."
+                    ),
+                }
+            )
+        raise RuntimeError("rate_limit_exceeded")
+
+
+def emit_chat_message_event(*, chat_id: str, surface: str, sender: str) -> None:
+    """Emit one ``chat.message`` usage event per user chat turn — the
+    module-level implementation behind ``ChatManager._emit_chat_message_event``
+    (see that method's docstring). Best-effort by contract: telemetry must
+    never block or fail a send."""
+    try:
+        user_id: Optional[str] = None
+        try:
+            row = users_repo().get_by_email(sender)
+            user_id = (row or {}).get("id")
+        except Exception:
+            # Identity resolution is best-effort; username still keys the event.
+            pass
+        usage_repo().emit_server_event(
+            event_type="chat.message",
+            user_id=user_id,
+            username=sender,
+            props={"surface": surface, "session_id": chat_id},
+        )
+    except Exception:
+        logger.warning("usage_events emit failed for chat.message (session %s)", chat_id)
+
+
+def count_foreign_lease_sessions(repo: ChatRepository, user_email: str, *, skip_chat_ids=()) -> int:
+    """Count ``user_email``'s sessions whose ``chat:{id}`` routing lease is
+    positively held by a DIFFERENT gateway than this process — the
+    cross-replica half of the per-user concurrency cap (spec §3.2).
+
+    ``skip_chat_ids``: chat_ids already governed by the caller's own local
+    predicate (``ChatManager._active_count_for_user`` passes its ``_live``
+    registry). An api-role producer passes nothing — it hosts no live
+    sessions, and its own gateway id never holds a chat lease, so every
+    positively-owned session of the user counts.
+
+    May raise on repo/enumeration errors — ``routing.owner_of`` itself
+    already degrades to ``None`` on ``CoordinationUnavailable`` (each
+    candidate then contributes 0), and callers wrap the whole call in
+    their own fail-open handling.
+    """
+    n = 0
+    this_gw = routing.this_gateway_id()
+    candidates = {s.id for s in repo.list_sessions(user_email)}
+    for s in repo.list_sessions_for_participant(user_email):
+        candidates.add(s.id)
+    for chat_id in candidates:
+        if chat_id in skip_chat_ids:
+            continue  # already governed by the caller's local predicate
+        owner = routing.owner_of(chat_id)
+        if owner is not None and owner != this_gw:
+            n += 1
+    return n
+
+
+def resolve_or_create_slack_session(
+    repo: ChatRepository,
+    config: ChatConfig,
+    *,
+    user_email: str,
+    surface: Surface,
+    slack_channel_id: Optional[str],
+    slack_thread_ts: Optional[str] = None,
+) -> ChatSession:
+    """Producer-side counterpart of ``ChatManager.create_session`` for the
+    Slack surfaces, for processes with NO ChatManager (api role).
+
+    De-dupes FIRST (an existing DM/thread session must always be
+    forwardable — returning it can never add to the cap), then enforces the
+    per-user concurrency cap via the lease-derived count (this process
+    hosts no live sessions, so the foreign-lease count IS the whole count),
+    then creates the row. Raises ``ConcurrencyCapHit`` / ``RuntimeError``
+    with the same semantics as ``create_session``.
+    """
+    if not config.enabled:
+        raise RuntimeError("chat.enabled is false")
+    if surface == Surface.SLACK_DM and slack_channel_id:
+        existing = repo.get_slack_dm_session(slack_channel_id)
+        if existing is not None:
+            return existing
+    if surface == Surface.SLACK_THREAD and slack_channel_id and slack_thread_ts:
+        existing = repo.get_slack_thread_session(slack_channel_id, slack_thread_ts)
+        if existing is not None:
+            return existing
+    try:
+        active = count_foreign_lease_sessions(repo, user_email)
+    except Exception:
+        # Same fail-open-to-serving posture as _active_count_for_user.
+        logger.warning("producer-side session count for %s failed — allowing create", user_email, exc_info=True)
+        active = 0
+    if active >= config.concurrency_per_user:
+        raise ConcurrencyCapHit(f"user {user_email} has {active} active sessions; cap = {config.concurrency_per_user}")
+    return repo.create_session(
+        user_email=user_email,
+        surface=surface,
+        slack_channel_id=slack_channel_id,
+        slack_thread_ts=slack_thread_ts,
+        title=None,
+    )
+
+
+async def produce_inbound_user_message(
+    repo: ChatRepository,
+    config: ChatConfig,
+    chat_id: str,
+    text: str,
+    *,
+    sender_email: Optional[str] = None,
+    slack_origin: Optional[dict] = None,
+) -> None:
+    """Thin-producer forward: enforce limits, persist the user message, emit
+    telemetry, and publish to the ``chat-in:{chat_id}`` stream — the
+    module-level implementation behind
+    ``ChatManager._forward_inbound_message`` (see that method's docstring
+    for the raise contract), callable from processes with no ChatManager.
+    """
+    session = repo.get_session(chat_id)
+    if session is None:
+        raise SessionNotFound(chat_id)
+    sender = sender_email or session.user_email
+    await enforce_sender_limits(repo, config, sender, chat_id)
+    repo.append_message(
+        session_id=chat_id,
+        role="user",
+        content=text,
+        sender_email=sender,
+    )
+    emit_chat_message_event(
+        chat_id=chat_id,
+        surface=getattr(session.surface, "value", str(session.surface)),
+        sender=sender,
+    )
+    await inbound.publish_inbound(chat_id, text, slack=slack_origin)

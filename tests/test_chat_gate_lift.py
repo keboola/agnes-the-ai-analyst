@@ -491,3 +491,260 @@ def test_slack_dm_owned_locally_unaffected(monkeypatch):
 
     assert len(mgr._attached) == 1
     assert mgr._sent == [("sess-1", "hello agnes")]
+
+
+# ---------------------------------------------------------------------------
+# Group 3 (wave-2F final review F1): api-role replicas — chat_manager is None
+# — must degrade to the chat-manager-free thin-producer path, never crash.
+# ---------------------------------------------------------------------------
+
+
+def _build_api_role_app_state(monkeypatch):
+    """App-shaped state for an API-ROLE replica: a REAL ChatRepository +
+    ChatConfig and ``chat_manager=None`` — only ``Role.GATEWAY`` processes
+    construct a ChatManager (app/main.py CHAT-INIT), so this is exactly the
+    state every Slack webhook handler sees on an api replica. Same
+    isolation strategy as ``_build_isolated_dm_app_state`` above (own
+    in-memory DuckDB + ``src.repositories.get_system_db`` redirect)."""
+    from types import SimpleNamespace
+
+    import duckdb
+
+    from app.chat.config import ChatConfig
+    from app.chat.persistence import ChatRepository
+    from src.db import _ensure_schema
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    conn.execute("INSERT INTO users(id, email, name) VALUES ('uid1', 'bob@example.com', 'Bob')")
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: conn)
+    repo = ChatRepository(conn)
+    state = SimpleNamespace(
+        chat_repo=repo,
+        chat_manager=None,
+        chat_config=ChatConfig(enabled=True, concurrency_per_user=3),
+        public_url="https://agnes.example.com",
+        slack_bot_user_id="U07BOT",
+    )
+    return SimpleNamespace(state=state), repo, conn
+
+
+@pytest.fixture()
+def _fresh_coordination():
+    """The producer path publishes to the process-wide coordination
+    singleton — reset around each test so stream/seq state can't leak."""
+    from app.coordination.factory import reset_coordination_for_tests
+
+    reset_coordination_for_tests()
+    yield
+    reset_coordination_for_tests()
+
+
+def _bind_bob(conn):
+    from services.slack_bot.binding import _ensure_table
+
+    _ensure_table(conn)
+    conn.execute("UPDATE users SET slack_user_id = 'U123' WHERE email = 'bob@example.com'")
+
+
+def test_slack_dm_api_role_thin_producer_forwards(monkeypatch, _fresh_coordination):
+    """F1: a DM webhook on an api-role replica (chat_manager=None — the
+    reference Caddyfile used to route ALL HTTP there) must not crash on the
+    None deref — it runs the thin-producer path: session row resolved/
+    created, user message persisted, entry published on chat-in:{id} with
+    its Slack origin. Load-bearing: pre-fix this dispatch raised
+    AttributeError('NoneType' has no attribute 'create_session') and the
+    webhook-mode Slack chat was 100% dead on api replicas."""
+    import app.auth.access as _access
+    import services.slack_bot.events as ev
+    from app.chat import inbound
+
+    monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
+    app, repo, conn = _build_api_role_app_state(monkeypatch)
+    _bind_bob(conn)
+
+    event = {
+        "type": "message",
+        "channel_type": "im",
+        "channel": "D1",
+        "user": "U123",
+        "ts": "1.1",
+        "text": "hello api role",
+    }
+    asyncio.run(ev.dispatch_event(app, event))
+
+    session = repo.get_slack_dm_session("D1")
+    assert session is not None, "the producer must create the DM session row"
+    user_msgs = [m.content for m in repo.list_messages(session.id) if m.role == "user"]
+    assert user_msgs == ["hello api role"], "the producer must persist the user message"
+    entries = inbound.read_new(session.id, after_seq=0)
+    assert [e.get("text") for e in entries] == ["hello api role"]
+    assert entries[0].get("slack", {}).get("channel") == "D1", (
+        "the forwarded entry must carry its Slack origin so the owner re-seats the sink"
+    )
+
+
+def test_slack_mention_api_role_thin_producer_forwards(monkeypatch, _fresh_coordination):
+    """F1, channel-mention path: same thin-producer degrade on an api-role
+    replica, with the mention token stripped before forwarding."""
+    from types import SimpleNamespace
+
+    import duckdb
+
+    from src.db import _ensure_schema
+    from tests.test_slack_bot import _allow_channel, _seed_bound_chat_user
+
+    import services.slack_bot.events as ev
+    from app.chat import inbound
+    from app.chat.config import ChatConfig
+    from app.chat.persistence import ChatRepository
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: conn)
+    _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    repo = ChatRepository(conn)
+    state = SimpleNamespace(
+        chat_repo=repo,
+        chat_manager=None,
+        chat_config=ChatConfig(enabled=True, concurrency_per_user=3),
+        public_url="https://agnes.example.com",
+        slack_bot_user_id="U07BOT",
+    )
+    app = SimpleNamespace(state=state)
+
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.1", "user": "U_OK", "text": "<@U07BOT> revenue?"}))
+
+    session = repo.get_slack_thread_session("C_OK", "9.1")
+    assert session is not None, "the producer must create the thread session row"
+    entries = inbound.read_new(session.id, after_seq=0)
+    assert [e.get("text") for e in entries] == ["revenue?"]
+    assert entries[0].get("slack", {}).get("channel") == "C_OK"
+
+
+def test_cmd_agnes_api_role_thin_producer_forwards_and_acks(monkeypatch, _fresh_coordination):
+    """F1, /agnes slash-command path: producer forward + the standard
+    'reply in your DM' response_url ack."""
+    import app.auth.access as _access
+    import services.slack_bot.commands as cmds
+    from app.chat import inbound
+
+    monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
+    app, repo, conn = _build_api_role_app_state(monkeypatch)
+    _bind_bob(conn)
+
+    async def fake_open_im(uid):
+        return "D1"
+
+    ephemerals: list[tuple[str, str]] = []
+
+    async def fake_ephemeral(url, text):
+        ephemerals.append((url, text))
+
+    monkeypatch.setattr(cmds, "open_im", fake_open_im)
+    monkeypatch.setattr(cmds, "send_ephemeral", fake_ephemeral)
+
+    cmd = {"command": "/agnes", "user_id": "U123", "text": "hi agnes", "response_url": "https://hooks.slack/r1"}
+    asyncio.run(cmds.dispatch_command(app, cmd))
+
+    session = repo.get_slack_dm_session("D1")
+    assert session is not None
+    entries = inbound.read_new(session.id, after_seq=0)
+    assert [e.get("text") for e in entries] == ["hi agnes"]
+    assert ephemerals and ephemerals[-1][0] == "https://hooks.slack/r1"
+    assert "reply in your DM" in ephemerals[-1][1]
+
+
+def test_stop_button_api_role_forwards_cancel(monkeypatch, _fresh_coordination):
+    """F1, Stop-button path: on an api-role replica the click forwards a
+    control:cancel to the owning gateway instead of dereferencing the
+    (absent) local ChatManager."""
+    import services.slack_bot.interactivity as inter
+
+    app, repo, conn = _build_api_role_app_state(monkeypatch)
+    _bind_bob(conn)
+
+    monkeypatch.setattr("app.chat.routing.owner_of", lambda cid: "gw-B")
+    monkeypatch.setattr("app.chat.routing.this_gateway_id", lambda: "api-1")
+    published: list[tuple[str, str]] = []
+
+    async def fake_publish_control(cid, command, **kw):
+        published.append((cid, command))
+        return 1
+
+    monkeypatch.setattr("app.chat.inbound.publish_control", fake_publish_control)
+
+    it = inter.Interaction(
+        action_id="chat_stop",
+        slack_user_id="U123",
+        channel_id="D1",
+        response_url="https://hooks.slack/r1",
+        value={"chat_id": "sess-9", "owner": "bob@example.com"},
+    )
+    asyncio.run(inter._on_stop(app, it))
+
+    assert published == [("sess-9", "cancel")]
+
+
+def test_agnes_new_api_role_forwards_kill_and_archives(monkeypatch, _fresh_coordination):
+    """F1, /agnes-new path: on an api-role replica the archive still lands
+    locally and the kill is forwarded as a control:kill to the owner."""
+    import services.slack_bot.commands as cmds
+    from app.chat.types import Surface
+
+    app, repo, conn = _build_api_role_app_state(monkeypatch)
+    _bind_bob(conn)
+    session = repo.create_session(
+        user_email="bob@example.com",
+        surface=Surface.SLACK_DM,
+        slack_channel_id="D1",
+    )
+
+    monkeypatch.setattr("app.chat.routing.owner_of", lambda cid: "gw-B")
+    monkeypatch.setattr("app.chat.routing.this_gateway_id", lambda: "api-1")
+    published: list[tuple[str, str, str]] = []
+
+    async def fake_publish_control(cid, command, *, reason=None):
+        published.append((cid, command, reason))
+        return 1
+
+    monkeypatch.setattr("app.chat.inbound.publish_control", fake_publish_control)
+
+    async def fake_open_im(uid):
+        return "D1"
+
+    ephemerals: list[str] = []
+
+    async def fake_ephemeral(url, text):
+        ephemerals.append(text)
+
+    monkeypatch.setattr(cmds, "open_im", fake_open_im)
+    monkeypatch.setattr(cmds, "send_ephemeral", fake_ephemeral)
+
+    asyncio.run(cmds.dispatch_command(app, {"command": "/agnes-new", "user_id": "U123", "response_url": "r1"}))
+
+    assert published == [(session.id, "kill", "agnes_new")]
+    assert repo.get_slack_dm_session("D1") is None, "the session row must be archived locally"
+    assert ephemerals and "Archived" in ephemerals[-1]
+
+
+def test_cmd_status_api_role_uses_lease_count(monkeypatch, _fresh_coordination):
+    """F1, /agnes-status path: reports the lease-derived count instead of
+    dereferencing the absent ChatManager."""
+    import services.slack_bot.commands as cmds
+
+    app, repo, conn = _build_api_role_app_state(monkeypatch)
+    _bind_bob(conn)
+
+    ephemerals: list[str] = []
+
+    async def fake_ephemeral(url, text):
+        ephemerals.append(text)
+
+    monkeypatch.setattr(cmds, "send_ephemeral", fake_ephemeral)
+
+    asyncio.run(cmds.dispatch_command(app, {"command": "/agnes-status", "user_id": "U123", "response_url": "r1"}))
+
+    assert ephemerals and "active sessions: *0* / 3" in ephemerals[-1]
