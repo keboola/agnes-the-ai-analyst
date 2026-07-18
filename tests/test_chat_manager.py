@@ -1728,7 +1728,18 @@ def test_shutdown_pauses_active_sessions(tmp_path):
 
 
 def test_keepalive_heartbeat_extends_timeout_while_sinks_attached(tmp_path):
-    """The reaper tick calls provider.keepalive for ACTIVE sessions with sinks."""
+    """The reaper tick calls provider.keepalive for ACTIVE sessions with sinks.
+
+    Awaits ``mgr.attach`` directly rather than firing it via
+    ``asyncio.create_task`` + a fixed sleep (the pre-existing pattern here):
+    ``attach()`` fully completes seat_sink (and thus registers the sink)
+    before returning — it doesn't need the pump/wait tasks it kicks off to
+    finish — so there's no concurrency to simulate and nothing to race. A
+    fixed 50ms sleep before checking ``live.sinks`` was flaky under a loaded
+    CI runner (8 shards x pytest -n auto), matching the direct-await pattern
+    already used by sibling non-concurrent attach tests in this file (e.g.
+    test_broadcast_dead_sink_sweep_triggers_detach_policy,
+    test_seat_sink_does_not_replay_persisted_history)."""
 
     async def _run():
         mgr = _make_pause_manager(tmp_path, linger_seconds=999)
@@ -1736,8 +1747,7 @@ def test_keepalive_heartbeat_extends_timeout_while_sinks_attached(tmp_path):
         provider = mgr._provider
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
-        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await mgr.attach(s.id, ws)
         live = mgr._live.get(s.id)
         assert live is not None and live.sinks  # has a sink
 
@@ -1745,11 +1755,6 @@ def test_keepalive_heartbeat_extends_timeout_while_sinks_attached(tmp_path):
         assert provider.keepalive_calls, "keepalive should be called for ACTIVE session with sinks"
 
         await mgr.kill(s.id, reason="test_done")
-        attach_task.cancel()
-        try:
-            await attach_task
-        except (asyncio.CancelledError, Exception):
-            pass
 
     asyncio.run(_run())
 
