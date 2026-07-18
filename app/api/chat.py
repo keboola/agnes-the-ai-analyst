@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from app.auth.access import require_resource_access
 from app.auth.dependencies import _get_db
+from app.chat.frame_seq import stamp_frame
 from app.chat.manager import ChatManager, ConcurrencyCapHit, SessionNotFound
 from app.chat.persistence import ChatRepository
 from app.chat.profiles import get_profile
@@ -273,12 +274,19 @@ async def ws_stream(ws: WebSocket, chat_id: str, ticket: str):
                         except SessionNotFound:
                             await asyncio.sleep(0.5)
                     else:
+                        # Sent directly on the WS before any LiveSession
+                        # exists (so it can't go through
+                        # ChatManager._broadcast) — stamp it here (wave-2F
+                        # task 2).
                         await ws.send_json(
-                            {
-                                "type": "error",
-                                "kind": "runner_not_ready",
-                                "message": "Runner did not become ready within 30 s.",
-                            }
+                            stamp_frame(
+                                chat_id_v,
+                                {
+                                    "type": "error",
+                                    "kind": "runner_not_ready",
+                                    "message": "Runner did not become ready within 30 s.",
+                                },
+                            )
                         )
                 elif kind == "cancel":
                     await mgr.cancel(chat_id_v)
@@ -352,12 +360,17 @@ async def ws_join(ws: WebSocket, session_id: str, ticket: str):
                         except SessionNotFound:
                             await asyncio.sleep(0.5)
                     else:
+                        # See ws_stream's identical branch above — stamp for
+                        # the same reason (wave-2F task 2).
                         await ws.send_json(
-                            {
-                                "type": "error",
-                                "kind": "runner_not_ready",
-                                "message": "Runner did not become ready within 30 s.",
-                            }
+                            stamp_frame(
+                                session_id,
+                                {
+                                    "type": "error",
+                                    "kind": "runner_not_ready",
+                                    "message": "Runner did not become ready within 30 s.",
+                                },
+                            )
                         )
                 elif kind == "cancel":
                     await mgr.cancel(session_id)
