@@ -290,6 +290,7 @@ def test_socket_gate_ok_when_all_conditions_met(monkeypatch):
         workers=1,
         app_token="xapp-abc",
         bot_token="xoxb-def",
+        backend="memory",
     )
     assert ok is True
     assert reason == ""
@@ -298,7 +299,7 @@ def test_socket_gate_ok_when_all_conditions_met(monkeypatch):
 @pytest.mark.parametrize(
     "workers,app_tok,bot_tok,sdk,needle",
     [
-        (2, "xapp-a", "xoxb-b", True, "UVICORN_WORKERS"),  # multi-worker
+        (2, "xapp-a", "xoxb-b", True, "UVICORN_WORKERS"),  # multi-worker, memory backend
         (1, "", "xoxb-b", True, "SLACK_APP_TOKEN"),  # missing app token
         (1, "xoxb-wrong", "xoxb-b", True, "xapp-"),  # app token wrong prefix
         (1, "xapp-a", "", True, "SLACK_BOT_TOKEN"),  # missing bot token
@@ -307,6 +308,9 @@ def test_socket_gate_ok_when_all_conditions_met(monkeypatch):
     ],
 )
 def test_socket_gate_fails_closed(monkeypatch, workers, app_tok, bot_tok, sdk, needle):
+    """Needs backend="memory" to hold for the multi-worker case (wave-2F
+    task 7): with coordination.backend="redis", workers>1 is now safe — see
+    tests/test_chat_gate_lift.py's test_socket_preflight_redis_multi_worker_ok."""
     from services.slack_bot import socket_mode_client as smc
 
     monkeypatch.setattr(smc, "_slack_sdk_importable", lambda: sdk)
@@ -314,6 +318,7 @@ def test_socket_gate_fails_closed(monkeypatch, workers, app_tok, bot_tok, sdk, n
         workers=workers,
         app_token=app_tok,
         bot_token=bot_tok,
+        backend="memory",
     )
     assert ok is False
     assert needle in reason

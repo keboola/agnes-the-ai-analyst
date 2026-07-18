@@ -1,0 +1,390 @@
+"""Task 7 (wave-2F) — lift the multi-worker/replica chat gate for the redis
+coordination backend, and make Slack HTTP webhook handlers thin producers.
+
+Everything the multi-replica chat path needs (tickets, session-routing
+leases + takeover, frame replay, inbound command streams, notifications
+pub/sub) was already coordination-backed by the end of wave-2F tasks 1-6 —
+this task only lifts the two gates that still hard-refused ``UVICORN_WORKERS
+> 1`` / role-split regardless of backend, and hardens the Slack webhook
+handlers so a request landing on a non-owning gateway replica doesn't try to
+locally attach/spawn a session it doesn't own.
+
+Two groups of tests:
+
+1. Chat-gate tests mirror ONLY the (now backend-aware) ``UVICORN_WORKERS``
+   branch of app/main.py's CHAT-INIT block — the same minimal-app
+   convention ``tests/test_chat_deployment_gates.py`` established — but
+   route the backend check through ``app.main._chat_coordination_backend``
+   so monkeypatching that one function drives the mirrored branch exactly
+   like the real lifespan would.
+
+2. The Slack producer test verifies ``services.slack_bot.events``'s wave-2F
+   task 7 fix: a webhook landing on a gateway replica that does NOT own the
+   session's routing lease must not attempt a local attach/spawn — it calls
+   straight through to ``send_user_message``, relying on
+   ``ChatManager.send_user_message``'s own cross-gateway forwarding (wave-2F
+   task 4, exercised end-to-end in tests/test_chat_inbound.py) to deliver it
+   to the owning gateway.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+from contextlib import asynccontextmanager
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import app.main as main_mod
+from app.roles import Role, reset_roles_cache, role_enabled
+
+# ---------------------------------------------------------------------------
+# Group 1: the UVICORN_WORKERS / coordination-backend chat gate
+# ---------------------------------------------------------------------------
+
+
+def _make_app_with_worker_gate() -> FastAPI:
+    """Minimal app whose lifespan mirrors the CHAT-INIT gate order from
+    app/main.py: gateway-role gate first, then the (now backend-aware)
+    multi-worker/replica gate."""
+
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI):
+        from app.chat.config import ChatConfig
+
+        app.state.chat_config = ChatConfig(enabled=True)
+
+        if app.state.chat_config.enabled:
+            if not role_enabled(Role.GATEWAY):
+                app.state.chat_manager = None
+            elif int(os.environ.get("UVICORN_WORKERS", "1")) > 1 and main_mod._chat_coordination_backend() != "redis":
+                app.state.chat_manager = None
+            else:
+                app.state.chat_manager = object()  # sentinel: "something"
+
+        yield
+
+    return FastAPI(lifespan=_lifespan)
+
+
+@pytest.fixture(autouse=True)
+def _reset_role_cache(monkeypatch):
+    monkeypatch.delenv("AGNES_ROLE", raising=False)
+    reset_roles_cache()
+    yield
+    reset_roles_cache()
+
+
+def test_redis_backend_multi_worker_enables_chat(monkeypatch):
+    """coordination.backend=redis + UVICORN_WORKERS=2 -> chat_manager
+    enabled (not None): tickets/leases/replay/inbound/notifications are all
+    coordination-backed now, so a redis-backed multi-worker/replica
+    deployment is safe."""
+    monkeypatch.setenv("UVICORN_WORKERS", "2")
+    monkeypatch.setattr(main_mod, "_chat_coordination_backend", lambda: "redis")
+
+    app = _make_app_with_worker_gate()
+    with TestClient(app):
+        assert getattr(app.state, "chat_manager", None) is not None
+
+
+def test_memory_backend_multi_worker_still_disables_chat(monkeypatch):
+    """coordination.backend=memory (the default) + UVICORN_WORKERS=2 ->
+    still disabled — unchanged S-tier posture. Process-local memory state
+    cannot be shared across worker processes, so multi-worker chat stays
+    unsafe on this backend."""
+    monkeypatch.setenv("UVICORN_WORKERS", "2")
+    monkeypatch.setattr(main_mod, "_chat_coordination_backend", lambda: "memory")
+
+    app = _make_app_with_worker_gate()
+    with TestClient(app):
+        assert getattr(app.state, "chat_manager", None) is None
+
+
+def test_single_worker_memory_backend_enables_chat(monkeypatch):
+    """Baseline unchanged: UVICORN_WORKERS=1 (default), memory backend -> chat
+    still enabled — the gate only ever fired at workers>1."""
+    monkeypatch.setenv("UVICORN_WORKERS", "1")
+    monkeypatch.setattr(main_mod, "_chat_coordination_backend", lambda: "memory")
+
+    app = _make_app_with_worker_gate()
+    with TestClient(app):
+        assert getattr(app.state, "chat_manager", None) is not None
+
+
+def test_redis_backend_role_split_gateway_enables_chat(monkeypatch):
+    """coordination.backend=redis + AGNES_ROLE=gateway (role-split) +
+    UVICORN_WORKERS=2 -> chat still enabled. A gateway-role replica passes
+    the role gate, and with the coordination backend=redis the worker-count
+    gate no longer disables it either."""
+    monkeypatch.setenv("AGNES_ROLE", "gateway")
+    reset_roles_cache()
+    monkeypatch.setenv("UVICORN_WORKERS", "2")
+    monkeypatch.setattr(main_mod, "_chat_coordination_backend", lambda: "redis")
+
+    app = _make_app_with_worker_gate()
+    with TestClient(app):
+        assert getattr(app.state, "chat_manager", None) is not None
+
+
+def test_non_gateway_role_disables_chat_regardless_of_backend(monkeypatch):
+    """A non-gateway role-split replica (e.g. AGNES_ROLE=worker) never owns
+    chat — unrelated to, and unaffected by, the coordination backend."""
+    monkeypatch.setenv("AGNES_ROLE", "worker")
+    reset_roles_cache()
+    monkeypatch.setenv("UVICORN_WORKERS", "1")
+    monkeypatch.setattr(main_mod, "_chat_coordination_backend", lambda: "redis")
+
+    app = _make_app_with_worker_gate()
+    with TestClient(app):
+        assert getattr(app.state, "chat_manager", None) is None
+
+
+# ---------------------------------------------------------------------------
+# Group 1b: services.slack_bot.socket_mode_client.socket_mode_preflight's
+# matching backend-aware relaxation (Slack Socket Mode's own leader lease —
+# WS C-3 — makes N workers safe under redis the same way).
+# ---------------------------------------------------------------------------
+
+
+def test_socket_preflight_redis_multi_worker_ok(monkeypatch):
+    from services.slack_bot import socket_mode_client as smc
+
+    monkeypatch.setattr(smc, "_slack_sdk_importable", lambda: True)
+    ok, reason = smc.socket_mode_preflight(
+        workers=2,
+        app_token="xapp-a",
+        bot_token="xoxb-b",
+        backend="redis",
+    )
+    assert ok is True
+    assert reason == ""
+
+
+def test_socket_preflight_memory_multi_worker_still_fails_closed(monkeypatch):
+    from services.slack_bot import socket_mode_client as smc
+
+    monkeypatch.setattr(smc, "_slack_sdk_importable", lambda: True)
+    ok, reason = smc.socket_mode_preflight(
+        workers=2,
+        app_token="xapp-a",
+        bot_token="xoxb-b",
+        backend="memory",
+    )
+    assert ok is False
+    assert "UVICORN_WORKERS" in reason
+
+
+def test_socket_preflight_default_backend_is_memory(monkeypatch):
+    """Omitting ``backend`` must not silently become permissive — the
+    default keeps today's fail-closed behavior for any caller that hasn't
+    been updated to pass it explicitly."""
+    from services.slack_bot import socket_mode_client as smc
+
+    monkeypatch.setattr(smc, "_slack_sdk_importable", lambda: True)
+    ok, reason = smc.socket_mode_preflight(workers=2, app_token="xapp-a", bot_token="xoxb-b")
+    assert ok is False
+    assert "UVICORN_WORKERS" in reason
+
+
+# ---------------------------------------------------------------------------
+# Group 2: Slack webhook handlers as thin producers (events.py)
+# ---------------------------------------------------------------------------
+
+
+def test_owned_by_other_gateway_true_for_foreign_live_owner(monkeypatch):
+    import services.slack_bot.events as ev
+
+    monkeypatch.setattr(ev.routing, "this_gateway_id", lambda: "gw-A")
+    monkeypatch.setattr(ev.routing, "owner_of", lambda chat_id: "gw-B")
+    assert asyncio.run(ev._owned_by_other_gateway("sess-1")) is True
+
+
+def test_owned_by_other_gateway_false_when_unclaimed(monkeypatch):
+    import services.slack_bot.events as ev
+
+    monkeypatch.setattr(ev.routing, "this_gateway_id", lambda: "gw-A")
+    monkeypatch.setattr(ev.routing, "owner_of", lambda chat_id: None)
+    assert asyncio.run(ev._owned_by_other_gateway("sess-1")) is False
+
+
+def test_owned_by_other_gateway_false_when_self_owned(monkeypatch):
+    import services.slack_bot.events as ev
+
+    monkeypatch.setattr(ev.routing, "this_gateway_id", lambda: "gw-A")
+    monkeypatch.setattr(ev.routing, "owner_of", lambda chat_id: "gw-A")
+    assert asyncio.run(ev._owned_by_other_gateway("sess-1")) is False
+
+
+def _build_isolated_dm_app_state(monkeypatch):
+    """Self-contained equivalent of tests.test_slack_bot._build_slack_app_state,
+    using its OWN fresh in-memory DuckDB connection instead of the shared
+    on-disk system.duckdb.
+
+    tests.test_slack_bot's own helper relies on that module's
+    ``_shared_slack_db`` autouse fixture to redirect ``get_system_db()`` to a
+    fresh ``:memory:`` connection per test — an isolation mechanism scoped to
+    tests collected FROM that module, not to helpers merely imported from it.
+    Calling that helper here would hit the real, process-persistent
+    ${DATA_DIR}/state/system.duckdb instead and collide with any other test
+    (in this file or another) that seeded the same hardcoded ``uid1`` row.
+
+    ``services.slack_bot.binding.lookup_user_email`` resolves through
+    ``src.repositories.users_repo()`` (not ``repo._conn`` directly), so the
+    factory's own ``get_system_db`` must be pointed at this same isolated
+    connection too — otherwise the identity lookup silently misses and the
+    handler takes the "unbound user" branch instead of the bound-user path
+    these tests exercise.
+    """
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    import duckdb
+
+    from app.chat.persistence import ChatRepository
+    from app.chat.types import ChatSession
+    from src.db import _ensure_schema
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    conn.execute("INSERT INTO users(id, email, name) VALUES ('uid1', 'bob@example.com', 'Bob')")
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: conn)
+    repo = ChatRepository(conn)
+
+    created_sessions: list[ChatSession] = []
+    attached: list = []
+    sent_msgs: list[tuple[str, str]] = []
+
+    async def create_session(*, user_email, surface, slack_channel_id=None, **kw):
+        s = ChatSession(
+            id="sess-1",
+            user_email=user_email,
+            surface=surface,
+            slack_channel_id=slack_channel_id,
+            slack_thread_ts=None,
+            title=None,
+            started_at=datetime.now(timezone.utc),
+            last_message_at=None,
+            message_count=0,
+            archived=False,
+        )
+        created_sessions.append(s)
+        return s
+
+    async def attach(chat_id, sink):
+        attached.append((chat_id, sink))
+
+    async def send_user_message(chat_id, text):
+        sent_msgs.append((chat_id, text))
+
+    async def wait_until_live(chat_id, *, timeout=30.0):
+        return True
+
+    mgr = SimpleNamespace(
+        list_live=lambda: [],
+        create_session=create_session,
+        attach=attach,
+        wait_until_live=wait_until_live,
+        send_user_message=send_user_message,
+        _created=created_sessions,
+        _attached=attached,
+        _sent=sent_msgs,
+    )
+    state = SimpleNamespace(chat_repo=repo, chat_manager=mgr, public_url="https://agnes.example.com")
+    app = SimpleNamespace(state=state)
+    return app, repo, mgr, conn
+
+
+def test_slack_dm_owned_elsewhere_forwards_without_local_attach(monkeypatch):
+    """A DM webhook for a session owned by a DIFFERENT, still-live gateway
+    replica must not attempt a local attach/spawn (which would trigger
+    ChatManager.attach's cross-gateway takeover) — it goes straight to
+    send_user_message, which forwards over the chat-in:{chat_id}
+    coordination stream (app.chat.manager.ChatManager._forward_inbound_message,
+    exercised in tests/test_chat_inbound.py)."""
+    import services.slack_bot.events as ev
+
+    import app.auth.access as _access
+
+    monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
+    monkeypatch.setattr(ev.routing, "this_gateway_id", lambda: "gw-A")
+    monkeypatch.setattr(ev.routing, "owner_of", lambda chat_id: "gw-B")
+
+    app, _repo, mgr, conn = _build_isolated_dm_app_state(monkeypatch)
+    from services.slack_bot.binding import _ensure_table
+
+    _ensure_table(conn)
+    conn.execute("UPDATE users SET slack_user_id = 'U123' WHERE email = 'bob@example.com'")
+
+    event = {
+        "type": "message",
+        "channel_type": "im",
+        "channel": "D1",
+        "user": "U123",
+        "ts": "1.1",
+        "text": "hello agnes",
+    }
+    asyncio.run(ev.dispatch_event(app, event))
+
+    assert mgr._attached == [], "must not locally attach/spawn a session owned by another gateway"
+    assert mgr._sent == [("sess-1", "hello agnes")], "message must still reach send_user_message (forward path)"
+
+
+def test_slack_mention_owned_elsewhere_forwards_without_local_attach(monkeypatch):
+    """Same fix, channel-mention path (_handle_mention)."""
+    import duckdb
+
+    from src.db import _ensure_schema
+    from tests.test_slack_bot import _FakeApp, _FakeMgr, _allow_channel, _seed_bound_chat_user
+
+    import services.slack_bot.events as ev
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
+    monkeypatch.setattr(ev.routing, "this_gateway_id", lambda: "gw-A")
+    monkeypatch.setattr(ev.routing, "owner_of", lambda chat_id: "gw-B")
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.1", "user": "U_OK", "text": "<@U07BOT> revenue?"}))
+
+    assert mgr.attached == [], "must not locally attach/spawn a session owned by another gateway"
+    assert mgr.sent and mgr.sent[0][1] == "revenue?"
+
+
+def test_slack_dm_owned_locally_unaffected(monkeypatch):
+    """Sanity check: when the session is unowned/owned by THIS gateway, the
+    existing local attach/wait_until_live/send_user_message flow is
+    unchanged (no regression from the wave-2F task 7 ownership check)."""
+    import services.slack_bot.events as ev
+
+    import app.auth.access as _access
+
+    monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
+    monkeypatch.setattr(ev.routing, "this_gateway_id", lambda: "gw-A")
+    monkeypatch.setattr(ev.routing, "owner_of", lambda chat_id: None)
+
+    app, _repo, mgr, conn = _build_isolated_dm_app_state(monkeypatch)
+    from services.slack_bot.binding import _ensure_table
+
+    _ensure_table(conn)
+    conn.execute("UPDATE users SET slack_user_id = 'U123' WHERE email = 'bob@example.com'")
+
+    event = {
+        "type": "message",
+        "channel_type": "im",
+        "channel": "D1",
+        "user": "U123",
+        "ts": "1.1",
+        "text": "hello agnes",
+    }
+    asyncio.run(ev.dispatch_event(app, event))
+
+    assert len(mgr._attached) == 1
+    assert mgr._sent == [("sess-1", "hello agnes")]
