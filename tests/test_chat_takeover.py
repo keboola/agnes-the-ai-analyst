@@ -325,6 +325,161 @@ def test_concurrent_takeover_attempts_on_same_gateway_serialized_single_spawn(tw
     asyncio.run(_run())
 
 
+def test_second_attach_during_inflight_takeover_respawn_single_spawn(two_gateways, monkeypatch):
+    """Critical-1 lock-composition gap: a SECOND attach() for the same
+    chat_id, landing on the SAME gateway (B) while the FIRST attach()'s
+    takeover has already registered a state=NEW LiveSession and claimed the
+    routing lease but has NOT yet finished spawning, must not produce a
+    second spawn.
+
+    Pre-fix, the second attach() call reads `self._live.get(chat_id)`,
+    finds the NEW-state stub (not ACTIVE/PAUSED — falls through both early
+    branches), and since `owner_of` already resolves to THIS gateway (the
+    first call's claim already landed), it skips the takeover branch too;
+    the repo row's sandbox refs are already cleared, so it falls all the
+    way through to `_spawn_live` — a second, independent spawn. The
+    previous `_takeover_locks` lock never protected this fallthrough path at
+    all (it only wrapped `_takeover_foreign_session`'s own body), so the
+    race was open. Post-fix, `attach()` wraps its ENTIRE decision tree in
+    one per-chat_id lock (`self._get_session_lock`), so the second call
+    simply blocks until the first fully settles.
+
+    Load-bearing: reverting the `self._get_session_lock` wrapper around
+    `attach()` in `app/chat/manager.py` (`git stash` the fix) makes this
+    fail with 3 total spawns instead of 2.
+    """
+    mgr_a, mgr_b, provider = two_gateways
+    fake_tickets = _FakeTicketRepo()
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: fake_tickets)
+
+    async def _run():
+        _as_gateway(monkeypatch, "gw-a")
+        chat_id, handle_a = await _spawn_owned_session(mgr_a)
+
+        # Slow down B's fresh spawn so its takeover has time to register the
+        # state=NEW LiveSession and claim the routing lease, but NOT finish
+        # spawning, before a second attach() call lands.
+        orig_spawn = provider.spawn
+        spawn_started = asyncio.Event()
+
+        async def _slow_spawn(**kw):
+            spawn_started.set()
+            await asyncio.sleep(0.1)
+            return await orig_spawn(**kw)
+
+        provider.spawn = _slow_spawn
+
+        _as_gateway(monkeypatch, "gw-b")
+        ws1, ws2 = FakeWS(), FakeWS()
+        attach1 = asyncio.create_task(mgr_b.attach(chat_id, ws1))
+
+        # Wait until the takeover is mid-spawn — i.e., past the exact point
+        # where the pre-fix code's owner_of check would already resolve to
+        # gw-b, but before the fresh handle is registered / state flips to
+        # ACTIVE.
+        await asyncio.wait_for(spawn_started.wait(), timeout=2.0)
+        assert routing.owner_of(chat_id) == "gw-b", "precondition: B must already hold the lease mid-spawn"
+        live_mid = mgr_b._live.get(chat_id)
+        assert live_mid is not None and live_mid.state == SessionState.NEW, (
+            "precondition: the second attach() must race a state=NEW, not-yet-ACTIVE entry"
+        )
+
+        attach2 = asyncio.create_task(mgr_b.attach(chat_id, ws2))
+        results = await asyncio.gather(attach1, attach2, return_exceptions=True)
+        for r in results:
+            if isinstance(r, Exception):
+                raise r
+
+        assert len(provider.spawned) == 2, (
+            f"expected A's original spawn + exactly ONE takeover spawn on B, got {len(provider.spawned)} — "
+            "a second spawn means the in-flight-takeover race produced a leaked, orphaned sandbox"
+        )
+        live_b = mgr_b._live[chat_id]
+        assert live_b.state == SessionState.ACTIVE
+        # Both websockets must have landed on the SAME live session.
+        assert {e.sink for e in live_b.sinks} == {ws1, ws2}
+
+        await mgr_b.kill(chat_id, reason="test_done")
+
+    asyncio.run(_run())
+
+
+def test_old_owner_crash_path_does_not_respawn_after_foreign_takeover(two_gateways, monkeypatch):
+    """Critical-2 split-brain: when B's takeover destroys A's ACTIVE
+    sandbox (a cross-owner destroy — FakeProvider.destroy now correctly
+    breaks the corresponding FakeHandle.wait(), see tests/chat_fakes.py),
+    A's OWN crash-respawn path (_wait_for_exit_and_respawn) observes the
+    resulting non-zero exit exactly as if the runner had genuinely crashed.
+    It must notice that `routing.owner_of` no longer resolves to A and
+    must NOT respawn or overwrite the repo's sandbox_ref — otherwise there
+    would be two live runners for one chat_id and a leaked third sandbox.
+
+    This exercises the CRASH path specifically (no explicit
+    `_renew_routing_leases()` call, unlike
+    test_old_owner_renew_fails_tears_down_without_second_destroy above) —
+    A's background wait task must notice on its own.
+
+    Load-bearing: reverting the ownership check in
+    `ChatManager._wait_for_exit_and_respawn` (`git stash` the fix) makes
+    this fail — A respawns a THIRD sandbox and clobbers the repo row back
+    to its own fresh (orphaned) sandbox_id.
+    """
+    mgr_a, mgr_b, provider = two_gateways
+    fake_tickets = _FakeTicketRepo()
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: fake_tickets)
+
+    async def _run():
+        _as_gateway(monkeypatch, "gw-a")
+        chat_id, handle_a = await _spawn_owned_session(mgr_a)
+
+        _as_gateway(monkeypatch, "gw-b")
+        ws_b = FakeWS()
+        await mgr_b.attach(chat_id, ws_b)  # takeover: destroys handle_a
+        handle_b = mgr_b._live[chat_id].handle
+        assert handle_a.killed, "precondition: B's takeover must have destroyed A's sandbox"
+
+        # `_as_gateway` monkeypatches `routing.this_gateway_id` GLOBALLY
+        # (it's a shared module-level function, not per-manager) — B's own
+        # takeover work above is all synchronous and has already finished,
+        # so it's now safe to flip the patched identity back to "gw-a"
+        # before A's BACKGROUND wait task (still asynchronously polling
+        # `handle_a.wait()`) gets scheduled and calls `this_gateway_id()`
+        # itself. Without this, A's crash-check would incorrectly see
+        # itself AS "gw-b" (whatever the monkeypatch was last left at) and
+        # wrongly conclude it still owns the lease.
+        _as_gateway(monkeypatch, "gw-a")
+
+        # Give A's own background wait task time to notice the crash and
+        # run its ownership check and teardown.
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if chat_id not in mgr_a._live:
+                break
+        assert chat_id not in mgr_a._live, "A's crash-respawn path must tear itself down after losing ownership"
+
+        # Exactly the spawns we expect: A's original + B's takeover spawn —
+        # NOT a third spawn from A wrongly respawning after losing
+        # ownership.
+        assert len(provider.spawned) == 2, (
+            f"expected exactly 2 spawns (A's original + B's takeover), got {len(provider.spawned)} — "
+            "A's crash-respawn path spawned a THIRD sandbox after losing ownership (split-brain)"
+        )
+
+        # B's fresh refs in the repo were NOT clobbered by A's crash path.
+        row = mgr_a._repo.get_session(chat_id)
+        assert row is not None
+        assert row.sandbox_id == handle_b.sandbox_id
+        assert row.runner_pid == handle_b.pid
+
+        # No extra destroy call beyond B's takeover destroy.
+        assert provider.destroyed.count(handle_a.sandbox_id) == 1
+
+        _as_gateway(monkeypatch, "gw-b")
+        await mgr_b.kill(chat_id, reason="test_done")
+
+    asyncio.run(_run())
+
+
 # ---------------------------------------------------------------------------
 # Memory backend / single-process: the non-owner branch is unreachable
 # ---------------------------------------------------------------------------
