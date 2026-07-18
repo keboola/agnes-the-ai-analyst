@@ -47,7 +47,18 @@ Job-queue + worker metrics (task 2):
   mutated by `app/worker/runtime.py` around each handler invocation
   (`begin_job_running`/`end_job_running`) — these track live in-process
   state (a slot currently executing a handler), not something a scrape-time
-  DB query could observe.
+  DB query could observe. Because each replica only increments/decrements
+  its OWN slots, these two gauges are genuinely additive across replicas —
+  `sum() by (kind)` gives the correct fleet-wide total.
+- `agnes_jobs_queued` / `agnes_jobs_queued_capped` are the opposite: every
+  replica's `_QueuedJobsCollector` queries the SAME shared job queue, so
+  every replica reports an IDENTICAL value each scrape (a global queue
+  depth, not a per-replica one) even though the series still carries a
+  `replica` label (kept for consistency with every other series in this
+  module, and so a scraper can attribute a given sample to the process that
+  emitted it — see above). Summing these across `replica` (or `role`)
+  N-counts the true depth; use `max() by (kind)` instead. See
+  `docs/observability.md` for the operator-facing version of this note.
 - Every `record_*`/`begin_job_running`/`end_job_running` helper below
   swallows its own exceptions (log + return) — the worker loop calls these
   as pure side effects around job execution, and a metrics bug must never
@@ -142,15 +153,25 @@ metrics_collector_errors_total = Counter(
 
 jobs_running = Gauge(
     "agnes_jobs_running",
-    "Number of jobs currently executing, by kind and lane.",
+    "Number of jobs currently executing, by kind and lane. Per-replica in-process "
+    "state (unlike agnes_jobs_queued) — safe to sum() across replica/role for a "
+    "fleet-wide total.",
     ["kind", "lane", "role", "replica"],
     registry=REGISTRY,
 )
+
+#: Agnes jobs range from sub-second housekeeping to multi-hour BigQuery
+#: materializations and heavy Keboola syncs — the default `prometheus_client`
+#: buckets (top bucket ~10s) would dump nearly everything into `+Inf`,
+#: making the histogram useless for its actual workload. Explicit buckets
+#: span 1s to 4h.
+_JOB_DURATION_BUCKETS = (1, 5, 15, 30, 60, 300, 900, 3600, 14400, float("inf"))
 
 job_duration_seconds = Histogram(
     "agnes_job_duration_seconds",
     "Job handler execution duration in seconds, by kind and outcome.",
     ["kind", "outcome", "role"],
+    buckets=_JOB_DURATION_BUCKETS,
     registry=REGISTRY,
 )
 
@@ -334,7 +355,10 @@ class _QueuedJobsCollector:
 
         queued_family = GaugeMetricFamily(
             "agnes_jobs_queued",
-            "Number of queued jobs by kind, sampled at scrape time (bounded scan — see agnes_jobs_queued_capped).",
+            "Number of queued jobs by kind, sampled at scrape time (bounded scan — see "
+            "agnes_jobs_queued_capped). Global queue depth: every replica samples the same "
+            "shared queue, so this value is identical across replica/role. Use max() by (kind), "
+            "never sum() — summing N-counts the true depth by the number of scraped replicas.",
             labels=["kind", "role", "replica"],
         )
         for kind, count in counts.items():
@@ -344,7 +368,8 @@ class _QueuedJobsCollector:
         capped_family = GaugeMetricFamily(
             "agnes_jobs_queued_capped",
             "1 if the last agnes_jobs_queued scrape hit the query cap "
-            "(counts may undercount true queue depth), else 0.",
+            "(counts may undercount true queue depth), else 0. Global flag like "
+            "agnes_jobs_queued — identical across replica/role; use max(), not sum().",
             labels=["role", "replica"],
         )
         capped_family.add_metric([role, replica], 1.0 if capped else 0.0)
