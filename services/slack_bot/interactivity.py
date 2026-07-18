@@ -9,6 +9,7 @@ never a Slack retry).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 import time as _time
@@ -111,6 +112,21 @@ async def _on_stop(app, it: Interaction) -> None:
             it.response_url,
             "Only the session owner can stop it.",
         )
+        return
+    if mgr is None:
+        # api-role replica (no ChatManager — only Role.GATEWAY builds one):
+        # mirror ChatManager.cancel's non-owner branch and publish a
+        # control:cancel for the owning gateway's consumer to execute
+        # (wave-2F final review F1). No owner -> idempotent no-op, same as
+        # cancel() with no live session.
+        from app.chat import inbound, routing
+
+        lease_owner = await asyncio.to_thread(routing.owner_of, chat_id)
+        if lease_owner is not None and lease_owner != routing.this_gateway_id():
+            try:
+                await inbound.publish_control(chat_id, "cancel")
+            except inbound.InboundPublishFailed:
+                logger.warning("cross-gateway cancel for %s could not be published", chat_id)
         return
     await mgr.cancel(chat_id)  # idempotent; sink strips the button on `cancelled`
 
