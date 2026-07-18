@@ -209,6 +209,18 @@ within ~5 min via the cron in `agnes-auto-upgrade.sh`. Convenient for
 per-developer dev VMs; **footgun for shared dev VMs** (last pusher wins,
 regardless of who).
 
+On a role-split (m-tier) VM, that same cron performs a sequential
+`/readyz`-gated rolling recreate instead of one-shot `docker compose up -d`:
+`worker`+`gateway` recreate first, then each named `api` replica one at a
+time, gated on its own readiness before the next is touched. A hard failure
+of the `worker`+`gateway` recreate itself, or any single replica never
+reporting ready within the bounded timeout, aborts the rollout (webhook
+alert, non-zero exit) **without** touching the remaining replicas — they
+stay on the previous image and keep serving. See
+[`DEPLOYMENT.md`](DEPLOYMENT.md) → *Multi-process* for the full mechanism,
+including the `agnes-db-backup.sh` `pg_dump` + restore-canary coverage for
+the on-VM Postgres side-car.
+
 **Auto-rollback on smoke failure.** On `main` pushes, after `:stable` is
 published, the `smoke-test` job pulls the just-built image and runs
 `scripts/ops/post-deploy-smoke-test.sh` inside a docker-compose stack. If
