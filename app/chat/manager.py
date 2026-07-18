@@ -563,16 +563,35 @@ class ChatManager:
         return created
 
     def _active_count_for_user(self, user_email: str) -> int:
-        # Deliberately process-local (unlike the rate/quota counters above)
-        # for wave-2C task 4: it counts LIVE sandbox handles in THIS
-        # process's `self._live`, not a value coordination() can hold — the
-        # concurrency cap is only meaningful once it can see every replica's
-        # live sessions for a user, which needs a real per-session lease
-        # (who is this session's owning replica right now?), not a plain
-        # counter. That lands in wave-2C's WS D once routing leases exist;
-        # building a throwaway counter-based version here now would just be
-        # thrown away then. Until WS D, this cap is only accurate within one
-        # process/replica — a documented, temporary gap, not a silent one.
+        """Count ``user_email``'s live chat sessions ACROSS gateways for the
+        per-user concurrency cap (spec §3.2: cap = count of live chat
+        leases per user).
+
+        Local sessions keep the exact process-local predicate this method
+        always had (NEW/ACTIVE/IDLE states, owner or live co-participant).
+        On top of that, sessions of this user that are NOT in this
+        process's ``self._live`` but whose ``chat:{id}`` routing lease is
+        positively held by a DIFFERENT gateway count too — that is the
+        lease-derived cross-replica counting the routing leases (wave-2F
+        task 1) finally enable. Enumeration goes through the user's
+        non-archived session rows (owned + participant), one ``owner_of``
+        read each — bounded by the per-user session count, which the
+        empty-session GC in ``create_session`` keeps small; chosen over a
+        coordination counter because it has no increment/decrement drift
+        to reconcile after crashes.
+
+        Failure posture: fail-open to serving. ``routing.owner_of``
+        already degrades to ``None`` on ``CoordinationUnavailable`` (each
+        foreign candidate then simply contributes 0 — i.e. the result
+        collapses to the local count), and any repo/enumeration error is
+        caught the same way. Under the default ``memory`` backend a
+        foreign holder can never exist (single process), so the result is
+        identical to the historical local-only count there.
+
+        Known approximation: a foreign PAUSED session still renews its
+        lease, so it counts here while a local PAUSED one does not — the
+        cap errs toward safety for sessions we cannot see the state of.
+        """
         n = 0
         for s in self._live.values():
             if s.state not in (SessionState.NEW, SessionState.ACTIVE, SessionState.IDLE):
@@ -582,6 +601,23 @@ class ChatManager:
             co_emails = getattr(s, "participant_emails", [])
             if s.user_email == user_email or user_email in co_emails:
                 n += 1
+        try:
+            this_gw = routing.this_gateway_id()
+            candidates = {s.id: s for s in self._repo.list_sessions(user_email)}
+            for s in self._repo.list_sessions_for_participant(user_email):
+                candidates.setdefault(s.id, s)
+            for chat_id in candidates:
+                if chat_id in self._live:
+                    continue  # already governed by the local state predicate above
+                owner = routing.owner_of(chat_id)
+                if owner is not None and owner != this_gw:
+                    n += 1
+        except Exception:
+            logger.warning(
+                "cross-gateway session count for %s failed — falling back to the local count",
+                user_email,
+                exc_info=True,
+            )
         return n
 
     def active_count_for_user(self, user_email: str) -> int:
@@ -1881,7 +1917,49 @@ class ChatManager:
         live.last_activity = datetime.now(timezone.utc)
         live.state = SessionState.ACTIVE
 
-    async def _forward_inbound_message(self, chat_id: str, text: str, *, sender_email: Optional[str]) -> None:
+    def _ensure_slack_sink(self, live: "LiveSession", slack_origin: dict) -> None:
+        """Make sure ``live`` has a ``SlackSinkBridge`` for the Slack
+        channel in ``slack_origin`` (``{"channel": ..., "thread_ts": ...}``),
+        creating and seating one if missing.
+
+        Needed on the OWNER when processing a user message forwarded from a
+        Slack webhook that landed on a different replica: a cross-gateway
+        takeover builds its LiveSession with ``sinks=[]``, and the
+        non-owning webhook handler deliberately never attaches a sink
+        (services.slack_bot.events), so without this the runner's replies
+        for a Slack-surfaced session silently stop reaching Slack.
+
+        ``web_base`` comes from ``SERVER_URL`` (the deployment's public
+        URL) — falling back to no Continue-on-web button when unset, which
+        matches SlackSinkBridge's own empty-``web_base`` behavior. Import
+        is lazy + guarded so a deployment without the Slack extras
+        installed degrades to a logged skip, never a crash in the consumer
+        loop. Best-effort by design: idempotent per (session, channel).
+        """
+        channel = (slack_origin or {}).get("channel") or ""
+        if not channel:
+            return
+        try:
+            from services.slack_bot.sink import SlackSinkBridge
+        except Exception:
+            logger.warning("cannot import SlackSinkBridge — Slack reply sink not re-established for %s", live.chat_id)
+            return
+        for entry in live.sinks:
+            if isinstance(entry.sink, SlackSinkBridge) and entry.sink._channel == channel:
+                return
+        sink = SlackSinkBridge(
+            channel=channel,
+            thread_ts=(slack_origin or {}).get("thread_ts") or "",
+            chat_id=live.chat_id,
+            owner=live.user_email,
+            web_base=os.environ.get("SERVER_URL", "").rstrip("/"),
+        )
+        live.sinks.append(SinkEntry(participant_email=live.user_email, sink=sink))
+        logger.info("re-established Slack sink for %s (channel %s) on forwarded message", live.chat_id, channel)
+
+    async def _forward_inbound_message(
+        self, chat_id: str, text: str, *, sender_email: Optional[str], slack_origin: Optional[dict] = None
+    ) -> None:
         """Hand a user message to whichever gateway actually owns
         ``chat_id`` (wave-2F task 4) instead of delivering it locally.
 
@@ -1921,7 +1999,7 @@ class ChatManager:
             surface=getattr(session.surface, "value", str(session.surface)),
             sender=sender,
         )
-        await inbound.publish_inbound(chat_id, text)
+        await inbound.publish_inbound(chat_id, text, slack=slack_origin)
 
     async def _inbound_consumer_loop(self, live: "LiveSession") -> None:
         """Feed ``chat-in:{chat_id}`` stream entries into this (owning)
@@ -1968,6 +2046,35 @@ class ChatManager:
                     seq = entry.get("seq")
                     if not isinstance(seq, int) or seq <= live.inbound_last_seq:
                         continue  # already consumed, or a malformed entry — dedup guard
+                    # Typed envelope (multi-replica gate lift): entries are
+                    # either user messages (default — entries published
+                    # before the envelope existed carry no "type" and must
+                    # keep flowing to stdin) or CONTROL commands published
+                    # by a NON-owning gateway's kill()/cancel() — those are
+                    # dispatched to the LOCAL kill/cancel here, never to
+                    # the runner's stdin.
+                    if entry.get("type", "user_message") == "control":
+                        live.inbound_last_seq = seq
+                        command = entry.get("command")
+                        if command == "kill":
+                            await self.kill(chat_id, reason=entry.get("reason") or "remote_kill")
+                            # kill() just cancelled this very task (see
+                            # LiveSession.inbound_task) — stop consuming
+                            # instead of racing the pending cancellation.
+                            return
+                        if command == "cancel":
+                            try:
+                                await self.cancel(chat_id)
+                            except Exception:
+                                logger.exception("inbound consumer: remote cancel failed for %s", chat_id)
+                        else:
+                            logger.warning(
+                                "inbound consumer: unknown control command %r for %s (seq %s) — skipped",
+                                command,
+                                chat_id,
+                                seq,
+                            )
+                        continue
                     text = entry.get("text", "")
                     if live.state == SessionState.DEAD:
                         # Nothing left to deliver to — advance past it anyway
@@ -1981,6 +2088,14 @@ class ChatManager:
                     if live.handle is None:
                         live.inbound_last_seq = seq
                         continue
+                    slack_origin = entry.get("slack")
+                    if slack_origin:
+                        # The message entered via a Slack webhook on a
+                        # NON-owning replica — make sure the runner's reply
+                        # has somewhere to land on Slack (a takeover builds
+                        # LiveSession with sinks=[], and the non-owning
+                        # webhook handler never attaches one).
+                        self._ensure_slack_sink(live, slack_origin)
                     try:
                         await self._deliver_local_user_message(live, text)
                     except Exception:
@@ -2000,9 +2115,24 @@ class ChatManager:
                 except Exception:
                     logger.debug("inbound consumer unsubscribe failed for %s", chat_id, exc_info=True)
 
-    async def send_user_message(self, chat_id: str, text: str, *, sender_email: Optional[str] = None) -> None:
+    async def send_user_message(
+        self,
+        chat_id: str,
+        text: str,
+        *,
+        sender_email: Optional[str] = None,
+        slack_origin: Optional[dict] = None,
+    ) -> None:
         """Deliver ``text`` to ``chat_id``'s runner, forwarding to the owning
         gateway if this process doesn't host the session (wave-2F task 4).
+
+        ``slack_origin`` (``{"channel": ..., "thread_ts": ...}``) marks a
+        message that entered via a Slack webhook on a replica that does NOT
+        own the session: it rides the forwarded envelope so the OWNER's
+        inbound consumer can (re-)establish a ``SlackSinkBridge`` before
+        delivering (see ``_ensure_slack_sink``). Callers on the owning
+        replica don't pass it — the webhook handler there seats the sink
+        itself.
 
         Ordering disclosure: direct-owner delivery (this method's local path,
         via ``_deliver_local_user_message``) and stream-forwarded delivery
@@ -2074,7 +2204,9 @@ class ChatManager:
                     this_gw = routing.this_gateway_id()
                     owner = await asyncio.to_thread(routing.owner_of, chat_id)
                     if owner is not None and owner != this_gw:
-                        await self._forward_inbound_message(chat_id, text, sender_email=sender_email)
+                        await self._forward_inbound_message(
+                            chat_id, text, sender_email=sender_email, slack_origin=slack_origin
+                        )
                         return
                     # Post-restart: no LiveSession in memory, but repo row may have sandbox refs.
                     session = self._repo.get_session(chat_id)
@@ -2208,8 +2340,27 @@ class ChatManager:
         live.tasks.append(new_wait)
 
     async def cancel(self, chat_id: str) -> None:
+        """Cancel ``chat_id``'s in-flight turn.
+
+        Multi-replica gate lift: a REST/webhook cancel (e.g. the Slack
+        Stop button — a load-balanced HTTP POST) can land on a replica
+        that does NOT host the session. If a DIFFERENT live gateway owns
+        the routing lease, forward a ``control:cancel`` over the
+        ``chat-in:{chat_id}`` stream so the OWNER's inbound consumer runs
+        its local cancel (raises ``InboundPublishFailed`` if the publish
+        itself fails — a silently dropped Stop is worse than a visible
+        error). No owner / self-owned with no live entry stays the prior
+        idempotent no-op. Under the default ``memory`` backend ``owner``
+        can never differ from ``this_gw`` (single process), so behavior
+        there is byte-for-byte unchanged.
+        """
         live = self._live.get(chat_id)
         if live is None or live.handle is None:
+            if live is None:
+                this_gw = routing.this_gateway_id()
+                owner = await asyncio.to_thread(routing.owner_of, chat_id)
+                if owner is not None and owner != this_gw:
+                    await inbound.publish_control(chat_id, "cancel")
             return
         payload = json.dumps({"type": "cancel"}) + "\n"
         async with live._stdin_lock:
@@ -2250,6 +2401,42 @@ class ChatManager:
             logger.warning("broker ticket revocation failed for %s on kill (non-fatal)", chat_id)
         live = self._live.pop(chat_id, None)
         if live is None:
+            # Multi-replica gate lift: kill() used to be process-local — a
+            # DELETE /api/chat/sessions/{id}, /agnes-new, or New-session
+            # button landing on a NON-owning replica would early-return
+            # here while the caller archived the row and the tickets above
+            # were revoked, leaving the foreign owner's sandbox running
+            # (and billable) untouched. If a DIFFERENT live gateway holds
+            # the routing lease, forward a control:kill over the
+            # chat-in:{chat_id} stream — the owner's inbound consumer runs
+            # its own local kill (sandbox destroy, lease release, audit) —
+            # and archive the row locally (idempotent; every caller does
+            # it too, but the row must reflect the kill even if the caller
+            # doesn't). A publish failure is logged loudly, not raised:
+            # kill is teardown, and every other failure inside it is
+            # best-effort too — the owner's idle reaper remains the
+            # backstop.
+            #
+            # No owner (lease absent — orphan) keeps the prior behavior:
+            # nothing further to tear down locally. (Verified: today's
+            # code does NOT best-effort destroy a DB-ref'd sandbox here —
+            # the paused-TTL sweep in _reap_once owns that cleanup.)
+            this_gw = routing.this_gateway_id()
+            owner = await asyncio.to_thread(routing.owner_of, chat_id)
+            if owner is not None and owner != this_gw:
+                try:
+                    await inbound.publish_control(chat_id, "kill", reason=reason)
+                except inbound.InboundPublishFailed:
+                    logger.warning(
+                        "cross-gateway kill for %s could not be published (owner %s); "
+                        "the owner's sandbox keeps running until its own reaper acts",
+                        chat_id,
+                        owner,
+                    )
+                try:
+                    self._repo.archive_session(chat_id)
+                except Exception:
+                    logger.exception("archive on cross-gateway kill failed for %s", chat_id)
             return
         await self._release_routing_lease(chat_id)
         live.state = SessionState.DEAD
