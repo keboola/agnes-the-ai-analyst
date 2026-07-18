@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- Cowork per-plugin zips (`GET /marketplace/cowork/<prefixed_name>.zip`) no
+  longer fail Claude Cowork's upload validation when a skill or plugin
+  `description` exceeds 1024 characters. `sanitize_description` now truncates
+  over-long descriptions on a word boundary with a trailing ellipsis (the
+  validator rejects `description` fields over 1024 characters — previously the
+  packager shipped them through unchanged, so the upload failed with "field
+  'description' in SKILL.md must be at most 1024 characters").
+  `COWORK_FORMAT_VERSION` bumped so cached ETags bust and clients re-download
+  the corrected zip.
+
 ## [0.74.113] - 2026-07-18
 
 ### Added

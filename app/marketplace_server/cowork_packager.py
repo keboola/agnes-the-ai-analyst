@@ -58,7 +58,11 @@ class CoworkZipError(Exception):
 
 # Bump when the transform rules change so cached ETags bust and clients
 # re-download the newer-shaped zip.
-COWORK_FORMAT_VERSION = "3"
+COWORK_FORMAT_VERSION = "4"
+
+# Cowork's validator rejects a SKILL.md / plugin.json ``description`` longer
+# than 1024 characters.
+_MAX_DESCRIPTION_CHARS = 1024
 
 # SKILL.md frontmatter whitelist. Anything else is a Claude-Code-only field
 # that gets the plugin rejected (``argument-hint``, ``user-invocable``, …).
@@ -98,12 +102,19 @@ def sanitize_description(desc: Any) -> str:
 
     Angle brackets (treated as HTML/XML-like) are removed; double quotes
     (plain-scalar quoting hazard) are downgraded to single quotes. Newlines
-    collapse to spaces so the value emits on one line.
+    collapse to spaces so the value emits on one line. Descriptions over
+    ``_MAX_DESCRIPTION_CHARS`` are truncated on a word boundary with a
+    trailing ellipsis.
     """
     if not isinstance(desc, str):
         desc = "" if desc is None else str(desc)
     desc = desc.replace("<", "").replace(">", "").replace('"', "'")
     desc = re.sub(r"\s+", " ", desc).strip()
+    if len(desc) > _MAX_DESCRIPTION_CHARS:
+        cut = desc[: _MAX_DESCRIPTION_CHARS - 1]
+        if " " in cut:
+            cut = cut[: cut.rfind(" ")]
+        desc = cut.rstrip() + "…"
     return desc
 
 
@@ -224,7 +235,7 @@ def filter_skill_frontmatter(text: str, folder_name: str) -> str:
             "\n" + text.lstrip("\n"),
         )
     parsed = _parse_frontmatter_block(m.group(1)) or {}
-    body = text[m.end():]
+    body = text[m.end() :]
 
     fields: List[Tuple[str, Any]] = [("name", folder_name)]
     if "description" in parsed:
@@ -285,9 +296,7 @@ def _transform_file(rel_parts: tuple, raw_bytes: bytes, plugin: dict) -> bytes:
             data = json.loads(raw_bytes.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             data = {}
-        transformed = transform_plugin_json(
-            data, manifest_name=plugin["manifest_name"], raw=plugin.get("raw") or {}
-        )
+        transformed = transform_plugin_json(data, manifest_name=plugin["manifest_name"], raw=plugin.get("raw") or {})
         return (json.dumps(transformed, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
     if rel_parts[0] == "skills" and rel_parts[-1].lower() == "skill.md":
@@ -319,9 +328,7 @@ def _synth_plugin_json(plugin: dict) -> bytes:
     return (json.dumps(transformed, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
-def _concat_md_under(
-    members: List[Tuple[str, bytes]], root: str
-) -> List[Tuple[str, bytes]]:
+def _concat_md_under(members: List[Tuple[str, bytes]], root: str) -> List[Tuple[str, bytes]]:
     """Concatenate per-directory ``.md`` files under ``<root>/`` into
     ``<dir>/_all.md`` — header ``# <dir> — combined docs`` then one
     ``## `<file>` `` section per original file. Matches the reference zip's
@@ -424,14 +431,10 @@ def _finalize(members: List[Tuple[str, bytes]]) -> List[Tuple[str, bytes]]:
     members = _fallback_file_cap(members)
     members = _dedup_arcnames(members)
     if len(members) > _MAX_FILES:
-        raise CoworkZipError(
-            f"plugin exceeds Cowork's {_MAX_FILES}-file cap ({len(members)} files)"
-        )
+        raise CoworkZipError(f"plugin exceeds Cowork's {_MAX_FILES}-file cap ({len(members)} files)")
     total = sum(len(data) for _, data in members)
     if total > _MAX_TOTAL_BYTES:
-        raise CoworkZipError(
-            f"plugin exceeds Cowork's {_MAX_TOTAL_BYTES}-byte uncompressed cap ({total} bytes)"
-        )
+        raise CoworkZipError(f"plugin exceeds Cowork's {_MAX_TOTAL_BYTES}-byte uncompressed cap ({total} bytes)")
     return members
 
 
