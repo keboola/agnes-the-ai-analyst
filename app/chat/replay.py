@@ -203,17 +203,62 @@ class GapReplayGate:
     appended to the stream AND delivered directly to this now-seated
     sink), and sends the result in one consistent, gap-free, in-order pass
     before going fully passthrough for the rest of the connection's life.
+
+    IMPORTANT fix (2026-07-18, narrower race): ``release``'s flush loop is
+    ``await``-heavy (one socket write per buffered/replayed frame). The
+    first version flipped ``_buffering`` to ``False`` BEFORE that loop ran,
+    so a concurrent ``send_json`` call (a live frame arriving via
+    ``ChatManager._broadcast`` while the flush is still in flight) would
+    see ``_buffering is False`` and write straight to ``_real``, landing
+    in the middle of the still-in-progress ordered flush — e.g. buffer
+    holds seq [5, 6], live seq 7 arrives mid-flush, socket sees [5, 7, 6]:
+    still gap-free at the transport level, but delivered out of order, and
+    the client's dedup-by-seq logic drops 6 as a stale duplicate. Same bug
+    class as the module docstring above, narrower window; existing tests
+    didn't catch it because ``tests.chat_fakes.FakeWS.send_json`` appends
+    synchronously with no ``await`` point, so the old flush loop never
+    actually yielded control mid-iteration.
+
+    The fix: an ``asyncio.Lock`` (``_lock``) makes buffering-vs-flush a
+    single atomic decision instead of two (check-then-append raced against
+    check-then-passthrough). ``send_json`` only ever appends to the buffer
+    or does one passthrough send while holding the lock — never both, and
+    never a long-lived hold. ``release`` does NOT hold the lock across its
+    own socket sends (that would serialize every concurrent live frame for
+    this session behind this flush's I/O via ``live._broadcast_lock``,
+    since ``_broadcast`` calls ``gate.send_json`` while already holding
+    that lock — see ``ChatManager._broadcast``). Instead ``release`` keeps
+    ``_buffering`` at ``True`` and drains the buffer in a loop — anything
+    that lands mid-flush (``_buffering`` still ``True`` at the instant
+    ``send_json`` takes the lock) gets appended to the buffer rather than
+    written directly, so the next drain iteration picks it up in seq
+    order — and only flips ``_buffering`` to ``False`` once a lock-held
+    check finds the buffer empty, i.e. no frame arrived between the last
+    drain and the flip. A frame that arrives in the narrow window between
+    that empty-check and the flip cannot exist: both are done under the
+    same lock acquisition, so ``send_json`` either completed its append
+    before the check (and got drained) or is still blocked on the lock
+    (and will see ``_buffering is False`` only after the flip, going
+    passthrough correctly — after, not during or before, the flush).
     """
 
     def __init__(self, real_sink) -> None:
         self._real = real_sink
         self._buffering = True
         self._buffer: list[dict] = []
+        self._lock = asyncio.Lock()
 
     async def send_json(self, frame: dict) -> None:
-        if self._buffering:
-            self._buffer.append(frame)
-        else:
+        # Buffering path: append only — no await other than the (short)
+        # lock acquisition, so this never blocks behind a slow socket
+        # write. Passthrough path: the send itself happens under the lock
+        # so it can never interleave with a release() flush iteration
+        # (which also takes the lock to swap the buffer) — see class
+        # docstring.
+        async with self._lock:
+            if self._buffering:
+                self._buffer.append(frame)
+                return
             await self._real.send_json(frame)
 
     async def close(self) -> None:
@@ -231,22 +276,47 @@ class GapReplayGate:
         stream-sourced ones. Frames without an int ``seq`` (e.g. add_sink's
         unstamped persisted-history replay) sort before every seq'd frame,
         preserving their relative arrival order via a stable sort.
+
+        Drains in a loop rather than one shot: ``_buffering`` stays
+        ``True`` (so any frame arriving mid-flush keeps landing in the
+        buffer instead of racing straight to the socket — see class
+        docstring) until a lock-held check finds nothing left to drain,
+        at which point it flips to ``False`` atomically with that check.
         """
-        pending, self._buffer = self._buffer, []
-        self._buffering = False
-        combined = list(extra_frames or []) + pending
         seen_seqs: set[int] = set()
-        ordered: list[tuple[int, int, dict]] = []
-        for idx, frame in enumerate(combined):
-            seq = frame.get("seq")
-            if isinstance(seq, int):
-                if seq in seen_seqs:
-                    continue  # same frame surfaced via both sources
-                seen_seqs.add(seq)
-                sort_key = seq
-            else:
-                sort_key = -1  # unstamped frames sort first, tie-broken by idx
-            ordered.append((sort_key, idx, frame))
-        ordered.sort(key=lambda t: (t[0], t[1]))
-        for _, _, frame in ordered:
+
+        def _order(frames: list[dict]) -> list[dict]:
+            ordered: list[tuple[int, int, dict]] = []
+            for idx, frame in enumerate(frames):
+                seq = frame.get("seq")
+                if isinstance(seq, int):
+                    if seq in seen_seqs:
+                        continue  # same frame surfaced via both sources
+                    seen_seqs.add(seq)
+                    sort_key = seq
+                else:
+                    sort_key = -1  # unstamped frames sort first, tie-broken by idx
+                ordered.append((sort_key, idx, frame))
+            ordered.sort(key=lambda t: (t[0], t[1]))
+            return [frame for _, _, frame in ordered]
+
+        # First batch: the caller's stream-replay frames plus whatever had
+        # already landed in the buffer by the time release() was invoked.
+        async with self._lock:
+            pending, self._buffer = self._buffer, []
+        for frame in _order(list(extra_frames or []) + pending):
             await self._real.send_json(frame)
+
+        # Drain anything that arrived WHILE the batch above was being sent
+        # (still buffered, because _buffering was still True). Keep going
+        # until a lock-held snapshot finds the buffer empty, then flip
+        # atomically — no send_json call can slip a frame in between that
+        # check and the flip, since both happen under the same lock.
+        while True:
+            async with self._lock:
+                if not self._buffer:
+                    self._buffering = False
+                    break
+                pending, self._buffer = self._buffer, []
+            for frame in _order(pending):
+                await self._real.send_json(frame)
