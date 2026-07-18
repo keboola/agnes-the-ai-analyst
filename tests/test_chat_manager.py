@@ -2660,3 +2660,120 @@ def test_concurrent_resume_live_serialized_no_double_spawn(tmp_path, monkeypatch
             pass
 
     asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# attach() + send_user_message() session-lock guard: concurrent spawn/resume
+# decisions for a chat_id not yet in _live must not double-spawn.
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_attach_and_send_user_message_no_double_spawn(tmp_path, monkeypatch):
+    """attach() (WS reconnect) and send_user_message() (e.g. an inbound
+    webhook) racing the SAME post-restart chat_id — no LiveSession in
+    memory yet, but the repo row still carries sandbox_id/runner_pid from
+    before — must resume exactly ONE runner (no second spawn), and the
+    message must reach that single runner.
+
+    Setup mirrors ``test_attach_after_restart_resumes_from_repo_row``:
+    spawn+pause a session, then ``mgr._live.clear()`` to simulate the
+    in-memory state a process restart leaves behind, while the repo row
+    keeps its sandbox refs.
+
+    Without wrapping send_user_message's own "no local live session yet"
+    resume-from-row decision in the same ``self._get_session_lock(chat_id)``
+    attach() uses, both coroutines read ``self._live.get(chat_id)`` as
+    ``None``, both see the repo row's sandbox refs, and both call
+    ``_resume_from_row`` concurrently and unserialized against each other.
+    ``_resume_from_row``'s own ``provider.resume()`` pops the parked handle
+    out of the fake provider's ``paused`` dict — only one caller's pop can
+    win; the loser's resume raises, and ``_resume_from_row`` reacts by
+    destroying the (now-resumed, still-billable) sandbox and clearing its
+    ref, and its caller then falls back to a brand new ``_spawn_live`` —
+    a second spawn for a session that should have been a pure resume,
+    while the winner's freshly-resumed handle is torn down out from under
+    it by that same destroy call.
+
+    This test is proven load-bearing: reverting the session-lock wrap
+    around send_user_message's spawn/resume decision (``git stash`` the fix
+    in ``app/chat/manager.py``) makes it fail — a second entry appears in
+    ``provider.spawned`` (or the race raises/corrupts state entirely) —
+    and it passes once the decision is serialized under the same
+    per-chat_id lock as ``attach()``.
+    """
+    import app.chat.manager as manager_mod
+
+    fake_tickets = _FakeTicketRepo()
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: fake_tickets)
+
+    mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+    monkeypatch_workdir(mgr)
+    provider = mgr._provider
+
+    async def _run():
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
+        await asyncio.sleep(0.05)
+        assert s.id in mgr._known_protocol_sessions, "precondition: non-legacy (known-protocol) resume path"
+        await mgr.detach_sink(s.id, ws1)
+        await asyncio.sleep(0.15)  # linger=0, pause fires
+        assert provider.paused, "precondition: sandbox must be parked (paused) before the race"
+        assert len(provider.spawned) == 1
+
+        # Simulate server restart: clear in-memory _live. The repo row
+        # keeps its sandbox_id/runner_pid, so both racers below see "no
+        # local live session, but a resumable repo row" — exactly the
+        # window send_user_message's own decision used to run unlocked.
+        mgr._live.clear()
+
+        # Inject realistic resume() latency so attach() and
+        # send_user_message() actually interleave inside the race window
+        # instead of one completing before the other is even scheduled.
+        orig_resume = provider.resume
+
+        async def _slow_resume(*, sandbox_id, runner_pid, env):
+            await asyncio.sleep(0.05)
+            return await orig_resume(sandbox_id=sandbox_id, runner_pid=runner_pid, env=env)
+
+        provider.resume = _slow_resume
+
+        ws2 = FakeWS()
+        attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
+        send_task = asyncio.create_task(mgr.send_user_message(s.id, "hello after restart"))
+        results = await asyncio.gather(attach_task2, send_task, return_exceptions=True)
+        for r in results:
+            if isinstance(r, Exception):
+                raise r
+
+        assert len(provider.spawned) == 1, (
+            f"expected NO additional spawn (a pure resume), got {len(provider.spawned)} total spawns "
+            "— a second spawn means attach() and send_user_message() raced _resume_from_row independently"
+        )
+        assert not provider.paused, f"no sandbox should be left parked/leaked in the provider: {provider.paused}"
+        live = mgr._live[s.id]
+        assert live.state == SessionState.ACTIVE
+        alive_tasks = [t for t in live.tasks if not t.done()]
+        assert len(alive_tasks) == 2, (
+            f"expected exactly 2 live tasks (pump+wait), got {len(alive_tasks)} "
+            "— extra tasks are orphaned pump/wait survivors from a double-resume/double-spawn race"
+        )
+
+        # The message must have reached the single (resumed) runner's
+        # stdin exactly once — not lost, not duplicated onto an orphaned
+        # second runner.
+        handle = live.handle
+        payloads = [json.loads(b.decode()) for b in handle._stdin_buf]
+        user_msgs = [p for p in payloads if p.get("type") == "user_msg"]
+        assert len(user_msgs) == 1, f"expected exactly one user_msg delivered, got {user_msgs}"
+        assert user_msgs[0]["text"] == "hello after restart"
+
+        await mgr.kill(s.id, reason="test_done")
+        for t in [attach_task, attach_task2]:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    asyncio.run(_run())
