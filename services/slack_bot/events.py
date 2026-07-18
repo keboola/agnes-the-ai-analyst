@@ -121,6 +121,51 @@ def _has_slack_sink(mgr, chat_id: str, channel: str) -> bool:
     return False
 
 
+async def _produce_slack_message(app, *, user_email: str, surface, channel: str, thread_ts: str, text: str) -> None:
+    """Thin-producer forward for a Slack message handled on a process with
+    NO ChatManager — i.e. an api-role replica, where ``app.state.
+    chat_manager`` is ``None`` because only ``Role.GATEWAY`` processes
+    construct one (wave-2F final review F1).
+
+    An api replica is never an owner, so this ALWAYS forwards: resolve or
+    create the session row, run the same sender-limit gate as the owner
+    path, persist the user message, and publish it over the
+    ``chat-in:{chat_id}`` stream with its Slack origin so the owning
+    gateway's consumer (re-)establishes the reply sink before delivering.
+    All via ``app.chat.manager``'s module-level thin-producer helpers (the
+    ChatManager methods delegate to the same implementations, so the two
+    paths cannot drift). The reference m-tier LB rule routes
+    ``/api/slack/*`` to gateway-role upstreams (docs/DEPLOYMENT.md -> chat
+    HA -> LB routing rule), so this is the graceful-degradation fallback,
+    not the primary route — note a session no gateway ever owns has no
+    consumer to deliver to (see the thin-producer section's reach
+    disclosure in app/chat/manager.py).
+    """
+    from app.chat import manager as chat_manager_mod
+    from app.chat.types import Surface
+
+    repo = app.state.chat_repo
+    config = getattr(app.state, "chat_config", None)
+    if config is None:
+        logger.warning("thin-producer forward skipped: app.state.chat_config missing (chat init failed?)")
+        return
+    session = chat_manager_mod.resolve_or_create_slack_session(
+        repo,
+        config,
+        user_email=user_email,
+        surface=surface,
+        slack_channel_id=channel,
+        slack_thread_ts=thread_ts if surface == Surface.SLACK_THREAD else None,
+    )
+    await chat_manager_mod.produce_inbound_user_message(
+        repo,
+        config,
+        session.id,
+        text,
+        slack_origin={"channel": channel, "thread_ts": thread_ts},
+    )
+
+
 async def _owned_by_other_gateway(chat_id: str) -> bool:
     """True iff ``chat_id``'s routing lease is currently held by a
     DIFFERENT, presumably-still-live gateway replica than this process
@@ -199,6 +244,19 @@ async def _handle_dm(app, event: dict) -> None:
     mgr = app.state.chat_manager
     from app.chat.types import Surface
 
+    if mgr is None:
+        # api-role replica (no ChatManager in this process): thin-producer
+        # forward — never attach/spawn here, an api replica is never an
+        # owner. See _produce_slack_message.
+        await _produce_slack_message(
+            app,
+            user_email=user_email,
+            surface=Surface.SLACK_DM,
+            channel=channel,
+            thread_ts=thread_ts,
+            text=text,
+        )
+        return
     session = await mgr.create_session(
         user_email=user_email,
         surface=Surface.SLACK_DM,
@@ -319,15 +377,29 @@ async def _handle_mention(app, event: dict) -> None:
         owner_ref = f"<@{owner_slack_id}>" if owner_slack_id else "another user"
         await send_ephemeral_to_user(channel, slack_user_id, f"This thread belongs to {owner_ref}.")
         return
+
+    # 7. Strip our own mention token. (Before session creation so the
+    # api-role thin-producer branch below can forward the cleaned text.)
+    clean = _strip_bot_mention(text, bot_user_id)
+
+    if mgr is None:
+        # api-role replica (no ChatManager in this process): thin-producer
+        # forward — see _handle_dm's twin branch and _produce_slack_message.
+        await _produce_slack_message(
+            app,
+            user_email=user_email,
+            surface=Surface.SLACK_THREAD,
+            channel=channel,
+            thread_ts=thread_ts,
+            text=clean,
+        )
+        return
     session = await mgr.create_session(
         user_email=user_email,
         surface=Surface.SLACK_THREAD,
         slack_channel_id=channel,
         slack_thread_ts=thread_ts,
     )
-
-    # 7. Strip our own mention token.
-    clean = _strip_bot_mention(text, bot_user_id)
 
     # 8. Attach (NOT awaited — keep the 3s ack budget). wave-2F task 7: skip
     # entirely when a different, still-live gateway already owns this

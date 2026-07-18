@@ -286,12 +286,15 @@ echo "post-FLUSHALL coordination write OK (redis repopulated within ${i}s; keys=
 # Deliberately NOT covered here (needs a live spawned sandbox): the
 # reconnect-with-last_seq replay / full_refresh control frame itself, and
 # the claim-then-respawn takeover logic in ChatManager. Also note: Caddy's
-# example config for this harness (deploy/caddy/Caddyfile.mtier) load-
-# balances only api1/api2 today — it does not front the `gateway` role —
-# so "through the proxy" here means reachability via the compose-internal
-# network from a peer container, not literally through :8080. A real
-# multi-replica deployment needs its own LB rule routing chat/notification
-# WS paths to the gateway role (see docs/DEPLOYMENT.md's chat HA section).
+# example config for this harness (deploy/caddy/Caddyfile.mtier) now
+# implements the reference LB rule — a matcher routes /api/chat/*,
+# /api/notifications/ws, and /api/slack/* to the `gateway` upstream ahead
+# of the api1/api2 catch-all (see docs/DEPLOYMENT.md's chat HA section,
+# "Load-balancer routing rule"). This section still exercises reachability
+# via the compose-internal network from a peer container (api1->gateway),
+# not literally through :8080 — the WS-ticket handshake needs a
+# container-issued ticket either way, and the cross-container hop is the
+# property under test.
 echo "checking chat WS ticket mint/consume + gateway-role restart continuity..."
 token1=$(openssl rand -hex 20)
 mint_ws_ticket "$token1"
