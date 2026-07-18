@@ -871,8 +871,9 @@ def register_foundation_tools(
 
         Runs a live connectivity check against the upstream under YOUR
         credential (not the shared one). Returns ``{ok, tool_count, message}``.
-        If you are not connected, this returns a 403 whose message tells you
-        where to add your token.
+        If you are not connected (or another 4xx condition applies — not
+        granted, rate-limited, ...), ``ok`` is ``False`` and ``message``
+        carries the server's remedy text (e.g. where to add your token).
 
         Args:
             source_id: The MCP source id (``src_*``).
@@ -886,6 +887,17 @@ def register_foundation_tools(
                 headers=headers_fn(),
                 timeout=30,
             )
+            # 4xx bodies carry the connect remedy (e.g. the not-connected 403's
+            # `detail` — see mcp_user_secrets.py) — raise_for_status() would
+            # discard it and surface only a generic "403 Forbidden" to the
+            # model, defeating the "tells you where to add your token" promise
+            # above. Only genuine 5xx/transport errors still raise.
+            if 400 <= r.status_code < 500:
+                try:
+                    detail = r.json().get("detail", r.text)
+                except ValueError:
+                    detail = r.text
+                return {"ok": False, "tool_count": None, "message": detail}
             r.raise_for_status()
             return r.json()
 
