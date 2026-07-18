@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from app.chat import routing
 from app.chat.audit import hash_args, write_audit
 from app.chat.config import ChatConfig
 from app.chat.persistence import ChatRepository
@@ -54,6 +55,16 @@ _DAILY_TOKENS_SEED_LEASE_TTL_SEC = 15
 # (the reaper runs every 60s — see `_idle_reaper_loop`), not minutes.
 _PAUSED_SWEEP_LEASE_NAME = "paused-sandbox-sweep"
 _PAUSED_SWEEP_LEASE_TTL_SEC = 90
+
+# Session routing lease (wave-2F task 1 — see app/chat/routing.py). Claimed
+# for `chat:{chat_id}` when a session becomes live in this process's
+# `self._live` (_spawn_live / _resume_from_row), renewed once per
+# idle-reaper tick (_reap_once, ~60s cadence — see _idle_reaper_loop),
+# released on teardown (kill()). 180s = 3x the reaper cadence, same
+# heartbeat-safety-margin convention as run_with_lease's ttl_s/3 renew
+# interval (app/coordination/leases.py) — a single missed reaper tick must
+# not lose the lease.
+_ROUTING_LEASE_TTL_SEC = 180
 
 # Chat sandbox secret broker (2026-07-14 incident hardening): bumped whenever
 # the ticket_push stdin frame contract changes. ChatManager only ever
@@ -619,6 +630,7 @@ class ChatManager:
             active_since=_t.monotonic(),
         )
         self._live[chat_id] = live
+        self._claim_routing_lease(chat_id)
         self._repo.set_sandbox_ref(chat_id, sandbox_id=handle.sandbox_id, runner_pid=handle.pid)
         # Broker: push the session's initial main+mcp tickets before the
         # session is considered ready to serve messages.
@@ -845,6 +857,7 @@ class ChatManager:
             participant_emails=emails,
         )
         self._live[session.id] = live
+        self._claim_routing_lease(session.id)
         self._repo.set_sandbox_paused_at(session.id, None)
         # This branch only runs when session.id IS a known-current-protocol
         # session (the legacy branch above returns early), but the runner's
@@ -1498,6 +1511,7 @@ class ChatManager:
         live = self._live.pop(chat_id, None)
         if live is None:
             return
+        self._release_routing_lease(chat_id)
         live.state = SessionState.DEAD
         # Partial-save: if a turn was in flight, persist the accumulated token
         # text as an interrupted assistant message so it's not lost.
@@ -1589,6 +1603,48 @@ class ChatManager:
         except Exception:
             logger.exception("auto-title task crashed for %s", live.chat_id)
 
+    # --- session routing leases (wave-2F task 1) -----------------------------
+    #
+    # `chat:{chat_id}` on the coordination backend marks which gateway
+    # replica currently hosts this session's LiveSession — claimed once per
+    # entry into `self._live` (`_spawn_live` / `_resume_from_row`), renewed
+    # every reaper tick (`_renew_routing_leases`, called from `_reap_once`),
+    # released on teardown (`kill`). All three helpers are best-effort: a
+    # claim that loses to another gateway, or a renew that is lost, is
+    # logged and otherwise ignored here — this process keeps serving the
+    # session locally regardless (see app/chat/routing.py's module
+    # docstring for why: deciding what to actually DO about a lost/contended
+    # lease, e.g. redirecting a client to the real owner, is a later
+    # wave-2F task, not this one). Under the default `memory` backend this
+    # can never actually contend (single process, nothing else holds the
+    # lease), so behavior there is unchanged from before routing leases
+    # existed.
+
+    def _claim_routing_lease(self, chat_id: str) -> None:
+        if not routing.claim_session(chat_id, routing.this_gateway_id(), ttl_s=_ROUTING_LEASE_TTL_SEC):
+            logger.warning(
+                "routing lease for %s not claimed (held by %s) — serving it locally anyway; "
+                "cross-gateway takeover is not yet enforced (wave-2F task 1)",
+                chat_id,
+                routing.owner_of(chat_id),
+            )
+
+    def _release_routing_lease(self, chat_id: str) -> None:
+        routing.release_session(chat_id, routing.this_gateway_id())
+
+    def _renew_routing_leases(self) -> None:
+        gateway_id = routing.this_gateway_id()
+        for chat_id, live in list(self._live.items()):
+            if live.state == SessionState.DEAD:
+                continue
+            if not routing.renew_session(chat_id, gateway_id, ttl_s=_ROUTING_LEASE_TTL_SEC):
+                logger.warning(
+                    "routing lease for %s lost (expired or claimed by another gateway) — "
+                    "continuing to serve it locally; cross-gateway takeover is not yet "
+                    "enforced (wave-2F task 1)",
+                    chat_id,
+                )
+
     # --- idle reaper --------------------------------------------------------
 
     def start_idle_reaper(self) -> None:
@@ -1609,6 +1665,9 @@ class ChatManager:
           pause or kill. Active time only counts while ACTIVE — pause stops the clock.
         - Keepalive heartbeat: for ACTIVE sessions with sinks, extend the sandbox
           external timeout so it outlives the in-process reaper horizon.
+        - Routing-lease heartbeat: renew every non-DEAD session's `chat:{chat_id}`
+          routing lease (wave-2F task 1 — see app/chat/routing.py) so it survives
+          the ~60s gap until the next tick.
 
         Paused-TTL sweep (repo rows, no live session required):
         - Sessions whose sandbox_paused_at is older than ``paused_ttl_seconds``
@@ -1618,6 +1677,8 @@ class ChatManager:
         max_active = self._config.max_session_seconds
         now = datetime.now(timezone.utc)
         now_mono = time.monotonic()
+
+        self._renew_routing_leases()
 
         to_pause: list[str] = []
         to_kill: list[tuple[str, str]] = []
