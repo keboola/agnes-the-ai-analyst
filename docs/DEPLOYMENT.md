@@ -543,6 +543,33 @@ worker, keeps the same total capacity but makes "the gateway that owns
 this session" a property the load balancer *can* act on (see below), where
 per-worker round-robin inside one process cannot.
 
+**Load-balancer routing rule (required for role-split topologies).** Only
+`Role.GATEWAY` processes construct a `ChatManager`; on api-role replicas
+`app.state.chat_manager` is `None`. The load balancer must therefore route
+the chat surfaces to gateway-role upstreams:
+
+- `/api/chat/*` — the chat WebSockets (stream/join) and the session
+  lifecycle REST endpoints;
+- `/api/notifications/ws` — the desktop/browser notifications WS (absorbed
+  into the gateway role in wave-2F); and
+- `/api/slack/*` — **when Slack runs in webhook mode** (Socket Mode opens
+  an outbound connection from the gateway leader and needs no inbound
+  route).
+
+The reference `deploy/caddy/Caddyfile.mtier` implements this rule: a
+path-matcher-scoped `reverse_proxy` to the `gateway` upstream placed
+*before* the `api1`/`api2` catch-all (Caddy evaluates same-name directives
+in order of appearance). Slack webhooks that land on an api replica anyway
+do not crash: the handlers detect the missing `ChatManager` and degrade to
+a **thin-producer** path — resolve/create the session row, enforce the
+same sender limits, persist the user message, and publish it to the
+`chat-in:{chat_id}` stream with its Slack origin so the owning gateway
+re-establishes the reply sink (kills/cancels forward as `control`
+entries the same way). That fallback can only *hand off*, though — a
+session no gateway ever attaches has no inbound consumer to deliver to —
+so treat the gateway routing rule as the reference topology and the
+producer path as graceful degradation, not as an alternative.
+
 **WebSocket affinity is recommended, not required.** Session-routing
 leases plus claim-then-respawn takeover mean the chat feature is
 *correct* with zero LB stickiness — any replica can serve any session,
