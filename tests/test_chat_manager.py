@@ -2481,3 +2481,97 @@ def test_routing_lease_calls_offloaded_to_thread(manager: ChatManager):
             reset_coordination_for_tests()
 
     asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# _resume_live reentrancy guard: concurrent resume must not double-spawn
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_resume_live_serialized_no_double_spawn(tmp_path, monkeypatch):
+    """Two concurrent ``_resume_live`` calls on one PAUSED session (attach()
+    racing a simulated inbound-consumer wake) must resume the sandbox
+    exactly once.
+
+    Without ``LiveSession._resume_lock`` this races: both calls reach
+    ``FakeProvider.resume`` concurrently, which pops the parked handle out
+    of ``provider.paused`` — whichever call wins the pop succeeds, and the
+    loser's own ``sandbox_id not in self.paused`` check now fails, so it
+    falls back to ``_respawn_fresh`` and spawns a SECOND, entirely new
+    sandbox. The winner's already-resumed handle is then silently
+    overwritten on ``live.handle`` by the loser's fresh spawn and never
+    referenced again — an orphaned, still-billable sandbox leak — while the
+    winner's own crash-respawn wait task (bound to that now-unreferenced
+    handle) is left running, unmonitored, alongside the loser's fresh
+    pump/wait pair: 3 alive tasks instead of 2.
+
+    This test is proven load-bearing: reverting the `_resume_lock` guard in
+    `ChatManager._resume_live` (`git stash` the fix in `app/chat/manager.py`)
+    makes it fail — `len(provider.spawned) == 2` and 3 alive tasks — and it
+    passes once the lock guards the method.
+    """
+    import app.chat.manager as manager_mod
+
+    fake_tickets = _FakeTicketRepo()
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: fake_tickets)
+
+    mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+    monkeypatch_workdir(mgr)
+    provider = mgr._provider
+
+    # Inject realistic resume() latency (per the task) so two concurrent
+    # _resume_live callers actually interleave inside the provider call
+    # instead of one completing before the other is even scheduled.
+    orig_resume = provider.resume
+
+    async def _slow_resume(*, sandbox_id, runner_pid, env):
+        await asyncio.sleep(0.05)
+        return await orig_resume(sandbox_id=sandbox_id, runner_pid=runner_pid, env=env)
+
+    provider.resume = _slow_resume
+
+    async def _run():
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.1)
+        assert s.id in mgr._known_protocol_sessions, "precondition: non-legacy (known-protocol) resume path"
+        await mgr.detach_sink(s.id, ws)
+        await asyncio.sleep(0.15)  # linger=0, pause fires
+        assert provider.paused, "precondition: sandbox must be parked (paused) before the race"
+        assert len(provider.spawned) == 1
+        live = mgr._live[s.id]
+        assert live.state == SessionState.PAUSED
+
+        # Two concurrent resume triggers on the SAME PAUSED LiveSession —
+        # mirrors attach() (WS reconnect) racing _inbound_consumer_loop's
+        # resume-on-wake call, both hitting the same PAUSED session.
+        results = await asyncio.gather(
+            mgr._resume_live(live),
+            mgr._resume_live(live),
+            return_exceptions=True,
+        )
+        for r in results:
+            if isinstance(r, Exception):
+                raise r
+
+        assert len(provider.spawned) == 1, (
+            f"expected exactly ONE resume/spawn for the session, got {len(provider.spawned)} total spawns "
+            "— a second spawn means the race produced a leaked, orphaned sandbox"
+        )
+        assert not provider.paused, f"no sandbox should be left parked/leaked in the provider: {provider.paused}"
+        assert live.state == SessionState.ACTIVE
+        alive_tasks = [t for t in live.tasks if not t.done()]
+        assert len(alive_tasks) == 2, (
+            f"expected exactly 2 live tasks (pump+wait), got {len(alive_tasks)} "
+            "— extra tasks are orphaned pump/wait survivors from a double-resume"
+        )
+
+        await mgr.kill(s.id, reason="test_done")
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
