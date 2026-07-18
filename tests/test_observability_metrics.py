@@ -440,6 +440,20 @@ class TestJobQueueMetrics:
                 count = sample.value
         assert count is not None and count >= 1.0
 
+    def test_job_duration_histogram_has_hours_scale_bucket(self):
+        # Agnes jobs run seconds-to-hours (BQ materialize, heavy sync) — the
+        # default prometheus_client buckets top out around 10s, which would
+        # dump everything into +Inf. Assert an explicit bucket boundary at
+        # or beyond one hour (3600s) exists, distinct from the +Inf bucket.
+        bucket_bounds = set()
+        for sample in _samples("agnes_job_duration_seconds_bucket"):
+            le = sample.labels.get("le")
+            if le is not None and le != "+Inf":
+                bucket_bounds.add(float(le))
+        assert any(b >= 3600 for b in bucket_bounds), (
+            f"expected a bucket boundary >= 3600s, got {sorted(bucket_bounds)}"
+        )
+
     def test_begin_end_job_running_increments_and_decrements(self):
         from app.observability.metrics import begin_job_running, end_job_running
         from app.worker.registry import HEAVY_LANE, JobKind, register_kind
