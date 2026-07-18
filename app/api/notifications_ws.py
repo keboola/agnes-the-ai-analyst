@@ -39,6 +39,12 @@ Role gating: only processes with the GATEWAY role serve this route (same
 module docstring and app/roles.py). A non-gateway process closes the socket
 with code 4503 before ever accepting the WS upgrade, mirroring the
 CoordinationUnavailable 4503 pattern used elsewhere in the chat WS routes.
+
+Per-replica connection cap: MAX_CONNECTIONS_PER_USER is enforced PER gateway
+replica, not globally. If gateway scales horizontally (N replicas), one user
+can have up to N × MAX_CONNECTIONS_PER_USER concurrent connections across
+all replicas. This is acceptable for current single-gateway topologies;
+revisit this design if the gateway scales.
 """
 
 from __future__ import annotations
