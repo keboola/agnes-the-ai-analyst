@@ -403,7 +403,7 @@ A durable job queue (the `jobs` table, present on both backends —
 most contention-prone recurring work; the rest of the Services table
 above stays on direct synchronous HTTP calls from the scheduler.
 
-**Schema** (migration v92 / Alembic `0039_jobs_v92`): `id`, `kind`,
+**Schema** (migration v93 / Alembic `0040_jobs_v93`): `id`, `kind`,
 `payload_json`, `status` (`queued`/`running`/`done`/`failed`), `priority`,
 `run_after`, `attempts`/`max_attempts`, `lease_expires_at`/`leased_by`/
 `lease_token`, `idempotency_key`, `error`, plus `created_at`/`started_at`/
