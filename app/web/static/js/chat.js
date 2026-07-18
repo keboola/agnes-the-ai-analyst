@@ -5,6 +5,17 @@ let ws = null;
 let currentChatId = null;
 let inFlightToolCalls = new Map();
 
+// Per-session monotonic frame sequence tracking (wave-2F task 2). The
+// server now stamps every outbound WS frame with `seq` (monotonic int per
+// chat_id) + `id` (see app.chat.frame_seq.stamp_frame) — this map tracks
+// the highest `seq` seen per chat_id so a future reconnect (wave-2F task 3)
+// can ask the server to replay anything missed. This task only ADDS the
+// tracking: nothing reads the map yet, and it never blocks or errors —
+// frames without a numeric `seq` (older server, or a frame kind that isn't
+// stamped) are simply skipped, which is exactly what "a client that
+// ignores seq works exactly as today" means.
+let lastSeenSeqByChat = new Map();
+
 // §5.3 Co-presence: the current user's email for per-message sender attribution.
 // Sourced from <body data-user-email="..."> set by the server-rendered template.
 // Empty string for unauthenticated / anonymous views — co-presence degrades
@@ -480,6 +491,13 @@ async function openSession(chatId, wsUrlOverride) {
 }
 
 function handleFrame(frame) {
+  // Track last-seen seq per session (wave-2F task 2 — see
+  // lastSeenSeqByChat above). Additive/back-compat: a frame with no `seq`
+  // (rollout window, or a frame kind the server doesn't stamp) just isn't
+  // tracked — every other code path below is unaffected either way.
+  if (currentChatId && typeof frame.seq === "number") {
+    lastSeenSeqByChat.set(currentChatId, frame.seq);
+  }
   switch (frame.type) {
     case "ready":
     case "runner_ready":
