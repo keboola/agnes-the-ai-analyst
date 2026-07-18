@@ -48,6 +48,15 @@ cadence, so it doesn't appear in `build_jobs()`.
 
 - **Collections/corpus ingest + admin register-table conversion** — deferred
   to the DuckLake workstream.
+- **`telegram_bot` absorption into the gateway role** (three-plane spec
+  §3.5) — not delivered in wave-2F; the spec's companion item (`ws_gateway`
+  absorption) shipped there, Telegram did not. The standalone
+  `services/telegram_bot` process keeps its own Compose service entry. Safe
+  today: Compose runs it as a singleton, and under
+  `coordination.backend: redis` the Telegram long-poll loop is additionally
+  guarded by a leader lease, so even an accidental second replica cannot
+  double-poll. Folding the consumer into the `gateway` role (and removing
+  the Compose entry) is deferred to a later wave.
 - **LISTEN/NOTIFY worker wakeup** — polling suffices for v1; the worker loop
   polls the `jobs` table on its own cadence instead of being pushed a
   wakeup notification.
