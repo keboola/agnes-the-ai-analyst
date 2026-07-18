@@ -1,7 +1,7 @@
 """Prometheus `/metrics` endpoint + core HTTP request metrics.
 
-Three-plane wave 2D (observability), tasks 1 (HTTP metrics) and 2 (job-queue
-+ worker runtime metrics). Spec:
+Three-plane wave 2D (observability), tasks 1 (HTTP metrics), 2 (job-queue
++ worker runtime metrics), and 3 (coordination + readiness health). Spec:
 docs/superpowers/specs/2026-07-16-three-plane-scalable-architecture.md §3.7,
 plan: docs/superpowers/plans/2026-07-17-three-plane-wave2d-observability.md.
 
@@ -72,6 +72,47 @@ Job-queue + worker metrics (task 2):
   (`_MAX_REASON_LEN`) and falls back to `"other"` for anything empty or
   implausibly long, even though in practice it's always a short exception
   class name.
+
+Coordination + readiness metrics (task 3):
+
+- `agnes_coordination_up`, `agnes_coordination_backend_info`, and
+  `agnes_readiness` are all populated at SCRAPE time by
+  `_CoordinationReadinessCollector`, a second custom `Collector` registered
+  on `REGISTRY` alongside `_QueuedJobsCollector`. Same rationale as task 2:
+  these are cheap, always-current state reads (an in-process bool, an
+  in-process method call, an in-process ping) rather than something a
+  background loop would need to push on its own schedule.
+- `agnes_coordination_up` calls `coordination().ping()` on every scrape.
+  When the active backend is redis this is one blocking network
+  round-trip per scrape (~15s cadence in a typical Prometheus config),
+  bounded by the redis client's own `socket_timeout`/
+  `socket_connect_timeout` (~3s each — see
+  `app.coordination.factory._REDIS_SOCKET_TIMEOUT_S`); acceptable cost for
+  one PING. `CoordinationBackend.ping()` is documented to never raise for
+  a plain connectivity failure (it returns `False` instead — see
+  `app/coordination/base.py`), but the collector still wraps the call
+  defensively: an unexpected exception (backend construction failure,
+  ping() contract violation, etc.) must not 500 the whole `/metrics`
+  response, only this one gauge drops to `up=0` and
+  `agnes_metrics_collector_errors_total{collector="coordination"}`
+  increments — same swallow-and-count pattern as `_QueuedJobsCollector`.
+- `agnes_coordination_backend_info` exposes the resolved backend name
+  (`memory`|`redis`, via `app.coordination.factory.resolve_backend_name`)
+  as a `backend` label on a `prometheus_client` `InfoMetricFamily`.
+  `InfoMetricFamily` always appends `_info` to the name passed to its
+  constructor, so the family is built with base name
+  `agnes_coordination_backend` to land on the series name
+  `agnes_coordination_backend_info` (not a doubled
+  `agnes_coordination_backend_info_info`).
+- `agnes_readiness` samples the wave-1 `ReadinessState.is_ready()`
+  in-process singleton (`app/api/health_probes.py`) — the same value
+  `/readyz` itself reports, exported as a scrapeable time series so a
+  dashboard/alert doesn't have to poll `/readyz` separately.
+- Each of the three checks in `_CoordinationReadinessCollector.collect()`
+  has its own try/except so one broken check can't suppress the other two
+  on the same scrape (mirrors `_QueuedJobsCollector`'s single try/except,
+  just split three ways since these are three independent state reads
+  instead of one DB query).
 """
 
 from __future__ import annotations
@@ -89,7 +130,7 @@ from prometheus_client import (
     Histogram,
     generate_latest,
 )
-from prometheus_client.core import GaugeMetricFamily
+from prometheus_client.core import GaugeMetricFamily, InfoMetricFamily
 
 logger = logging.getLogger(__name__)
 
@@ -381,6 +422,104 @@ class _QueuedJobsCollector:
 # collect() itself, so this does NOT touch the DB at import time (only real
 # /metrics scrapes do).
 REGISTRY.register(_QueuedJobsCollector())
+
+
+# ---------------------------------------------------------------------------
+# Coordination + readiness metrics (task 3) — see module docstring.
+# ---------------------------------------------------------------------------
+
+
+def _bump_collector_error(collector: str) -> None:
+    """Increment `agnes_metrics_collector_errors_total{collector=...}`,
+    swallowing its own failure — same defensive pattern `_QueuedJobsCollector`
+    inlines above, factored out here since `_CoordinationReadinessCollector`
+    needs it three times (one per independent check)."""
+    try:
+        metrics_collector_errors_total.labels(collector=collector).inc()
+    except Exception:
+        logger.exception("metrics: failed to increment agnes_metrics_collector_errors_total")
+
+
+class _CoordinationReadinessCollector:
+    """Scrape-time collector for `agnes_coordination_up`,
+    `agnes_coordination_backend_info`, and `agnes_readiness`.
+
+    See the module docstring for the full design rationale. Like
+    `_QueuedJobsCollector`, `collect()` is called by `REGISTRY.collect()` on
+    every `/metrics` scrape and MUST NOT raise — each of the three checks
+    below is wrapped in its own try/except so a failure in one still lets
+    the other two (and every other collector on this REGISTRY) report
+    normally on the same scrape.
+    """
+
+    def collect(self):
+        role = role_label()
+        replica = _REPLICA_ID
+
+        # -- agnes_coordination_up -------------------------------------------
+        up_family = GaugeMetricFamily(
+            "agnes_coordination_up",
+            "1 if coordination().ping() succeeded at this scrape, else 0. One "
+            "blocking network round-trip per scrape when the backend is redis, "
+            "bounded by the redis client's socket_timeout/socket_connect_timeout "
+            "(see app.coordination.factory) — see module docstring.",
+            labels=["role", "replica"],
+        )
+        try:
+            from app.coordination.factory import coordination
+
+            up = 1.0 if coordination().ping() else 0.0
+        except Exception:
+            logger.exception("metrics: agnes_coordination_up collector failed (non-fatal)")
+            _bump_collector_error("coordination")
+            up = 0.0
+        up_family.add_metric([role, replica], up)
+        yield up_family
+
+        # -- agnes_coordination_backend_info ---------------------------------
+        # Base name "agnes_coordination_backend" — InfoMetricFamily appends
+        # "_info" itself, landing on the series name
+        # "agnes_coordination_backend_info" (see module docstring).
+        backend_family = InfoMetricFamily(
+            "agnes_coordination_backend",
+            "Resolved coordination backend name (memory|redis) — see app.coordination.factory.resolve_backend_name.",
+            labels=["role", "replica"],
+        )
+        try:
+            from app.coordination.factory import resolve_backend_name
+
+            backend_name = resolve_backend_name()
+        except Exception:
+            logger.exception("metrics: agnes_coordination_backend_info collector failed (non-fatal)")
+            _bump_collector_error("coordination_backend")
+            backend_name = "unknown"
+        backend_family.add_metric([role, replica], {"backend": backend_name})
+        yield backend_family
+
+        # -- agnes_readiness --------------------------------------------------
+        readiness_family = GaugeMetricFamily(
+            "agnes_readiness",
+            "1 if the wave-1 readiness canary (app.api.health_probes.readiness) "
+            "currently reports ready, else 0 — the same value /readyz reports, "
+            "exported as a scrapeable time series.",
+            labels=["role", "replica"],
+        )
+        try:
+            from app.api.health_probes import readiness
+
+            ready = 1.0 if readiness.is_ready() else 0.0
+        except Exception:
+            logger.exception("metrics: agnes_readiness collector failed (non-fatal)")
+            _bump_collector_error("readiness")
+            ready = 0.0
+        readiness_family.add_metric([role, replica], ready)
+        yield readiness_family
+
+
+# Registered once at import time — see the auto_describe=False note above
+# _QueuedJobsCollector's registration; the same guarantee applies here (no
+# ping()/DB/readiness read happens until a real /metrics scrape).
+REGISTRY.register(_CoordinationReadinessCollector())
 
 
 # No auth dependency — mirrors app/api/health_probes.py's unauthenticated LB
