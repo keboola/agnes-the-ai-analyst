@@ -20,10 +20,18 @@ gateway now claims (steals) the lease and takes over via
 ``ChatManager._takeover_foreign_session`` (destroy the old sandbox,
 respawn a fresh runner, replay recent turns — NOT a live handoff, see that
 method's docstring for why and its accepted trade-off), and a renew that
-comes back lost now tears the local session down
-(``ChatManager._teardown_lost_ownership``) instead of continuing to serve
-it. A lease loss under the default ``memory`` backend can still never
-actually happen (single process, nothing else ever contends — see
+comes back lost is followed by ONE MORE read (``owner_of``) before
+``ChatManager`` decides what to do: only a POSITIVE, concrete different
+gateway id is treated as a genuine steal and tears the local session down
+(``ChatManager._teardown_lost_ownership``); ``owner_of`` returning ``None``
+(unclaimed, expired with nobody else holding it yet, or the coordination
+backend itself being unreachable) is NOT proof of loss, so that case keeps
+serving locally and retries on the next reaper tick instead — see
+``ChatManager._renew_routing_leases``'s Critical-3 fix for the full
+reasoning (a naive "any False renew means torn down" reaction would turn an
+ordinary transient backend blip into every replica dropping every session
+it hosts). A lease loss under the default ``memory`` backend can still
+never actually happen (single process, nothing else ever contends — see
 ``app.coordination.leases``'s FLUSHALL/memory-mode docstring for the same
 invariant applied to the leader-lease helper), so none of this is reachable
 there; under `redis` it is now live.

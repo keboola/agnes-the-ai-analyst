@@ -112,3 +112,19 @@ class FakeProvider:
     async def destroy(self, *, sandbox_id) -> None:
         self.paused.pop(sandbox_id, None)
         self.destroyed.append(sandbox_id)
+        # Test-fidelity fix: a real destroy() (E2B AsyncSandbox.kill) kills
+        # the underlying VM and its process, so ANY handle still bound to
+        # this sandbox_id — paused OR actively running elsewhere (the
+        # cross-gateway takeover race: gateway B destroys gateway A's still
+        # ACTIVE sandbox by id) — must have its wait() unblock with a
+        # crash-like exit, exactly as a real destroyed process would.
+        # Previously this method only recorded the call and never touched
+        # the handle, so a destroy() racing another owner's in-flight
+        # wait() was silently swallowed in tests: the "owning" gateway's
+        # crash-respawn path never fired, masking the split-brain race this
+        # fake exists to exercise. Search ALL spawned handles (not just
+        # `self.paused`) since the handle being destroyed here may still be
+        # the ACTIVE one another simulated gateway is holding.
+        for h in self.spawned:
+            if h.sandbox_id == sandbox_id:
+                h.killed = True
