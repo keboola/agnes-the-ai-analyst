@@ -176,6 +176,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   handler doesn't cover the WS scope, so a coordination backend blip (e.g.
   Redis unreachable) previously dropped the connection ungracefully with a
   traceback.
+- `infra/modules/customer-instance`'s startup script now provisions and
+  writes `SESSION_SECRET` the same way it already handled `JWT_SECRET_KEY`
+  (a dedicated Secret Manager secret, fetched fresh on every boot, no on-VM
+  fallback generation) — previously it only wrote `JWT_SECRET_KEY` +
+  `AGNES_VAULT_KEY`, so a role-split deployment through this module tripped
+  `app/startup_guards.py`'s multi-process guard, which hard-fails without
+  `SESSION_SECRET` set explicitly.
 
 ### Changed
 
