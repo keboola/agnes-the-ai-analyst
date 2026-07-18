@@ -3,7 +3,7 @@ metric_definitions, glossary_terms, instance_templates, personal_access_tokens.
 
 Mirrors:
   - ``metric_definitions``       (src/db.py:329-352)
-  - ``glossary_terms``           (src/db.py, v92 — Keboola semantic-glossary import)
+  - ``glossary_terms``           (src/db.py, v93 — Keboola semantic-glossary import)
   - ``instance_templates``       (src/db.py:496-502)
   - ``personal_access_tokens``   (src/db.py:365-377)
 """
