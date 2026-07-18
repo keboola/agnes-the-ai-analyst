@@ -55,6 +55,11 @@ cadence, so it doesn't appear in `build_jobs()`.
   handler chain — deferred to the observability workstream.
 - **Scheduler catch-up semantics** — the scheduler still keeps in-memory
   last_run; per-job catch-up (spec §3.3) is deferred to a later wave.
-- **Role-split /api/sync/status** — the api process's in-process lock is not
-  held on split topologies; the auto-upgrade sync-defer probe rewrite to a
-  job-queue query is deferred to WS I (ops tooling).
+- ~~**Role-split /api/sync/status** — the api process's in-process lock is
+  not held on split topologies; the auto-upgrade sync-defer probe rewrite to
+  a job-queue query is deferred to WS I (ops tooling).~~ Done in wave-2E:
+  `scripts/ops/agnes-auto-upgrade.sh`'s `sync_or_refresh_busy` now also
+  queries `GET /api/jobs?kind=data-refresh&status=running` (authenticated
+  with `SCHEDULER_API_TOKEN`), so the defer probe correctly sees a sync
+  running in a separate worker container, alongside the original
+  `/api/sync/status` check.

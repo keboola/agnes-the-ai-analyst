@@ -345,6 +345,89 @@ A production deployment that skips the `mtier` profile should still scrape
 `/metrics` on every role instance at a similar interval — nothing about
 the endpoint itself is tied to Compose.
 
+### Ops tooling (host scripts)
+
+The `customer-instance` Terraform module's host-side scripts (deployed to
+`/usr/local/bin/` and driven by systemd timers / cron) are role-split-aware:
+
+- **`SESSION_SECRET` provisioning.** The startup script now mints and writes
+  `SESSION_SECRET` through the same dedicated-Secret-Manager-secret path it
+  already used for `JWT_SECRET_KEY` (fetched fresh on every boot, no on-VM
+  fallback generation). Previously only `JWT_SECRET_KEY` + `AGNES_VAULT_KEY`
+  were provisioned this way, so a role-split deployment through this module
+  tripped the multi-process startup guard (above), which hard-fails without
+  `SESSION_SECRET` set explicitly.
+- **`agnes-db-backup.sh` covers the on-VM Postgres side-car.** When
+  `instance.yaml::database.backend == side_car` and the container is
+  actually running, the daily backup also `pg_dump`s the control-plane DB
+  into the same dated backup directory and restore-canaries it (restore
+  into a throwaway database, run a sanity query, drop) before declaring
+  success — same 7-day retention and webhook alerting as the existing
+  `system.duckdb` path. DuckDB-only deployments are unaffected.
+- **`agnes-auto-upgrade.sh` does a sequential `/readyz`-gated rolling
+  recreate** when it detects a role-split (m-tier) topology (dedicated
+  `worker` + `gateway` services alongside 2+ named `api` replicas in the
+  resolved compose config): it pulls the new image, recreates
+  `worker`+`gateway` first, then walks the `api` replicas one at a time,
+  waiting for each to report `/readyz` ready before touching the next. A
+  hard failure of the initial `worker`+`gateway` recreate, or any single
+  replica that never becomes ready within the bounded timeout, **aborts the
+  whole rollout** (webhook alert, non-zero exit) without touching the
+  remaining replicas, which stay on the previous image and keep serving.
+  Single-container deployments are unaffected — they keep the exact
+  one-shot `docker compose up -d` recreate. The script's sync-in-flight
+  defer probe also now queries `GET /api/jobs?kind=data-refresh&status=running`
+  (authenticated with `SCHEDULER_API_TOKEN`) alongside the existing
+  `/api/sync/status` check, so it defers correctly when sync runs in a
+  separate `worker` container.
+- **`agnes-watchdog.sh` monitors every role container**, not just a single
+  hardcoded `app` — services are enumerated via `docker compose ps`
+  (`app`, `worker`, `gateway`, `api<N>`; falls back to the legacy
+  `agnes-app-1` name when compose can't be resolved from the working
+  directory). Every existing incident signature runs per container, naming
+  it in the alert, plus a new signature: coordination-backend unreachable —
+  when `coordination.backend: redis` is configured, repeated
+  `CoordinationUnavailable` log hits in one container within a scan window
+  fires an alert. Single-container deployments are unaffected.
+
+**Deferred: the module doesn't opt a VM into role-split by default.** These
+host scripts are role-split-*ready*, but `infra/modules/customer-instance`
+does not yet ship the `mtier` Compose profile as a first-class deployable
+option — an operator opts a VM in manually (set `COMPOSE_FILE`/
+`COMPOSE_PROFILES` in `/opt/agnes/.env` to include
+`docker-compose.mtier.yml` / `mtier`), or a later change wires the module's
+own variables to do it. The load-testing / smoke harness exercises the
+`mtier` Compose profile directly rather than through the module.
+
+### Bod-3 live verification
+
+The checks above are covered by the bash-harness unit tests (fakes for
+`docker`/`curl`/`logger`/`flock`) and are static-validated (`shellcheck`,
+`bash -n`) — none of it has been exercised against a real GCE VM. Before
+relying on this in production, verify live:
+
+1. **Role-split/coordination detection needs the right working directory.**
+   `agnes-watchdog.sh` and `agnes-auto-upgrade.sh` resolve topology via
+   `docker compose ps` / `docker compose config --services` run from the
+   directory holding `docker-compose.mtier.yml` +
+   `config/instance.mtier.yaml`. Without that cwd (or the files), both
+   scripts silently fall back to the single-container path — role-split and
+   coordination-backend detection stay inert rather than erroring loudly.
+2. **A real `pg_dump` → `pg_restore` round-trip returns 0** against the
+   on-VM Postgres side-car container, not just the fake-`pg_dump`/
+   fake-`psql` bash-harness stand-ins.
+3. **Rolling recreate against a real Caddy load balancer** leaves an aborted
+   rollout serving the *old* image on the untouched replicas — confirm via
+   an actual HTTP request through Caddy, not just the transcript of `docker
+   compose` invocations the harness asserts on.
+4. **`/readyz` via `docker compose exec` hits the newly-created replica**,
+   not a stale container from a previous recreate (compose service-name
+   reuse could otherwise mask a wedged container as "ready").
+5. **`GET /api/jobs?kind=data-refresh&status=running` shape** matches what
+   `sync_or_refresh_busy` expects against the real endpoint (not just the
+   fake `curl` stub in the bash harness) — in particular the `"id"` field
+   presence used as the "busy" signal.
+
 ## Cloud-chat host requirements
 
 Agnes can serve a zero-install web chat and Slack DM bot at `/chat`. The
