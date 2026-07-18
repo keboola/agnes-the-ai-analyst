@@ -1697,12 +1697,19 @@ def create_app() -> FastAPI:
         if request.url.path == METRICS_PATH:
             return await call_next(request)
         start = _time.monotonic()
-        response = await call_next(request)
-        duration = _time.monotonic() - start
-        route = request.scope.get("route")
-        path_template = route.path if route is not None else UNMATCHED_PATH
-        observe_http(request.method, path_template, response.status_code, duration)
-        return response
+        try:
+            response = await call_next(request)
+            duration = _time.monotonic() - start
+            route = request.scope.get("route")
+            path_template = route.path if route is not None else UNMATCHED_PATH
+            observe_http(request.method, path_template, response.status_code, duration)
+            return response
+        except Exception:
+            duration = _time.monotonic() - start
+            route = request.scope.get("route")
+            path_template = route.path if route is not None else UNMATCHED_PATH
+            observe_http(request.method, path_template, 500, duration)
+            raise
 
     # Load .env_overlay (persisted by /api/admin/configure)
     from app.secrets import _state_dir
