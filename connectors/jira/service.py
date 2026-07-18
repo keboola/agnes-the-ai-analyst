@@ -111,9 +111,10 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
             # number of pending webhook events into a single queued
             # rebuild — see `app.worker.kinds._run_jira_refresh`.
             try:
+                from app.job_correlation import stamp_request_id
                 from src.repositories import jobs_repo
 
-                result = jobs_repo().enqueue("jira-refresh", {}, idempotency_key="jira-refresh")
+                result = jobs_repo().enqueue("jira-refresh", stamp_request_id({}), idempotency_key="jira-refresh")
                 # Invariant: every parquet write (above, via transform_single_issue)
                 # must be followed by a rebuild that starts AFTER it. Dedup above
                 # matches against status IN ('queued', 'running') — if it collapsed
@@ -125,7 +126,7 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
                 # after this write. Repeated webhooks mid-run all dedup onto this
                 # same follow-up row, bounding the pile-up at 1 running + 1 queued.
                 if result.get("status") == "running":
-                    jobs_repo().enqueue("jira-refresh", {}, idempotency_key="jira-refresh-followup")
+                    jobs_repo().enqueue("jira-refresh", stamp_request_id({}), idempotency_key="jira-refresh-followup")
             except Exception as enqueue_err:
                 logger.warning(f"Failed to enqueue jira-refresh job: {enqueue_err}")
         else:
