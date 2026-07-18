@@ -1,4 +1,4 @@
-"""DuckDB-backed repository for the ``jobs`` table (durable job queue, v93).
+"""DuckDB-backed repository for the ``jobs`` table (durable job queue, v94).
 
 Foundation for the wave-2B worker runtime. This module now also covers
 the claim/lease/complete/fail lifecycle (worker loop itself is a later
