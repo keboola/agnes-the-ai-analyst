@@ -35,17 +35,31 @@ from __future__ import annotations
 
 from app.coordination.factory import coordination
 
-#: Coordination-backend TTL for the per-session seq counter. Deliberately
-#: NOT sized to outlive the longest possible PAUSED session
-#: (``ChatConfig.paused_ttl_seconds``, default 7 days) — it only needs to
-#: comfortably outlive one ACTIVE session lifetime between messages
-#: (``ChatConfig.max_session_seconds``, default 4h). A session paused (or
-#: otherwise silent) longer than this TTL resumes with the counter reset to
-#: 1 — a narrow, documented gap: a future replay mechanism (wave-2F task 3)
-#: must treat a reset/lower seq as "nothing to replay from", never as
-#: license to replay the wrong frames. Widening the TTL (or refreshing it at
-#: pause time) is a follow-up if this proves too narrow in practice.
-_SEQ_TTL_SEC = 6 * 3600
+#: Coordination-backend TTL for the per-session seq counter.
+#:
+#: ``coordination().incr`` only applies ``ttl_s`` the first time a key is
+#: created (see ``CoordinationBackend.incr``), so this must comfortably
+#: outlive the ENTIRE wall-clock lifetime of a session, not just one ACTIVE
+#: stretch — a session can go PAUSED for up to ``ChatConfig.paused_ttl_seconds``
+#: (default 7 days = 604800s) and then resume for up to another
+#: ``ChatConfig.max_session_seconds`` (default 4h) before its next frame. The
+#: previous value (6h) was sized only for the ACTIVE half of that story: any
+#: session paused past 6h — well within the 7-day paused_ttl default, let
+#: alone an operator raising it further — would see the counter expire and
+#: restart at seq=1, producing a duplicate seq/id and breaking the replay/
+#: dedup contract the future replay mechanism (wave-2F task 3) depends on.
+#:
+#: Hardened to a fixed value safely past ``paused_ttl_seconds +
+#: max_session_seconds`` under default config (604800 + 14400 = 619200s),
+#: with margin: 9 days. Not wired to a live ``ChatConfig`` instance — the
+#: seq counter is a tiny, cheap coordination-backend key, so a large fixed
+#: TTL on it costs nothing, and doing so avoids threading a config object
+#: through every ``stamp_frame``/``FrameSequencer`` call site (``_broadcast``,
+#: ``_seat_sink``, ``add_sink``, and the two direct-WS ``runner_not_ready``
+#: stamps in ``app.api.chat``) for a bound that's already generous relative
+#: to the defaults. An operator who raises ``paused_ttl_seconds`` or
+#: ``max_session_seconds`` past this margin should bump this constant too.
+_SEQ_TTL_SEC = 9 * 24 * 3600
 
 
 class FrameSequencer:
