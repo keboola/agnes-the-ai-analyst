@@ -276,8 +276,11 @@ def _build_isolated_dm_app_state(monkeypatch):
     async def attach(chat_id, sink):
         attached.append((chat_id, sink))
 
-    async def send_user_message(chat_id, text):
+    sent_kwargs: list[dict] = []
+
+    async def send_user_message(chat_id, text, **kw):
         sent_msgs.append((chat_id, text))
+        sent_kwargs.append(kw)
 
     async def wait_until_live(chat_id, *, timeout=30.0):
         return True
@@ -291,6 +294,7 @@ def _build_isolated_dm_app_state(monkeypatch):
         _created=created_sessions,
         _attached=attached,
         _sent=sent_msgs,
+        _sent_kwargs=sent_kwargs,
     )
     state = SimpleNamespace(chat_repo=repo, chat_manager=mgr, public_url="https://agnes.example.com")
     app = SimpleNamespace(state=state)
@@ -356,6 +360,91 @@ def test_slack_mention_owned_elsewhere_forwards_without_local_attach(monkeypatch
 
     assert mgr.attached == [], "must not locally attach/spawn a session owned by another gateway"
     assert mgr.sent and mgr.sent[0][1] == "revenue?"
+
+
+def test_cmd_agnes_owned_elsewhere_forwards_without_local_attach(monkeypatch):
+    """FINDING 1 (multi-replica gate lift): a `/agnes` slash command landing
+    on a replica that does NOT own the session must not attach — commands.py's
+    process-local `_is_attached` reads False there, and mgr.attach() would
+    fire ChatManager.attach's cross-gateway TAKEOVER (destroy the live
+    owner's sandbox + respawn locally) for a plain slash command. Instead the
+    message is forwarded via send_user_message (with the slack_origin marker
+    so the owner re-establishes its SlackSinkBridge — finding 6) and the
+    response_url gets the standard ack."""
+    import app.auth.access as _access
+    import services.slack_bot.commands as cmds
+    import services.slack_bot.events as ev
+
+    monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
+    monkeypatch.setattr(ev.routing, "this_gateway_id", lambda: "gw-A")
+    monkeypatch.setattr(ev.routing, "owner_of", lambda chat_id: "gw-B")
+
+    app, _repo, mgr, conn = _build_isolated_dm_app_state(monkeypatch)
+    from services.slack_bot.binding import _ensure_table
+
+    _ensure_table(conn)
+    conn.execute("UPDATE users SET slack_user_id = 'U123' WHERE email = 'bob@example.com'")
+
+    async def fake_open_im(uid):
+        return "D1"
+
+    ephemerals: list[tuple[str, str]] = []
+
+    async def fake_ephemeral(url, text):
+        ephemerals.append((url, text))
+
+    monkeypatch.setattr(cmds, "open_im", fake_open_im)
+    monkeypatch.setattr(cmds, "send_ephemeral", fake_ephemeral)
+
+    cmd = {"command": "/agnes", "user_id": "U123", "text": "hi agnes", "response_url": "https://hooks.slack/r1"}
+    asyncio.run(cmds.dispatch_command(app, cmd))
+
+    assert mgr._attached == [], "non-owner /agnes must not attach (attach = unwanted takeover)"
+    assert mgr._sent == [("sess-1", "hi agnes")], "message must be forwarded via send_user_message"
+    assert mgr._sent_kwargs and mgr._sent_kwargs[0].get("slack_origin", {}).get("channel") == "D1"
+    assert ephemerals and ephemerals[0][0] == "https://hooks.slack/r1", "response_url must get the standard ack"
+
+
+def test_slack_dm_live_without_sink_reestablishes_slack_sink(monkeypatch):
+    """FINDING 6 (owner side): after a cross-gateway takeover the owner's
+    LiveSession exists with sinks=[] — the DM handler used to skip sink
+    creation whenever a live entry existed (`_is_attached` is True), so
+    replies silently stopped reaching Slack. The handler must now seat a
+    SlackSinkBridge in that live-but-sinkless window."""
+    from types import SimpleNamespace
+
+    import app.auth.access as _access
+
+    import services.slack_bot.events as ev
+    from services.slack_bot.sink import SlackSinkBridge
+
+    monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
+    monkeypatch.setattr(ev.routing, "this_gateway_id", lambda: "gw-A")
+    monkeypatch.setattr(ev.routing, "owner_of", lambda chat_id: "gw-A")  # THIS replica owns it
+
+    app, _repo, mgr, conn = _build_isolated_dm_app_state(monkeypatch)
+    from services.slack_bot.binding import _ensure_table
+
+    _ensure_table(conn)
+    conn.execute("UPDATE users SET slack_user_id = 'U123' WHERE email = 'bob@example.com'")
+
+    # Post-takeover shape: session is live on this replica but has no sinks.
+    live_stub = SimpleNamespace(chat_id="sess-1", sinks=[])
+    mgr.list_live = lambda: [live_stub]
+
+    event = {
+        "type": "message",
+        "channel_type": "im",
+        "channel": "D1",
+        "user": "U123",
+        "ts": "1.1",
+        "text": "hello again",
+    }
+    asyncio.run(ev.dispatch_event(app, event))
+
+    assert len(mgr._attached) == 1, "a live-but-sinkless Slack session must get its sink re-established"
+    assert isinstance(mgr._attached[0][1], SlackSinkBridge)
+    assert mgr._sent == [("sess-1", "hello again")]
 
 
 def test_slack_dm_owned_locally_unaffected(monkeypatch):
