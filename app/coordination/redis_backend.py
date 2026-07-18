@@ -141,6 +141,16 @@ class RedisCoordinationBackend(CoordinationBackend):
 
         self._compare_and_run(name, holder_id, _action)
 
+    def lease_owner(self, name: str) -> Optional[str]:
+        # Lease keys share the same top-level Redis keyspace as kv_set/
+        # kv_get/lease_acquire (a plain `SET name holder_id ...`), so a
+        # plain GET returns the current holder — no separate namespace to
+        # maintain.
+        try:
+            return self._client.get(name)
+        except _REDIS_ERRORS as exc:
+            raise CoordinationUnavailable(f"redis lease_owner failed: {exc}") from exc
+
     def _compare_and_run(self, key: str, holder_id: str, action: Callable[["redis_lib.client.Pipeline"], None]) -> bool:
         """WATCH ``key``; if its current value is ``holder_id``, run
         ``action`` (one or more pipelined commands) inside MULTI/EXEC.

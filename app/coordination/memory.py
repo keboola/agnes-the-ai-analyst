@@ -103,6 +103,17 @@ class MemoryCoordinationBackend(CoordinationBackend):
             if current is not None and current[0] == holder_id:
                 del self._leases[name]
 
+    def lease_owner(self, name: str) -> Optional[str]:
+        with self._lock:
+            current = self._leases.get(name)
+            if current is None:
+                return None
+            holder, expiry = current
+            if expiry <= self._now():
+                del self._leases[name]
+                return None
+            return holder
+
     # -- Pub/sub ------------------------------------------------------------------
 
     def publish(self, channel: str, message: str) -> None:
