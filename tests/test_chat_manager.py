@@ -2368,10 +2368,15 @@ def test_renew_routing_leases_keeps_ownership(manager: ChatManager):
 
 
 def test_spawn_continues_when_routing_lease_contended(manager: ChatManager):
-    """Another gateway already holding `chat:{chat_id}` must not block this
-    replica from serving the session locally (task 1 is mechanism-only —
-    real cross-gateway takeover/redirect is a later wave-2F task): the
-    claim fails, a warning is logged, and the session runs anyway."""
+    """Another gateway holding `chat:{chat_id}` for a session that was
+    never actually spawned anywhere (no sandbox_id/runner_pid persisted —
+    e.g. a bare claim_session call, as simulated here) must not block this
+    replica from serving it: attach() now runs the wave-2F task 5
+    cross-gateway takeover path (steal the lease, no-op destroy since there
+    is no old sandbox, fresh spawn), so the session ends up live here AND
+    this replica ends up the genuine lease owner — not just "serving
+    despite a lost claim" (task 1's original mechanism-only posture, now
+    superseded by task 5's real takeover)."""
     from app.chat import routing
 
     async def _run():
@@ -2385,8 +2390,8 @@ def test_spawn_continues_when_routing_lease_contended(manager: ChatManager):
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
         await asyncio.sleep(0.05)
 
-        assert s.id in manager._live  # served locally despite the lost claim
-        assert routing.owner_of(s.id) == "other-gateway:999"  # claim genuinely lost
+        assert s.id in manager._live  # served locally via takeover
+        assert routing.owner_of(s.id) == routing.this_gateway_id(), "takeover claims the lease for real"
 
         await manager.kill(s.id, reason="test_done")
         handle.emit_eof()

@@ -193,6 +193,16 @@ class LiveSession:
     # leaked, still-billable resource), and the orphaned loser's pump/wait
     # tasks are never cancelled. See _resume_live's docstring for the full
     # mechanism and why acquiring this lock cannot deadlock.
+    #
+    # This lock only ever guards a session that ALREADY has a LiveSession
+    # object in this process. Cross-gateway takeover (wave-2F task 5,
+    # ChatManager._takeover_foreign_session) races a DIFFERENT window — a
+    # WS connect for a chat_id this process has never seen before — where
+    # no LiveSession exists yet to hang a lock off of, so it is guarded by
+    # a separate `ChatManager._takeover_locks` entry instead. Once the
+    # takeover completes and this LiveSession is registered, any further
+    # PAUSED->ACTIVE resume on it goes through the normal _resume_lock path
+    # above like any other session.
     _resume_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Serializes _broadcast's stamp+send critical section per session. 9
     # call sites can invoke _broadcast for the SAME LiveSession from
@@ -229,10 +239,13 @@ class LiveSession:
     # (wave-2F task 4) — the ordering/dedup cursor for
     # ChatManager._inbound_consumer_loop. Lives on the LiveSession object
     # (not the coordination backend) so an in-process respawn resumes
-    # exactly where it left off; a genuine cross-gateway ownership handoff
-    # starting a fresh consumer at 0 on the new owner is an accepted
-    # at-least-once gap left for wave-2F task 5 (see app.chat.inbound's
-    # module docstring).
+    # exactly where it left off; a genuine cross-gateway takeover
+    # (_takeover_foreign_session, wave-2F task 5) builds a brand new
+    # LiveSession with this at its default 0, so the new owner's consumer
+    # re-reads the WHOLE chat-in:{chat_id} stream from the start — an
+    # accepted at-least-once redelivery (never a loss), same posture as
+    # every other coordination-backend stream reader in this module (see
+    # app.chat.inbound's module docstring).
     inbound_last_seq: int = 0
 
 
@@ -268,6 +281,17 @@ class ChatManager:
         # _push_ticket_frame). Consulted by the resume paths to decide
         # respawn vs. reconnect (AC-G-resume-legacy).
         self._known_protocol_sessions: set[str] = set()
+        # Cross-gateway takeover locks (wave-2F task 5) — one per chat_id,
+        # created on first use. Serializes ChatManager._takeover_foreign_session
+        # for a session that has NO LiveSession in this process yet, so two
+        # WS connects landing on this gateway concurrently for the same
+        # foreign-owned chat_id can't both destroy the old sandbox and spawn
+        # competing fresh runners. See LiveSession._resume_lock's docstring
+        # for why this can't just be a per-session field on LiveSession like
+        # that lock is (the object doesn't exist yet at the point this needs
+        # to be held). Left empty forever under a single-process deployment
+        # (memory backend) — see _takeover_foreign_session's docstring.
+        self._takeover_locks: dict[str, asyncio.Lock] = {}
 
     @staticmethod
     def _daily_token_keys(user_email: str) -> tuple[str, str]:
@@ -598,11 +622,14 @@ class ChatManager:
     async def attach(self, chat_id: str, ws, *, is_primary: bool = True) -> None:
         """Ensure the session is running and seat ws as a sink.
 
-        Decision tree (Task 8):
+        Decision tree (Task 8, extended by wave-2F task 5):
         1. Live ACTIVE  → cancel any linger task, seat sink.
         2. Live PAUSED  → resume provider, restart tasks, seat sink.
-        3. No live entry but repo row has sandbox refs → _resume_from_row (post-restart).
-        4. Otherwise    → _spawn_live (today's spawn body).
+        3. No live entry, but another gateway's routing lease owns this
+           chat_id → cross-gateway claim-then-respawn takeover
+           (_takeover_foreign_session).
+        4. No live entry but repo row has sandbox refs → _resume_from_row (post-restart).
+        5. Otherwise    → _spawn_live (today's spawn body).
 
         attach() is now fast: it returns after seating the sink. The pump/wait
         tasks run independently — attach no longer awaits them. The caller is
@@ -616,6 +643,24 @@ class ChatManager:
             return
         if live is not None and live.state == SessionState.PAUSED:
             await self._resume_live(live)
+            await self._seat_sink(live, ws, is_primary=is_primary)
+            return
+        # wave-2F task 5: no LiveSession here. Before touching the repo row's
+        # sandbox refs (which _resume_from_row would try to *reconnect* via
+        # provider.resume() — unsafe for a runner this process never itself
+        # pushed a broker ticket to, see _takeover_foreign_session's
+        # docstring), find out whether a DIFFERENT gateway currently owns
+        # this session's routing lease. `owner is None` (unclaimed/expired)
+        # or `owner == this_gw` (stale self-claim, e.g. a lease that outlived
+        # a local kill()) both fall through to the existing
+        # resume-from-row/spawn story below, unchanged. Under the default
+        # `memory` backend `owner` can never differ from `this_gw` (single
+        # process — see app.chat.routing's module docstring), so this branch
+        # is simply never taken there.
+        this_gw = routing.this_gateway_id()
+        owner = await asyncio.to_thread(routing.owner_of, chat_id)
+        if owner is not None and owner != this_gw:
+            live = await self._takeover_foreign_session(chat_id, owner)
             await self._seat_sink(live, ws, is_primary=is_primary)
             return
         session = self._repo.get_session(chat_id)
@@ -1047,6 +1092,182 @@ class ChatManager:
         new_wait = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
         live.current_wait = new_wait
         live.tasks.append(new_wait)
+
+    # --- cross-gateway claim-then-respawn takeover (wave-2F task 5) --------
+
+    async def _takeover_foreign_session(self, chat_id: str, owner: str) -> "LiveSession":
+        """Take over a session another gateway's routing lease currently
+        claims, when a WS connect lands on THIS gateway instead.
+
+        Called only from ``attach()``, only when this process has no local
+        ``LiveSession`` for ``chat_id`` AND ``app.chat.routing.owner_of``
+        reports a DIFFERENT gateway as the current lease holder — the
+        session may genuinely still be live and serving traffic over there
+        (e.g. a load-balancer reroute, not necessarily a crash of the other
+        gateway).
+
+        v1 semantics, deliberately NOT live handoff: ``_resume_live`` /
+        ``_resume_from_row`` only ever reconnect a runner via
+        ``provider.resume()`` when THIS process itself already pushed it a
+        current-protocol broker ticket (``_known_protocol_sessions`` —
+        AC-G-resume-legacy); this process has never done that for a session
+        it never spawned, so reconnecting to the other gateway's live runner
+        would hand a `ticket_push` frame to a process that has no idea what
+        to do with it. So instead of a live handoff, this destroys the old
+        (still-billable) sandbox and respawns a brand new runner here,
+        replaying the last few user turns over stdin so the fresh agent has
+        some continuity — exactly the same ``_respawn_fresh`` replay path
+        ``_resume_live``'s legacy branch and the crash-respawn loop already
+        use. TRADE-OFF (documented, accepted for v1): any turn that was
+        in-flight on the old gateway at the moment of takeover is lost —
+        identical to what a plain process restart already costs via
+        ``_resume_from_row``'s legacy branch; this makes that same gap
+        reachable across gateways, not a new one.
+
+        Lease steal mechanics: a lease actively renewed every ~60s by a
+        live, reachable-from-nowhere-but-there owner never expires on its
+        own, so a plain ``routing.claim_session`` (exclusive-acquire-only —
+        see ``CoordinationBackend.lease_acquire``'s contract) would never
+        succeed against it. ``routing.release_session`` accepts any
+        holder_id string and only actually releases if it still matches the
+        CURRENT holder (``CoordinationBackend.lease_release``'s contract) —
+        calling it with the foreign owner's own id (obtained from
+        ``owner_of``, not our own gateway id) is how this evicts them before
+        claiming the now-free lease for this gateway. This is a best-effort
+        v1 mechanism, not a fenced/consensus takeover: a third gateway
+        stealing it in the same instant is possible and simply logged (see
+        ``_claim_routing_lease``) — same "log and continue serving locally
+        anyway" posture every other routing-lease helper in this class has
+        had since task 1.
+
+        Old-owner teardown is NOT this method's job — the old gateway
+        notices it lost the lease on its own next reaper tick
+        (``_renew_routing_leases`` → ``_teardown_lost_ownership``) and drops
+        its local bookkeeping without touching the sandbox again (this
+        method already destroyed it).
+
+        Serialized per ``chat_id`` via ``self._takeover_locks`` rather than
+        ``LiveSession._resume_lock`` — that lock lives ON a LiveSession
+        instance, which does not exist yet at the point two concurrent WS
+        connects for the same never-locally-live ``chat_id`` could both
+        reach this method — so without a lock keyed independently of the
+        (not yet created) LiveSession, both would race destroy+respawn and
+        leave one fresh sandbox orphaned. Re-checks ``self._live`` and the
+        current lease owner immediately after acquiring the lock: if another
+        call already finished the takeover while this one waited, this
+        returns that result instead of doing a second destroy+respawn.
+
+        Memory backend / single-process story: ``owner_of`` can never return
+        anything other than ``None`` or ``this_gateway_id()`` under the
+        default `memory` coordination backend (single process — see
+        ``app.chat.routing``'s module docstring), so ``attach()`` never
+        reaches this method there — a reconnect to the same process always
+        takes the normal ACTIVE/PAUSED/resume-from-row/spawn path, unchanged
+        from before this task existed.
+        """
+        lock = self._takeover_locks.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            live = self._live.get(chat_id)
+            if live is not None:
+                # Another WS connect on THIS gateway already won the race
+                # and finished the takeover while we waited for the lock.
+                return live
+            session = self._repo.get_session(chat_id)
+            if session is None:
+                raise SessionNotFound(chat_id)
+            current_owner = await asyncio.to_thread(routing.owner_of, chat_id)
+            if current_owner is not None and current_owner != routing.this_gateway_id():
+                await asyncio.to_thread(routing.release_session, chat_id, current_owner)
+            # Destroy the OLD sandbox using the DB row's refs BEFORE clearing
+            # them — mirrors _resume_live's legacy branch / _resume_from_row's
+            # legacy branch: skipping this leaks a billable microVM forever
+            # (clear_sandbox_ref nulls sandbox_paused_at too, so the
+            # paused-TTL reaper can never find it either).
+            await self._destroy_old_sandbox(session)
+            self._repo.clear_sandbox_ref(chat_id)
+            # The old runner's broker tickets only ever lived in a relay
+            # process this gateway just destroyed — revoke before the fresh
+            # spawn mints+pushes new ones (revoke_session deletes by
+            # session_id, so revoking AFTER would delete the ones we just
+            # pushed).
+            ticket_repo().revoke_session(chat_id)
+            if session.is_co_session:
+                parts = self._repo.get_session_participants(chat_id)
+                emails = [p.user_email for p in parts if p.left_at is None]
+                from src.grant_intersection import compute_grant_intersection
+
+                inter = compute_grant_intersection(emails, self._repo._conn)
+                session_dir = self._workdir_mgr.prepare_ephemeral_session_dir(chat_id, emails, inter)
+            else:
+                emails = []
+                self._workdir_mgr.ensure_user_workdir(session.user_email)
+                session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id)
+            live = LiveSession(
+                chat_id=chat_id,
+                user_email=session.user_email,
+                state=SessionState.NEW,
+                handle=None,
+                started_at=datetime.now(timezone.utc),
+                last_activity=datetime.now(timezone.utc),
+                surface=getattr(session.surface, "value", str(session.surface)),
+                sinks=[],
+                participant_emails=emails,
+                session_dir=session_dir,
+            )
+            self._live[chat_id] = live
+            await self._claim_routing_lease(chat_id)
+            # _respawn_fresh does the spawn + sandbox-ref persist + ticket
+            # push + last-3-turns stdin replay + pump/wait task startup —
+            # exactly what a fresh runner needs, reused verbatim rather than
+            # duplicated here.
+            await self._respawn_fresh(live)
+            # _respawn_fresh (factored from the crash-respawn path) assumes
+            # inbound_task is already running from this LiveSession's
+            # original spawn — true for every OTHER caller, but this IS the
+            # original spawn in this process, so start it here (mirrors the
+            # tail of _spawn_live / _resume_from_row).
+            live.inbound_task = asyncio.create_task(self._inbound_consumer_loop(live))
+            return live
+
+    async def _teardown_lost_ownership(self, chat_id: str, live: "LiveSession") -> None:
+        """Stop serving ``chat_id`` locally after this gateway's routing
+        lease was lost to a takeover elsewhere (wave-2F task 5).
+
+        Called from ``_renew_routing_leases`` when a lease renew fails for a
+        session still in this process's ``self._live`` — the only way that
+        happens is another gateway's ``_takeover_foreign_session`` stole it
+        (or, under a real backend outage, ``renew_session`` degrading to
+        "treat as lost" — see ``app.chat.routing``'s FLUSHALL posture; same
+        safe teardown either way).
+
+        Deliberately does NOT call ``self._provider.destroy()`` or
+        ``self._repo.clear_sandbox_ref()``/``set_sandbox_paused_at()``: the
+        new owner already destroyed this session's OLD sandbox and has
+        since overwritten the repo row with its OWN fresh sandbox_id/
+        runner_pid. Calling destroy() again would at best be a redundant
+        no-op (E2B ``AsyncSandbox.kill`` on an already-gone id) and at worst
+        — if sandbox ids were ever reused, which they are not, but the
+        principle holds — tear down the NEW owner's live sandbox out from
+        under it; clearing the repo's sandbox ref would corrupt the new
+        owner's persisted state the same way. So this only ever touches
+        THIS process's own bookkeeping: cancel the local pump/wait/
+        inbound-consumer tasks, close any sinks still attached to this now-
+        stale gateway (their client gets a clean disconnect instead of
+        hanging on frames that will never arrive — this process has no way
+        to forward them to the new owner), and forget the LiveSession.
+        """
+        self._live.pop(chat_id, None)
+        live.state = SessionState.DEAD
+        self._known_protocol_sessions.discard(chat_id)
+        for t in live.tasks:
+            t.cancel()
+        if live.inbound_task is not None:
+            live.inbound_task.cancel()
+        if live.linger_task is not None and not live.linger_task.done():
+            live.linger_task.cancel()
+        for entry in list(live.sinks):
+            asyncio.create_task(self._safe_close(entry.sink))
+        live.sinks = []
 
     async def add_sink(self, chat_id: str, sink, participant_email: str) -> None:
         """Attach an additional output sink to an already-live session.
@@ -1978,22 +2199,29 @@ class ChatManager:
         except Exception:
             logger.exception("auto-title task crashed for %s", live.chat_id)
 
-    # --- session routing leases (wave-2F task 1) -----------------------------
+    # --- session routing leases (wave-2F task 1, takeover in task 5) --------
     #
     # `chat:{chat_id}` on the coordination backend marks which gateway
     # replica currently hosts this session's LiveSession — claimed once per
-    # entry into `self._live` (`_spawn_live` / `_resume_from_row`), renewed
-    # every reaper tick (`_renew_routing_leases`, called from `_reap_once`),
-    # released on teardown (`kill`). All three helpers are best-effort: a
-    # claim that loses to another gateway, or a renew that is lost, is
-    # logged and otherwise ignored here — this process keeps serving the
-    # session locally regardless (see app/chat/routing.py's module
-    # docstring for why: deciding what to actually DO about a lost/contended
-    # lease, e.g. redirecting a client to the real owner, is a later
-    # wave-2F task, not this one). Under the default `memory` backend this
-    # can never actually contend (single process, nothing else holds the
-    # lease), so behavior there is unchanged from before routing leases
-    # existed.
+    # entry into `self._live` (`_spawn_live` / `_resume_from_row` /
+    # `_takeover_foreign_session`), renewed every reaper tick
+    # (`_renew_routing_leases`, called from `_reap_once`), released on
+    # teardown (`kill`). Claim/renew failures here (this method,
+    # `_claim_routing_lease`) are still best-effort log-and-continue — this
+    # narrow race (this gateway is ALREADY spawning/resuming the session
+    # locally, e.g. two calls into `_spawn_live` racing for a brand new
+    # chat_id, or a third gateway winning a simultaneous takeover) is left
+    # as-is rather than retried, matching task 1's original posture. What
+    # task 5 actually changed is what happens OUTSIDE this claim call: a WS
+    # connect for a chat_id owned by a genuinely different gateway now goes
+    # through `attach()` → `_takeover_foreign_session` (claim + destroy old
+    # sandbox + fresh respawn) instead of racing a second runner into
+    # existence locally, and a lease lost on the renew side now tears the
+    # local session down (`_renew_routing_leases` →
+    # `_teardown_lost_ownership`) instead of continuing to serve it. Under
+    # the default `memory` backend this can never actually contend (single
+    # process, nothing else holds the lease), so behavior there is
+    # unchanged from before routing leases existed.
 
     async def _claim_routing_lease(self, chat_id: str) -> None:
         # asyncio.to_thread: routing.claim_session's coordination().lease_acquire
@@ -2006,8 +2234,9 @@ class ChatManager:
         if not claimed:
             owner = await asyncio.to_thread(routing.owner_of, chat_id)
             logger.warning(
-                "routing lease for %s not claimed (held by %s) — serving it locally anyway; "
-                "cross-gateway takeover is not yet enforced (wave-2F task 1)",
+                "routing lease for %s not claimed (held by %s) — serving it locally anyway "
+                "(narrow same-tick race; see the cross-gateway takeover path in attach()/"
+                "_takeover_foreign_session for the general case, wave-2F task 5)",
                 chat_id,
                 owner,
             )
@@ -2027,12 +2256,25 @@ class ChatManager:
                 continue
             renewed = await asyncio.to_thread(routing.renew_session, chat_id, gateway_id, ttl_s=_ROUTING_LEASE_TTL_SEC)
             if not renewed:
+                # wave-2F task 5: a lost renew means another gateway's
+                # _takeover_foreign_session already claimed this chat_id,
+                # destroyed our old sandbox, and spawned its own fresh
+                # runner — this process must stop serving it locally
+                # (_teardown_lost_ownership never touches the sandbox or the
+                # repo's sandbox_ref again; the new owner already owns
+                # both). Under a real coordination-backend outage
+                # (renew_session's own CoordinationUnavailable → False
+                # degrade — see app.chat.routing's FLUSHALL posture) this is
+                # the same safe reaction: stop trusting an ownership claim
+                # we can no longer confirm, rather than keep serving
+                # unconditionally.
                 logger.warning(
-                    "routing lease for %s lost (expired or claimed by another gateway) — "
-                    "continuing to serve it locally; cross-gateway takeover is not yet "
-                    "enforced (wave-2F task 1)",
+                    "routing lease for %s lost (expired, claimed by another gateway, or "
+                    "coordination backend unavailable) — tearing down the local session "
+                    "(wave-2F task 5 cross-gateway takeover)",
                     chat_id,
                 )
+                await self._teardown_lost_ownership(chat_id, live)
 
     # --- idle reaper --------------------------------------------------------
 
