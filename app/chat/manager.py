@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from app.chat import routing
+from app.chat import inbound, routing
 from app.chat.audit import hash_args, write_audit
 from app.chat.config import ChatConfig
 from app.chat.frame_seq import stamp_frame
@@ -67,6 +67,17 @@ _PAUSED_SWEEP_LEASE_TTL_SEC = 90
 # interval (app/coordination/leases.py) — a single missed reaper tick must
 # not lose the lease.
 _ROUTING_LEASE_TTL_SEC = 180
+
+# Poll-fallback cadence for ChatManager._inbound_consumer_loop (wave-2F
+# task 4). The coordination-backend pub/sub notify (app.chat.inbound.
+# subscribe_notify) wakes the loop promptly in the common case; this is
+# only the backstop for a missed/undelivered notify (subscribe raced a
+# publish, or a redis blip ate the publish) — short enough that an
+# inbound message published while the owner's consumer is mid-poll still
+# lands well within one interactive turn's patience, long enough not to
+# spin the coordination backend with a tight per-session poll loop across
+# many concurrently live sessions.
+_INBOUND_POLL_INTERVAL_SEC = 2.0
 
 # Chat sandbox secret broker (2026-07-14 incident hardening): bumped whenever
 # the ticket_push stdin frame contract changes. ChatManager only ever
@@ -192,6 +203,26 @@ class LiveSession:
     # chat_session_participants WHERE left_at IS NULL; updated by leave_session()
     # when a participant leaves. Empty for non-co sessions.
     participant_emails: list[str] = field(default_factory=list)
+    # Inbound-stream consumer task (wave-2F task 4, app.chat.inbound): feeds
+    # chat-in:{chat_id} entries published by OTHER gateways into this
+    # session's local runner stdin. Started once per LiveSession object
+    # (_spawn_live / _resume_from_row) and deliberately kept OUT of `tasks`
+    # (which pause/crash-respawn reset wholesale via `live.tasks = [...]`,
+    # see _pause_live/_resume_from_row/_wait_for_exit_and_respawn) — it must
+    # keep running across pause/resume so a message published by another
+    # gateway while this session happens to be PAUSED is still noticed and
+    # triggers a resume, mirroring send_user_message's direct-call path.
+    # Cancelled only in kill().
+    inbound_task: Optional[asyncio.Task] = None
+    # Highest inbound-stream seq already delivered to this session's runner
+    # (wave-2F task 4) — the ordering/dedup cursor for
+    # ChatManager._inbound_consumer_loop. Lives on the LiveSession object
+    # (not the coordination backend) so an in-process respawn resumes
+    # exactly where it left off; a genuine cross-gateway ownership handoff
+    # starting a fresh consumer at 0 on the new owner is an accepted
+    # at-least-once gap left for wave-2F task 5 (see app.chat.inbound's
+    # module docstring).
+    inbound_last_seq: int = 0
 
 
 class ChatManager:
@@ -671,6 +702,10 @@ class ChatManager:
         live.tasks = [pump_task, wait_task]
         live.current_pump = pump_task
         live.current_wait = wait_task
+        # wave-2F task 4: start this session's inbound-stream consumer once,
+        # for the LiveSession object's whole lifetime — see LiveSession.
+        # inbound_task's docstring for why this is NOT part of `tasks`.
+        live.inbound_task = asyncio.create_task(self._inbound_consumer_loop(live))
         return live
 
     # --- detach / linger / pause --------------------------------------------
@@ -920,6 +955,10 @@ class ChatManager:
         live.tasks = [pump_task, wait_task]
         live.current_pump = pump_task
         live.current_wait = wait_task
+        # wave-2F task 4: see _spawn_live's identical line — this is the
+        # other site that creates a brand-new LiveSession object (the
+        # post-restart resume path), so it needs its own consumer start too.
+        live.inbound_task = asyncio.create_task(self._inbound_consumer_loop(live))
         return live
 
     async def _respawn_fresh(self, live: "LiveSession") -> None:
@@ -1335,7 +1374,7 @@ class ChatManager:
             live.tasks.append(new_pump)
             # Loop back to wait on the new handle.
 
-    def _emit_chat_message_event(self, live: LiveSession, sender: str) -> None:
+    def _emit_chat_message_event(self, *, chat_id: str, surface: str, sender: str) -> None:
         """Emit one ``chat.message`` usage event per user chat turn.
 
         Web and Slack turns both funnel through send_user_message, so this is
@@ -1343,6 +1382,12 @@ class ChatManager:
         /admin/telemetry and the adoption DAU — usage_events otherwise only
         sees desktop CC sessions (agnes push) and server product events.
         Best-effort by contract: telemetry must never block or fail a send.
+
+        Takes ``chat_id``/``surface`` directly (not a ``LiveSession``, as
+        before wave-2F task 4) so the forward-to-owner path
+        (``_forward_inbound_message``) — which has no local ``LiveSession``
+        for a session this gateway doesn't own — can emit the same event as
+        the direct-owner path without needing one.
         """
         try:
             user_id: Optional[str] = None
@@ -1356,47 +1401,39 @@ class ChatManager:
                 event_type="chat.message",
                 user_id=user_id,
                 username=sender,
-                props={"surface": live.surface, "session_id": live.chat_id},
+                props={"surface": surface, "session_id": chat_id},
             )
         except Exception:
-            logger.warning("usage_events emit failed for chat.message (session %s)", live.chat_id)
+            logger.warning("usage_events emit failed for chat.message (session %s)", chat_id)
 
-    async def send_user_message(self, chat_id: str, text: str, *, sender_email: Optional[str] = None) -> None:
-        live = self._live.get(chat_id)
-        # Resume on-demand: PAUSED live session (Slack DM after hours, web race).
-        if live is not None and live.state == SessionState.PAUSED:
-            await self._resume_live(live)
-        elif live is None:
-            # Post-restart: no LiveSession in memory, but repo row may have sandbox refs.
-            session = self._repo.get_session(chat_id)
-            if session is not None and session.sandbox_id is not None and session.runner_pid is not None:
-                live = await self._resume_from_row(session)
-                if live is None:
-                    # _resume_from_row cleared refs; try a fresh spawn
-                    session = self._repo.get_session(chat_id)
-                    if session is not None:
-                        live = await self._spawn_live(session)
-            # After recovery attempt, re-fetch from _live
-            live = self._live.get(chat_id)
-        if live is None or live.handle is None or live.state == SessionState.DEAD:
-            raise SessionNotFound(chat_id)
-        # SR-10: key all per-user budget/rate checks on the actual SENDER,
-        # not the session owner — each co-driver has their own daily/rate window.
-        sender = sender_email or live.user_email
+    async def _enforce_sender_limits(self, sender: str, chat_id: str, live: Optional["LiveSession"]) -> None:
+        """Sender-keyed daily-budget / per-session-token / rate-limit gate
+        shared by both send_user_message's direct-owner path and the
+        forward-to-owner path (wave-2F task 4, ``_forward_inbound_message``).
+
+        ``live`` is the local sink to broadcast an in-band error frame to
+        when the caller has one (the owner path always does); the forward
+        path has none (this gateway doesn't host the session), so it passes
+        ``None`` — the cap is still fully enforced (the sender still gets a
+        raised, catchable exception), just without the extra WS error frame,
+        since there is no local socket to put it on.
+        """
         # Enforce daily Anthropic spend cap — see _daily_token_totals.
         tokens_in, tokens_out = self._daily_token_totals(sender)
         spent_usd = tokens_in * _PRICE_IN_PER_MTOK / 1_000_000 + tokens_out * _PRICE_OUT_PER_MTOK / 1_000_000
         if spent_usd >= self._config.daily_anthropic_spend_usd:
-            await self._broadcast(
-                live,
-                {
-                    "type": "error",
-                    "kind": "daily_budget",
-                    "message": (
-                        f"Daily spend cap of ${self._config.daily_anthropic_spend_usd:.2f} reached. Try again tomorrow."
-                    ),
-                },
-            )
+            if live is not None:
+                await self._broadcast(
+                    live,
+                    {
+                        "type": "error",
+                        "kind": "daily_budget",
+                        "message": (
+                            f"Daily spend cap of ${self._config.daily_anthropic_spend_usd:.2f} reached. "
+                            "Try again tomorrow."
+                        ),
+                    },
+                )
             raise RuntimeError("daily_budget_exhausted")
         # Per-session token cap — operators set max_session_tokens in
         # instance.yaml; previously the knob was dead config. Tokens already
@@ -1405,17 +1442,18 @@ class ChatManager:
         # documented in persistence.py).
         session_tokens = self._repo.session_total_tokens(chat_id)
         if session_tokens >= self._config.max_session_tokens:
-            await self._broadcast(
-                live,
-                {
-                    "type": "error",
-                    "kind": "max_session_tokens",
-                    "message": (
-                        f"Per-session token cap of {self._config.max_session_tokens} reached "
-                        f"(used {session_tokens}). Start a new chat session."
-                    ),
-                },
-            )
+            if live is not None:
+                await self._broadcast(
+                    live,
+                    {
+                        "type": "error",
+                        "kind": "max_session_tokens",
+                        "message": (
+                            f"Per-session token cap of {self._config.max_session_tokens} reached "
+                            f"(used {session_tokens}). Start a new chat session."
+                        ),
+                    },
+                )
             raise RuntimeError("max_session_tokens_exhausted")
         # Per-user message-rate cap keyed on the SENDER (SR-10), enforced via
         # a coordination-backend fixed-window counter (see _msg_window_key) —
@@ -1430,25 +1468,31 @@ class ChatManager:
             logger.warning("message-rate check: coordination backend unavailable; allowing message for %s", sender)
             attempt_count = 0
         if attempt_count > self._config.rate_messages_per_hour:
-            await self._broadcast(
-                live,
-                {
-                    "type": "error",
-                    "kind": "rate_limit",
-                    "message": (
-                        f"Rate limit hit: {self._config.rate_messages_per_hour} messages/hour. "
-                        "Slow down or wait an hour."
-                    ),
-                },
-            )
+            if live is not None:
+                await self._broadcast(
+                    live,
+                    {
+                        "type": "error",
+                        "kind": "rate_limit",
+                        "message": (
+                            f"Rate limit hit: {self._config.rate_messages_per_hour} messages/hour. "
+                            "Slow down or wait an hour."
+                        ),
+                    },
+                )
             raise RuntimeError("rate_limit_exceeded")
-        self._repo.append_message(
-            session_id=chat_id,
-            role="user",
-            content=text,
-            sender_email=sender_email or live.user_email,
-        )
-        self._emit_chat_message_event(live, sender)
+
+    async def _deliver_local_user_message(self, live: "LiveSession", text: str) -> None:
+        """Write ``text`` as a ``user_msg`` stdin frame to ``live``'s runner
+        and update local turn-state.
+
+        The common tail shared by send_user_message's direct-owner path and
+        ``_inbound_consumer_loop``'s per-entry delivery step (wave-2F task
+        4) — factored out so the two can never drift on the wire format or
+        the turn-state bookkeeping (turn_buffer/turn_in_flight/
+        last_activity/state) that follows a send, regardless of whether the
+        text arrived via a direct call or the chat-in:{chat_id} stream.
+        """
         payload = json.dumps({"type": "user_msg", "text": text}) + "\n"
         async with live._stdin_lock:
             live.handle.stdin.write(payload.encode("utf-8"))
@@ -1457,6 +1501,176 @@ class ChatManager:
         live.turn_in_flight = True
         live.last_activity = datetime.now(timezone.utc)
         live.state = SessionState.ACTIVE
+
+    async def _forward_inbound_message(self, chat_id: str, text: str, *, sender_email: Optional[str]) -> None:
+        """Hand a user message to whichever gateway actually owns
+        ``chat_id`` (wave-2F task 4) instead of delivering it locally.
+
+        Called by send_user_message when THIS gateway has no local
+        ``LiveSession`` for ``chat_id`` and ``app.chat.routing.owner_of``
+        says a DIFFERENT gateway does — spawning/resuming a second runner
+        here would be wrong (duplicate sandbox, split conversation
+        history). Runs the exact same sender-keyed budget/rate-limit gate
+        and chat_messages persistence the direct-owner path does (so limits
+        and history are identical no matter which gateway physically
+        receives the request), then publishes the raw text to
+        ``app.chat.inbound``'s ``chat-in:{chat_id}`` stream instead of
+        writing to a local stdin — the owner's ``_inbound_consumer_loop``
+        picks it up in seq order.
+
+        Raises ``SessionNotFound`` if the session row itself is gone (the
+        lease said someone owns it, but the repo disagrees — treat the
+        same as the direct path's "no such session"), or
+        ``app.chat.inbound.InboundPublishFailed`` if the coordination
+        backend rejects the publish (surfaced to the caller as a clean,
+        specific, catchable error — see that module's docstring for why
+        this one is not swallowed like most coordination helpers here).
+        """
+        session = self._repo.get_session(chat_id)
+        if session is None:
+            raise SessionNotFound(chat_id)
+        sender = sender_email or session.user_email
+        await self._enforce_sender_limits(sender, chat_id, live=None)
+        self._repo.append_message(
+            session_id=chat_id,
+            role="user",
+            content=text,
+            sender_email=sender_email or session.user_email,
+        )
+        self._emit_chat_message_event(
+            chat_id=chat_id,
+            surface=getattr(session.surface, "value", str(session.surface)),
+            sender=sender,
+        )
+        await inbound.publish_inbound(chat_id, text)
+
+    async def _inbound_consumer_loop(self, live: "LiveSession") -> None:
+        """Feed ``chat-in:{chat_id}`` stream entries into this (owning)
+        gateway's local runner stdin, in seq order, deduped by inbound seq
+        (wave-2F task 4).
+
+        Runs for the LiveSession object's entire lifetime — started once in
+        _spawn_live/_resume_from_row, cancelled only in kill() (see
+        LiveSession.inbound_task's docstring for why it is NOT tied to
+        pause/respawn like the pump/wait tasks): a message can legitimately
+        arrive via another gateway's ``publish_inbound`` while this session
+        is PAUSED, and this loop must still notice it and resume the
+        session, mirroring what send_user_message's direct-call owner path
+        already does.
+
+        Wakes on the ``chat-in-notify:{chat_id}`` pub/sub channel for
+        prompt delivery, with a bounded poll (``_INBOUND_POLL_INTERVAL_SEC``)
+        as the fallback for a missed/undelivered notify — see
+        ``app.chat.inbound``'s module docstring. The notify handler may run
+        on a different OS thread than this task's event loop (the redis
+        backend's pub/sub listener thread — see
+        ``RedisCoordinationBackend._listen_loop``), so it only ever calls
+        ``loop.call_soon_threadsafe`` to marshal the wake-up, never touches
+        asyncio state directly.
+        """
+        chat_id = live.chat_id
+        loop = asyncio.get_event_loop()
+        wake = asyncio.Event()
+
+        def _on_notify(_message: str) -> None:
+            try:
+                loop.call_soon_threadsafe(wake.set)
+            except RuntimeError:
+                # Loop already closed (session torn down mid-notify) — the
+                # unsubscribe in the finally below will stop future calls;
+                # this one just has nothing left to wake.
+                pass
+
+        unsubscribe = inbound.subscribe_notify(chat_id, _on_notify)
+        try:
+            while True:
+                entries = await asyncio.to_thread(inbound.read_new, chat_id, live.inbound_last_seq)
+                for entry in entries:
+                    seq = entry.get("seq")
+                    if not isinstance(seq, int) or seq <= live.inbound_last_seq:
+                        continue  # already consumed, or a malformed entry — dedup guard
+                    text = entry.get("text", "")
+                    if live.state == SessionState.DEAD:
+                        # Nothing left to deliver to — advance past it anyway
+                        # so a dead session's consumer doesn't spin
+                        # re-fetching the same entries every tick until
+                        # kill() cancels it.
+                        live.inbound_last_seq = seq
+                        continue
+                    if live.state == SessionState.PAUSED:
+                        await self._resume_live(live)
+                    if live.handle is None:
+                        live.inbound_last_seq = seq
+                        continue
+                    try:
+                        await self._deliver_local_user_message(live, text)
+                    except Exception:
+                        logger.exception("inbound consumer: delivery failed for %s seq %s; skipping", chat_id, seq)
+                    live.inbound_last_seq = seq
+                wake.clear()
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout=_INBOUND_POLL_INTERVAL_SEC)
+                except asyncio.TimeoutError:
+                    pass
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if unsubscribe is not None:
+                try:
+                    unsubscribe()
+                except Exception:
+                    logger.debug("inbound consumer unsubscribe failed for %s", chat_id, exc_info=True)
+
+    async def send_user_message(self, chat_id: str, text: str, *, sender_email: Optional[str] = None) -> None:
+        live = self._live.get(chat_id)
+        if live is None:
+            # Not local. Before racing to spawn/resume a (possibly
+            # duplicate) runner here, wave-2F task 4: find out whether a
+            # DIFFERENT gateway already owns this session's routing lease —
+            # if so, this message must be FORWARDED to it via the
+            # chat-in:{chat_id} coordination stream instead of spawning a
+            # second runner in this process. `owner is None` (unclaimed —
+            # a fresh session's attach() race, or a session that never
+            # started) or `owner == this_gw` (stale/edge case — e.g. this
+            # process's own lease outlived its LiveSession somehow) both
+            # fall through to the EXISTING resume/spawn/SessionNotFound
+            # story below, unchanged from before this task. Under the
+            # default `memory` backend `owner` can never differ from
+            # `this_gw` (single process — see app.chat.inbound's module
+            # docstring), so this branch is simply never taken there.
+            this_gw = routing.this_gateway_id()
+            owner = await asyncio.to_thread(routing.owner_of, chat_id)
+            if owner is not None and owner != this_gw:
+                await self._forward_inbound_message(chat_id, text, sender_email=sender_email)
+                return
+            # Post-restart: no LiveSession in memory, but repo row may have sandbox refs.
+            session = self._repo.get_session(chat_id)
+            if session is not None and session.sandbox_id is not None and session.runner_pid is not None:
+                live = await self._resume_from_row(session)
+                if live is None:
+                    # _resume_from_row cleared refs; try a fresh spawn
+                    session = self._repo.get_session(chat_id)
+                    if session is not None:
+                        live = await self._spawn_live(session)
+            # After recovery attempt, re-fetch from _live
+            live = self._live.get(chat_id)
+        elif live.state == SessionState.PAUSED:
+            # Resume on-demand: PAUSED live session (Slack DM after hours, web race).
+            await self._resume_live(live)
+        if live is None or live.handle is None or live.state == SessionState.DEAD:
+            raise SessionNotFound(chat_id)
+        # SR-10: key all per-user budget/rate checks on the actual SENDER,
+        # not the session owner — each co-driver has their own daily/rate window.
+        sender = sender_email or live.user_email
+        await self._enforce_sender_limits(sender, chat_id, live)
+        self._repo.append_message(
+            session_id=chat_id,
+            role="user",
+            content=text,
+            sender_email=sender_email or live.user_email,
+        )
+        self._emit_chat_message_event(chat_id=chat_id, surface=live.surface, sender=sender)
+        await self._deliver_local_user_message(live, text)
 
     async def leave_session(self, chat_id: str, participant_email: str) -> None:
         """SR-9: atomically stamp left_at, remove+close the leaver's sink,
@@ -1624,6 +1838,12 @@ class ChatManager:
             await live.handle.kill()
         for t in live.tasks:
             t.cancel()
+        # wave-2F task 4: inbound_task lives outside `tasks` (see
+        # LiveSession.inbound_task's docstring) precisely so it survives
+        # every pause/respawn in between — teardown is the one place that
+        # must stop it explicitly.
+        if live.inbound_task is not None:
+            live.inbound_task.cancel()
         self._repo.clear_sandbox_ref(chat_id)
         write_audit(
             user_email=live.user_email,
