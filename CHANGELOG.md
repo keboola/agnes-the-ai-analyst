@@ -62,6 +62,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   operators. Status messages are also styled by state — failures use the
   design-system danger token, successes the success token — so an error is
   visually distinct from a neutral message.
+### Added
+
+- Session routing leases (`app/chat/routing.py`, wave-2F): any gateway replica can claim/renew/release/inspect ownership of a chat session via a `chat:{chat_id}` lease on the coordination backend (`claim_session`, `renew_session`, `release_session`, `owner_of`, `this_gateway_id`). `ChatManager` claims the lease when a session becomes live, renews it on the existing idle-reaper heartbeat, and releases it on teardown; under the default `memory` backend this is a no-op (single owner, as today). Added `CoordinationBackend.lease_owner` (both backends) to support the ownership lookup.
 
 ## [0.74.116] - 2026-07-18
 
