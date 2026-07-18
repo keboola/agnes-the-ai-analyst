@@ -127,6 +127,24 @@ def next_inbound_seq(chat_id: str) -> int:
     return coordination().incr(_seq_key(chat_id), ttl_s=_SEQ_TTL_SEC)
 
 
+def peek_seq(chat_id: str) -> int:
+    """Current value of ``chat_id``'s inbound seq counter WITHOUT allocating
+    a new seq — an ``amount=0`` no-op increment "peek" (documented on
+    ``CoordinationBackend.incr``; same pattern as the outbound counter's
+    ``app.chat.frame_seq.current_seq`` and the daily-token quota peek in
+    ``app.chat.manager``). Used by ``ChatManager._inbound_consumer_loop``
+    to seed a fresh consumer's dedup cursor past the stream's retained
+    (already-delivered) entries — wave-2F final review F3. Returns ``0``
+    when the backend is unavailable (the caller then starts from the
+    beginning — at-least-once, never a crash), the same degrade posture as
+    :func:`read_new`."""
+    try:
+        return coordination().incr(_seq_key(chat_id), amount=0, ttl_s=_SEQ_TTL_SEC)
+    except CoordinationUnavailable:
+        logger.warning("chat-in seq peek failed for %s; treating as 0 (start of stream)", chat_id)
+        return 0
+
+
 async def _publish_entry(chat_id: str, payload: dict) -> int:
     """Shared append+notify tail for :func:`publish_inbound` /
     :func:`publish_control`: assign the next seq, durably append the entry,
