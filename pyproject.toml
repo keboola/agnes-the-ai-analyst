@@ -171,6 +171,14 @@ dependencies = [
     # must always be importable, same rationale as always shipping the PG
     # driver even though DuckDB is the default state backend.
     "redis>=5.0",
+    # Prometheus client for the /metrics scrape endpoint
+    # (app/observability/metrics.py, three-plane wave 2D observability).
+    # Pure-Python, no compilation, no network calls of its own — the app
+    # just exposes an in-process CollectorRegistry for an operator's
+    # Prometheus server to scrape. Core dep (not the `observability` extra
+    # below, which is PostHog-only) so /metrics is always served with zero
+    # extra config, mirroring the always-on /healthz probe.
+    "prometheus_client>=0.20.0",
 ]
 
 [project.optional-dependencies]

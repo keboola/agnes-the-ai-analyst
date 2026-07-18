@@ -162,6 +162,23 @@ class TestHealthProbesSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Metrics (Prometheus scrape endpoint — unauthenticated, app/observability/metrics.py)
+# ---------------------------------------------------------------------------
+
+
+class TestMetricsProbeSmoke:
+    COVERED_ROUTES = {
+        "GET /metrics",
+    }
+
+    def test_metrics(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/metrics")
+        assert r.status_code == 200
+        assert "text/plain" in r.headers["content-type"]
+        assert "agnes_http_requests_total" in r.text
+
+
+# ---------------------------------------------------------------------------
 # Me
 # ---------------------------------------------------------------------------
 
