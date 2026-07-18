@@ -1,9 +1,9 @@
-"""Postgres-backed repository for the ``jobs`` table (durable job queue, v93).
+"""Postgres-backed repository for the ``jobs`` table (durable job queue, v94).
 
 Mirrors ``src/repositories/jobs.py``. Idempotency dedup is enforced with
 a partial unique index (``idx_jobs_idem`` — ``WHERE idempotency_key IS
 NOT NULL AND status IN ('queued', 'running')``, see
-``migrations/versions/0040_jobs_v93.py`` and ``src/models/jobs.py``) as
+``migrations/versions/0041_jobs_v94.py`` and ``src/models/jobs.py``) as
 the ``ON CONFLICT`` arbiter for the insert below.
 
 This is deliberately NOT a plain SELECT-then-INSERT: under READ
