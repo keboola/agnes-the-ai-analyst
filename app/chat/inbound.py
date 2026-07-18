@@ -55,7 +55,7 @@ out or the message being dropped with no signal at all.
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from typing import Callable, Optional
 
 from app.coordination.base import CoordinationUnavailable
 from app.coordination.factory import coordination
@@ -87,14 +87,15 @@ STREAM_MAXLEN = 1000
 class InboundPublishFailed(Exception):
     """A user message could not be published to the inbound stream.
 
-    Raised by :func:`publish_inbound` when the coordination backend is
-    unavailable at publish time (``CoordinationUnavailable``) -- see the
-    module docstring for why this is a raised, sender-visible error rather
-    than a swallowed-and-logged best-effort failure like most of this
-    codebase's other coordination-backend helpers. The message was NOT
-    accepted; the caller (``ChatManager.send_user_message``) lets this
-    propagate so the sender's request fails cleanly instead of silently
-    vanishing or crashing on a raw transport exception.
+    Raised by :func:`publish_inbound` / :func:`publish_control` when the
+    coordination backend is unavailable at publish time
+    (``CoordinationUnavailable``) -- see the module docstring for why this
+    is a raised, sender-visible error rather than a swallowed-and-logged
+    best-effort failure like most of this codebase's other
+    coordination-backend helpers. The message was NOT accepted; the caller
+    (``ChatManager.send_user_message``) lets this propagate so the
+    sender's request fails cleanly instead of silently vanishing or
+    crashing on a raw transport exception.
     """
 
 
@@ -126,23 +127,22 @@ def next_inbound_seq(chat_id: str) -> int:
     return coordination().incr(_seq_key(chat_id), ttl_s=_SEQ_TTL_SEC)
 
 
-async def publish_inbound(chat_id: str, text: str) -> int:
-    """Append a user message to ``chat_id``'s inbound stream and best-effort
-    notify any subscribed owner. Returns the assigned seq.
-
-    Raises :class:`InboundPublishFailed` if the append itself fails
-    (coordination backend unavailable) -- see module docstring. The notify
-    publish, by contrast, IS best-effort (log-and-continue): a missed
-    notify only delays delivery until the owner's next poll tick, it can
-    never lose the message (already durably appended by that point).
-    """
+async def _publish_entry(chat_id: str, payload: dict) -> int:
+    """Shared append+notify tail for :func:`publish_inbound` /
+    :func:`publish_control`: assign the next seq, durably append the entry,
+    then best-effort notify. Raises :class:`InboundPublishFailed` if the
+    append itself fails (coordination backend unavailable) -- see module
+    docstring. The notify publish, by contrast, IS best-effort
+    (log-and-continue): a missed notify only delays delivery until the
+    owner's next poll tick, it can never lose the entry (already durably
+    appended by that point)."""
     try:
         seq = next_inbound_seq(chat_id)
-        entry = {"seq": seq, "text": text}
+        entry = {"seq": seq, **payload}
         coordination().stream_append(stream_key(chat_id), entry, maxlen=STREAM_MAXLEN)
     except CoordinationUnavailable as exc:
-        logger.warning("chat-in publish failed for %s; message not accepted", chat_id)
-        raise InboundPublishFailed(f"could not publish inbound message for {chat_id}") from exc
+        logger.warning("chat-in publish failed for %s; entry not accepted", chat_id)
+        raise InboundPublishFailed(f"could not publish inbound entry for {chat_id}") from exc
     try:
         coordination().publish(notify_channel(chat_id), str(seq))
     except CoordinationUnavailable:
@@ -151,6 +151,50 @@ async def publish_inbound(chat_id: str, text: str) -> int:
             chat_id,
         )
     return seq
+
+
+async def publish_inbound(chat_id: str, text: str, *, slack: Optional[dict] = None) -> int:
+    """Append a user message to ``chat_id``'s inbound stream and best-effort
+    notify any subscribed owner. Returns the assigned seq.
+
+    Entries carry a typed envelope (``type: "user_message"``) so the same
+    stream can also route CONTROL commands cross-gateway (see
+    :func:`publish_control`). ``slack``, when given, is a small
+    ``{"channel": ..., "thread_ts": ...}`` origin marker for messages that
+    entered via a Slack webhook on a NON-owning gateway: the owner's
+    consumer uses it to (re-)establish a ``SlackSinkBridge`` for that
+    channel before delivering, so the runner's reply actually reaches
+    Slack (``ChatManager._ensure_slack_sink``). Empty values are dropped
+    from the marker; a fully-empty marker is omitted.
+    """
+    payload: dict = {"type": "user_message", "text": text}
+    if slack:
+        origin = {k: v for k, v in slack.items() if v}
+        if origin:
+            payload["slack"] = origin
+    return await _publish_entry(chat_id, payload)
+
+
+async def publish_control(chat_id: str, command: str, *, reason: Optional[str] = None) -> int:
+    """Append a CONTROL command (``"kill"`` / ``"cancel"``) to ``chat_id``'s
+    inbound stream, for the owning gateway's consumer to execute against
+    its LOCAL session (``ChatManager._inbound_consumer_loop`` dispatches
+    ``type == "control"`` entries to the local ``kill``/``cancel`` instead
+    of the runner's stdin). Returns the assigned seq.
+
+    This is how a webhook/REST request landing on a NON-owning replica
+    (DELETE /api/chat/sessions/{id}, /agnes-new, the Slack Stop button)
+    reaches the replica that actually hosts the sandbox -- without it,
+    ``ChatManager.kill``/``cancel`` were process-local no-ops there,
+    leaving the foreign owner's sandbox running while the caller archived
+    the row. Same raise-on-append-failure posture as
+    :func:`publish_inbound` (a silently dropped kill is worse than a
+    visible error).
+    """
+    payload: dict = {"type": "control", "command": command}
+    if reason:
+        payload["reason"] = reason
+    return await _publish_entry(chat_id, payload)
 
 
 def read_new(chat_id: str, after_seq: int) -> list[dict]:
