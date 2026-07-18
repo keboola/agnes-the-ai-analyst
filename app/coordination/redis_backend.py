@@ -45,6 +45,7 @@ Primitive-by-primitive notes:
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from typing import Callable, Optional
@@ -298,3 +299,56 @@ class RedisCoordinationBackend(CoordinationBackend):
         thread = self._listener_thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
+
+    # -- Streams ------------------------------------------------------------------
+    #
+    # Backed by a native Redis stream (XADD/XRANGE), one entry per JSON-
+    # serialized ``entry`` dict under a single ``"data"`` field — streams
+    # store field-value pairs, not arbitrary objects, so this is the
+    # simplest encoding that round-trips any dict. Trimming is EXACT
+    # (``MAXLEN`` without ``~``), not Redis's approximate/`~` trim: an
+    # approximate trim only removes whole radix-tree nodes and can retain
+    # more than ``maxlen`` entries, which would make the eviction-vs-
+    # after_seq-gap contract test in tests/test_chat_replay.py
+    # non-deterministic between the memory backend (an exact `deque`
+    # maxlen) and this one. The exact trim is an O(N) command, but N is
+    # bounded by ``maxlen`` itself (~1000 for the chat-out replay stream),
+    # which is cheap enough not to matter.
+
+    def stream_append(self, key: str, entry: dict, *, maxlen: int) -> str:
+        try:
+            entry_id = self._client.xadd(
+                key,
+                {"data": json.dumps(entry)},
+                maxlen=maxlen,
+                approximate=False,
+            )
+        except _REDIS_ERRORS as exc:
+            raise CoordinationUnavailable(f"redis stream_append failed: {exc}") from exc
+        return entry_id
+
+    def stream_read(self, key: str, after_seq: Optional[int] = None) -> list[dict]:
+        # after_seq filters on the "seq" field INSIDE the JSON payload, not
+        # the Redis-generated stream id, so we can't ask Redis to start the
+        # XRANGE past a given id — read everything currently retained (
+        # bounded by maxlen at append time) and filter client-side.
+        try:
+            raw_entries = self._client.xrange(key, min="-", max="+")
+        except _REDIS_ERRORS as exc:
+            raise CoordinationUnavailable(f"redis stream_read failed: {exc}") from exc
+        entries: list[dict] = []
+        for _entry_id, fields in raw_entries:
+            data = fields.get("data") if fields else None
+            if data is None:
+                continue
+            try:
+                entry = json.loads(data)
+            except (TypeError, ValueError):
+                # Malformed payload (shouldn't happen — we're the only
+                # writer) — skip rather than raise, same "degrade the
+                # replay, don't crash" posture as a missing "seq" field.
+                continue
+            entries.append(entry)
+        if after_seq is None:
+            return entries
+        return [e for e in entries if e.get("seq", 0) > after_seq]
