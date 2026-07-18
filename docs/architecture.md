@@ -453,6 +453,43 @@ why: [`jobs-classification.md`](jobs-classification.md).
 
 ---
 
+## Coordination Backend
+
+`app/coordination/` provides a `CoordinationBackend` abstraction (`base.py`)
+with two implementations — `MemoryCoordinationBackend` (in-process dict +
+lock, the default) and `RedisCoordinationBackend` (redis-py) — selected by
+`app.coordination.factory.coordination()`, a process-wide singleton keyed
+off `coordination.backend` (`instance.yaml`) / `AGNES_COORDINATION_BACKEND`
+(env) and `redis.url` / `AGNES_REDIS_URL`. The interface is four primitive
+groups: TTL key/value (`kv_set`/`kv_get`/`kv_delete`, the latter an atomic
+get-and-delete for single-use tokens), counters (`incr`, TTL applied only
+on first increment — window semantics are the caller's), leases
+(`lease_acquire`/`lease_renew`/`lease_release`, exclusive per name/holder),
+and pub/sub (`publish`/`subscribe`). Both implementations are exercised
+against the same contract suite (`tests/test_coordination_contract.py`) so
+a consumer written against the ABC behaves identically regardless of
+backend. `app/coordination/leases.py::run_with_lease` layers an
+acquire-or-wait-then-renew-then-release loop on top of the raw lease
+primitives for long-running singleton consumers (Slack Socket Mode,
+Telegram long-poll, the paused-sandbox sweep).
+
+`coordination.backend=redis` is itself one of the three conditions
+`app/startup_guards.py::is_multi_process()` checks — configuring it
+declares multi-process intent even ahead of an actual role split, and the
+same guard module then requires it (alongside `DATABASE_URL` and explicit
+secrets) for any topology that is role-split or runs
+`UVICORN_WORKERS > 1`.
+
+Consumers riding this abstraction: chat WS auth tickets, leader leases,
+shared rate limits/chat quotas, cache-invalidation pub/sub, operational
+auth codes, and `.env_overlay` token reload — enumerated with their key
+prefixes and TTLs in [`DEPLOYMENT.md`](DEPLOYMENT.md) → *Multi-process →
+Coordination backend*, which also states the disposability invariant this
+design is built around: a single non-HA Redis is the supported shape, and
+every consumer recovers cleanly from a `FLUSHALL`.
+
+---
+
 ## Security
 
 ### Query Sandbox (`app/api/query.py`)
