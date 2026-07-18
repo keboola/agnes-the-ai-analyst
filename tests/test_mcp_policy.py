@@ -150,3 +150,25 @@ def test_rate_limit_old_calls_age_out_of_window():
     check_rate_limit("t.a", "u1", 3, now=1002.0)
     # 61s later the oldest aged out → new call accepted
     check_rate_limit("t.a", "u1", 3, now=1061.0)
+
+
+def test_remedy_is_web_first_with_deep_link(monkeypatch):
+    """With a public URL configured the remedy points at the connect page,
+    deep-linked by source id (not name)."""
+    import app.api.mcp_policy as p
+
+    monkeypatch.setattr(p, "get_public_url", lambda: "https://agnes.example", raising=False)
+    exc = p.PerUserCredentialMissing(source_label="CRM", source_id="abc123")
+    msg = str(exc)
+    assert "https://agnes.example/me/connections?source=abc123" in msg
+    assert "CRM" in msg
+
+
+def test_remedy_falls_back_to_cli_without_public_url(monkeypatch):
+    """No public URL → CLI hint, no broken link, keyed by source id."""
+    import app.api.mcp_policy as p
+
+    monkeypatch.setattr(p, "get_public_url", lambda: "", raising=False)
+    msg = str(p.PerUserCredentialMissing(source_label="CRM", source_id="abc123"))
+    assert "agnes mcp my-secret set abc123" in msg
+    assert "http" not in msg

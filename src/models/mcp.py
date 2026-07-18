@@ -2,12 +2,13 @@
 
 Mirrors:
   - setup_tokens      (src/db.py v63)
-  - mcp_sources       (src/db.py v64 + v66 scope column)
+  - mcp_sources       (src/db.py v64 + v66 scope column + v92 connect_hint column)
   - tool_registry     (src/db.py v64)
   - tool_grants       (src/db.py v64)
   - mcp_secrets       (src/db.py v65)
   - mcp_user_secrets  (src/db.py v66)
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -30,6 +31,7 @@ from src.db_pg import Base
 
 class SetupToken(Base):
     """Short-lived one-time tokens for Agnes Cowork one-click setup (v63)."""
+
     __tablename__ = "setup_tokens"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -47,7 +49,8 @@ class SetupToken(Base):
 
 
 class MCPSource(Base):
-    """External MCP server registered for inbound tool ingestion (v64 + v66)."""
+    """External MCP server registered for inbound tool ingestion (v64 + v66 + v92)."""
+
     __tablename__ = "mcp_sources"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -59,12 +62,9 @@ class MCPSource(Base):
     url: Mapped[str | None] = mapped_column(String, nullable=True)
     auth_method: Mapped[str | None] = mapped_column(String, nullable=True)
     auth_secret_env: Mapped[str | None] = mapped_column(String, nullable=True)
-    enabled: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("TRUE"), nullable=False
-    )
-    scope: Mapped[str | None] = mapped_column(
-        String, server_default=text("'shared'"), nullable=True
-    )
+    enabled: Mapped[bool] = mapped_column(Boolean, server_default=text("TRUE"), nullable=False)
+    scope: Mapped[str | None] = mapped_column(String, server_default=text("'shared'"), nullable=True)
+    connect_hint: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=text("CURRENT_TIMESTAMP"),
@@ -79,6 +79,7 @@ class MCPSource(Base):
 
 class ToolRegistry(Base):
     """Curated tools extracted from MCP sources (v64)."""
+
     __tablename__ = "tool_registry"
 
     tool_id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -89,15 +90,11 @@ class ToolRegistry(Base):
     table_id: Mapped[str | None] = mapped_column(String, nullable=True)
     input_schema: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     description: Mapped[str | None] = mapped_column(String, nullable=True)
-    mutating: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("FALSE"), nullable=False
-    )
+    mutating: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), nullable=False)
     pii_fields: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     rate_limit_pm: Mapped[int | None] = mapped_column(Integer, nullable=True)
     schedule: Mapped[str | None] = mapped_column(String, nullable=True)
-    enabled: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("TRUE"), nullable=False
-    )
+    enabled: Mapped[bool] = mapped_column(Boolean, server_default=text("TRUE"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=text("CURRENT_TIMESTAMP"),
@@ -114,6 +111,7 @@ class ToolRegistry(Base):
 
 class ToolGrant(Base):
     """Per-group ACL for passthrough tools (v64)."""
+
     __tablename__ = "tool_grants"
 
     tool_id: Mapped[str] = mapped_column(String, nullable=False)
@@ -127,6 +125,7 @@ class ToolGrant(Base):
 
 class MCPSecret(Base):
     """Server-wide vault for MCP source auth credentials (v65)."""
+
     __tablename__ = "mcp_secrets"
 
     source_id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -145,6 +144,7 @@ class MCPSecret(Base):
 
 class MCPUserSecret(Base):
     """Per-user MCP source secrets for per_user-scope sources (v66)."""
+
     __tablename__ = "mcp_user_secrets"
 
     source_id: Mapped[str] = mapped_column(String, nullable=False)

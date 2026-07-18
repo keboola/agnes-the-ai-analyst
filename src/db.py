@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 91
+SCHEMA_VERSION = 92
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1919,9 +1919,7 @@ def get_operational_db() -> duckdb.DuckDBPyConnection:
                     pass
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
             _operational_db_conn = _open_duckdb(db_path)
-            _apply_memory_caps(
-                _operational_db_conn, _SYSTEM_DB_MEMORY_LIMIT, label="get_operational_db"
-            )
+            _apply_memory_caps(_operational_db_conn, _SYSTEM_DB_MEMORY_LIMIT, label="get_operational_db")
             _operational_db_conn.execute(_OPERATIONAL_SCHEMA_DDL)
             _operational_db_path = db_path
         return _maybe_instrument(_operational_db_conn.cursor(), "operational")
@@ -5872,6 +5870,21 @@ def _v90_to_v91(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 91")
 
 
+def _v91_to_v92(conn: duckdb.DuckDBPyConnection) -> None:
+    """v92: mcp_sources.connect_hint — per-source, admin-authored instructions
+    telling a user where to obtain their personal token for a per_user source.
+    Rendered through app/markdown_render.render_safe on the connect page.
+
+    Guarded on table existence: minimal-fixture migration tests replay the
+    ladder from an intermediate version onto a DB that never created
+    ``mcp_sources`` (it is created at v64). On a real ladder the table always
+    exists by v92, so the guard only no-ops those partial replays."""
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'mcp_sources'").fetchone()
+    if exists:
+        conn.execute("ALTER TABLE mcp_sources ADD COLUMN IF NOT EXISTS connect_hint VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 92")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6246,6 +6259,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # _SYSTEM_SCHEMA already creates them on fresh installs (no-op
             # CREATE IF NOT EXISTS here).
             _v90_to_v91(conn)
+            # v91→v92: mcp_sources.connect_hint column.
+            _v91_to_v92(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -6481,6 +6496,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v89_to_v90(conn)
             if current < 91:
                 _v90_to_v91(conn)
+            if current < 92:
+                _v91_to_v92(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

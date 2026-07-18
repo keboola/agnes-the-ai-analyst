@@ -2,6 +2,7 @@
 
 Mirrors ``src/repositories/mcp_sources.py``.
 """
+
 from __future__ import annotations
 
 import json
@@ -41,6 +42,7 @@ class MCPSourcePgRepository:
         auth_secret_env: Optional[str] = None,
         enabled: bool = True,
         scope: str = "shared",
+        connect_hint: Optional[str] = None,
     ) -> None:
         if transport not in ("stdio", "http", "sse"):
             raise ValueError(f"unsupported transport: {transport}")
@@ -59,10 +61,10 @@ class MCPSourcePgRepository:
                 sa.text(
                     """INSERT INTO mcp_sources
                        (id, name, transport, command, args, env, url, auth_method,
-                        auth_secret_env, enabled, scope, created_at, updated_at)
+                        auth_secret_env, enabled, scope, connect_hint, created_at, updated_at)
                        VALUES (:id, :name, :transport, :command, :args, :env, :url,
                                :auth_method, :auth_secret_env, :enabled, :scope,
-                               :now, :now)
+                               :connect_hint, :now, :now)
                        ON CONFLICT (id) DO UPDATE SET
                            name            = EXCLUDED.name,
                            transport       = EXCLUDED.transport,
@@ -74,30 +76,48 @@ class MCPSourcePgRepository:
                            auth_secret_env = EXCLUDED.auth_secret_env,
                            enabled         = EXCLUDED.enabled,
                            scope           = EXCLUDED.scope,
+                           connect_hint    = EXCLUDED.connect_hint,
                            updated_at      = EXCLUDED.updated_at"""
                 ),
                 {
-                    "id": id, "name": name, "transport": transport,
-                    "command": command, "args": args_json, "env": env_json, "url": url,
-                    "auth_method": auth_method, "auth_secret_env": auth_secret_env,
-                    "enabled": enabled, "scope": scope, "now": now,
+                    "id": id,
+                    "name": name,
+                    "transport": transport,
+                    "command": command,
+                    "args": args_json,
+                    "env": env_json,
+                    "url": url,
+                    "auth_method": auth_method,
+                    "auth_secret_env": auth_secret_env,
+                    "enabled": enabled,
+                    "scope": scope,
+                    "connect_hint": connect_hint,
+                    "now": now,
                 },
             )
 
     def get(self, source_id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT * FROM mcp_sources WHERE id = :id"),
-                {"id": source_id},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM mcp_sources WHERE id = :id"),
+                    {"id": source_id},
+                )
+                .mappings()
+                .first()
+            )
         return self._decode_row(dict(row)) if row else None
 
     def get_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT * FROM mcp_sources WHERE name = :name"),
-                {"name": name},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM mcp_sources WHERE name = :name"),
+                    {"name": name},
+                )
+                .mappings()
+                .first()
+            )
         return self._decode_row(dict(row)) if row else None
 
     def list_all(self, *, enabled_only: bool = False) -> List[Dict[str, Any]]:

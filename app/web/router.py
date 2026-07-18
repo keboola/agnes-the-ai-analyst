@@ -1044,6 +1044,46 @@ async def mcp_connect_page(
     return templates.TemplateResponse(request, "mcp_connect.html", ctx)
 
 
+@router.get("/me/connections", response_class=HTMLResponse)
+async def me_connections_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Self-service page: connect / replace / test / remove your own credential
+    for the per_user MCP sources you are granted. Any authenticated user."""
+    from app.api.mcp_passthrough import _visible_passthrough_tools
+    from app.markdown_render import render_safe
+    from src.repositories import mcp_sources_repo, per_user_secrets_repo
+
+    granted_ids = {t["source_id"] for t in _visible_passthrough_tools(user)}
+    sources = []
+    for src in mcp_sources_repo().list_all(enabled_only=True):
+        if src["id"] not in granted_ids:
+            continue
+        if (src.get("scope") or "shared").lower() != "per_user":
+            continue
+        sources.append(
+            {
+                "id": src["id"],
+                "name": src["name"],
+                "transport": src.get("transport"),
+                "hint_html": render_safe(src.get("connect_hint")),
+                "has_secret": per_user_secrets_repo().has(src["id"], user["id"]),
+                "updated_at": per_user_secrets_repo().get_updated_at(src["id"], user["id"]),
+            }
+        )
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=is_user_admin(user["id"], conn),
+        connect_sources=sources,
+        highlight_source=request.query_params.get("source") or "",
+    )
+    return templates.TemplateResponse(request, "me_connections.html", ctx)
+
+
 @router.get("/me/activity", response_class=HTMLResponse)
 async def me_activity_page(
     request: Request,

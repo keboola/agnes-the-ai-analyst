@@ -39,6 +39,7 @@ class MCPSourceRepository:
         auth_secret_env: Optional[str] = None,
         enabled: bool = True,
         scope: str = "shared",
+        connect_hint: Optional[str] = None,
     ) -> None:
         if transport not in ("stdio", "http", "sse"):
             raise ValueError(f"unsupported transport: {transport}")
@@ -54,8 +55,8 @@ class MCPSourceRepository:
         env_json = json.dumps(env) if env is not None else None
         self.conn.execute(
             """INSERT INTO mcp_sources
-               (id, name, transport, command, args, env, url, auth_method, auth_secret_env, enabled, scope, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               (id, name, transport, command, args, env, url, auth_method, auth_secret_env, enabled, scope, connect_hint, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT (id) DO UPDATE SET
                    name = excluded.name,
                    transport = excluded.transport,
@@ -67,8 +68,24 @@ class MCPSourceRepository:
                    auth_secret_env = excluded.auth_secret_env,
                    enabled = excluded.enabled,
                    scope = excluded.scope,
+                   connect_hint = excluded.connect_hint,
                    updated_at = excluded.updated_at""",
-            [id, name, transport, command, args_json, env_json, url, auth_method, auth_secret_env, enabled, scope, now, now],
+            [
+                id,
+                name,
+                transport,
+                command,
+                args_json,
+                env_json,
+                url,
+                auth_method,
+                auth_secret_env,
+                enabled,
+                scope,
+                connect_hint,
+                now,
+                now,
+            ],
         )
 
     def get(self, source_id: str) -> Optional[Dict[str, Any]]:

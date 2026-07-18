@@ -1648,6 +1648,7 @@ KNOWN_UNTESTED = {
     "GET /marketplace/info",
     "GET /me/activity",
     "GET /me/ai-connector",
+    "GET /me/connections",  # per-user MCP connect page tested in tests/test_me_connections_page.py
     "GET /me/cowork",
     "GET /me/mcp",
     "GET /me/profile",
@@ -1925,6 +1926,7 @@ KNOWN_UNTESTED = {
     "GET /api/mcp/sources/{source_id}/my-secret",
     "POST /api/mcp/passthrough/tools/{tool_id}/call",
     "POST /api/mcp/query-table/{table_id}",
+    "POST /api/mcp/sources/{source_id}/my-secret/test",  # gates tested in tests/test_mcp_passthrough_api.py
     "PUT /api/mcp/sources/{source_id}/my-secret",
     # Memory advanced routes (audit, votes, tree, etc.)
     "DELETE /api/memory/{item_id}/dismiss",
