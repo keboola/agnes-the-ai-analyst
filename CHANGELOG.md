@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.74.113] - 2026-07-18
+
 ### Added
 
 - Self-service per-user MCP credential management. A new `/me/connections`
