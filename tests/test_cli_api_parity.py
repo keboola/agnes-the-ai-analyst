@@ -31,6 +31,7 @@ by ``(action, target)`` pairs since exact wall-clock differs.
 from __future__ import annotations
 
 import contextlib
+import json
 import uuid
 from typing import Dict, List
 
@@ -1080,8 +1081,26 @@ class TestJobEnqueueParity:
             "SELECT kind, status, payload_json FROM jobs WHERE kind = ?",
             [kind],
         )
+        # `_enqueued_by_request` (app/job_correlation.py, wave-2D Task 4)
+        # stamps the *live* HTTP request-id onto the payload at enqueue
+        # time — both the API call and the CLI's own `POST /api/jobs`
+        # call go through the same endpoint, but each is a distinct HTTP
+        # request, so they mint distinct request-ids even for an
+        # otherwise byte-identical payload. Mask the value to a
+        # placeholder before comparing (same convention
+        # `_snapshot_audit_actions` already uses for uuid-suffixed audit
+        # resource ids), after first asserting the key actually landed as
+        # a non-empty string — the correlation stamp itself is part of
+        # what parity should verify, just not its exact value.
+        masked_job_rows = []
+        for row_kind, status, payload_json in job_rows:
+            payload = json.loads(payload_json)
+            rid = payload.get("_enqueued_by_request")
+            assert isinstance(rid, str) and rid, f"expected a non-empty _enqueued_by_request, got {rid!r}"
+            payload["_enqueued_by_request"] = "<rid>"
+            masked_job_rows.append((row_kind, status, json.dumps(payload, sort_keys=True)))
         audit_rows = _snapshot_audit_actions(conn, prefix="job.enqueue")
-        return (job_rows, audit_rows)
+        return (sorted(masked_job_rows), audit_rows)
 
     def test_enqueue_parity(self, parity_env):
         from app.worker.registry import LIGHT_LANE, JOB_KINDS, JobKind, register_kind
