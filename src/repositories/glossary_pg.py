@@ -31,7 +31,12 @@ class GlossaryPgRepository:
         see_also: Optional[List[str]] = None,
         model_uuid: Optional[str] = None,
         source: str = "manual",
+        refresh_fts: bool = True,
     ) -> Dict[str, Any]:
+        """``refresh_fts`` is accepted for call-signature compatibility with
+        ``GlossaryRepository`` (DuckDB) — Postgres ``search`` computes
+        ``ts_rank`` on the fly with no index to rebuild, so this is a no-op
+        here."""
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
             conn.execute(
@@ -86,6 +91,12 @@ class GlossaryPgRepository:
                 .all()
             )
         return [dict(r) for r in rows]
+
+    def refresh_search_index(self) -> None:
+        """No-op — Postgres has no BM25 index to rebuild (``search`` computes
+        ``ts_rank`` on the fly). Present for call-signature compatibility
+        with ``GlossaryRepository.refresh_search_index`` (DuckDB)."""
+        return None
 
     def delete(self, glossary_id: str) -> bool:
         existing = self.get(glossary_id)

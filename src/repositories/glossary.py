@@ -33,7 +33,14 @@ class GlossaryRepository:
         see_also: Optional[List[str]] = None,
         model_uuid: Optional[str] = None,
         source: str = "manual",
+        refresh_fts: bool = True,
     ) -> Dict[str, Any]:
+        """``refresh_fts=False`` skips the post-write BM25 index rebuild —
+        used by bulk importers (e.g. the Keboola semantic-layer sync) that
+        call ``create`` once per row and would otherwise pay an O(N) full
+        ``PRAGMA create_fts_index`` rebuild per row (O(N^2) overall). Callers
+        that opt out MUST call ``refresh_search_index()`` once after their
+        batch completes."""
         now = datetime.now(timezone.utc)
         self.conn.execute(
             """INSERT INTO glossary_terms (
@@ -49,7 +56,8 @@ class GlossaryRepository:
                 updated_at = excluded.updated_at""",
             [id, term, definition, see_also, model_uuid, source, now, now],
         )
-        self._refresh_fts_index()
+        if refresh_fts:
+            self._refresh_fts_index()
         return self.get(id)  # type: ignore[return-value]
 
     def get(self, glossary_id: str) -> Optional[Dict[str, Any]]:
@@ -99,6 +107,12 @@ class GlossaryRepository:
                 )
         rows = self.conn.execute(ilike_sql, ilike_params).fetchall()
         return self._rows_to_dicts(rows)
+
+    def refresh_search_index(self) -> None:
+        """Public entrypoint for callers that batched writes via
+        ``create(..., refresh_fts=False)`` and need one rebuild after the
+        batch instead of one per row."""
+        self._refresh_fts_index()
 
     def _refresh_fts_index(self) -> None:
         """Rebuild the BM25 index after a mutation. Soft helper — failure is

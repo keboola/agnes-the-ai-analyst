@@ -415,7 +415,10 @@ def sync_semantic_layer(
                     (item.get("attributes") or {}).get("term"),
                 )
             continue
-        glossary_repository.create(**row)
+        # refresh_fts=False: rebuilding the BM25 index is O(N) per call, so
+        # doing it once per imported term is O(N^2) over a sync. Refresh once
+        # after the full create+prune loop below instead.
+        glossary_repository.create(**row, refresh_fts=False)
         seen_glossary_ids.add(row["id"])
 
     existing_glossary = [
@@ -435,6 +438,11 @@ def sync_semantic_layer(
             if g["id"] not in seen_glossary_ids:
                 glossary_repository.delete(g["id"])
                 glossary_pruned += 1
+
+    if seen_glossary_ids:
+        # Single rebuild for the whole batch (see the refresh_fts=False note
+        # in the create loop above).
+        glossary_repository.refresh_search_index()
 
     return {
         "status": "ok",

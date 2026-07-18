@@ -440,6 +440,35 @@ class TestSyncSemanticLayerGlossary:
         assert result["glossary_created_or_updated"] == 0
         assert result["skipped_missing_term"] == 1
 
+    def test_imports_multiple_terms_with_single_fts_rebuild(self, e2e_env):
+        """Regression: importing N>1 glossary terms in one sync must rebuild
+        the BM25 FTS index once (after the batch), not once per term — a
+        per-row rebuild is an O(N^2) `PRAGMA create_fts_index` + CHECKPOINT
+        storm against the shared system DB connection."""
+        from connectors.keboola.semantic_layer import sync_semantic_layer
+        from src.repositories.glossary import GlossaryRepository
+
+        fake_storage = MagicMock()
+        fake_storage.verify_token.return_value = {"isMasterToken": True}
+        fake_metastore = MagicMock()
+        fake_metastore.list_items.side_effect = _metastore_side_effect(
+            glossary_items=[
+                _glossary_item("A", "def a"),
+                _glossary_item("B", "def b"),
+                _glossary_item("C", "def c"),
+            ]
+        )
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+            patch.object(GlossaryRepository, "_refresh_fts_index") as mock_refresh,
+        ):
+            result = sync_semantic_layer(keboola_url="https://connection.keboola.com", keboola_token="master-tok")
+
+        assert result["glossary_created_or_updated"] == 3
+        mock_refresh.assert_called_once()
+
     def test_metric_import_behavior_unchanged_by_glossary_step(self, e2e_env):
         """Regression: adding the glossary step must not change a single
         existing metric-import assertion — same inputs, same metric outputs."""
