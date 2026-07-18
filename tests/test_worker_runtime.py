@@ -526,3 +526,175 @@ def test_worker_loop_reaps_stuck_jobs(worker_db):
     row = repo.get(job["id"])
     assert row["status"] == "failed"
     assert row["error"] == "lease expired after max attempts"
+
+
+# ---------------------------------------------------------------------------
+# observability (three-plane wave 2D, task 2): job-queue + worker metrics
+# ---------------------------------------------------------------------------
+
+
+def _metric_value(name, **labels):
+    from app.observability.metrics import REGISTRY
+
+    for metric in REGISTRY.collect():
+        for sample in metric.samples:
+            if sample.name == name and all(sample.labels.get(k) == v for k, v in labels.items()):
+                return sample.value
+    return None
+
+
+def test_worker_loop_records_claims_total(worker_db):
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    register_kind(JobKind(name="metrics_claim_e2e", handler=lambda payload: None, lane=LIGHT_LANE, lease_seconds=30))
+    repo = jobs_repo()
+    repo.enqueue("metrics_claim_e2e", {})
+
+    before = _metric_value("agnes_job_claims_total", kind="metrics_claim_e2e") or 0.0
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.4))
+
+    after = _metric_value("agnes_job_claims_total", kind="metrics_claim_e2e")
+    assert after == before + 1.0
+
+
+def test_worker_loop_records_duration_and_done_outcome(worker_db):
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    register_kind(JobKind(name="metrics_duration_ok", handler=lambda payload: None, lane=LIGHT_LANE, lease_seconds=30))
+    repo = jobs_repo()
+    job = repo.enqueue("metrics_duration_ok", {})
+
+    before_count = _metric_value("agnes_job_duration_seconds_count", kind="metrics_duration_ok", outcome="done") or 0.0
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.4))
+
+    assert repo.get(job["id"])["status"] == "done"
+    after_count = _metric_value("agnes_job_duration_seconds_count", kind="metrics_duration_ok", outcome="done")
+    assert after_count == before_count + 1.0
+
+
+def test_worker_loop_records_duration_and_failed_outcome(worker_db):
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    def boom_handler(payload: dict) -> None:
+        raise RuntimeError("metrics boom")
+
+    register_kind(JobKind(name="metrics_duration_fail", handler=boom_handler, lane=LIGHT_LANE, lease_seconds=30))
+    repo = jobs_repo()
+    repo.enqueue("metrics_duration_fail", {}, max_attempts=1)
+
+    before_duration = (
+        _metric_value("agnes_job_duration_seconds_count", kind="metrics_duration_fail", outcome="failed") or 0.0
+    )
+    before_failures = (
+        _metric_value("agnes_job_failures_total", kind="metrics_duration_fail", reason="RuntimeError") or 0.0
+    )
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.4))
+
+    after_duration = _metric_value("agnes_job_duration_seconds_count", kind="metrics_duration_fail", outcome="failed")
+    after_failures = _metric_value("agnes_job_failures_total", kind="metrics_duration_fail", reason="RuntimeError")
+    assert after_duration == before_duration + 1.0
+    assert after_failures == before_failures + 1.0
+
+
+def test_worker_loop_lane_active_reflects_busy_heavy_lane(worker_db):
+    """agnes_worker_lane_active{lane="heavy"} must go up while a heavy job's
+    handler is actually running, and come back down once it finishes."""
+    from app.worker.registry import HEAVY_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_heavy_handler(payload: dict) -> None:
+        started.set()
+        release.wait(timeout=5)
+
+    register_kind(JobKind(name="metrics_lane_active", handler=slow_heavy_handler, lane=HEAVY_LANE, lease_seconds=30))
+    repo = jobs_repo()
+    job = repo.enqueue("metrics_lane_active", {})
+
+    baseline = _metric_value("agnes_worker_lane_active", lane=HEAVY_LANE) or 0.0
+    baseline_running = _metric_value("agnes_jobs_running", kind="metrics_lane_active", lane=HEAVY_LANE) or 0.0
+
+    async def _drive():
+        task = asyncio.create_task(worker_loop(worker_id="test-worker", poll_interval_s=0.05))
+        deadline = time.monotonic() + 2.0
+        while not started.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert started.is_set(), "handler never started"
+
+        # While the handler is blocked mid-flight, the lane must show busy.
+        assert _metric_value("agnes_worker_lane_active", lane=HEAVY_LANE) == baseline + 1.0
+        assert (
+            _metric_value("agnes_jobs_running", kind="metrics_lane_active", lane=HEAVY_LANE) == baseline_running + 1.0
+        )
+
+        release.set()
+        # Give the handler + finalization a moment to complete, then cancel.
+        deadline = time.monotonic() + 2.0
+        while repo.get(job["id"])["status"] == "running" and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(_drive())
+
+    assert repo.get(job["id"])["status"] == "done"
+    assert _metric_value("agnes_worker_lane_active", lane=HEAVY_LANE) == baseline
+    assert _metric_value("agnes_jobs_running", kind="metrics_lane_active", lane=HEAVY_LANE) == baseline_running
+
+
+def test_worker_loop_no_handler_records_failure_metric(worker_db, monkeypatch):
+    """The registry-drift ("no registered handler") branch finalizes the
+    job without ever running a handler — it must still bump
+    agnes_job_failures_total instead of being invisible to observability.
+
+    Mirrors ``test_unregistered_kind_is_terminally_failed_without_retry``'s
+    registry-drift simulation: a job can only be claimed for a kind
+    currently in ``JOB_KINDS`` (``_kinds_for_lane`` filters on it), so an
+    entirely-unregistered kind is never claimed at all. The drift has to
+    happen *between* claim and dispatch, via a repo proxy that pops the
+    kind right after ``claim_next`` returns it.
+    """
+    import app.worker.runtime as runtime_mod
+    from app.worker.registry import JOB_KINDS, LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    def handler(payload: dict) -> None:
+        raise AssertionError("handler must never run — the guard fires before dispatch")
+
+    register_kind(JobKind(name="metrics_drift_kind", handler=handler, lane=LIGHT_LANE, lease_seconds=30))
+    real_repo = jobs_repo()
+    real_repo.enqueue("metrics_drift_kind", {}, max_attempts=5)
+
+    class DriftingRepo:
+        def __getattr__(self, name):
+            return getattr(real_repo, name)
+
+        def claim_next(self, **kwargs):
+            claimed = real_repo.claim_next(**kwargs)
+            if claimed is not None:
+                JOB_KINDS.pop("metrics_drift_kind", None)
+            return claimed
+
+    monkeypatch.setattr(runtime_mod, "_jobs_repo", lambda: DriftingRepo())
+
+    before = _metric_value("agnes_job_failures_total", kind="other", reason="no-registered-handler") or 0.0
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.3))
+
+    after = _metric_value("agnes_job_failures_total", kind="other", reason="no-registered-handler")
+    assert after == before + 1.0
