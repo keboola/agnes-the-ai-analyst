@@ -2255,3 +2255,109 @@ def test_paused_sweep_runs_when_lease_acquired_and_releases_after(tmp_path):
         assert coordination().lease_acquire(_PAUSED_SWEEP_LEASE_NAME, "someone-else", ttl_s=90) is True
 
     asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Wave-2F task 1: session routing leases (app/chat/routing.py) wiring
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_claims_routing_lease(manager: ChatManager):
+    """_spawn_live claims `chat:{chat_id}` for this gateway as soon as the
+    session is registered in self._live."""
+    from app.chat import routing
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+
+        assert routing.owner_of(s.id) == routing.this_gateway_id()
+
+        await manager.kill(s.id, reason="test_done")
+        handle.emit_eof()
+        await attach_task
+
+    asyncio.run(_run())
+
+
+def test_kill_releases_routing_lease(manager: ChatManager):
+    """kill() releases the routing lease so a takeover (or a later respawn
+    on another gateway) doesn't have to wait out the TTL."""
+    from app.chat import routing
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        assert routing.owner_of(s.id) is not None
+
+        await manager.kill(s.id, reason="test_done")
+        handle.emit_eof()
+        await attach_task
+
+        assert routing.owner_of(s.id) is None
+        # Freed, not just expired — another gateway could claim it right away.
+        assert routing.claim_session(s.id, "other-gateway:999", ttl_s=60) is True
+
+    asyncio.run(_run())
+
+
+def test_renew_routing_leases_keeps_ownership(manager: ChatManager):
+    """_renew_routing_leases (invoked from _reap_once's ~60s tick) extends
+    the lease for every non-DEAD live session without changing ownership."""
+    from app.chat import routing
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        gw = routing.this_gateway_id()
+        assert routing.owner_of(s.id) == gw
+
+        manager._renew_routing_leases()
+
+        assert routing.owner_of(s.id) == gw
+
+        await manager.kill(s.id, reason="test_done")
+        handle.emit_eof()
+        await attach_task
+
+    asyncio.run(_run())
+
+
+def test_spawn_continues_when_routing_lease_contended(manager: ChatManager):
+    """Another gateway already holding `chat:{chat_id}` must not block this
+    replica from serving the session locally (task 1 is mechanism-only —
+    real cross-gateway takeover/redirect is a later wave-2F task): the
+    claim fails, a warning is logged, and the session runs anyway."""
+    from app.chat import routing
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+
+        assert routing.claim_session(s.id, "other-gateway:999", ttl_s=60) is True
+
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+
+        assert s.id in manager._live  # served locally despite the lost claim
+        assert routing.owner_of(s.id) == "other-gateway:999"  # claim genuinely lost
+
+        await manager.kill(s.id, reason="test_done")
+        handle.emit_eof()
+        await attach_task
+
+    asyncio.run(_run())
