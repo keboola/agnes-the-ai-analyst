@@ -121,6 +121,26 @@ The unit tests in `tests/test_posthog_*.py` cover the disabled and enabled
 configurations; `tests/test_llm_tracing.py` exercises the success and error
 variants of the LLM event.
 
+## Prometheus `/metrics` — job-queue gauge aggregation
+
+Every role (api/gateway/worker) exposes its own unauthenticated `GET /metrics`
+(`app/observability/metrics.py`) — an internal-scrape-only endpoint, like
+`/healthz`/`/readyz`; operators must not expose it publicly. Each replica's
+series carries `role` + `replica` labels, but the two `agnes_jobs_*` gauge
+families behave differently under cross-replica aggregation:
+
+| Metric | Scope | Correct aggregation |
+|---|---|---|
+| `agnes_jobs_queued` | **Global.** Sampled at scrape time from the shared job queue — every replica reports the same value each scrape. | `max() by (kind)` — `sum()` N-counts the true depth by however many replicas were scraped. |
+| `agnes_jobs_queued_capped` | **Global.** 1 if the last scrape hit the bounded-scan cap (see the metric's own help text), else 0. | `max() by (...)` — same reasoning as above. |
+| `agnes_jobs_running` | **Per-replica.** In-process count of that replica's own currently-executing jobs. | `sum() by (kind)` — genuinely additive across the fleet. |
+| `agnes_worker_lane_active` | **Per-replica.** In-process count of busy concurrency slots in a lane. | `sum() by (lane)` — genuinely additive across the fleet. |
+
+`agnes_job_duration_seconds` is a histogram (by `kind`+`outcome`) with explicit
+buckets from 1s to 4h — Agnes jobs range from sub-second housekeeping to
+multi-hour BigQuery materializations, so the `prometheus_client` default
+buckets (top bucket ~10s) would collapse almost everything into `+Inf`.
+
 ## Self-hosting note
 
 PostHog is itself open source — operators with a self-hosted PostHog instance
