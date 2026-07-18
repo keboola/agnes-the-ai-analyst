@@ -22,7 +22,7 @@ from aiohttp import web
 from app.logging_config import setup_logging
 
 from . import config
-from .dispatch import dispatch_to_ws_gateway
+from .dispatch import dispatch_desktop_notification
 from .runner import run_user_script
 from .sender import (
     answer_callback_query,
@@ -211,8 +211,8 @@ async def handle_callback_query(callback_query: dict) -> None:
     else:
         await send_message(chat_id, f"`{script_name}` produced no output.", parse_mode="Markdown")
 
-    # Also dispatch to WebSocket gateway for desktop app
-    await asyncio.to_thread(dispatch_to_ws_gateway, username, output, script_name)
+    # Also publish a desktop-app notification (coordination pub/sub — wave-2F task 6)
+    await asyncio.to_thread(dispatch_desktop_notification, username, output, script_name)
 
 
 async def polling_loop() -> None:

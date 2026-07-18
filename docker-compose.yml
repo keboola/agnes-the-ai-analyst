@@ -145,20 +145,6 @@ services:
       - full
     restart: unless-stopped
 
-  ws-gateway:
-    build: .
-    command: python -m services.ws_gateway
-    volumes:
-      - data:/data
-    env_file: .env
-    environment:
-      - DATA_DIR=/data
-    depends_on:
-      - app
-    profiles:
-      - full
-    restart: unless-stopped
-
   # NOTE: corporate-memory + session-collector previously ran here as
   # tight `restart: unless-stopped` boot loops behind `profiles: [full]`.
   # As of #176 the scheduler container drives both through admin HTTP
