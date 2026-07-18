@@ -207,6 +207,29 @@ class TestLease:
             t.join()
         assert results.count(True) == 1
 
+    def test_lease_owner_returns_none_when_free(self, backend):
+        assert backend.lease_owner("l8") is None
+
+    def test_lease_owner_returns_current_holder(self, backend):
+        backend.lease_acquire("l9", "holder-a", ttl_s=60)
+        assert backend.lease_owner("l9") == "holder-a"
+
+    def test_lease_owner_returns_none_after_expiry(self, backend):
+        backend.lease_acquire("l10", "holder-a", ttl_s=1)
+        time.sleep(1.3)
+        assert backend.lease_owner("l10") is None
+
+    def test_lease_owner_returns_none_after_release(self, backend):
+        backend.lease_acquire("l11", "holder-a", ttl_s=60)
+        backend.lease_release("l11", "holder-a")
+        assert backend.lease_owner("l11") is None
+
+    def test_lease_owner_reflects_new_holder_after_takeover(self, backend):
+        backend.lease_acquire("l12", "holder-a", ttl_s=1)
+        time.sleep(1.3)
+        assert backend.lease_acquire("l12", "holder-b", ttl_s=60) is True
+        assert backend.lease_owner("l12") == "holder-b"
+
 
 class TestPubSub:
     def test_publish_delivers_to_subscriber(self, backend):
