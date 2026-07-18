@@ -1676,6 +1676,33 @@ def create_app() -> FastAPI:
     # x-request-id header.
     app.add_middleware(RequestIdMiddleware)
 
+    # HTTP request metrics (three-plane wave 2D, task 1) — registered as an
+    # `@app.middleware("http")` function (not add_middleware) so it becomes
+    # the true OUTERMOST layer, even later than RequestIdMiddleware above:
+    # duration then captures the full per-request latency including every
+    # other middleware (gzip, CORS, session, rate limiting, request-id).
+    # Skips METRICS_PATH itself — scraping must never grow the series it's
+    # reading. Uses the FastAPI-matched route TEMPLATE
+    # (request.scope["route"].path), never the raw path, to keep label
+    # cardinality bounded; falls back to UNMATCHED_PATH when no route
+    # matched at all (e.g. a CORS preflight short-circuited before routing
+    # ran). See app/observability/metrics.py.
+    import time as _time
+
+    from app.observability.metrics import METRICS_PATH, UNMATCHED_PATH, observe_http
+
+    @app.middleware("http")
+    async def _observe_http_metrics(request, call_next):
+        if request.url.path == METRICS_PATH:
+            return await call_next(request)
+        start = _time.monotonic()
+        response = await call_next(request)
+        duration = _time.monotonic() - start
+        route = request.scope.get("route")
+        path_template = route.path if route is not None else UNMATCHED_PATH
+        observe_http(request.method, path_template, response.status_code, duration)
+        return response
+
     # Load .env_overlay (persisted by /api/admin/configure)
     from app.secrets import _state_dir
 
@@ -1837,6 +1864,10 @@ def create_app() -> FastAPI:
     from app.api import health_probes
 
     app.include_router(health_probes.router)  # /healthz + /readyz, unauthenticated LB probes
+
+    from app.observability.metrics import router as prometheus_metrics_router
+
+    app.include_router(prometheus_metrics_router)  # /metrics, unauthenticated Prometheus scrape endpoint
     app.include_router(sync_router)
     app.include_router(jobs_router)
     app.include_router(data_router)
