@@ -89,7 +89,9 @@ import dataclasses
 import logging
 import os
 import socket
+import time
 
+from app.observability import metrics as obs_metrics
 from app.worker.registry import HEAVY_LANE, JOB_KINDS, LIGHT_LANE, JobKind
 
 logger = logging.getLogger(__name__)
@@ -175,6 +177,15 @@ class _InFlightJob:
     retry_in_seconds: int | None
     handler_future: asyncio.Future[None]
     hb_task: asyncio.Task[None]
+    #: Lane the job was running in — carried through to `_drain_in_flight`
+    #: so it can decrement `agnes_jobs_running`/`agnes_worker_lane_active`
+    #: (incremented in `_run_one`, before the handoff) once this entry is
+    #: finally resolved (finished or abandoned).
+    lane: str
+    #: `time.monotonic()` when the handler started — lets `_drain_in_flight`
+    #: observe `agnes_job_duration_seconds` for a job that finishes during
+    #: the drain window instead of losing its timing entirely.
+    started_at: float
 
 
 async def _heartbeat_loop(job_id: str, worker_id: str, lease_token: str, lease_seconds: int) -> None:
@@ -221,6 +232,16 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
     cancelled before the handler finishes, the future is handed off to
     ``in_flight`` for ``worker_loop``'s bounded shutdown drain to finish
     waiting on (and finalize) instead of being abandoned here.
+
+    Wraps ``agnes_jobs_running``/``agnes_worker_lane_active`` (lane-slot
+    occupancy) and ``agnes_job_duration_seconds``/``agnes_job_failures_total``
+    (outcome) around the handler invocation. The observability helpers
+    (``app.observability.metrics``) never raise, so a metrics bug can't fail
+    a job — but the occupancy gauges are only decremented here on the
+    normal (success/exception) exit paths; a handed-off (cancelled) job
+    stays "running" until ``_drain_in_flight`` resolves it, since the
+    handler keeps executing in the background regardless of this
+    coroutine's cancellation (see module docstring).
     """
     lease_token = job["lease_token"]
     hb_task = asyncio.create_task(
@@ -229,6 +250,8 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
     )
     handler_future = asyncio.ensure_future(asyncio.to_thread(kind.handler, job["payload_json"]))
     handed_off = False
+    obs_metrics.begin_job_running(job["kind"], kind.lane)
+    started_at = time.monotonic()
     try:
         await asyncio.shield(handler_future)
     except asyncio.CancelledError:
@@ -241,10 +264,14 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
             retry_in_seconds=kind.retry_in_seconds,
             handler_future=handler_future,
             hb_task=hb_task,
+            lane=kind.lane,
+            started_at=started_at,
         )
         raise
     except Exception as exc:
         logger.exception("worker %s: job %s (kind=%s) failed", worker_id, job["id"], job["kind"])
+        obs_metrics.record_job_duration(job["kind"], "failed", time.monotonic() - started_at)
+        obs_metrics.record_job_failure(job["kind"], type(exc).__name__)
         await asyncio.to_thread(
             _jobs_repo().fail,
             job["id"],
@@ -254,9 +281,11 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
             retry_in_seconds=kind.retry_in_seconds,
         )
     else:
+        obs_metrics.record_job_duration(job["kind"], "done", time.monotonic() - started_at)
         await asyncio.to_thread(_jobs_repo().complete, job["id"], worker_id, lease_token)
     finally:
         if not handed_off:
+            obs_metrics.end_job_running(job["kind"], kind.lane)
             hb_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await hb_task
@@ -306,6 +335,12 @@ async def _lane_slot(
                 await asyncio.sleep(poll_interval_s)
                 continue
 
+            # Counted here, not inside _run_one — a claim_next() success is
+            # a claim regardless of what happens next (including the
+            # no-registered-handler branch immediately below), so this is
+            # the one place that sees every claim exactly once.
+            obs_metrics.record_job_claim(job["kind"])
+
             kind = JOB_KINDS.get(job["kind"])
             if kind is None:
                 # Registry drift: this job's kind isn't (or is no longer)
@@ -317,6 +352,7 @@ async def _lane_slot(
                     job["kind"],
                     job["id"],
                 )
+                obs_metrics.record_job_failure(job["kind"], "no-registered-handler")
                 await asyncio.to_thread(
                     _jobs_repo().fail,
                     job["id"],
@@ -370,61 +406,75 @@ async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -
     futures = [entry.handler_future for entry in in_flight.values()]
     _done, pending = await asyncio.wait(futures, timeout=timeout)
     for job_id, entry in in_flight.items():
-        fut = entry.handler_future
-        if fut in pending:
-            logger.warning(
-                "worker %s: shutdown drain timed out after %.0fs — job %s (kind=%s) abandoned mid-flight; "
-                "will recover via lease expiry (reclaim or reap_exhausted)",
-                worker_id,
-                timeout,
-                job_id,
-                entry.kind_name,
-            )
-            entry.hb_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await entry.hb_task
-            continue
-        if fut.cancelled():
-            logger.warning(
-                "worker %s: in-flight job %s (kind=%s) handler future was cancelled during drain",
-                worker_id,
-                job_id,
-                entry.kind_name,
-            )
-            continue
-        exc = fut.exception()
+        # `agnes_jobs_running`/`agnes_worker_lane_active` were incremented
+        # in `_run_one` before the handoff and never decremented there
+        # (the handler keeps running regardless of that coroutine's own
+        # cancellation) — this drain loop is the only place every in-flight
+        # entry is eventually resolved (finished in time, cancelled, or
+        # abandoned on timeout), so it's the one place that must undo it,
+        # exactly once per entry, regardless of which branch below fires.
         try:
-            if exc is not None:
-                logger.exception(
-                    "worker %s: job %s (kind=%s) failed (finished during shutdown drain)",
+            fut = entry.handler_future
+            if fut in pending:
+                logger.warning(
+                    "worker %s: shutdown drain timed out after %.0fs — job %s (kind=%s) abandoned mid-flight; "
+                    "will recover via lease expiry (reclaim or reap_exhausted)",
+                    worker_id,
+                    timeout,
+                    job_id,
+                    entry.kind_name,
+                )
+                entry.hb_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await entry.hb_task
+                continue
+            if fut.cancelled():
+                logger.warning(
+                    "worker %s: in-flight job %s (kind=%s) handler future was cancelled during drain",
                     worker_id,
                     job_id,
                     entry.kind_name,
-                    exc_info=exc,
                 )
-                await asyncio.to_thread(
-                    _jobs_repo().fail,
+                continue
+            exc = fut.exception()
+            duration = time.monotonic() - entry.started_at
+            try:
+                if exc is not None:
+                    logger.exception(
+                        "worker %s: job %s (kind=%s) failed (finished during shutdown drain)",
+                        worker_id,
+                        job_id,
+                        entry.kind_name,
+                        exc_info=exc,
+                    )
+                    obs_metrics.record_job_duration(entry.kind_name, "failed", duration)
+                    obs_metrics.record_job_failure(entry.kind_name, type(exc).__name__)
+                    await asyncio.to_thread(
+                        _jobs_repo().fail,
+                        job_id,
+                        entry.worker_id,
+                        entry.lease_token,
+                        str(exc),
+                        retry_in_seconds=entry.retry_in_seconds,
+                    )
+                else:
+                    obs_metrics.record_job_duration(entry.kind_name, "done", duration)
+                    await asyncio.to_thread(_jobs_repo().complete, job_id, entry.worker_id, entry.lease_token)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "worker %s: job %s (kind=%s) finalization (complete/fail) failed during shutdown drain "
+                    "(non-fatal); job will recover via lease expiry",
+                    worker_id,
                     job_id,
-                    entry.worker_id,
-                    entry.lease_token,
-                    str(exc),
-                    retry_in_seconds=entry.retry_in_seconds,
+                    entry.kind_name,
                 )
-            else:
-                await asyncio.to_thread(_jobs_repo().complete, job_id, entry.worker_id, entry.lease_token)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception(
-                "worker %s: job %s (kind=%s) finalization (complete/fail) failed during shutdown drain "
-                "(non-fatal); job will recover via lease expiry",
-                worker_id,
-                job_id,
-                entry.kind_name,
-            )
-        entry.hb_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await entry.hb_task
+            entry.hb_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await entry.hb_task
+        finally:
+            obs_metrics.end_job_running(entry.kind_name, entry.lane)
 
 
 async def worker_loop(*, worker_id: str, poll_interval_s: float = 5.0) -> None:
