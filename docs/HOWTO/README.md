@@ -7,3 +7,4 @@ Task-oriented guides for analysts using Agnes. Each guide is < 100 lines and ass
 3. [Private sessions: when and how](03-private-session.md)
 4. [Feedback and ad-hoc telemetry questions](04-feedback-and-ask.md)
 5. [Customising your skills](05-customizing-skills.md)
+6. [Installing skills in Claude Cowork](06-claude-cowork.md)

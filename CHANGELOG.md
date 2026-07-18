@@ -10,6 +10,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- New analyst HOWTO: [Installing skills in Claude Cowork](docs/HOWTO/06-claude-cowork.md)
+  — the download → `Customize → Personal plugins → Upload plugin` loop, the
+  no-sync update model, what packages carry, connector reachability caveat,
+  and troubleshooting for upload-validation failures.
+
 ## [0.74.115] - 2026-07-18
 
 ### Added
