@@ -12,7 +12,7 @@ agnes-the-ai-analyst/
 │   ├── api/              REST API routers
 │   ├── auth/             Auth providers (JWT, Google OAuth, email magic link, password)
 │   └── web/              HTML dashboard routes
-├── services/             Standalone background services (scheduler, telegram_bot, ws_gateway, …)
+├── services/             Standalone background services (scheduler, telegram_bot, …)
 ├── cli/                  CLI tool (agnes pull, agnes query, agnes admin)
 ├── scripts/              Utility and migration scripts
 ├── config/               Instance configuration templates
@@ -56,7 +56,7 @@ system.duckdb       analytics.duckdb
 
 **Deployment:** Docker Compose. The `app` service runs Uvicorn. The `scheduler` sidecar triggers
 sync jobs and the LLM pipeline (corporate-memory, verification-detector, session-collector) via
-the app's REST API on offset cadences. Optional `full` profile adds telegram-bot and ws-gateway.
+the app's REST API on offset cadences. Optional `full` profile adds telegram-bot.
 
 ```bash
 docker compose up               # app + scheduler
@@ -376,12 +376,11 @@ Docker Compose service.
 |---------|---------|-----------------|-------------|
 | `scheduler` | default | Always-on; polls every N seconds | Lightweight sidecar that triggers jobs via the app's REST API: `POST /api/sync/trigger` every 15 min, `GET /api/health` every 5 min, `POST /api/admin/run-session-collector` every 10 min, `POST /api/admin/run-verification-detector` every 15 min, `POST /api/admin/run-corporate-memory` every 17 min, `POST /api/marketplaces/sync-all` daily 03:00. Auth via `SCHEDULER_API_TOKEN` or auto-fetch from `/auth/token`. |
 | `telegram_bot` | `full` | Always-on (long-poll) | Telegram bot: polling + HTTP dispatch, `/status` command, notification script execution. |
-| `ws_gateway` | `full` | Always-on | WebSocket gateway (TCP 8765) + HTTP dispatch socket. JWT auth. Per-user connection limit (5). Heartbeat ping/pong. |
 | `corporate_memory` | (driven by scheduler) | Every 17 min | Scans `CLAUDE.local.md` files, extracts knowledge via LLM (Claude Haiku), writes to `knowledge_items` in system.duckdb. Inline contradiction detection runs after each new item: one batched Haiku structured-output call returns judgments + structured resolution suggestions for every same-domain candidate (no SQL keyword pre-filter — see [ADR Decision 4](ADR-corporate-memory-v1.md)). Driven by scheduler-v2 since #176. |
 | `verification_detector` | (driven by scheduler) | Every 15 min | Scans unprocessed analyst session JSONLs, extracts corrections / confirmations / unprompted definitions via Haiku structured outputs. Confidence is computed in code from `(source_type, detection_type)` — never trusted from the LLM. Each verification persists a `verification_evidence` row carrying `user_quote` + `detection_type` ([ADR Decision 3](ADR-corporate-memory-v1.md)). Driven by scheduler-v2 since #176. |
 | `session_collector` | (driven by scheduler) | Every 10 min | Copies Claude Code `.jsonl` session transcripts to central storage. Driven by scheduler-v2 since #176. |
 
-Files NOT to modify: `services/ws_gateway/` (stable WebSocket infrastructure).
+**Desktop/browser notifications** (formerly the standalone `ws_gateway` service, TCP 8765 + a Unix-socket HTTP dispatch): absorbed into the main app (wave-2F task 6). The WS endpoint (`/api/notifications/ws`, same JWT auth, per-user connection limit, heartbeat ping/pong) lives in `app/api/notifications_ws.py` and serves only on `Role.GATEWAY` processes; producers (e.g. the Telegram bot) call `app/notifications.py::publish_notification(user, payload)`, which publishes on the coordination pub/sub channel `notify:{user}` — replacing the old in-memory `connections` dict + Unix socket, and making delivery work across replicas when `coordination.backend=redis`.
 
 ### Corporate-memory privacy boundary
 
