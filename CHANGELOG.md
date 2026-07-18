@@ -48,6 +48,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Chat reconnect replay silent-gap race: a WS reconnect used to compute the gap replay before seating the connection as a live sink, so a frame broadcast in that window was silently lost. `app/api/chat.py` now seats the connection live FIRST via a new `app.chat.replay.GapReplayGate` (buffers frames until the gap replay is computed, then releases them merged + de-duplicated + seq-sorted), closing the gap.
 - Chat replay's `full_refresh` decision is now eviction-based (`last_seq + 1 < min_retained_seq`) instead of strict seq contiguity, so a legitimate hole from a private, never-broadcast frame (the per-sink `ready`/`runner_not_ready` sends) no longer forces an unnecessary `full_refresh`.
 - `ChatManager._broadcast` no longer holds the per-session `_broadcast_lock` across the chat-out replay-stream append (a coordination-backend round trip), removing that latency from every streamed token. `CoordinationBackend.stream_read` (both backends) now sorts entries by the frame's own `seq` field to stay correct despite appends that can now complete out of order.
+- `ChatManager._resume_live` is now serialized per session (`LiveSession._resume_lock`): with the inbound-consumer task (wave-2F task 4) added as a third concurrent caller alongside `attach()` and `send_user_message`, two callers racing a single PAUSED session could both resume/spawn a sandbox — leaking one (never destroyed, still billable) and leaving its crash-respawn wait task orphaned. The lock plus a post-acquire PAUSED re-check makes a losing caller a no-op instead.
+
+### Internal
+
+- `send_user_message` now documents the accepted ordering gap between direct-owner delivery and stream-forwarded delivery: each path is internally ordered, but the two share no total order against each other (acceptable under the current sticky-WS topology; see the method's docstring).
+- `ChatManager._inbound_consumer_loop` uses `asyncio.get_running_loop()` instead of the deprecated `asyncio.get_event_loop()`.
 
 ## [0.74.116] - 2026-07-18
 
