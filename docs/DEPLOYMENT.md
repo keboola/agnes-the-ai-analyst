@@ -249,6 +249,63 @@ call their endpoint synchronously (full split in
 with `agnes admin jobs list` (`--status`/`--kind` to filter) or
 `agnes admin jobs show <job_id>` for one row.
 
+### Coordination backend
+
+`coordination.backend` (`instance.yaml`) / `AGNES_COORDINATION_BACKEND`
+(env) selects the `CoordinationBackend` implementation everything above
+(and several other cross-process concerns) rides on: `memory` (default)
+or `redis`, pointed at `redis.url` / `AGNES_REDIS_URL`. `memory` is
+process-local — fine for `all`-role, single-process deployments, and it's
+what every non-multi-process topology uses today. `redis` is required as
+soon as any process is split by role or `UVICORN_WORKERS > 1` — it is
+itself one of the three conditions `is_multi_process()` checks (alongside
+`DATABASE_URL`/`database.backend` and `UVICORN_WORKERS > 1`), so
+configuring it alone is enough to opt a topology into the multi-process
+startup guards even before an actual role split.
+
+In `redis` mode the backend carries:
+
+- WS auth tickets (chat stream/join and the admin tail route) — single-use,
+  60 s TTL, visible to whichever replica the client's next request lands on;
+- leader leases for the Slack Socket Mode connection, the Telegram
+  long-poll loop, and the paused-sandbox TTL sweep — exactly one replica
+  runs each singleton consumer at a time;
+- shared per-IP auth-endpoint rate limits and chat per-user hourly
+  message / daily token quotas — counted once across all replicas instead
+  of once per replica;
+- cache-invalidation pub/sub for the v2 catalog/schema/sample TTL caches —
+  every api replica drops its own stale entries on a registry change;
+- operational auth codes — CLI-auth login codes and Slack binding codes —
+  as `redis` KV instead of `operational.duckdb` reads/writes; and
+- `.env_overlay` token reload — a rotated marketplace/template PAT or
+  chat-sandbox key is written once and every api/worker/gateway replica
+  picks it up via a pub/sub event (plus a periodic re-read, belt-and-braces,
+  every `AGNES_STATE_CHECKPOINT_INTERVAL_S`, default 300 s).
+
+Configuring `redis` mode also **removes `operational.duckdb` from
+multi-process topologies** — it was one of only two files every replica
+still opened read/write; with `redis` mode, operational codes live in
+Redis instead, and no replica needs to touch that file. (`memory` mode is
+unaffected: `operational.duckdb` remains the storage for CLI-auth/Slack
+binding codes there.)
+
+**Disposability invariant.** A single non-HA Redis is the supported
+shape — no cluster, no sentinel, no persistence requirement. Every
+consumer above is designed to recover cleanly from a Redis `FLUSHALL` (or
+the instance being replaced outright): leases are re-acquired within their
+TTL by whichever replica asks next; WS tickets are simply re-minted on the
+client's next request; rate-limit and quota counters reset to zero (a
+brief extra-generous window, never a false 429); operational codes are
+gone, so an in-flight login/bind flow must be re-run from the start; and
+`.env_overlay` values go stale for at most the periodic re-read interval
+(`AGNES_STATE_CHECKPOINT_INTERVAL_S`, default 300 s) before every replica
+converges again. Nothing durable — app state, table registry, secrets —
+lives in Redis; it is purely a coordination cache. The redis-py client is
+configured with bounded socket connect/read timeouts, so a hung or
+unreachable Redis surfaces as a prompt `CoordinationUnavailable` (which
+callers already handle — e.g. a graceful WS close with code 4503) instead
+of blocking a lease-heartbeat thread indefinitely.
+
 ## Cloud-chat host requirements
 
 Agnes can serve a zero-install web chat and Slack DM bot at `/chat`. The
