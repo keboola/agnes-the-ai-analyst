@@ -2257,6 +2257,34 @@ def test_paused_sweep_runs_when_lease_acquired_and_releases_after(tmp_path):
     asyncio.run(_run())
 
 
+def test_paused_sweep_releases_routing_lease(tmp_path):
+    """A session torn down via the paused-sandbox-TTL sweep's destroy path
+    (`self._live.pop(session.id, None)` directly, bypassing kill()) must
+    have its routing lease released immediately rather than left to
+    self-heal at the lease's own TTL (Minor finding)."""
+    from app.chat import routing
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        session = _paused_expired_session(mgr)
+
+        # Simulate the session having previously claimed its routing lease
+        # (the normal spawn/resume path) before it was paused.
+        gw = routing.this_gateway_id()
+        assert routing.claim_session(session.id, gw, ttl_s=180) is True
+        assert routing.owner_of(session.id) == gw
+
+        await mgr._reap_once()
+
+        assert routing.owner_of(session.id) is None, "paused-sweep teardown must release the routing lease"
+        # Freed immediately, not just expired — another gateway can claim
+        # it right away instead of waiting out the TTL.
+        assert routing.claim_session(session.id, "other-gateway:999", ttl_s=60) is True
+
+    asyncio.run(_run())
+
+
 # ---------------------------------------------------------------------------
 # Wave-2F task 1: session routing leases (app/chat/routing.py) wiring
 # ---------------------------------------------------------------------------
@@ -2324,7 +2352,7 @@ def test_renew_routing_leases_keeps_ownership(manager: ChatManager):
         gw = routing.this_gateway_id()
         assert routing.owner_of(s.id) == gw
 
-        manager._renew_routing_leases()
+        await manager._renew_routing_leases()
 
         assert routing.owner_of(s.id) == gw
 
@@ -2359,5 +2387,93 @@ def test_spawn_continues_when_routing_lease_contended(manager: ChatManager):
         await manager.kill(s.id, reason="test_done")
         handle.emit_eof()
         await attach_task
+
+    asyncio.run(_run())
+
+
+def test_routing_lease_calls_offloaded_to_thread(manager: ChatManager):
+    """Important finding: _claim_routing_lease/_renew_routing_leases must
+    run the coordination-backend lease call via asyncio.to_thread, not
+    synchronously on the event loop — under the redis backend each is a
+    blocking socket round-trip (WATCH/MULTI/EXEC) that would otherwise
+    stall the whole process for every live session on every reaper tick.
+
+    Proof: install a coordination backend whose lease_acquire/lease_renew
+    block synchronously for a noticeable duration, then confirm a
+    concurrently-running coroutine keeps making progress (its tick counter
+    advances) while the lease call is in flight. If the lease call ran
+    on-loop instead of via to_thread, the ticker would be starved and the
+    counter would stay near zero.
+    """
+    import time as _time
+
+    import app.coordination.factory as factory
+    from app.coordination.memory import MemoryCoordinationBackend
+
+    class _SlowLeaseBackend(MemoryCoordinationBackend):
+        """MemoryCoordinationBackend whose lease primitives block
+        synchronously — simulates a slow Redis round-trip."""
+
+        def __init__(self, delay: float) -> None:
+            super().__init__()
+            self.delay = delay
+
+        def lease_acquire(self, name, holder_id, *, ttl_s):
+            _time.sleep(self.delay)
+            return super().lease_acquire(name, holder_id, ttl_s=ttl_s)
+
+        def lease_renew(self, name, holder_id, *, ttl_s):
+            _time.sleep(self.delay)
+            return super().lease_renew(name, holder_id, ttl_s=ttl_s)
+
+    async def _run():
+        factory._instance = _SlowLeaseBackend(delay=0.3)
+        try:
+            ticks = 0
+
+            async def _ticker():
+                nonlocal ticks
+                for _ in range(60):
+                    await asyncio.sleep(0.01)
+                    ticks += 1
+
+            ticker_task = asyncio.create_task(_ticker())
+            await manager._claim_routing_lease("chat-claim-slow")
+            await asyncio.sleep(0)  # let the ticker record its latest tick
+
+            # A 0.3s blocking call, if truly offloaded, overlaps with ~30
+            # ticker iterations (0.01s each); a call that instead blocked
+            # the loop would leave `ticks` near 0.
+            assert ticks > 10, f"event loop appears stalled during _claim_routing_lease (ticks={ticks})"
+
+            ticker_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await ticker_task
+
+            # Same proof for the reaper's per-tick renew path — needs a
+            # live (non-DEAD) session in self._live to iterate over.
+            from datetime import datetime, timezone
+
+            from app.chat.manager import LiveSession
+
+            manager._live["chat-claim-slow"] = LiveSession(
+                chat_id="chat-claim-slow",
+                user_email="u@x",
+                state=SessionState.ACTIVE,
+                handle=None,
+                started_at=datetime.now(timezone.utc),
+                last_activity=datetime.now(timezone.utc),
+                sinks=[],
+            )
+            ticks = 0
+            ticker_task = asyncio.create_task(_ticker())
+            await manager._renew_routing_leases()
+            await asyncio.sleep(0)
+            ticker_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await ticker_task
+            assert ticks > 10, f"event loop appears stalled during _renew_routing_leases (ticks={ticks})"
+        finally:
+            reset_coordination_for_tests()
 
     asyncio.run(_run())
