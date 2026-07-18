@@ -490,3 +490,112 @@ class TestJobQueueMetrics:
         obs_metrics.record_job_duration("whatever", "done", 0.1)
         obs_metrics.begin_job_running("whatever", "heavy")
         obs_metrics.end_job_running("whatever", "heavy")
+
+
+@pytest.fixture(autouse=True)
+def _reset_coordination_for_metrics_tests(monkeypatch):
+    """`coordination()` is a process-wide singleton (app/coordination/factory.py)
+    — isolate it across tests in this module the same way
+    tests/test_coordination_factory.py does, so an earlier test's redis
+    override (or a monkeypatched `ping`) never leaks into a later one."""
+    from app.coordination.factory import reset_coordination_for_tests
+
+    for var in ("AGNES_COORDINATION_BACKEND", "AGNES_REDIS_URL"):
+        monkeypatch.delenv(var, raising=False)
+    reset_coordination_for_tests()
+    yield
+    reset_coordination_for_tests()
+
+
+@pytest.fixture
+def _restore_readiness():
+    """`app.api.health_probes.readiness` is a process-wide singleton also
+    mutated by tests/test_health_probes.py — restore it to a fresh ready
+    state afterward so this module's readiness-tripping tests don't leak
+    into unrelated tests running later in the same session."""
+    yield
+    from app.api.health_probes import readiness
+
+    for _ in range(2):
+        readiness.record_canary(True)
+
+
+class TestCoordinationReadinessMetrics:
+    """Task 3: `agnes_coordination_up` / `agnes_coordination_backend_info` /
+    `agnes_readiness`, all populated at scrape time by
+    `_CoordinationReadinessCollector` (app/observability/metrics.py)."""
+
+    def test_coordination_up_is_1_for_memory_backend(self, app_client, monkeypatch):
+        monkeypatch.delenv("AGNES_COORDINATION_BACKEND", raising=False)
+        monkeypatch.setattr("app.instance_config.get_value", lambda *a, **k: None)
+
+        r = app_client.get("/metrics")
+        assert r.status_code == 200
+        assert _counter_value("agnes_coordination_up") == 1.0
+
+    def test_coordination_backend_info_shows_memory(self, app_client, monkeypatch):
+        monkeypatch.delenv("AGNES_COORDINATION_BACKEND", raising=False)
+        monkeypatch.setattr("app.instance_config.get_value", lambda *a, **k: None)
+
+        app_client.get("/metrics")
+        sample = next(iter(_samples("agnes_coordination_backend_info")), None)
+        assert sample is not None
+        assert sample.labels.get("backend") == "memory"
+
+    def test_readiness_gauge_reflects_tripped_state(self, app_client, _restore_readiness):
+        from app.api.health_probes import readiness
+
+        for _ in range(3):
+            readiness.record_canary(False)
+        assert not readiness.is_ready()
+
+        app_client.get("/metrics")
+        assert _counter_value("agnes_readiness") == 0.0
+
+    def test_readiness_gauge_reflects_ready_state(self, app_client, _restore_readiness):
+        from app.api.health_probes import readiness
+
+        for _ in range(2):
+            readiness.record_canary(True)
+        assert readiness.is_ready()
+
+        app_client.get("/metrics")
+        assert _counter_value("agnes_readiness") == 1.0
+
+    def test_coordination_ping_raising_yields_up_0_and_bumps_error_counter(self, app_client, monkeypatch):
+        # Mirrors test_queued_collector_survives_jobs_repo_error's shape: capture
+        # `before` while the backend still works (no error bump yet), trigger
+        # exactly one broken scrape, then read `after` via exactly one more
+        # REGISTRY.collect()-triggering call. Every call to `_counter_value`/
+        # `_samples` itself runs REGISTRY.collect() — since our collector bumps
+        # the SAME error counter it's about to be asked to report, an extra
+        # intermediate check in between would itself trigger another bump
+        # (the ping stays broken) and throw off the before/after delta. So the
+        # `up` value is read straight out of the one response's own exposition
+        # text (already-collected data) instead of a fresh `_counter_value` call.
+        from prometheus_client.parser import text_string_to_metric_families
+
+        from app.coordination.factory import coordination
+
+        backend = coordination()
+
+        before = _counter_value("agnes_metrics_collector_errors_total", collector="coordination") or 0.0
+
+        def boom():
+            raise RuntimeError("ping exploded")
+
+        monkeypatch.setattr(backend, "ping", boom)
+
+        r = app_client.get("/metrics")
+        assert r.status_code == 200
+        assert "agnes_http_requests_total" in r.text  # other metrics still present
+
+        up_value = None
+        for family in text_string_to_metric_families(r.text):
+            for sample in family.samples:
+                if sample.name == "agnes_coordination_up":
+                    up_value = sample.value
+        assert up_value == 0.0
+
+        after = _counter_value("agnes_metrics_collector_errors_total", collector="coordination")
+        assert after == before + 1.0
