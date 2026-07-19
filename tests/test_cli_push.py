@@ -649,13 +649,19 @@ def test_push_env_killswitch_skips_probe(tmp_path, monkeypatch):
     _one_transcript(tmp_path, monkeypatch, content)
     monkeypatch.setenv("AGNES_PUSH_NO_GZIP", "1")
 
-    def _must_not_probe(p, **kw):
-        raise AssertionError("api_get must not be called with AGNES_PUSH_NO_GZIP=1")
+    probe_calls: list[str] = []
 
-    monkeypatch.setattr("cli.commands.push.api_get", _must_not_probe)
+    def _record_probe(p, **kw):
+        probe_calls.append(p)
+        return _FakeProbeResp("session-gzip")
+
+    monkeypatch.setattr("cli.commands.push.api_get", _record_probe)
     calls = _record_upload_bodies(monkeypatch)
     result = runner.invoke(push_app, [])
     assert result.exit_code == 0
+    # With the kill-switch set, the capability probe must never fire...
+    assert probe_calls == []
+    # ...and the upload must fall back to the plain (non-gzip) filename.
     _path, name, body = [c for c in calls if c[0] == "/api/upload/sessions"][0]
     assert name == "sess-gz-test.jsonl"
     assert body == content

@@ -1,7 +1,7 @@
 # Gzip-compressed session transcript uploads — design
 
 **Date:** 2026-07-17
-**Status:** Draft (verified against the codebase, pending approval)
+**Status:** Implemented (see docs/superpowers/plans/2026-07-17-gzip-session-upload.md)
 
 ## Problem
 
