@@ -49,6 +49,12 @@ logger = logging.getLogger(__name__)
 
 _rebuild_lock = threading.Lock()
 
+# Row count per Arrow RecordBatchReader batch for the DuckLake copy-ingest
+# path (see `_ingest_source_ducklake`). Deliberately small relative to
+# DuckDB's own default (1_000_000) so a single table's ingest never holds
+# more than one batch's worth of rows in Python-process memory at a time.
+_DUCKLAKE_INGEST_BATCH_SIZE = 100_000
+
 
 def _capture_orchestrator_exception(exc: BaseException, **props) -> None:
     """Best-effort PostHog forward for rebuild failures. No-op when disabled."""
@@ -592,10 +598,11 @@ class SyncOrchestrator:
         ATTACHes every extract source under its directory-name alias on
         that shared connection — a second ATTACH of the same alias from
         here would collide with it. Reading through a fully independent
-        connection and hopping the result through an in-memory Arrow
-        table (DuckDB's replacement scan can reference a local Python
-        variable from either connection's ``execute()`` call) sidesteps
-        that collision entirely, and is still pure copy-ingest: nothing
+        connection and streaming the result batch-by-batch through an
+        Arrow ``RecordBatchReader`` (DuckDB's replacement scan can
+        reference a local Python variable from either connection's
+        ``execute()`` call) sidesteps that collision entirely, and is
+        still pure copy-ingest: nothing
         is ever attached or added as a DuckLake data file directly from
         the extract's own mutable parquet paths.
 
@@ -636,11 +643,98 @@ class SyncOrchestrator:
                 if not _validate_identifier(table_name, "table_name"):
                     continue
 
-                # Issue #81 Group C — same first-come-first-served claim
-                # as the legacy path, run for EVERY table regardless of
-                # query_mode: a remote table's name still occupies the
-                # shared view-name namespace even though it gets no
-                # ducklake object here (task 4's reader resolves it).
+                if query_mode == "remote":
+                    # Remote-mode tables have no local parquet — their
+                    # "inner object" is the view over an externally-ATTACHed
+                    # extension (BigQuery, Keboola direct-bucket), which we
+                    # don't attempt to read here at all. There is nothing to
+                    # probe for readability, so they claim their name
+                    # unconditionally, same as the legacy path's Group C
+                    # first-come-first-served claim.
+                    if view_repo is not None:
+                        if not view_repo.claim(table_name, source_name):
+                            prior_owner = view_repo.get_owner(table_name) or existing_owners.get(
+                                table_name, "<unknown>"
+                            )
+                            logger.error(
+                                "view_ownership collision: %s already owns view %r; "
+                                "%s.%s will NOT be exposed. Rename `name` in the "
+                                "table_registry on one side to resolve.",
+                                prior_owner,
+                                table_name,
+                                source_name,
+                                table_name,
+                            )
+                            continue
+                        if claimed_pairs is not None:
+                            claimed_pairs.append((source_name, table_name))
+
+                    logger.info(
+                        "DuckLake ingest: %s.%s is query_mode='remote' — "
+                        "skipping copy-ingest (no local parquet); the reader "
+                        "resolves it from table_registry at query time",
+                        source_name,
+                        table_name,
+                    )
+                    continue
+
+                # Determine whether this table has a readable inner object
+                # BEFORE claiming ownership of its name — mirrors legacy's
+                # `if table_name not in inner_objects: continue`, which runs
+                # before its own `view_repo.claim()` call. A `_meta` row
+                # without a backing object (e.g. keboola
+                # use_extension=False) must never claim the name: doing so
+                # would let it win a collision against a DIFFERENT source's
+                # real table of the same name and block that source's
+                # legitimate row from ever being exposed — a divergence
+                # from legacy semantics caught in review.
+                try:
+                    # arrow_batches looks unused to static analysis, but
+                    # DuckDB's replacement scan resolves the bare
+                    # `arrow_batches` name in the `write_conn.execute(...)`
+                    # FROM-clause below against this calling frame's locals —
+                    # it IS the data transfer from the read-only extract
+                    # connection to the DuckLake writer connection. See this
+                    # method's docstring.
+                    #
+                    # `.to_arrow_reader(batch_size=...)` returns a
+                    # `pyarrow.RecordBatchReader`: `write_conn` pulls it
+                    # batch-by-batch (``_DUCKLAKE_INGEST_BATCH_SIZE`` rows at
+                    # a time) as it executes the CTAS below, so at most one
+                    # batch is ever materialized in Python-process memory at
+                    # once. This is deliberate and load-bearing — the whole
+                    # point of this data plane is to keep a runaway ingest
+                    # from OOM-killing the process (see
+                    # docs/superpowers/specs/2026-07-16-three-plane-scalable-architecture.md).
+                    # Do NOT change this to `.to_arrow_table()`, `.fetchall()`,
+                    # or any other form that materializes the full result
+                    # before handing it to `write_conn` — those buffer the
+                    # entire table in memory and will OOM on large analytics
+                    # tables. `tests/test_orchestrator_ducklake.py`'s
+                    # bounded-memory test exists specifically to catch that
+                    # regression.
+                    arrow_batches = ro.sql(f'SELECT * FROM "{table_name}"').to_arrow_reader(  # noqa: F841
+                        batch_size=_DUCKLAKE_INGEST_BATCH_SIZE
+                    )
+                except Exception as e:
+                    # Mirrors the legacy "_meta row without inner object"
+                    # skip (e.g. keboola use_extension=False path) —
+                    # reactive here (try/except) rather than a
+                    # precomputed inner-objects set, since we're not
+                    # holding an ATTACH to introspect information_schema
+                    # against. Deliberately does NOT claim the name (see
+                    # comment above the try block).
+                    logger.info(
+                        "Skipping ducklake ingest for %s.%s — no inner object (%s)",
+                        source_name,
+                        table_name,
+                        e,
+                    )
+                    continue
+
+                # Issue #81 Group C — same first-come-first-served claim as
+                # the legacy path. Only reached once we've confirmed above
+                # that this table actually has data to ingest.
                 if view_repo is not None:
                     if not view_repo.claim(table_name, source_name):
                         prior_owner = view_repo.get_owner(table_name) or existing_owners.get(table_name, "<unknown>")
@@ -657,45 +751,12 @@ class SyncOrchestrator:
                     if claimed_pairs is not None:
                         claimed_pairs.append((source_name, table_name))
 
-                if query_mode == "remote":
-                    logger.info(
-                        "DuckLake ingest: %s.%s is query_mode='remote' — "
-                        "skipping copy-ingest (no local parquet); the reader "
-                        "resolves it from table_registry at query time",
-                        source_name,
-                        table_name,
-                    )
-                    continue
-
-                try:
-                    # arrow_tbl looks unused to static analysis, but DuckDB's
-                    # replacement scan resolves the bare `arrow_tbl` name in
-                    # the `write_conn.execute(...)` FROM-clause below against
-                    # this calling frame's locals — it IS the data transfer
-                    # from the read-only extract connection to the DuckLake
-                    # writer connection. See this method's docstring.
-                    arrow_tbl = ro.sql(f'SELECT * FROM "{table_name}"').arrow()  # noqa: F841
-                except Exception as e:
-                    # Mirrors the legacy "_meta row without inner object"
-                    # skip (e.g. keboola use_extension=False path) —
-                    # reactive here (try/except) rather than a
-                    # precomputed inner-objects set, since we're not
-                    # holding an ATTACH to introspect information_schema
-                    # against.
-                    logger.info(
-                        "Skipping ducklake ingest for %s.%s — no inner object (%s)",
-                        source_name,
-                        table_name,
-                        e,
-                    )
-                    continue
-
                 try:
                     if not schema_created:
                         write_conn.execute(f'CREATE SCHEMA IF NOT EXISTS lake."{source_name}"')
                         schema_created = True
                     write_conn.execute(
-                        f'CREATE OR REPLACE TABLE lake."{source_name}"."{table_name}" AS SELECT * FROM arrow_tbl'
+                        f'CREATE OR REPLACE TABLE lake."{source_name}"."{table_name}" AS SELECT * FROM arrow_batches'
                     )
                     write_conn.execute(
                         f'CREATE OR REPLACE VIEW lake."main"."{table_name}" AS '
