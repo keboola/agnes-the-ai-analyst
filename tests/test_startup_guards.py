@@ -177,6 +177,27 @@ def test_ducklake_multiprocess_accepts_postgres_scheme_alias(monkeypatch):
     validate_deployment()
 
 
+def test_ducklake_multiprocess_accepts_sqlalchemy_driver_suffix(monkeypatch):
+    """``postgresql+psycopg://`` (the SQLAlchemy ``+driver`` form a copied
+    ``DATABASE_URL`` uses) must satisfy the guard — it uses the same
+    ``src.analytics_backend.is_postgres_dsn`` predicate as
+    ``src.ducklake_session``'s attach path, which already accepted this
+    form; a plain ``str.startswith(("postgresql://", "postgres://"))``
+    would have rejected it and blocked an otherwise-valid deployment."""
+    monkeypatch.setenv("AGNES_ROLE", "api")
+    monkeypatch.setenv("JWT_SECRET_KEY", "x" * 32)
+    monkeypatch.setenv("SESSION_SECRET", "y" * 32)
+    reset_roles_cache()
+    monkeypatch.setattr("app.startup_guards._use_pg", lambda: True)
+    monkeypatch.setattr("app.startup_guards._coordination_backend", lambda: "redis")
+    monkeypatch.setattr("app.startup_guards._analytics_backend", lambda: "ducklake")
+    monkeypatch.setattr(
+        "app.startup_guards._ducklake_catalog_dsn",
+        lambda: "postgresql+psycopg://agnes:pw@pg-host:5432/agnes_ducklake",
+    )
+    validate_deployment()
+
+
 def test_single_process_ducklake_file_catalog_passes_with_zero_config(monkeypatch):
     """All-in-one + ``analytics.backend=ducklake`` + the default file
     catalog is a fully supported topology — no PG, no secrets, no redis
