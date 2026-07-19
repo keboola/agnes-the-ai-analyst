@@ -67,6 +67,22 @@ class _SubprocessRecorder:
         return subprocess.CompletedProcess(args=list(cmd), returncode=0, stdout="", stderr="")
 
 
+@pytest.fixture(autouse=True)
+def _clear_marketplace_host_env(monkeypatch):
+    """Neutralize AGNES_SERVER / AGNES_MARKETPLACE_URL for every test here.
+
+    `configured_marketplace_host()` reads these env vars; when either is set,
+    refresh runs an origin-host mismatch preflight (`git remote get-url
+    origin`) that records an extra git call before the fetch. Another test
+    setting these via raw `os.environ` (not monkeypatch) leaks a configured
+    host into this module under randomized ordering and flakes the
+    git-call-order assertions. Clearing them restores the isolation these
+    tests were written against.
+    """
+    monkeypatch.delenv("AGNES_SERVER", raising=False)
+    monkeypatch.delenv("AGNES_MARKETPLACE_URL", raising=False)
+
+
 @pytest.fixture
 def recorder(monkeypatch) -> _SubprocessRecorder:
     rec = _SubprocessRecorder()
@@ -225,7 +241,12 @@ def test_refresh_marketplace_uses_fetch_plus_reset_not_pull(
     git_calls = [c for c in recorder.calls if c.cmd and c.cmd[0] == "git"]
     assert len(git_calls) >= 2
 
-    fetch = git_calls[0]
+    # Find the fetch/reset calls by content, not by position: a configured
+    # marketplace host makes refresh run an origin-host preflight
+    # (`git remote get-url origin`) first, so the fetch is not necessarily
+    # git_calls[0]. The autouse fixture clears that env, but assert by
+    # content anyway so the ordering is not load-bearing.
+    fetch = next(c for c in git_calls if "fetch" in c.cmd)
     assert "-c" in fetch.cmd
     assert fetch.cmd[fetch.cmd.index("-c") + 1].startswith("credential.helper=")
     assert "fetch" in fetch.cmd and "origin" in fetch.cmd
@@ -233,7 +254,7 @@ def test_refresh_marketplace_uses_fetch_plus_reset_not_pull(
         assert with_token not in arg
     assert fetch.env.get("AGNES_TOKEN") == with_token
 
-    reset = git_calls[1]
+    reset = next(c for c in git_calls if "reset" in c.cmd)
     assert "reset" in reset.cmd and "--hard" in reset.cmd and "FETCH_HEAD" in reset.cmd
 
     assert not any("pull" in c.cmd for c in git_calls)
