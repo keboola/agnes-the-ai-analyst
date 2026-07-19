@@ -65,7 +65,10 @@ In `app/api/upload.py`:
 2. Stream-decompress while writing to the temp file: a sibling of
    `_stream_to_temp` that pipes each 64 KB chunk through
    `zlib.decompressobj(wbits=31)` (gzip container) and counts
-   **decompressed** bytes against `MAX_UPLOAD_SIZE`.
+   **decompressed** bytes against `MAX_UPLOAD_SIZE`. Each chunk is drained
+   through `decompress(buf, _MAX_DECOMP_STEP)` in a `unconsumed_tail` loop so
+   a single call can never materialize more than `_MAX_DECOMP_STEP` bytes —
+   bounding peak memory even for adversarial high-ratio input.
    - Decompressed total over the cap → HTTP 413, temp file unlinked. This is
      the zip-bomb guard: the cap must bind on output bytes, not transfer
      bytes. (Compressed input is implicitly capped too — keep the existing
