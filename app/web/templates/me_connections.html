@@ -25,8 +25,8 @@
 .conn-pill--on { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
 .conn-pill--off { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
 .conn-hint { font-size: 13px; color: var(--ds-text-secondary); margin: 8px 0; }
-.conn-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
-.conn-row input { flex: 1; }
+.conn-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.conn-row input { flex: 1; min-width: 200px; }
 .conn-updated { font-size: 12px; color: var(--ds-text-muted); margin-top: 6px; }
 .conn-note {
   font-size: 12px; color: var(--ds-text-secondary);
@@ -64,10 +64,10 @@
 
     <div class="conn-row">
       <input type="password" autocomplete="off" placeholder="Paste your token" data-token />
-      <button type="button" data-action="save">{% if s.has_secret %}Replace token{% else %}Connect{% endif %}</button>
+      <button type="button" class="btn btn-primary btn-sm" data-action="save">{% if s.has_secret %}Replace token{% else %}Connect{% endif %}</button>
       {% if s.has_secret %}
-      <button type="button" data-action="test">Test</button>
-      <button type="button" data-action="remove">Remove</button>
+      <button type="button" class="btn btn-secondary btn-sm" data-action="test">Test</button>
+      <button type="button" class="btn btn-danger btn-sm" data-action="remove">Remove</button>
       {% endif %}
     </div>
     {% if s.updated_at %}<div class="conn-updated">Updated {{ s.updated_at }}</div>{% endif %}
