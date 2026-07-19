@@ -10,14 +10,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.74.118] - 2026-07-18
-
-### Changed
-
-- `/me/connections` Connect / Replace token / Test / Remove buttons now use the
-  design-system button classes (`btn btn-primary` / `btn-secondary` /
-  `btn-danger`, size `btn-sm`) instead of unstyled browser-default buttons, and
-  the row wraps on narrow viewports.
 ### Added
 
 - **Opt-in DuckLake analytics backend** (wave-2G, WS E — `legacy` remains the
@@ -59,6 +51,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   [`docs/architecture.md`](docs/architecture.md#analytics-data-plane-legacy-vs-ducklake);
   deployment/config guide:
   [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#ducklake-analytics-backend).
+
+## [0.74.118] - 2026-07-18
+
+### Changed
+
+- `/me/connections` Connect / Replace token / Test / Remove buttons now use the
+  design-system button classes (`btn btn-primary` / `btn-secondary` /
+  `btn-danger`, size `btn-sm`) instead of unstyled browser-default buttons, and
+  the row wraps on narrow viewports.
 
 ## [0.74.117] - 2026-07-18
 
