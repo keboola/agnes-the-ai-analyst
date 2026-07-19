@@ -615,6 +615,65 @@ def _on_env_overlay_changed(env_name: str) -> None:
         logger.exception("env-overlay-changed handler failed for %s (non-fatal)", env_name)
 
 
+def _register_ducklake_readyz_check() -> None:
+    """Register the DuckLake ``/readyz`` check (``app.api.health_probes``)
+    UNCONDITIONALLY when the analytics backend is ``ducklake`` — i.e.
+    independent of whether the best-effort reader warm-up in the lifespan
+    (right after this call) succeeds.
+
+    Why unconditional (wave-2G Task 5 review carry-over, finding 4): this
+    registration used to happen only *after* the warm-up call
+    (``get_ducklake_read().close()``) had already succeeded, inside the
+    same ``try`` block. The single most likely failure window — the
+    Postgres catalog not yet reachable at boot (e.g. a rolling deploy
+    racing the catalog's own restart) — hit that block's ``except``
+    branch, which swallowed the warm-up failure AND skipped registration
+    in the same step. The result: a replica whose DuckLake attach is
+    actually broken reported ``/readyz`` as fully ready (no ``"ducklake"``
+    entry ever appeared in ``failed_checks`` because the check was never
+    registered at all), so the load balancer kept routing traffic to
+    it — exactly the failure this check exists to surface. Registering
+    here, before any warm-up attempt, means a later periodic ``/readyz``
+    poll still catches a catalog that was unreachable at boot (and
+    recovers if it comes back, or correctly keeps the replica out of
+    rotation if it never does).
+
+    The check function itself is a cheap liveness probe: it calls
+    :func:`src.ducklake_session.get_ducklake_read` directly (which opens
+    the singleton lazily if the warm-up below never ran or failed) and
+    issues ``SELECT 1`` on the returned cursor — safe to call whether or
+    not the session is already warm.
+    """
+    from src.analytics_backend import analytics_backend
+
+    if analytics_backend() != "ducklake":
+        return
+
+    def _ducklake_readyz_check() -> bool:
+        from src.ducklake_session import get_ducklake_read
+
+        try:
+            cur = get_ducklake_read()
+        except Exception:
+            logger.warning("ducklake readyz check: get_ducklake_read() failed", exc_info=True)
+            return False
+        try:
+            cur.execute("SELECT 1").fetchone()
+            return True
+        except Exception:
+            logger.warning("ducklake readyz check: SELECT 1 probe failed", exc_info=True)
+            return False
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+
+    from app.api.health_probes import register_readiness_check
+
+    register_readiness_check("ducklake", _ducklake_readyz_check)
+
+
 @asynccontextmanager
 async def lifespan(app):
     # Refuse to boot an unsafe multi-process topology (role split or
@@ -739,6 +798,19 @@ async def lifespan(app):
     # must never block startup — the same reader opens lazily, exactly as
     # today, on the first real request that needs it.
     if role_enabled(Role.API) or role_enabled(Role.GATEWAY):
+        # Registered UNCONDITIONALLY, before the warm-up attempt below —
+        # see _register_ducklake_readyz_check's docstring for why this
+        # must not live inside the warm-up's own try/except (finding 4:
+        # a catalog unreachable at boot must still surface via periodic
+        # /readyz polls, the m-tier smoke harness
+        # (scripts/dev/mtier-smoke.sh) asserts on this). Its own
+        # analytics_backend() resolution is wrapped here too, so a
+        # config-resolution error can't block startup either.
+        try:
+            _register_ducklake_readyz_check()
+        except Exception:
+            logger.exception("ducklake readyz-check registration failed at startup (non-fatal)")
+
         try:
             from src.analytics_backend import analytics_backend
 
@@ -747,30 +819,11 @@ async def lifespan(app):
 
                 get_ducklake_read().close()  # closes the cursor only; the underlying attach stays open
                 logger.info("DuckLake reader session warmed at startup")
-
-                # Register a /readyz check (app.api.health_probes) so a
-                # broken catalog attach (e.g. the Postgres catalog becomes
-                # unreachable after boot) surfaces as LB-visible
-                # "not_ready" instead of only failing at query time — the
-                # m-tier smoke harness (scripts/dev/mtier-smoke.sh) asserts
-                # on this. Only registered when ducklake is actually active,
-                # so a legacy-backend deployment's /readyz payload is
-                # unchanged.
-                def _ducklake_readyz_check() -> bool:
-                    from src.ducklake_session import get_ducklake_read as _get_read
-
-                    cur = _get_read()
-                    try:
-                        cur.execute("SELECT 1").fetchone()
-                        return True
-                    finally:
-                        cur.close()
-
-                from app.api.health_probes import register_readiness_check
-
-                register_readiness_check("ducklake", _ducklake_readyz_check)
         except Exception:
-            logger.exception("DuckLake reader warm-up failed at startup (non-fatal; opens lazily on first query)")
+            logger.exception(
+                "DuckLake reader warm-up failed at startup (non-fatal; opens lazily on first query, "
+                "surfaced via the /readyz check registered above)"
+            )
 
     # Sweep stale materialize parquet locks left behind by previous runs
     # that were SIGKILL'd mid-materialize. Lazy reclaim at next acquire

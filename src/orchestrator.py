@@ -27,12 +27,13 @@ re-fetches the metadata token and re-creates the secret each time a read-only
 analytics connection is opened.
 """
 
+import contextlib
 import hashlib
 import logging
 import os
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 import duckdb
 
@@ -48,6 +49,44 @@ from src.orchestrator_security import (
 logger = logging.getLogger(__name__)
 
 _rebuild_lock = threading.Lock()
+
+
+@contextlib.contextmanager
+def rebuild_mutex() -> Iterator[None]:
+    """Combined in-process + cross-process mutual exclusion for the DuckLake
+    write critical section — the exact two locks :meth:`SyncOrchestrator.rebuild`/
+    :meth:`SyncOrchestrator.rebuild_source` take, in the same order (in-process
+    ``_rebuild_lock`` first, then the cross-process ``src.db_pg.rebuild_lease``),
+    exposed as one reusable context manager.
+
+    Why this needs to exist as a shared helper (wave-2G Task 5 review carry-
+    over, finding 1-concurrency): ``ducklake-maintenance``
+    (``app.worker.kinds._run_ducklake_maintenance``) also writes the lake —
+    catalog-wide ``merge_adjacent_files``/``ducklake_expire_snapshots``/
+    ``ducklake_cleanup_old_files`` — via the same ``get_ducklake_write()``
+    singleton a concurrent rebuild uses. ``ducklake-maintenance`` runs in the
+    LIGHT lane, ``data-refresh``/``jira-refresh`` (which call
+    :meth:`rebuild`/:meth:`rebuild_source`) run in the HEAVY lane, and both
+    lanes run in the SAME worker process on independent OS threads
+    (``asyncio.to_thread`` per lane slot — see ``app/worker/runtime.py``), so
+    a long rebuild running past the maintenance job's schedule can race a
+    catalog-wide expire/cleanup pass against an in-progress per-table
+    ``CREATE OR REPLACE TABLE``. Taking the identical lock pair, in the
+    identical order, from both call sites makes them mutually exclusive
+    without risking a lock-order-inversion deadlock (which taking
+    ``_rebuild_lock``/``rebuild_lease()`` in reversed order from a second
+    call site would risk).
+
+    No-op cross-process half on the DuckDB backend (``rebuild_lease()`` is a
+    Postgres advisory lock, itself a no-op there) — the in-process
+    ``_rebuild_lock`` still applies, matching :meth:`rebuild`'s existing
+    behavior.
+    """
+    from src.db_pg import rebuild_lease
+
+    with _rebuild_lock, rebuild_lease():
+        yield
+
 
 # Row count per Arrow RecordBatchReader batch for the DuckLake copy-ingest
 # path (see `_ingest_source_ducklake`). Deliberately small relative to
@@ -131,9 +170,8 @@ class SyncOrchestrator:
         Returns: {source_name: [table_names]} for logging.
         """
         from src.analytics_backend import analytics_backend
-        from src.db_pg import rebuild_lease
 
-        with _rebuild_lock, rebuild_lease():
+        with rebuild_mutex():
             try:
                 if analytics_backend() == "ducklake":
                     return self._do_rebuild_ducklake()
@@ -154,9 +192,8 @@ class SyncOrchestrator:
         each time).
         """
         from src.analytics_backend import analytics_backend
-        from src.db_pg import rebuild_lease
 
-        with _rebuild_lock, rebuild_lease():
+        with rebuild_mutex():
             try:
                 if analytics_backend() == "ducklake":
                     return self._do_rebuild_ducklake(only_source=source_name).get(source_name, [])

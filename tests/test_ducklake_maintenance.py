@@ -163,8 +163,18 @@ class TestRealMaintenanceSequence:
         regardless of wall-clock timing — the real production default (7
         days) would correctly NOT expire anything created seconds ago in a
         test, so this override is what makes the assertion meaningful
-        rather than flaky/vacuous."""
+        rather than flaky/vacuous.
+
+        The 1-hour safety floor (``src.analytics_backend
+        ._MIN_RETENTION_FLOOR_SECONDS``, finding 1-retention-floor) would
+        otherwise ALSO correctly refuse to expire snapshots created
+        seconds ago even with retention_days=0 — that floor-clamping
+        behavior is exercised deliberately (and separately) by
+        ``TestCallOrderAndSql.test_retention_zero_is_clamped_to_floor_not_zero_days``
+        below; here the floor is forced to 0 so this test keeps proving
+        the real merge/expire/cleanup sequence works end to end."""
         monkeypatch.setenv("AGNES_DUCKLAKE_SNAPSHOT_RETENTION_DAYS", "0")
+        monkeypatch.setattr("src.analytics_backend._MIN_RETENTION_FLOOR_SECONDS", 0)
 
         from app.worker.kinds import register_all_kinds
         from app.worker.registry import JOB_KINDS
@@ -194,6 +204,50 @@ class TestRealMaintenanceSequence:
 
         assert snapshots_after < snapshots_before
         assert row_count == 50 + 5 * 20 - 5  # initial + inserts - the 5 deleted ids
+
+    def test_cleanup_reclaims_real_files_on_disk(self, ducklake_env, monkeypatch):
+        """Minor (reviewer-requested): the snapshot-count assertion above
+        proves the CATALOG shrinks, but not that ``ducklake_cleanup_old_files``
+        actually reclaimed anything physical. Same churn pattern, floor
+        forced to 0 for the same determinism reason as the sibling test,
+        but here the assertion is against real bytes/file count under the
+        lake's ``data_path`` on disk — proving the real extension actually
+        deletes the dead Parquet files, not just drops catalog rows."""
+        monkeypatch.setenv("AGNES_DUCKLAKE_SNAPSHOT_RETENTION_DAYS", "0")
+        monkeypatch.setattr("src.analytics_backend._MIN_RETENTION_FLOOR_SECONDS", 0)
+
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+        from src.analytics_backend import ducklake_data_path
+        from src.ducklake_session import get_ducklake_write
+
+        register_all_kinds()
+
+        w = get_ducklake_write()
+        w.execute("CREATE SCHEMA IF NOT EXISTS lake.src1")
+        w.execute("CREATE OR REPLACE TABLE lake.src1.t1 AS SELECT range AS id FROM range(2000)")
+        for i in range(8):
+            w.execute(f"INSERT INTO lake.src1.t1 SELECT range + {(i + 1) * 10000} FROM range(500)")
+            w.execute(f"DELETE FROM lake.src1.t1 WHERE id % {i + 2} = 0")
+        w.close()
+
+        from pathlib import Path
+
+        data_path = Path(ducklake_data_path())
+
+        def _file_stats() -> tuple[int, int]:
+            files = [p for p in data_path.rglob("*") if p.is_file()]
+            return len(files), sum(p.stat().st_size for p in files)
+
+        files_before, bytes_before = _file_stats()
+        assert files_before > 0, "fixture churn should have written real parquet files under data_path"
+
+        JOB_KINDS["ducklake-maintenance"].handler({})
+
+        files_after, bytes_after = _file_stats()
+
+        assert files_after < files_before, "dead parquet files must be physically removed, not just uncataloged"
+        assert bytes_after < bytes_before, "on-disk byte footprint must shrink after cleanup"
 
     def test_snapshot_retention_window_is_honored(self, ducklake_env, monkeypatch):
         """A long retention window (3650 days) must NOT expire any
@@ -320,6 +374,118 @@ class TestCallOrderAndSql:
             assert vacuum_calls == [1]  # VACUUM ran exactly once, after cleanup
         finally:
             ab.reset_analytics_backend_cache()
+
+    def test_retention_zero_is_clamped_to_floor_not_zero_days(self, monkeypatch, tmp_path):
+        """Finding 1-retention-floor: ``retention_days=0`` must NOT
+        translate into ``older_than => now() - INTERVAL '0 days'``
+        (effectively "expire everything up to right now") — it must clamp
+        to the configured safety floor
+        (``src.analytics_backend._MIN_RETENTION_FLOOR_SECONDS``, default
+        3600s/1h) instead, so a snapshot a live analyst query is still
+        reading from is never expired out from under it. The floor is
+        left at its production default here (unlike the sibling
+        end-to-end tests, which force it to 0 for determinism) —
+        precisely because this test's whole point is proving the default
+        floor actually clamps."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("AGNES_ANALYTICS_BACKEND", "ducklake")
+        monkeypatch.setenv("AGNES_DUCKLAKE_SNAPSHOT_RETENTION_DAYS", "0")
+
+        import src.analytics_backend as ab
+
+        ab.reset_analytics_backend_cache()
+        try:
+            assert ab.ducklake_min_retention_floor_seconds() == 3600, "sanity: production default floor"
+
+            from app.worker.kinds import register_all_kinds
+            from app.worker.registry import JOB_KINDS
+
+            register_all_kinds()
+
+            executed: list[str] = []
+
+            class _SpyCursor:
+                def execute(self, sql, *a, **kw):
+                    executed.append(sql)
+                    return self
+
+                def close(self):
+                    pass
+
+            monkeypatch.setattr("src.ducklake_session.get_ducklake_write", lambda: _SpyCursor())
+            monkeypatch.setattr("src.ducklake_session.vacuum_ducklake_catalog", lambda: True)
+
+            JOB_KINDS["ducklake-maintenance"].handler({})
+
+            expire_call = executed[1]
+            assert "INTERVAL '0 days'" not in expire_call, "must not clamp to effectively now()"
+            assert expire_call == (
+                "CALL ducklake_expire_snapshots('lake', older_than => now() - INTERVAL '3600 seconds')"
+            )
+        finally:
+            ab.reset_analytics_backend_cache()
+
+
+class TestMaintenanceRebuildMutualExclusion:
+    """Finding 1-concurrency: ``ducklake-maintenance`` (LIGHT lane) and
+    ``SyncOrchestrator.rebuild()``/``rebuild_source()`` (HEAVY lane) both
+    write the lake and run in the same worker process on independent OS
+    threads (``asyncio.to_thread`` per lane slot — see
+    ``app/worker/runtime.py``), so they must be mutually exclusive. This
+    simulates an in-progress rebuild by holding the real
+    ``src.orchestrator.rebuild_mutex()`` directly (rather than driving a
+    full ``SyncOrchestrator().rebuild()``, which would need a real
+    extracts directory) — proving the maintenance handler blocks on the
+    identical lock object until the simulated rebuild releases it. Runs
+    against a file-catalog (single-process) DuckLake, where the
+    cross-process ``rebuild_lease()`` half of the mutex is a documented
+    no-op and only the in-process ``_rebuild_lock`` half actually
+    serializes — i.e. this proves the fix holds even in the mode where
+    Postgres isn't around to help."""
+
+    def test_maintenance_blocks_until_simulated_rebuild_releases(self, ducklake_env):
+        import threading
+        import time
+
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+        from src.orchestrator import rebuild_mutex
+
+        register_all_kinds()
+
+        events: list[str] = []
+        rebuild_acquired = threading.Event()
+        release_rebuild = threading.Event()
+
+        def _simulated_rebuild() -> None:
+            with rebuild_mutex():
+                events.append("rebuild-acquired")
+                rebuild_acquired.set()
+                release_rebuild.wait(timeout=5)
+                events.append("rebuild-released")
+
+        rebuild_thread = threading.Thread(target=_simulated_rebuild)
+        rebuild_thread.start()
+        assert rebuild_acquired.wait(timeout=5), "simulated rebuild never acquired rebuild_mutex()"
+
+        def _run_maintenance() -> None:
+            JOB_KINDS["ducklake-maintenance"].handler({})
+            events.append("maintenance-done")
+
+        maintenance_thread = threading.Thread(target=_run_maintenance)
+        maintenance_thread.start()
+
+        # Give the maintenance thread a beat to reach (and block on) the
+        # mutex before the simulated rebuild releases it.
+        time.sleep(0.3)
+        assert "maintenance-done" not in events, "maintenance must not proceed while a rebuild holds rebuild_mutex()"
+
+        release_rebuild.set()
+        rebuild_thread.join(timeout=5)
+        maintenance_thread.join(timeout=5)
+
+        assert not rebuild_thread.is_alive() and not maintenance_thread.is_alive()
+        assert events == ["rebuild-acquired", "rebuild-released", "maintenance-done"]
 
 
 class TestSchedulerRow:
