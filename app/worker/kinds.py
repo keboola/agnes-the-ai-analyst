@@ -172,6 +172,51 @@ def _run_jira_refresh(payload: dict) -> None:
     SyncOrchestrator().rebuild_source("jira")
 
 
+def _ducklake_expire_older_than_sql(retention_days: int) -> str:
+    """Build the ``older_than => ...`` argument for ``ducklake_expire_snapshots``,
+    enforcing :func:`src.analytics_backend.ducklake_min_retention_floor_seconds`
+    as an absolute safety floor.
+
+    ``ducklake_snapshot_retention_days()`` deliberately allows ``0`` ("no
+    retention grace" — see its docstring), but ``0`` with no further
+    guardrail would let this job expire a snapshot a live analyst query is
+    still reading from: there is no hard statement timeout on local
+    DuckLake queries (nothing in this codebase caps how long
+    ``agnes query`` / ``/api/query`` can run), so a long-running query
+    holding a reference to "the current snapshot at the time it started"
+    must not have that snapshot pulled out from under it mid-query.
+
+    ``retention_days * 86400`` is compared against the floor in seconds;
+    whenever the configured retention is below the floor (in practice only
+    ``retention_days == 0``, since any ``retention_days >= 1`` is already
+    ``86400s >= `` the 3600s default floor), the clamped floor value is
+    used instead — expressed in seconds (not days) so the clamp doesn't
+    round down to zero days again. A warning is logged so an operator who
+    intentionally configured aggressive reclamation knows why the actual
+    cutoff differs from what they set.
+    """
+    from src.analytics_backend import ducklake_min_retention_floor_seconds
+
+    floor_seconds = ducklake_min_retention_floor_seconds()
+    retention_seconds = retention_days * 86400
+    if retention_seconds < floor_seconds:
+        logger.warning(
+            "ducklake-maintenance: configured snapshot_retention_days=%d (%ds) is below the "
+            "%ds safety floor (max plausible in-flight analytic query duration + margin) — "
+            "clamping older_than to now() - %ds so an active reader's held snapshot is never "
+            "expired out from under it",
+            retention_days,
+            retention_seconds,
+            floor_seconds,
+            floor_seconds,
+        )
+        return f"now() - INTERVAL '{floor_seconds} seconds'"
+    # retention_days is always a non-negative int (validated by
+    # ducklake_snapshot_retention_days()) — safe to interpolate directly
+    # into the INTERVAL literal.
+    return f"now() - INTERVAL '{retention_days} days'"
+
+
 def _run_ducklake_maintenance(payload: dict) -> None:
     """Run the POC-verified DuckLake maintenance sequence on the writer
     session, in order:
@@ -181,8 +226,9 @@ def _run_ducklake_maintenance(payload: dict) -> None:
     2. ``CALL ducklake_expire_snapshots('lake', older_than => now() -
        INTERVAL '<N> days')`` — drops catalog snapshots older than the
        configured retention window (``src.analytics_backend
-       .ducklake_snapshot_retention_days()``, default 7 days), freeing
-       the files that only they referenced for step 3 to reclaim.
+       .ducklake_snapshot_retention_days()``, default 7 days; floored by
+       :func:`_ducklake_expire_older_than_sql`), freeing the files that
+       only they referenced for step 3 to reclaim.
     3. ``CALL ducklake_cleanup_old_files('lake', cleanup_all => true)`` —
        physically deletes data files no longer referenced by any
        remaining snapshot.
@@ -207,6 +253,21 @@ def _run_ducklake_maintenance(payload: dict) -> None:
     trusting the scheduler's own gate, makes a stray/stale enqueue
     harmless instead of raising ``ducklake`` extension errors against a
     backend that was never attached.
+
+    **Mutual exclusion with rebuild (wave-2G Task 5 review carry-over,
+    finding 1-concurrency).** ``ducklake-maintenance`` (LIGHT lane) and
+    ``SyncOrchestrator.rebuild()``/``rebuild_source()`` (HEAVY lane, via
+    ``data-refresh``/``jira-refresh``) both write the lake through the
+    same ``get_ducklake_write()`` singleton, and both lanes run in the
+    same worker process on independent OS threads (see
+    ``app/worker/runtime.py``) — so a long rebuild running past this job's
+    schedule could otherwise race a catalog-wide expire/cleanup pass
+    against an in-progress per-table ``CREATE OR REPLACE TABLE``. Wrapping
+    the whole write section in ``src.orchestrator.rebuild_mutex()`` — the
+    identical in-process lock + cross-process Postgres advisory lease pair
+    ``rebuild()``/``rebuild_source()`` already take, in the same order —
+    makes maintenance and rebuild mutually exclusive without introducing a
+    second lock-acquisition order (which would risk deadlock).
     """
     from src.analytics_backend import analytics_backend, ducklake_snapshot_retention_days
 
@@ -215,23 +276,26 @@ def _run_ducklake_maintenance(payload: dict) -> None:
         return
 
     from src.ducklake_session import get_ducklake_write, vacuum_ducklake_catalog
+    from src.orchestrator import rebuild_mutex
 
     retention_days = ducklake_snapshot_retention_days()
-    conn = get_ducklake_write()
-    try:
-        conn.execute("CALL lake.merge_adjacent_files()")
-        # retention_days is always an int (validated by
-        # ducklake_snapshot_retention_days()) — safe to interpolate
-        # directly into the INTERVAL literal.
-        conn.execute(f"CALL ducklake_expire_snapshots('lake', older_than => now() - INTERVAL '{retention_days} days')")
-        conn.execute("CALL ducklake_cleanup_old_files('lake', cleanup_all => true)")
-    finally:
-        conn.close()
+    older_than_sql = _ducklake_expire_older_than_sql(retention_days)
 
-    vacuumed = vacuum_ducklake_catalog()
+    with rebuild_mutex():
+        conn = get_ducklake_write()
+        try:
+            conn.execute("CALL lake.merge_adjacent_files()")
+            conn.execute(f"CALL ducklake_expire_snapshots('lake', older_than => {older_than_sql})")
+            conn.execute("CALL ducklake_cleanup_old_files('lake', cleanup_all => true)")
+        finally:
+            conn.close()
+
+        vacuumed = vacuum_ducklake_catalog()
+
     logger.info(
-        "ducklake-maintenance: merge/expire(retention=%dd)/cleanup done; catalog VACUUM %s",
+        "ducklake-maintenance: merge/expire(retention=%dd, older_than=%s)/cleanup done; catalog VACUUM %s",
         retention_days,
+        older_than_sql,
         "ran" if vacuumed else "skipped (file catalog)",
     )
 

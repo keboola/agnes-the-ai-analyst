@@ -187,6 +187,31 @@ def ducklake_snapshot_retention_days() -> int:
     return value
 
 
+#: Minimum age, in seconds, that ``ducklake-maintenance`` will ever pass as
+#: the ``older_than`` cutoff to ``ducklake_expire_snapshots`` — regardless
+#: of how low :func:`ducklake_snapshot_retention_days` is configured,
+#: including the explicit "no grace" value ``0``. There is no hard
+#: statement timeout on local DuckLake queries (see
+#: ``app/worker/kinds.py::_run_ducklake_maintenance``), so a snapshot a
+#: live analyst query is still reading from must never be expired out from
+#: under it mid-query. 3600s (1 hour) is a conservative ceiling on how long
+#: any single analytic query is expected to run — comfortably beyond
+#: typical query durations, cheap in the extra storage it retains. A plain
+#: module constant (not env/yaml-resolved) rather than an operator knob —
+#: this is a safety floor, not a tuning parameter — but tests monkeypatch
+#: it directly (``monkeypatch.setattr(analytics_backend, "_MIN_RETENTION_FLOOR_SECONDS", ...)``)
+#: since a real test can't wait an hour to prove real expiry.
+_MIN_RETENTION_FLOOR_SECONDS = 3600
+
+
+def ducklake_min_retention_floor_seconds() -> int:
+    """Effective minimum retention floor, in seconds — see
+    :data:`_MIN_RETENTION_FLOOR_SECONDS`. A plain accessor (module global
+    read at call time, not cached) so tests can monkeypatch the constant
+    directly and have it take effect immediately."""
+    return _MIN_RETENTION_FLOOR_SECONDS
+
+
 def is_postgres_dsn(dsn: str) -> bool:
     """True when *dsn* is a Postgres URL (``postgresql://`` / ``postgres://``,
     with or without a SQLAlchemy ``+driver`` suffix, e.g. ``postgresql+psycopg://``)

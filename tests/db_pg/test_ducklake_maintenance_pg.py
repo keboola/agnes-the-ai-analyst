@@ -98,8 +98,18 @@ def test_full_maintenance_handler_against_pg_catalog(ducklake_maintenance_pg_env
     real churn, real handler (merge -> expire -> cleanup -> VACUUM),
     asserting the snapshot count actually dropped and the live data
     survived — the Postgres-catalog counterpart of
-    ``tests/test_ducklake_maintenance.py``'s file-catalog version."""
+    ``tests/test_ducklake_maintenance.py``'s file-catalog version.
+
+    The 1-hour retention safety floor (``src.analytics_backend
+    ._MIN_RETENTION_FLOOR_SECONDS``, finding 1-retention-floor) would
+    otherwise refuse to expire snapshots created seconds ago even with
+    retention_days=0 — forced to 0 here so this test keeps proving the
+    real merge/expire/cleanup sequence against a live Postgres catalog;
+    the floor-clamping behavior itself is covered by
+    ``tests/test_ducklake_maintenance.py::TestCallOrderAndSql
+    ::test_retention_zero_is_clamped_to_floor_not_zero_days``."""
     monkeypatch.setenv("AGNES_DUCKLAKE_SNAPSHOT_RETENTION_DAYS", "0")
+    monkeypatch.setattr("src.analytics_backend._MIN_RETENTION_FLOOR_SECONDS", 0)
 
     from app.worker.kinds import register_all_kinds
     from app.worker.registry import JOB_KINDS
