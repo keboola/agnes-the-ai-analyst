@@ -51,7 +51,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import duckdb
 
-from src.analytics_backend import ducklake_catalog_dsn, ducklake_data_path
+from src.analytics_backend import ducklake_catalog_dsn, ducklake_data_path, is_postgres_dsn
 from src.db import (
     _apply_memory_caps,
     _get_data_dir,
@@ -98,21 +98,18 @@ _available_lock = threading.Lock()
 _available_cache: bool | None = None
 
 
-def _is_postgres_dsn(dsn: str) -> bool:
-    """True when *dsn* is a Postgres URL (``postgresql://`` / ``postgres://``,
-    with or without a SQLAlchemy ``+driver`` suffix, e.g. ``postgresql+psycopg://``)
-    rather than a bare filesystem path.
-
-    Checks the parsed scheme (split on ``+``) rather than a plain
-    ``str.startswith`` — a naive ``startswith(("postgresql://", ...))``
-    (as ``app.startup_guards.validate_deployment`` currently does for its
-    own, narrower purpose) misses the ``+driver`` form entirely, which
-    matters here because :func:`pg_dsn_to_libpq` is exercised in tests
-    against a SQLAlchemy ``Engine.url`` (the ``pg_engine`` fixture), whose
-    rendered form is always ``postgresql+psycopg://...``.
-    """
-    scheme = urlparse(dsn).scheme.split("+", 1)[0]
-    return scheme in ("postgresql", "postgres")
+# Re-exported under the original private name: the predicate itself now
+# lives in ``src.analytics_backend.is_postgres_dsn`` so
+# ``app.startup_guards.validate_deployment`` shares the exact same
+# postgres-DSN check as the attach path below, instead of the narrower
+# ``str.startswith(("postgresql://", "postgres://"))`` it used to run,
+# which silently rejected the SQLAlchemy ``+driver`` form
+# (``postgresql+psycopg://...``) that a copied ``DATABASE_URL`` uses.
+# Kept as a module-level alias (rather than inlining ``is_postgres_dsn``
+# at each call site) so existing internal call sites and
+# ``tests/test_ducklake_session.py::test_is_postgres_dsn_detects_url_forms_and_rejects_file_paths``
+# keep importing ``src.ducklake_session._is_postgres_dsn`` unchanged.
+_is_postgres_dsn = is_postgres_dsn
 
 
 def _libpq_escape(value: str) -> str:

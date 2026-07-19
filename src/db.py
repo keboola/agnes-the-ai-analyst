@@ -2046,6 +2046,17 @@ def close_singleton_connections() -> None:
     open database file; without releasing it here the subprocess raises
     ``IOException: Conflicting lock is held in /usr/local/bin/python3.13``.
 
+    Also closes the DuckLake reader/writer singletons (``src.ducklake_session
+    .close_ducklake_sessions()``) — when ``analytics.backend=ducklake`` is
+    active, an open DuckLake attach holds the same kind of exclusive lock on
+    a file-catalog target (or a live libpq connection on a Postgres catalog
+    target) that would otherwise survive into the subprocess handoff and
+    conflict with it, same as the DuckDB singletons above. Imported locally
+    to avoid a module-level circular import (``src.ducklake_session`` itself
+    imports from this module); safe to call unconditionally regardless of
+    which analytics backend is configured — ``close_ducklake_sessions()`` is
+    a no-op when no DuckLake session has ever been opened.
+
     Idempotent. The next call to ``get_system_db()`` / ``get_analytics_db()``
     will lazily re-open if the file is still on disk; if the migration
     flipped the backend to Postgres, the app process will be recreated by
@@ -2076,6 +2087,10 @@ def close_singleton_connections() -> None:
             except Exception:
                 pass
             _analytics_db_conn = None
+
+    from src.ducklake_session import close_ducklake_sessions
+
+    close_ducklake_sessions()
 
 
 def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: Path) -> None:
