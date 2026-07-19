@@ -19,6 +19,7 @@ extract data and copying it into the DuckLake catalog.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import duckdb
@@ -77,11 +78,15 @@ def _create_ducklake_extract(extracts_dir: Path, source_name: str, tables: list[
     """Build ``extracts_dir/source_name/{extract.duckdb, data/*.parquet}``.
 
     Each entry in *tables* is ``{"name": ..., "data": [...], "query_mode":
-    "local"|"remote" (default "local")}``. Remote-mode entries get a
-    ``_meta`` row with no local parquet/inner-object at all — matching the
-    real contract (their inner object is a view over an externally-ATTACHed
-    extension, irrelevant here since the ducklake ingest path skips remote
-    rows before ever trying to read them).
+    "local"|"remote" (default "local"), "no_inner_object": bool (default
+    False)}``. Remote-mode entries get a ``_meta`` row with no local
+    parquet/inner-object at all — matching the real contract (their inner
+    object is a view over an externally-ATTACHed extension, irrelevant here
+    since the ducklake ingest path skips remote rows before ever trying to
+    read them). ``no_inner_object=True`` simulates the local-mode analogue
+    (e.g. keboola ``use_extension=False``): a ``_meta`` row is inserted but
+    no backing view/parquet is ever created, so a read against the name
+    fails with ``CatalogException``.
 
     Recreates the source directory from scratch if it already exists, so a
     test can call this twice for the same source to simulate "new sync
@@ -115,6 +120,13 @@ def _create_ducklake_extract(extracts_dir: Path, source_name: str, tables: list[
                 conn.execute(
                     "INSERT INTO _meta VALUES (?, ?, ?, ?, current_timestamp, ?)",
                     [name, t.get("description", ""), len(rows_data), 0, "remote"],
+                )
+                continue
+
+            if t.get("no_inner_object"):
+                conn.execute(
+                    "INSERT INTO _meta VALUES (?, ?, ?, ?, current_timestamp, ?)",
+                    [name, t.get("description", ""), len(rows_data), 0, query_mode],
                 )
                 continue
 
@@ -321,6 +333,137 @@ class TestDucklakeRebuild:
         # ...but it still claimed its name in view_ownership.
         repo = view_ownership_repo()
         assert repo.get_owner("web_sessions") == "bigquery"
+
+    def test_inner_object_less_row_does_not_block_other_sources_claim(self, ducklake_env):
+        """Legacy-parity ordering (review finding): a ``_meta`` row with no
+        backing inner object (e.g. keboola ``use_extension=False``) must be
+        skipped BEFORE the view-ownership claim, not after — otherwise it
+        wins a name collision it has no real data for and blocks a
+        DIFFERENT source's legitimate table of the same name.
+
+        Source ``src_a`` (alphabetically first, so processed first) has an
+        inner-object-less ``foo``; source ``src_b`` has a real ``foo``.
+        Legacy semantics (and the fixed ordering here): ``src_b``'s ``foo``
+        is exposed, since ``src_a``'s row never had anything to claim on
+        behalf of."""
+        from src.orchestrator import SyncOrchestrator
+        from src.repositories import view_ownership_repo
+
+        extracts_dir = ducklake_env["extracts_dir"]
+        _create_ducklake_extract(
+            extracts_dir,
+            "src_a",
+            [{"name": "foo", "no_inner_object": True}],
+        )
+        _create_ducklake_extract(
+            extracts_dir,
+            "src_b",
+            [{"name": "foo", "data": [{"id": "real"}]}],
+        )
+
+        result = SyncOrchestrator().rebuild()
+
+        assert "foo" not in result.get("src_a", [])
+        assert "foo" in result.get("src_b", [])
+
+        repo = view_ownership_repo()
+        assert repo.get_owner("foo") == "src_b"
+
+        from src.ducklake_session import get_ducklake_read
+
+        r = get_ducklake_read()
+        try:
+            assert r.execute('SELECT id FROM lake."main"."foo"').fetchone()[0] == "real"
+        finally:
+            r.close()
+
+    def test_ingest_bounded_memory_streams_large_table(self, ducklake_env):
+        """IMPORTANT review finding: the DuckLake copy-ingest read
+        (``ro.sql(...).to_arrow_reader(batch_size=...)``) must stream the
+        source table batch-by-batch rather than materializing it fully in
+        Python-process memory. This builds a real ~235MB/20M-row
+        parquet-backed extract and runs the real ingest — under a tightened
+        DuckLake writer memory budget — in a CHILD process, asserting it
+        completes with the correct row count AND that the child's peak RSS
+        stays well below what a full-table materialization would need.
+
+        Why two child processes, and why the ingest child measures its OWN
+        before/after RSS rather than the parent reading
+        ``RUSAGE_CHILDREN``: building the 20M-row pyarrow fixture inflates
+        whatever process does it (``ru_maxrss`` is a monotonic high-water
+        mark that never comes back down within a process lifetime) well
+        past anything the ingest itself needs, and so does the cost of
+        importing the full app stack (``src.orchestrator`` pulls in
+        FastAPI, the BigQuery connector, etc.). Measuring the *parent*
+        test's RSS before/after (or reading ``RUSAGE_CHILDREN``, which
+        reports the child's TOTAL lifetime peak including its own imports)
+        folds those fixed costs into the delta and swamps the actual
+        ingest signal — that version of this test passed even when
+        manually reverted to a fully materializing read, which is not the
+        load-bearing test the review asked for. Splitting fixture-build
+        (``build``) and ingest (``ingest``) into separate processes, and
+        having the ``ingest`` child take its "before" snapshot only AFTER
+        all its imports are done, isolates the measurement to the ingest
+        call alone.
+
+        Note on what this actually proves: DuckDB's own ``memory_limit``
+        PRAGMA does not bound a fully-materialized ``pyarrow.Table`` (that
+        memory lives in pyarrow's own arena, invisible to DuckDB's buffer
+        manager) — so neither the streaming nor a hypothetical buffering
+        implementation raises a catchable ``duckdb.OutOfMemoryException`` at
+        this data size in this environment. The real, load-bearing signal is
+        process RSS growth: measured directly against this environment's
+        real DuckDB 1.5.2 + ducklake extension via this child-process
+        harness, streaming via ``to_arrow_reader(100_000)`` grows the
+        ingest child's peak RSS by roughly 300-700MB for this dataset,
+        while swapping in a full ``to_arrow_table()`` materialize (same
+        data, same tight memory_limit) grows it by roughly 1.8-2GB — a ~3-4x
+        difference. The bound below sits well above the streaming path's
+        actual usage and well below the buffering path's, so a regression
+        back to a materializing form fails this test (verified manually by
+        monkeypatching ``duckdb.DuckDBPyRelation.to_arrow_reader`` to route
+        through ``to_arrow_table()`` and re-running this test — see
+        ``.superpowers/sdd/task-3-report.md`` for the recorded numbers).
+        """
+        import subprocess
+
+        data_dir = str(ducklake_env["data_dir"])
+        child_script = str(Path(__file__).parent / "_ducklake_bounded_memory_child.py")
+        n_rows = 20_000_000
+        memory_limit = "200MB"
+
+        build_proc = subprocess.run(
+            [sys.executable, child_script, "build", data_dir, str(n_rows)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert build_proc.returncode == 0 and "BUILD_OK" in build_proc.stdout, (
+            f"fixture build failed: stdout={build_proc.stdout!r} stderr={build_proc.stderr[-4000:]!r}"
+        )
+        size_bytes = int(build_proc.stdout.strip().splitlines()[-1].split()[1])
+        assert size_bytes > 150_000_000, "fixture should produce a real multi-hundred-MB parquet"
+
+        ingest_proc = subprocess.run(
+            [sys.executable, child_script, "ingest", data_dir, memory_limit],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert ingest_proc.returncode == 0 and "RESULT_OK" in ingest_proc.stdout, (
+            f"child ingest failed: stdout={ingest_proc.stdout!r} stderr={ingest_proc.stderr[-4000:]!r}"
+        )
+        _, row_count_str, delta_mb_str = ingest_proc.stdout.strip().splitlines()[-1].split()
+        row_count = int(row_count_str)
+        delta_mb = float(delta_mb_str)
+
+        assert row_count == n_rows
+        assert delta_mb < 1200, (
+            f"ingest child grew peak RSS by {delta_mb:.0f}MB for a ~235MB table under a 200MB "
+            "DuckLake memory_limit — this is consistent with a full-table materialization "
+            "(.to_arrow_table()/.fetchall()) rather than the expected batch-by-batch stream "
+            "via .to_arrow_reader(); see this test's docstring for measured reference numbers"
+        )
 
     def test_legacy_backend_default_untouched(self, tmp_path, monkeypatch):
         """Zero-config default (no AGNES_ANALYTICS_BACKEND set) must still
