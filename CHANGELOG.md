@@ -86,6 +86,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   unconnected caller invokes a `per_user` tool, the error is now an actionable,
   web-linked remedy pointing at the connect page (falling back to the CLI hint
   when no public URL is configured).
+### Changed
+
+- `agnes push` now gzip-compresses session transcript uploads (~10x smaller transfers) when the server advertises the `session-gzip` capability; older client/server combinations keep the plain format automatically. Escape hatch: `AGNES_PUSH_NO_GZIP=1`.
 
 ## [0.74.112] - 2026-07-17
 
