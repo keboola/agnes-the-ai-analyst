@@ -44,7 +44,7 @@ from app.logging_config import setup_logging
 
 setup_logging("app")
 
-from app.version import APP_VERSION, MIN_COMPAT_CLI_VERSION
+from app.version import APP_VERSION, MIN_COMPAT_CLI_VERSION, SERVER_CAPABILITIES
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -1243,6 +1243,7 @@ def create_app() -> FastAPI:
         if request.url.path.startswith("/api/"):
             response.headers["X-Agnes-Latest-Version"] = APP_VERSION
             response.headers["X-Agnes-Min-Version"] = MIN_COMPAT_CLI_VERSION
+            response.headers["X-Agnes-Accepts"] = SERVER_CAPABILITIES
         # Server-rendered HTML must not be heuristically cached by the browser.
         # The setup hero (/home, /setup, /install) bakes build-pinned values
         # into the markup at render time — most importantly the current wheel

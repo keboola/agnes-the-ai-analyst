@@ -1,7 +1,6 @@
 """Tests for upload API endpoints — sessions, artifacts, local-md."""
 
 import io
-import pytest
 
 
 def _auth(token):
@@ -180,3 +179,11 @@ class TestUploadLocalMd:
         )
         assert resp.status_code == 200
         assert resp.json()["user"] == "analyst@test.com"
+
+
+class TestSessionGzipCapability:
+    def test_api_responses_advertise_session_gzip(self, seeded_app):
+        c = seeded_app["client"]
+        resp = c.get("/api/health")
+        caps = resp.headers.get("X-Agnes-Accepts", "")
+        assert "session-gzip" in [t.strip() for t in caps.split(",")]
