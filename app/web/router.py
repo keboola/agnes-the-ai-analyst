@@ -44,8 +44,10 @@ from src.repositories import (
     corpus_files_repo,
     data_packages_repo,
     file_corpora_repo,
+    glossary_repo,
     knowledge_repo,
     memory_domains_repo,
+    metric_repo,
     news_template_repo,
     profile_repo,
     recipes_repo,
@@ -1342,6 +1344,52 @@ async def catalog(
         total_registered_tables=total_registered_tables,
     )
     return templates.TemplateResponse(request, "catalog.html", ctx)
+
+
+@router.get("/catalog/semantics", response_class=HTMLResponse)
+async def catalog_semantics(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Read-only browser for the semantic layer — business metrics
+    (`metric_definitions`) and the glossary (`glossary_terms`) in one page
+    (issue #853 + the Keboola glossary import, #920).
+
+    Analyst-facing tier: ``get_current_user``, no admin gate and no
+    per-resource grant — matches the RBAC tier of the underlying
+    ``GET /api/metrics`` / ``GET /api/glossary*`` endpoints this page reuses,
+    and mirrors /catalog's own gate.
+
+    Metrics are server-rendered (grouped by category, same reading order as
+    ``agnes catalog --metrics``) — the scale is tens-to-low-hundreds so a
+    client-side substring filter over the rendered rows is enough; no new
+    search endpoint. Glossary starts empty and is populated client-side via
+    the existing ``GET /api/glossary`` / ``GET /api/glossary/search``.
+    """
+    metrics = metric_repo().list()
+    by_category: dict[str, list[dict]] = {}
+    for m in metrics:
+        by_category.setdefault(m.get("category") or "uncategorized", []).append(m)
+    metric_categories = [
+        {"name": cat, "metrics": sorted(items, key=lambda m: m.get("name") or "")}
+        for cat, items in sorted(by_category.items())
+    ]
+
+    # Total glossary count for the tab label. GlossaryRepository.list() has
+    # no unlimited mode (deliberately, to bound a full-table scan) — 500 is
+    # the endpoint's own max `limit` (app/api/glossary.py), comfortably above
+    # the "tens-to-low-hundreds" scale this feature targets, so it's an
+    # exact count in practice rather than a true cap.
+    glossary_count = len(glossary_repo().list(limit=500))
+
+    ctx = _build_context(
+        request,
+        user=user,
+        metric_categories=metric_categories,
+        metric_count=len(metrics),
+        glossary_count=glossary_count,
+    )
+    return templates.TemplateResponse(request, "catalog_semantics.html", ctx)
 
 
 @router.get("/catalog/p/{slug}", response_class=HTMLResponse)
