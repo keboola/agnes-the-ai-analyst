@@ -334,6 +334,113 @@ class TestDucklakeRebuild:
         repo = view_ownership_repo()
         assert repo.get_owner("web_sessions") == "bigquery"
 
+    def test_writer_creates_remote_wrapper_view_for_registered_remote_table(self, ducklake_env):
+        """A registered query_mode='remote' table gets its
+        ``lake.main.<name>`` wrapper view created by the WRITER during
+        rebuild (moved off the per-request reader path). Asserted directly
+        on the writer connection — the view exists and resolves."""
+        from tests.conftest import create_mock_extract
+        from src.db import get_system_db
+        from src.repositories.table_registry import TableRegistryRepository
+        from src.orchestrator import SyncOrchestrator
+        from src.ducklake_session import get_ducklake_write
+
+        extracts_dir = ducklake_env["extracts_dir"]
+        # create_mock_extract (unlike this file's _create_ducklake_extract)
+        # builds the remote table's inner object — mirroring the real
+        # extractor, which writes a `CREATE VIEW "<name>" AS SELECT * FROM
+        # bq...` into extract.duckdb — which the writer wrapper references.
+        create_mock_extract(
+            extracts_dir,
+            "bigquery",
+            [{"name": "web_sessions", "data": [], "query_mode": "remote"}],
+        )
+        conn = get_system_db()
+        try:
+            TableRegistryRepository(conn).register(
+                id="bigquery.web_sessions",
+                name="web_sessions",
+                source_type="bigquery",
+                bucket="dataset",
+                source_table="web_sessions",
+                query_mode="remote",
+            )
+        finally:
+            conn.close()
+
+        SyncOrchestrator().rebuild()
+
+        w = get_ducklake_write()
+        try:
+            found = w.execute(
+                "SELECT table_name FROM information_schema.views "
+                "WHERE table_catalog='lake' AND table_schema='main' AND table_name='web_sessions'"
+            ).fetchall()
+            assert found == [("web_sessions",)], "writer must own the remote wrapper view"
+        finally:
+            w.close()
+
+    def test_full_rebuild_drops_stale_remote_wrapper_view(self, ducklake_env):
+        """De-registering a remote table and re-running a FULL rebuild
+        drops its now-dangling ``lake.main`` wrapper view (the long-lived
+        DuckLake catalog otherwise leaks it forever)."""
+        from tests.conftest import create_mock_extract
+        from src.db import get_system_db
+        from src.repositories.table_registry import TableRegistryRepository
+        from src.orchestrator import SyncOrchestrator
+        from src.ducklake_session import get_ducklake_write
+
+        extracts_dir = ducklake_env["extracts_dir"]
+        create_mock_extract(
+            extracts_dir,
+            "bigquery",
+            [{"name": "web_sessions", "data": [], "query_mode": "remote"}],
+        )
+        conn = get_system_db()
+        try:
+            TableRegistryRepository(conn).register(
+                id="bigquery.web_sessions",
+                name="web_sessions",
+                source_type="bigquery",
+                bucket="dataset",
+                source_table="web_sessions",
+                query_mode="remote",
+            )
+        finally:
+            conn.close()
+
+        SyncOrchestrator().rebuild()
+
+        def _wrapper_exists() -> bool:
+            w = get_ducklake_write()
+            try:
+                return bool(
+                    w.execute(
+                        "SELECT 1 FROM information_schema.views "
+                        "WHERE table_catalog='lake' AND table_schema='main' "
+                        "AND table_name='web_sessions'"
+                    ).fetchall()
+                )
+            finally:
+                w.close()
+
+        assert _wrapper_exists()
+
+        # De-register the remote table + drop it from the extract, then
+        # rebuild: the reconcile must drop the stale wrapper view.
+        conn = get_system_db()
+        try:
+            conn.execute("DELETE FROM table_registry WHERE id = ?", ["bigquery.web_sessions"])
+        finally:
+            conn.close()
+        import shutil
+
+        shutil.rmtree(extracts_dir / "bigquery")
+
+        SyncOrchestrator().rebuild()
+
+        assert not _wrapper_exists(), "stale remote wrapper view must be dropped on full rebuild"
+
     def test_inner_object_less_row_does_not_block_other_sources_claim(self, ducklake_env):
         """Legacy-parity ordering (review finding): a ``_meta`` row with no
         backing inner object (e.g. keboola ``use_extension=False``) must be
