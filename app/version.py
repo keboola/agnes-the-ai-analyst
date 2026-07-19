@@ -32,3 +32,10 @@ def _read_app_version() -> str:
 
 APP_VERSION = _read_app_version()
 MIN_COMPAT_CLI_VERSION = "0.0.0"
+
+# Comma-separated list of opt-in wire-protocol capabilities the server
+# accepts, advertised on /api/* responses as `X-Agnes-Accepts`. Clients
+# treat an absent header as "none" and fall back to legacy formats.
+# `session-gzip`: POST /api/upload/sessions accepts a gzip-compressed
+# transcript when the part filename ends in `.gz`.
+SERVER_CAPABILITIES = "session-gzip"
