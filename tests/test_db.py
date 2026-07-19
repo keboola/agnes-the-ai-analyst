@@ -2062,3 +2062,29 @@ class TestCloseSingletonConnections:
         close_singleton_connections()
         # Second call must not raise even though both globals are already None.
         close_singleton_connections()
+
+    def test_also_closes_ducklake_sessions(self, tmp_path, monkeypatch):
+        """A ducklake attach (file lock or PG catalog conn) must not survive
+        into the subprocess-handoff path any more than the plain DuckDB
+        singletons do — ``close_singleton_connections`` is the one place the
+        migrator-spawn path calls before handing the file(s) to a
+        subprocess, so it must close ducklake's reader/writer singletons
+        too, not just ``_system_db_conn`` / ``_analytics_db_conn``.
+
+        Stubs ``src.ducklake_session.close_ducklake_sessions`` rather than
+        opening a real DuckLake attach — this test asserts the wiring
+        (close_singleton_connections calls it), not DuckLake's own
+        session-lifecycle contract (covered by tests/test_ducklake_session.py
+        and tests/db_pg/test_ducklake_pg_catalog.py).
+        """
+        _setup_data_dir(tmp_path, monkeypatch)
+        import src.ducklake_session as ducklake_session
+        from src.db import close_singleton_connections, get_system_db
+
+        calls = []
+        monkeypatch.setattr(ducklake_session, "close_ducklake_sessions", lambda: calls.append(1))
+
+        get_system_db().close()
+        close_singleton_connections()
+
+        assert calls == [1]

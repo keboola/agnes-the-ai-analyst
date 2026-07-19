@@ -93,7 +93,9 @@ def validate_deployment() -> None:
         problems.append("coordination.backend must be 'redis' (instance.yaml::coordination.backend)")
     if _analytics_backend() == "ducklake":
         dsn = _ducklake_catalog_dsn()
-        if not dsn.startswith(("postgresql://", "postgres://")):
+        from src.analytics_backend import is_postgres_dsn
+
+        if not is_postgres_dsn(dsn):
             problems.append(
                 "ducklake.catalog_dsn (or AGNES_DUCKLAKE_CATALOG_DSN) must be an explicit Postgres DSN "
                 "(postgresql://...) when analytics.backend=ducklake — a DuckDB-file catalog is "
