@@ -2987,6 +2987,18 @@ async def admin_data_sources_page(
 
     ctx = _build_context(request, user=user)
     ctx["vault_key_configured"] = vault_key_configured()
+
+    # Semantic-layer sync summary (#853 + #920 follow-up): metric_definitions
+    # / glossary_terms carry no per-connection column, so the counts are
+    # global — scoped to source='keboola_semantic_layer' so a manual/
+    # yaml_import/openmetadata row doesn't inflate the "synced from Keboola"
+    # figure. The card only renders once something has actually synced.
+    semantic_metric_count = sum(1 for m in metric_repo().list() if m.get("source") == "keboola_semantic_layer")
+    semantic_glossary_count = sum(
+        1 for t in glossary_repo().list(limit=500) if t.get("source") == "keboola_semantic_layer"
+    )
+    ctx["semantic_metric_count"] = semantic_metric_count
+    ctx["semantic_glossary_count"] = semantic_glossary_count
     return templates.TemplateResponse(request, "admin_data_sources.html", ctx)
 
 
