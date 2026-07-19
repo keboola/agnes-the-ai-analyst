@@ -1,8 +1,9 @@
 """Real job kinds for the worker runtime (wave-2B, spec §3.3 — Task 4;
-``ducklake-maintenance`` added in wave-2G Task 5).
+``ducklake-maintenance`` added in wave-2G Task 5; ``analytics-migrate``
+added in wave-2G Task 6).
 
-``register_all_kinds()`` registers the six kinds the scheduler's
-current HTTP-driven jobs map onto:
+``register_all_kinds()`` registers the seven kinds the scheduler's
+current HTTP-driven jobs (plus the analytics migrate command) map onto:
 
 - ``data-refresh``       (HEAVY) — wraps ``app.api.sync._run_sync``, the
   body behind ``POST /api/sync/trigger``.
@@ -20,6 +21,10 @@ current HTTP-driven jobs map onto:
   catalog VACUUM) on the writer session. No-ops when
   ``analytics.backend`` is not ``ducklake`` — see
   ``_run_ducklake_maintenance`` below.
+- ``analytics-migrate``  (HEAVY) — wraps
+  ``SyncOrchestrator().migrate_to_backend(to)``, the body behind
+  ``POST /api/admin/analytics/migrate``. Admin-triggered only (no
+  scheduler row) — see ``_run_analytics_migrate`` below.
 
 Every handler below is a THIN ADAPTER — it imports and calls the existing
 function/method and does not reimplement any of its logic. Each import is
@@ -300,8 +305,26 @@ def _run_ducklake_maintenance(payload: dict) -> None:
     )
 
 
+def _run_analytics_migrate(payload: dict) -> None:
+    """Wrap ``SyncOrchestrator().migrate_to_backend(to)`` — the body
+    behind ``POST /api/admin/analytics/migrate`` (wave-2G Task 6).
+
+    ``payload["to"]`` is ``"ducklake"`` or ``"legacy"``, already validated
+    by the endpoint before enqueueing (an unknown value re-raises via
+    ``migrate_to_backend``'s own ``ValueError``, which the worker turns
+    into a failed job the same way any other handler exception does).
+    Unlike ``data-refresh``/``jira-refresh``, this rebuilds into the
+    EXPLICITLY named target backend regardless of the currently
+    configured ``analytics.backend`` — see ``migrate_to_backend``'s
+    docstring for why that distinction matters (config is boot-time
+    cached, not hot-reloaded)."""
+    from src.orchestrator import SyncOrchestrator
+
+    SyncOrchestrator().migrate_to_backend(payload.get("to"))
+
+
 def register_all_kinds() -> None:
-    """Register the six real job kinds. Idempotent — safe to call more
+    """Register the seven real job kinds. Idempotent — safe to call more
     than once (e.g. across test re-imports); ``register_kind`` replaces
     any existing entry of the same name rather than erroring."""
     register_kind(
@@ -355,6 +378,19 @@ def register_all_kinds() -> None:
             handler=_run_ducklake_maintenance,
             lane=LIGHT_LANE,
             lease_seconds=_DEFAULT_DUCKLAKE_MAINTENANCE_LEASE_S,
+            retry_in_seconds=300,
+        )
+    )
+    register_kind(
+        JobKind(
+            name="analytics-migrate",
+            handler=_run_analytics_migrate,
+            lane=HEAVY_LANE,
+            # Same cost class as data-refresh (a full extracts-tree rebuild,
+            # just into a different target backend) — reuse the same
+            # generous lease default/override knob rather than inventing a
+            # second one.
+            lease_seconds=_data_refresh_lease_seconds(),
             retry_in_seconds=300,
         )
     )

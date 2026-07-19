@@ -691,6 +691,23 @@ accepts the scheduler's shared-secret bearer token
 user in the `Admin` group. CLI: `agnes admin jobs enqueue|show|list`. MCP:
 `admin_job_enqueue`, `admin_job_get`, `admin_jobs_list`.
 
+### `/api/admin/analytics/migrate` — DuckLake analytics-backend migration (wave-2G)
+
+- /api/admin/analytics/migrate
+
+`POST` with `{"to": "ducklake"}` or `{"to": "legacy"}`. Validates
+prerequisites (`to="ducklake"` only — the DuckLake extension is loadable
+and the catalog is reachable, auto-repairing a missing catalog database
+on an existing Postgres volume) and enqueues an `analytics-migrate` job
+(`app/worker/kinds.py`, HEAVY lane) that rebuilds the named target
+backend from the on-disk extracts tree, via
+`SyncOrchestrator.migrate_to_backend`. Returns 202 with a `job_id` to
+poll via `GET /api/jobs/{job_id}`; 400 with the full list of unmet
+prerequisites; 409 if a migration is already in flight. Never flips
+`analytics.backend` in config — see `docs/DEPLOYMENT.md`'s DuckLake
+section for the full operator flow. CLI: `agnes admin analytics migrate
+--to <target>`. MCP: `admin_analytics_migrate`.
+
 ### `/api/admin/mcp-sources` — MCP source management
 
 - /api/admin/mcp-sources

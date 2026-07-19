@@ -68,6 +68,9 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "admin_jobs_list",
     "admin_job_get",
     "admin_job_enqueue",
+    # DuckLake analytics-backend migration (wave-2G Task 6), triple-surface
+    # with /api/admin/analytics/migrate + `agnes admin analytics migrate`.
+    "admin_analytics_migrate",
 )
 
 
@@ -1005,6 +1008,42 @@ def register_foundation_tools(
             body["idempotency_key"] = idempotency_key
         async with httpx.AsyncClient() as c:
             r = await c.post(f"{base_url}/api/jobs", json=body, headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def admin_analytics_migrate(to: str) -> dict:
+        """Migrate the analytics query surface between backends (admin only).
+
+        Validates prerequisites (``to="ducklake"`` only: the DuckLake DuckDB
+        extension is loadable and the catalog is reachable, auto-repairing a
+        missing catalog database on an existing Postgres volume where the
+        init-script never ran) and enqueues an ``analytics-migrate`` job that
+        rebuilds the named target backend from the on-disk extracts tree —
+        no re-extract from the source system, in either direction.
+
+        This call never flips ``analytics.backend`` in config — it is read
+        once at boot, not hot-reloaded. Once the returned job completes
+        (poll with ``admin_job_get``), set ``analytics.backend`` in
+        ``instance.yaml`` (or ``AGNES_ANALYTICS_BACKEND`` env) on every role
+        process and restart to actually switch query serving over.
+
+        Args:
+            to: Target backend — "ducklake" or "legacy" (rollback).
+
+        Returns ``{status, to, job_id, message}`` on success. Mirrors
+        ``POST /api/admin/analytics/migrate`` and
+        ``agnes admin analytics migrate --to <target>``. Requires an admin
+        PAT. Raises on a 400 (unmet prerequisites — see the error body for
+        the full problem list) or a 409 (a migration is already running).
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/admin/analytics/migrate",
+                json={"to": to},
+                headers=headers_fn(),
+                timeout=30,
+            )
             r.raise_for_status()
             return r.json()
 

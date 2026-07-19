@@ -143,6 +143,9 @@ def test_no_bare_duckdb_connect_in_production_code():
         "tests/db_pg/test_ducklake_pg_catalog.py",
         "tests/db_pg/test_ducklake_reader_pg_catalog.py",
         "tests/db_pg/test_ducklake_maintenance_pg.py",
+        # wave-2G Task 6 migration-prerequisite contract — same extension-
+        # availability probe pattern as the three files above.
+        "tests/db_pg/test_ducklake_migrate_prereqs_pg.py",
     )
 
     pat = re.compile(r"duckdb\.connect\(")
