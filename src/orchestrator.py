@@ -697,17 +697,21 @@ class SyncOrchestrator:
         resolved catalog is a DuckDB-file target (see that module's
         "same-process file-catalog constraint" docstring), and the
         reader's own attach loop
-        (:func:`src.ducklake_session._attach_extract_sources`) already
-        ATTACHes every extract source under its directory-name alias on
-        that shared connection — a second ATTACH of the same alias from
-        here would collide with it. Reading through a fully independent
+        (:func:`src.ducklake_session._attach_remote_read_sources`, via
+        :func:`src.ducklake_session._ensure_remote_extract_attach`)
+        persistently ATTACHes each *remote-mode* extract source — a
+        source with at least one ``query_mode='remote'`` table_registry
+        row, not every extract source — under its directory-name alias
+        on that shared connection; a second ATTACH of the same alias
+        from here would collide with it for any source that mixes local
+        and remote tables. Reading through a fully independent
         connection and streaming the result batch-by-batch through an
         Arrow ``RecordBatchReader`` (DuckDB's replacement scan can
         reference a local Python variable from either connection's
-        ``execute()`` call) sidesteps that collision entirely, and is
-        still pure copy-ingest: nothing
-        is ever attached or added as a DuckLake data file directly from
-        the extract's own mutable parquet paths.
+        ``execute()`` call) sidesteps that collision regardless of a
+        source's local/remote mix, and is still pure copy-ingest:
+        nothing is ever attached or added as a DuckLake data file
+        directly from the extract's own mutable parquet paths.
 
         Remote-mode tables (``query_mode='remote'``) are NOT
         copy-ingested — there is no local parquet backing them, only a
