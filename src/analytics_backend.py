@@ -39,6 +39,7 @@ from __future__ import annotations
 import os
 import threading
 from pathlib import Path
+from urllib.parse import urlparse
 
 _VALID_BACKENDS = ("legacy", "ducklake")
 
@@ -143,3 +144,26 @@ def ducklake_data_path() -> str:
     if explicit:
         return explicit
     return str(_get_data_dir() / "analytics" / _DEFAULT_LAKE_DIRNAME) + "/"
+
+
+def is_postgres_dsn(dsn: str) -> bool:
+    """True when *dsn* is a Postgres URL (``postgresql://`` / ``postgres://``,
+    with or without a SQLAlchemy ``+driver`` suffix, e.g. ``postgresql+psycopg://``)
+    rather than a bare filesystem path.
+
+    Checks the parsed scheme (split on ``+``) rather than a plain
+    ``str.startswith`` — a naive ``startswith(("postgresql://", ...))`` misses
+    the ``+driver`` form entirely. That form is exactly what a
+    ``DATABASE_URL`` copied verbatim into ``ducklake.catalog_dsn`` /
+    ``AGNES_DUCKLAKE_CATALOG_DSN`` looks like once SQLAlchemy has rendered it,
+    and it's also the shape ``pg_engine``-fixture-backed tests exercise
+    against :func:`src.ducklake_session.pg_dsn_to_libpq`.
+
+    Single shared predicate for the two call sites that must never drift
+    apart: :func:`src.ducklake_session._attach_target` (decides the DuckLake
+    ATTACH form) and ``app.startup_guards.validate_deployment`` (decides
+    whether a configured DuckLake catalog DSN satisfies the multi-process
+    Postgres-catalog requirement).
+    """
+    scheme = urlparse(dsn).scheme.split("+", 1)[0]
+    return scheme in ("postgresql", "postgres")
