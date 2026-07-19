@@ -291,11 +291,13 @@ class TestQueryDucklakeSnapshotIsolation:
 class TestQueryDucklakeRemoteViews:
     def test_remote_table_resolves_from_table_registry(self, ducklake_env):
         """A query_mode='remote' table_registry row gets a lake.main
-        wrapper view pointing at the extract source's own inner object —
-        asserted via resolution (no error, correct rowset), not live BQ
-        data (there is none in this environment)."""
+        wrapper view — created by the WRITER during rebuild (not by the
+        reader per-request) — pointing at the extract source's own inner
+        object. Asserted via resolution (no error, correct rowset), not
+        live BQ data (there is none in this environment)."""
         from src.db import get_system_db
         from src.repositories.table_registry import TableRegistryRepository
+        from src.orchestrator import SyncOrchestrator
         from src.ducklake_session import get_ducklake_read
 
         # Extract with a remote-mode row: create_mock_extract() builds an
@@ -318,6 +320,9 @@ class TestQueryDucklakeRemoteViews:
             )
         finally:
             conn.close()
+
+        # The writer owns remote wrapper views now — a rebuild creates them.
+        SyncOrchestrator(analytics_db_path=ducklake_env["analytics_db"]).rebuild()
 
         r = get_ducklake_read()
         try:

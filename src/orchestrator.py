@@ -558,6 +558,27 @@ class SyncOrchestrator:
                 if tables:
                     result[ext_dir.name] = tables
                     logger.info("DuckLake ingested %s: %d tables", ext_dir.name, len(tables))
+
+            # Remote-mode (query_mode='remote') wrapper views are owned by
+            # the WRITER, created here once per rebuild — NOT on every reader
+            # request. A ``CREATE OR REPLACE VIEW lake.main.<name>`` commits a
+            # new DuckLake catalog snapshot on every call even when the view
+            # body is unchanged (verified vs DuckDB 1.5.2: 5 identical calls →
+            # +5 snapshots); doing it per-request from the api-role reader
+            # would be unbounded catalog write-amplification onto the shared
+            # PG catalog under concurrent load, defeating read/write plane
+            # separation. See _sync_ducklake_remote_views.
+            try:
+                self._sync_ducklake_remote_views(
+                    write_conn,
+                    extracts_dir,
+                    only_source=only_source,
+                    claimed_pairs=claimed_pairs,
+                    view_repo=view_repo,
+                    local_result=result,
+                )
+            except Exception as e:
+                logger.warning("DuckLake remote-view sync failed: %s", e)
         finally:
             # get_ducklake_write() hands back a cursor-per-caller (see
             # src/ducklake_session.py) — .close() only drops this cursor,
@@ -780,6 +801,124 @@ class SyncOrchestrator:
         # backend — same call, same contract, as the legacy rebuild path.
         self._update_sync_state(meta_rows, source_name)
         return tables
+
+    def _sync_ducklake_remote_views(
+        self,
+        write_conn: duckdb.DuckDBPyConnection,
+        extracts_dir: Path,
+        *,
+        only_source: Optional[str],
+        claimed_pairs: Optional[List[tuple]],
+        view_repo=None,
+        local_result: Optional[Dict[str, List[str]]] = None,
+    ) -> None:
+        """Create the ``lake."main"."<name>"`` wrapper view for every
+        ``query_mode='remote'`` table_registry row, and reconcile away
+        stale wrapper views for de-registered/renamed remote (and, on a
+        full rebuild, local) tables.
+
+        This is the WRITER-side owner of remote wrapper views. The reader
+        path used to (re)create these on every request, which committed a
+        fresh DuckLake catalog snapshot per call regardless of whether the
+        view changed — unbounded write-amplification onto the shared
+        catalog from the read plane. Creating them here is bounded (once
+        per rebuild).
+
+        Each wrapper points at the extract source's own already-correct
+        inner object (``"<source>"."<name>"`` — exactly what the legacy
+        master view references and what the reader wrapper used to
+        reference), so all BigQuery/Keboola addressing (bq_fqn overrides,
+        BASE TABLE vs VIEW ``bigquery_query()`` wrapping) stays owned by
+        the extractor. DuckLake views are NOT late-bound (verified vs
+        DuckDB 1.5.2 — ``CREATE VIEW`` referencing an unattached alias
+        raises a Catalog Error), so the remote extract sources and their
+        external extensions (BigQuery, etc.) are ATTACHed here first,
+        reusing the same helpers the reader uses.
+
+        Ownership: a remote row's name is claimed in
+        :meth:`_ingest_source_ducklake` (first-come-first-served, issue #81
+        Group C). Only the (source, name) pairs that WON their claim this
+        rebuild (``claimed_pairs``) get a wrapper view, so a name that lost
+        a cross-connector collision is not silently exposed by the losing
+        source.
+        """
+        from src.db import _reattach_remote_extensions
+        from src.ducklake_session import _ensure_remote_extract_attach, _remote_registry_rows_by_source
+
+        remote_by_source = _remote_registry_rows_by_source()
+
+        # Attach remote extract sources + external extensions so the view
+        # bodies bind at CREATE time (views are not late-bound). Both
+        # helpers are idempotent (skip already-attached) and only touch
+        # sources with a remote-mode table_registry row — never a
+        # live-in-place connector like Jira.
+        _ensure_remote_extract_attach(write_conn, remote_by_source)
+        _reattach_remote_extensions(write_conn, extracts_dir)
+
+        owned = set(claimed_pairs or [])
+        created_remote_names: set[str] = set()
+        for source_name, rows in remote_by_source.items():
+            if only_source is not None and source_name != only_source:
+                continue
+            if not _validate_identifier(source_name, "source_name"):
+                continue
+            for row in rows:
+                name = row.get("name") or ""
+                if not _validate_identifier(name, "table_name"):
+                    continue
+                # Respect the view-ownership claim made during ingest — only
+                # the winner exposes the name. When view_repo is unavailable
+                # (reconcile skipped), fall back to best-effort create.
+                if view_repo is not None and (source_name, name) not in owned:
+                    continue
+                try:
+                    write_conn.execute(
+                        f'CREATE OR REPLACE VIEW lake."main"."{name}" AS SELECT * FROM {source_name}."{name}"'
+                    )
+                    created_remote_names.add(name)
+                except Exception as e:
+                    logger.warning(
+                        "DuckLake remote view create failed for %s.%s: %s",
+                        source_name,
+                        name,
+                        e,
+                    )
+
+        # Reconcile: drop stale lake.main wrapper views whose backing
+        # table_registry row is gone or renamed. Only on a FULL rebuild —
+        # a per-source rebuild must leave every other source's views alone.
+        if only_source is None:
+            expected: set[str] = set(created_remote_names)
+            for tbls in (local_result or {}).values():
+                expected.update(tbls)
+            self._drop_stale_ducklake_main_views(write_conn, expected)
+
+    def _drop_stale_ducklake_main_views(self, write_conn: duckdb.DuckDBPyConnection, expected_names: set) -> None:
+        """Drop any ``lake.main`` VIEW whose name is not in *expected_names*.
+
+        The long-lived DuckLake catalog (unlike the legacy fresh-temp-file
+        rebuild) accumulates wrapper views forever unless something removes
+        them, so a table de-registered or renamed in table_registry leaves
+        a dangling ``lake.main`` view resolving stale/erroring data. This
+        reconcile — run only on a full rebuild — collects the expected set
+        (all local master-view names + all remote wrapper names created
+        this pass) and drops the rest.
+        """
+        try:
+            rows = write_conn.execute(
+                "SELECT table_name FROM information_schema.views WHERE table_catalog='lake' AND table_schema='main'"
+            ).fetchall()
+        except Exception as e:
+            logger.debug("DuckLake reconcile: could not list lake.main views: %s", e)
+            return
+        for (view_name,) in rows:
+            if view_name in expected_names or not _validate_identifier(view_name, "table_name"):
+                continue
+            try:
+                write_conn.execute(f'DROP VIEW IF EXISTS lake."main"."{view_name}"')
+                logger.info("DuckLake reconcile: dropped stale lake.main view %s", view_name)
+            except Exception as e:
+                logger.warning("DuckLake reconcile: could not drop stale lake.main view %s: %s", view_name, e)
 
     def _attach_and_create_views(
         self,

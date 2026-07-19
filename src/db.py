@@ -2242,8 +2242,6 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                     apply_bq_session_settings(conn)
                     if not already_attached:
                         conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
-                elif already_attached:
-                    continue
                 elif token:
                     escaped_token = escape_sql_string_literal(token)
                     conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')")
