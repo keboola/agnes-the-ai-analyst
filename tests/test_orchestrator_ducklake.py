@@ -595,3 +595,58 @@ class TestDucklakeRebuild:
             assert Path(db_path).exists()
         finally:
             ab.reset_analytics_backend_cache()
+
+
+class TestMigrateToBackendDucklakeDirection:
+    """``SyncOrchestrator.migrate_to_backend("ducklake")`` (wave-2G Task 6)
+    against the REAL ``ducklake`` extension — the ``to="legacy"``
+    direction (no extension needed) is covered in
+    ``tests/test_orchestrator.py::TestMigrateToBackend``.
+
+    The whole point of ``migrate_to_backend`` is that it works
+    regardless of the currently configured ``analytics.backend`` — every
+    test here deliberately configures ``legacy`` (the OPPOSITE of the
+    migration target) to prove that.
+    """
+
+    def test_migrate_to_ducklake_ingests_from_extracts_while_configured_backend_is_legacy(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.delenv("AGNES_ANALYTICS_BACKEND", raising=False)
+        for var in ("AGNES_DUCKLAKE_CATALOG_DSN", "AGNES_DUCKLAKE_DATA_PATH"):
+            monkeypatch.delenv(var, raising=False)
+        extracts_dir = tmp_path / "extracts"
+        extracts_dir.mkdir()
+
+        import src.analytics_backend as ab
+        import src.ducklake_session as ds
+
+        ab.reset_analytics_backend_cache()
+        ds.close_ducklake_sessions()
+        try:
+            assert ab.analytics_backend() == "legacy"
+
+            _create_ducklake_extract(
+                extracts_dir,
+                "keboola",
+                [{"name": "orders", "data": [{"id": "1", "total": "100"}]}],
+            )
+
+            from src.orchestrator import SyncOrchestrator
+
+            result = SyncOrchestrator().migrate_to_backend("ducklake")
+            assert set(result.get("keboola", [])) == {"orders"}
+
+            # Populated the lake even though analytics_backend() still
+            # says "legacy" — migrate_to_backend never consulted it.
+            assert ab.analytics_backend() == "legacy"
+
+            r = ds.get_ducklake_read()
+            try:
+                row = r.execute('SELECT total FROM lake."keboola"."orders" WHERE id=\'1\'').fetchone()
+                assert row[0] == "100"
+                assert r.execute('SELECT total FROM lake."main"."orders"').fetchone()[0] == "100"
+            finally:
+                r.close()
+        finally:
+            ds.close_ducklake_sessions()
+            ab.reset_analytics_backend_cache()

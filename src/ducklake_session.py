@@ -35,6 +35,13 @@ the singleton pattern ``get_system_db`` / ``get_analytics_db()`` use in ``src/db
   (``app/worker/kinds.py``) calls to ``VACUUM`` the Postgres database
   backing the catalog, over its own short-lived raw connection (not the
   writer singleton above).
+- :func:`validate_ducklake_migration_prerequisites` (task 6) — also not a
+  session accessor; a pre-flight check (extension loadable + a real
+  catalog ``ATTACH`` probe, with a ``CREATE DATABASE`` auto-repair
+  attempt) the ``POST /api/admin/analytics/migrate`` endpoint
+  (``app/api/admin_analytics.py``) runs before enqueueing the
+  ``analytics-migrate`` job, over its own throwaway connections (again,
+  not either singleton above).
 
 Both wrap the same underlying attach mechanics (``_attach_ducklake``):
 ``INSTALL/LOAD ducklake`` (+``postgres`` when the catalog target is a
@@ -703,3 +710,161 @@ def vacuum_ducklake_catalog() -> bool:
     finally:
         conn.close()
     return True
+
+
+def _dsn_with_database(dsn: str, database: str) -> str:
+    """Return the Postgres URL *dsn* with its path (database name) replaced
+    by *database* — netloc and query string untouched.
+
+    Used to derive an "administrative" connection target (the always-
+    present ``postgres`` database on the same server) from an operator-
+    supplied ``ducklake.catalog_dsn`` whose named database doesn't exist
+    yet — see :func:`_probe_or_repair_ducklake_pg_catalog`'s auto-create
+    path. Works for the pgserver-style unix-socket DSN shape too (the
+    socket directory rides in the query string, which this leaves alone).
+    """
+    from urllib.parse import urlparse, urlunparse
+
+    parsed = urlparse(dsn)
+    return urlunparse(parsed._replace(path=f"/{database}"))
+
+
+def _ducklake_target_database_name(catalog_dsn: str) -> str:
+    """Extract the bare database name a Postgres ``catalog_dsn`` targets."""
+    from urllib.parse import unquote, urlparse
+
+    return unquote(urlparse(catalog_dsn).path.lstrip("/"))
+
+
+def _probe_or_repair_ducklake_pg_catalog(catalog_dsn: str, data_path: str) -> list[str]:
+    """Postgres-catalog half of :func:`validate_ducklake_migration_prerequisites`.
+
+    Attempts a real DuckLake ``ATTACH`` against *catalog_dsn* on a
+    throwaway in-memory connection. On success, returns ``[]``. On a
+    "database does not exist" failure — the expected shape on an EXISTING
+    Postgres volume that pre-dates DuckLake, since
+    ``deploy/postgres/init-ducklake-db.sql`` only ever runs against a
+    brand-new empty volume (wave-2G Task 5's known m-tier gap) — attempts
+    ``CREATE DATABASE`` against the same server's ``postgres`` database
+    and retries the attach once. Any other failure (auth, missing schema
+    privileges, unwritable ``data_path``, an unreachable server, a
+    ``CREATE DATABASE`` permission failure, ...) is reported verbatim,
+    with the exact manual ``CREATE DATABASE`` command included whenever
+    the missing-database branch is the one that failed to self-heal —
+    this instance's credentials may simply lack ``CREATEDB``.
+
+    Returns a list of human-readable problem strings (empty on success).
+    Broken out from :func:`validate_ducklake_migration_prerequisites` so
+    the "database missing -> try to create it -> retry" branch reads as
+    one linear sequence instead of nesting inside the caller.
+    """
+    import psycopg
+
+    dbname = _ducklake_target_database_name(catalog_dsn)
+
+    def _try_attach() -> Exception | None:
+        try:
+            probe = _open_duckdb(":memory:")
+            try:
+                _attach_ducklake(probe, catalog_dsn=catalog_dsn, data_path=data_path)
+            finally:
+                probe.close()
+            return None
+        except Exception as e:  # noqa: BLE001 - classify+report, never crash the caller
+            return e
+
+    exc = _try_attach()
+    if exc is None:
+        return []
+
+    message = str(exc)
+    missing_db = bool(dbname) and f'database "{dbname}" does not exist' in message
+    if not missing_db:
+        return [f"could not reach the DuckLake Postgres catalog at the configured DSN: {message}"]
+
+    create_cmd = f'CREATE DATABASE "{dbname}";'
+    admin_dsn = _dsn_with_database(catalog_dsn, "postgres")
+    try:
+        admin_conn = psycopg.connect(pg_dsn_to_libpq(admin_dsn), autocommit=True)
+        try:
+            admin_conn.execute(f'CREATE DATABASE "{dbname}"')
+        finally:
+            admin_conn.close()
+    except Exception as create_exc:
+        return [
+            f"database {dbname!r} does not exist on the configured DuckLake Postgres "
+            f"catalog server, and this instance could not create it automatically "
+            f"({create_exc}). This is expected on a Postgres volume that pre-dates "
+            f"DuckLake (deploy/postgres/init-ducklake-db.sql only runs on a brand-new "
+            f"volume) — run this manually against the target Postgres server, then "
+            f"retry the migration: {create_cmd}"
+        ]
+
+    logger.info(
+        "validate_ducklake_migration_prerequisites: created missing catalog database %r",
+        dbname,
+    )
+
+    retry_exc = _try_attach()
+    if retry_exc is not None:
+        return [f"created database {dbname!r} but the DuckLake ATTACH still failed: {retry_exc}"]
+    return []
+
+
+def validate_ducklake_migration_prerequisites() -> list[str]:
+    """Validate that ``analytics.backend: ducklake`` can actually be
+    populated/queried in this environment, WITHOUT flipping any config —
+    the engine behind ``agnes admin analytics migrate --to ducklake``
+    (wave-2G Task 6). Returns a list of human-readable problem strings;
+    an empty list means every prerequisite is satisfied and the migration
+    rebuild is safe to trigger.
+
+    Every applicable check runs (not short-circuited on the first
+    failure), so an operator sees every problem in one pass:
+
+    1. :func:`ducklake_available` — the ``ducklake`` DuckDB extension must
+       be installable/loadable in this environment (offline/air-gapped
+       deployments without vendored extensions fail here).
+    2. A multi-process topology (``app.startup_guards.is_multi_process``)
+       requires an explicit Postgres ``ducklake.catalog_dsn`` — a DuckDB-
+       file catalog is hard single-process. ``app.startup_guards
+       .validate_deployment`` enforces the same rule at boot; re-checking
+       it here fails the migrate command BEFORE triggering a (potentially
+       large) rebuild instead of only at the next restart.
+    3. When the resolved catalog is a Postgres DSN: a real ``ATTACH``
+       reachability probe, with an automatic ``CREATE DATABASE`` repair
+       attempt (or the exact manual command) when the target database
+       itself doesn't exist yet — see
+       :func:`_probe_or_repair_ducklake_pg_catalog`.
+
+    A single-process DuckDB-file catalog target gets no live reachability
+    check beyond the extension probe — ``_attach_ducklake`` creates the
+    file/directory on first write if it doesn't exist yet, so there is
+    nothing meaningful to pre-flight there.
+    """
+    problems: list[str] = []
+
+    if not ducklake_available():
+        problems.append(
+            "the 'ducklake' DuckDB extension could not be installed/loaded in this "
+            "environment — check network egress to the DuckDB extension repository "
+            "(or vendor the extension locally for an air-gapped deploy)"
+        )
+
+    catalog_dsn = ducklake_catalog_dsn()
+    data_path = ducklake_data_path()
+
+    if is_postgres_dsn(catalog_dsn):
+        problems.extend(_probe_or_repair_ducklake_pg_catalog(catalog_dsn, data_path))
+    else:
+        from app.startup_guards import is_multi_process
+
+        if is_multi_process():
+            problems.append(
+                "this is a multi-process deployment (role split or UVICORN_WORKERS>1) "
+                "but ducklake.catalog_dsn (or AGNES_DUCKLAKE_CATALOG_DSN) resolves to a "
+                "DuckDB-file path — a file catalog is hard single-process; set an "
+                "explicit Postgres DSN before migrating"
+            )
+
+    return problems

@@ -306,6 +306,85 @@ unreachable Redis surfaces as a prompt `CoordinationUnavailable` (which
 callers already handle — e.g. a graceful WS close with code 4503) instead
 of blocking a lease-heartbeat thread indefinitely.
 
+### DuckLake analytics backend
+
+`analytics.backend` (`instance.yaml`) / `AGNES_ANALYTICS_BACKEND` (env) opts
+an instance into `ducklake` — a DuckLake catalog replacing the rebuilt-and-
+swapped `server.duckdb` file as the analytics query surface (wave-2G, WS E).
+`legacy` (the current `server.duckdb` behavior) stays the zero-config
+default; existing deployments are unaffected until an operator opts in.
+Full architecture: [`architecture.md`](architecture.md#analytics-data-plane-legacy-vs-ducklake).
+
+**Config:**
+
+- `analytics.backend: ducklake` (or `AGNES_ANALYTICS_BACKEND=ducklake`).
+- `ducklake.catalog_dsn` / `AGNES_DUCKLAKE_CATALOG_DSN` — a Postgres DSN
+  (`postgresql://...`, the SQLAlchemy `+driver` form also accepted) for a
+  shared catalog, or left unset for a DuckDB-file catalog at
+  `{DATA_DIR}/analytics/catalog.ducklake` (single-process `all` mode only —
+  the startup guard below refuses a file catalog on any multi-process
+  topology).
+- `ducklake.data_path` / `AGNES_DUCKLAKE_DATA_PATH` — where DuckLake stores
+  its own data files. Defaults to `{DATA_DIR}/analytics/lake/`.
+- `ducklake.snapshot_retention_days` / `AGNES_DUCKLAKE_SNAPSHOT_RETENTION_DAYS`
+  — days of DuckLake snapshot history the daily maintenance job keeps before
+  expiring + physically deleting the files only that snapshot referenced.
+  Default 7; `0` means "no retention grace" but is floored at 1 hour
+  internally (a live analyst query must never have its snapshot yanked
+  out from under it mid-query — there is no hard statement timeout on
+  local DuckLake queries).
+
+**Multi-process requirement.** Any multi-process topology (role split or
+`UVICORN_WORKERS > 1`) opting into `ducklake` MUST set an explicit Postgres
+`ducklake.catalog_dsn` — `app/startup_guards.py::validate_deployment` refuses
+to start otherwise (a DuckDB-file catalog is hard single-process: DuckDB
+refuses a second same-process ATTACH of the same catalog file). The `mtier`
+Compose profile (`docker-compose.mtier.yml`) demonstrates this: it flips
+`analytics.backend: ducklake` with `ducklake.catalog_dsn` pointed at a
+**dedicated** `agnes_ducklake` Postgres database (kept separate from the
+`agnes` app-state database Alembic manages — DuckLake's `ducklake_*` catalog
+tables land directly in the target database's `public` schema and would
+otherwise mix with app-state tables), created via
+`deploy/postgres/init-ducklake-db.sql` on first boot.
+
+**Postgres catalog sizing.** Every DuckLake ATTACH from a Postgres-catalog
+target opens exactly one libpq connection (verified directly against DuckDB
+1.5.2 — no per-query connection churn). Each `api`/`gateway` replica holds
+one long-lived reader connection; each `worker` process holds one writer
+connection (opened lazily on first rebuild or maintenance run). Size the
+catalog Postgres instance's `max_connections` for **N api/gateway replicas +
+M worker processes**, plus normal headroom — not per-request, and not
+per-uvicorn-worker beyond the one connection each role process itself opens.
+
+**Maintenance job.** A daily `ducklake-maintenance` job (`app/worker/kinds.py`,
+LIGHT lane; see [`jobs-classification.md`](jobs-classification.md)) runs
+`merge_adjacent_files` → `ducklake_expire_snapshots` (using the retention
+window above) → `ducklake_cleanup_old_files` → a catalog `VACUUM`
+(Postgres-catalog only — a DuckDB-file catalog has no equivalent storage
+VACUUM). Mutually exclusive with any concurrent rebuild via the same
+`rebuild_mutex()` lock pair `rebuild()`/`rebuild_source()` already take, so
+a long rebuild can never race a catalog-wide expire/cleanup pass. No-ops
+cleanly (logs, returns) if a stray/stale job runs against a
+`legacy`-configured instance.
+
+**Migrating an existing instance.** `agnes admin analytics migrate --to
+ducklake` (`POST /api/admin/analytics/migrate`) validates prerequisites —
+the `ducklake` extension is loadable, and (for a Postgres catalog) a real
+`ATTACH` reachability probe, auto-repairing a missing catalog database with
+`CREATE DATABASE` when this instance's credentials allow it, or printing the
+exact command to run manually otherwise (the expected shape when adding
+DuckLake to an **existing** Postgres volume — `init-ducklake-db.sql` only
+ever runs against a brand-new empty volume, so a running instance's
+Postgres never gets `agnes_ducklake` created for it automatically) — then
+enqueues a full rebuild into DuckLake from the on-disk extracts tree
+(`analytics-migrate` job, HEAVY lane). This command never flips
+`analytics.backend` itself: once the job completes (`agnes admin jobs show
+<job_id>`), set `analytics.backend: ducklake` on every role process and
+restart — config is read once at boot. Roll back with `agnes admin
+analytics migrate --to legacy`, same shape in reverse (no prerequisites to
+validate); materialized-SQL tables are not re-materialized by either
+direction, they follow their own scheduler cadence.
+
 ### Metrics (Prometheus)
 
 Every role process exposes `GET /metrics` (`app/observability/metrics.py`)
@@ -427,6 +506,33 @@ relying on this in production, verify live:
    `sync_or_refresh_busy` expects against the real endpoint (not just the
    fake `curl` stub in the bash harness) — in particular the `"id"` field
    presence used as the "busy" signal.
+
+**Carried DuckLake load-test risks (wave-2G).** Two items the wave's own
+review rounds flagged but did not close — verify under real load before
+relying on the `ducklake` backend in production, not just under this repo's
+unit/contract tests:
+
+6. **Materialize-vs-rebuild ATTACH-race fallback-pass omission.** The legacy
+   backend's filesystem-fallback pass (a materialized table's parquet landing
+   on disk mid-rebuild, before its `table_registry` row is visible) was NOT
+   ported to the DuckLake copy-ingest path (wave-2G Task 3 finding). Under
+   load, a materialized-SQL job finishing while a `data-refresh`/
+   `jira-refresh` rebuild is mid-flight can transiently drop that table from
+   the lake until the *next* rebuild picks it back up — self-healing, but a
+   query landing in that window sees a missing table where the legacy
+   backend's fallback pass would have caught it. Verify the actual window
+   size and any query-facing error surface under a realistic concurrent
+   materialize+rebuild load pattern before trusting this on a large,
+   frequently-materializing instance.
+7. **Snapshot retention floor vs. real query durations.** The maintenance
+   job's safety floor (`_MIN_RETENTION_FLOOR_SECONDS`, 1 hour — see
+   `src/analytics_backend.py`) is a conservative guess at "longer than any
+   real analytic query," not a measured one. Verify actual p99 query
+   duration against the DuckLake reader plane under production-shaped load
+   and confirm it stays comfortably under the floor — if a legitimate query
+   ever runs longer, `ducklake_expire_snapshots`/`ducklake_cleanup_old_files`
+   could physically delete a Parquet file a still-running query holds a
+   reference to.
 
 ## Cloud-chat host requirements
 
