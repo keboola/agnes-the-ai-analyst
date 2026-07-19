@@ -12,16 +12,21 @@ the singleton pattern ``get_system_db`` / ``get_analytics_db()`` use in ``src/db
   long-lived attach + per-request cursor beats a per-request open for
   this backend). Local/materialized tables need no extra wiring per call
   — they live in the lake itself, so a fresh cursor already sees them via
-  DuckLake's MVCC snapshot. Remote-mode (``query_mode='remote'``) tables
-  are different: they have no lake-resident data, so on every call this
-  ATTACHes (only) the extract sources that ``table_registry`` says carry
-  a remote-mode row, re-runs ``_reattach_remote_extensions`` (refreshing
-  short-lived BQ tokens), and creates a ``lake."main"."<name>"`` wrapper
-  view per remote row — see :func:`_sync_remote_views`. Deliberately
-  scoped to remote-only sources: attaching every extract source
-  persistently (as this function did pre-task-4) collides with a
-  connector that rewrites its extract.duckdb *in place* rather than via
-  temp-file swap (Jira) — see :func:`_ensure_remote_extract_attach`.
+  DuckLake's MVCC snapshot. **The reader is a strictly read-only plane: it
+  issues NO ``CREATE VIEW`` / lake DDL and commits NO catalog snapshot per
+  request.** Remote-mode (``query_mode='remote'``) tables have no
+  lake-resident data, but their ``lake."main"."<name>"`` wrapper views are
+  now owned by the WRITER (created once per rebuild in
+  ``src.orchestrator.SyncOrchestrator._sync_ducklake_remote_views``) — the
+  reader only queries them. At session (re)open the reader ATTACHes (only)
+  the extract sources ``table_registry`` marks remote-mode plus their
+  external extensions (:func:`_attach_remote_read_sources`) so those
+  wrappers bind; per request it does nothing but a session-scoped BigQuery
+  secret refresh (:func:`_refresh_bq_secrets`), which commits no snapshot.
+  Deliberately scoped to remote-only sources: attaching every extract
+  source persistently collides with a connector that rewrites its
+  extract.duckdb *in place* rather than via temp-file swap (Jira) — see
+  :func:`_ensure_remote_extract_attach`.
 - :func:`get_ducklake_write` — the worker-role writer (task 3's copy-ingest
   rebuild lands through this). Logically a separate singleton from the
   reader — different roles in the three-plane topology.
@@ -32,6 +37,21 @@ Postgres DSN), then ``ATTACH 'ducklake:...' AS lake (DATA_PATH '...')``.
 Memory caps + thread count reuse ``src.db._apply_memory_caps`` verbatim —
 same per-connection budgeting rationale as the legacy analytics
 connections (see the ``_*_MEMORY_LIMIT`` block in ``src/db.py``).
+
+**Memory-budget model (per-connection, shared across cursors).** The
+``memory_limit`` is a property of the *physical DuckDB connection*, not of
+a cursor. The reader singleton is one such connection; every concurrent
+caller's cursor (``.cursor()``) runs under that single shared budget. This
+is intended — it bounds the reader plane's *aggregate* RSS across all
+in-flight analyst queries (one api-replica-wide cap), rather than letting
+N concurrent cursors each claim their own ``_DUCKLAKE_READ_MEMORY_LIMIT``
+and multiply the process's peak. **Corollary for the file-catalog path:**
+when the resolved catalog is a DuckDB *file* target, reader and writer
+share one physical connection (see the same-process constraint below),
+and that shared connection is budgeted at the writer's
+``_DUCKLAKE_WRITE_MEMORY_LIMIT`` (1500MB), NOT the 1GB read cap — a
+file-catalog deployment is single-process ``all`` mode, so the writer's
+higher cap governs both roles on the one shared connection.
 
 **Same-process file-catalog constraint (verified directly against DuckDB
 1.5.2, not documented upstream):** DuckDB refuses to ``ATTACH`` the same
@@ -345,59 +365,50 @@ def _ensure_remote_extract_attach(conn: duckdb.DuckDBPyConnection, remote_by_sou
             logger.debug("Could not attach remote-mode extract source %s: %s", source_name, e)
 
 
-def _ensure_remote_views(conn: duckdb.DuckDBPyConnection, remote_by_source: dict[str, list[dict]]) -> None:
-    """Ensure a ``lake."main"."<name>"`` view exists for every
-    ``query_mode='remote'`` table_registry row, pointing at the extract
-    source's own already-correct inner view
-    (``"<source>"."<name>"``, i.e. exactly what the legacy master view
-    references — ``{source}."{table}"`` — per ``src.db.get_analytics_db_readonly``).
+def _attach_remote_read_sources(conn: duckdb.DuckDBPyConnection) -> None:
+    """ONE-TIME (per reader session open) attach of the remote-mode extract
+    sources + their external extensions, so the writer-created
+    ``lake.main`` wrapper views bind at query time.
 
-    Deliberately does NOT re-derive BigQuery/Keboola addressing (bq_fqn
-    overrides, cross-project routing, BASE TABLE vs VIEW/MATERIALIZED_VIEW
-    ``bigquery_query()`` wrapping — see ``connectors/bigquery/extractor.py``)
-    here. That logic already lives in the extractor and stays there; this
-    just re-exposes its already-built inner view under ``lake.main`` via a
-    thin wrapper, the same way task 3's writer wraps copy-ingested local
-    tables (``CREATE OR REPLACE VIEW lake."main"."<table>" AS SELECT * FROM
-    lake."<source>"."<table>"``).
+    The ``lake.main`` wrapper views themselves are created by the WRITER
+    (``src.orchestrator.SyncOrchestrator._sync_ducklake_remote_views``),
+    NOT here — the reader never issues ``CREATE VIEW`` against the lake, so
+    it never commits a DuckLake catalog snapshot. But each wrapper's body
+    is ``SELECT * FROM "<source>"."<name>"``, so the reader connection must
+    have the extract source (and, for a BigQuery extract, its ``bq`` alias)
+    ATTACHed for the wrapper to resolve. This does that attach exactly once
+    per session open — a registry scan (:func:`_remote_registry_rows_by_source`)
+    is acceptable here (bounded, one-time); it must NOT run per-request.
 
-    Idempotent (``CREATE OR REPLACE VIEW``) and cheap (no data movement) —
-    safe to call on every :func:`get_ducklake_read` cursor fetch, which is
-    what keeps a newly-registered remote table visible on the very next
-    query without waiting for the reader session to fully reopen.
-    """
-    for source_name, rows in remote_by_source.items():
-        if not _SAFE_IDENTIFIER.match(source_name):
-            continue
-        for row in rows:
-            name = row.get("name") or ""
-            if not _SAFE_IDENTIFIER.match(name):
-                continue
-            try:
-                conn.execute(
-                    f'CREATE OR REPLACE VIEW {_LAKE_ALIAS}."main"."{name}" AS SELECT * FROM {source_name}."{name}"'
-                )
-            except Exception as e:
-                logger.debug("Could not create lake.main remote view for %s.%s: %s", source_name, name, e)
-
-
-def _sync_remote_views(conn: duckdb.DuckDBPyConnection) -> None:
-    """Full per-request remote-table sync: attach any not-yet-attached
-    remote-mode extract source, refresh remote extensions/tokens
-    (``src.db._reattach_remote_extensions``), and (re)create each
-    remote-mode table's ``lake.main`` wrapper view.
-
-    Called on every :func:`get_ducklake_read` cursor fetch — see that
-    function's docstring for why this needs to run per-request rather
-    than only at session (re)open (BQ token TTL, and newly registered
-    remote tables should not need a full reader restart to appear).
+    Newly-registered remote tables therefore appear once (a) the writer's
+    next rebuild creates their wrapper view and (b) this reader session
+    re-opens (picking up the new extract source attach) — a deliberate
+    trade of instant per-request visibility for a read plane that issues
+    no per-request registry scan and commits no per-request catalog write.
     """
     remote_by_source = _remote_registry_rows_by_source()
     if not remote_by_source:
         return
     _ensure_remote_extract_attach(conn, remote_by_source)
     _reattach_remote_extensions(conn, _extracts_dir())
-    _ensure_remote_views(conn, remote_by_source)
+
+
+def _refresh_bq_secrets(conn: duckdb.DuckDBPyConnection) -> None:
+    """Per-request refresh of short-lived BigQuery ACCESS_TOKEN secrets on
+    the long-lived reader connection.
+
+    ``src.db._reattach_remote_extensions`` re-fetches the GCE metadata
+    token and issues ``CREATE OR REPLACE SECRET`` for each already-attached
+    BQ source (it skips re-ATTACH for anything already attached, and is a
+    no-op filesystem walk when no source carries a ``_remote_attach``
+    table). Crucially it does NOT scan ``table_registry`` and does NOT
+    touch the DuckLake catalog — ``CREATE OR REPLACE SECRET`` is
+    session-scoped and commits no snapshot (verified vs DuckDB 1.5.2) — so
+    running it on every :func:`get_ducklake_read` call keeps BQ queries
+    working past the ~1h token TTL without amplifying catalog writes from
+    the read plane.
+    """
+    _reattach_remote_extensions(conn, _extracts_dir())
 
 
 def get_ducklake_read() -> duckdb.DuckDBPyConnection:
@@ -411,41 +422,35 @@ def get_ducklake_read() -> duckdb.DuckDBPyConnection:
     ``AGNES_DUCKLAKE_CATALOG_DSN`` across cases) — same contract
     ``get_analytics_db()`` has for a changed ``DATA_DIR``.
 
-    **Remote-table (``query_mode='remote'``) wiring — refreshed on
-    EVERY call, not just (re)open:** unlike local/materialized tables
-    (copy-ingested straight into the lake by task 3's writer, so a fresh
-    cursor sees them via DuckLake's own MVCC snapshot with no extra
-    work), remote tables have no lake-resident data — this function
-    builds a ``lake."main"."<name>"`` wrapper view for each
-    ``table_registry`` row with ``query_mode='remote'`` on every call
-    (see :func:`_sync_remote_views`). Three reasons this runs per-call
-    rather than only at session (re)open:
+    **Read-only plane — no per-request catalog writes.** The wrapper
+    views for ``query_mode='remote'`` tables (``lake."main"."<name>"``)
+    are created by the WRITER once per rebuild
+    (``src.orchestrator.SyncOrchestrator._sync_ducklake_remote_views``),
+    NOT here. This is load-bearing: a ``CREATE OR REPLACE VIEW`` against a
+    DuckLake catalog commits a fresh catalog snapshot on every call even
+    when the body is unchanged (verified vs DuckDB 1.5.2 — 5 identical
+    calls → +5 snapshots), so doing it on every reader request would be
+    unbounded catalog write-amplification onto the shared PG catalog from
+    the api plane, defeating read/write separation. The reader therefore
+    issues NO ``CREATE VIEW`` / lake DDL and commits NO snapshot. Its only
+    per-request work is:
 
-    1. **BQ token TTL.** The GCE metadata token backing the BigQuery
-       ATTACH's ``ACCESS_TOKEN`` secret expires (~1h). This reader's
-       physical connection lives for the process's lifetime, so a
-       (re)open-only refresh would silently start failing BQ queries
-       once the first token expired.
-    2. **Newly-registered remote tables should not need a process
-       restart to appear** — matches the legacy ``get_analytics_db_readonly()``
-       behavior of re-attaching everything (and thus picking up registry
-       changes) on every single request.
-    3. **Single-process Jira-class collision avoidance.** Only extract
-       sources that table_registry says have a remote-mode table are
-       ever ATTACHed here (see :func:`_ensure_remote_extract_attach`) —
-       a purely local-mode source (e.g. Jira, whose
-       ``connectors/jira/extract_init.py::update_meta`` rewrites its
-       ``extract.duckdb`` *in place*, not via temp-file swap) is never
-       attached by this long-lived reader, so it never wedges that
-       connector's live webhook writes with a "Conflicting lock" error.
-       Remote-mode sources (Keboola direct-bucket, BigQuery) are safe to
-       hold attached indefinitely — their extractors always write a
-       ``.tmp`` file and atomically swap it in.
+    - ``USE lake`` on the returned cursor (no snapshot);
+    - a BigQuery ACCESS_TOKEN secret refresh via :func:`_refresh_bq_secrets`
+      — ``CREATE OR REPLACE SECRET`` is session-scoped and commits no
+      DuckLake snapshot (verified), needed because the GCE metadata token
+      backing the BQ ATTACH expires (~1h) while this reader's physical
+      connection lives for the whole process.
 
-    This per-call work is cheap: it only touches the (typically very
-    small) set of sources with at least one remote-mode row, and the
-    view/attach mutations are idempotent (``CREATE OR REPLACE`` / skip if
-    already attached).
+    The one-time work at session (re)open attaches the remote-mode extract
+    sources + their external extensions (:func:`_attach_remote_read_sources`)
+    so the writer-created wrappers bind. That attach set is exactly the
+    sources ``table_registry`` marks remote-mode — never a live-in-place
+    connector (e.g. Jira, whose ``extract_init.py::update_meta`` rewrites
+    ``extract.duckdb`` in place), so the long-lived reader never wedges a
+    webhook write with a "Conflicting lock". Remote-mode sources (Keboola
+    direct-bucket, BigQuery) always temp-file-swap, so holding their attach
+    is safe.
 
     Every returned cursor also runs ``USE lake`` so an unqualified
     ``SELECT ... FROM "<table>"`` resolves against ``lake.main`` — the
@@ -479,7 +484,20 @@ def get_ducklake_read() -> duckdb.DuckDBPyConnection:
                 conn = _get_shared_file_catalog_conn(catalog_dsn, data_path)
             _read_conn = conn
             _read_key = key
-        _sync_remote_views(_read_conn)
+            # ONE-TIME (per session open, not per request): ATTACH the
+            # remote-mode extract sources + their external extensions so
+            # the writer-created ``lake.main`` wrapper views bind at query
+            # time. A registry scan is fine here (once per open); it must
+            # NOT happen per-request (see below).
+            _attach_remote_read_sources(_read_conn)
+        # Per-request: refresh ONLY the BQ ACCESS_TOKEN secret. The reader
+        # issues NO ``CREATE VIEW`` / lake DDL and commits NO catalog
+        # snapshot — the writer owns the wrapper views now. ``CREATE OR
+        # REPLACE SECRET`` is session-scoped and does NOT commit a DuckLake
+        # snapshot (verified vs DuckDB 1.5.2), so this cannot amplify
+        # catalog writes from the read plane. Kept under ``_read_lock``
+        # because it mutates the shared physical connection.
+        _refresh_bq_secrets(_read_conn)
         cursor = _read_conn.cursor()
         cursor.execute(f"USE {_LAKE_ALIAS}")
         return _maybe_instrument(cursor, "ducklake_read")
