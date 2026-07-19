@@ -2,6 +2,7 @@
 
 import gzip
 import io
+import os
 
 
 def _auth(token):
@@ -243,3 +244,41 @@ class TestSessionGzipUpload:
         resp = self._post(seeded_app, "sess_plain.jsonl", content)
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok", "filename": "sess_plain.jsonl", "size": len(content)}
+
+    def test_large_valid_roundtrip_exercises_drain_loop(self, seeded_app):
+        # >1 MB decompressed forces the bounded drain loop to iterate several times.
+        content = b'{"type": "message", "text": "x"}\n' * 60000  # ~2 MB
+        assert len(content) > 1024 * 1024
+        resp = self._post(seeded_app, "sess_big.jsonl.gz", gzip.compress(content))
+        assert resp.status_code == 200
+        assert resp.json()["size"] == len(content)
+        from app.utils import get_data_dir
+
+        stored = get_data_dir() / "user_sessions" / "admin1" / "sess_big.jsonl"
+        assert stored.read_bytes() == content
+
+    def test_raw_transfer_bound_rejects_413(self, seeded_app, monkeypatch):
+        import app.api.upload as _upl
+
+        # Shrink the cap so a small INCOMPRESSIBLE payload trips the raw-transfer
+        # (compressed-bytes) bound BEFORE decompression — exercises the secondary guard.
+        monkeypatch.setattr(_upl, "MAX_UPLOAD_SIZE", 4096)
+        payload = gzip.compress(os.urandom(16384))  # incompressible → stays > 4096
+        assert len(payload) > 4096
+        resp = self._post(seeded_app, "sess_rawbig.jsonl.gz", payload)
+        assert resp.status_code == 413
+        assert "File too large" in resp.text  # the raw-bound message, not "Decompressed"
+
+    def test_temp_file_cleaned_up_on_oversize(self, seeded_app, monkeypatch, tmp_path):
+        import tempfile
+
+        import app.api.upload as _upl
+
+        monkeypatch.setattr(_upl, "MAX_UPLOAD_SIZE", 4096)
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        # Compressible payload whose DECOMPRESSED size exceeds the patched cap → 413 mid-stream.
+        payload = gzip.compress(b"\x00" * (64 * 1024))
+        resp = self._post(seeded_app, "sess_bombtmp.jsonl.gz", payload)
+        assert resp.status_code == 413
+        # The intermediate NamedTemporaryFile (suffix ".tmp") must have been unlinked.
+        assert list(tmp_path.glob("*.tmp")) == []
