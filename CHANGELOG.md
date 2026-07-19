@@ -50,6 +50,47 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   design-system button classes (`btn btn-primary` / `btn-secondary` /
   `btn-danger`, size `btn-sm`) instead of unstyled browser-default buttons, and
   the row wraps on narrow viewports.
+### Added
+
+- **Opt-in DuckLake analytics backend** (wave-2G, WS E — `legacy` remains the
+  default; every existing deployment is unaffected until an operator opts
+  in): `analytics.backend: ducklake` (or `AGNES_ANALYTICS_BACKEND=ducklake`)
+  moves the server-side analytics query surface from the rebuilt-and-swapped
+  `server.duckdb` file to a DuckLake catalog — Postgres-backed for
+  multi-process deployments (`ducklake.catalog_dsn` / `AGNES_DUCKLAKE_CATALOG_DSN`,
+  enforced by `app/startup_guards.py::validate_deployment`), a DuckDB-file
+  catalog for single-process `all` mode. The extracts tree
+  (`/data/extracts/{source}/{extract.duckdb, data/*.parquet}`) is untouched
+  and remains the distribution artifact + rollback truth for both backends —
+  neither ever re-extracts from a source system. Building blocks: session
+  management (`src/ducklake_session.py`) with a long-lived reader singleton
+  per api/gateway process (cursor-per-request, snapshot-isolated against
+  concurrent writes, no per-request catalog writes) and a separate writer
+  singleton for the worker; a copy-ingest rebuild path
+  (`src/orchestrator.py::_do_rebuild_ducklake`) that ports the legacy
+  rebuild's view-ownership claim/collision semantics and — unlike the
+  legacy full-rebuild-on-any-change path — re-ingests only the touched
+  source's own catalog schema on a per-source rebuild (e.g. a Jira webhook);
+  a reader path wired into `/api/query` and the BigQuery-hybrid query
+  endpoint; a daily `ducklake-maintenance` job (`merge_adjacent_files` →
+  `ducklake_expire_snapshots` → `ducklake_cleanup_old_files` → catalog
+  `VACUUM`, mutually exclusive with any concurrent rebuild via a shared
+  `rebuild_mutex()`, with a configurable snapshot-retention window floored
+  at 1 hour so a live query's snapshot can never be reclaimed out from
+  under it) plus an m-tier Compose profile flip exercising it end-to-end;
+  and an `agnes admin analytics migrate --to ducklake|legacy`
+  command/`POST /api/admin/analytics/migrate` endpoint (REST+CLI+MCP) that
+  validates prerequisites (extension loadable; for a Postgres catalog, a
+  real reachability probe that auto-repairs a missing catalog database via
+  `CREATE DATABASE` when possible, or reports the exact manual command),
+  enqueues a full rebuild into the named target backend from the on-disk
+  extracts tree regardless of the currently configured backend, and
+  instructs the operator to flip `analytics.backend` and restart once that
+  job completes (config is read once at boot, not hot-reloaded) — the same
+  shape in reverse rolls back to `legacy`. Full architecture:
+  [`docs/architecture.md`](docs/architecture.md#analytics-data-plane-legacy-vs-ducklake);
+  deployment/config guide:
+  [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#ducklake-analytics-backend).
 
 ## [0.74.117] - 2026-07-18
 
@@ -64,7 +105,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   visually distinct from a neutral message.
 ### Added
 
-- **DuckLake analytics backend seam** (wave-2G, opt-in — `legacy` remains the default): `src/analytics_backend.py` resolves `analytics.backend` (`legacy`|`ducklake`, env `AGNES_ANALYTICS_BACKEND` overrides `instance.yaml`) and the DuckLake catalog/data targets (`ducklake.catalog_dsn` / `ducklake.data_path`, same env-overrides-yaml shape, defaulting to a DuckDB-file catalog at `{DATA_DIR}/analytics/catalog.ducklake` and `{DATA_DIR}/analytics/lake/` for single-process deployments). `app/startup_guards.py::validate_deployment` now also refuses `analytics.backend=ducklake` on a multi-process topology unless `ducklake.catalog_dsn` is an explicit Postgres DSN — a DuckDB-file catalog is hard single-process. The guard shares its postgres-DSN predicate (`src/analytics_backend.py::is_postgres_dsn`) with `src/ducklake_session.py`'s attach path, so it accepts the SQLAlchemy `+driver` form (`postgresql+psycopg://...`) a copied `DATABASE_URL` uses, not just the bare `postgresql://`/`postgres://` schemes. `src/db.py::close_singleton_connections()` (run before a migrator subprocess spawns to release DuckDB file locks) now also closes the DuckLake reader/writer singletons via `src/ducklake_session.py::close_ducklake_sessions()`, so an open DuckLake attach doesn't survive into the subprocess handoff. No query wiring yet (later wave-2G tasks); this lands only the resolution seam, the DuckLake session singletons, and the guard.
 - **Multi-replica chat HA** (wave-2F): `ChatManager` state — previously in-process dicts, unusable across replicas — is now coordination-backed, and multi-worker/multi-replica chat is allowed whenever `coordination.backend: redis` (previously refused outright regardless of backend). Building blocks: a **routing lease** per session (`app/chat/routing.py`, key `chat:{chat_id}`, `claim_session`/`renew_session`/`release_session`/`owner_of`) names the one gateway currently hosting a session's sandbox, claimed on spawn and renewed on the existing idle-reaper heartbeat; a **monotonic frame envelope** (`app/chat/frame_seq.py` — `seq`/`id` stamped on every outbound frame, counter backed by `chat-seq:{chat_id}`) feeds an **outbound replay stream** (`app/chat/replay.py`, `chat-out:{chat_id}`, `MAXLEN` 1000) so a WS reconnect with `?last_seq=` gets exactly the missed frames, or a `full_refresh` control frame when the gap can't be confidently closed; an **inbound command stream** (`app/chat/inbound.py`, `chat-in:{chat_id}`) forwards a message/command landing on a non-owning gateway to whichever gateway owns the lease instead of racing a second runner; and a WS reconnect landing on a gateway that doesn't hold the lease **claims (steals) it and takes over** (`ChatManager.attach` / `_takeover_foreign_session`) — destroys the old sandbox, spawns a fresh runner, and replays recent turns for continuity (v1 semantics, NOT a live handoff: any turn in flight on the old gateway at that moment is lost, the same trade-off a plain process restart already accepts). Desktop/browser notifications are absorbed into the same coordination fabric, replacing the standalone `ws_gateway` service (see Removed): `app/notifications.py::publish_notification` publishes per-user on `notify:{user}`, and `app/api/notifications_ws.py` (`/api/notifications/ws`, `Role.GATEWAY` only) serves it with the same JWT handshake, per-user connection cap, and ping/pong heartbeat the old service used. `app/startup_guards.py::validate_deployment`'s existing Postgres-app-state + explicit-secrets requirement for any multi-process topology covers the rest of the gate-lift condition; Slack Socket Mode's own `workers > 1` preflight is relaxed the same way (its `slack-socket-mode` leader lease already serializes ownership once the backend is shared). Under the default `memory` backend every mechanism above is a no-op — a single process can never see a foreign owner, so behavior there is unchanged.
 
 ### Removed

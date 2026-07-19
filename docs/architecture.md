@@ -118,9 +118,13 @@ any connector can use it. Auth credentials are never stored in `extract.duckdb`.
 
 ## SyncOrchestrator
 
-`src/orchestrator.py` — thread-safe via `_rebuild_lock`.
+`src/orchestrator.py` — thread-safe via `_rebuild_lock` (and, cross-process, the
+Postgres advisory lock `rebuild_lease()` — both taken together by the
+`rebuild_mutex()` context manager). `rebuild()` and `rebuild_source(source_name)`
+dispatch on the configured [analytics backend](#analytics-data-plane-legacy-vs-ducklake)
+— `legacy` (below) or `ducklake` — before doing anything else.
 
-### rebuild()
+### rebuild() — legacy backend
 
 1. Open a **temporary** DuckDB file (`analytics.duckdb.tmp`).
 2. Scan `/data/extracts/*/extract.duckdb` (sorted, skips non-directories and missing files).
@@ -132,15 +136,85 @@ any connector can use it. Auth credentials are never stored in `extract.duckdb`.
 8. `CHECKPOINT` and close the temp connection.
 9. **Atomic swap**: `shutil.move(tmp_path, target_path)` — replaces `analytics.duckdb` in-place.
 
-### rebuild_source(source_name)
+### rebuild_source(source_name) — legacy backend
 
 Convenience wrapper that calls `rebuild()` in full (partial rebuild is not possible because
 `analytics.duckdb` is written fresh from scratch each time). Used after Jira webhooks.
+
+On the `ducklake` backend the equivalent call is genuinely incremental instead —
+see below.
 
 ### Identifier validation
 
 Both `source_name` and `table_name` are checked against `^[a-zA-Z_][a-zA-Z0-9_]{0,63}$`
 before being interpolated into SQL. Invalid names are skipped with a warning.
+
+---
+
+## Analytics Data Plane: legacy vs DuckLake
+
+`analytics.backend` (`instance.yaml` / `AGNES_ANALYTICS_BACKEND` env) — `legacy`
+(default, zero-config) or `ducklake` (opt-in, wave-2G/WS E). Resolved once per
+process and cached for its lifetime (`src/analytics_backend.py`) — config is
+read at boot, not hot-reloaded, so flipping it requires a restart of every role
+process.
+
+**The invariant that never changes between backends:** the `extract.duckdb`
+contract above — `/data/extracts/{source}/{extract.duckdb, data/*.parquet}` —
+is the distribution artifact and the rollback truth for BOTH backends. Neither
+backend re-extracts from the source system; both are populated purely by
+reading what the connectors already wrote to that tree. Migrating between
+backends is therefore always a rebuild-from-extracts, never a re-sync (see
+`agnes admin analytics migrate` below).
+
+- **`legacy`** — the rebuild-and-swap `{DATA_DIR}/analytics/server.duckdb`
+  described above: a full temp-file rebuild, atomically swapped in.
+- **`ducklake`** (`src/ducklake_session.py`, `src/orchestrator.py`'s
+  `_do_rebuild_ducklake`) — a DuckLake catalog (Postgres-backed for
+  multi-process deployments, a DuckDB-file catalog for single-process `all`
+  mode) with data files DuckLake itself owns under `ducklake.data_path`.
+  Three properties define this plane:
+  - **Copy-ingest writer.** The worker is the only writer: after each sync,
+    `CREATE OR REPLACE TABLE lake."<source>"."<table>" AS SELECT * FROM
+    read_parquet(...)` copies each source's parquet into its own catalog
+    schema, then master views (`lake.main."<view>"`) are (re)created —
+    porting the same view-ownership claim/collision semantics the legacy
+    rebuild uses. `rebuild_source(name)` only re-ingests that one source's
+    schema — every other source's DuckLake tables/snapshots are untouched,
+    fixing the legacy "any webhook forces a full rebuild" cost by
+    construction.
+  - **Read-only reader plane.** `api`/`gateway` roles hold one long-lived
+    DuckLake attach per process (`get_ducklake_read()`), reused across
+    requests via `.cursor()` — never `CREATE VIEW`/lake DDL, never a
+    catalog-write commit, per request. This matters because a DuckLake
+    catalog commits a new snapshot on every DDL statement even when nothing
+    changed; a reader that wrote on every request would be unbounded write
+    amplification onto the shared Postgres catalog. `query_mode='remote'`
+    (BigQuery) wrapper views are therefore created by the writer once per
+    rebuild, not by the reader per request.
+  - **Snapshot-isolated concurrent reads.** A reader mid-request sees a
+    consistent snapshot even while the writer commits a new one concurrently
+    — DuckLake's MVCC, not anything Agnes builds itself.
+  - **Maintenance.** A daily `ducklake-maintenance` job (see
+    [Background Jobs](#background-jobs)) runs `merge_adjacent_files` →
+    `ducklake_expire_snapshots` → `ducklake_cleanup_old_files` → a catalog
+    `VACUUM` (Postgres-catalog only), mutually exclusive with a rebuild via
+    the same `rebuild_mutex()` lock pair.
+
+**Migrating an existing instance** (`agnes admin analytics migrate --to
+ducklake|legacy`, `POST /api/admin/analytics/migrate`) never flips config
+itself — config is operator-owned and boot-time-cached, as above. It (1)
+validates prerequisites (`ducklake` extension loadable; for a Postgres
+catalog, a real reachability probe, auto-repairing a missing catalog database
+on an existing Postgres volume), (2) enqueues a full rebuild into the named
+target backend from the on-disk extracts tree (`SyncOrchestrator
+.migrate_to_backend`, bypassing whichever backend is currently configured),
+and (3) tells the operator to flip `analytics.backend` and restart once that
+job completes. Rollback (`--to legacy`) is the same shape in reverse — the
+extracts tree never stopped being legacy's source of truth either.
+Materialized-SQL tables are not re-materialized by either direction; they
+follow their own scheduler cadence. Full operator recipe:
+[`DEPLOYMENT.md`](DEPLOYMENT.md#ducklake-analytics-backend).
 
 ---
 

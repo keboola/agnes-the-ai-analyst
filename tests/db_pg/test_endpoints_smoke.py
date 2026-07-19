@@ -1512,6 +1512,13 @@ KNOWN_UNTESTED = {
     # jobs_repo() dual-backend parity already covered by
     # tests/db_pg/test_jobs_contract.py.
     "POST /api/jobs",
+    # DuckLake analytics-backend migration (wave-2G Task 6) — requires a
+    # body (`to`) and, for `to="ducklake"`, runs a real prerequisite probe
+    # (extension/catalog reachability) before enqueueing, so it has no
+    # place in this parameter-free smoke sweep. Behaviour (401/403, `to`
+    # validation, prerequisite 400/enqueue 202/dedup 409) covered in
+    # tests/test_admin_analytics_api.py.
+    "POST /api/admin/analytics/migrate",
     "GET /api/jobs",
     "GET /api/jobs/{job_id}",
     "GET /api/collections/{collection_id}",
