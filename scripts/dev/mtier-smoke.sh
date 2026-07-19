@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # M-tier smoke: boots the role-split profile, asserts probes + kill-one-api
 # continuity + redis coordination plumbing + FLUSHALL chaos resilience +
-# chat/gateway-role WS-ticket + restart continuity (infra path — see §4).
+# chat/gateway-role WS-ticket + restart continuity (infra path — see §4) +
+# DuckLake catalog attach/readyz/live-query (wave-2G Task 5 — see §1.5/1.6).
 # Local/dev harness — needs docker; not run in unit CI.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -103,6 +104,26 @@ for role in api1 api2 gateway worker; do
 done
 echo "redis URL plumbing OK (statically, in the compose overlay)"
 
+# --- 1.5 Config plumbing: DuckLake catalog DSN must reach every role -----
+# Wave-2G Task 5: this harness flips analytics.backend=ducklake
+# (config/instance.mtier.yaml) with an explicit Postgres catalog DSN
+# (app.startup_guards.validate_deployment requires one in any multi-process
+# topology) supplied per-role via AGNES_DUCKLAKE_CATALOG_DSN, pointed at
+# the dedicated `agnes_ducklake` database (see
+# deploy/postgres/init-ducklake-db.sql) rather than the `agnes` app-state
+# database. Same static-then-live confirmation shape as the redis check
+# above.
+echo "checking ducklake catalog DSN plumbing in docker-compose.mtier.yml..."
+for role in api1 api2 gateway worker; do
+  awk -v role="  ${role}:" '
+    $0 == role { in_block=1; next }
+    in_block && /^  [a-zA-Z0-9_-]+:$/ { in_block=0 }
+    in_block { print }
+  ' docker-compose.mtier.yml | grep -q 'AGNES_DUCKLAKE_CATALOG_DSN: postgresql' \
+    || { echo "FAIL: ${role} stanza missing AGNES_DUCKLAKE_CATALOG_DSN pointing at a postgres DSN"; exit 1; }
+done
+echo "ducklake catalog DSN plumbing OK (statically, in the compose overlay)"
+
 "${COMPOSE[@]}" up -d --build
 for i in $(seq 1 60); do
   curl -fsS localhost:8080/readyz >/dev/null 2>&1 && break
@@ -121,6 +142,48 @@ for role in api1 api2 gateway worker; do
     || { echo "FAIL: ${role} container does not see AGNES_REDIS_URL pointing at the compose redis service"; exit 1; }
 done
 echo "redis URL plumbing OK (confirmed live inside api1/api2/gateway/worker)"
+
+for role in api1 api2 gateway worker; do
+  "${COMPOSE[@]}" exec -T "$role" printenv AGNES_DUCKLAKE_CATALOG_DSN 2>/dev/null | grep -q '^postgresql' \
+    || { echo "FAIL: ${role} container does not see AGNES_DUCKLAKE_CATALOG_DSN pointing at a postgres DSN"; exit 1; }
+done
+echo "ducklake catalog DSN plumbing OK (confirmed live inside api1/api2/gateway/worker)"
+
+# --- 1.6 DuckLake readiness + live query ---------------------------------
+# app/main.py's lifespan registers a "ducklake" /readyz check
+# (app.api.health_probes.register_readiness_check) whenever
+# analytics.backend=ducklake — confirm it's neither missing nor failing
+# (the earlier `readyz | grep -q ready` already implies this, since a
+# failed extra check flips /readyz to 503, but checking the body directly
+# names the exact check under test rather than relying on the aggregate).
+echo "checking ducklake readyz check is present and passing..."
+readyz_body=$(curl -fsS localhost:8080/readyz)
+printf '%s' "$readyz_body" | grep -q '"failed_checks":\[\]' \
+  || { echo "FAIL: /readyz reports failed_checks: $readyz_body"; exit 1; }
+echo "ducklake readyz check OK (failed_checks empty: $readyz_body)"
+
+# Dynamic, container-local proof that the DuckLake catalog ATTACH + a real
+# query round-trips end to end for this exact container — not just that
+# the aggregate /readyz probe passed. Runs a trivial `SELECT 1` through
+# src.ducklake_session.get_ducklake_read() (the same singleton the
+# app/api/query.py / app/api/query_hybrid.py endpoints dispatch to via
+# src.db.get_analytics_db_readonly() when analytics.backend=ducklake) —
+# the closest equivalent this harness has to "agnes query" without an
+# authenticated user + a registered table + a real sync (out of scope for
+# this smoke per the task-5 brief: a full sync needs real source
+# credentials this harness doesn't configure).
+echo "checking a live DuckLake query through api1..."
+ducklake_query_out=$("${COMPOSE[@]}" exec -T api1 python -c "
+from src.ducklake_session import get_ducklake_read
+cur = get_ducklake_read()
+try:
+    print(cur.execute('SELECT 1').fetchone())
+finally:
+    cur.close()
+" 2>&1)
+printf '%s' "$ducklake_query_out" | grep -q '(1,)' \
+  || { echo "FAIL: ducklake SELECT 1 did not return (1,) from api1: $ducklake_query_out"; exit 1; }
+echo "ducklake live query OK (api1: $ducklake_query_out)"
 
 # --- 2. Coordination-live assertion --------------------------------------
 echo "checking redis reachability..."
@@ -329,4 +392,4 @@ mint_ws_ticket "$token2"
 [ "$(ws_handshake_101 "$token2")" = "1" ] || { echo "FAIL: WS handshake did not reach 101 against the restarted gateway"; exit 1; }
 echo "chat WS reconnect-after-gateway-restart OK (101 observed against the restarted gateway)"
 
-echo "MTIER SMOKE OK (kill failures: $fails/20, flushall failures: $loop_fails/20, post-flushall tracebacks: ${tb_count:-0}, chat WS infra: ok)"
+echo "MTIER SMOKE OK (kill failures: $fails/20, flushall failures: $loop_fails/20, post-flushall tracebacks: ${tb_count:-0}, chat WS infra: ok, ducklake: ok)"

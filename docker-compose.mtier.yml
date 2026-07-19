@@ -14,11 +14,35 @@
 # alongside the role-split services on `--profile mtier up` and fight over
 # the same `data` volume / DATABASE_URL wiring. Gate them behind an unused
 # profile here so only the role services boot for this topology.
+#
+# Wave-2G Task 5: this overlay also flips `analytics.backend: ducklake`
+# (config/instance.mtier.yaml) so the smoke test exercises the multi-process
+# DuckLake path — a Postgres-backed DuckLake catalog is the whole reason a
+# role-split harness needs to touch this at all (a DuckDB-file catalog is
+# hard single-process, per src/analytics_backend.py). `postgres` below gets
+# an init script creating a dedicated `agnes_ducklake` database (kept
+# separate from the `agnes` app-state database — DuckLake's own
+# `ducklake_*` catalog tables land directly in the target database's
+# `public` schema, so sharing `agnes` would mix them with Alembic-managed
+# app-state tables); every role service gets `AGNES_DUCKLAKE_CATALOG_DSN`
+# pointed at it, mirroring how `DATABASE_URL` is wired for the `agnes` DB.
 services:
   app:
     profiles: ["standalone"]
   scheduler:
     profiles: ["standalone"]
+
+  # Additive: docker-compose.postgres.yml already defines this service
+  # (image, POSTGRES_* env, healthcheck, the postgres_data volume, host
+  # port). No `profiles:` override here — like that base definition, this
+  # service must stay available in every profile (`standalone` local dev,
+  # `mtier` role split), so it keeps running unconditionally. This stanza
+  # only adds the ducklake-catalog-database init script via Compose's
+  # additive volumes-list merge (same mechanism the `data-migrate`
+  # `depends_on` merge lower in this file relies on).
+  postgres:
+    volumes:
+      - ./deploy/postgres/init-ducklake-db.sql:/docker-entrypoint-initdb.d/init-ducklake-db.sql:ro
 
   # api1/api2 are intentionally two full, explicit stanzas rather than a
   # YAML anchor (`&api_role` / `<<: *api_role`) — verified via
@@ -48,6 +72,10 @@ services:
       # limiter storage) would silently fail without this.
       AGNES_REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+      # Dedicated database (see the postgres service's init script
+      # above) — separate from `agnes` app-state, per
+      # config/instance.mtier.yaml's analytics.backend=ducklake note.
+      AGNES_DUCKLAKE_CATALOG_DSN: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes_ducklake
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       SESSION_SECRET: ${SESSION_SECRET}
     depends_on:
@@ -68,6 +96,10 @@ services:
       CONFIG_DIR: /app/mtier-config
       AGNES_REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+      # Dedicated database (see the postgres service's init script
+      # above) — separate from `agnes` app-state, per
+      # config/instance.mtier.yaml's analytics.backend=ducklake note.
+      AGNES_DUCKLAKE_CATALOG_DSN: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes_ducklake
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       SESSION_SECRET: ${SESSION_SECRET}
     depends_on:
@@ -88,6 +120,10 @@ services:
       CONFIG_DIR: /app/mtier-config
       AGNES_REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+      # Dedicated database (see the postgres service's init script
+      # above) — separate from `agnes` app-state, per
+      # config/instance.mtier.yaml's analytics.backend=ducklake note.
+      AGNES_DUCKLAKE_CATALOG_DSN: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes_ducklake
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       SESSION_SECRET: ${SESSION_SECRET}
     depends_on:
@@ -108,6 +144,10 @@ services:
       CONFIG_DIR: /app/mtier-config
       AGNES_REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+      # Dedicated database (see the postgres service's init script
+      # above) — separate from `agnes` app-state, per
+      # config/instance.mtier.yaml's analytics.backend=ducklake note.
+      AGNES_DUCKLAKE_CATALOG_DSN: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes_ducklake
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       SESSION_SECRET: ${SESSION_SECRET}
     depends_on:

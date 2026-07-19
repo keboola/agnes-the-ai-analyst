@@ -1,6 +1,7 @@
-"""Real job kinds for the worker runtime (wave-2B, spec §3.3 — Task 4).
+"""Real job kinds for the worker runtime (wave-2B, spec §3.3 — Task 4;
+``ducklake-maintenance`` added in wave-2G Task 5).
 
-``register_all_kinds()`` registers the five kinds the scheduler's
+``register_all_kinds()`` registers the six kinds the scheduler's
 current HTTP-driven jobs map onto:
 
 - ``data-refresh``       (HEAVY) — wraps ``app.api.sync._run_sync``, the
@@ -14,6 +15,11 @@ current HTTP-driven jobs map onto:
 - ``jira-refresh``       (HEAVY) — wraps ``SyncOrchestrator().rebuild_source("jira")``,
   previously called inline from the Jira webhook's incremental-transform
   path (``connectors/jira/service.py:trigger_incremental_transform``).
+- ``ducklake-maintenance`` (LIGHT) — runs the POC-verified DuckLake
+  maintenance sequence (merge → expire snapshots → cleanup old files →
+  catalog VACUUM) on the writer session. No-ops when
+  ``analytics.backend`` is not ``ducklake`` — see
+  ``_run_ducklake_maintenance`` below.
 
 Every handler below is a THIN ADAPTER — it imports and calls the existing
 function/method and does not reimplement any of its logic. Each import is
@@ -54,13 +60,22 @@ Lease/retry tuning:
 
 from __future__ import annotations
 
+import logging
 import os
 
 from app.worker.registry import HEAVY_LANE, LIGHT_LANE, JobKind, register_kind
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_DATA_REFRESH_LEASE_S = 900
 _DEFAULT_JIRA_REFRESH_LEASE_S = 300
 _DEFAULT_LIGHT_LEASE_S = 300
+# merge_adjacent_files/expire_snapshots/cleanup_old_files/VACUUM can each
+# take a while over a large lake — same "generous ceiling, not a hard
+# timeout" reasoning as _DEFAULT_DATA_REFRESH_LEASE_S (the worker's
+# heartbeat keeps the lease alive every lease_seconds/3 while the handler
+# thread runs).
+_DEFAULT_DUCKLAKE_MAINTENANCE_LEASE_S = 900
 
 
 def _data_refresh_lease_seconds() -> int:
@@ -157,8 +172,72 @@ def _run_jira_refresh(payload: dict) -> None:
     SyncOrchestrator().rebuild_source("jira")
 
 
+def _run_ducklake_maintenance(payload: dict) -> None:
+    """Run the POC-verified DuckLake maintenance sequence on the writer
+    session, in order:
+
+    1. ``CALL lake.merge_adjacent_files()`` — compacts small adjacent
+       Parquet files written by successive copy-ingest rebuilds.
+    2. ``CALL ducklake_expire_snapshots('lake', older_than => now() -
+       INTERVAL '<N> days')`` — drops catalog snapshots older than the
+       configured retention window (``src.analytics_backend
+       .ducklake_snapshot_retention_days()``, default 7 days), freeing
+       the files that only they referenced for step 3 to reclaim.
+    3. ``CALL ducklake_cleanup_old_files('lake', cleanup_all => true)`` —
+       physically deletes data files no longer referenced by any
+       remaining snapshot.
+    4. Catalog ``VACUUM`` (``src.ducklake_session.vacuum_ducklake_catalog``)
+       — Postgres-catalog only; a no-op (logged, not an error) on a
+       DuckDB-file catalog, which has no equivalent storage-compaction
+       VACUUM.
+
+    Every CALL signature here was verified directly against the real
+    ``ducklake`` extension (DuckDB 1.5.2) before being written — see the
+    task 5 report for the scratch session that exercised each one
+    (snapshot count dropping from N to 1 after
+    ``ducklake_expire_snapshots`` + ``ducklake_cleanup_old_files``, and a
+    direct ``psycopg`` ``VACUUM`` against a live pgserver-backed catalog).
+
+    **No-op on the legacy backend.** A ``ducklake-maintenance`` job can
+    only ever be enqueued by this instance's own scheduler row (daily,
+    see ``services/scheduler/__main__.py::build_jobs``), but the backend
+    could have been flipped back to ``legacy`` between the job being
+    queued and a worker claiming it (or a stray manual enqueue via
+    ``POST /api/jobs`` on a legacy instance) — checking here, not just
+    trusting the scheduler's own gate, makes a stray/stale enqueue
+    harmless instead of raising ``ducklake`` extension errors against a
+    backend that was never attached.
+    """
+    from src.analytics_backend import analytics_backend, ducklake_snapshot_retention_days
+
+    if analytics_backend() != "ducklake":
+        logger.info("ducklake-maintenance: analytics.backend is not 'ducklake' — no-op")
+        return
+
+    from src.ducklake_session import get_ducklake_write, vacuum_ducklake_catalog
+
+    retention_days = ducklake_snapshot_retention_days()
+    conn = get_ducklake_write()
+    try:
+        conn.execute("CALL lake.merge_adjacent_files()")
+        # retention_days is always an int (validated by
+        # ducklake_snapshot_retention_days()) — safe to interpolate
+        # directly into the INTERVAL literal.
+        conn.execute(f"CALL ducklake_expire_snapshots('lake', older_than => now() - INTERVAL '{retention_days} days')")
+        conn.execute("CALL ducklake_cleanup_old_files('lake', cleanup_all => true)")
+    finally:
+        conn.close()
+
+    vacuumed = vacuum_ducklake_catalog()
+    logger.info(
+        "ducklake-maintenance: merge/expire(retention=%dd)/cleanup done; catalog VACUUM %s",
+        retention_days,
+        "ran" if vacuumed else "skipped (file catalog)",
+    )
+
+
 def register_all_kinds() -> None:
-    """Register the five real job kinds. Idempotent — safe to call more
+    """Register the six real job kinds. Idempotent — safe to call more
     than once (e.g. across test re-imports); ``register_kind`` replaces
     any existing entry of the same name rather than erroring."""
     register_kind(
@@ -203,6 +282,15 @@ def register_all_kinds() -> None:
             handler=_run_jira_refresh,
             lane=HEAVY_LANE,
             lease_seconds=_DEFAULT_JIRA_REFRESH_LEASE_S,
+            retry_in_seconds=300,
+        )
+    )
+    register_kind(
+        JobKind(
+            name="ducklake-maintenance",
+            handler=_run_ducklake_maintenance,
+            lane=LIGHT_LANE,
+            lease_seconds=_DEFAULT_DUCKLAKE_MAINTENANCE_LEASE_S,
             retry_in_seconds=300,
         )
     )
