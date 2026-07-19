@@ -6,11 +6,22 @@ DuckDB sessions actually get opened. Two long-lived singletons, mirroring
 the singleton pattern ``get_system_db`` / ``get_analytics_db()`` use in ``src/db.py``:
 
 - :func:`get_ducklake_read` — the api-role reader: one process-wide attach,
-  cursor-per-caller, so a caller's ``.close()`` only drops the cursor. Also
-  ATTACHes each extract source (mirroring ``get_analytics_db_readonly()``)
-  and re-runs the existing ``_reattach_remote_extensions`` seam so
-  ``_remote_attach`` rows (BigQuery et al.) keep resolving the same way
-  they do against the legacy backend.
+  cursor-per-caller, so a caller's ``.close()`` only drops the cursor
+  (task 4 wires this into ``src.db.get_analytics_db_readonly()`` as the
+  ``analytics.backend=ducklake`` dispatch target, documenting there why a
+  long-lived attach + per-request cursor beats a per-request open for
+  this backend). Local/materialized tables need no extra wiring per call
+  — they live in the lake itself, so a fresh cursor already sees them via
+  DuckLake's MVCC snapshot. Remote-mode (``query_mode='remote'``) tables
+  are different: they have no lake-resident data, so on every call this
+  ATTACHes (only) the extract sources that ``table_registry`` says carry
+  a remote-mode row, re-runs ``_reattach_remote_extensions`` (refreshing
+  short-lived BQ tokens), and creates a ``lake."main"."<name>"`` wrapper
+  view per remote row — see :func:`_sync_remote_views`. Deliberately
+  scoped to remote-only sources: attaching every extract source
+  persistently (as this function did pre-task-4) collides with a
+  connector that rewrites its extract.duckdb *in place* rather than via
+  temp-file swap (Jira) — see :func:`_ensure_remote_extract_attach`.
 - :func:`get_ducklake_write` — the worker-role writer (task 3's copy-ingest
   rebuild lands through this). Logically a separate singleton from the
   reader — different roles in the three-plane topology.
@@ -250,30 +261,143 @@ def _extracts_dir() -> Path:
     return _get_data_dir() / "extracts"
 
 
-def _attach_extract_sources(conn: duckdb.DuckDBPyConnection) -> None:
-    """ATTACH each ``extract.duckdb`` under ``{DATA_DIR}/extracts`` as a
-    read-only alias, mirroring ``src.db.get_analytics_db_readonly()``'s
-    attach loop.
+def _remote_registry_rows_by_source() -> dict[str, list[dict]]:
+    """Group ``table_registry`` rows with ``query_mode='remote'`` by
+    ``source_type`` (== the extract source's directory name under
+    ``{DATA_DIR}/extracts`` — every connector writes its extract to
+    ``extracts/<source_type>/``, one directory per connector, never
+    per-instance; see ``app/api/sync.py``'s ``bq_output_dir`` /
+    ``kb_output_dir`` constants).
 
-    Needed so :func:`src.db._reattach_remote_extensions` — reused as-is
-    below — can read each source's ``_remote_attach`` table the same way
-    it already does against the legacy backend (task 2 keeps that seam
-    exactly as today; relocating ``_remote_attach`` into the control
-    plane is out of scope here — see the wave-2G plan's task 3/4 notes).
+    ``table_registry`` (system.duckdb/PG) is the task-4-decided source of
+    truth for "which sources need a remote attach" — not a filesystem
+    probe of each extract.duckdb's own ``_remote_attach`` table. This
+    matters: it lets the reader skip touching a purely local-mode
+    source's extract.duckdb *entirely*, which is the fix for the
+    single-process collision described in :func:`_ensure_remote_extract_attach`.
+    """
+    from src.repositories import table_registry_repo
+
+    try:
+        rows = table_registry_repo().list_all()
+    except Exception as e:
+        logger.debug("could not list table_registry for ducklake remote-view sync: %s", e)
+        return {}
+
+    by_source: dict[str, list[dict]] = {}
+    for r in rows:
+        if (r.get("query_mode") or "") != "remote":
+            continue
+        source_type = r.get("source_type") or ""
+        name = r.get("name") or ""
+        if not source_type or not name:
+            continue
+        by_source.setdefault(source_type, []).append(r)
+    return by_source
+
+
+def _ensure_remote_extract_attach(conn: duckdb.DuckDBPyConnection, remote_by_source: dict[str, list[dict]]) -> None:
+    """ATTACH, read-only, only the extract sources ``remote_by_source``
+    names — i.e. only sources with at least one ``query_mode='remote'``
+    table_registry row — and only if not already attached.
+
+    **Why not attach every extract source (what this function did before
+    task 4), and why not even a filesystem probe of every source:** a
+    local-mode-only source's extract.duckdb can be rewritten *in place*
+    by its connector — e.g. ``connectors/jira/extract_init.py::update_meta``
+    opens ``extract.duckdb`` read-write (no temp-file swap) on every
+    webhook. DuckDB refuses a read-write open while *any* other
+    connection — even read-only, even same-process — already has that
+    file open ("Conflicting lock is held"). The legacy per-request
+    ``get_analytics_db_readonly()`` gets away with attaching every source
+    because its attach is closed at the end of the same request; this
+    reader's attach is process-lifetime, so holding it on a source Jira
+    (or any future live-in-place connector) mutates in-place would wedge
+    every subsequent webhook. The batch extractors that *do* need a
+    persistent attach here (Keboola, BigQuery) never write in place —
+    they always build ``extract.duckdb.tmp`` and atomically swap it in
+    (see ``connectors/keboola/extractor.py::run`` /
+    ``connectors/bigquery/extractor.py::_init_extract_locked``), which
+    never conflicts with an existing reader holding the old inode open —
+    so it is safe to hold their attach indefinitely. Restricting the
+    persistent-attach set to exactly "sources with a remote-mode table"
+    (via table_registry, see :func:`_remote_registry_rows_by_source`)
+    happens to select exactly this safe subset, since only batch
+    connectors (Keboola direct-bucket, BigQuery) ever emit
+    ``query_mode='remote'`` rows.
     """
     extracts_dir = _extracts_dir()
-    if not extracts_dir.exists():
+    if not extracts_dir.exists() or not remote_by_source:
         return
-    for ext_dir in sorted(extracts_dir.iterdir()):
-        if not ext_dir.is_dir() or not _SAFE_IDENTIFIER.match(ext_dir.name):
+    try:
+        attached_dbs = {r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()}
+    except Exception:
+        return
+    for source_name in sorted(remote_by_source):
+        if not _SAFE_IDENTIFIER.match(source_name) or source_name in attached_dbs:
             continue
-        db_file = ext_dir / "extract.duckdb"
+        db_file = extracts_dir / source_name / "extract.duckdb"
         if not db_file.exists():
             continue
         try:
-            conn.execute(f"ATTACH '{db_file}' AS {ext_dir.name} (READ_ONLY)")
-        except Exception:
-            pass
+            conn.execute(f"ATTACH '{db_file}' AS {source_name} (READ_ONLY)")
+        except Exception as e:
+            logger.debug("Could not attach remote-mode extract source %s: %s", source_name, e)
+
+
+def _ensure_remote_views(conn: duckdb.DuckDBPyConnection, remote_by_source: dict[str, list[dict]]) -> None:
+    """Ensure a ``lake."main"."<name>"`` view exists for every
+    ``query_mode='remote'`` table_registry row, pointing at the extract
+    source's own already-correct inner view
+    (``"<source>"."<name>"``, i.e. exactly what the legacy master view
+    references — ``{source}."{table}"`` — per ``src.db.get_analytics_db_readonly``).
+
+    Deliberately does NOT re-derive BigQuery/Keboola addressing (bq_fqn
+    overrides, cross-project routing, BASE TABLE vs VIEW/MATERIALIZED_VIEW
+    ``bigquery_query()`` wrapping — see ``connectors/bigquery/extractor.py``)
+    here. That logic already lives in the extractor and stays there; this
+    just re-exposes its already-built inner view under ``lake.main`` via a
+    thin wrapper, the same way task 3's writer wraps copy-ingested local
+    tables (``CREATE OR REPLACE VIEW lake."main"."<table>" AS SELECT * FROM
+    lake."<source>"."<table>"``).
+
+    Idempotent (``CREATE OR REPLACE VIEW``) and cheap (no data movement) —
+    safe to call on every :func:`get_ducklake_read` cursor fetch, which is
+    what keeps a newly-registered remote table visible on the very next
+    query without waiting for the reader session to fully reopen.
+    """
+    for source_name, rows in remote_by_source.items():
+        if not _SAFE_IDENTIFIER.match(source_name):
+            continue
+        for row in rows:
+            name = row.get("name") or ""
+            if not _SAFE_IDENTIFIER.match(name):
+                continue
+            try:
+                conn.execute(
+                    f'CREATE OR REPLACE VIEW {_LAKE_ALIAS}."main"."{name}" AS SELECT * FROM {source_name}."{name}"'
+                )
+            except Exception as e:
+                logger.debug("Could not create lake.main remote view for %s.%s: %s", source_name, name, e)
+
+
+def _sync_remote_views(conn: duckdb.DuckDBPyConnection) -> None:
+    """Full per-request remote-table sync: attach any not-yet-attached
+    remote-mode extract source, refresh remote extensions/tokens
+    (``src.db._reattach_remote_extensions``), and (re)create each
+    remote-mode table's ``lake.main`` wrapper view.
+
+    Called on every :func:`get_ducklake_read` cursor fetch — see that
+    function's docstring for why this needs to run per-request rather
+    than only at session (re)open (BQ token TTL, and newly registered
+    remote tables should not need a full reader restart to appear).
+    """
+    remote_by_source = _remote_registry_rows_by_source()
+    if not remote_by_source:
+        return
+    _ensure_remote_extract_attach(conn, remote_by_source)
+    _reattach_remote_extensions(conn, _extracts_dir())
+    _ensure_remote_views(conn, remote_by_source)
 
 
 def get_ducklake_read() -> duckdb.DuckDBPyConnection:
@@ -287,15 +411,47 @@ def get_ducklake_read() -> duckdb.DuckDBPyConnection:
     ``AGNES_DUCKLAKE_CATALOG_DSN`` across cases) — same contract
     ``get_analytics_db()`` has for a changed ``DATA_DIR``.
 
-    On (re)open, also ATTACHes every extract source directory and runs
-    the existing remote-extension re-attach hook (see
-    :func:`_attach_extract_sources` / ``src.db._reattach_remote_extensions``)
-    so ``_remote_attach``-backed remote-mode tables resolve. Newly added
-    extract sources become visible only on the *next* (re)open — call
-    :func:`close_ducklake_sessions` to force a refresh. Task 4 (reader
-    path wiring into ``get_analytics_db_readonly()``) decides how/when
-    that refresh is triggered in practice; this function only owns the
-    session lifecycle.
+    **Remote-table (``query_mode='remote'``) wiring — refreshed on
+    EVERY call, not just (re)open:** unlike local/materialized tables
+    (copy-ingested straight into the lake by task 3's writer, so a fresh
+    cursor sees them via DuckLake's own MVCC snapshot with no extra
+    work), remote tables have no lake-resident data — this function
+    builds a ``lake."main"."<name>"`` wrapper view for each
+    ``table_registry`` row with ``query_mode='remote'`` on every call
+    (see :func:`_sync_remote_views`). Three reasons this runs per-call
+    rather than only at session (re)open:
+
+    1. **BQ token TTL.** The GCE metadata token backing the BigQuery
+       ATTACH's ``ACCESS_TOKEN`` secret expires (~1h). This reader's
+       physical connection lives for the process's lifetime, so a
+       (re)open-only refresh would silently start failing BQ queries
+       once the first token expired.
+    2. **Newly-registered remote tables should not need a process
+       restart to appear** — matches the legacy ``get_analytics_db_readonly()``
+       behavior of re-attaching everything (and thus picking up registry
+       changes) on every single request.
+    3. **Single-process Jira-class collision avoidance.** Only extract
+       sources that table_registry says have a remote-mode table are
+       ever ATTACHed here (see :func:`_ensure_remote_extract_attach`) —
+       a purely local-mode source (e.g. Jira, whose
+       ``connectors/jira/extract_init.py::update_meta`` rewrites its
+       ``extract.duckdb`` *in place*, not via temp-file swap) is never
+       attached by this long-lived reader, so it never wedges that
+       connector's live webhook writes with a "Conflicting lock" error.
+       Remote-mode sources (Keboola direct-bucket, BigQuery) are safe to
+       hold attached indefinitely — their extractors always write a
+       ``.tmp`` file and atomically swap it in.
+
+    This per-call work is cheap: it only touches the (typically very
+    small) set of sources with at least one remote-mode row, and the
+    view/attach mutations are idempotent (``CREATE OR REPLACE`` / skip if
+    already attached).
+
+    Every returned cursor also runs ``USE lake`` so an unqualified
+    ``SELECT ... FROM "<table>"`` resolves against ``lake.main`` — the
+    schema task 3's writer creates master views in — the same way a
+    query against the legacy ``server.duckdb`` file resolves unqualified
+    names against its own default catalog/schema.
 
     When the resolved catalog is a DuckDB-file target, the underlying
     physical connection is shared with :func:`get_ducklake_write` (see the
@@ -321,11 +477,12 @@ def get_ducklake_read() -> duckdb.DuckDBPyConnection:
                 _attach_ducklake(conn, catalog_dsn=catalog_dsn, data_path=data_path)
             else:
                 conn = _get_shared_file_catalog_conn(catalog_dsn, data_path)
-            _attach_extract_sources(conn)
-            _reattach_remote_extensions(conn, _extracts_dir())
             _read_conn = conn
             _read_key = key
-        return _maybe_instrument(_read_conn.cursor(), "ducklake_read")
+        _sync_remote_views(_read_conn)
+        cursor = _read_conn.cursor()
+        cursor.execute(f"USE {_LAKE_ALIAS}")
+        return _maybe_instrument(cursor, "ducklake_read")
 
 
 def get_ducklake_write() -> duckdb.DuckDBPyConnection:
