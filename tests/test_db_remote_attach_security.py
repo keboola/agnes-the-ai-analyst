@@ -20,6 +20,7 @@ import logging
 from pathlib import Path
 
 import duckdb
+import pytest
 
 from src.db import _reattach_remote_extensions
 
@@ -160,6 +161,21 @@ class TestQueryPathBqSecretRefreshOnLongLivedConnection:
             token_env="",
         )
         conn = duckdb.connect()
+        # This test exercises the real BQ secret-refresh branch, which runs
+        # only after `LOAD bigquery` succeeds. `_reattach_remote_extensions`
+        # is LOAD-only (no INSTALL) by design, so the extension must already
+        # be on disk. Under CI's randomized ordering that is NOT guaranteed —
+        # nothing else in this shard need have installed it first — so install
+        # it here to make the test self-sufficient and order-independent.
+        # Skip (rather than fail) if the extension genuinely can't be fetched
+        # (offline runner).
+        # Mirror production's install incantation (orchestrator rebuild path,
+        # connectors/bigquery): bigquery is a *community* extension.
+        try:
+            conn.execute("INSTALL bigquery FROM community")
+            conn.execute("LOAD bigquery")
+        except duckdb.Error as e:  # pragma: no cover - offline CI only
+            pytest.skip(f"bigquery DuckDB extension unavailable: {e}")
         # Simulate "already attached from an earlier call on this same
         # long-lived connection" without needing real BQ credentials —
         # any physical attach under the `bq` alias satisfies the
