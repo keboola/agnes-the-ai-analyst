@@ -6,6 +6,7 @@ import typer
 
 from cli.client import api_get, api_post, api_delete, api_put
 from cli.commands.admin_activity import activity_app
+from cli.commands.admin_analytics import analytics_app as admin_analytics_app
 from cli.commands.admin_connection import admin_connection_app
 from cli.commands.admin_ask import app as admin_ask_app
 from cli.commands.admin_autodoc import autodoc_tables
@@ -60,6 +61,7 @@ admin_app.add_typer(
 )
 admin_app.add_typer(admin_skills_app, name="skill", help="Contributed skills management")
 admin_app.add_typer(admin_jobs_app, name="jobs", help="Job queue admin (wave-2B worker runtime)")
+admin_app.add_typer(admin_analytics_app, name="analytics", help="DuckLake analytics-backend migration (wave-2G)")
 # Single direct command (mirrors `register-table` / `discover-and-register`):
 # LLM-generate descriptions for undescribed tables (#399).
 admin_app.command("autodoc-tables")(autodoc_tables)

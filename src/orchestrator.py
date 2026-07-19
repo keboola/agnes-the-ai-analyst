@@ -202,6 +202,51 @@ class SyncOrchestrator:
                 _capture_orchestrator_exception(exc, op="rebuild_source", source=source_name)
                 raise
 
+    def migrate_to_backend(self, to: str) -> Dict[str, List[str]]:
+        """Full rebuild into an EXPLICITLY named target backend — the
+        engine behind ``agnes admin analytics migrate --to ducklake|legacy``
+        (wave-2G Task 6), as distinct from :meth:`rebuild`, which dispatches
+        on the *currently configured* :func:`src.analytics_backend.analytics_backend`.
+
+        Why a separate entry point instead of temporarily monkeypatching the
+        config and calling :meth:`rebuild`: ``analytics_backend()`` is
+        resolved once and cached for the process lifetime (see that
+        module's docstring) — config is operator-owned and read at boot,
+        not hot-reloaded. The migration flow this method powers is
+        therefore: (1) the admin endpoint validates prerequisites, (2) THIS
+        method populates the target backend from the on-disk extracts tree
+        — the extracts tree is the distribution artifact + rollback truth
+        for both backends, so no re-extract is ever needed for either
+        direction — and (3) the operator flips ``analytics.backend`` in
+        config and restarts every role process to actually switch the live
+        query-serving plane over.
+
+        ``to="ducklake"`` runs the full copy-ingest rebuild
+        (:meth:`_do_rebuild_ducklake`, all sources); ``to="legacy"`` runs
+        the full rebuild-and-swap (:meth:`_do_rebuild`) — the rollback
+        path, since the extracts tree never stopped being legacy's source
+        of truth either. Materialized-SQL tables are NOT re-materialized
+        by this call in either direction — they follow their own
+        scheduler cadence and simply get copied/rebuilt from whatever
+        parquet already sits under their source's ``data/`` directory.
+
+        Takes the same :func:`rebuild_mutex` cross-process/in-process lock
+        pair as :meth:`rebuild`/:meth:`rebuild_source`, so a migration
+        rebuild can never race a concurrent scheduled rebuild or the
+        ``ducklake-maintenance`` job.
+        """
+        if to not in ("ducklake", "legacy"):
+            raise ValueError(f"to must be 'ducklake' or 'legacy', got {to!r}")
+
+        with rebuild_mutex():
+            try:
+                if to == "ducklake":
+                    return self._do_rebuild_ducklake()
+                return self._do_rebuild()
+            except Exception as exc:
+                _capture_orchestrator_exception(exc, op="migrate_to_backend", to=to)
+                raise
+
     def _sync_bq_remote_attach_with_overlay(self, extracts_dir: Path) -> None:
         """Detect drift in BQ extract.duckdb's ``_remote_attach.url`` and
         rewrite the extract when it disagrees with the overlay project.

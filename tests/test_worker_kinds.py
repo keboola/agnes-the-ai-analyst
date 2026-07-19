@@ -1,13 +1,15 @@
 """Tests for ``app/worker/kinds.py`` (wave-2B Task 4; ``ducklake-maintenance``
 added in wave-2G Task 5 — see ``tests/test_ducklake_maintenance.py`` for its
-dedicated coverage).
+dedicated coverage; ``analytics-migrate`` added in wave-2G Task 6).
 
 Verifies:
 
 - ``register_all_kinds()`` registers all five wave-2B job kinds with the
-  correct lane (the sixth, ``ducklake-maintenance``, is asserted alongside
-  them here too — just its presence/lane; its handler behavior lives in
-  ``tests/test_ducklake_maintenance.py``).
+  correct lane (the sixth, ``ducklake-maintenance``, and the seventh,
+  ``analytics-migrate``, are asserted alongside them here too — just their
+  presence/lane; ``ducklake-maintenance``'s handler behavior lives in
+  ``tests/test_ducklake_maintenance.py``, ``analytics-migrate``'s dispatch
+  behavior in ``TestAnalyticsMigrateHandler`` below).
 - Each kind's handler is a thin adapter that DELEGATES to the existing
   function it wraps — no logic is reimplemented here. Verified by
   monkeypatching the wrapped target and asserting it was called (with
@@ -49,7 +51,7 @@ def jobs_db(tmp_path, monkeypatch):
 
 
 class TestRegisterAllKinds:
-    def test_registers_six_kinds(self):
+    def test_registers_seven_kinds(self):
         from app.worker.kinds import register_all_kinds
         from app.worker.registry import JOB_KINDS
 
@@ -62,6 +64,7 @@ class TestRegisterAllKinds:
             "corporate-memory",
             "jira-refresh",
             "ducklake-maintenance",
+            "analytics-migrate",
         }
 
     def test_lanes_are_correct(self):
@@ -76,6 +79,7 @@ class TestRegisterAllKinds:
         assert JOB_KINDS["session-collector"].lane == LIGHT_LANE
         assert JOB_KINDS["corporate-memory"].lane == LIGHT_LANE
         assert JOB_KINDS["ducklake-maintenance"].lane == LIGHT_LANE
+        assert JOB_KINDS["analytics-migrate"].lane == HEAVY_LANE
 
     def test_idempotent_reregistration(self):
         """Calling register_all_kinds() twice (e.g. test re-imports, or a
@@ -86,7 +90,7 @@ class TestRegisterAllKinds:
         register_all_kinds()
         register_all_kinds()
 
-        assert len(JOB_KINDS) == 6
+        assert len(JOB_KINDS) == 7
 
 
 class TestDataRefreshHandler:
@@ -226,6 +230,45 @@ class TestJiraRefreshHandler:
         JOB_KINDS["jira-refresh"].handler({})
 
         assert calls == ["jira"]
+
+
+class TestAnalyticsMigrateHandler:
+    """``analytics-migrate`` (wave-2G Task 6) — a thin adapter over
+    ``SyncOrchestrator().migrate_to_backend(to)``, dispatch-only (the
+    method's own behavior is covered in
+    ``tests/test_orchestrator.py::TestMigrateToBackend`` and
+    ``tests/test_orchestrator_ducklake.py::TestMigrateToBackendDucklakeDirection``)."""
+
+    def test_delegates_to_migrate_to_backend_with_payload_target(self, monkeypatch):
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        register_all_kinds()
+
+        calls = []
+
+        class FakeOrchestrator:
+            def migrate_to_backend(self, to):
+                calls.append(to)
+                return {}
+
+        monkeypatch.setattr("src.orchestrator.SyncOrchestrator", FakeOrchestrator)
+
+        JOB_KINDS["analytics-migrate"].handler({"to": "ducklake"})
+
+        assert calls == ["ducklake"]
+
+    def test_propagates_invalid_target_error(self, monkeypatch):
+        """An unknown ``to`` value re-raises ``migrate_to_backend``'s own
+        ``ValueError`` — the worker's lane-slot handler turns that into a
+        failed job the same way any other handler exception does."""
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        register_all_kinds()
+
+        with pytest.raises(ValueError):
+            JOB_KINDS["analytics-migrate"].handler({"to": "bogus"})
 
 
 class TestJiraWebhookEnqueues:

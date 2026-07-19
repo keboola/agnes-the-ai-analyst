@@ -106,11 +106,11 @@ class TestRegistration:
         assert "ducklake-maintenance" in JOB_KINDS
         assert JOB_KINDS["ducklake-maintenance"].lane == LIGHT_LANE
 
-    def test_registered_alongside_the_other_five_kinds(self):
+    def test_registered_alongside_the_other_kinds(self):
         """Regression guard for the wave-2B `register_all_kinds` test
-        (`tests/test_worker_kinds.py`), which asserts an exact 5-name set —
-        this proves the sixth kind coexists without disturbing the other
-        five."""
+        (`tests/test_worker_kinds.py`), which asserts the exact registered
+        set — this proves `ducklake-maintenance` (and wave-2G Task 6's
+        `analytics-migrate`) coexist without disturbing the others."""
         from app.worker.kinds import register_all_kinds
         from app.worker.registry import JOB_KINDS
 
@@ -123,6 +123,7 @@ class TestRegistration:
             "corporate-memory",
             "jira-refresh",
             "ducklake-maintenance",
+            "analytics-migrate",
         }
 
 

@@ -287,3 +287,152 @@ def test_reset_ducklake_available_cache_forces_reprobe(monkeypatch):
     ds.reset_ducklake_available_cache()
     assert ds._available_cache is None
     assert ds.ducklake_available() is True
+
+
+# ---------------------------------------------------------------------------
+# validate_ducklake_migration_prerequisites (wave-2G Task 6)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_prerequisites_ok_for_file_catalog_single_process(monkeypatch):
+    """Default test env: file catalog (no AGNES_DUCKLAKE_CATALOG_DSN set,
+    per the autouse fixture), single-process — no problems."""
+    import app.startup_guards as guards
+    from src.ducklake_session import validate_ducklake_migration_prerequisites
+
+    monkeypatch.setattr(guards, "is_multi_process", lambda: False)
+    assert validate_ducklake_migration_prerequisites() == []
+
+
+def test_validate_prerequisites_flags_multi_process_without_pg_dsn(monkeypatch):
+    """A file-catalog target under a multi-process topology is refused —
+    mirrors app.startup_guards.validate_deployment's own boot-time check,
+    but surfaced BEFORE the (potentially large) migration rebuild runs."""
+    import app.startup_guards as guards
+    from src.ducklake_session import validate_ducklake_migration_prerequisites
+
+    monkeypatch.setattr(guards, "is_multi_process", lambda: True)
+    problems = validate_ducklake_migration_prerequisites()
+    assert len(problems) == 1
+    assert "multi-process" in problems[0]
+    assert "Postgres DSN" in problems[0]
+
+
+def test_validate_prerequisites_flags_missing_extension(monkeypatch):
+    import app.startup_guards as guards
+    import src.ducklake_session as ds
+
+    monkeypatch.setattr(guards, "is_multi_process", lambda: False)
+    monkeypatch.setattr(ds, "ducklake_available", lambda: False)
+    problems = ds.validate_ducklake_migration_prerequisites()
+    assert len(problems) == 1
+    assert "extension" in problems[0]
+
+
+def test_validate_prerequisites_reports_both_problems_at_once(monkeypatch):
+    """Every applicable check runs — an operator sees the extension AND
+    the multi-process/file-catalog mismatch in one pass, not one fix at a
+    time."""
+    import app.startup_guards as guards
+    import src.ducklake_session as ds
+
+    monkeypatch.setattr(guards, "is_multi_process", lambda: True)
+    monkeypatch.setattr(ds, "ducklake_available", lambda: False)
+    problems = ds.validate_ducklake_migration_prerequisites()
+    assert len(problems) == 2
+
+
+def test_validate_prerequisites_pg_catalog_missing_database_create_also_fails(monkeypatch, tmp_path):
+    """Postgres-catalog path, without needing a real server: the ATTACH
+    probe raises a "database does not exist" error, and the auto-repair
+    CREATE DATABASE attempt itself fails (e.g. insufficient privilege) —
+    the exact manual command must be surfaced so the operator isn't left
+    guessing."""
+    import src.ducklake_session as ds
+
+    monkeypatch.setenv("AGNES_DUCKLAKE_CATALOG_DSN", "postgresql://user:pw@myhost:5432/agnes_ducklake")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    def _fake_attach_ducklake(conn, *, catalog_dsn, data_path):
+        raise RuntimeError('database "agnes_ducklake" does not exist')
+
+    class _FakePsycopg:
+        @staticmethod
+        def connect(*args, **kwargs):
+            raise RuntimeError("permission denied to create database")
+
+    monkeypatch.setattr(ds, "_attach_ducklake", _fake_attach_ducklake)
+    monkeypatch.setitem(__import__("sys").modules, "psycopg", _FakePsycopg)
+
+    problems = ds.validate_ducklake_migration_prerequisites()
+    assert len(problems) == 1
+    assert 'CREATE DATABASE "agnes_ducklake";' in problems[0]
+
+
+def test_validate_prerequisites_pg_catalog_missing_database_auto_create_succeeds(monkeypatch, tmp_path):
+    """Same starting failure as above, but the CREATE DATABASE attempt
+    succeeds and the retried attach then succeeds too — no problems
+    reported, migration proceeds without any manual operator step."""
+    import src.ducklake_session as ds
+
+    monkeypatch.setenv("AGNES_DUCKLAKE_CATALOG_DSN", "postgresql://user:pw@myhost:5432/agnes_ducklake")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    attempts = {"n": 0}
+
+    def _fake_attach_ducklake(conn, *, catalog_dsn, data_path):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError('database "agnes_ducklake" does not exist')
+        # second call (post-repair retry) succeeds — no-op
+
+    class _FakeAdminConn:
+        def execute(self, *args, **kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    class _FakePsycopg:
+        @staticmethod
+        def connect(*args, **kwargs):
+            return _FakeAdminConn()
+
+    monkeypatch.setattr(ds, "_attach_ducklake", _fake_attach_ducklake)
+    monkeypatch.setitem(__import__("sys").modules, "psycopg", _FakePsycopg)
+
+    problems = ds.validate_ducklake_migration_prerequisites()
+    assert problems == []
+    assert attempts["n"] == 2
+
+
+def test_validate_prerequisites_pg_catalog_other_failure_not_treated_as_missing_db(monkeypatch, tmp_path):
+    """A non-"does not exist" failure (auth, network, ...) is reported
+    verbatim and never triggers the CREATE DATABASE repair path."""
+    import src.ducklake_session as ds
+
+    monkeypatch.setenv("AGNES_DUCKLAKE_CATALOG_DSN", "postgresql://user:pw@myhost:5432/agnes_ducklake")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    def _fake_attach_ducklake(conn, *, catalog_dsn, data_path):
+        raise RuntimeError("could not connect to server: Connection refused")
+
+    monkeypatch.setattr(ds, "_attach_ducklake", _fake_attach_ducklake)
+
+    problems = ds.validate_ducklake_migration_prerequisites()
+    assert len(problems) == 1
+    assert "Connection refused" in problems[0]
+    assert "CREATE DATABASE" not in problems[0]
+
+
+def test_dsn_with_database_swaps_path_keeps_query_and_netloc():
+    from src.ducklake_session import _dsn_with_database
+
+    swapped = _dsn_with_database("postgresql://user:pw@host:5432/agnes_ducklake?sslmode=require", "postgres")
+    assert swapped == "postgresql://user:pw@host:5432/postgres?sslmode=require"
+
+
+def test_ducklake_target_database_name_extracts_bare_dbname():
+    from src.ducklake_session import _ducklake_target_database_name
+
+    assert _ducklake_target_database_name("postgresql://user:pw@host:5432/agnes_ducklake") == "agnes_ducklake"

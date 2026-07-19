@@ -369,6 +369,20 @@
         "title": "AnalystInitialWorkspaceResponse",
         "type": "object"
       },
+      "AnalyticsMigrateRequest": {
+        "description": "Body for ``POST /api/admin/analytics/migrate``.",
+        "properties": {
+          "to": {
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to"
+        ],
+        "title": "AnalyticsMigrateRequest",
+        "type": "object"
+      },
       "AppliedRequest": {
         "description": "CLI audit event after the analyst's workspace has been extracted.",
         "properties": {
@@ -2067,6 +2081,17 @@
             ],
             "title": "Command"
           },
+          "connect_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connect Hint"
+          },
           "enabled": {
             "default": true,
             "title": "Enabled",
@@ -3185,6 +3210,17 @@
           "source_scope": {
             "title": "Source Scope",
             "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
           }
         },
         "required": [
@@ -7089,6 +7125,35 @@
         "title": "TemplatePutRequest",
         "type": "object"
       },
+      "TestResult": {
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "tool_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Count"
+          }
+        },
+        "required": [
+          "ok",
+          "message"
+        ],
+        "title": "TestResult",
+        "type": "object"
+      },
       "ToggleRequest": {
         "properties": {
           "enabled": {
@@ -7572,6 +7637,17 @@
               }
             ],
             "title": "Command"
+          },
+          "connect_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connect Hint"
           },
           "enabled": {
             "anyOf": [
@@ -12526,6 +12602,74 @@
         "summary": "Adoption User Top Tools",
         "tags": [
           "admin-adoption"
+        ]
+      }
+    },
+    "/api/admin/analytics/migrate": {
+      "post": {
+        "description": "Validate prerequisites (``to=\"ducklake\"`` only) then enqueue an\n``analytics-migrate`` job that rebuilds the named target backend from\nthe on-disk extracts tree. See the module docstring for the full\noperator flow (this call never flips config).\n\nReturns 202 with ``{status, to, job_id, message}`` on success \u2014 poll\n``GET /api/jobs/{job_id}`` (or ``agnes admin jobs show <job_id>``) for\nprogress. 400 with the full list of unmet prerequisites when\n``to=\"ducklake\"`` and this environment can't populate/query a DuckLake\ncatalog yet. 409 (with the in-flight ``job_id``) when a migration is\nalready running.",
+        "operationId": "migrate_analytics_backend_api_admin_analytics_migrate_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalyticsMigrateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Migrate Analytics Backend Api Admin Analytics Migrate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Migrate Analytics Backend",
+        "tags": [
+          "admin-analytics"
         ]
       }
     },
@@ -25519,7 +25663,7 @@
     },
     "/api/broker/anthropic": {
       "post": {
-        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849).",
+        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849). When LLM_DISPATCHER_URL is set, POST /v1/messages is\ninstead forwarded to that dispatcher with LLM_DISPATCHER_API_KEY\n(token-arbitrage PoC); all other subpaths keep the pinned Anthropic\nupstream.",
         "operationId": "anthropic_proxy_bare_api_broker_anthropic_post",
         "responses": {
           "200": {
@@ -25545,7 +25689,7 @@
     },
     "/api/broker/anthropic/{subpath}": {
       "post": {
-        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849).",
+        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849). When LLM_DISPATCHER_URL is set, POST /v1/messages is\ninstead forwarded to that dispatcher with LLM_DISPATCHER_API_KEY\n(token-arbitrage PoC); all other subpaths keep the pinned Anthropic\nupstream.",
         "operationId": "anthropic_proxy_subpath_api_broker_anthropic__subpath__post",
         "responses": {
           "200": {
@@ -26319,7 +26463,7 @@
     },
     "/api/chat/{session_id}/join-ticket": {
       "post": {
-        "description": "Issue a short-lived WS ticket for a live participant of a co-session.\n\nSR-9: only a user with an active (left_at IS NULL) participant row\ncan obtain a ticket.  Strangers receive 403.\n\nThe ticket is an opaque secret (same _TICKETS mechanism as the primary\nstream path) carrying (session_id, participant_email).  The WS join\nroute /api/chat/sessions/{id}/join consumes it, re-verifies\nparticipant membership (SR-9), and calls add_sink.",
+        "description": "Issue a short-lived WS ticket for a live participant of a co-session.\n\nSR-9: only a user with an active (left_at IS NULL) participant row\ncan obtain a ticket.  Strangers receive 403.\n\nThe ticket is an opaque secret (same coordination-backed ticket\nmechanism as the primary stream path) carrying\n(session_id, participant_email).  The WS join\nroute /api/chat/sessions/{id}/join consumes it, re-verifies\nparticipant membership (SR-9), and calls add_sink.",
         "operationId": "join_ticket_api_chat__session_id__join_ticket_post",
         "parameters": [
           {
@@ -27493,6 +27637,213 @@
         "summary": "Debug Throw",
         "tags": [
           "health"
+        ]
+      }
+    },
+    "/api/glossary": {
+      "get": {
+        "description": "List glossary terms, ordered by term.",
+        "operationId": "list_glossary_terms_api_glossary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Glossary Terms",
+        "tags": [
+          "glossary"
+        ]
+      }
+    },
+    "/api/glossary/search": {
+      "get": {
+        "description": "Relevance-ranked search across term + definition (BM25, ILIKE fallback).",
+        "operationId": "search_glossary_terms_api_glossary_search_get",
+        "parameters": [
+          {
+            "description": "Search query",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "description": "Search query",
+              "minLength": 1,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Glossary Terms",
+        "tags": [
+          "glossary"
+        ]
+      }
+    },
+    "/api/glossary/{glossary_id}": {
+      "get": {
+        "description": "Get a single glossary term by ID.",
+        "operationId": "get_glossary_term_api_glossary__glossary_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "glossary_id",
+            "required": true,
+            "schema": {
+              "title": "Glossary Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Glossary Term",
+        "tags": [
+          "glossary"
         ]
       }
     },
@@ -30449,6 +30800,71 @@
           }
         },
         "summary": "Set My Secret",
+        "tags": [
+          "mcp-user-secrets"
+        ]
+      }
+    },
+    "/api/mcp/sources/{source_id}/my-secret/test": {
+      "post": {
+        "description": "Verify the caller's own stored credential works against the upstream.\n\nGated in order, all before any upstream call: unknown source \u2192 404; a\nnon-per_user (shared) source \u2192 400 (its introspection would run under the\noperator's shared credential \u2014 nothing personal to test); no grant on the\nsource \u2192 403; over the rate limit \u2192 429; no personal credential \u2192 403 with\nthe connect remedy. Only then does it introspect under the caller's token.",
+        "operationId": "test_my_secret_api_mcp_sources__source_id__my_secret_test_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test My Secret",
         "tags": [
           "mcp-user-secrets"
         ]
@@ -36887,7 +37303,7 @@
     },
     "/api/sync/status": {
       "get": {
-        "description": "Whether a sync is currently in flight on this app process.\n\nPublic (no auth) \u2014 used by the host-side ``agnes-auto-upgrade.sh``\ncron to decide whether to skip a `docker compose up -d` that would\nkill a running extractor / materialized pass mid-flight. Cheap to\nserve (single Lock.locked() check) and contains no sensitive data.\n\nReturns:\n    ``{\"locked\": bool}`` \u2014 True if `_sync_lock` is currently held by\n    a `_run_sync` invocation, OR a sync was triggered within the\n    last ``_TRIGGER_HOLD_SEC`` seconds (so the FastAPI background\n    task hasn't yet acquired the lock). Without the trigger-hold\n    window, an auto-upgrade probe firing in the gap between the\n    trigger handler's 200 response and the background task's\n    ``_sync_lock.acquire()`` would see ``locked=False`` and proceed\n    with ``up -d`` \u2014 killing the just-spawning extractor.",
+        "description": "Whether a sync is currently in flight on this app process.\n\nPublic (no auth) \u2014 used by the host-side ``agnes-auto-upgrade.sh``\ncron to decide whether to skip a `docker compose up -d` that would\nkill a running extractor / materialized pass mid-flight. Cheap to\nserve (single Lock.locked() check) and contains no sensitive data.\n\nReturns:\n    ``{\"locked\": bool}`` \u2014 True if `_sync_lock` is currently held by\n    a `_run_sync` invocation, OR a `data-refresh` job was triggered\n    within the last ``_TRIGGER_HOLD_SEC`` seconds (so the worker loop\n    hasn't yet claimed it and acquired the lock). Without the\n    trigger-hold window, an auto-upgrade probe firing in the gap\n    between the trigger handler's response and the worker's\n    ``_sync_lock.acquire()`` would see ``locked=False`` and proceed\n    with ``up -d`` \u2014 killing the just-spawning extractor.",
         "operationId": "sync_status_api_sync_status_get",
         "responses": {
           "200": {
@@ -37029,7 +37445,7 @@
     },
     "/api/sync/trigger": {
       "post": {
-        "description": "Trigger data sync from configured source. Admin only. Runs in background.\n\nBody accepts three shapes (all optional \u2014 empty body / `null` syncs\nevery registered table):\n\n  - ``[\"kbc_job\", \"orders\"]`` \u2014 bare JSON array of table ids\n  - ``{\"tables\": [\"kbc_job\", \"orders\"]}`` \u2014 object with a ``tables``\n    key (matches the wire shape of the response, more discoverable\n    for clients building requests by hand)\n  - ``null`` / no body \u2014 sync everything\n\nBoth array forms have shipped at different times; accepting both\nkeeps older clients (PR-build CLIs, helper scripts) working while\nsurfacing the shape that mirrors the response payload. Anything\nelse returns HTTP 422 with a structured detail.\n\n``?source=<source_type>`` scopes the rebuild to a single registered\nsource (partial rebuild): only that source's local + materialized\nrows are rebuilt, and the other source's ``extract.duckdb`` is left\nuntouched. Useful on dual-source deployments where a BQ refresh\nshould not pay the cost of re-extracting every Keboola table.\n\nReturns 409 if a previously-triggered sync is still running. Two\nconcurrent extractor subprocesses fight for the same `extract.duckdb`\nfile lock \u2014 that contention starves uvicorn, makes `/api/health` time\nout, flips the container to `unhealthy`, and (behind a `reverse_proxy`\nupstream like the bundled Caddy overlay) bricks external traffic\nuntil contention drains. Fast-fail here keeps that from happening.",
+        "description": "Trigger data sync from configured source. Admin only.\n\nEnqueues a ``data-refresh`` job (``src/repositories/jobs.py``, worker\nruntime wave-2B) instead of running the sync inline via\n``BackgroundTasks`` \u2014 the worker loop (in-process by default; a\ndedicated ``worker`` role/process on split deployments) claims and\nexecutes it. This is the SAME queue + idempotency key\n(``\"sync\"``) the scheduler's cadence-driven trigger uses\n(``services/scheduler/__main__.py``), so a manual trigger and the next\nscheduled tick collapse into one in-flight job instead of racing two\nextractor subprocesses.\n\nBody accepts three shapes (all optional \u2014 empty body / `null` syncs\nevery registered table):\n\n  - ``[\"kbc_job\", \"orders\"]`` \u2014 bare JSON array of table ids\n  - ``{\"tables\": [\"kbc_job\", \"orders\"]}`` \u2014 object with a ``tables``\n    key (matches the wire shape of the response, more discoverable\n    for clients building requests by hand)\n  - ``null`` / no body \u2014 sync everything\n\nBoth array forms have shipped at different times; accepting both\nkeeps older clients (PR-build CLIs, helper scripts) working while\nsurfacing the shape that mirrors the response payload. Anything\nelse returns HTTP 422 with a structured detail.\n\n``?source=<source_type>`` scopes the rebuild to a single registered\nsource (partial rebuild): only that source's local + materialized\nrows are rebuilt, and the other source's ``extract.duckdb`` is left\nuntouched. Useful on dual-source deployments where a BQ refresh\nshould not pay the cost of re-extracting every Keboola table.\n\nReturns 409 (``detail={\"error\": \"sync_already_in_progress\", \"job_id\":\n...}``) if a ``data-refresh`` job is already queued or running under\nthe shared ``\"sync\"`` idempotency key \u2014 this status code is kept\n(rather than 200 ``already_running``) because `agnes admin sync`\n(``cli/commands/admin.py``) and the admin web UI\n(``app/web/templates/admin_sync.html``) both branch on 409 today for a\nfriendlier \"already running\" message; both now also get ``job_id`` in\nthe body. On success (a new job was enqueued), the response keeps its\nexisting shape plus ``job_id`` so a caller can poll\n``GET /api/jobs/{job_id}``.\n\nThe 200-vs-409 decision is made from ``enqueue()``'s own ``\"deduped\"``\nreturn key (see ``JobsRepository.enqueue`` docstring), not a\npre-``enqueue()`` peek at the job queue. A separate peek-then-enqueue\nis inherently racy: two concurrent triggers can both see \"no in-flight\njob\" during the peek, then both call ``enqueue()`` \u2014 the loser's call\ndedups server-side (returns the winner's row), but a pre-check-based\nhandler has no way to tell it apart from \"I just created this job\",\nso it would incorrectly report 200 \"triggered\" for a job it didn't\ncreate. Branching on the return value of the SAME ``enqueue()`` call\nthat produced ``job`` is race-free: only the caller whose row was\nactually inserted (``deduped=False``) gets 200.",
         "operationId": "trigger_sync_api_sync_trigger_post",
         "parameters": [
           {
@@ -41921,6 +42337,56 @@
         ]
       }
     },
+    "/me/connections": {
+      "get": {
+        "description": "Self-service page: connect / replace / test / remove your own credential\nfor the per_user MCP sources you are granted. Any authenticated user.",
+        "operationId": "me_connections_page_me_connections_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Me Connections Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/me/cowork": {
       "get": {
         "description": "Legacy redirects \u2014 /me/mcp and /me/cowork \u2192 /me/ai-connector.",
@@ -42191,6 +42657,25 @@
         "summary": "Memory Domain Detail",
         "tags": [
           "web"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "metrics_endpoint_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Metrics Endpoint",
+        "tags": [
+          "metrics"
         ]
       }
     },
