@@ -28,6 +28,7 @@ router = APIRouter(prefix="/api/upload", tags=["upload"])
 
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
 _CHUNK_SIZE = 64 * 1024  # 64 KB read chunks for streaming size check
+_MAX_DECOMP_STEP = 1024 * 1024  # cap bytes produced per decompress() call (bounds peak memory)
 
 
 async def _stream_to_temp(file: UploadFile) -> tuple[tempfile.NamedTemporaryFile, int]:
@@ -88,17 +89,20 @@ async def _stream_to_temp_gunzip(file: UploadFile) -> tuple[tempfile.NamedTempor
                     status_code=413,
                     detail=f"File too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)",
                 )
-            try:
-                out = decomp.decompress(chunk)
-            except zlib.error:
-                raise HTTPException(status_code=400, detail="invalid_gzip")
-            total += len(out)
-            if total > MAX_UPLOAD_SIZE:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"Decompressed content too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)",
-                )
-            tmp.write(out)
+            buf = chunk
+            while buf:
+                try:
+                    out = decomp.decompress(buf, _MAX_DECOMP_STEP)
+                except zlib.error:
+                    raise HTTPException(status_code=400, detail="invalid_gzip")
+                total += len(out)
+                if total > MAX_UPLOAD_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Decompressed content too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)",
+                    )
+                tmp.write(out)
+                buf = decomp.unconsumed_tail
         try:
             out = decomp.flush()
         except zlib.error:
