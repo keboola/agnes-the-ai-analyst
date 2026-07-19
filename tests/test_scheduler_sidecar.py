@@ -437,8 +437,9 @@ def test_build_jobs_honors_keboola_semantic_layer_refresh_env_override(monkeypat
 
 
 class TestEnqueueMigratedJobs:
-    """The four rows must target /api/jobs with the documented kind +
-    fixed idempotency_key body."""
+    """These rows must target /api/jobs with the documented kind + fixed
+    idempotency_key body (the original four wave-2B rows, plus wave-2G
+    Task 5's ``ducklake-maintenance``)."""
 
     @pytest.mark.parametrize(
         "name,expected_body",
@@ -456,6 +457,10 @@ class TestEnqueueMigratedJobs:
                 "corporate-memory",
                 {"kind": "corporate-memory", "idempotency_key": "corporate-memory"},
             ),
+            (
+                "ducklake-maintenance",
+                {"kind": "ducklake-maintenance", "idempotency_key": "ducklake-maintenance"},
+            ),
         ],
     )
     def test_migrated_row_posts_to_jobs_queue(self, name, expected_body):
@@ -469,7 +474,7 @@ class TestEnqueueMigratedJobs:
 
     @pytest.mark.parametrize(
         "name",
-        ["data-refresh", "marketplaces", "session-collector", "corporate-memory"],
+        ["data-refresh", "marketplaces", "session-collector", "corporate-memory", "ducklake-maintenance"],
     )
     def test_migrated_row_uses_short_enqueue_timeout(self, name):
         """Enqueueing just inserts a row and returns 202 — the work no
@@ -481,11 +486,17 @@ class TestEnqueueMigratedJobs:
         assert target[4] == 30
 
     def test_migrated_rows_are_6_tuples_others_stay_5_tuples(self):
-        """Only the four migrated jobs carry a 6th (json_body) element;
-        every other row keeps its original 5-tuple shape."""
+        """Only the migrated jobs carry a 6th (json_body) element; every
+        other row keeps its original 5-tuple shape."""
         from services.scheduler.__main__ import build_jobs
 
-        migrated = {"data-refresh", "marketplaces", "session-collector", "corporate-memory"}
+        migrated = {
+            "data-refresh",
+            "marketplaces",
+            "session-collector",
+            "corporate-memory",
+            "ducklake-maintenance",
+        }
         for j in build_jobs():
             if j[0] in migrated:
                 assert len(j) == 6, f"{j[0]} must be a 6-tuple (with json_body)"

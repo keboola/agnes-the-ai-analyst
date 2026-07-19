@@ -19,8 +19,9 @@ Wave-2B job-queue migration (Task 6): four rows (``data-refresh``,
 ``marketplaces``, ``session-collector``, ``corporate-memory``) no longer
 run their work inside that HTTP call at all — they POST a fire-and-forget
 enqueue request to ``/api/jobs`` and a worker process executes the job
-out-of-band. See ``_ENQUEUE_BODIES`` below and
-``docs/jobs-classification.md`` for the full per-row classification.
+out-of-band. Wave-2G Task 5 added a fifth such row, ``ducklake-maintenance``.
+See ``_ENQUEUE_BODIES`` below and ``docs/jobs-classification.md`` for the
+full per-row classification.
 
 Usage: python -m services.scheduler
 """
@@ -355,8 +356,9 @@ def resolved_bq_metadata_initial_offset_seconds(rng=None) -> int:
     return r.randint(0, cap)
 
 
-# Wave-2B job-queue migration (Task 6). These four scheduler rows no longer
-# run their work synchronously inside the scheduler's HTTP call — they POST
+# Wave-2B job-queue migration (Task 6), plus ``ducklake-maintenance`` (wave-2G
+# Task 5). These scheduler rows no longer run their work synchronously inside
+# the scheduler's HTTP call — they POST
 # an enqueue request to ``/api/jobs`` (see ``app/api/jobs.py``) and return
 # immediately; a worker process picks the job up and does the actual work
 # out-of-band. ``idempotency_key`` is a fixed per-kind string (not per-tick)
@@ -369,6 +371,11 @@ _ENQUEUE_BODIES: dict[str, dict[str, str]] = {
     "marketplaces": {"kind": "marketplaces-sync", "idempotency_key": "marketplaces-sync"},
     "session-collector": {"kind": "session-collector", "idempotency_key": "session-collector"},
     "corporate-memory": {"kind": "corporate-memory", "idempotency_key": "corporate-memory"},
+    # wave-2G Task 5: DuckLake merge/expire/cleanup/VACUUM maintenance pass.
+    # The handler itself (app/worker/kinds.py::_run_ducklake_maintenance)
+    # no-ops when analytics.backend != "ducklake", so this row is enqueued
+    # unconditionally — harmless on a legacy-backend instance.
+    "ducklake-maintenance": {"kind": "ducklake-maintenance", "idempotency_key": "ducklake-maintenance"},
 }
 
 # HTTP timeout for a ``/api/jobs`` enqueue call. Short on purpose: enqueueing
@@ -493,6 +500,20 @@ def build_jobs() -> list[JobRow | EnqueueJobRow]:
         # job at 03:00. Endpoint reads guardrails.blocked_bundle_ttl_days
         # from instance.yaml and short-circuits when set to 0.
         ("store-blocked-purge", "daily 04:00", "/api/admin/run-blocked-purge", "POST", 600),
+        # wave-2G Task 5: DuckLake merge_adjacent_files/expire_snapshots/
+        # cleanup_old_files/VACUUM pass (app/worker/kinds.py::
+        # _run_ducklake_maintenance). Offset 30 min after the 04:00 store
+        # purge so the two nightly maintenance passes don't stack. LIGHT
+        # lane, enqueued unconditionally — the handler itself no-ops when
+        # analytics.backend != "ducklake" (see docs/jobs-classification.md).
+        (
+            "ducklake-maintenance",
+            "daily 04:30",
+            "/api/jobs",
+            "POST",
+            _ENQUEUE_TIMEOUT_SEC,
+            _ENQUEUE_BODIES["ducklake-maintenance"],
+        ),
         # Stuck-review reaper (#7). A submission stays at
         # status='pending_llm' until the BackgroundTasks worker writes
         # a verdict. If the worker crashes, the row sits forever. Run
@@ -594,10 +615,9 @@ def _call_api(
 ) -> bool:
     """Call the main app API. Returns True on success.
 
-    ``json_body`` is set for the four wave-2B jobs that enqueue via
-    ``POST /api/jobs`` instead of running synchronously (see
-    ``_ENQUEUE_BODIES``); ``None`` for every other job, which sends no
-    request body exactly as before.
+    ``json_body`` is set for the jobs that enqueue via ``POST /api/jobs``
+    instead of running synchronously (see ``_ENQUEUE_BODIES``); ``None``
+    for every other job, which sends no request body exactly as before.
     """
     url = f"{API_URL}{endpoint}"
     headers = {}
