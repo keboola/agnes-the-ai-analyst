@@ -43,6 +43,7 @@ cadence, so it doesn't appear in `build_jobs()`.
 | `jira-refresh` | enqueued from the Jira webhook path (no scheduler row) | queued | HEAVY lane orchestrator rebuild, previously called inline from the webhook's incremental-transform path; now a durable job so a slow rebuild can't block the webhook response. |
 | `knowledge-packaging` | `POST /api/admin/run-knowledge-packaging` | stays-HTTP | Fingerprint-gated (K3, #798); not yet migrated. |
 | `knowledge-digests` | `POST /api/admin/run-knowledge-digests` | stays-HTTP | Fingerprint-gated (K4, #799); not yet migrated. |
+| `ducklake-maintenance` | `POST /api/jobs` (`kind=ducklake-maintenance`) | queued | DuckLake `merge_adjacent_files` → `ducklake_expire_snapshots` → `ducklake_cleanup_old_files` → catalog VACUUM pass (wave-2G Task 5) — LIGHT lane. Enqueued daily regardless of the configured analytics backend; the handler (`app/worker/kinds.py::_run_ducklake_maintenance`) no-ops when `analytics.backend != "ducklake"`, so this row is harmless on a legacy-backend instance. |
 
 ## Explicitly deferred (not in scope for this wave)
 

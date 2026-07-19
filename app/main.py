@@ -710,6 +710,68 @@ async def lifespan(app):
     if role_enabled(Role.WORKER):
         maybe_schedule_startup_warmup()
 
+    # DuckLake reader warm-up (wave-2G Task 5). When analytics.backend is
+    # ducklake, open the long-lived reader singleton (src.ducklake_session
+    # .get_ducklake_read()) here at boot rather than leaving it fully lazy —
+    # so the ``ducklake`` extension INSTALL/LOAD, the catalog ATTACH (a real
+    # libpq connection on a Postgres catalog), and the one-time remote-mode
+    # extract-source attach all happen during startup instead of stalling
+    # the very first analyst query (app/api/query.py, app/api/query_hybrid.py
+    # — the two callers of ``src.db.get_analytics_db_readonly()``, which
+    # dispatches to the DuckLake reader when this backend is active).
+    #
+    # Role scope — api AND gateway, not just api: every role process mounts
+    # the exact same FastAPI app with every router registered (role gating
+    # in this codebase controls which background loops run, not which HTTP
+    # routes exist — see the ``include_router`` calls below, none of which
+    # are role-conditional), so a gateway-role replica can still serve a
+    # query request in principle (e.g. a future in-process agent tool call,
+    # or an operator hitting its internal port directly). Warming there too
+    # is cheap (one extra ATTACH at boot) and removes that latent
+    # cold-start gap; there is no reason to reserve the warm-up for api
+    # only. The worker role deliberately does NOT warm the writer here —
+    # ``get_ducklake_write()`` opens lazily on the worker's first rebuild
+    # (``src.orchestrator``) or ``ducklake-maintenance`` job run
+    # (``app/worker/kinds.py``), matching the existing lazy-open contract
+    # for both DuckLake singletons.
+    #
+    # Fail-soft: a warm-up hiccup (e.g. the catalog is briefly unreachable)
+    # must never block startup — the same reader opens lazily, exactly as
+    # today, on the first real request that needs it.
+    if role_enabled(Role.API) or role_enabled(Role.GATEWAY):
+        try:
+            from src.analytics_backend import analytics_backend
+
+            if analytics_backend() == "ducklake":
+                from src.ducklake_session import get_ducklake_read
+
+                get_ducklake_read().close()  # closes the cursor only; the underlying attach stays open
+                logger.info("DuckLake reader session warmed at startup")
+
+                # Register a /readyz check (app.api.health_probes) so a
+                # broken catalog attach (e.g. the Postgres catalog becomes
+                # unreachable after boot) surfaces as LB-visible
+                # "not_ready" instead of only failing at query time — the
+                # m-tier smoke harness (scripts/dev/mtier-smoke.sh) asserts
+                # on this. Only registered when ducklake is actually active,
+                # so a legacy-backend deployment's /readyz payload is
+                # unchanged.
+                def _ducklake_readyz_check() -> bool:
+                    from src.ducklake_session import get_ducklake_read as _get_read
+
+                    cur = _get_read()
+                    try:
+                        cur.execute("SELECT 1").fetchone()
+                        return True
+                    finally:
+                        cur.close()
+
+                from app.api.health_probes import register_readiness_check
+
+                register_readiness_check("ducklake", _ducklake_readyz_check)
+        except Exception:
+            logger.exception("DuckLake reader warm-up failed at startup (non-fatal; opens lazily on first query)")
+
     # Sweep stale materialize parquet locks left behind by previous runs
     # that were SIGKILL'd mid-materialize. Lazy reclaim at next acquire
     # already handles correctness, but an active sweep at startup keeps
@@ -1424,6 +1486,20 @@ async def lifespan(app):
     # file; the checkpoint loop folds it periodically, and this closes it
     # cleanly on the way out).
     close_operational_db()
+    # DuckLake reader/writer singletons (wave-2G Task 5) — mirrors the
+    # subprocess-handoff path (src.db.close_singleton_connections(), used
+    # before a DB-migrator subprocess spawns) which already closes these;
+    # graceful process shutdown needs the same release so an open catalog
+    # ATTACH (a held libpq connection on a Postgres catalog, or an
+    # exclusive file lock on a DuckDB-file catalog) doesn't linger past
+    # this process's lifetime. Safe to call unconditionally: a no-op when
+    # analytics.backend is legacy or no DuckLake session was ever opened.
+    try:
+        from src.ducklake_session import close_ducklake_sessions
+
+        close_ducklake_sessions()
+    except Exception:
+        logger.exception("close_ducklake_sessions failed during shutdown (non-fatal)")
 
 
 def _is_truthy_env(name: str) -> bool:

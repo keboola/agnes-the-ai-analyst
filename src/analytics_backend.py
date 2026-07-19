@@ -146,6 +146,47 @@ def ducklake_data_path() -> str:
     return str(_get_data_dir() / "analytics" / _DEFAULT_LAKE_DIRNAME) + "/"
 
 
+_DEFAULT_SNAPSHOT_RETENTION_DAYS = 7
+
+
+def ducklake_snapshot_retention_days() -> int:
+    """Effective DuckLake snapshot-retention window, in whole days — env
+    overrides instance.yaml, default :data:`_DEFAULT_SNAPSHOT_RETENTION_DAYS`.
+
+    Consumed by the ``ducklake-maintenance`` job kind
+    (``app/worker/kinds.py``) to build the ``older_than => now() - INTERVAL
+    '<N> days'`` argument to ``ducklake_expire_snapshots`` — any snapshot
+    (and the stale files it alone still references) older than this window
+    is eligible for expiry+cleanup. Not itself a DuckLake session accessor
+    (mirrors this module's existing scope: resolve config, open no
+    connections), so it lives here rather than in ``src/ducklake_session.py``.
+
+    A non-integer or negative override (env var or yaml) falls back to the
+    default rather than raising — a typo'd retention knob should degrade to
+    "keep the safe default cadence", not crash the maintenance job. ``0`` is
+    a valid override (not a typo): it means "no retention grace" — every
+    snapshot except the current one becomes eligible for expiry+cleanup on
+    the very next maintenance run. Useful for an operator who wants
+    aggressive space reclamation (or a test that wants to force real
+    expiry deterministically) and deliberately doesn't care about DuckLake
+    time-travel queries against old snapshots.
+    """
+    from app.instance_config import get_value
+
+    raw = os.environ.get("AGNES_DUCKLAKE_SNAPSHOT_RETENTION_DAYS") or get_value(
+        "ducklake", "snapshot_retention_days", default=None
+    )
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return _DEFAULT_SNAPSHOT_RETENTION_DAYS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_SNAPSHOT_RETENTION_DAYS
+    if value < 0:
+        return _DEFAULT_SNAPSHOT_RETENTION_DAYS
+    return value
+
+
 def is_postgres_dsn(dsn: str) -> bool:
     """True when *dsn* is a Postgres URL (``postgresql://`` / ``postgres://``,
     with or without a SQLAlchemy ``+driver`` suffix, e.g. ``postgresql+psycopg://``)
