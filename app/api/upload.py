@@ -6,7 +6,7 @@ import re
 import shutil
 import tempfile
 import uuid
-from datetime import datetime, timezone
+import zlib
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -19,6 +19,7 @@ from src.audit_helpers import client_kind_from_user
 from src.repositories import (
     audit_repo,
 )
+
 logger = logging.getLogger(__name__)
 
 _FILENAME_RE = re.compile(r"^[A-Za-z0-9._\-]{1,200}$")
@@ -62,6 +63,65 @@ async def _stream_to_temp(file: UploadFile) -> tuple[tempfile.NamedTemporaryFile
     return tmp, total
 
 
+async def _stream_to_temp_gunzip(file: UploadFile) -> tuple[tempfile.NamedTemporaryFile, int]:
+    """Stream-decompress a gzip upload with the size cap on DECOMPRESSED bytes.
+
+    Zip-bomb guard: `MAX_UPLOAD_SIZE` binds on the decompressor's output, not
+    the transfer size — a few KB on the wire must not expand into gigabytes
+    on disk. The raw-transfer counter stays as a second bound. Corrupt or
+    truncated streams (zlib error, or EOF before the gzip trailer) are a 400
+    `invalid_gzip`: deterministic, so the client files them as permanent
+    failures instead of retrying.
+    """
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".tmp")
+    decomp = zlib.decompressobj(wbits=31)  # 31 = gzip container
+    total = 0  # decompressed bytes (the capped quantity)
+    raw_total = 0  # compressed transfer bytes (secondary bound)
+    try:
+        while True:
+            chunk = await file.read(_CHUNK_SIZE)
+            if not chunk:
+                break
+            raw_total += len(chunk)
+            if raw_total > MAX_UPLOAD_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)",
+                )
+            try:
+                out = decomp.decompress(chunk)
+            except zlib.error:
+                raise HTTPException(status_code=400, detail="invalid_gzip")
+            total += len(out)
+            if total > MAX_UPLOAD_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Decompressed content too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)",
+                )
+            tmp.write(out)
+        try:
+            out = decomp.flush()
+        except zlib.error:
+            raise HTTPException(status_code=400, detail="invalid_gzip")
+        total += len(out)
+        if total > MAX_UPLOAD_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Decompressed content too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)",
+            )
+        tmp.write(out)
+        if not decomp.eof:
+            # Stream ended before the gzip trailer — truncated upload.
+            raise HTTPException(status_code=400, detail="invalid_gzip")
+        tmp.flush()
+    except BaseException:
+        tmp.close()
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
+    tmp.seek(0)
+    return tmp, total
+
+
 @router.post("/sessions")
 async def upload_session(
     file: UploadFile = File(...),
@@ -76,13 +136,27 @@ async def upload_session(
             detail="filename must match [A-Za-z0-9._-]{1,200}",
         )
 
+    # A `.gz` suffix means the body is gzip-compressed (client capability
+    # `session-gzip`). The stored name strips the suffix so the on-disk
+    # corpus stays plain JSONL for every downstream reader.
+    filename = file.filename  # already validated by regex above
+    is_gzip = filename.endswith(".gz")
+    if is_gzip:
+        filename = filename[: -len(".gz")]
+        if not _FILENAME_RE.match(filename):
+            raise HTTPException(
+                status_code=400,
+                detail="filename must match [A-Za-z0-9._-]{1,200} before .gz",
+            )
+
     sessions_dir = _get_data_dir() / "user_sessions" / user_id
     sessions_dir.mkdir(parents=True, exist_ok=True)
-
-    filename = file.filename  # already validated by regex above
     target = sessions_dir / filename
 
-    tmp, size = await _stream_to_temp(file)
+    if is_gzip:
+        tmp, size = await _stream_to_temp_gunzip(file)
+    else:
+        tmp, size = await _stream_to_temp(file)
     try:
         tmp.close()
         shutil.move(tmp.name, str(target))
