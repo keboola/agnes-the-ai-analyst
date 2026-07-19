@@ -12,6 +12,13 @@ export SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -hex 32)}"
 # Required by docker-compose.postgres.yml's postgres side-car — no literal
 # default there by design (LOW-2), so the harness must supply one.
 export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(openssl rand -hex 20)}"
+# The base `app` service (docker-compose.yml) declares `env_file: .env`,
+# which Compose treats as a hard error when the file is absent. A fresh
+# checkout (CI, a throwaway load-test VM) has no `.env` — every secret this
+# harness needs is exported above and reaches the containers via `${...}`
+# interpolation, so an empty file is enough to satisfy the directive. Only
+# create it when missing; never clobber a developer's real `.env`.
+[ -f .env ] || : > .env
 COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.postgres.yml -f docker-compose.mtier.yml --profile mtier)
 
 cleanup() { "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true; }
@@ -257,7 +264,16 @@ done
 echo "api1 kill-continuity OK (failures: $fails/20)"
 
 echo "restarting api1 before FLUSHALL chaos test..."
-"${COMPOSE[@]}" up -d api1
+# --no-deps mirrors how production actually recreates a role container
+# (scripts/ops/agnes-auto-upgrade.sh's `up -d --no-deps worker gateway`;
+# scripts/ops/agnes-state-applier.sh's `up -d --no-deps --force-recreate
+# app scheduler`). Without it, Compose re-runs api1's `depends_on` chain —
+# including the `data-migrate` one-shot (docker-compose.postgres.yml), a
+# ONE-TIME DuckDB->PG cutover that is deliberately not idempotent: on this
+# second run it reads an already-migrated Postgres and exits 1, aborting
+# the smoke. Production never re-runs it precisely because those recreate
+# paths pass --no-deps; the harness must match.
+"${COMPOSE[@]}" up -d --no-deps api1
 for i in $(seq 1 60); do
   curl -fsS localhost:8080/readyz >/dev/null 2>&1 && break
   sleep 2
@@ -378,7 +394,9 @@ echo "ticket replay-rejection OK (second use did not reach 101)"
 
 echo "killing gateway to check role-restart continuity..."
 "${COMPOSE[@]}" kill gateway
-"${COMPOSE[@]}" up -d gateway
+# --no-deps: same reason as the api1 restart above — a role-container
+# recreate must not re-trigger the one-time data-migrate cutover.
+"${COMPOSE[@]}" up -d --no-deps gateway
 gw_ready=0
 for i in $(seq 1 60); do
   "${COMPOSE[@]}" exec -T gateway curl -fsS -m 2 localhost:8000/readyz 2>/dev/null | grep -Eq '"status":[[:space:]]*"ready"' \
