@@ -10,14 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.74.118] - 2026-07-18
+### Added
 
 ### Changed
 
-- `/me/connections` Connect / Replace token / Test / Remove buttons now use the
-  design-system button classes (`btn btn-primary` / `btn-secondary` /
-  `btn-danger`, size `btn-sm`) instead of unstyled browser-default buttons, and
-  the row wraps on narrow viewports.
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.119] - 2026-07-19
+
 ### Added
 
 - New admin/analyst web page `/catalog/semantics` — a read-only browser for
@@ -31,6 +35,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   from `/catalog`. `/admin/data-sources` gets a small summary card —
   "Semantic layer: N metrics, M glossary terms synced from Keboola" — once a
   connection has synced. Picks up issue #853 plus the glossary.
+
+## [0.74.118] - 2026-07-18
+
+### Changed
+
+- `/me/connections` Connect / Replace token / Test / Remove buttons now use the
+  design-system button classes (`btn btn-primary` / `btn-secondary` /
+  `btn-danger`, size `btn-sm`) instead of unstyled browser-default buttons, and
+  the row wraps on narrow viewports.
 
 ## [0.74.117] - 2026-07-18
 
