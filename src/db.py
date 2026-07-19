@@ -14,6 +14,7 @@ from pathlib import Path
 import duckdb
 
 from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+from src.analytics_backend import analytics_backend
 
 logger = logging.getLogger(__name__)
 
@@ -2181,7 +2182,23 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                     alias,
                 )
                 continue
-            if alias in attached_dbs:
+            already_attached = alias in attached_dbs
+            # Non-BQ remote extensions carry no expiring credential — the
+            # existing ATTACH (from an earlier call on this same
+            # connection) is still good, nothing to refresh. BQ is
+            # different: its ACCESS_TOKEN secret is a short-lived GCE
+            # metadata token (or TOKEN literal), and this function is
+            # called from a long-lived connection under the DuckLake
+            # backend (`src.ducklake_session.get_ducklake_read`'s
+            # process-wide reader singleton) as well as the legacy
+            # per-request path. On the legacy path `already_attached` is
+            # never True (each call gets a brand-new connection with
+            # nothing attached yet), so this branch is a no-op there;
+            # on the long-lived DuckLake reader, skipping the refresh
+            # here would leave the BQ secret to expire after its TTL and
+            # start failing every remote query for the rest of the
+            # process's life — see the wave-2G task-4 report.
+            if already_attached and extension != "bigquery":
                 logger.debug("Remote source %s already attached, skipping", alias)
                 continue
             try:
@@ -2203,6 +2220,10 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                 # is the contract that signals "use built-in metadata path". The
                 # secret is created here on every readonly-connection open because
                 # secrets are session-scoped and don't persist with analytics.duckdb.
+                # DuckDB resolves a secret by (TYPE, name) match at query time, not
+                # at ATTACH time, so replacing `bq_secret_{alias}` refreshes
+                # credentials for an ATTACH that already exists — no re-ATTACH
+                # needed (and re-ATTACHing an already-attached alias would error).
                 if extension == "bigquery":
                     try:
                         bq_token = get_metadata_token()
@@ -2219,7 +2240,10 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                     from connectors.bigquery.access import apply_bq_session_settings
 
                     apply_bq_session_settings(conn)
-                    conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
+                    if not already_attached:
+                        conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
+                elif already_attached:
+                    continue
                 elif token:
                     escaped_token = escape_sql_string_literal(token)
                     conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')")
@@ -2248,7 +2272,35 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
     """Read-only connection to analytics DB. Blocks writes and external access.
 
     ATTACHes extract.duckdb files so views that reference them work.
+
+    Backend dispatch (wave-2G, DuckLake): when ``analytics.backend`` /
+    ``AGNES_ANALYTICS_BACKEND`` resolves to ``"ducklake"``, this delegates
+    to ``src.ducklake_session.get_ducklake_read()`` instead of the
+    open-file-and-re-ATTACH-every-request path below.
+
+    **Connection-model choice (documented per the wave-2G task-4 brief):**
+    the legacy path below opens a brand-new connection on every call — a
+    cheap operation for a local DuckDB file, so per-request open/close is
+    fine. DuckLake is different: when the catalog target is a Postgres
+    DSN, every ``ATTACH`` opens its own libpq connection (see
+    ``src/ducklake_session.py``'s module docstring and the W2G-2 POC
+    finding — "one PG connection per ATTACH, no extra per query"), so a
+    naive per-request open would churn one new Postgres connection per
+    API request. Instead, ``get_ducklake_read()`` keeps ONE long-lived
+    attach per process and hands back a ``.cursor()`` per caller —
+    mirroring the ``get_analytics_db()`` singleton+cursor pattern in this
+    module rather than this function's per-call-open pattern. A cursor
+    still gives snapshot-consistent reads (DuckLake's MVCC — a cursor
+    opened before a concurrent writer commits keeps seeing the
+    pre-commit snapshot) and callers here already only ever call
+    ``.close()`` on the returned handle, which is exactly the
+    cursor-close contract ``get_ducklake_read()`` documents.
     """
+    if analytics_backend() == "ducklake":
+        from src.ducklake_session import get_ducklake_read
+
+        return get_ducklake_read()
+
     db_path = _get_data_dir() / "analytics" / "server.duckdb"
     if not db_path.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
