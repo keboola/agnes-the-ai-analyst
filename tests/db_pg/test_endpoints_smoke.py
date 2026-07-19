@@ -1646,6 +1646,9 @@ KNOWN_UNTESTED = {
     "GET /activity-center",
     "GET /catalog",
     "GET /catalog/p/{slug}",
+    # Semantic-layer browser (#853 + glossary) — covered by
+    # tests/test_catalog_semantics_page.py.
+    "GET /catalog/semantics",
     "GET /catalog/r/{slug}",
     "GET /catalog/t/{table_id}",
     "GET /chat",
