@@ -180,5 +180,18 @@ async def test_my_secret(source_id: str, user: dict = Depends(get_current_user))
     try:
         tools = await list_tools_async(source, caller_user_id=user["id"])
     except Exception as exc:  # upstream unreachable / bad token
-        return TestResult(ok=False, tool_count=None, message=_redact_then_truncate(str(exc), token))
+        # Log the sanitized cause for operators; show the user a friendly,
+        # actionable line rather than a raw SDK/TaskGroup exception string
+        # (e.g. "unhandled errors in a TaskGroup (1 sub-exception)").
+        source_name = source.get("name") or source_id
+        logger.info(
+            "my-secret test failed for source %s: %s",
+            source_id,
+            _redact_then_truncate(str(exc), token),
+        )
+        return TestResult(
+            ok=False,
+            tool_count=None,
+            message=f"Couldn't connect to {source_name}. Check that your token is valid and try again.",
+        )
     return TestResult(ok=True, tool_count=len(tools), message="ok")

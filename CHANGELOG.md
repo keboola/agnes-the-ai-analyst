@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.74.117] - 2026-07-18
+
+### Changed
+
+- `/me/connections` "Test connection" now shows a friendly, actionable failure
+  ("Couldn't connect to <source>. Check that your token is valid and try
+  again.") instead of the raw upstream/SDK exception string (e.g. "unhandled
+  errors in a TaskGroup"). The sanitized cause is logged server-side for
+  operators. Status messages are also styled by state — failures use the
+  design-system danger token, successes the success token — so an error is
+  visually distinct from a neutral message.
+
 ## [0.74.116] - 2026-07-18
 
 ### Added

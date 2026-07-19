@@ -483,11 +483,17 @@ def _seed_ungranted_per_user_source() -> None:
     conn = get_system_db()
     sources = MCPSourceRepository(conn)
     tools = ToolRegistryRepository(conn)
-    sources.upsert(id="src_pu_ung", name="pu-ungranted", transport="http",
-                   url="https://up.example/mcp", scope="per_user")
-    tools.upsert(tool_id="pu-ungranted.lookup", source_id="src_pu_ung",
-                 original_name="lookup", exposed_name="lookup", mode=PASSTHROUGH,
-                 description="ungranted")
+    sources.upsert(
+        id="src_pu_ung", name="pu-ungranted", transport="http", url="https://up.example/mcp", scope="per_user"
+    )
+    tools.upsert(
+        tool_id="pu-ungranted.lookup",
+        source_id="src_pu_ung",
+        original_name="lookup",
+        exposed_name="lookup",
+        mode=PASSTHROUGH,
+        description="ungranted",
+    )
     conn.close()
 
 
@@ -502,8 +508,8 @@ def _store_analyst_secret(monkeypatch, source_id: str, value: str) -> None:
 def test_test_endpoint_rejects_shared_scope(seeded_app):
     _seed_two_tools_two_groups()  # src_test is scope=shared, lookup granted
     r = seeded_app["client"].post(
-        "/api/mcp/sources/src_test/my-secret/test",
-        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"})
+        "/api/mcp/sources/src_test/my-secret/test", headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"}
+    )
     assert r.status_code == 400, r.text
     assert r.json()["detail"] == "source_scope_not_per_user"
 
@@ -511,8 +517,8 @@ def test_test_endpoint_rejects_shared_scope(seeded_app):
 def test_test_endpoint_requires_grant(seeded_app):
     _seed_ungranted_per_user_source()
     r = seeded_app["client"].post(
-        "/api/mcp/sources/src_pu_ung/my-secret/test",
-        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"})
+        "/api/mcp/sources/src_pu_ung/my-secret/test", headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"}
+    )
     assert r.status_code == 403, r.text
 
 
@@ -521,7 +527,8 @@ def test_test_endpoint_no_credential_403_no_upstream(seeded_app):
     with patch("connectors.mcp.client.list_tools_async", new=AsyncMock()) as up:
         r = seeded_app["client"].post(
             "/api/mcp/sources/src_pu_pt/my-secret/test",
-            headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"})
+            headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+        )
     assert r.status_code == 403, r.text
     assert "my-secret" in r.json()["detail"]  # CLI remedy (no public url in tests)
     up.assert_not_called()
@@ -534,7 +541,8 @@ def test_test_endpoint_ok_threads_caller_id(seeded_app, monkeypatch):
     with patch("connectors.mcp.client.list_tools_async", new=fake):
         r = seeded_app["client"].post(
             "/api/mcp/sources/src_pu_pt/my-secret/test",
-            headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"})
+            headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+        )
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "tool_count": 2, "message": "ok"}
     # Plumbing guard: the upstream introspection runs under the caller's id.
@@ -548,10 +556,15 @@ def test_test_endpoint_redacts_token_before_truncation(seeded_app, monkeypatch):
     with patch("connectors.mcp.client.list_tools_async", new=boom):
         r = seeded_app["client"].post(
             "/api/mcp/sources/src_pu_pt/my-secret/test",
-            headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"})
+            headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+        )
     body = r.json()
     assert body["ok"] is False
+    # User sees a friendly, actionable line — not a raw SDK/TaskGroup string —
+    # and it never contains the token.
+    assert "Couldn't connect" in body["message"]
     assert "SEKRET" not in body["message"]
+    assert "TaskGroup" not in body["message"]
     assert len(body["message"]) <= 300
 
 
@@ -565,8 +578,9 @@ def test_test_endpoint_over_rate_limit_429(seeded_app, monkeypatch):
     hdr = {"Authorization": f"Bearer {seeded_app['analyst_token']}"}
     with patch("connectors.mcp.client.list_tools_async", new=AsyncMock(return_value=[])):
         for _ in range(_TEST_CONNECTION_RATE_LIMIT_PM):
-            assert seeded_app["client"].post(
-                "/api/mcp/sources/src_pu_pt/my-secret/test", headers=hdr).status_code == 200
+            assert (
+                seeded_app["client"].post("/api/mcp/sources/src_pu_pt/my-secret/test", headers=hdr).status_code == 200
+            )
         r = seeded_app["client"].post("/api/mcp/sources/src_pu_pt/my-secret/test", headers=hdr)
     assert r.status_code == 429
     assert "Retry-After" in r.headers

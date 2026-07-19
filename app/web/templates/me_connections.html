@@ -33,7 +33,9 @@
   border: 1px solid var(--ds-border); border-radius: var(--ds-radius-md, 8px);
   padding: 10px 12px; margin-top: 18px;
 }
-.conn-status { font-size: 13px; margin-top: 6px; min-height: 18px; }
+.conn-status { font-size: 13px; margin-top: 6px; min-height: 18px; color: var(--ds-text-secondary); }
+.conn-status--error { color: var(--ds-accent-danger-ink); }
+.conn-status--ok { color: var(--ds-accent-success-ink); }
 .conn-empty { color: var(--ds-text-secondary); }
 </style>
 {% endblock %}
@@ -91,7 +93,12 @@
       body: body ? JSON.stringify(body) : undefined,
     });
   }
-  function say(card, msg) { card.querySelector("[data-status]").textContent = msg || ""; }
+  function say(card, msg, state) {
+    var el = card.querySelector("[data-status]");
+    el.textContent = msg || "";
+    el.classList.remove("conn-status--error", "conn-status--ok");
+    if (state) { el.classList.add("conn-status--" + state); }
+  }
 
   document.querySelectorAll(".conn-card").forEach(function (card) {
     var id = card.getAttribute("data-source");
@@ -103,25 +110,25 @@
       var input = card.querySelector("[data-token]");
       try {
         if (action === "save") {
-          if (!input.value) { say(card, "Enter your token first."); return; }
+          if (!input.value) { say(card, "Enter your token first.", "error"); return; }
           say(card, "Saving…");
           var r = await api("PUT", base, { value: input.value });
           if (r.status === 204) { input.value = ""; location.reload(); }
-          else { say(card, "Save failed (" + r.status + ")."); }
+          else { say(card, "Save failed (" + r.status + ").", "error"); }
         } else if (action === "test") {
           say(card, "Testing…");
           var t = await api("POST", base + "/test");
           var body = await t.json().catch(function () { return {}; });
-          if (t.ok && body.ok) { say(card, "Works — " + (body.tool_count ?? "?") + " tools reachable."); }
-          else { say(card, body.detail || body.message || ("Test failed (" + t.status + ").")); }
+          if (t.ok && body.ok) { say(card, "Works — " + (body.tool_count ?? "?") + " tools reachable.", "ok"); }
+          else { say(card, body.detail || body.message || ("Test failed (" + t.status + ")."), "error"); }
         } else if (action === "remove") {
           if (!confirm("Remove your token for this source?")) return;
           say(card, "Removing…");
           var d = await api("DELETE", base);
           if (d.status === 204) { location.reload(); }
-          else { say(card, "Remove failed (" + d.status + ")."); }
+          else { say(card, "Remove failed (" + d.status + ").", "error"); }
         }
-      } catch (e) { say(card, "Network error."); }
+      } catch (e) { say(card, "Network error.", "error"); }
     });
   });
 
