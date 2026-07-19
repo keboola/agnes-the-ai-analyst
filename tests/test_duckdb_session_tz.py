@@ -136,6 +136,11 @@ def test_no_bare_duckdb_connect_in_production_code():
         "tests/db_pg/test_table_registry_delete_corpus_contract.py",
         # K4 knowledge_digests contract — fixture isolation, intentional bare connect.
         "tests/db_pg/test_knowledge_digests_contract.py",
+        # wave-2G DuckLake session contract — bare :memory: connects are an
+        # extension-availability probe + a direct postgres-attach round-trip
+        # (no tz-sensitive writes; the module under test routes its real
+        # sessions through _open_duckdb).
+        "tests/db_pg/test_ducklake_pg_catalog.py",
     )
 
     pat = re.compile(r"duckdb\.connect\(")
