@@ -141,6 +141,8 @@ def test_no_bare_duckdb_connect_in_production_code():
         # (no tz-sensitive writes; the module under test routes its real
         # sessions through _open_duckdb).
         "tests/db_pg/test_ducklake_pg_catalog.py",
+        "tests/db_pg/test_ducklake_reader_pg_catalog.py",
+        "tests/db_pg/test_ducklake_maintenance_pg.py",
     )
 
     pat = re.compile(r"duckdb\.connect\(")
