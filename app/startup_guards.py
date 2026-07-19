@@ -9,9 +9,12 @@ split) — such a deployment must ALSO satisfy the other multi-process
 requirements below, not just gain the coordination backend.
 
 Multi-process deployments require: Postgres app-state, explicit shared
-secrets, and a Redis coordination backend. Single-process ``all`` mode
-with the default memory coordination backend has no new requirements.
-Spec §3.2/§3.7.
+secrets, a Redis coordination backend, and — when opted into
+``analytics.backend=ducklake`` — an explicit Postgres DuckLake catalog
+DSN (a DuckDB-file catalog is hard single-process; see
+``src/analytics_backend.py``). Single-process ``all`` mode with the
+default memory coordination backend (and, if set, a file-catalog
+DuckLake backend) has no new requirements. Spec §3.2/§3.4/§3.7.
 """
 
 import os
@@ -45,6 +48,27 @@ def _coordination_backend() -> str:
     return resolve_backend_name()
 
 
+def _analytics_backend() -> str:
+    """Effective analytics backend — thin wrapper around
+    :func:`src.analytics_backend.analytics_backend` (env overrides
+    instance.yaml), kept as its own module-level function (same reasoning
+    as :func:`_coordination_backend`) so tests can monkeypatch
+    ``app.startup_guards._analytics_backend`` directly.
+    """
+    from src.analytics_backend import analytics_backend
+
+    return analytics_backend()
+
+
+def _ducklake_catalog_dsn() -> str:
+    """Effective DuckLake catalog DSN/path — thin wrapper around
+    :func:`src.analytics_backend.ducklake_catalog_dsn`, mirroring
+    :func:`_analytics_backend`."""
+    from src.analytics_backend import ducklake_catalog_dsn
+
+    return ducklake_catalog_dsn()
+
+
 def _workers() -> int:
     try:
         return int(os.environ.get("UVICORN_WORKERS", "1"))
@@ -67,6 +91,14 @@ def validate_deployment() -> None:
             problems.append(f"{var} must be set explicitly (no per-node autogeneration)")
     if _coordination_backend() != "redis":
         problems.append("coordination.backend must be 'redis' (instance.yaml::coordination.backend)")
+    if _analytics_backend() == "ducklake":
+        dsn = _ducklake_catalog_dsn()
+        if not dsn.startswith(("postgresql://", "postgres://")):
+            problems.append(
+                "ducklake.catalog_dsn (or AGNES_DUCKLAKE_CATALOG_DSN) must be an explicit Postgres DSN "
+                "(postgresql://...) when analytics.backend=ducklake — a DuckDB-file catalog is "
+                "single-process only"
+            )
     if problems:
         raise DeploymentConfigError(
             "Multi-process deployment (AGNES_ROLE split or UVICORN_WORKERS>1) "
