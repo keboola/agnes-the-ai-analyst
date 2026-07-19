@@ -10,6 +10,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.120] - 2026-07-20
+
+### Added
+
+- New admin/analyst web page `/catalog/semantics` — a read-only browser for
+  the semantic layer: business metrics (`metric_definitions`) and the
+  glossary (`glossary_terms`), reusing `GET /api/metrics` and
+  `GET /api/glossary(/search)` (no new REST endpoints). Metrics tab is
+  server-rendered and grouped by category with a client-side filter;
+  Glossary tab is a live, debounced search. Row detail expands inline
+  (accordion), source badges (`manual` / `yaml_import` / `openmetadata` /
+  `keboola_semantic_layer`) use the existing 4-slot badge vocabulary. Linked
+  from `/catalog`. `/admin/data-sources` gets a small summary card —
+  "Semantic layer: N metrics, M glossary terms synced from Keboola" — once a
+  connection has synced. Picks up issue #853 plus the glossary.
+
 ## [0.74.119] - 2026-07-20
 
 ### Changed
@@ -24,19 +50,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   design-system button classes (`btn btn-primary` / `btn-secondary` /
   `btn-danger`, size `btn-sm`) instead of unstyled browser-default buttons, and
   the row wraps on narrow viewports.
-### Added
-
-- New admin/analyst web page `/catalog/semantics` — a read-only browser for
-  the semantic layer: business metrics (`metric_definitions`) and the
-  glossary (`glossary_terms`), reusing `GET /api/metrics` and
-  `GET /api/glossary(/search)` (no new REST endpoints). Metrics tab is
-  server-rendered and grouped by category with a client-side filter;
-  Glossary tab is a live, debounced search. Row detail expands inline
-  (accordion), source badges (`manual` / `yaml_import` / `openmetadata` /
-  `keboola_semantic_layer`) use the existing 4-slot badge vocabulary. Linked
-  from `/catalog`. `/admin/data-sources` gets a small summary card —
-  "Semantic layer: N metrics, M glossary terms synced from Keboola" — once a
-  connection has synced. Picks up issue #853 plus the glossary.
 
 ## [0.74.117] - 2026-07-18
 
