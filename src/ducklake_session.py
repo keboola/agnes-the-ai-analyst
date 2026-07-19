@@ -30,6 +30,11 @@ the singleton pattern ``get_system_db`` / ``get_analytics_db()`` use in ``src/db
 - :func:`get_ducklake_write` — the worker-role writer (task 3's copy-ingest
   rebuild lands through this). Logically a separate singleton from the
   reader — different roles in the three-plane topology.
+- :func:`vacuum_ducklake_catalog` (task 5) — not a session accessor; a
+  one-shot maintenance helper the ``ducklake-maintenance`` job kind
+  (``app/worker/kinds.py``) calls to ``VACUUM`` the Postgres database
+  backing the catalog, over its own short-lived raw connection (not the
+  writer singleton above).
 
 Both wrap the same underlying attach mechanics (``_attach_ducklake``):
 ``INSTALL/LOAD ducklake`` (+``postgres`` when the catalog target is a
@@ -637,3 +642,64 @@ def reset_ducklake_available_cache() -> None:
     global _available_cache
     with _available_lock:
         _available_cache = None
+
+
+def vacuum_ducklake_catalog() -> bool:
+    """``VACUUM`` the Postgres database backing the DuckLake catalog, when
+    the resolved catalog target is Postgres. Returns ``True`` when it ran,
+    ``False`` when skipped (file-catalog target).
+
+    Used by the ``ducklake-maintenance`` job kind (``app/worker/kinds.py``)
+    as the fourth step of the POC-verified maintenance sequence
+    (``merge_adjacent_files`` → ``ducklake_expire_snapshots`` →
+    ``ducklake_cleanup_old_files`` → catalog VACUUM).
+
+    **Why a separate raw connection instead of running ``VACUUM`` on the
+    ``lake``-ATTACHed writer cursor:** the DuckLake catalog, when Postgres-
+    backed, is exposed through the ``lake`` alias as the *data* catalog
+    (schemas/tables the ingest path writes) — DuckDB's ``ducklake``/
+    ``postgres`` extensions do not surface a passthrough for administrative
+    commands like ``VACUUM`` against the underlying Postgres database
+    through that ATTACH. Verified directly (real pgserver instance, DuckDB
+    1.5.2): DuckLake's Postgres-catalog implementation stores its
+    ``ducklake_*`` metadata tables as plain tables directly in the
+    database's ``public`` schema (see
+    ``tests/db_pg/test_ducklake_pg_catalog.py``'s module docstring) — so a
+    single unqualified ``VACUUM`` issued over a *direct* connection to that
+    database vacuums the whole thing (catalog metadata tables included),
+    exactly like any other Postgres database maintenance pass. This reuses
+    :func:`pg_dsn_to_libpq` (the same DSN-conversion this module already
+    applies for the ``ducklake:postgres:...`` ATTACH form) to build a
+    conninfo string ``psycopg`` accepts directly — including the
+    pgserver-style unix-socket DSN shape (``host`` riding in the query
+    string).
+
+    ``autocommit=True`` is required: Postgres refuses ``VACUUM`` inside an
+    explicit transaction block (``VACUUM cannot run inside a transaction
+    block``), and psycopg opens every connection in an implicit transaction
+    by default.
+
+    A no-op (returns ``False``) for a DuckDB-file catalog target — DuckDB
+    has no equivalent storage-compaction ``VACUUM`` (its ``VACUUM``/
+    ``VACUUM ANALYZE`` statements only refresh planner statistics, and
+    ``merge_adjacent_files``/``ducklake_cleanup_old_files`` above already
+    do the file-level compaction DuckLake itself needs); running one there
+    would be a costly no-op rather than a meaningful maintenance step.
+    """
+    catalog_dsn = ducklake_catalog_dsn()
+    if not _is_postgres_dsn(catalog_dsn):
+        logger.debug(
+            "vacuum_ducklake_catalog: catalog target is a DuckDB file, not Postgres — "
+            "skipping (no storage-compaction VACUUM equivalent for a file catalog)"
+        )
+        return False
+
+    import psycopg
+
+    libpq = pg_dsn_to_libpq(catalog_dsn)
+    conn = psycopg.connect(libpq, autocommit=True)
+    try:
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
+    return True

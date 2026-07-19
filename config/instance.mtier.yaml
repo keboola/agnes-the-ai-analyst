@@ -24,3 +24,30 @@ server:
 # docker-compose.mtier.yml is the placeholder target.
 coordination:
   backend: redis
+
+# Wave-2G Task 5: flip the m-tier harness onto the DuckLake analytics
+# backend so the smoke test exercises the multi-process DuckLake path (the
+# single reason this harness exists — legacy `analytics.backend` never
+# needed a Postgres catalog, so it never proved multi-process readers/
+# writers actually work). `ducklake.catalog_dsn` is deliberately NOT set
+# here — it carries the Postgres password, so it's supplied via the
+# AGNES_DUCKLAKE_CATALOG_DSN env var on each role service in
+# docker-compose.mtier.yml instead (same reasoning as DATABASE_URL /
+# AGNES_REDIS_URL staying env-only rather than baked into this
+# statically-mounted, no-templating file). The startup guard
+# (app.startup_guards.validate_deployment) requires that env var to be an
+# explicit postgresql:// DSN whenever analytics.backend=ducklake in a
+# multi-process topology — see docker-compose.mtier.yml's postgres/api/
+# worker/gateway stanzas for the dedicated `agnes_ducklake` database this
+# points at (kept separate from the `agnes` app-state database so DuckLake's
+# own `ducklake_*` catalog tables never collide with app-state tables in the
+# same schema).
+analytics:
+  backend: ducklake
+
+ducklake:
+  # Matches the default (`{DATA_DIR}/analytics/lake/` with DATA_DIR=/data
+  # for every role container here) — set explicitly so this file documents
+  # the full DuckLake config surface rather than relying on an implicit
+  # default an operator reading this file wouldn't see.
+  data_path: "/data/analytics/lake/"
