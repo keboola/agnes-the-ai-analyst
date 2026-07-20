@@ -246,6 +246,109 @@ def _mask_backticks(sql: str) -> str:
     return _BACKTICK_SEGMENT.sub(lambda m: " " * len(m.group(0)), sql)
 
 
+def _local_extract_catalogs(conn) -> set[str]:
+    """Attached local extract catalogs (per-source ``extract.duckdb`` files).
+
+    Each source is ATTACHed as its own catalog named after the source
+    (``src/db.py``). These are file-backed ``duckdb`` attachments; the default
+    catalog (where the analyst-facing master views live) and the
+    remote-extension catalogs (``bq``/``kbc``, type ``bigquery``/``keboola``)
+    are excluded — the latter keep their own registry gate in
+    ``_bq_guardrail_inputs``.
+    """
+    try:
+        default = conn.execute("SELECT current_database()").fetchone()[0]
+        rows = conn.execute("SELECT database_name, type FROM duckdb_databases()").fetchall()
+    except Exception:
+        # If catalog enumeration fails we can't run the #868 catalog gate, but
+        # the view-name + internal-table denylists below still apply. Don't 500
+        # the request over it.
+        logger.warning("RBAC catalog gate: could not enumerate attached catalogs", exc_info=True)
+        return set()
+    reserved = {default, "system", "temp", "memory"}
+    return {name for (name, typ) in rows if typ == "duckdb" and name not in reserved}
+
+
+def _assert_no_ungranted_catalog_ref(sql_lower_masked: str, conn) -> None:
+    """403 if user SQL references a local extract catalog by qualified path.
+
+    Non-admins reach their granted data through the *unqualified* master views
+    in the default catalog; a catalog-qualified reference like
+    ``<source>.main."<name>"`` bypasses the master-view-name denylist and reads
+    an un-granted source's rows directly (audit #868). The legitimate analyst
+    surface never needs to name a source catalog, so any such reference is
+    denied.
+    """
+    for cat in _local_extract_catalogs(conn):
+        # `src.` or `"src".` (optionally quoted) immediately followed by a `.`
+        # qualifier. The `(?<![\w."])` lookbehind avoids matching mid-identifier
+        # or inside a longer already-qualified path segment.
+        if re.search(r'(?<![\w."])"?' + re.escape(cat.lower()) + r'"?\s*\.', sql_lower_masked):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "query references an un-granted source catalog directly; "
+                    "use the granted table name (unqualified) instead"
+                ),
+            )
+
+
+def _enforce_non_admin_sql_rbac(analytics, sql_lower: str, allowed) -> None:
+    """Non-admin SQL RBAC deny checks shared by ``/api/query`` (``execute_query``)
+    and the snapshot ``run_remote_select_to_arrow`` path — previously duplicated
+    verbatim in both.
+
+    ``allowed`` is ``get_accessible_tables(user, conn)``; ``None`` means admin →
+    no checks. Three layers, all word-boundary matched on a backtick-masked copy
+    (``_mask_backticks``, issue #201):
+
+      (a) #868 — block catalog-qualified refs into un-granted local extract
+          catalogs (``<source>.main.x``);
+      (b) master-view-name denylist — default-catalog views not covered by a
+          granted registry row;
+      (c) M1 — internal extract metadata tables
+          (``_meta``/``_remote_attach``/``_remote_links``); kept as
+          defense-in-depth, now subsumed by (a) when the catalog is attached.
+
+    The ``_bq_guardrail_inputs`` remote-row gate stays in each caller (it also
+    computes the dry-run set used downstream).
+    """
+    if allowed is None:  # admin — sees all
+        return
+    from src.rbac import table_not_in_stack_message
+
+    sql_lower_masked = _mask_backticks(sql_lower)
+
+    # (a) #868 catalog gate
+    _assert_no_ungranted_catalog_ref(sql_lower_masked, analytics)
+
+    # (b) master-view-name denylist. `allowed` carries registry IDs
+    # (resource_grants.resource_id); DuckDB master views are named by registry
+    # display `name`, so map name->id to compare apples to apples (avoids the
+    # over-deny when id != name — Devin Review iter #5 on PR #168).
+    all_views = {
+        row[0]
+        for row in analytics.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
+        ).fetchall()
+    }
+    allowed_ids = set(allowed)
+    registry_rows = table_registry_repo().list_all()
+    allowed_view_names = {r["name"] for r in registry_rows if r.get("name") and r.get("id") in allowed_ids}
+    for table in all_views - allowed_view_names:
+        if re.search(r"\b" + re.escape(table.lower()) + r"\b", sql_lower_masked):
+            raise HTTPException(status_code=403, detail=table_not_in_stack_message(table))
+
+    # (c) internal extract metadata tables (audit M1) — see
+    # _assert_no_ungranted_catalog_ref for why base tables slip the view denylist.
+    for internal in _INTERNAL_EXTRACT_TABLES:
+        if re.search(r"\b" + re.escape(internal) + r"\b", sql_lower_masked):
+            raise HTTPException(
+                status_code=403,
+                detail="query references an internal extract metadata table (_meta/_remote_attach/_remote_links)",
+            )
+
+
 def _default_remote_query_cap_bytes() -> int:
     """5 GiB default cap on /api/query BQ-touching scans. Configurable via
     `data_source.bigquery.bq_max_scan_bytes` in /admin/server-config —
@@ -509,63 +612,10 @@ def execute_query(
     # Used for audit action selection (query.remote vs query.local) and bytes_scanned.
     _dry_run_set: list = []
     try:
-        if allowed is not None:  # None = admin, sees all
-            # Get all views in analytics DB
-            all_views = {
-                row[0]
-                for row in analytics.execute(
-                    "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
-                ).fetchall()
-            }
-
-            # `allowed` carries registry IDs (resource_grants.resource_id);
-            # DuckDB master views are named by registry display `name`.
-            # Build a name->id map so the forbidden check compares apples to
-            # apples — when id != name, the prior `all_views - set(allowed)`
-            # over-denied authorized users (Devin Review iter #5 on PR #168;
-            # pre-existing class of name/id mismatch flagged across this
-            # PR's BQ guardrail too).
-            allowed_ids = set(allowed)
-            registry_rows = table_registry_repo().list_all()
-            allowed_view_names = {r["name"] for r in registry_rows if r.get("name") and r.get("id") in allowed_ids}
-
-            # Check if query references any forbidden tables (word-boundary
-            # match). Issue #201: mask backtick segments so `\b` doesn't
-            # falsely fire inside a user-supplied full backtick path like
-            # `<project>.<dataset>.<table>` whose final segment happens to
-            # collide with a forbidden master view name. The full-path
-            # registry-gate downstream is the proper authorization check
-            # for those.
-            sql_lower_masked = _mask_backticks(sql_lower)
-            forbidden = all_views - allowed_view_names
-            for table in forbidden:
-                pattern = r"\b" + re.escape(table.lower()) + r"\b"
-                if re.search(pattern, sql_lower_masked):
-                    from src.rbac import table_not_in_stack_message
-
-                    raise HTTPException(
-                        status_code=403,
-                        detail=table_not_in_stack_message(table),
-                    )
-
-            # The per-source extract.duckdb files ATTACHed as catalogs expose
-            # INTERNAL base tables — `_meta` (schema + rowcounts), and for
-            # remote sources `_remote_attach` (upstream URL + the token_env
-            # var name) / `_remote_links`. These are orchestrator-internal and
-            # never part of an analyst's query surface (analysts hit the
-            # RBAC-filtered master views). Because they are base tables, not
-            # VIEWs, a non-admin reaching them via a catalog-qualified path
-            # (`<ungranted_source>.main."_meta"`) slipped past the view-name
-            # denylist above — leaking cross-source schemas and remote
-            # credentials' env-var names (audit M1). Deny any reference for
-            # non-admins. (Broader cross-source catalog-qualified row access is
-            # tracked as a follow-up allowlist redesign.)
-            for internal in _INTERNAL_EXTRACT_TABLES:
-                if re.search(r"\b" + re.escape(internal) + r"\b", sql_lower_masked):
-                    raise HTTPException(
-                        status_code=403,
-                        detail="query references an internal extract metadata table (_meta/_remote_attach/_remote_links)",
-                    )
+        # Non-admin SQL RBAC: catalog gate (#868) + master-view-name denylist +
+        # internal-extract-table denylist (M1). Shared with the snapshot path
+        # via _enforce_non_admin_sql_rbac; no-op for admins (allowed is None).
+        _enforce_non_admin_sql_rbac(analytics, sql_lower, allowed)
 
         # ---- #160 BQ remote-row guardrail + RBAC patch -------------------
         dry_run_set, name_lookups, blocked_bq_path = _bq_guardrail_inputs(
@@ -1737,35 +1787,9 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
     allowed = get_accessible_tables(user, conn)
     analytics = get_analytics_db_readonly()
     try:
-        if allowed is not None:  # None = admin, sees all
-            all_views = {
-                row[0]
-                for row in analytics.execute(
-                    "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
-                ).fetchall()
-            }
-            allowed_ids = set(allowed)
-            registry_rows = table_registry_repo().list_all()
-            allowed_view_names = {r["name"] for r in registry_rows if r.get("name") and r.get("id") in allowed_ids}
-            sql_lower_masked = _mask_backticks(sql_lower)
-            for table in all_views - allowed_view_names:
-                pattern = r"\b" + re.escape(table.lower()) + r"\b"
-                if re.search(pattern, sql_lower_masked):
-                    from src.rbac import table_not_in_stack_message
-
-                    raise HTTPException(
-                        status_code=403,
-                        detail=table_not_in_stack_message(table),
-                    )
-            # Same internal-extract-table denial as /api/query (audit M1): the
-            # scan `from_query` path shares the view-name denylist and the same
-            # catalog-qualified bypass to `_meta`/`_remote_attach`/`_remote_links`.
-            for internal in _INTERNAL_EXTRACT_TABLES:
-                if re.search(r"\b" + re.escape(internal) + r"\b", sql_lower_masked):
-                    raise HTTPException(
-                        status_code=403,
-                        detail="query references an internal extract metadata table (_meta/_remote_attach/_remote_links)",
-                    )
+        # Same non-admin SQL RBAC as /api/query (catalog gate #868 + view-name
+        # denylist + internal-extract denylist M1), shared via the helper.
+        _enforce_non_admin_sql_rbac(analytics, sql_lower, allowed)
 
         dry_run_set, name_lookups, blocked_bq_path = _bq_guardrail_inputs(
             sql,

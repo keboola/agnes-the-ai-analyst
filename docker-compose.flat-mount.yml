@@ -76,11 +76,6 @@ services:
       - /data:/data
       - /data-state:/data-state
 
-  ws-gateway:
-    volumes: !override
-      - /data:/data
-      - /data-state:/data-state
-
   caddy:
     # `!override` replaces the entire base volumes list, so every mount
     # the base service depends on must be re-stated here. Two of those

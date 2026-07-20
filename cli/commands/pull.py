@@ -167,6 +167,12 @@ def pull(
                     "tables_removed": result.tables_removed,
                     "parquets_total": result.parquets_total,
                     "rules_count": result.rules_count,
+                    # WF-4 (wave 2H) — provenance counters. `getattr` with a
+                    # 0 default keeps this endpoint tolerant of duck-typed
+                    # `PullResult` stand-ins in tests that predate these
+                    # fields (`_FakePullResult` et al. in test_cli_pull.py).
+                    "tables_via_signed_url": getattr(result, "tables_via_signed_url", 0),
+                    "tables_via_app": getattr(result, "tables_via_app", 0),
                     "duration_s": round(result.duration_s, 3),
                     "errors": result.errors,
                 }
@@ -208,6 +214,16 @@ def pull(
     else:
         typer.echo(f"Updated {result.tables_updated} tables ({result.parquets_total} total).")
     typer.echo(f"Rules: {result.rules_count}.")
+
+    # WF-4 (wave 2H) — provenance summary. Only printed once a
+    # `signed_url` has actually been used (an instance with no object
+    # store configured, or `distribution.signed_urls: off`, never sees
+    # this line — no noise for the common case). `getattr` keeps this
+    # tolerant of duck-typed `PullResult` stand-ins in tests.
+    via_signed_url = getattr(result, "tables_via_signed_url", 0)
+    if via_signed_url:
+        via_app = getattr(result, "tables_via_app", 0)
+        typer.echo(f"  {via_signed_url} via signed URL, {via_app} via app path.")
 
     # #754 — an empty manifest with zero errors is ambiguous: it means
     # either "nothing is registered on the server yet" or "your account

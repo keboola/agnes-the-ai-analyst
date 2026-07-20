@@ -7,6 +7,7 @@ import logging
 import re
 from typing import Any, Awaitable, Callable, Coroutine, Optional
 
+from app.chat import routing
 from services.slack_bot.binding import (
     bind_prompt,
     issue_verification_code,
@@ -99,6 +100,108 @@ def _is_attached(mgr, chat_id: str) -> bool:
     return any(live.chat_id == chat_id for live in mgr.list_live())
 
 
+def _has_slack_sink(mgr, chat_id: str, channel: str) -> bool:
+    """True iff ``chat_id``'s live session already has a SlackSinkBridge
+    for ``channel``.
+
+    ``_is_attached`` alone is not enough on the OWNER after a cross-gateway
+    takeover: ``ChatManager._takeover_foreign_session`` builds its fresh
+    LiveSession with ``sinks=[]``, so the session is "attached" (live) but
+    has nowhere to deliver Slack replies — every webhook handler that used
+    to skip sink creation whenever a live entry existed silently dropped
+    all subsequent replies for Slack-surfaced sessions. Handlers use this
+    to re-seat a bridge in that live-but-sinkless window."""
+    for live in mgr.list_live():
+        if getattr(live, "chat_id", None) != chat_id:
+            continue
+        for entry in getattr(live, "sinks", []):
+            sink = getattr(entry, "sink", None)
+            if isinstance(sink, SlackSinkBridge) and sink._channel == channel:
+                return True
+    return False
+
+
+async def _produce_slack_message(app, *, user_email: str, surface, channel: str, thread_ts: str, text: str) -> None:
+    """Thin-producer forward for a Slack message handled on a process with
+    NO ChatManager — i.e. an api-role replica, where ``app.state.
+    chat_manager`` is ``None`` because only ``Role.GATEWAY`` processes
+    construct one (wave-2F final review F1).
+
+    An api replica is never an owner, so this ALWAYS forwards: resolve or
+    create the session row, run the same sender-limit gate as the owner
+    path, persist the user message, and publish it over the
+    ``chat-in:{chat_id}`` stream with its Slack origin so the owning
+    gateway's consumer (re-)establishes the reply sink before delivering.
+    All via ``app.chat.manager``'s module-level thin-producer helpers (the
+    ChatManager methods delegate to the same implementations, so the two
+    paths cannot drift). The reference m-tier LB rule routes
+    ``/api/slack/*`` to gateway-role upstreams (docs/DEPLOYMENT.md -> chat
+    HA -> LB routing rule), so this is the graceful-degradation fallback,
+    not the primary route — note a session no gateway ever owns has no
+    consumer to deliver to (see the thin-producer section's reach
+    disclosure in app/chat/manager.py).
+    """
+    from app.chat import manager as chat_manager_mod
+    from app.chat.types import Surface
+
+    repo = app.state.chat_repo
+    config = getattr(app.state, "chat_config", None)
+    if config is None:
+        logger.warning("thin-producer forward skipped: app.state.chat_config missing (chat init failed?)")
+        return
+    session = chat_manager_mod.resolve_or_create_slack_session(
+        repo,
+        config,
+        user_email=user_email,
+        surface=surface,
+        slack_channel_id=channel,
+        slack_thread_ts=thread_ts if surface == Surface.SLACK_THREAD else None,
+    )
+    await chat_manager_mod.produce_inbound_user_message(
+        repo,
+        config,
+        session.id,
+        text,
+        slack_origin={"channel": channel, "thread_ts": thread_ts},
+    )
+
+
+async def _owned_by_other_gateway(chat_id: str) -> bool:
+    """True iff ``chat_id``'s routing lease is currently held by a
+    DIFFERENT, presumably-still-live gateway replica than this process
+    (wave-2F task 7 — thin Slack webhook producers).
+
+    A Slack HTTP webhook can land on ANY gateway replica behind the load
+    balancer, regardless of which replica actually owns (spawned/attached)
+    the session. Blindly calling ``ChatManager.attach`` here would hit its
+    "no local LiveSession, but the routing lease is held elsewhere" branch,
+    which is a cross-gateway TAKEOVER — it destroys the session's runner on
+    its current owner and respawns a fresh one on THIS replica (see
+    ``ChatManager.attach`` / ``_takeover_foreign_session`` docstrings). That
+    behavior exists for a reconnecting web WS, which really does need to be
+    local to whichever gateway now holds the socket — it is the wrong
+    behavior for a webhook that has no such requirement and would otherwise
+    silently steal (and interrupt) every session on every load-balanced
+    request.
+
+    Checking ownership first lets the handler skip attach/wait_until_live
+    entirely when a foreign owner is live and fall straight through to
+    ``ChatManager.send_user_message``, which already forwards the message
+    over the ``chat-in:{chat_id}`` coordination stream to whichever gateway
+    owns the session (``ChatManager._forward_inbound_message``) — no local
+    spawn, no takeover, no assumption that this process hosts the session.
+
+    Returns False (safe to attach locally) when the lease is unclaimed/
+    expired, held by this same gateway, or the coordination backend is
+    unavailable (``routing.owner_of`` already degrades to ``None`` in that
+    case) — all of those fall through to the existing local resume/spawn
+    path, unchanged.
+    """
+    this_gw = routing.this_gateway_id()
+    owner = await asyncio.to_thread(routing.owner_of, chat_id)
+    return owner is not None and owner != this_gw
+
+
 async def _handle_dm(app, event: dict) -> None:
     if event.get("channel_type") != "im" or event.get("bot_id"):
         return
@@ -141,11 +244,39 @@ async def _handle_dm(app, event: dict) -> None:
     mgr = app.state.chat_manager
     from app.chat.types import Surface
 
+    if mgr is None:
+        # api-role replica (no ChatManager in this process): thin-producer
+        # forward — never attach/spawn here, an api replica is never an
+        # owner. See _produce_slack_message.
+        await _produce_slack_message(
+            app,
+            user_email=user_email,
+            surface=Surface.SLACK_DM,
+            channel=channel,
+            thread_ts=thread_ts,
+            text=text,
+        )
+        return
     session = await mgr.create_session(
         user_email=user_email,
         surface=Surface.SLACK_DM,
         slack_channel_id=channel,
     )
+    # wave-2F task 7: this HTTP webhook can land on ANY gateway replica, not
+    # necessarily the one that owns this session. Only attach/spawn locally
+    # when THIS replica would actually become (or already is) the owner —
+    # if a different, still-live gateway already owns it, skip straight to
+    # send_user_message (which forwards over the inbound coordination
+    # stream) instead of triggering attach()'s cross-gateway takeover. See
+    # _owned_by_other_gateway's docstring. slack_origin rides the forwarded
+    # envelope so the OWNER's consumer can (re-)establish the Slack sink.
+    if await _owned_by_other_gateway(session.id):
+        await mgr.send_user_message(
+            session.id,
+            text,
+            slack_origin={"channel": channel, "thread_ts": thread_ts},
+        )
+        return
     # Attach a SlackSinkBridge if no pump is running for this session yet.
     # The bridge forwards assistant_message frames to send_thread_reply so
     # the user actually sees the answer in Slack.
@@ -171,6 +302,18 @@ async def _handle_dm(app, event: dict) -> None:
                 "Agnes is still starting up — please resend your message in a few seconds.",
             )
             return
+    elif not _has_slack_sink(mgr, session.id, channel):
+        # Live session with no Slack sink for this channel — the
+        # post-takeover window (_takeover_foreign_session seats sinks=[]).
+        # Re-establish the bridge or replies silently stop reaching Slack.
+        sink = SlackSinkBridge(
+            channel=channel,
+            thread_ts=thread_ts,
+            chat_id=session.id,
+            owner=user_email,
+            web_base=getattr(app.state, "public_url", ""),
+        )
+        _schedule(mgr.attach(session.id, sink))
     await mgr.send_user_message(session.id, text)
 
 
@@ -234,6 +377,23 @@ async def _handle_mention(app, event: dict) -> None:
         owner_ref = f"<@{owner_slack_id}>" if owner_slack_id else "another user"
         await send_ephemeral_to_user(channel, slack_user_id, f"This thread belongs to {owner_ref}.")
         return
+
+    # 7. Strip our own mention token. (Before session creation so the
+    # api-role thin-producer branch below can forward the cleaned text.)
+    clean = _strip_bot_mention(text, bot_user_id)
+
+    if mgr is None:
+        # api-role replica (no ChatManager in this process): thin-producer
+        # forward — see _handle_dm's twin branch and _produce_slack_message.
+        await _produce_slack_message(
+            app,
+            user_email=user_email,
+            surface=Surface.SLACK_THREAD,
+            channel=channel,
+            thread_ts=thread_ts,
+            text=clean,
+        )
+        return
     session = await mgr.create_session(
         user_email=user_email,
         surface=Surface.SLACK_THREAD,
@@ -241,10 +401,18 @@ async def _handle_mention(app, event: dict) -> None:
         slack_thread_ts=thread_ts,
     )
 
-    # 7. Strip our own mention token.
-    clean = _strip_bot_mention(text, bot_user_id)
-
-    # 8. Attach (NOT awaited — keep the 3s ack budget).
+    # 8. Attach (NOT awaited — keep the 3s ack budget). wave-2F task 7: skip
+    # entirely when a different, still-live gateway already owns this
+    # session — see _owned_by_other_gateway's docstring for why attaching
+    # here would otherwise trigger a cross-gateway takeover; slack_origin
+    # rides the forwarded envelope so the OWNER re-establishes the sink.
+    if await _owned_by_other_gateway(session.id):
+        await mgr.send_user_message(
+            session.id,
+            clean,
+            slack_origin={"channel": channel, "thread_ts": thread_ts},
+        )
+        return
     if not _is_attached(mgr, session.id):
         sink = SlackSinkBridge(
             channel=channel,
@@ -264,6 +432,16 @@ async def _handle_mention(app, event: dict) -> None:
                 "Agnes is still starting up — please resend in a few seconds.",
             )
             return
+    elif not _has_slack_sink(mgr, session.id, channel):
+        # Live-but-sinkless (post-takeover) window — see _has_slack_sink.
+        sink = SlackSinkBridge(
+            channel=channel,
+            thread_ts=thread_ts,
+            chat_id=session.id,
+            owner=user_email,
+            web_base=getattr(app.state, "public_url", ""),
+        )
+        _schedule(mgr.attach(session.id, sink))
 
     # 9. Inject the user turn. send_user_message(chat_id, text) — no sender_email
     #    (per-sender attribution arrives with Phase 5a's multi-sink refactor).

@@ -122,6 +122,63 @@ class TestHealthSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Health probes (LB liveness/readiness — unauthenticated, app/api/health_probes.py)
+# ---------------------------------------------------------------------------
+
+
+class TestHealthProbesSmoke:
+    COVERED_ROUTES = {
+        "GET /healthz",
+        "GET /readyz",
+    }
+
+    def test_healthz(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/healthz")
+        assert r.status_code == 200
+        assert r.json() == {"status": "alive"}
+
+    def test_readyz(self, seeded_app_both):
+        # The write-canary runs on a background timer, not per request, so a
+        # fresh app either hasn't run it yet (ReadinessState defaults to
+        # ready) or has recorded canary results already — either way the
+        # only valid outcomes are 200 (ready) or 503 (not ready).
+        r = seeded_app_both["client"].get("/readyz")
+        assert r.status_code in (200, 503), r.text
+        body = r.json()
+        assert body["status"] in ("ready", "not_ready")
+        assert "failed_checks" in body
+        assert "canary_ready" in body
+
+    def test_canary_write_path(self, seeded_app_both):
+        # /readyz's 200-or-503 assertion above tolerates a permanently failing
+        # canary, so it can't catch a broken write path on its own. Call the
+        # canary directly against the active backend (DuckDB or Postgres, per
+        # seeded_app_both) to assert the write genuinely succeeds — otherwise
+        # a regression here would ship a /readyz that's always 503 in prod
+        # while this suite stays green.
+        from app.api.health_probes import _write_canary
+
+        assert _write_canary() is True
+
+
+# ---------------------------------------------------------------------------
+# Metrics (Prometheus scrape endpoint — unauthenticated, app/observability/metrics.py)
+# ---------------------------------------------------------------------------
+
+
+class TestMetricsProbeSmoke:
+    COVERED_ROUTES = {
+        "GET /metrics",
+    }
+
+    def test_metrics(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/metrics")
+        assert r.status_code == 200
+        assert "text/plain" in r.headers["content-type"]
+        assert "agnes_http_requests_total" in r.text
+
+
+# ---------------------------------------------------------------------------
 # Me
 # ---------------------------------------------------------------------------
 
@@ -285,10 +342,13 @@ class TestSyncSmoke:
         assert r.status_code == 200
         assert "tables" in r.json()
 
-    def test_sync_trigger(self, seeded_app_both, monkeypatch):
-        monkeypatch.setattr("app.api.sync._run_sync", lambda *a, **kw: None)
+    def test_sync_trigger(self, seeded_app_both):
+        # Enqueues a `data-refresh` job (wave-2B job queue) rather than
+        # running `_run_sync` inline — nothing to monkeypatch here, the
+        # handler only touches `jobs_repo()`, which both backends provide.
         r = seeded_app_both["client"].post("/api/sync/trigger", headers=_admin_headers(seeded_app_both))
         assert r.status_code in (200, 202)
+        assert r.json().get("job_id")
 
     def test_sync_settings(self, seeded_app_both):
         r = seeded_app_both["client"].get("/api/sync/settings", headers=_admin_headers(seeded_app_both))
@@ -1443,6 +1503,24 @@ KNOWN_UNTESTED = {
     # tests/test_api_knowledge_digests_distribution.py (manifest kind:"digest"
     # entries, 401/403/404/200, staleness md5 change-token).
     "GET /api/knowledge/digests/{digest_id}/content",
+    # Wave-2B job queue REST surface (Task 5) — POST /api/jobs requires a body
+    # (`kind`) and enqueue behavior depends on the process-wide `JOB_KINDS`
+    # registry (empty outside the app lifespan's `register_all_kinds()`, so
+    # tests register their own fake kinds), so it has no place in this
+    # parameter-free smoke sweep. Behaviour (401/403, enqueue/get/list,
+    # unknown-kind 400, idempotency dedup) covered in tests/test_jobs_api.py;
+    # jobs_repo() dual-backend parity already covered by
+    # tests/db_pg/test_jobs_contract.py.
+    "POST /api/jobs",
+    # DuckLake analytics-backend migration (wave-2G Task 6) — requires a
+    # body (`to`) and, for `to="ducklake"`, runs a real prerequisite probe
+    # (extension/catalog reachability) before enqueueing, so it has no
+    # place in this parameter-free smoke sweep. Behaviour (401/403, `to`
+    # validation, prerequisite 400/enqueue 202/dedup 409) covered in
+    # tests/test_admin_analytics_api.py.
+    "POST /api/admin/analytics/migrate",
+    "GET /api/jobs",
+    "GET /api/jobs/{job_id}",
     "GET /api/collections/{collection_id}",
     "DELETE /api/collections/{collection_id}",
     "POST /api/collections/{collection_id}/files",
