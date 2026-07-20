@@ -26,7 +26,7 @@ from src.repositories import (
     audit_repo,
     table_registry_repo,
 )
-from app.api.v2_schema import build_schema  # reused for column resolution
+from app.api.v2_schema import NotFound, build_schema  # reused for column resolution
 from app.api.v2_arrow import CONTENT_TYPE, arrow_to_ipc_bytes_capped
 from app.api.v2_quota import QuotaTracker, QuotaExceededError
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
@@ -46,8 +46,52 @@ class ScanRequest(BaseModel):
 
 def _resolve_schema(conn, user, table_id: str, bq: BqAccess) -> dict:
     """Get {column: type} dict for the target table — used by validator + projection check."""
-    s = build_schema(conn, user, table_id, bq=bq)
+    try:
+        s = build_schema(conn, user, table_id, bq=bq)
+    except NotFound as e:
+        # build_schema raises its own NotFound (a plain Exception) for a
+        # missing registry row OR a materialized/local row whose parquet
+        # hasn't been written yet. The scan/estimate endpoints map
+        # FileNotFoundError → 404; without this translation NotFound would
+        # escape their except tuples and surface as a 500 from the global
+        # handler (PR #946 review).
+        raise FileNotFoundError(str(e)) from e
     return {c["name"]: c["type"] for c in s.get("columns", [])}
+
+
+def _executes_on_bigquery(row: dict) -> bool:
+    """True only when a scan must run a billable BigQuery job.
+
+    A `query_mode='materialized'` row already has its data as a server-side
+    parquet written by the scheduled materialize run — the parquet is the
+    source of truth (mirrors the v2_schema branch, issue #261). A missing
+    parquet is a 404, NEVER a fallback to scanning the raw upstream table."""
+    return (row.get("source_type") or "") == "bigquery" and (row.get("query_mode") or "") != "materialized"
+
+
+def _validated_where_fragment(req: "ScanRequest", schema: dict, row: dict, use_bq: bool) -> str | None:
+    """Validate ``req.where`` and return the comment-stripped fragment in the
+    EXECUTION dialect.
+
+    Parse dialect follows the source_type (clients are taught BQ flavor for
+    bigquery-sourced tables); render dialect follows the execution engine.
+    For `query_mode='materialized'` BQ rows those differ — the scan runs on a
+    local DuckDB read of the server-side parquet, so the fragment is
+    transpiled BQ → DuckDB.
+
+    Dialect-mismatch note: the schema endpoint advertises
+    ``sql_flavor='duckdb'`` for materialized rows (#261), so clients write
+    either flavor. That is fine — sqlglot's BigQuery parser is permissive
+    and accepts DuckDB-style syntax (``x::int`` parses and normalizes to
+    ``CAST``), and rendering in the execution dialect makes the result
+    correct in both cases (pinned by test_accepts_duckdb_flavor_where)."""
+    if not req.where:
+        return None
+    parse_dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
+    render_dialect = "bigquery" if use_bq else "duckdb"
+    return safe_where_predicate(
+        req.where, req.table_id, schema, dialect=parse_dialect, render_dialect=render_dialect
+    )
 
 
 def _bq_dry_run_bytes(bq: BqAccess, sql: str, *, user: dict | None = None, agent_name: str = "scan") -> int:
@@ -168,10 +212,11 @@ def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
         raise PermissionError(req.table_id)
 
     schema = _resolve_schema(conn, user, req.table_id, bq)
-    dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
+    use_bq = _executes_on_bigquery(row)
 
-    # Validate WHERE and capture the comment-stripped fragment for splicing.
-    safe_where = safe_where_predicate(req.where, req.table_id, schema, dialect=dialect) if req.where else None
+    # Validate WHERE and capture the comment-stripped fragment for splicing,
+    # rendered in the execution dialect (see _validated_where_fragment).
+    safe_where = _validated_where_fragment(req, schema, row, use_bq)
     # Validate select columns exist (case-insensitive, matching order_by).
     if req.select:
         _validate_select_columns(req.select, schema)
@@ -181,7 +226,9 @@ def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
             raise ValueError(f"unknown columns: {unknown}")
     _validate_order_by(req.order_by, schema)
 
-    if (row.get("source_type") or "") != "bigquery":
+    # Materialized rows join the non-BQ sources here: served from the
+    # server-side parquet, so there is no billable scan to estimate.
+    if not use_bq:
         return {
             "table_id": req.table_id,
             "estimated_scan_bytes": 0,
@@ -405,9 +452,10 @@ def run_scan(
         raise ValueError(f"limit {req.limit} exceeds max {_max_limit()}")
 
     schema = _resolve_schema(conn, user, req.table_id, bq)
-    dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
-    # Validate WHERE and capture the comment-stripped fragment for splicing.
-    safe_where = safe_where_predicate(req.where, req.table_id, schema, dialect=dialect) if req.where else None
+    use_bq = _executes_on_bigquery(row)
+    # Validate WHERE and capture the comment-stripped fragment for splicing,
+    # rendered in the execution dialect (see _validated_where_fragment).
+    safe_where = _validated_where_fragment(req, schema, row, use_bq)
     if req.select:
         # Case-insensitive (BQ identifiers are case-insensitive; mixed-case
         # names from INFORMATION_SCHEMA.COLUMNS shouldn't 400-reject the
@@ -427,12 +475,18 @@ def run_scan(
     quota.check_daily_budget(user=user_id)
 
     with quota.acquire(user=user_id):
-        if source_type != "bigquery":
-            # Local source: query parquet directly. Resolve by source-name-agnostic
-            # lookup — the extract directory is not necessarily the source_type
-            # (e.g. the bundled `demo` extract registers tables as 'local' but
-            # lives under extracts/demo/), and `source_type` may be NULL/empty for
-            # legacy rows. resolve_local_parquet handles both.
+        if not use_bq:
+            # Local execution: query the parquet directly. Covers non-BQ
+            # sources AND `query_mode='materialized'` BQ rows — their parquet
+            # was already written by the scheduled materialize run, so scanning
+            # the raw upstream table again would re-bill the whole scan
+            # (mirrors the v2_schema materialized branch, issue #261). Resolve
+            # by source-name-agnostic lookup — the extract directory is not
+            # necessarily the source_type (e.g. the bundled `demo` extract
+            # registers tables as 'local' but lives under extracts/demo/), and
+            # `source_type` may be NULL/empty for legacy rows.
+            # resolve_local_parquet handles both; for materialized BQ rows the
+            # source_type fast path hits extracts/bigquery/data/<id>.parquet.
             from app.utils import resolve_local_parquet
 
             parquet = resolve_local_parquet(req.table_id, source_type)
@@ -448,7 +502,26 @@ def run_scan(
                     sql += f" ORDER BY {', '.join(_quote_order_by_duckdb(e) for e in req.order_by)}"
                 if req.limit:
                     sql += f" LIMIT {int(req.limit)}"
-                table = local.execute(sql, [str(parquet)]).arrow()
+                try:
+                    table = local.execute(sql, [str(parquet)]).arrow()
+                except duckdb.InvalidInputException:
+                    # Corrupt/unreadable parquet ("No magic bytes found…").
+                    # duckdb files it under ProgrammingError, but it is an
+                    # operational failure the caller cannot fix by editing
+                    # the query — re-raise before the client-error catch
+                    # below so it reaches the logged, sanitized 500 handler.
+                    raise
+                except (duckdb.DataError, duckdb.ProgrammingError) as e:
+                    # Fail loud, not 500: a predicate can pass validation (and
+                    # BQ→DuckDB transpile for materialized rows) yet still hit
+                    # a construct DuckDB can't bind or resolve (Binder/
+                    # CatalogException → ProgrammingError) or a data value it
+                    # can't convert (ConversionException → DataError). Those
+                    # are request-attributable → ValueError → 400 with the
+                    # real reason. Other failures (IO → OperationalError,
+                    # out-of-memory, internal errors) stay un-caught and reach
+                    # the 500 handler.
+                    raise ValueError(f"local scan failed for {req.table_id!r}: {e}") from e
             finally:
                 local.close()
         else:
