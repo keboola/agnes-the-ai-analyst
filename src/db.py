@@ -1627,6 +1627,179 @@ def _peek_schema_version(snapshot_path: Path) -> int:
         return 0
 
 
+def _system_self_heal_enabled() -> bool:
+    """Whether the ART-index self-heal on open is active (default: yes).
+
+    ``AGNES_DB_SELF_HEAL=0`` (or ``false``/``no``) turns it off — e.g. to
+    freeze a corrupt DB for forensics instead of auto-rebuilding it.
+    """
+    return os.environ.get("AGNES_DB_SELF_HEAL", "1").strip().lower() not in {"0", "false", "no"}
+
+
+# The runtime signature DuckDB raises when an on-disk ART (PK/UNIQUE)
+# index has diverged from its base table. Either substring means the
+# file itself needs an EXPORT/IMPORT rebuild — a reopen cannot fix it.
+_ART_CORRUPTION_MARKERS = (
+    "Failed to delete all rows from index",
+    "database has been invalidated",
+)
+
+
+def _probe_art_integrity(
+    conn: duckdb.DuckDBPyConnection,
+) -> tuple[bool, str | None]:
+    """Canary for on-disk ART-index corruption.
+
+    For each table backed by a PRIMARY KEY / UNIQUE (ART) index, delete one
+    row *inside a transaction and roll it back*. The delete forces DuckDB to
+    remove the row's key from the index — the exact operation that fails
+    (``Failed to delete all rows from index``) when the index is corrupt —
+    while the ROLLBACK guarantees no data changes. Empty and index-less
+    tables are skipped (nothing to corrupt).
+
+    Returns ``(True, None)`` when every probe succeeds. Returns
+    ``(False, detail)`` when a probe raises the ART-corruption signature —
+    at which point ``conn`` is invalidated and the caller must discard it
+    and rebuild. Any *other* DuckDB error on a given table (e.g. a
+    foreign-key ``ConstraintException`` from a referenced row) is caught,
+    that table's probe transaction is rolled back, and the loop moves on
+    to the next table — this canary's sole job is spotting the ART-
+    corruption signature, so it must never itself abort the DB open or
+    trigger a needless rebuild over an unrelated per-table quirk
+    (Devin Review, PR #948 — this docstring previously said such errors
+    are "re-raised", which never matched the implementation below).
+    """
+    indexed = conn.execute(
+        "SELECT DISTINCT table_name FROM duckdb_constraints() WHERE constraint_type IN ('PRIMARY KEY', 'UNIQUE')"
+    ).fetchall()
+    for (table,) in indexed:
+        ident = '"' + str(table).replace('"', '""') + '"'
+        try:
+            row = conn.execute(f"SELECT rowid FROM {ident} LIMIT 1").fetchone()
+            if row is None:
+                continue  # empty table — no index entries to corrupt
+            conn.execute("BEGIN")
+            conn.execute(f"DELETE FROM {ident} WHERE rowid = {int(row[0])}")
+            conn.execute("ROLLBACK")
+        except duckdb.Error as e:
+            if any(m in str(e) for m in _ART_CORRUPTION_MARKERS):
+                return (False, str(e))
+            # Anything else — a foreign-key ConstraintException on a
+            # referenced row, or any other engine quirk — is NOT evidence of
+            # index corruption. The probe must never break the DB open nor
+            # trigger a needless rebuild: roll back this table's txn and move
+            # on. Its sole job is spotting the corruption signature.
+            try:
+                conn.execute("ROLLBACK")
+            except duckdb.Error:
+                pass
+            continue
+    return (True, None)
+
+
+def _probe_and_heal_art_index(conn: duckdb.DuckDBPyConnection, db_path: str) -> duckdb.DuckDBPyConnection:
+    """Run :func:`_probe_art_integrity` on an already-open connection and
+    transparently rebuild via :func:`_rebuild_system_db` if it's corrupt.
+
+    Shared by every successful-open path in :func:`_try_open_system_db` —
+    the clean open AND both WAL-recovery paths (STEP A salvage, STEP B
+    snapshot restore). The same abrupt termination that leaves a dirty WAL
+    can also tear the on-disk ART index; a DB that needed WAL recovery is
+    not evidence the index survived (Devin Review, PR #948). Returns the
+    connection, possibly rebuilt.
+    """
+    if not _system_self_heal_enabled():
+        return conn
+    healthy, detail = _probe_art_integrity(conn)
+    if healthy:
+        return conn
+    logger.critical(
+        "system.duckdb ART-index corruption detected on open (%s). A "
+        "restart cannot fix on-disk index corruption; rebuilding via "
+        "EXPORT/IMPORT (original preserved as .broken.<ts>).",
+        (detail or "").split("\n", 1)[0][:200],
+    )
+    try:
+        conn.close()
+    except Exception:  # noqa: BLE001 - the handle is already invalidated
+        pass
+    _rebuild_system_db(db_path)
+    conn = _open_duckdb(db_path)
+    healthy_again, detail_again = _probe_art_integrity(conn)
+    if not healthy_again:
+        logger.critical(
+            "system.duckdb STILL reports index corruption after rebuild (%s) — manual recovery required.",
+            (detail_again or "").split("\n", 1)[0][:200],
+        )
+    return conn
+
+
+def _rebuild_system_db(db_path: str) -> Path:
+    """Rebuild ``system.duckdb`` in place via EXPORT/IMPORT, healing a
+    corrupt on-disk ART index. Returns the ``.broken.<ts>`` path the
+    corrupt original was quarantined to.
+
+    The base-table data is fully readable (only the index is broken), so
+    ``EXPORT DATABASE`` (full table scans, no index use) dumps every row to
+    parquet, and ``IMPORT DATABASE`` into a fresh file re-creates every
+    table and rebuilds every index from scratch. The rebuilt file is
+    assembled completely *before* the original is touched; the original is
+    then quarantined as ``.broken.<ts>`` (via :func:`_move_to_broken`, which
+    also chmods it ``0o600``) and the rebuilt file moved into place. On any
+    failure the original is left where it is.
+
+    Sibling files (``.export``/``.rebuild`` scratch) live next to
+    ``db_path`` so the final move is a same-filesystem rename.
+    """
+    export_dir = f"{db_path}.export.{os.getpid()}"
+    rebuilt = f"{db_path}.rebuild.{os.getpid()}"
+    for stale in (export_dir, rebuilt):
+        if os.path.isdir(stale):
+            shutil.rmtree(stale, ignore_errors=True)
+        elif os.path.exists(stale):
+            os.remove(stale)
+
+    # 1. Export the readable data from the (index-corrupt) live file. A
+    # normal (read-write) open, not read-only: read-only bypasses WAL
+    # replay entirely (see _peek_schema_version's docstring), so any
+    # transactions committed since the last checkpoint but still only in
+    # ``db_path + ".wal"`` would silently be missing from the export —
+    # the opposite of this function's "data preserved" contract (Devin
+    # Review, PR #948). A normal open is safe here: the whole premise of
+    # this self-heal path is that the file OPENS fine on a plain
+    # read-write connection — only an explicit write against the corrupt
+    # index fails — and EXPORT DATABASE itself only does full table
+    # scans, no index writes, so it can't re-trigger the corruption.
+    src = _open_duckdb(db_path)
+    try:
+        src.execute(f"EXPORT DATABASE '{export_dir}' (FORMAT PARQUET)")
+    finally:
+        src.close()
+
+    # 2. Import into a fresh file — this rebuilds all indexes.
+    dst = _open_duckdb(rebuilt)
+    try:
+        dst.execute(f"IMPORT DATABASE '{export_dir}'")
+        dst.execute("CHECKPOINT")
+    finally:
+        dst.close()
+
+    # 3. Swap: quarantine the corrupt original, move the rebuilt file in.
+    wal_path = Path(db_path + ".wal")
+    broken = _move_to_broken(db_path, wal_path)
+    shutil.move(rebuilt, db_path)
+    try:
+        os.chmod(db_path, 0o600)
+    except OSError:
+        pass
+    shutil.rmtree(export_dir, ignore_errors=True)
+    logger.warning(
+        "system.duckdb rebuilt via EXPORT/IMPORT; corrupt original preserved at %s",
+        broken,
+    )
+    return broken
+
+
 def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
     """Open ``system.duckdb``. If DuckDB's WAL replay raises an
     ``INTERNAL Error`` from ``ReplayAlter`` (a known failure mode when a
@@ -1641,9 +1814,25 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
 
     Only fires on the specific WAL-replay error class to avoid masking
     legitimate corruption (operator-edited DB, disk failure, etc.).
+
+    Layered on top: once ANY path above lands an open connection — clean
+    open, STEP A salvage, or STEP B snapshot restore — an ART-index
+    integrity probe (:func:`_probe_art_integrity`, via the shared
+    :func:`_probe_and_heal_art_index`) runs on it. On-disk ART (PRIMARY
+    KEY / UNIQUE) index corruption — caused by a termination that bypasses
+    the graceful CHECKPOINT-and-close path (OOM SIGKILL, VM ``-replace``
+    destroy, host crash) — lets the file OPEN cleanly but makes the first
+    index write fail with ``Failed to delete all rows from index`` and
+    invalidate the whole connection. A restart cannot heal it; only an
+    EXPORT/IMPORT rebuild can. The same abrupt termination that dirties
+    the WAL can also tear the ART index, so a WAL-recovered DB gets the
+    same probe, not just a cleanly-opened one (Devin Review, PR #948).
+    When the probe detects that signature the DB is transparently rebuilt
+    (:func:`_rebuild_system_db`) and reopened. Disable with
+    ``AGNES_DB_SELF_HEAL=0``.
     """
     try:
-        return _open_duckdb(db_path)
+        conn = _open_duckdb(db_path)
     except duckdb.Error as e:
         msg = str(e)
         is_wal_replay = (
@@ -1667,7 +1856,7 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
         # version and the idempotent ladder re-runs forward on this start.
         salvaged = _salvage_discard_wal(db_path, wal_path, original_error=e)
         if salvaged is not None:
-            return salvaged
+            return _probe_and_heal_art_index(salvaged, db_path)
 
         # STEP B — the live file itself won't open. Fall back to the
         # pre-migrate snapshot (with the #379 version guard below). The
@@ -1740,8 +1929,16 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
         _move_to_broken(db_path, wal_path)
         shutil.copy2(str(snapshot), db_path)
         # Re-open. If THIS also fails, propagate — auto-recovery has
-        # exhausted its options.
-        return _open_duckdb(db_path)
+        # exhausted its options. Same ART-index probe as the other paths:
+        # the WAL-replay failure that forced this fallback can co-occur
+        # with on-disk index corruption from the same abrupt termination.
+        return _probe_and_heal_art_index(_open_duckdb(db_path), db_path)
+    else:
+        # File opened cleanly. Guard against on-disk ART-index corruption
+        # (a different failure mode from WAL replay: the file opens, then
+        # the first index write fails at runtime and invalidates the
+        # connection — a restart cannot heal it).
+        return _probe_and_heal_art_index(conn, db_path)
 
 
 def _salvage_discard_wal(
@@ -1795,16 +1992,29 @@ def _move_to_broken(db_path: str, wal_path: Path) -> Path:
     """Move the broken DB (+ WAL if present) aside to ``.broken.<ts>``.
 
     Shared by both branches of :func:`_try_open_system_db` (refusal and
-    happy-path recovery). The preserved files are chmod'd to ``0o600``
-    because ``system.duckdb`` holds argon2 password hashes, personal-
-    access-token rows, and the audit log — ``shutil.move`` inherits the
-    source mode (typically ``0o644`` under default umask), so a stale
-    ``.broken.*`` would be world-readable on its way out. The
+    happy-path recovery), and can now fire twice in one call chain: STEP
+    B quarantines the WAL-replay-failed file, then — if the restored
+    pre-migrate snapshot ALSO fails the ART probe — ``_rebuild_system_db``
+    quarantines it too (Devin Review, PR #948). The preserved files are
+    chmod'd to ``0o600`` because ``system.duckdb`` holds argon2 password
+    hashes, personal-access-token rows, and the audit log — ``shutil.move``
+    inherits the source mode (typically ``0o644`` under default umask), so
+    a stale ``.broken.*`` would be world-readable on its way out. The
     containing ``state/`` directory is usually ``0o700``, but defense
     in depth matters: backups, container volumes, and tab-completion
     mistakes can all surface the file. Returns the chosen broken path.
     """
     broken = Path(db_path + f".broken.{int(time.time())}")
+    # Collision guard: the 1-second timestamp resolution isn't unique
+    # across two calls milliseconds apart in the same synchronous chain
+    # (STEP B → failed re-probe → rebuild, above). shutil.move silently
+    # overwrites an existing destination file, which would clobber an
+    # earlier quarantine and destroy forensics data — append a counter
+    # instead of overwriting.
+    n = 1
+    while broken.exists():
+        broken = Path(db_path + f".broken.{int(time.time())}.{n}")
+        n += 1
     shutil.move(db_path, str(broken))
     try:
         os.chmod(broken, 0o600)
