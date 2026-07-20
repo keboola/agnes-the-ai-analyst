@@ -1,0 +1,191 @@
+/* Catalog card — the single reusable card component for the unified
+   Catalog + My Stack surfaces (Data · Plugins · Memory · Recipes).
+   Rendered server-side by templates/macros/_catalog_card.html and
+   client-side by the matching renderCatalogCard() twin in
+   catalog_unified.html — the two MUST emit the same DOM. All colors
+   via --ds-* tokens (per-kind accent: --ds-kind-*). No raw hex. */
+
+.cc-card {
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: 14px;
+  padding: 15px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  transition: transform var(--ds-motion-fast) var(--ds-ease-standard),
+              box-shadow var(--ds-motion-fast) var(--ds-ease-standard),
+              border-color var(--ds-motion-fast) var(--ds-ease-standard);
+}
+.cc-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--ds-shadow-md);
+  border-color: var(--ds-border);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cc-card, .cc-card:hover { transition: none; transform: none; }
+}
+
+/* ── Header: icon · title/eyebrow · overflow menu ─────────────────── */
+.cc-head {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: start;
+}
+.cc-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.cc-icon svg { width: 20px; height: 20px; display: block; }
+.cc-icon--data    { background: var(--ds-kind-data-soft);    color: var(--ds-kind-data); }
+.cc-icon--plugins { background: var(--ds-kind-plugin-soft);  color: var(--ds-kind-plugin); }
+.cc-icon--memory  { background: var(--ds-kind-memory-soft);  color: var(--ds-kind-memory); }
+.cc-icon--recipes { background: var(--ds-kind-recipe-soft);  color: var(--ds-kind-recipe); }
+.cc-icon--library { background: var(--ds-kind-library-soft); color: var(--ds-kind-library); }
+
+.cc-titlewrap { min-width: 0; }
+.cc-title {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 0;
+  color: var(--ds-text-primary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cc-title a { color: inherit; text-decoration: none; }
+.cc-title a:hover { color: var(--ds-primary-dark); }
+
+.cc-eyebrow {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ds-text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.cc-eyebrow .cc-sep { color: var(--ds-text-disabled); }
+.cc-eyebrow .cc-kind { font-weight: 600; }
+.cc-kind--data    { color: var(--ds-kind-data); }
+.cc-kind--plugins { color: var(--ds-kind-plugin); }
+.cc-kind--memory  { color: var(--ds-kind-memory); }
+.cc-kind--recipes { color: var(--ds-kind-recipe); }
+.cc-kind--library { color: var(--ds-kind-library); }
+
+/* ── Body ─────────────────────────────────────────────────────────── */
+.cc-desc {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ds-text-secondary);
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.cc-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.cc-tag {
+  border: 1px solid var(--ds-border);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  color: var(--ds-text-secondary);
+  background: var(--ds-surface);
+  white-space: nowrap;
+}
+.cc-tag--more { color: var(--ds-text-muted); }
+
+/* ── Footer: meta · stack action ──────────────────────────────────── */
+.cc-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--ds-border-light);
+}
+.cc-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--ds-text-muted);
+  min-width: 0;
+}
+.cc-meta svg { width: 15px; height: 15px; flex-shrink: 0; }
+.cc-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.cc-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--ds-border);
+  background: var(--ds-surface);
+  color: var(--ds-text-primary);
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background var(--ds-motion-fast) var(--ds-ease-standard),
+              border-color var(--ds-motion-fast) var(--ds-ease-standard),
+              color var(--ds-motion-fast) var(--ds-ease-standard);
+}
+.cc-btn:hover { background: var(--ds-surface-dim); }
+.cc-btn:disabled { opacity: .6; cursor: default; }
+.cc-btn svg { width: 15px; height: 15px; }
+
+.cc-btn--primary {
+  background: var(--ds-primary);
+  border-color: var(--ds-primary);
+  color: var(--ds-text-inverse);
+}
+.cc-btn--primary:hover { background: var(--ds-primary-dark); border-color: var(--ds-primary-dark); }
+
+/* In-stack toggle: settled = success tint; on hover it invites removal. */
+.cc-btn--instack {
+  background: var(--ds-accent-success-bg);
+  border-color: var(--ds-accent-success-line);
+  color: var(--ds-accent-success-ink);
+}
+.cc-btn-instack, .cc-btn-remove { display: inline-flex; align-items: center; gap: 6px; }
+.cc-btn--instack .cc-btn-remove { display: none; }
+.cc-btn--instack:hover {
+  background: var(--ds-surface-dim);
+  border-color: var(--ds-border);
+  color: var(--ds-text-secondary);
+}
+.cc-btn--instack:hover .cc-btn-instack { display: none; }
+.cc-btn--instack:hover .cc-btn-remove { display: inline-flex; }
+
+.cc-required {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: var(--ds-radius-pill);
+  background: var(--ds-warn-bg);
+  border: 1px solid var(--ds-warn-line);
+  color: var(--ds-warn-ink);
+}
+.cc-required svg { width: 14px; height: 14px; }

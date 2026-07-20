@@ -1,0 +1,109 @@
+{# ══════════════════════════════════════════════════════════════════
+   catalog_card(c) — the single reusable card component for the unified
+   Catalog + My Stack grids. Kind-agnostic: Data · Plugins · Memory ·
+   Recipes all render through this one macro so the look stays identical
+   everywhere. Styles: static/css/catalog_card.css (.cc-* prefix).
+
+   A matching JS twin — renderCatalogCard() in catalog_unified.html —
+   emits the SAME DOM for the client-hydrated kinds (plugins, recipes).
+   Keep the two in lockstep.
+
+   `c` contract (all keys optional unless noted):
+     kind        'data'|'plugins'|'memory'|'recipes'  (required)
+     kind_label  eyebrow label, e.g. 'Data'           (required)
+     title       card heading                          (required)
+     href        detail / drilldown URL                (required)
+     curator     e.g. 'Curated by Admin'  → eyebrow, omitted if falsy
+     category    e.g. 'Sales'             → eyebrow, omitted if falsy
+     description  body copy (falls back to a neutral line)
+     tags        list[str] — first 3 shown, rest collapse to '+N'
+     meta_icon   'tables'|'items'|'plugin'|'doc'  → footer glyph
+     meta_text   footer-left text, e.g. '14 tables'
+     action      dict driving the footer-right control:
+                   mode 'stack'     → Add-to-stack / In-stack toggle
+                        state 'add'|'in'
+                        add_url, remove_url  (required for stack)
+                        add_body (dict|None) — JSON body for the add POST
+                   mode 'required'  → locked 'Required' pill
+                   mode 'link'      → styled link
+                        href, label
+   ══════════════════════════════════════════════════════════════════ #}
+
+{%- macro _kind_glyph(kind) -%}
+  {%- if kind == 'data' -%}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3" stroke="currentColor" stroke-width="1.7"/><path d="M5 6v6c0 1.66 3.13 3 7 3s7-1.34 7-3V6" stroke="currentColor" stroke-width="1.7"/><path d="M5 12v6c0 1.66 3.13 3 7 3s7-1.34 7-3v-6" stroke="currentColor" stroke-width="1.7"/></svg>
+  {%- elif kind == 'plugins' -%}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 4a2 2 0 1 1 4 0v2h3a1 1 0 0 1 1 1v3h2a2 2 0 1 1 0 4h-2v3a1 1 0 0 1-1 1h-3v-2a2 2 0 1 0-4 0v2H7a1 1 0 0 1-1-1v-3H4a2 2 0 1 1 0-4h2V7a1 1 0 0 1 1-1h3V4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+  {%- elif kind == 'memory' -%}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3c-1.7 0-3 1.3-3 3-1.6.2-3 1.5-3 3.2 0 .6.2 1.2.5 1.7-.6.6-1 1.4-1 2.4 0 1.5.9 2.7 2.2 3.2 0 1.7 1.4 3 3.1 3 .8 0 1.5-.3 2-.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 3c1.7 0 3 1.3 3 3 1.6.2 3 1.5 3 3.2 0 .6-.2 1.2-.5 1.7.6.6 1 1.4 1 2.4 0 1.5-.9 2.7-2.2 3.2 0 1.7-1.4 3-3.1 3-.8 0-1.5-.3-2-.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 3v18" stroke="currentColor" stroke-width="1.6"/></svg>
+  {%- elif kind == 'recipes' -%}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 3h9l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 3v4h4M8.5 12h7M8.5 16h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+  {%- else -%}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3" stroke="currentColor" stroke-width="1.7"/></svg>
+  {%- endif -%}
+{%- endmacro -%}
+
+{%- macro _meta_glyph(name) -%}
+  {%- if name == 'tables' -%}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 9.5h17M3.5 14.5h17M9 4.5v15" stroke="currentColor" stroke-width="1.6"/></svg>
+  {%- elif name == 'items' -%}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 3 7.5 12 12l9-4.5L12 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m3 12 9 4.5L21 12M3 16.5 12 21l9-4.5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+  {%- elif name == 'plugin' -%}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3" stroke="currentColor" stroke-width="1.6"/><path d="M9 9h6v6H9z" stroke="currentColor" stroke-width="1.6"/></svg>
+  {%- else -%}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4h7l4 4v12H7z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M13 4v4h4" stroke="currentColor" stroke-width="1.6"/></svg>
+  {%- endif -%}
+{%- endmacro -%}
+
+{% macro catalog_card(c) %}
+{% set _tags = c.tags or [] %}
+<article class="cc-card" data-search="{{ (c.title ~ ' ' ~ (c.description or '')) | lower }}">
+  <div class="cc-head">
+    <span class="cc-icon cc-icon--{{ c.kind }}">{{ _kind_glyph(c.kind) }}</span>
+    <div class="cc-titlewrap">
+      <h3 class="cc-title"><a href="{{ c.href }}">{{ c.title }}</a></h3>
+      <div class="cc-eyebrow">
+        <span class="cc-kind cc-kind--{{ c.kind }}">{{ c.kind_label }}</span>
+        {% if c.curator %}<span class="cc-sep">·</span><span>{{ c.curator }}</span>{% endif %}
+        {% if c.category %}<span class="cc-sep">·</span><span>{{ c.category }}</span>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <p class="cc-desc">{{ c.description or 'No description provided yet.' }}</p>
+
+  {% if _tags %}
+  <div class="cc-tags">
+    {% for t in _tags[:3] %}<span class="cc-tag">{{ t }}</span>{% endfor %}
+    {% if _tags|length > 3 %}<span class="cc-tag cc-tag--more">+{{ _tags|length - 3 }}</span>{% endif %}
+  </div>
+  {% endif %}
+
+  <div class="cc-foot">
+    <span class="cc-meta">{{ _meta_glyph(c.meta_icon or 'items') }}<span>{{ c.meta_text }}</span></span>
+    {% set a = c.action or {} %}
+    {% if a.mode == 'required' %}
+      <span class="cc-required"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.7"/></svg>Required</span>
+    {% elif a.mode == 'stack' %}
+      <button type="button"
+              class="cc-btn {{ 'cc-btn--instack' if a.state == 'in' else 'cc-btn--primary' }}"
+              data-stack-toggle
+              data-state="{{ a.state }}"
+              data-add-url="{{ a.add_url }}"
+              data-remove-url="{{ a.remove_url }}"
+              {% if a.rt %}data-rt="{{ a.rt }}" data-rid="{{ a.rid }}"{% endif %}>
+        {% if a.state == 'in' %}
+          <span class="cc-btn-instack"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> In stack</span>
+          <span class="cc-btn-remove"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> Remove</span>
+        {% else %}
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> Add to stack
+        {% endif %}
+      </button>
+    {% else %}
+      <a class="cc-btn" href="{{ a.href or c.href }}">{{ a.label or 'Open' }}
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </a>
+    {% endif %}
+  </div>
+</article>
+{% endmacro %}
