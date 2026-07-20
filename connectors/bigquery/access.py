@@ -234,6 +234,55 @@ def translate_bq_error(
     raise e
 
 
+def run_bq_query_to_arrow(
+    bq: "BqAccess", sql: str, *, labels: dict[str, str] | None = None
+) -> tuple["pa.Table", dict]:
+    """Run a billable BigQuery query via ``google-cloud-bigquery``
+    ``client.query(labels=...)`` and return ``(arrow_table, job_info)``.
+
+    The billable execution on the scan / remote-select paths would otherwise run
+    through the DuckDB ``bigquery_query()`` extension, which owns the job config
+    and exposes **no** label hook and **no** job id — so those jobs carry no
+    cost-attribution labels (#752). Routing a fully-materialized result through
+    ``client.query`` instead is shape-equivalent (the extension materializes the
+    result into DuckDB anyway) and lets the job carry ``labels`` and surface its
+    metadata. Mirrors the labeled-job + Storage-Read-API-fallback shape of
+    ``src.remote_query.register_bq`` (#751) and ``v2_scan._run_bq_scan``.
+
+    ``job_info`` has keys ``bq_job_id`` / ``bytes_scanned`` / ``bytes_billed``
+    for the caller's audit log. SQL here is user-derived → BadRequest → 400
+    (``bad_request_status="client_error"``).
+    """
+    from google.cloud import bigquery  # noqa: PLC0415
+
+    client = bq.client()  # raises BqAccessError(bq_lib_missing/auth_failed) — propagates
+    try:
+        job = client.query(
+            sql,
+            job_config=bigquery.QueryJobConfig(labels=labels or {}),
+        )
+        try:
+            table = job.to_arrow()
+        except Exception as storage_exc:
+            # Some SAs lack BQ Storage Read API access; fall back to the slower
+            # REST-based fetch rather than failing the whole query (mirrors
+            # register_bq / _run_bq_scan).
+            if "readsessions" in str(storage_exc) or "PERMISSION_DENIED" in str(storage_exc):
+                logger.warning("BQ Storage API unavailable, falling back to REST")
+                table = job.to_arrow(create_bqstorage_client=False)
+            else:
+                raise
+    except Exception as e:
+        raise translate_bq_error(e, bq.projects, bad_request_status="client_error")
+
+    job_info = {
+        "bq_job_id": getattr(job, "job_id", None),
+        "bytes_scanned": getattr(job, "total_bytes_processed", None),
+        "bytes_billed": getattr(job, "total_bytes_billed", None),
+    }
+    return table, job_info
+
+
 def _vault_credentials():
     """Return google-auth Credentials from the vault SA JSON, or None if absent.
 

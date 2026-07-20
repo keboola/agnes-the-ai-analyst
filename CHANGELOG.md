@@ -12,7 +12,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-- **Actionable diagnostic when the chat LLM credential fails at runtime.** An invalid/expired key (HTTP 401/403), an unfunded account ("credit balance too low", HTTP 400), or a provider outage forwarding chat traffic through the broker previously surfaced only as an opaque synthetic assistant message. The broker now classifies the failure (reusing `app/chat/readiness.py::classify_llm_failure`, shared with the admin "test connection" probe), records a key-free signal, and audits it as `broker_llm_auth_failure`. `GET /admin/chat/readiness` gains an `llm_runtime` field and the *Cloud chat readiness* admin panel shows a red banner naming the exact fault; the signal clears on the next successful forward. Operator remediation runbook added to `docs/DEPLOYMENT.md`.
 ### Changed
 
 ### Fixed
@@ -30,6 +29,110 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+### Security
+
+## [0.75.9] - 2026-07-20
+
+### Added
+
+- E2B SDK contract tests (`tests/test_e2b_sdk_contract.py`) that assert against
+  the *installed* `e2b` package — `AsyncSandbox.list` is a lazy paginator
+  factory (not a coroutine), `AsyncSandbox.create` still accepts the `network`
+  kwarg, and the symbols `app/chat` calls still exist. These catch SDK contract
+  drift at `pip install` time (zero network, normal CI) — the class of breakage
+  that hit chat three times but stayed green because the unit mocks encoded the
+  old shape (#872). Plus a key-gated real-SDK smoke test
+  (`tests/test_e2b_smoke.py`, `-m e2b`, skipped unless `E2B_API_KEY` is set) that
+  drives the real `list() → await next_items()` auth round trip.
+
+## [0.75.8] - 2026-07-20
+
+### Security
+
+- OAuth `client_secret` is now encrypted at rest instead of stored in plaintext,
+  so a database or backup leak no longer exposes usable MCP client secrets
+  (#869, audit M4 follow-up). Secrets are encrypted (Fernet, key derived from an
+  app-managed secret / `AGNES_OAUTH_ENC_KEY`) on `register_client` and decrypted
+  in `get_client` for the SDK's client-auth comparison. Legacy plaintext rows
+  keep working and re-encrypt on next registration; a decrypt failure fails
+  authentication **closed**. (Hashing was not possible: the MCP SDK verifies the
+  presented secret by equality against the value `get_client` returns.)
+
+## [0.75.7] - 2026-07-20
+
+### Fixed
+
+- `/api/v2/scan` and `/api/v2/scan/estimate` on a `source_type='bigquery'` +
+  `query_mode='materialized'` table previously re-ran a billable BigQuery scan
+  of the raw upstream table on every snapshot, ignoring the server-side parquet
+  the scheduled materialize run already wrote. Both now serve from the parquet
+  (zero upstream scan cost), mirroring the schema endpoint's materialized
+  branch (#261). `--where` predicates accept BigQuery or DuckDB flavor and are
+  rendered as DuckDB for local execution; a predicate that still fails at
+  DuckDB execution returns a clean 400 instead of an unhandled 500 (operational
+  failures such as a corrupt parquet still reach the 500 handler). A missing
+  parquet (materialize not yet run) is a 404 — never a fallback to a billable
+  raw-table scan.
+
+### Removed
+
+## [0.75.6] - 2026-07-20
+
+### Fixed
+
+- Chat: a sandbox that spawned but then failed post-spawn setup (a broken-pipe
+  ticket push when the runner died on boot, a DB `set_sandbox_ref` error, etc.)
+  before its kill-on-exit `wait_task` was wired is now torn down immediately
+  instead of being orphaned. Orphaned microVMs later paused and persisted
+  (billable) with the reaper unable to find them (#867, early-crash leak; the
+  reaper-cadence half is tracked separately).
+
+## [0.75.5] - 2026-07-20
+
+### Changed
+
+- The Admin nav dropdown's catch-all "Agent Experience" section is split into three intent-based groups — **Moderation queues** (Curated memory reviews, Flea Submissions), **Marketplace & knowledge distribution** (Curated Marketplaces, Maintained digests), and **Onboarding & messaging** (Initial Workspace, News, Prompts) — so an admin lands on the right page by the job they're doing instead of scanning seven loosely-related items. Nav-only change in `app/web/templates/_app_header.html`; same links, same routes, same RBAC.
+
+## [0.75.4] - 2026-07-20
+
+### Changed
+
+- BigQuery cost attribution: the billable job on the fully-materialized
+  remote-select path (`agnes query --remote --auto-snapshot` /
+  `run_remote_select_to_arrow`) now runs via labeled
+  `client.query(labels=...)` instead of the unlabeled DuckDB `bigquery_query()`
+  extension, so those jobs carry per-user `workload_type` / `agent_name` /
+  `environment` / `user_id` labels for `INFORMATION_SCHEMA.JOBS` / billing-export
+  attribution (#752). Shared with `/api/v2/scan` via a new
+  `connectors.bigquery.access.run_bq_query_to_arrow` helper. The interactive,
+  LIMIT-capped `/api/query --remote` path (small, bounded byte volume) still
+  runs through the extension — see
+  [docs/planning/752-bq-billable-labels.md](docs/planning/752-bq-billable-labels.md).
+
+## [0.75.3] - 2026-07-20
+
+### Added
+
+- Keboola relationship-based JOIN metrics: `semantic-metric` expressions previously skipped as `foreign_alias_reference` now compose a two-table `LEFT JOIN` when exactly one `semantic-relationship` connects the metric's dataset (on the live-verified `to` side) to a registered Agnes table, resolved by real column metadata rather than alias-name matching (verified live: alias names in `semantic-relationship.on` never matched the aliases metric authors used). Anything ambiguous, an unverified join direction, or an unsupported relationship type still skips and counts under a specific reason — never a guessed JOIN.
+
+## [0.75.2] - 2026-07-20
+
+### Added
+
+- **Actionable diagnostic when the chat LLM credential fails at runtime.** An invalid/expired key (HTTP 401/403), an unfunded account ("credit balance too low", HTTP 400), or a provider outage forwarding chat traffic through the broker previously surfaced only as an opaque synthetic assistant message. The broker now classifies the failure (reusing `app/chat/readiness.py::classify_llm_failure`, shared with the admin "test connection" probe), records a key-free signal, and audits it as `broker_llm_auth_failure`. `GET /admin/chat/readiness` gains an `llm_runtime` field and the *Cloud chat readiness* admin panel shows a red banner naming the exact fault; the signal clears on the next successful forward. Operator remediation runbook added to `docs/DEPLOYMENT.md`.
+
+### Internal
+
+- Fixed `tests/test_cli_push.py` and `tests/test_e2e_privacy.py` making real,
+  uncontrolled network calls during the test suite: the gzip-capability
+  health probe added in #929 (`_server_accepts_gzip()`) resolves `api_get`
+  from `push.py`'s own module scope, a separate binding from
+  `cli.commands.push.get_server_url` — the tests' config stubs patched the
+  latter but not the former, so the probe silently hit whatever server the
+  machine running the suite was really configured against. Sandboxed the
+  probe in both files' config-stub helpers and added a regression test
+  guarding against this gap reopening.
 
 ## [0.75.1] - 2026-07-20
 

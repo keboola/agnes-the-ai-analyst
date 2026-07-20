@@ -2247,6 +2247,66 @@ def test_legacy_resume_destroys_old_sandbox_before_clearing(tmp_path):
     asyncio.run(_run())
 
 
+def test_spawn_live_destroys_sandbox_on_post_spawn_failure(manager: ChatManager):
+    """#867: a spawn that succeeds but then fails during post-spawn setup —
+    before the kill-on-exit `wait_task` is wired — must tear the sandbox down
+    (else it orphans and later pauses/persists, billable) and not leave a
+    half-registered `live` behind."""
+    from app.chat import routing
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+
+        # Simulate the runner dying on boot: the ticket push over stdin raises
+        # (broken pipe) after the sandbox is already up.
+        async def _boom(_live):
+            raise RuntimeError("runner died on boot")
+
+        manager._push_ticket_frame = _boom
+
+        with pytest.raises(RuntimeError, match="runner died on boot"):
+            await manager._spawn_live(s)
+
+        assert handle.killed is True, "orphaned sandbox was not torn down"
+        assert s.id not in manager._live, "half-registered live left behind"
+        # #867 review: the DB sandbox ref written before the failure must be
+        # cleared, else a row points at a dead sandbox that the paused-TTL
+        # reaper can never find.
+        row = manager._repo.get_session(s.id)
+        assert row.sandbox_id is None, "stale sandbox ref left in DB after failed setup"
+        assert row.runner_pid is None
+        # Devin Review, PR #935: the routing lease claimed before the failure
+        # must be released too — else a stale self-claim lingers until its
+        # TTL and can misroute a reconnect under the redis multi-gateway
+        # backend.
+        assert routing.owner_of(s.id) is None, "stale routing lease left after failed setup"
+
+    asyncio.run(_run())
+
+
+def test_spawn_live_happy_path_does_not_kill_sandbox(manager: ChatManager):
+    """Guard against the teardown firing on the success path: a clean spawn
+    keeps the sandbox alive and wires the wait_task."""
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+
+        live = await manager._spawn_live(s)
+        try:
+            assert handle.killed is False
+            assert manager._live.get(s.id) is live
+            assert live.current_wait is not None
+        finally:
+            await manager.kill(s.id, reason="test_done")
+            handle.emit_eof()
+
+    asyncio.run(_run())
+
+
 # ---------------------------------------------------------------------------
 # Wave-2C task 3: paused-sandbox sweep leader lease
 # ---------------------------------------------------------------------------
