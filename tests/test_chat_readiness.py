@@ -196,6 +196,50 @@ def test_test_anthropic_key_auth_failure_classified(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# classify_llm_failure — shared auth/credit/provider classifier (#884)
+# ---------------------------------------------------------------------------
+
+
+def test_classify_llm_failure_auth():
+    d = readiness.classify_llm_failure(401, "invalid x-api-key")
+    assert d["reason"] == readiness.LLM_REASON_AUTH
+    assert "authentication failed" in d["detail"]
+
+
+def test_classify_llm_failure_credit_wins_over_status():
+    # A 400 whose body is the credit-balance error classifies as credit, not
+    # a generic provider error — even though 400 is not an auth status.
+    d = readiness.classify_llm_failure(400, "Your credit balance is too low to access the API.")
+    assert d["reason"] == readiness.LLM_REASON_CREDIT
+    assert "credit balance too low" in d["detail"]
+
+
+def test_classify_llm_failure_provider():
+    d = readiness.classify_llm_failure(529, "overloaded_error")
+    assert d["reason"] == readiness.LLM_REASON_PROVIDER
+    assert "overloaded_error" in d["detail"]
+
+
+def test_classify_credit_exception_via__classify():
+    class _CreditErr(Exception):
+        status_code = 400
+
+    detail = readiness._classify(_CreditErr("Your credit balance is too low"))
+    assert "credit balance too low" in detail
+
+
+def test_runtime_diagnostic_record_and_clear():
+    state = SimpleNamespace()
+    assert readiness.get_llm_runtime_diagnostic(state) is None
+    diag = readiness.record_llm_runtime_failure(state, 401, "invalid x-api-key")
+    assert diag["reason"] == readiness.LLM_REASON_AUTH
+    assert diag["status_code"] == 401 and diag["at"]
+    assert readiness.get_llm_runtime_diagnostic(state)["reason"] == readiness.LLM_REASON_AUTH
+    readiness.clear_llm_runtime_diagnostic(state)
+    assert readiness.get_llm_runtime_diagnostic(state) is None
+
+
+# ---------------------------------------------------------------------------
 # Admin endpoints
 # ---------------------------------------------------------------------------
 
@@ -228,6 +272,20 @@ def test_readiness_endpoint_returns_presence(monkeypatch):
     assert body["secrets"]["e2b_api_key"]["set"] is False
     assert body["secrets"]["anthropic_api_key"]["set"] is True
     assert "e2b_api_key" in body["missing"]
+
+
+def test_readiness_endpoint_surfaces_llm_runtime(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk")
+    monkeypatch.setenv("E2B_API_KEY", "e2b")
+    monkeypatch.setenv("JWT_SECRET_KEY", "x" * 40)
+    client, _ = _make_app()
+    # Healthy → null.
+    assert client.get("/admin/chat/readiness").json()["llm_runtime"] is None
+    # Broker records a runtime failure on app.state → endpoint surfaces it.
+    readiness.record_llm_runtime_failure(client.app.state, 401, "invalid x-api-key")
+    body = client.get("/admin/chat/readiness").json()
+    assert body["llm_runtime"]["reason"] == readiness.LLM_REASON_AUTH
+    assert "authentication failed" in body["llm_runtime"]["detail"]
 
 
 def test_set_secrets_persists_only_provided(monkeypatch):
