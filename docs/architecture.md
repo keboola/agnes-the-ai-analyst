@@ -259,7 +259,7 @@ POST /api/sync/trigger (admin)
 - Runs admin-registered SQL through the DuckDB BigQuery extension via `BqAccess.duckdb_session()` and writes the result to `/data/extracts/bigquery/data/<id>.parquet` atomically (`<id>.parquet.tmp` → `os.replace`).
 - Triggered by `_run_materialized_pass` in `app/api/sync.py` between custom-connectors and orchestrator rebuild on every `/api/sync/trigger`. Per-table `sync_schedule` honored via `is_table_due()`.
 - Cost guardrail: BQ dry-run via `app.api.v2_scan._bq_dry_run_bytes` (single source of truth for cost-estimate logic). `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB; `0` disables). Fail-open when dry-run errors (DuckDB three-part syntax the native BQ client can't parse) — log warning + proceed.
-- Distribution: result parquet rides the same manifest + `agnes pull` flow as Keboola tables. Per-user RBAC unchanged (`resource_grants(group, ResourceType.TABLE, table_id)`).
+- Distribution: result parquet rides the same manifest + `agnes pull` flow as Keboola tables. Per-user RBAC unchanged (`resource_grants(group, ResourceType.TABLE, table_id)`). That flow optionally gains a bucket-mirror + presigned-URL hop — see [Distribution: signed-URL object store mirror](#distribution-signed-url-object-store-mirror) below.
 
 ### Jira — Real-Time Push
 
@@ -281,6 +281,55 @@ Background supplements:
 - `jira-consistency` — detects and backfills missing issues every 6 h.
 
 Files NOT to modify: `connectors/jira/file_lock.py`, `connectors/jira/transform.py`.
+
+---
+
+## Distribution: signed-URL object store mirror
+
+Optional (off by default), wave-2H addition on top of the manifest +
+`agnes pull` flow every connector above already rides. When an
+S3-compatible object store is configured (`distribution.object_store.*` /
+`distribution.signed_urls`, see
+[`DEPLOYMENT.md`](DEPLOYMENT.md#signed-url-distribution-object-store)), three
+extra hops layer on top of the existing distribution path — none of them
+change what's authoritative:
+
+1. **Bucket mirror** (`app/worker/kinds.py::_run_distribution_mirror`, a
+   `distribution-mirror` LIGHT job chained off every successful
+   `data-refresh`) reads the same `extracts/**/data/<table_id>.parquet`
+   files `agnes pull` has always served, and uploads any whose content
+   changed (md5-compared against the object's stamped metadata) to
+   `{prefix}/<table_id>.parquet` in the configured bucket via
+   `src.object_store.ObjectStore` (one S3-compatible implementation,
+   `S3ObjectStore`, built on `boto3`). It never moves, deletes, or
+   rewrites the extracts tree — that tree remains the sole source of
+   truth and the rollback path regardless of whether the mirror is
+   configured, current, or has ever run.
+2. **Manifest v2 signed URLs** (`app/api/sync.py::_build_manifest_for_user`
+   / `_apply_signed_url`) add `signed_url` + `signed_url_expires_at`
+   (15-minute TTL) to a table's `tables[<id>]` manifest entry — but only
+   when the mirror's marker index (`src/distribution.py`) shows that
+   table's object is present *and* current. An unmirrored or stale table
+   gets no `signed_url`; older CLIs that don't recognize the field ignore
+   it. RBAC is unaffected — a `signed_url` only ever appears on an entry
+   the caller could already reach via `get_accessible_tables`.
+3. **`agnes pull` prefers the signed URL** (`cli/lib/pull.py::_download_one`
+   / `_fetch_signed_url`) when present, fetching directly from the bucket
+   (SSRF-guarded, no redirects). On ANY failure — network error, expired/
+   403, md5 mismatch — it falls back to the existing app-served
+   `/api/data/{id}/download` route, and md5-verifies again via the same
+   `_verify_and_promote` step either path uses. A misconfigured or expired
+   signed URL therefore degrades to "slightly slower pull," never to a
+   corrupted or missing local parquet.
+
+**Separate concern from DuckLake's `data_path`.** `ducklake.data_path`
+(see [Analytics Data Plane](#analytics-data-plane-legacy-vs-ducklake) above)
+is where DuckLake stores its *own* managed data files for the analytics
+query engine — a different filesystem-coupling problem with its own
+migration path. This mirror only ever reads the `extracts/` tree the
+orchestrator already scans; the two do not share config, code, or a
+migration story, and moving one to object storage says nothing about the
+other.
 
 ---
 

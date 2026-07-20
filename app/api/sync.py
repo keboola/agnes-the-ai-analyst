@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, List
 
@@ -18,9 +18,12 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
+from app.instance_config import distribution_signed_urls_mode
 from app.job_correlation import stamp_request_id
 from app.utils import get_data_dir as _get_data_dir
 from src.audit_helpers import client_kind_from_user
+from src.distribution import cached_mirror_index
+from src.object_store import ObjectStore, object_store
 from src.rbac import get_accessible_tables
 from src.scheduler import filter_due_tables, is_table_due
 
@@ -1126,6 +1129,85 @@ sys.exit(compute_exit_code(result, len(configs)))
 
 # ---- Manifest ----
 
+# Three-plane wave 2-H, WS F, task WF-2 (signed-URL distribution) — see
+# docs/superpowers/plans/2026-07-20-three-plane-wave2h-distribution.md.
+# 15-minute presign TTL per the wave plan's non-negotiable design decisions
+# ("TTL ≈ 15 min bounds leakage").
+_SIGNED_URL_TTL_S = 900
+
+
+def _resolve_signed_url_context() -> tuple[Optional[ObjectStore], dict]:
+    """Resolve the object store + its (TTL-cached) mirror index ONCE per
+    manifest build — never per-table.
+
+    Returns ``(None, {})`` when signed-URL distribution is off (explicit
+    ``distribution.signed_urls: off`` escape hatch) or no store is
+    configured (``auto``/``on`` with nothing set up); callers then skip
+    ``signed_url`` entirely, so an instance with no object store produces a
+    byte-for-byte identical manifest to before this feature existed.
+
+    The single :func:`~src.distribution.cached_mirror_index` call is the
+    only store touch this makes — no per-table HEAD/GET — and it is itself
+    fail-open (a store outage degrades to an empty index, never a manifest
+    build failure), keeping the manifest p95 < 300ms budget intact even
+    when the object store is slow or down.
+    """
+    if distribution_signed_urls_mode() == "off":
+        return None, {}
+    store = object_store()
+    if store is None:
+        return None, {}
+    return store, cached_mirror_index(store)
+
+
+def _apply_signed_url(
+    entry: dict,
+    table_id: str,
+    *,
+    query_mode: str,
+    server_only: bool,
+    store: Optional[ObjectStore],
+    mirror_index: dict,
+) -> None:
+    """Mutate *entry* in place, adding ``signed_url`` / ``signed_url_expires_at``
+    when — and only when — ALL of the following hold:
+
+    - a store is configured and signed-URL distribution isn't off
+      (*store* is ``None`` otherwise, per :func:`_resolve_signed_url_context`);
+    - the table is downloadable (``query_mode`` != ``remote``, not
+      ``server_only`` — remote tables have no server parquet at all, and
+      server_only ones are deliberately not distributed);
+    - the table is not one of the internal row-level-RBAC tables
+      (``agnes_sessions`` / ``agnes_telemetry`` / ``agnes_audit`` — see
+      ``connectors.internal.access.is_internal_table``). Those tables are
+      accessible to every user at the table level, but access is scoped
+      per-row via a WHERE clause applied at query time
+      (``src.rbac.get_accessible_tables``, ``connectors/internal/access.py``);
+      a signed URL would serve the *entire* parquet — every user's rows —
+      bypassing that row filter. In practice these tables never reach the
+      sync_state/mirror pipeline today, so this is defense-in-depth against
+      a future change that starts mirroring them;
+    - the table_id is present in *mirror_index* with an md5 that matches
+      this entry's own md5 exactly — an absent or stale mirror entry means
+      the object either doesn't exist yet or is behind the latest sync, so
+      the client must fall back to ``/api/data/{id}/download`` rather than
+      get a presigned URL to the wrong (or missing) bytes.
+
+    RBAC note: this is called only for entries already in the caller's
+    accessible-table set (filtered upstream in ``_build_manifest_for_user``
+    via ``get_accessible_tables``) — signed URLs are added to already-
+    authorized entries, never widen access.
+    """
+    from connectors.internal.access import is_internal_table
+
+    if store is None or server_only or query_mode == "remote" or is_internal_table(table_id):
+        return
+    md5 = entry.get("hash") or ""
+    if not md5 or mirror_index.get(table_id) != md5:
+        return
+    entry["signed_url"] = store.presign_get(f"{table_id}.parquet", ttl_s=_SIGNED_URL_TTL_S)
+    entry["signed_url_expires_at"] = (datetime.now(timezone.utc) + timedelta(seconds=_SIGNED_URL_TTL_S)).isoformat()
+
 
 def _table_manifest_entry(state: dict, reg: dict) -> dict:
     """Shape one ``sync_state`` row + registry metadata into the per-table
@@ -1443,21 +1525,43 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     all_states = [s for s in all_states if _allowed is None or _id_for(s) in _allowed]
 
     data_dir = _get_data_dir()
+    # WF-2 (signed-URL distribution) — resolved ONCE per manifest build, not
+    # per-table. See `_resolve_signed_url_context`'s docstring for the
+    # perf/fail-open rationale. `signed_url`/`signed_url_expires_at` are
+    # added ONLY to this flat `tables` dict — the shape
+    # `cli/lib/pull.py:run_pull`'s download loop actually reads
+    # (`manifest.get("tables", {})`, hash-compared per row). The typed
+    # `data_packages[].tables[]` section (`_table_manifest_entry`) is only
+    # consulted by `run_pull` to build a name-based RBAC filter, never for
+    # hash/download decisions, so it intentionally does not get these
+    # fields.
+    _signed_url_store, _mirror_index = _resolve_signed_url_context()
     tables = {}
     for state in all_states:
         table_id = state["table_id"]
         reg = registry_by_name.get(table_id, {})
-        tables[table_id] = {
+        query_mode = reg.get("query_mode") or "local"
+        server_only = bool(reg.get("server_only"))
+        entry = {
             "hash": state.get("hash", ""),
             "updated": state.get("last_sync").isoformat() if state.get("last_sync") else None,
             "size_bytes": state.get("file_size_bytes", 0),
             "rows": state.get("rows", 0),
-            "query_mode": reg.get("query_mode") or "local",
+            "query_mode": query_mode,
             # #607 — distribution flag consumed by the cli/lib/pull.py
             # download-set loop: listed here but its parquet is not fetched.
-            "server_only": bool(reg.get("server_only")),
+            "server_only": server_only,
             "source_type": reg.get("source_type") or "",
         }
+        _apply_signed_url(
+            entry,
+            table_id,
+            query_mode=query_mode,
+            server_only=server_only,
+            store=_signed_url_store,
+            mirror_index=_mirror_index,
+        )
+        tables[table_id] = entry
 
     # Asset hashes
     docs_dir = data_dir / "docs"
