@@ -296,8 +296,12 @@ def test_home_renders_automode_block_by_default(fresh_db, monkeypatch):
     # badge already carries the number); match the bare label text.
     assert "Launch Claude with auto-approve on" in body
     # Recommended path: auto mode + the Agnes CLI allow-rules (both
-    # spellings — see _AGNES_PERMISSION_ALLOW_RULES in cli/lib/hooks.py).
-    assert 'claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)"' in body
+    # spellings — see _AGNES_PERMISSION_ALLOW_RULES in cli/lib/hooks.py) plus
+    # the wheel installer (`uv tool install`) so Step 1's CLI install isn't
+    # blocked by a permission prompt.
+    assert (
+        'claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)"' in body
+    )
     # The YOLO flag is no longer recommended on /home.
     assert "--dangerously-skip-permissions" not in body
     # Strict fallback: Shift + Tab → auto-accept-edits.

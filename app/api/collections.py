@@ -213,14 +213,18 @@ async def search_collections(
     Fail-closed: only the caller's granted collections are searched; an
     optional ``corpus_id`` narrows to one (ignored if not accessible). Declared
     before ``/{collection_id}`` so ``search`` isn't captured as a collection id.
+
+    The response carries ``retrieval`` (``hybrid | lexical_only``) so clients
+    can tell semantic-scored results from the lexical-only degradation that
+    kicks in when the embeddings extra is not installed (#898).
     """
-    from src.ingest.retrieval import search as _search
+    from src.ingest.retrieval import retrieval_mode, search as _search
 
     allowed = _accessible_corpus_ids(user)
     if corpus_id is not None:
         allowed = [c for c in allowed if c == corpus_id]
     k = max(1, min(k, 50))
-    return {"results": _search(allowed, q, k=k)}
+    return {"results": _search(allowed, q, k=k), "retrieval": retrieval_mode()}
 
 
 @router.get("/{collection_id}")

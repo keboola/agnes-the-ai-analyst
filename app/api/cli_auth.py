@@ -23,11 +23,12 @@ in browser history it is inert.
 """
 
 import hashlib
+import json
 import secrets
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import quote, urlencode
 
 import duckdb
@@ -37,6 +38,7 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import _get_db, get_optional_user, require_session_token
 from app.auth.jwt import create_access_token
+from app.coordination.factory import coordination, resolve_backend_name
 from src.repositories import access_token_repo, audit_repo
 from src.repositories.cli_auth_codes import CliAuthCodeRepository
 
@@ -48,6 +50,10 @@ _CODE_TTL = timedelta(seconds=120)
 # Default lifetime of the PAT minted by this flow. Mirrors the CLI token
 # default (90d) so analysts re-auth quarterly, not weekly.
 _PAT_TTL_DAYS = 90
+
+# Coordination-backend KV key prefix for CLI-auth codes (redis mode only —
+# see _create_cli_auth_code / _consume_cli_auth_code below).
+_CLI_AUTH_KV_PREFIX = "cli-auth:"
 
 
 @contextmanager
@@ -66,6 +72,11 @@ def _cli_auth_repo(conn):
     generator ``finally`` to release it, so a plain return would leak one cursor
     per request on Postgres. A caller-supplied DuckDB conn is left untouched for
     its own owner to close.
+
+    Only used by the ``memory`` coordination backend path (the zero-config
+    default) — see ``_create_cli_auth_code`` / ``_consume_cli_auth_code``
+    below, which route to ``coordination()`` KV instead when
+    ``coordination.backend=redis``.
     """
     if conn is not None:
         yield CliAuthCodeRepository(conn)
@@ -77,6 +88,59 @@ def _cli_auth_repo(conn):
         yield CliAuthCodeRepository(owned)
     finally:
         owned.close()
+
+
+def _create_cli_auth_code(conn, code_hash: str, user_id: str, email: str) -> None:
+    """Persist a freshly minted CLI-auth code.
+
+    Storage strategy for this site: ``coordination.backend=redis`` writes the
+    code straight to the coordination KV (prefix ``cli-auth:``, TTL =
+    ``_CODE_TTL``) and never touches DuckDB. The zero-config ``memory``
+    backend (default) keeps today's ``cli_auth_codes`` DuckDB path unchanged
+    (system db on DuckDB-state instances, the dedicated ``operational.duckdb``
+    fallback on Postgres-state instances — see ``_cli_auth_repo``).
+
+    FLUSHALL story: a code lost mid-flight (coordination backend loses state
+    between mint and exchange) just fails that one exchange attempt — the
+    user re-runs ``agnes auth login``. Acceptable for a ~2-minute-TTL,
+    single-use code.
+    """
+    if resolve_backend_name() == "redis":
+        coordination().kv_set(
+            f"{_CLI_AUTH_KV_PREFIX}{code_hash}",
+            json.dumps({"user_id": user_id, "email": email}),
+            ttl_s=int(_CODE_TTL.total_seconds()),
+        )
+        return
+    with _cli_auth_repo(conn) as _repo:
+        _repo.create(
+            code_hash=code_hash,
+            user_id=user_id,
+            email=email,
+            expires_at=datetime.now(timezone.utc) + _CODE_TTL,
+        )
+
+
+def _consume_cli_auth_code(conn, code_hash: str) -> Optional[dict[str, Any]]:
+    """Atomically claim a CLI-auth code exactly once.
+
+    Mirrors ``_create_cli_auth_code``'s backend strategy: redis mode does an
+    atomic KV get-and-delete (single-use by construction, and the KV's own
+    TTL means an expired code is simply absent — no separate expiry check
+    needed); memory mode falls through to the existing DuckDB
+    ``UPDATE ... RETURNING`` repo path.
+    """
+    if resolve_backend_name() == "redis":
+        raw = coordination().kv_delete(f"{_CLI_AUTH_KV_PREFIX}{code_hash}")
+        if raw is None:
+            return None
+        try:
+            rec = json.loads(raw)
+            return {"user_id": rec["user_id"], "email": rec["email"]}
+        except (ValueError, KeyError, TypeError):
+            return None
+    with _cli_auth_repo(conn) as _repo:
+        return _repo.consume(code_hash)
 
 
 def _validate_loopback(port: int, state: str) -> None:
@@ -132,13 +196,7 @@ async def confirm(
 
     raw_code = secrets.token_urlsafe(32)
     code_hash = hashlib.sha256(raw_code.encode()).hexdigest()
-    with _cli_auth_repo(conn) as _repo:
-        _repo.create(
-            code_hash=code_hash,
-            user_id=user["id"],
-            email=user["email"],
-            expires_at=datetime.now(timezone.utc) + _CODE_TTL,
-        )
+    _create_cli_auth_code(conn, code_hash, user["id"], user["email"])
     try:
         audit_repo().log(
             user_id=user["id"],
@@ -179,8 +237,7 @@ async def exchange(
     if not payload.code:
         raise HTTPException(status_code=400, detail="code is required")
     code_hash = hashlib.sha256(payload.code.encode()).hexdigest()
-    with _cli_auth_repo(conn) as _repo:
-        claimed = _repo.consume(code_hash)
+    claimed = _consume_cli_auth_code(conn, code_hash)
     if not claimed:
         # Expired, already used, or never existed — all indistinguishable on
         # purpose so a guesser learns nothing.

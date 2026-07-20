@@ -732,3 +732,35 @@ chat:
 #     # gws CLI send x-goog-user-project, which requires every analyst to
 #     # hold roles/serviceusage.serviceUsageConsumer on the OAuth project).
 #     # Only set it if your custom seed template still consumes it.
+
+# --- Signed-URL distribution (optional, off by default) ---
+#
+# When configured, the worker mirrors distribution parquets to an
+# S3-compatible bucket after each sync, and `agnes pull` downloads
+# directly from it via short-TTL presigned URLs instead of always
+# streaming through the app server — an L-tier bandwidth-offload option.
+# With no `object_store.bucket` set, nothing changes: the app-served
+# `/api/data/{id}/download` path stays the only download path. Requires
+# the `distribution` extra (`pip install "agnes[distribution]"`) for the
+# `boto3` S3 client. Full reference: docs/DEPLOYMENT.md → "Signed-URL
+# distribution (object store)".
+#
+# distribution:
+#   signed_urls: auto              # auto (on when object_store is configured) | on | off
+#                                   # Env override: AGNES_DISTRIBUTION_SIGNED_URLS
+#   object_store:
+#     bucket: my-agnes-distribution-bucket
+#     endpoint_url: https://s3.example.com   # unset for real AWS S3; or GCS's S3-interop
+#                                             # endpoint / SeaweedFS / any other S3-compatible
+#                                             # managed bucket. Not bundled — bring your own.
+#     region: us-east-1
+#     prefix: agnes/distribution             # default shown; key layout is {prefix}/<table_id>.parquet
+#     # Credentials are NEVER stored here — these two fields name OTHER
+#     # environment variables that hold the actual access key / secret key
+#     # (same *_env indirection used elsewhere in this file), resolved on
+#     # the Agnes server at runtime.
+#     access_key_env: AGNES_DISTRIBUTION_OBJECT_STORE_ACCESS_KEY
+#     secret_key_env: AGNES_DISTRIBUTION_OBJECT_STORE_SECRET_KEY
+#   # Per-field env overrides (win over the yaml values above):
+#   # AGNES_DISTRIBUTION_OBJECT_STORE_BUCKET, _ENDPOINT_URL, _REGION, _PREFIX,
+#   # _ACCESS_KEY_ENV, _SECRET_KEY_ENV

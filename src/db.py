@@ -14,6 +14,7 @@ from pathlib import Path
 import duckdb
 
 from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+from src.analytics_backend import analytics_backend
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 91
+SCHEMA_VERSION = 94
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1458,6 +1459,74 @@ CREATE TABLE IF NOT EXISTS store_lint_entity_state (
     run_id       VARCHAR NOT NULL,
     linted_at    TIMESTAMP NOT NULL
 );
+
+-- glossary_terms: v93. Keboola semantic-glossary import destination
+-- (docs/superpowers/specs/2026-07-17-keboola-glossary-import-design.md).
+-- id = "keboola/{model_uuid}/{slug(term)}" for Keboola-sourced rows, or
+-- admin-chosen for source='manual' rows. see_also is an opaque string
+-- list (not resolved/validated against other Metastore types).
+CREATE TABLE IF NOT EXISTS glossary_terms (
+    id           VARCHAR PRIMARY KEY,
+    term         VARCHAR NOT NULL,
+    definition   TEXT NOT NULL,
+    see_also     VARCHAR[],
+    model_uuid   VARCHAR,
+    source       VARCHAR NOT NULL DEFAULT 'manual',
+    created_at   TIMESTAMP DEFAULT current_timestamp,
+    updated_at   TIMESTAMP DEFAULT current_timestamp
+);
+
+-- v94: jobs — durable job queue, the foundation of the worker runtime
+-- (wave-2B). This table + JobsRepository/JobsPgRepository cover
+-- enqueue/get/list + idempotency dedup only; the claim/lease lifecycle and
+-- the worker loop are later tasks in the same wave.
+--
+-- idempotency_key dedup note: a *partial* unique index
+-- (`... WHERE idempotency_key IS NOT NULL AND status IN ('queued',
+-- 'running')`) would let a duplicate key be reused once the earlier job
+-- leaves queued/running, but DuckDB does not support partial indexes
+-- ("Not implemented Error: Creating partial indexes is not supported
+-- currently"). Dedup is therefore enforced in JobsRepository.enqueue()
+-- (guarded by an in-process lock — safe under DuckDB's single-writer
+-- model) rather than at the DB level. `idx_jobs_idem` below is a plain
+-- (non-unique) lookup index on this side.
+--
+-- The Postgres ladder (migrations/versions/0041_jobs_v94.py /
+-- src/models/jobs.py) is asymmetric here: it DOES create `idx_jobs_idem`
+-- as a partial unique index, because a plain SELECT-then-INSERT in
+-- JobsPgRepository would race under READ COMMITTED (two concurrent
+-- transactions can both miss each other's uncommitted row). The CONTRACT
+-- shared by both backends is the dedup *behavior*, not the index shape.
+--
+-- `lease_token` is a fresh uuid4 minted by claim_next() on every claim
+-- (including a same-worker reclaim of its own previously-abandoned lease).
+-- heartbeat()/complete()/fail() guard on `lease_token = ? AND status =
+-- 'running'` rather than `leased_by = ?`: all lane slots in one worker
+-- process share the same `leased_by` (worker_id = hostname:pid), so a
+-- worker_id-only guard cannot tell a stale slot's late call apart from a
+-- same-process reclaim of the same job by a DIFFERENT slot — a
+-- same-worker double-execution bug, empirically reproduced. `leased_by`
+-- is kept for audit/logging only.
+CREATE TABLE IF NOT EXISTS jobs (
+    id                VARCHAR PRIMARY KEY,
+    kind              VARCHAR NOT NULL,
+    payload_json      VARCHAR NOT NULL DEFAULT '{}',
+    status            VARCHAR NOT NULL DEFAULT 'queued',
+    priority          INTEGER NOT NULL DEFAULT 0,
+    run_after         TIMESTAMP,
+    attempts          INTEGER NOT NULL DEFAULT 0,
+    max_attempts      INTEGER NOT NULL DEFAULT 3,
+    lease_expires_at  TIMESTAMP,
+    leased_by         VARCHAR,
+    lease_token       VARCHAR,
+    idempotency_key   VARCHAR,
+    error             VARCHAR,
+    created_at        TIMESTAMP NOT NULL,
+    started_at        TIMESTAMP,
+    finished_at       TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, priority, run_after);
+CREATE INDEX IF NOT EXISTS idx_jobs_idem ON jobs(idempotency_key);
 """
 
 
@@ -1919,9 +1988,7 @@ def get_operational_db() -> duckdb.DuckDBPyConnection:
                     pass
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
             _operational_db_conn = _open_duckdb(db_path)
-            _apply_memory_caps(
-                _operational_db_conn, _SYSTEM_DB_MEMORY_LIMIT, label="get_operational_db"
-            )
+            _apply_memory_caps(_operational_db_conn, _SYSTEM_DB_MEMORY_LIMIT, label="get_operational_db")
             _operational_db_conn.execute(_OPERATIONAL_SCHEMA_DDL)
             _operational_db_path = db_path
         return _maybe_instrument(_operational_db_conn.cursor(), "operational")
@@ -1980,6 +2047,17 @@ def close_singleton_connections() -> None:
     open database file; without releasing it here the subprocess raises
     ``IOException: Conflicting lock is held in /usr/local/bin/python3.13``.
 
+    Also closes the DuckLake reader/writer singletons (``src.ducklake_session
+    .close_ducklake_sessions()``) — when ``analytics.backend=ducklake`` is
+    active, an open DuckLake attach holds the same kind of exclusive lock on
+    a file-catalog target (or a live libpq connection on a Postgres catalog
+    target) that would otherwise survive into the subprocess handoff and
+    conflict with it, same as the DuckDB singletons above. Imported locally
+    to avoid a module-level circular import (``src.ducklake_session`` itself
+    imports from this module); safe to call unconditionally regardless of
+    which analytics backend is configured — ``close_ducklake_sessions()`` is
+    a no-op when no DuckLake session has ever been opened.
+
     Idempotent. The next call to ``get_system_db()`` / ``get_analytics_db()``
     will lazily re-open if the file is still on disk; if the migration
     flipped the backend to Postgres, the app process will be recreated by
@@ -2010,6 +2088,10 @@ def close_singleton_connections() -> None:
             except Exception:
                 pass
             _analytics_db_conn = None
+
+    from src.ducklake_session import close_ducklake_sessions
+
+    close_ducklake_sessions()
 
 
 def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: Path) -> None:
@@ -2100,7 +2182,23 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                     alias,
                 )
                 continue
-            if alias in attached_dbs:
+            already_attached = alias in attached_dbs
+            # Non-BQ remote extensions carry no expiring credential — the
+            # existing ATTACH (from an earlier call on this same
+            # connection) is still good, nothing to refresh. BQ is
+            # different: its ACCESS_TOKEN secret is a short-lived GCE
+            # metadata token (or TOKEN literal), and this function is
+            # called from a long-lived connection under the DuckLake
+            # backend (`src.ducklake_session.get_ducklake_read`'s
+            # process-wide reader singleton) as well as the legacy
+            # per-request path. On the legacy path `already_attached` is
+            # never True (each call gets a brand-new connection with
+            # nothing attached yet), so this branch is a no-op there;
+            # on the long-lived DuckLake reader, skipping the refresh
+            # here would leave the BQ secret to expire after its TTL and
+            # start failing every remote query for the rest of the
+            # process's life — see the wave-2G task-4 report.
+            if already_attached and extension != "bigquery":
                 logger.debug("Remote source %s already attached, skipping", alias)
                 continue
             try:
@@ -2122,6 +2220,10 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                 # is the contract that signals "use built-in metadata path". The
                 # secret is created here on every readonly-connection open because
                 # secrets are session-scoped and don't persist with analytics.duckdb.
+                # DuckDB resolves a secret by (TYPE, name) match at query time, not
+                # at ATTACH time, so replacing `bq_secret_{alias}` refreshes
+                # credentials for an ATTACH that already exists — no re-ATTACH
+                # needed (and re-ATTACHing an already-attached alias would error).
                 if extension == "bigquery":
                     try:
                         bq_token = get_metadata_token()
@@ -2138,7 +2240,8 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                     from connectors.bigquery.access import apply_bq_session_settings
 
                     apply_bq_session_settings(conn)
-                    conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
+                    if not already_attached:
+                        conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
                 elif token:
                     escaped_token = escape_sql_string_literal(token)
                     conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')")
@@ -2167,7 +2270,35 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
     """Read-only connection to analytics DB. Blocks writes and external access.
 
     ATTACHes extract.duckdb files so views that reference them work.
+
+    Backend dispatch (wave-2G, DuckLake): when ``analytics.backend`` /
+    ``AGNES_ANALYTICS_BACKEND`` resolves to ``"ducklake"``, this delegates
+    to ``src.ducklake_session.get_ducklake_read()`` instead of the
+    open-file-and-re-ATTACH-every-request path below.
+
+    **Connection-model choice (documented per the wave-2G task-4 brief):**
+    the legacy path below opens a brand-new connection on every call — a
+    cheap operation for a local DuckDB file, so per-request open/close is
+    fine. DuckLake is different: when the catalog target is a Postgres
+    DSN, every ``ATTACH`` opens its own libpq connection (see
+    ``src/ducklake_session.py``'s module docstring and the W2G-2 POC
+    finding — "one PG connection per ATTACH, no extra per query"), so a
+    naive per-request open would churn one new Postgres connection per
+    API request. Instead, ``get_ducklake_read()`` keeps ONE long-lived
+    attach per process and hands back a ``.cursor()`` per caller —
+    mirroring the ``get_analytics_db()`` singleton+cursor pattern in this
+    module rather than this function's per-call-open pattern. A cursor
+    still gives snapshot-consistent reads (DuckLake's MVCC — a cursor
+    opened before a concurrent writer commits keeps seeing the
+    pre-commit snapshot) and callers here already only ever call
+    ``.close()`` on the returned handle, which is exactly the
+    cursor-close contract ``get_ducklake_read()`` documents.
     """
+    if analytics_backend() == "ducklake":
+        from src.ducklake_session import get_ducklake_read
+
+        return get_ducklake_read()
+
     db_path = _get_data_dir() / "analytics" / "server.duckdb"
     if not db_path.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5872,6 +6003,91 @@ def _v90_to_v91(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 91")
 
 
+def _v91_to_v92(conn: duckdb.DuckDBPyConnection) -> None:
+    """v92: mcp_sources.connect_hint — per-source, admin-authored instructions
+    telling a user where to obtain their personal token for a per_user source.
+    Rendered through app/markdown_render.render_safe on the connect page.
+
+    Guarded on table existence: minimal-fixture migration tests replay the
+    ladder from an intermediate version onto a DB that never created
+    ``mcp_sources`` (it is created at v64). On a real ladder the table always
+    exists by v92, so the guard only no-ops those partial replays."""
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'mcp_sources'").fetchone()
+    if exists:
+        conn.execute("ALTER TABLE mcp_sources ADD COLUMN IF NOT EXISTS connect_hint VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 92")
+
+
+def _v92_to_v93(conn: duckdb.DuckDBPyConnection) -> None:
+    """v92→v93: ``glossary_terms`` — Keboola semantic-glossary import
+    destination (docs/superpowers/specs/2026-07-17-keboola-glossary-import-design.md).
+
+    Additive-only; ``_SYSTEM_SCHEMA`` already creates the table on fresh
+    installs (no-op ``CREATE TABLE IF NOT EXISTS`` here).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS glossary_terms (
+            id           VARCHAR PRIMARY KEY,
+            term         VARCHAR NOT NULL,
+            definition   TEXT NOT NULL,
+            see_also     VARCHAR[],
+            model_uuid   VARCHAR,
+            source       VARCHAR NOT NULL DEFAULT 'manual',
+            created_at   TIMESTAMP DEFAULT current_timestamp,
+            updated_at   TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 93")
+
+
+def _v93_to_v94(conn: duckdb.DuckDBPyConnection) -> None:
+    """v93→v94: ``jobs`` — durable job queue (wave-2B worker runtime
+    foundation). This migration covers table + claim/lookup index only;
+    ``_SYSTEM_SCHEMA`` already creates it on fresh installs (no-op
+    ``CREATE IF NOT EXISTS`` here).
+
+    See the ``jobs`` block in ``_SYSTEM_SCHEMA`` above for why
+    ``idx_jobs_idem`` is a plain index rather than a partial unique index
+    (DuckDB does not support partial indexes) — idempotency dedup is
+    enforced in ``JobsRepository.enqueue()`` instead. The Postgres ladder
+    uses a real partial unique index for this same column; see that
+    docstring block for why the two ladders are intentionally asymmetric.
+
+    ``lease_token`` is the same-worker double-execution guard — see the
+    ``_SYSTEM_SCHEMA`` docstring block above for the full rationale.
+
+    Renumbered from v93 to v94 after upstream's glossary_terms migration
+    (#920) claimed schema v93 first.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS jobs (
+            id                VARCHAR PRIMARY KEY,
+            kind              VARCHAR NOT NULL,
+            payload_json      VARCHAR NOT NULL DEFAULT '{}',
+            status            VARCHAR NOT NULL DEFAULT 'queued',
+            priority          INTEGER NOT NULL DEFAULT 0,
+            run_after         TIMESTAMP,
+            attempts          INTEGER NOT NULL DEFAULT 0,
+            max_attempts      INTEGER NOT NULL DEFAULT 3,
+            lease_expires_at  TIMESTAMP,
+            leased_by         VARCHAR,
+            lease_token       VARCHAR,
+            idempotency_key   VARCHAR,
+            error             VARCHAR,
+            created_at        TIMESTAMP NOT NULL,
+            started_at        TIMESTAMP,
+            finished_at       TIMESTAMP
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, priority, run_after)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_idem ON jobs(idempotency_key)")
+    conn.execute("UPDATE schema_version SET version = 94")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6246,6 +6462,16 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # _SYSTEM_SCHEMA already creates them on fresh installs (no-op
             # CREATE IF NOT EXISTS here).
             _v90_to_v91(conn)
+            # v91→v92: mcp_sources.connect_hint column.
+            _v91_to_v92(conn)
+            # v92→v93: glossary_terms table (Keboola semantic-glossary
+            # import). _SYSTEM_SCHEMA already creates it on fresh installs
+            # (no-op CREATE IF NOT EXISTS here).
+            _v92_to_v93(conn)
+            # v93→v94: jobs table (durable job queue, wave-2B worker runtime
+            # foundation). _SYSTEM_SCHEMA already creates it on fresh
+            # installs (no-op CREATE IF NOT EXISTS here).
+            _v93_to_v94(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -6481,6 +6707,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v89_to_v90(conn)
             if current < 91:
                 _v90_to_v91(conn)
+            if current < 92:
+                _v91_to_v92(conn)
+            if current < 93:
+                _v92_to_v93(conn)
+            if current < 94:
+                _v93_to_v94(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

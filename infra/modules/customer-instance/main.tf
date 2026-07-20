@@ -67,6 +67,15 @@ locals {
   per_instance_oauth_secrets = toset(flatten([
     for k, v in local.per_vm_oauth : [v.id, v.secret]
   ]))
+
+  # Opt-in LLM dispatcher (token-arbitrage PoC): secrets the VM SA needs
+  # read access to when ANY instance in this module call enables it. The
+  # flag is per-VM (dev-first rollouts), the config is module-wide.
+  dispatcher_any_enabled = anytrue([for inst in local.all_instances : inst.dispatcher_enabled])
+  dispatcher_secrets = local.dispatcher_any_enabled ? toset(compact([
+    var.dispatcher_key_secret,
+    var.dispatcher_vertex_sa_secret,
+  ])) : toset([])
 }
 
 # --- Secrets ---
@@ -87,6 +96,29 @@ resource "random_password" "jwt" {
 resource "google_secret_manager_secret_version" "jwt" {
   secret      = google_secret_manager_secret.jwt.id
   secret_data = random_password.jwt.result
+}
+
+# SESSION_SECRET — signs the app's session cookies (app/secrets.py::get_session_secret).
+# Single-node deployments fall back to a per-node generated-and-persisted file, but a
+# role-split (multi-process) deployment needs every process to agree on the same value,
+# so this module provisions it the same way as the JWT secret: minted once here, fetched
+# fresh from Secret Manager on every boot (no on-VM fallback generation).
+resource "google_secret_manager_secret" "session" {
+  secret_id = "agnes-${var.customer_name}-session-secret"
+  project   = var.gcp_project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "random_password" "session" {
+  length  = 48
+  special = false
+}
+
+resource "google_secret_manager_secret_version" "session" {
+  secret      = google_secret_manager_secret.session.id
+  secret_data = random_password.session.result
 }
 
 # Postgres password for the side-car postgres:16-alpine container.
@@ -128,6 +160,14 @@ resource "google_secret_manager_secret_iam_member" "vm_jwt" {
   member    = "serviceAccount:${google_service_account.vm.email}"
 }
 
+# Same scoped read access for the session secret — mirrors vm_jwt above.
+resource "google_secret_manager_secret_iam_member" "vm_session" {
+  project   = var.gcp_project_id
+  secret_id = google_secret_manager_secret.session.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
 # Same scoped read access for the postgres password secret.
 resource "google_secret_manager_secret_iam_member" "vm_postgres" {
   project   = var.gcp_project_id
@@ -154,6 +194,17 @@ resource "google_secret_manager_secret_iam_member" "vm_runtime_env" {
   for_each  = var.runtime_secret_env
   project   = var.gcp_project_id
   secret_id = each.key
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
+# Dispatcher secrets (API key + Vertex SA key JSON) — read-only, and only
+# when some instance actually enables the dispatcher. Both secrets must
+# already exist (created out-of-band, like the OAuth clients above).
+resource "google_secret_manager_secret_iam_member" "vm_dispatcher" {
+  for_each  = local.dispatcher_secrets
+  project   = var.gcp_project_id
+  secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.vm.email}"
 }
@@ -338,6 +389,11 @@ resource "google_compute_instance" "vm" {
     enable_watchdog                 = var.enable_watchdog
     alert_webhook_url               = var.alert_webhook_url
     watchdog_files_b64              = local.watchdog_files_b64
+    dispatcher_enabled              = each.value.dispatcher_enabled
+    dispatcher_image                = var.dispatcher_image
+    dispatcher_key_secret           = var.dispatcher_key_secret
+    dispatcher_vertex_sa_secret     = var.dispatcher_vertex_sa_secret
+    dispatcher_policies_b64         = base64encode(var.dispatcher_policies)
   })
 
   service_account {
@@ -357,16 +413,32 @@ resource "google_compute_instance" "vm" {
   #   terraform apply -replace='module.agnes.google_compute_instance.vm["agnes-prod"]'
   lifecycle {
     ignore_changes = [metadata_startup_script]
+
+    # Enabling the dispatcher without its module-wide config would boot a VM
+    # whose startup script fails loudly halfway (missing secret name renders
+    # an empty --secret= arg). Catch it at plan time instead.
+    precondition {
+      condition = !each.value.dispatcher_enabled || (
+        var.dispatcher_image != "" &&
+        var.dispatcher_policies != "" &&
+        var.dispatcher_key_secret != "" &&
+        var.dispatcher_vertex_sa_secret != ""
+      )
+      error_message = "dispatcher_enabled=true on instance ${each.value.name} requires dispatcher_image, dispatcher_policies, dispatcher_key_secret and dispatcher_vertex_sa_secret to be set on the module."
+    }
   }
 
   # Ensure VM SA has read access to required secrets BEFORE the VM boots — otherwise
   # the startup script's `gcloud secrets versions access` can 403 due to IAM lag.
   depends_on = [
     google_secret_manager_secret_iam_member.vm_jwt,
+    google_secret_manager_secret_iam_member.vm_session,
     google_secret_manager_secret_iam_member.vm_runtime,
     google_secret_manager_secret_iam_member.vm_runtime_env,
     google_secret_manager_secret_iam_member.vm_oauth,
+    google_secret_manager_secret_iam_member.vm_dispatcher,
     google_secret_manager_secret_version.jwt,
+    google_secret_manager_secret_version.session,
   ]
 }
 

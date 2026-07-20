@@ -426,9 +426,7 @@ class UsageRepository:
     def count_events_export(self, filters: dict) -> int:
         """Row count for the admin export's audit-log entry."""
         where_sql, params = self._export_where(filters)
-        row = self.conn.execute(
-            f"SELECT COUNT(*) FROM usage_events WHERE {where_sql}", params
-        ).fetchone()
+        row = self.conn.execute(f"SELECT COUNT(*) FROM usage_events WHERE {where_sql}", params).fetchone()
         return int(row[0] or 0)
 
     def export_events(self, filters: dict) -> tuple[list[str], list[tuple]]:
@@ -1110,10 +1108,20 @@ class UsageRepository:
         return len(rows)
 
     def upsert_summary(self, summary: dict, *, processor_version: int) -> None:
-        """INSERT OR REPLACE on session_file PK."""
+        """Upsert on session_file PK.
+
+        INCIDENT 2026-07-17: ``INSERT OR REPLACE`` deterministically hit the
+        same DuckDB 1.5.4 PRIMARY KEY index assertion as the DELETE-then-
+        bulk-INSERT rollup producers fixed in #909 (`INSERT OR REPLACE`
+        deletes-then-inserts the conflicting row internally — the same
+        crash trigger) — twice, on two different session_file keys, ~24h
+        apart, taking down the whole app process both times. Switched to
+        `INSERT ... ON CONFLICT DO UPDATE`, which updates the existing row
+        in place instead of deleting it.
+        """
         self.conn.execute(
             """
-            INSERT OR REPLACE INTO usage_session_summary
+            INSERT INTO usage_session_summary
                 (session_file, session_id, username, started_at, ended_at,
                  active_seconds, wall_seconds, user_messages, assistant_messages,
                  tool_calls, tool_errors, skill_invocations, subagent_dispatches,
@@ -1121,6 +1129,30 @@ class UsageRepository:
                  primary_model, input_tokens, output_tokens, cache_read_tokens,
                  cache_creation_tokens, processor_version, user_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (session_file) DO UPDATE SET
+                session_id = EXCLUDED.session_id,
+                username = EXCLUDED.username,
+                started_at = EXCLUDED.started_at,
+                ended_at = EXCLUDED.ended_at,
+                active_seconds = EXCLUDED.active_seconds,
+                wall_seconds = EXCLUDED.wall_seconds,
+                user_messages = EXCLUDED.user_messages,
+                assistant_messages = EXCLUDED.assistant_messages,
+                tool_calls = EXCLUDED.tool_calls,
+                tool_errors = EXCLUDED.tool_errors,
+                skill_invocations = EXCLUDED.skill_invocations,
+                subagent_dispatches = EXCLUDED.subagent_dispatches,
+                mcp_calls = EXCLUDED.mcp_calls,
+                slash_commands = EXCLUDED.slash_commands,
+                distinct_tools = EXCLUDED.distinct_tools,
+                distinct_skills = EXCLUDED.distinct_skills,
+                primary_model = EXCLUDED.primary_model,
+                input_tokens = EXCLUDED.input_tokens,
+                output_tokens = EXCLUDED.output_tokens,
+                cache_read_tokens = EXCLUDED.cache_read_tokens,
+                cache_creation_tokens = EXCLUDED.cache_creation_tokens,
+                processor_version = EXCLUDED.processor_version,
+                user_id = EXCLUDED.user_id
             """,
             [
                 summary["session_file"],
@@ -1316,6 +1348,40 @@ class UsageRepository:
             [_MARKETPLACE_30D_TRACKER, now],
         )
 
+    def _delete_stale_by_anti_join(
+        self,
+        *,
+        table: str,
+        column_defs: str,
+        key_columns: str,
+        where_clause: str,
+        where_params: list,
+        fresh_keys: list,
+    ) -> None:
+        """Anti-join DELETE of ``table`` rows whose key isn't in ``fresh_keys``.
+
+        Loads ``fresh_keys`` into a temp table via `executemany` instead of
+        inlining them as a `(VALUES ...)` literal — a full rebuild
+        (``since_day=None``) can produce tens of thousands of keys, and
+        inlining that many bound parameters into one SQL statement risks a
+        very large query text / parameter vector. The temp table scales to
+        any key count via DuckDB's normal bulk-insert path.
+        """
+        self.conn.execute("DROP TABLE IF EXISTS _rollup_fresh_keys")
+        self.conn.execute(f"CREATE TEMP TABLE _rollup_fresh_keys ({column_defs})")
+        if fresh_keys:
+            placeholders = ", ".join("?" for _ in key_columns.split(", "))
+            self.conn.executemany(f"INSERT INTO _rollup_fresh_keys VALUES ({placeholders})", fresh_keys)
+        self.conn.execute(
+            f"""
+            DELETE FROM {table}
+            WHERE {where_clause}
+              AND ({key_columns}) NOT IN (SELECT {key_columns} FROM _rollup_fresh_keys)
+            """,
+            where_params,
+        )
+        self.conn.execute("DROP TABLE _rollup_fresh_keys")
+
     def _rebuild_window(
         self, period_label: str, cutoff_day, curated_plugins: set, flea_entities: dict, flea_plugins: set
     ) -> None:
@@ -1335,21 +1401,43 @@ class UsageRepository:
             [cutoff_day],
         ).fetchall()
         buckets = _aggregate_events(events, curated_plugins, flea_entities, flea_plugins, group_by_day=False)
-        self.conn.execute(
-            "DELETE FROM usage_marketplace_item_window WHERE period_label = ?",
-            [period_label],
-        )
+        # DuckDB 1.5.4: a DELETE of the whole period_label followed by a bulk
+        # re-INSERT of overlapping keys in the same transaction can hit an
+        # internal PRIMARY KEY index assertion (duplicate-key false positive)
+        # that aborts the process uncatchably. INSERT ... ON CONFLICT DO
+        # UPDATE never deletes the row, so it never hits that path. Stale
+        # keys (no longer present in `buckets`) are removed via an anti-join
+        # against the fresh key set, never a key about to be upserted, so
+        # this can't delete-then-reinsert the same key either.
         if buckets:
+            fresh_keys = list(buckets.keys())  # (source, type_, parent, name)
+            self._delete_stale_by_anti_join(
+                table="usage_marketplace_item_window",
+                column_defs="source VARCHAR, type VARCHAR, parent_plugin VARCHAR, name VARCHAR",
+                key_columns="source, type, parent_plugin, name",
+                where_clause="period_label = ?",
+                where_params=[period_label],
+                fresh_keys=fresh_keys,
+            )
             self.conn.executemany(
                 """
                 INSERT INTO usage_marketplace_item_window
                     (period_label, source, type, parent_plugin, name, invocations, distinct_users)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (period_label, source, type, parent_plugin, name) DO UPDATE SET
+                    invocations = EXCLUDED.invocations,
+                    distinct_users = EXCLUDED.distinct_users,
+                    refreshed_at = now()
                 """,
                 [
                     (period_label, source, type_, parent, name, v["count"], len(v["users"]))
                     for (source, type_, parent, name), v in buckets.items()
                 ],
+            )
+        else:
+            self.conn.execute(
+                "DELETE FROM usage_marketplace_item_window WHERE period_label = ?",
+                [period_label],
             )
 
     def rebuild_rollups(self, *, since_day: "date | None" = None, force_30d: bool = False) -> None:
@@ -1379,8 +1467,37 @@ class UsageRepository:
             curated_plugins, flea_entities, flea_plugins = self._curated_flea_lookup()
             do_30d = force_30d or self._last_30d_due()
 
-            # ---- Legacy: usage_tool_daily (unchanged) ----
-            self.conn.execute("DELETE FROM usage_tool_daily WHERE day >= ?", [since_day])
+            # ---- Legacy: usage_tool_daily ----
+            # DuckDB 1.5.4: DELETE of this range then bulk INSERT-SELECT of
+            # overlapping (day, tool_name, source) keys in the same
+            # transaction deterministically hit an internal PRIMARY KEY index
+            # assertion ("Failed to append to PRIMARY_usage_tool_daily_*:
+            # duplicate key") that aborts the whole process uncatchably —
+            # observed in production every ~10-minute tick once ``since_day``'s
+            # boundary day held a key that got deleted and reinserted in the
+            # same commit. INSERT ... ON CONFLICT DO UPDATE never deletes the
+            # row, so it can't hit that path.
+            #
+            # Stale keys (an event was deleted/corrected so a (day, tool,
+            # source) combo no longer has any qualifying events) still need
+            # removing to match Postgres semantics — but only keys ABSENT
+            # from the freshly computed set, never one that's about to be
+            # upserted, so this can never delete-then-reinsert the same key
+            # in one transaction (the crash trigger above).
+            self.conn.execute(
+                """
+                DELETE FROM usage_tool_daily
+                WHERE day >= ?
+                  AND (day, tool_name, source) NOT IN (
+                      SELECT CAST(occurred_at AS DATE) AS day, tool_name, source
+                      FROM usage_events
+                      WHERE CAST(occurred_at AS DATE) >= ?
+                        AND tool_name IS NOT NULL
+                      GROUP BY day, tool_name, source
+                  )
+                """,
+                [since_day, since_day],
+            )
             self.conn.execute(
                 """
                 INSERT INTO usage_tool_daily
@@ -1397,6 +1514,11 @@ class UsageRepository:
                 WHERE CAST(occurred_at AS DATE) >= ?
                   AND tool_name IS NOT NULL
                 GROUP BY day, tool_name, source
+                ON CONFLICT (day, tool_name, source) DO UPDATE SET
+                    invocations = EXCLUDED.invocations,
+                    error_count = EXCLUDED.error_count,
+                    distinct_users = EXCLUDED.distinct_users,
+                    distinct_sessions = EXCLUDED.distinct_sessions
                 """,
                 [since_day],
             )
@@ -1420,19 +1542,40 @@ class UsageRepository:
             daily_buckets = _aggregate_events(
                 daily_events, curated_plugins, flea_entities, flea_plugins, group_by_day=True
             )
-            self.conn.execute("DELETE FROM usage_marketplace_item_daily WHERE day >= ?", [since_day])
+            # Same DELETE-then-bulk-INSERT-of-overlapping-keys hazard as
+            # usage_tool_daily above — see that comment. ON CONFLICT DO
+            # UPDATE avoids the delete+reinsert-same-key path entirely. Stale
+            # keys (no longer present in daily_buckets — an event was
+            # deleted/corrected) are removed via an anti-join against the
+            # fresh key set below, never a key about to be upserted, so this
+            # can't delete-then-reinsert the same key either.
             if daily_buckets:
+                fresh_keys = list(daily_buckets.keys())  # (day, source, type_, parent, name)
+                self._delete_stale_by_anti_join(
+                    table="usage_marketplace_item_daily",
+                    column_defs="day DATE, source VARCHAR, type VARCHAR, parent_plugin VARCHAR, name VARCHAR",
+                    key_columns="day, source, type, parent_plugin, name",
+                    where_clause="day >= ?",
+                    where_params=[since_day],
+                    fresh_keys=fresh_keys,
+                )
                 self.conn.executemany(
                     """
                     INSERT INTO usage_marketplace_item_daily
                         (day, source, type, parent_plugin, name, count, distinct_users, error_count)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (day, source, type, parent_plugin, name) DO UPDATE SET
+                        count = EXCLUDED.count,
+                        distinct_users = EXCLUDED.distinct_users,
+                        error_count = EXCLUDED.error_count
                     """,
                     [
                         (day, source, type_, parent, name, v["count"], len(v["users"]), v["errors"])
                         for (day, source, type_, parent, name), v in daily_buckets.items()
                     ],
                 )
+            else:
+                self.conn.execute("DELETE FROM usage_marketplace_item_daily WHERE day >= ?", [since_day])
 
             # ---- usage_marketplace_item_window period_label='last_7d' (full) ----
             cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).date()

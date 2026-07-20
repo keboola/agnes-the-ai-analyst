@@ -21,11 +21,12 @@ agnes binary path and writes it into .claude/settings.json:
       }
     }
 """
+
 from typing import Optional
 
 import typer
 
-from cli.client import api_delete, api_get, api_put
+from cli.client import api_delete, api_get, api_post, api_put
 
 mcp_app = typer.Typer(
     help="Start Agnes MCP server for Claude Desktop (stdio transport)",
@@ -80,10 +81,12 @@ def _fail(resp) -> None:
 @my_secret_app.command("set")
 def my_secret_set(
     source_id: str = typer.Argument(
-        ..., help="MCP source id (src_*) — find it with 'agnes catalog' or admin UI",
+        ...,
+        help="MCP source id (src_*) — find it with 'agnes catalog' or admin UI",
     ),
     value: Optional[str] = typer.Option(
-        None, "--value",
+        None,
+        "--value",
         help="Secret value. Omit to read one line from stdin (keeps it out of shell history).",
     ),
 ):
@@ -94,6 +97,7 @@ def my_secret_set(
     """
     if value is None:
         import sys
+
         value = sys.stdin.readline().rstrip("\n")
     if not value:
         typer.echo("set: secret value is empty — refusing.", err=True)
@@ -132,3 +136,26 @@ def my_secret_status(
     has = body.get("has_secret", False)
     scope = body.get("source_scope", "?")
     typer.echo(f"source={source_id} scope={scope} has_secret={'yes' if has else 'no'}")
+
+
+@my_secret_app.command("test")
+def my_secret_test(
+    source_id: str = typer.Argument(..., help="MCP source id (src_*)"),
+    json_out: bool = typer.Option(False, "--json", help="Emit raw JSON"),
+):
+    """Verify your stored credential works against the upstream source."""
+    import json
+
+    resp = api_post(f"/api/mcp/sources/{source_id}/my-secret/test")
+    if resp.status_code != 200:
+        # 403 carries the connect remedy; _fail prints it and hints the next step.
+        _fail(resp)
+    body = resp.json() or {}
+    if json_out:
+        typer.echo(json.dumps(body))
+        return
+    if body.get("ok"):
+        typer.echo(f"ok — {body.get('tool_count')} tools reachable")
+    else:
+        typer.echo(f"not working: {body.get('message')}", err=True)
+        typer.echo(f"Reconnect with: agnes mcp my-secret set {source_id}", err=True)

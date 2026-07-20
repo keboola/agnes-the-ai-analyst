@@ -1,44 +1,59 @@
-"""Cross-platform one-word launcher shortcut installer.
+"""Cross-platform one-word launcher script installer.
 
-``install_launcher_shortcut`` is called by ``agnes init`` to write a shell
-function (bash/zsh on POSIX, PowerShell on Windows) that jumps into the
-workspace and launches Claude with ``--permission-mode auto``.
+``install_launcher_shortcut`` is called by ``agnes init`` to install an
+executable launcher script named after the workspace into ``~/.local/bin`` —
+the same directory ``uv tool install`` puts the ``agnes`` binary itself, so
+anyone who can run ``agnes`` already has it on PATH.  The script is
+``<word>`` (POSIX ``#!/bin/sh``) or ``<word>.cmd`` (Windows cmd shim) and
+jumps into the workspace before launching Claude with
+``--permission-mode auto``.
+
+Earlier versions wrote a shell *function* into the user's rc file
+(``~/.zshrc`` / ``~/.bashrc`` / PowerShell ``$PROFILE``).  That mutated
+personal dotfiles, was invisible to ``which`` and non-interactive shells,
+and on Windows silently failed under the default
+``ExecutionPolicy Restricted`` (profiles are scripts and don't load).
+``install_launcher_shortcut`` therefore also *removes* those legacy marked
+rc blocks, and ``migrate_launcher_shortcut`` (called from ``agnes update``)
+converges existing installs without re-running ``agnes init``.
 
 Design decisions
 ----------------
-- Vendor-agnostic: the shortcut word is derived from the workspace folder
+- Vendor-agnostic: the launcher word is derived from the workspace folder
   name (alphanumerics only, lowercased — see ``_launcher_word``), never
   hard-coded.
 - IWT convention: when ``<workspace>/bin/<word>`` (POSIX) or
   ``<workspace>/bin/<word>.cmd`` / ``<word>.ps1`` (Windows) exists and is
-  executable, the shortcut routes through it (adds ``--permission-mode auto``
+  executable, the script routes through it (adds ``--permission-mode auto``
   on top) so the operator's welcome skill fires correctly.  When absent, it
-  falls back to ``cd <workspace> && claude --permission-mode auto``.
-- Idempotent: a per-workspace guard marker
-  (``# >>> agnes launcher: <word> <<<``) is checked by reading the rc file —
-  not via ``grep`` (unavailable on Windows).  The marker embeds the launcher
-  word so several workspaces on one machine each get their own block and a
-  re-run of ``agnes init`` in any of them never duplicates.
-- Collision-safe: the launcher word must not shadow a POSIX shell built-in
-  or a command the Agnes toolchain itself depends on (``agnes``, ``claude``)
-  — a ``function agnes`` would hijack every CLI call into a chat session
-  (#783).  Colliding words get an ``ai`` suffix, and a re-run of
-  ``agnes init`` removes the stale shadowing block a pre-fix version wrote
-  (safe: the block carries our own marker).
-- Best-effort: all errors are caught and reported via ``typer.echo(err=True)``
-  so a write failure never aborts ``agnes init``.
-- Reversible: deleting the marked block from the rc file removes the shortcut.
+  falls back to ``cd <workspace> && exec claude --permission-mode auto``.
+- Ownership marker: every script we write carries a
+  ``>>> agnes launcher: <word> <<<`` comment line.  Only files carrying the
+  marker are ever overwritten; a same-named user file is left untouched.
+- Collision-safe: the word must not shadow a POSIX shell built-in, a
+  command the toolchain depends on (``agnes``, ``claude`` — #783), an
+  existing foreign file in the bin dir, or any other executable already on
+  PATH.  Colliding words get an ``ai`` suffix; if that collides too, the
+  shortcut is skipped with a warning.
+- Opt-out preserved: ``migrate_launcher_shortcut`` acts only on evidence of
+  a previous install (legacy marked rc block or our script), so a user who
+  ran ``agnes init --no-shortcut`` stays untouched.
+- Best-effort: all errors are caught and reported via
+  ``typer.echo(err=True)`` so a write failure never aborts ``agnes init``
+  or ``agnes update``.
+- Reversible: deleting the script removes the shortcut; legacy rc blocks
+  are removed automatically.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 
 import typer
-
 
 # POSIX built-ins / common commands that must not be shadowed by the launcher.
 # Sourced from the POSIX spec plus a handful of universally-present utilities.
@@ -87,17 +102,18 @@ _SHELL_BUILTINS: frozenset[str] = frozenset(
     }
 )
 
-# Commands the Agnes toolchain itself depends on. A launcher function with one
-# of these names shadows the real binary once the rc file is sourced — e.g. a
-# workspace named "Agnes" produced `function agnes`, hijacking every `agnes`
-# CLI call into a Claude chat session (#783); a `function claude` would even
-# call itself recursively.
+# Commands the Agnes toolchain itself depends on. A launcher with one of these
+# names shadows the real binary — e.g. a workspace named "Agnes" produced a
+# `function agnes`, hijacking every `agnes` CLI call into a Claude chat
+# session (#783); a `claude` launcher would even call itself recursively.
 _RESERVED_COMMANDS: frozenset[str] = frozenset(
     {
         "agnes",
         "claude",
     }
 )
+
+_OWNERSHIP_TOKEN = ">>> agnes launcher:"
 
 
 def _sanitized_word(workspace_name: str) -> str:
@@ -115,11 +131,10 @@ def _launcher_word(workspace_name: str) -> str:
     """Derive a shell-safe launcher word from the workspace folder name.
 
     Sanitizes via ``_sanitized_word`` so a folder name with spaces, dots or
-    parentheses can never produce a syntactically invalid ``function <word>``
-    block in the user's rc file.  Clean names (e.g. ``FoundryAI`` →
-    ``foundryai``) are unaffected, so the ``bin/<word>`` IWT convention still
-    resolves.  Returns ``""`` when the name has no alphanumeric characters at
-    all (caller skips + warns).
+    parentheses can never produce an invalid script name.  Clean names
+    (e.g. ``MyTeamAI`` → ``myteamai``) are unaffected, so the
+    ``bin/<word>`` IWT convention still resolves.  Returns ``""`` when the
+    name has no alphanumeric characters at all (caller skips + warns).
 
     Appends ``"ai"`` when the sanitized word collides with a POSIX shell
     built-in (workspace ``"Test"`` → ``"testai"``) or with a command the
@@ -131,8 +146,8 @@ def _launcher_word(workspace_name: str) -> str:
     return word
 
 
-# The open/close sentinels embed the workspace word so each workspace gets its
-# own idempotent block.
+# The open/close sentinels embed the workspace word so each legacy rc block
+# (and each script) is identifiable per workspace.
 def _markers(word: str) -> tuple[str, str]:
     """Return the (open, close) sentinel comments for ``word``'s block."""
     return (
@@ -141,61 +156,114 @@ def _markers(word: str) -> tuple[str, str]:
     )
 
 
-def _rc_file(home: Path) -> Path:
-    """Return the shell rc file to append to on POSIX.
+def _bin_dir(home: Path) -> Path:
+    """Launcher install dir — ``~/.local/bin`` on every platform.
 
-    Preference order:
-    1. SHELL env contains 'zsh' → ~/.zshrc
-    2. macOS (darwin) → ~/.zshrc  (zsh is the default since Catalina)
-    3. otherwise → ~/.bashrc
+    ``uv tool install`` places the ``agnes`` binary there (POSIX and
+    Windows alike), so PATH is already handled for anyone who can run
+    ``agnes`` at all.
     """
-    shell = os.environ.get("SHELL", "")
-    if "zsh" in shell or sys.platform == "darwin":
-        return home / ".zshrc"
-    return home / ".bashrc"
+    return home / ".local" / "bin"
 
 
-def _posix_block(word: str, raw_word: str, workspace: Path) -> str:
-    """Shell function block for bash/zsh.
+def _script_ext() -> str:
+    return ".cmd" if sys.platform == "win32" else ""
 
-    The IWT naming contract seeds ``bin/<raw_word>`` (sanitized folder name,
-    no collision suffix), so when the collision guard renamed the function the
-    lookup tries both names — the shortcut must keep routing through the
-    operator's launcher.  Invoking it by absolute path cannot re-shadow.
+
+def _script_is_ours(path: Path) -> bool:
+    """True when ``path`` carries the ownership marker.
+
+    Only such files may be overwritten. Unreadable/binary files are treated
+    as foreign.
     """
-    open_marker, close_marker = _markers(word)
-    launch_cmd = f'cd "{workspace}" && claude --permission-mode auto "$@"'
+    try:
+        return _OWNERSHIP_TOKEN in path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+
+
+def _posix_script(word: str, raw_word: str, workspace: Path) -> str:
+    """POSIX launcher script body.
+
+    Routes through the IWT ``bin/<raw_word>`` launcher when present (the
+    lookup tries both the collision-suffixed and the raw name — the IWT
+    seeds ``bin/<raw_word>``); otherwise cd + exec claude.  ``cd`` happens
+    in the script's own process, so the calling terminal's cwd is never
+    touched, and ``exec`` keeps the process tree flat.
+    """
+    open_marker, _ = _markers(word)
+    launch_cmd = f'cd "{workspace}" && exec claude --permission-mode auto "$@"'
     for candidate in dict.fromkeys((word, raw_word)):
         launcher = workspace / "bin" / candidate
         if launcher.exists() and os.access(launcher, os.X_OK):
-            launch_cmd = f'"{launcher}" --permission-mode auto "$@"'
+            launch_cmd = f'exec "{launcher}" --permission-mode auto "$@"'
             break
+    return (
+        "#!/bin/sh\n"
+        f"{open_marker}\n"
+        f"# Launcher for the {workspace.name} workspace. Managed by `agnes init`;\n"
+        "# safe to delete together with the workspace.\n"
+        f"{launch_cmd}\n"
+    )
 
-    return f"\n{open_marker}\nfunction {word} {{\n  {launch_cmd}\n}}\n{close_marker}\n"
 
+def _windows_script(word: str, raw_word: str, workspace: Path) -> str:
+    """Windows ``.cmd`` shim body.
 
-def _windows_block(word: str, raw_word: str, workspace: Path) -> str:
-    """PowerShell function block for Windows.
-
-    Same ``bin/<raw_word>`` fallback as ``_posix_block``, with the Windows
-    ``.cmd`` / ``.ps1`` launcher variants.
+    Works from cmd.exe AND PowerShell and — unlike the old ``$PROFILE``
+    function — is immune to the default ``ExecutionPolicy Restricted``,
+    which silently blocks profile loading.  Same ``bin/<raw_word>``
+    fallback as ``_posix_script``, with the ``.cmd`` / ``.ps1`` variants.
     """
-    open_marker, close_marker = _markers(word)
-    launch_cmd = f'Set-Location "{workspace}"; claude --permission-mode auto @args'
+    open_marker, _ = _markers(word)
+    launch_cmd = f'cd /d "{workspace}"\r\nclaude --permission-mode auto %*'
     bin_dir = workspace / "bin"
     candidates = [
         bin_dir / f"{candidate}{ext}" for candidate in dict.fromkeys((word, raw_word)) for ext in (".cmd", ".ps1")
     ]
     for launcher in candidates:
         if launcher.exists():
-            launch_cmd = f'& "{launcher}" --permission-mode auto @args'
+            if launcher.suffix == ".ps1":
+                launch_cmd = f'powershell -ExecutionPolicy Bypass -File "{launcher}" --permission-mode auto %*'
+            else:
+                launch_cmd = f'call "{launcher}" --permission-mode auto %*'
             break
+    # `_markers` returns shell-comment form ("# >>> ..."); strip the leading
+    # "# ". The comment must use `::` (label form), NOT `rem`: cmd.exe
+    # tokenizes `>`/`<` as redirection even on rem lines, so
+    # `rem >>> ... <<<` errors on every launch, while a top-level label
+    # line is skipped without redirection parsing.
+    return f"@echo off\r\n:: {open_marker.removeprefix('# ')}\r\n{launch_cmd}\r\n"
 
-    return f"\n{open_marker}\nfunction {word} {{\n  {launch_cmd}\n}}\n{close_marker}\n"
+
+def _choose_target(workspace_name: str, bin_dir: Path) -> tuple[str, Path] | tuple[None, None]:
+    """Pick a non-colliding script name and its target path.
+
+    Collision ladder: the builtin/toolchain guard in ``_launcher_word``
+    first, then — per candidate — a foreign file already occupying the
+    target, or ``shutil.which`` resolving the word to a foreign executable
+    elsewhere on PATH (a workspace named ``Node`` must not shadow ``node``).
+    One ``ai``-suffix retry; both colliding ⇒ ``(None, None)``.
+    """
+    base = _launcher_word(workspace_name)
+    if not base:
+        return None, None
+    ext = _script_ext()
+    for candidate in dict.fromkeys((base, base + "ai")):
+        target = bin_dir / f"{candidate}{ext}"
+        if target.exists() and not _script_is_ours(target):
+            continue
+        resolved = shutil.which(candidate)
+        if resolved is not None:
+            resolved_path = Path(resolved)
+            if resolved_path != target and not _script_is_ours(resolved_path):
+                continue
+        return candidate, target
+    return None, None
 
 
 def _ps_profile_paths(home: Path) -> list[Path]:
-    """Return the PowerShell profile paths to write on Windows.
+    """Return the PowerShell profile paths a legacy install may have written.
 
     Two editions coexist on Windows and read *different* profile files:
 
@@ -203,9 +271,8 @@ def _ps_profile_paths(home: Path) -> list[Path]:
       default on many machines) → ``Documents/WindowsPowerShell/``
     - **PowerShell 7+** (``pwsh``) → ``Documents/PowerShell/``
 
-    We write the function to both so the shortcut loads regardless of which
-    one the user launches.  Derived from ``Path.home()``; does not invoke
-    pwsh to avoid a subprocess dependency in tests.
+    Derived from ``Path.home()``-style layout; does not invoke pwsh to
+    avoid a subprocess dependency in tests.
     """
     docs = home / "Documents"
     return [
@@ -214,53 +281,25 @@ def _ps_profile_paths(home: Path) -> list[Path]:
     ]
 
 
-def install_launcher_shortcut(workspace: Path, *, no_shortcut: bool = False) -> None:
-    """Write a one-word launcher shortcut to the user's shell config.
+def _rc_paths(home: Path) -> list[Path]:
+    """Files a legacy (rc-function) install may have written a block to."""
+    if sys.platform == "win32":
+        return _ps_profile_paths(home)
+    return [home / ".zshrc", home / ".bashrc", home / ".bash_profile"]
 
-    Parameters
-    ----------
-    workspace:
-        The fully-resolved workspace directory (``Path``).
-    no_shortcut:
-        When ``True`` the function returns immediately without writing
-        anything (honours the ``--no-shortcut`` flag on ``agnes init``).
+
+def _cleanup_words(workspace_name: str, chosen: str | None) -> set[str]:
+    """Every word a legacy block may have been written under.
+
+    Covers the pre-#783 raw word (``function agnes``), the guarded word,
+    its suffixed form, and the freshly chosen word.
     """
-    if no_shortcut:
-        return
-
-    raw_word = _sanitized_word(workspace.name)
-    word = _launcher_word(workspace.name)
-    if not word:
-        typer.echo(
-            f"  Warning  : workspace name {workspace.name!r} has no alphanumeric "
-            "characters to derive a launcher word from; skipping shortcut.",
-            err=True,
-        )
-        return
-    # Prefer the HOME env var explicitly so tests can redirect writes to a
-    # tmp directory via monkeypatch.setenv("HOME", ...) on any platform.
-    # Fall back to os.path.expanduser("~") for production use.
-    _home_env = os.environ.get("HOME")
-    home = Path(_home_env) if _home_env else Path(os.path.expanduser("~"))
-
-    try:
-        if sys.platform == "win32":
-            _install_windows(word, raw_word, workspace, home)
-        else:
-            _install_posix(word, raw_word, workspace, home)
-    except Exception as exc:  # noqa: BLE001
-        typer.echo(
-            f"  Warning  : could not install launcher shortcut ({exc}). Add it manually: see `agnes init --help`.",
-            err=True,
-        )
-        return
-
-    typer.echo(f"  Shortcut : type `{word}` from any terminal to launch")
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
+    raw = _sanitized_word(workspace_name)
+    base = _launcher_word(workspace_name)
+    words = {raw, base, base + "ai" if base else ""}
+    if chosen:
+        words.add(chosen)
+    return {w for w in words if w}
 
 
 def _defines_function(content: str, word: str) -> bool:
@@ -270,23 +309,6 @@ def _defines_function(content: str, word: str) -> bool:
     ``function agnesai`` (or any other name that merely starts with ``word``).
     """
     return re.search(rf"\bfunction {re.escape(word)}\b", content) is not None
-
-
-def _warn_if_foreign_function(word: str, existing: str) -> None:
-    """Warn when a same-named shell function without our marker already exists.
-
-    Covers the pre-FAI-35 manual shortcut: an un-marked ``function <word>``
-    the user added by hand from the old homepage step.  We never edit foreign
-    lines, so the marked block is appended below it; the later definition wins
-    when the shell loads the file, and we tell the user the old line is now a
-    harmless leftover they can delete.
-    """
-    if _defines_function(existing, word):
-        typer.echo(
-            f"  Note     : found an existing `{word}` shell function without our marker. "
-            "The new one takes precedence — you may delete the old line.",
-            err=True,
-        )
 
 
 def _strip_marked_block(content: str, word: str) -> str:
@@ -304,79 +326,201 @@ def _strip_marked_block(content: str, word: str) -> str:
     if end == -1:
         return content
     end += len(close_marker)
-    # Swallow the surrounding newlines the writer added so healing does not
-    # accumulate blank lines across re-runs.
+    # Swallow the trailing newline of the block, plus the blank line the
+    # legacy writer inserted above it — but ONLY a blank line: eating the
+    # previous line's terminator would glue user lines together when the
+    # block sits directly under one.
     if content[end : end + 1] == "\n":
         end += 1
-    if start > 0 and content[start - 1 : start] == "\n":
+    if start >= 2 and content[start - 2 : start] == "\n\n":
         start -= 1
     return content[:start] + content[end:]
 
 
-def _heal_stale_shadowing_block(content: str, word: str, raw_word: str, target_name: str) -> str:
-    """Drop the pre-collision-guard block and warn about foreign shadowers.
+def _cleanup_legacy_rc_blocks(home: Path, words: set[str]) -> list[Path]:
+    """Strip our marked launcher blocks from shell rc / PowerShell profiles.
 
-    A pre-fix ``agnes init`` wrote the launcher under ``raw_word`` (e.g.
-    ``function agnes``), shadowing the very command it collides with (#783).
-    When the guard renamed the word, remove that stale block — it carries our
-    own marker, so this is safe — and tell the user.  An *unmarked* same-named
-    function is user content we must not edit; warn that it still shadows.
+    Returns the files that were modified.  Only sentinel-delimited text is
+    removed (see ``_strip_marked_block``); user lines are never touched.
     """
-    if raw_word == word:
-        return content
-    healed = _strip_marked_block(content, raw_word)
-    if healed != content:
+    cleaned: list[Path] = []
+    for rc in _rc_paths(home):
+        if not rc.exists():
+            continue
+        try:
+            content = rc.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        stripped = content
+        for word in words:
+            stripped = _strip_marked_block(stripped, word)
+        if stripped != content:
+            rc.write_text(stripped, encoding="utf-8")
+            cleaned.append(rc)
+    return cleaned
+
+
+def _has_legacy_block(home: Path, words: set[str]) -> bool:
+    """True when any rc/profile file still carries a marked block for ``words``."""
+    for rc in _rc_paths(home):
+        if not rc.exists():
+            continue
+        try:
+            content = rc.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if any(_markers(w)[0] in content for w in words):
+            return True
+    return False
+
+
+def _warn_if_shadowing_function(home: Path, word: str) -> None:
+    """Warn when an rc file defines an unmarked ``function <word>``.
+
+    Such a function takes precedence over the PATH script in interactive
+    shells.  It is user content — warn, never edit.
+    """
+    if sys.platform == "win32":
+        return
+    for rc in _rc_paths(home):
+        if not rc.exists():
+            continue
+        try:
+            content = rc.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if _defines_function(content, word):
+            typer.echo(
+                f"  Warning  : {rc.name} defines a `{word}` shell function that will "
+                f"shadow the new launcher script in interactive shells. Delete that "
+                f"`function {word}` block to use the script.",
+                err=True,
+            )
+
+
+def _home() -> Path:
+    # Prefer the HOME env var explicitly so tests can redirect writes to a
+    # tmp directory via monkeypatch.setenv("HOME", ...) on any platform.
+    # Fall back to os.path.expanduser("~") for production use.
+    home_env = os.environ.get("HOME")
+    return Path(home_env) if home_env else Path(os.path.expanduser("~"))
+
+
+def install_launcher_shortcut(workspace: Path, *, no_shortcut: bool = False, quiet: bool = False) -> None:
+    """Install the one-word launcher script into ``~/.local/bin`` and remove
+    any legacy rc-function blocks a previous version wrote.
+
+    Parameters
+    ----------
+    workspace:
+        The fully-resolved workspace directory (``Path``).
+    no_shortcut:
+        When ``True`` the function returns immediately without writing
+        anything (honours the ``--no-shortcut`` flag on ``agnes init``).
+    quiet:
+        Suppress the stdout summary line (used by ``agnes update``, whose
+        ``--quiet``/``--json`` contracts require a clean stdout).
+    """
+    if no_shortcut:
+        return
+
+    if not _sanitized_word(workspace.name):
         typer.echo(
-            f"  Note     : removed the old `{raw_word}` launcher shortcut from "
-            f"{target_name} — it shadowed the `{raw_word}` command. "
-            f"The shortcut is now `{word}`.",
+            f"  Warning  : workspace name {workspace.name!r} has no alphanumeric "
+            "characters to derive a launcher word from; skipping shortcut.",
             err=True,
         )
-    if _defines_function(healed, raw_word):
+        return
+
+    home = _home()
+    chosen: str | None = None
+    try:
+        bin_dir = _bin_dir(home)
+        chosen, target = _choose_target(workspace.name, bin_dir)
+
+        if chosen is None or target is None:
+            # Deliberately do NOT touch legacy rc blocks here: stripping a
+            # still-working legacy launcher without installing the
+            # replacement would leave the user with no launcher at all.
+            typer.echo(
+                "  Warning  : could not pick a launcher name that does not collide "
+                "with an existing command; skipping shortcut (any legacy shell-"
+                "function launcher is left in place).",
+                err=True,
+            )
+            return
+
+        raw_word = _sanitized_word(workspace.name)
+        if sys.platform == "win32":
+            script = _windows_script(chosen, raw_word, workspace)
+        else:
+            script = _posix_script(chosen, raw_word, workspace)
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        # newline="" disables universal-newline translation: the Windows body
+        # already carries explicit \r\n, and default text mode on Windows
+        # would double them to \r\r\n.
+        target.write_text(script, encoding="utf-8", newline="")
+        if sys.platform != "win32":
+            target.chmod(0o755)
+
+        # Only after the replacement script is in place, remove the legacy
+        # rc-function blocks — a write failure above leaves the old launcher
+        # working.
+        cleaned = _cleanup_legacy_rc_blocks(home, _cleanup_words(workspace.name, chosen))
+        for rc in cleaned:
+            typer.echo(
+                f"  Note     : removed the legacy launcher shell function from {rc.name} "
+                "— the launcher is now a script on PATH.",
+                err=True,
+            )
+
+        _warn_if_shadowing_function(home, chosen)
+        if shutil.which(chosen) is None:
+            typer.echo(
+                f"  Note     : {bin_dir} is not on PATH in this shell — add it "
+                f'(export PATH="$HOME/.local/bin:$PATH") to use `{chosen}`.',
+                err=True,
+            )
+    except Exception as exc:  # noqa: BLE001
         typer.echo(
-            f"  Warning  : your shell config still defines a `{raw_word}` function "
-            f"that shadows the `{raw_word}` command. Delete that `function {raw_word}` "
-            f"block manually; the Agnes shortcut is `{word}`.",
+            f"  Warning  : could not install launcher shortcut ({exc}). Add it manually: see `agnes init --help`.",
             err=True,
         )
-    return healed
+        return
+
+    if not quiet:
+        typer.echo(f"  Shortcut : type `{chosen}` from any terminal to launch")
 
 
-def _install_posix(word: str, raw_word: str, workspace: Path, home: Path) -> None:
-    rc = _rc_file(home)
-    open_marker, _ = _markers(word)
+def migrate_launcher_shortcut(workspace: Path, *, quiet: bool = True) -> str:
+    """Converge an existing launcher install to the script form.
 
-    existing = rc.read_text(encoding="utf-8") if rc.exists() else ""
-    # Heal first: a pre-collision-guard install may have left a block that
-    # shadows the `agnes` CLI itself (#783).
-    content = _heal_stale_shadowing_block(existing, word, raw_word, rc.name)
+    Used by ``agnes update``.  Acts only on evidence of a previous install —
+    a legacy marked rc block or an ours-marked script — so
+    ``agnes init --no-shortcut`` users stay untouched.
 
-    # Idempotency check: the marker embeds the word, so this only
-    # short-circuits for *this* workspace — other workspaces still get their
-    # own block.
-    if open_marker not in content:
-        _warn_if_foreign_function(word, content)
-        content += _posix_block(word, raw_word, workspace)
+    Returns ``"absent"`` (no evidence, nothing done), ``"migrated"``
+    (legacy rc block found; script installed, block removed),
+    ``"converged"`` (script already present, re-asserted) or ``"blocked"``
+    (legacy block present but the install skipped — e.g. both candidate
+    names collide — so the legacy launcher was deliberately left working).
+    """
+    home = _home()
+    words = _cleanup_words(workspace.name, None)
+    if not words:
+        return "absent"
 
-    if content != existing:
-        rc.parent.mkdir(parents=True, exist_ok=True)
-        rc.write_text(content, encoding="utf-8")
+    had_legacy = _has_legacy_block(home, words)
 
+    ext = _script_ext()
+    has_script = any((candidate := _bin_dir(home) / f"{w}{ext}").exists() and _script_is_ours(candidate) for w in words)
 
-def _install_windows(word: str, raw_word: str, workspace: Path, home: Path) -> None:
-    open_marker, _ = _markers(word)
-    block = _windows_block(word, raw_word, workspace)
+    if not had_legacy and not has_script:
+        return "absent"
 
-    # Write to both the Windows PowerShell 5.x and PowerShell 7+ profiles so
-    # the shortcut loads regardless of which edition the user launches.
-    for profile in _ps_profile_paths(home):
-        existing = profile.read_text(encoding="utf-8") if profile.exists() else ""
-        # Heal + idempotency check (per-workspace marker — see _install_posix).
-        content = _heal_stale_shadowing_block(existing, word, raw_word, profile.name)
-        if open_marker not in content:
-            _warn_if_foreign_function(word, content)
-            content += block
-
-        if content != existing:
-            profile.parent.mkdir(parents=True, exist_ok=True)
-            profile.write_text(content, encoding="utf-8")
+    install_launcher_shortcut(workspace, quiet=quiet)
+    if had_legacy:
+        # The install only removes legacy blocks after the replacement
+        # script landed; a block still present means the install skipped.
+        return "migrated" if not _has_legacy_block(home, words) else "blocked"
+    return "converged"

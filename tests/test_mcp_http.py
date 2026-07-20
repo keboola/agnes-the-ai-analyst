@@ -177,6 +177,11 @@ class TestToolRegistration:
             # Collections chunks + knowledge items + table catalog cards.
             # Triple-surface with GET /api/knowledge/search + `agnes search`.
             "knowledge_search",
+            # Keboola glossary import (2026-07-17 design) — relevance-ranked
+            # (BM25) search over Keboola-imported business-term definitions.
+            # Triple-surface with GET /api/glossary/search + `agnes glossary
+            # search`.
+            "glossary_search",
             # Re-run ingestion for one stuck file (needs_review/rejected) —
             # status-honesty follow-up (spec 2026-07-08). Triple-surface with
             # POST /api/collections/{cid}/files/{fid}/reingest +
@@ -191,6 +196,16 @@ class TestToolRegistration:
             # Triple-surface with GET /api/admin/source-connections +
             # `agnes admin connection list`.
             "admin_source_connections_list",
+            # Job management for scheduler — list, get, enqueue tasks.
+            # Triple-surface with GET /api/jobs + GET /api/jobs/{job_id} +
+            # POST /api/jobs + `agnes admin jobs`.
+            "admin_jobs_list",
+            "admin_job_get",
+            "admin_job_enqueue",
+            # DuckLake analytics-backend migration (wave-2G Task 6). Triple-
+            # surface with POST /api/admin/analytics/migrate + `agnes admin
+            # analytics migrate`.
+            "admin_analytics_migrate",
             # Contributed-skill triple-surface — admin can list, publish, and
             # delete skills in the Agnes Contributed marketplace without leaving
             # the chat. Mirrors REST + `agnes admin skill` CLI surface.
@@ -218,6 +233,10 @@ class TestToolRegistration:
             "admin_store_lint_findings",
             "admin_store_lint_audit",
             "admin_store_lint_dismiss",
+            # Per-user MCP credential connectivity check — an analyst's Claude
+            # verifies their own stored token. Triple-surface with POST
+            # /api/mcp/sources/{id}/my-secret/test + `agnes mcp my-secret test`.
+            "my_secret_test",
         }
 
     def test_no_client_only_tools(self):
@@ -476,3 +495,58 @@ class TestServerInfoTool:
 
         assert result["health"] == "unreachable"
         assert result["authenticated"] is True
+
+
+# ── my_secret_test tool ──────────────────────────────────────────────────────
+
+
+class TestMySecretTestTool:
+    def test_success_passthrough(self):
+        mod = _import_mod()
+        data = {"ok": True, "tool_count": 3, "message": "ok"}
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            MC.return_value.__aenter__.return_value.post = AsyncMock(return_value=_mock_resp(data))
+            result = _run(mod.my_secret_test("src_test"))
+
+        assert result == data
+
+    def test_403_remedy_reaches_the_model_instead_of_raising(self):
+        """raise_for_status() would discard the response body and surface only
+        a generic 'Forbidden' — the connect-here remedy in `detail` must reach
+        the caller instead (audit finding on PR #919)."""
+        mod = _import_mod()
+        remedy = "not connected — visit /me/connections?source=src_test to add your token"
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            resp = _mock_resp({"detail": remedy}, status=403)
+            MC.return_value.__aenter__.return_value.post = AsyncMock(return_value=resp)
+            result = _run(mod.my_secret_test("src_test"))
+
+        assert result == {"ok": False, "tool_count": None, "message": remedy}
+        resp.raise_for_status.assert_not_called()
+
+    def test_other_4xx_also_returns_detail_without_raising(self):
+        mod = _import_mod()
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            resp = _mock_resp({"detail": "not_granted"}, status=429)
+            MC.return_value.__aenter__.return_value.post = AsyncMock(return_value=resp)
+            result = _run(mod.my_secret_test("src_test"))
+
+        assert result["ok"] is False
+        assert result["message"] == "not_granted"
+
+    def test_5xx_still_raises(self):
+        mod = _import_mod()
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            resp = _mock_resp({}, status=500)
+            resp.raise_for_status.side_effect = RuntimeError("boom")
+            MC.return_value.__aenter__.return_value.post = AsyncMock(return_value=resp)
+            with pytest.raises(RuntimeError):
+                _run(mod.my_secret_test("src_test"))

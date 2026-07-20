@@ -21,6 +21,9 @@ Steps, in order, each wrapped so one failure never aborts the rest:
   3. Agnes-owned settings — hooks / statusLine / managed slash-commands. Agnes
      owns these in BOTH modes and (re)asserts them authoritatively; foreign
      hook entries and a user statusLine are preserved.
+  3b. Launcher shortcut — migrate a legacy rc-function launcher to the
+     ~/.local/bin script; skipped when no prior install evidence exists (so
+     the `agnes init --no-shortcut` opt-out survives updates).
   4. Marketplace plugins — bootstrap when the clone is missing, else cheap
      `--check` and a full reconcile only on drift.
   5. Data — `agnes pull` (MD5-skip, atomic sidecar swap; already idempotent).
@@ -346,6 +349,18 @@ def _reassert_enabled_plugins() -> list[str]:
     return ev["enabled"]
 
 
+# --------------------------------------------------------------------------- #
+# Step 3b — launcher shortcut (migrates a legacy rc-function launcher to the
+# ~/.local/bin script; no-op when the user never had a shortcut, preserving
+# the `agnes init --no-shortcut` opt-out).
+# --------------------------------------------------------------------------- #
+def _step_launcher(workspace: Path, *, report: list[dict]) -> None:
+    from cli.lib.shortcut import migrate_launcher_shortcut
+
+    status = migrate_launcher_shortcut(workspace, quiet=True)
+    report.append({"stage": "launcher", "status": "ok", "detail": status})
+
+
 def _step_marketplace(*, report: list[dict], quiet: bool = False) -> None:
     import contextlib
     import io
@@ -570,6 +585,7 @@ def update(
                         report,
                     )
                     _run_step("agnes-owned", lambda: _step_agnes_owned(workspace, report=report), report)
+                    _run_step("launcher", lambda: _step_launcher(workspace, report=report), report)
                     _run_step("marketplace", lambda: _step_marketplace(report=report, quiet=step_quiet), report)
                     _run_step(
                         "pull",

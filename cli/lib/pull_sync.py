@@ -33,7 +33,6 @@ Layout::
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import re
@@ -51,6 +50,7 @@ _DIRECT_DIRNAME = "_direct"
 _RESERVED_DATA_DIRS = frozenset({_SHARED_DIRNAME, _DIRECT_DIRNAME})
 
 _SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+_UNSAFE_SEGMENT_RE = re.compile(r"[^A-Za-z0-9_.\-]+")
 
 
 @dataclass
@@ -74,8 +74,7 @@ class SyncReport:
 
     def total_changes(self) -> int:
         return sum(
-            r.added + r.updated + r.removed
-            for r in (self.direct_tables, self.data_packages, self.memory_domains)
+            r.added + r.updated + r.removed for r in (self.direct_tables, self.data_packages, self.memory_domains)
         )
 
 
@@ -85,15 +84,73 @@ class SyncReport:
 
 
 def _safe_segment(name: str) -> str:
-    """Return ``name`` if it's safe to use as a path segment, else raise.
+    """Return a filesystem-safe path segment derived from ``name``.
 
-    Manifest slugs and table ids come from server-controlled rows but the
+    Manifest slugs and table ids come from server-controlled rows, but the
     sync layer is the last line of defense before they hit the local
-    filesystem — guard against traversal/control chars/empty.
+    filesystem. A table's display ``name`` is a human label ("Agnes audit
+    log") that is a legal name yet not usable as a raw path segment, so:
+
+    - if ``name`` is already strictly safe (and not ``.``/``..``), return it
+      verbatim so previously-synced filenames stay byte-for-byte stable;
+    - otherwise coerce every run of unsafe chars to ``_`` and strip leading/
+      trailing separators, raising only when nothing usable remains or the
+      result would traverse (``.``/``..``).
     """
-    if not name or not _SAFE_SEGMENT_RE.match(name):
+    if not name:
         raise ValueError(f"unsafe path segment: {name!r}")
-    return name
+    if _SAFE_SEGMENT_RE.match(name) and name not in {".", ".."}:
+        return name
+    cleaned = _UNSAFE_SEGMENT_RE.sub("_", name).strip("._-")
+    if not cleaned or cleaned in {".", ".."}:
+        raise ValueError(f"unsafe path segment: {name!r}")
+    return cleaned
+
+
+def _safe_segment_map(items: Iterable[dict], key: str, kind: str) -> Dict[str, dict]:
+    """Build ``{safe_segment: item}`` from server rows, skipping any row whose
+    ``key`` can't yield a usable path segment.
+
+    A single poison row must not abort the whole type's sync: sanitize what we
+    can, log + drop what we can't, so the rest of the manifest still syncs.
+
+    Since sanitization is many-to-one (``"Sales 2024"`` and ``"Sales/2024"``
+    both fold to ``Sales_2024``), two distinct labels can claim the same
+    segment. They would map to the same on-disk path anyway, so a collision is
+    resolved deterministically — the lexicographically smaller raw label wins
+    (independent of manifest row order), later ones are logged and skipped
+    rather than silently overwriting (which would drop a table and, on the
+    next delete pass, unlink its parquet).
+    """
+    out: Dict[str, dict] = {}
+    for it in items:
+        raw = it.get(key)
+        if not raw:
+            continue
+        try:
+            seg = _safe_segment(raw)
+        except ValueError:
+            logger.warning("pull: skipping %s with unsafe %s %r", kind, key, raw)
+            continue
+        if seg in out:
+            # Deterministic tiebreak independent of manifest row order: the
+            # lexicographically smaller raw label wins, so the survivor never
+            # flips run-to-run even if the server reorders colliding rows.
+            kept = out[seg].get(key)
+            winner, loser = (raw, kept) if str(raw) < str(kept) else (kept, raw)
+            logger.warning(
+                "pull: %s %r skipped — path segment %r collides with %r (keeping %r)",
+                kind,
+                loser,
+                seg,
+                winner,
+                winner,
+            )
+            if winner == kept:
+                continue
+            # new row wins the tiebreak → fall through and overwrite
+        out[seg] = it
+    return out
 
 
 def _shared_path(local_data_dir: Path, table_id: str) -> Path:
@@ -101,7 +158,8 @@ def _shared_path(local_data_dir: Path, table_id: str) -> Path:
 
 
 def _link_or_copy(
-    src: Path, dst: Path,
+    src: Path,
+    dst: Path,
 ) -> str:
     """Create a reference from ``dst`` → ``src``.
 
@@ -189,10 +247,7 @@ def _count_references(shared_path: Path, local_data_dir: Path) -> int:
                 ref_stat = ref.stat()
             except OSError:
                 continue
-            if (
-                ref_stat.st_dev == shared_stat.st_dev
-                and ref_stat.st_ino == shared_stat.st_ino
-            ):
+            if ref_stat.st_dev == shared_stat.st_dev and ref_stat.st_ino == shared_stat.st_ino:
                 count += 1
     return count
 
@@ -285,10 +340,7 @@ def _sync_table_into(
         return None, False
     expected_md5 = _server_table_md5(table)
     shared = _shared_path(local_data_dir, tid)
-    must_fetch = (
-        not shared.exists()
-        or (expected_md5 and md5_of(shared) != expected_md5)
-    )
+    must_fetch = not shared.exists() or (expected_md5 and md5_of(shared) != expected_md5)
     fetched = False
     if must_fetch:
         shared.parent.mkdir(parents=True, exist_ok=True)
@@ -301,9 +353,7 @@ def _sync_table_into(
             actual = md5_of(shared)
             if actual != expected_md5:
                 shared.unlink(missing_ok=True)
-                raise ValueError(
-                    f"md5 mismatch on {tid}: expected {expected_md5[:12]}, got {actual[:12]}"
-                )
+                raise ValueError(f"md5 mismatch on {tid}: expected {expected_md5[:12]}, got {actual[:12]}")
 
     strategy = _link_or_copy(shared, dest)
     entry = {
@@ -353,7 +403,7 @@ def sync_direct_tables(
     """
     report = TypeReport()
     new_state: Dict[str, Any] = {}
-    server_names = {_safe_segment(t["name"]): t for t in server_tables if t.get("name")}
+    server_names = _safe_segment_map(server_tables, "name", "direct table")
     prev_names = set(prev_state.keys())
 
     direct_dir = local_data_dir / _DIRECT_DIRNAME
@@ -419,16 +469,14 @@ def sync_data_packages(
     report = TypeReport()
     new_state: Dict[str, Dict[str, Any]] = {}
 
-    server_by_slug = {_safe_segment(p["slug"]): p for p in server_packages if p.get("slug")}
+    server_by_slug = _safe_segment_map(server_packages, "slug", "data package")
     prev_slugs = set(prev_state.keys())
 
     for slug, pkg in server_by_slug.items():
         pkg_dir = local_data_dir / slug
         prev_pkg = prev_state.get(slug) or {}
         server_tables = pkg.get("tables") or []
-        server_table_by_name = {
-            _safe_segment(t["name"]): t for t in server_tables if t.get("name")
-        }
+        server_table_by_name = _safe_segment_map(server_tables, "name", "package table")
         new_pkg_state: Dict[str, Any] = {}
 
         for name, table in server_table_by_name.items():
@@ -447,9 +495,7 @@ def sync_data_packages(
                     md5_of=md5_of,
                 )
             except Exception as exc:
-                report.errors.append(
-                    {"package": slug, "name": name, "error": str(exc)}
-                )
+                report.errors.append({"package": slug, "name": name, "error": str(exc)})
                 continue
             if entry is None:
                 continue
@@ -521,7 +567,7 @@ def sync_memory_domains(
     report = TypeReport()
     new_state: Dict[str, Any] = {}
 
-    server_by_slug = {_safe_segment(d["slug"]): d for d in server_domains if d.get("slug")}
+    server_by_slug = _safe_segment_map(server_domains, "slug", "memory domain")
     prev_slugs = set(prev_state.keys())
 
     for slug, dom in server_by_slug.items():
@@ -529,10 +575,7 @@ def sync_memory_domains(
         is_new = prev is None
         expected_md5 = dom.get("md5") or ""
         bundle_path = local_memory_dir / slug / "bundle.md"
-        must_fetch = (
-            not bundle_path.exists()
-            or expected_md5 != (prev or {}).get("md5")
-        )
+        must_fetch = not bundle_path.exists() or expected_md5 != (prev or {}).get("md5")
         if must_fetch:
             try:
                 body = bundle_fetcher(slug)
@@ -575,9 +618,7 @@ def sync_memory_domains(
 # ---------------------------------------------------------------------------
 
 
-def audit_invariants(
-    local_data_dir: Path, sync_state: Dict[str, Any]
-) -> List[str]:
+def audit_invariants(local_data_dir: Path, sync_state: Dict[str, Any]) -> List[str]:
     """Surface drift between disk + sync_state.
 
     Returns a list of human-readable violation strings — emitted as
@@ -610,9 +651,7 @@ def audit_invariants(
                 # Package: v is {name: entry}
                 for inner in v.values():
                     if isinstance(inner, dict) and inner.get("shared_path"):
-                        referenced_shared.add(
-                            Path(inner["shared_path"]).resolve(strict=False)
-                        )
+                        referenced_shared.add(Path(inner["shared_path"]).resolve(strict=False))
 
     for f in shared_dir.iterdir():
         if not f.is_file():

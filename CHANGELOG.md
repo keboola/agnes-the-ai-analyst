@@ -13,6 +13,618 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 - The Admin nav dropdown's catch-all "Agent Experience" section is split into three intent-based groups — **Moderation queues** (Curated memory reviews, Flea Submissions), **Marketplace & knowledge distribution** (Curated Marketplaces, Maintained digests), and **Onboarding & messaging** (Initial Workspace, News, Prompts) — so an admin lands on the right page by the job they're doing instead of scanning seven loosely-related items. Nav-only change in `app/web/templates/_app_header.html`; same links, same routes, same RBAC.
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.75.3] - 2026-07-20
+
+### Added
+
+- Keboola relationship-based JOIN metrics: `semantic-metric` expressions previously skipped as `foreign_alias_reference` now compose a two-table `LEFT JOIN` when exactly one `semantic-relationship` connects the metric's dataset (on the live-verified `to` side) to a registered Agnes table, resolved by real column metadata rather than alias-name matching (verified live: alias names in `semantic-relationship.on` never matched the aliases metric authors used). Anything ambiguous, an unverified join direction, or an unsupported relationship type still skips and counts under a specific reason — never a guessed JOIN.
+
+## [0.75.2] - 2026-07-20
+
+### Added
+
+- **Actionable diagnostic when the chat LLM credential fails at runtime.** An invalid/expired key (HTTP 401/403), an unfunded account ("credit balance too low", HTTP 400), or a provider outage forwarding chat traffic through the broker previously surfaced only as an opaque synthetic assistant message. The broker now classifies the failure (reusing `app/chat/readiness.py::classify_llm_failure`, shared with the admin "test connection" probe), records a key-free signal, and audits it as `broker_llm_auth_failure`. `GET /admin/chat/readiness` gains an `llm_runtime` field and the *Cloud chat readiness* admin panel shows a red banner naming the exact fault; the signal clears on the next successful forward. Operator remediation runbook added to `docs/DEPLOYMENT.md`.
+
+### Internal
+
+- Fixed `tests/test_cli_push.py` and `tests/test_e2e_privacy.py` making real,
+  uncontrolled network calls during the test suite: the gzip-capability
+  health probe added in #929 (`_server_accepts_gzip()`) resolves `api_get`
+  from `push.py`'s own module scope, a separate binding from
+  `cli.commands.push.get_server_url` — the tests' config stubs patched the
+  latter but not the former, so the probe silently hit whatever server the
+  machine running the suite was really configured against. Sandboxed the
+  probe in both files' config-stub helpers and added a regression test
+  guarding against this gap reopening.
+
+## [0.75.1] - 2026-07-20
+
+### Added
+
+- Jira parquet: reproducible bloom-filter benchmark
+  (`connectors/jira/scripts/bloom_benchmark.py`) and a decision record
+  ([docs/planning/749-jira-parquet-bloom-filters.md](docs/planning/749-jira-parquet-bloom-filters.md)).
+  Measured before/after numbers show bloom filters on `issue_key` give ≤1.12× on
+  the real hive-partitioned layout at +47 % file size and ~11× slower writes —
+  the existing hive partitioning + min/max statistics + page index already prune
+  our selective queries — so bloom filters are intentionally not added. Closes
+  the benchmark acceptance criterion left open since #406/#665.
+
+### Fixed
+
+- **Session processors could hold the request-serving process for minutes under a large session backlog (e.g. a bulk onboarding wave), causing app-wide `503`s on completely unrelated endpoints.** `run_processor()` (`services/session_pipeline/runner.py`) now enforces a per-tick wall-clock time budget (default 150s) across the whole cross-session loop, in addition to the existing per-tick attempt-count cap — once the budget is exceeded, the loop stops visiting new candidates and leaves the rest for the next scheduler tick (already-processed sessions in that tick stay marked processed; no exception is raised, since a partial tick is a normal outcome). This closes a gap the attempt-count cap alone didn't cover: one processor (`usage`) is deliberately exempt from the attempt-count cap as cheap/local-only, so a large backlog could previously drain unboundedly in one tick.
+
+## [0.75.0] - 2026-07-20
+
+### Added
+
+- **Process roles for multi-process deployments** (wave-1, WS A):
+  `AGNES_ROLE=api|gateway|worker|all` (or `instance.yaml::deployment.role`;
+  default `all` — unchanged single-process behavior) with startup guards
+  (`app/startup_guards.py`) that refuse any multi-process topology (role
+  split, or `UVICORN_WORKERS>1`) unless Postgres app-state, explicit
+  `JWT_SECRET_KEY`/`SESSION_SECRET`, and `coordination.backend: redis` are
+  all configured; unauthenticated `/healthz` (liveness) and `/readyz`
+  (readiness — background write-canary with M-of-N hysteresis) probes for
+  load balancers; lease-guarded startup seeds so concurrent cold boots
+  don't double-seed; role-gated lifecycle (chat manager, Slack socket-mode,
+  startup warmup, rebuild-on-boot run only on their owning role); and an
+  experimental m-tier Compose profile (`docker-compose.mtier.yml` +
+  `scripts/dev/mtier-smoke.sh`) exercising a role-split topology end to
+  end.
+
+- **Durable job queue + worker runtime** (wave-2B, WS B): a `jobs` table
+  (DuckDB and Postgres, schema v94) backs `POST /api/jobs` (enqueue `{kind, payload?,
+  idempotency_key?}` → 202; unknown `kind` → 400 listing the registered
+  kinds), `GET /api/jobs/{job_id}` and `GET /api/jobs?status=&kind=&limit=`
+  — gated by `require_admin` (also accepts the scheduler's shared-secret
+  token), with `agnes admin jobs enqueue|show|list` CLI and
+  `admin_job_enqueue`/`admin_job_get`/`admin_jobs_list` MCP tools. A worker
+  runtime (`app/worker/runtime.py`, `Role.WORKER`) claims rows through a
+  lease/heartbeat/retry lifecycle across two lanes — heavy (`data-refresh`,
+  `jira-refresh`) and light (`marketplaces-sync`, `session-collector`,
+  `corporate-memory`) — each kind a thin adapter over its existing HTTP
+  handler; rebuilds are additionally serialized across processes via a
+  Postgres advisory lock (`src/db_pg.py::rebuild_lease`, a no-op on the
+  DuckDB backend). The scheduler and `POST /api/sync/trigger` now enqueue
+  these kinds instead of running them inline, and the Jira webhook enqueues
+  `jira-refresh` instead of rebuilding the orchestrator synchronously,
+  collapsing a burst of webhook events into one queued rebuild. See
+  [`docs/jobs-classification.md`](docs/jobs-classification.md) for which
+  scheduler rows moved to the queue and which stay synchronous HTTP.
+
+- **Swappable coordination backend** (wave-2C, WS C):
+  `coordination.backend: memory|redis` (`AGNES_COORDINATION_BACKEND` env
+  override; `memory` remains the default — behavior unchanged for
+  single-process deployments) plus `redis.url`/`AGNES_REDIS_URL` now backs
+  every piece of cross-process ephemeral state that previously lived in
+  in-process module dicts: chat WS auth tickets (including the admin-tail
+  ticket); leader leases for Slack Socket Mode, the Telegram long-poll
+  loop, and the paused-sandbox TTL sweep (exactly one active replica per
+  singleton consumer); shared per-IP auth-endpoint rate limiting and chat
+  per-user hourly-message/daily-token quotas; cache-invalidation pub/sub
+  for the v2 catalog/schema/sample TTL caches; CLI-auth login codes and
+  Slack binding codes (removing one of the two remaining always-RW DuckDB
+  files across a multi-process topology); and `.env_overlay` secret tokens
+  (moved into the control-plane vault with cross-process reload on
+  rotation). `coordination.backend: redis` is also now a third trigger for
+  the wave-1 multi-process startup guard, and every consumer above is
+  designed to recover cleanly from a Redis `FLUSHALL` within its lease TTL
+  — see [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) → *Multi-process* for the
+  disposability invariant.
+
+- **Prometheus `/metrics` on every role** (wave-2D, WS G): an
+  unauthenticated, internal-scrape-only endpoint
+  (`app/observability/metrics.py`, same posture as `/healthz`/`/readyz` —
+  operators must not expose it publicly) exporting HTTP request metrics,
+  job-queue and worker-runtime metrics (queue depth, queue-lag, lane
+  occupancy, claim/failure counters, job duration), coordination-backend
+  health, and the readiness signal — every series labeled `role` and
+  `replica`. A job enqueued within a request now carries that request's
+  `request_id` in its payload, and the worker binds it into its logging
+  context while running the job, so a job's logs correlate back to the
+  request that triggered it. The `mtier` Compose profile gains
+  `prometheus` (scraping all role containers) and `cadvisor` services for
+  a working local example. See
+  [`observability.md`](docs/observability.md).
+
+- **Role-split-aware ops tooling** (wave-2E, WS I): the
+  `customer-instance` Terraform module's startup script now provisions
+  `SESSION_SECRET` the same way it already handles `JWT_SECRET_KEY`,
+  closing the gap that tripped the wave-1 multi-process guard on a
+  role-split deployment through this module; the daily backup script also
+  `pg_dump`s the Postgres control-plane DB (same retention + a
+  restore-canary) when that backend is in use; the auto-upgrade script
+  does a sequential, `/readyz`-gated rolling recreate (worker + gateway
+  first, then API replicas one at a time) instead of a one-shot recreate
+  when it detects a role-split topology, and its sync-in-flight defer
+  probe also checks for a running `data-refresh` job; and the watchdog now
+  monitors every role container instead of a single hardcoded `app`, with
+  a new coordination-backend-unreachable incident signature. Single-container
+  deployments are unaffected in all four cases.
+
+- **Multi-replica chat HA** (wave-2F, WS D): `ChatManager` state —
+  previously in-process dicts, unusable across replicas — is now
+  coordination-backed, so multi-worker/multi-replica chat is allowed
+  whenever `coordination.backend: redis` (previously refused outright
+  regardless of backend). Building blocks: a per-session routing lease
+  (`chat:{chat_id}`) naming the gateway currently hosting a session's
+  sandbox; a monotonic frame envelope feeding a bounded outbound replay
+  stream so a WS reconnect gets exactly the frames it missed (or a
+  `full_refresh` signal when the gap can't be confidently closed); an
+  inbound command stream forwarding a message landing on a non-owning
+  gateway to whichever gateway owns the session instead of racing a second
+  runner; a WS reconnect landing on a gateway that doesn't hold the lease
+  claims (steals) it and takes over — destroys the old sandbox, spawns a
+  fresh runner, and replays recent turns for continuity (v1 semantics, not
+  a live handoff: an in-flight turn on the old gateway is lost, the same
+  trade-off a plain process restart already accepts); and Slack webhook
+  handlers on `api`-role replicas (which run no `ChatManager`) degrade to
+  a thin-producer path that publishes straight to the inbound stream
+  instead of crashing. Desktop/browser notifications are absorbed into
+  the same coordination fabric (see Removed, below). Under the default
+  `memory` backend every mechanism above is a no-op — single-process
+  behavior is unchanged.
+
+- **Opt-in signed-URL distribution** (wave-2H, WS F — off by default; no
+  behavior change unless an operator configures an object store): when
+  `distribution.object_store` is set (bucket + optional S3-compatible
+  `endpoint_url`, credentials via `access_key_env`/`secret_key_env`
+  indirection) and `distribution.signed_urls` is `auto`/`on`, the worker
+  mirrors distribution parquets to the bucket after each sync (a new
+  `distribution-mirror` LIGHT job chained off `data-refresh`, md5-keyed and
+  idempotent), the `/api/sync/manifest` per-table entries gain a short-TTL
+  (~15 min) presigned `signed_url` + `signed_url_expires_at` next to the
+  existing md5/size, and `agnes pull` prefers the presigned URL — fetching
+  the parquet straight from object storage — with automatic fallback to the
+  app-served `/api/data/{id}/download` on any failure, md5-verifying the
+  bytes on both paths. Moves download bandwidth off the single app NIC onto
+  object storage at L tier; the S/M default (app-served path + reverse-proxy
+  file-server bypass) is unchanged. Vendor-agnostic by construction — one
+  S3-compatible client (`boto3`, shipped as the optional `[distribution]`
+  extra) covers AWS S3, GCS's S3-interop endpoint, SeaweedFS, and managed
+  buckets; there is no bundled object store. Presigned URLs never widen
+  access (emitted only for tables the caller can already download, and never
+  for row-level-RBAC internal tables), and the `agnes pull` fetch is
+  DNS-rebinding-guarded with redirects disabled. Config guide:
+  [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#signed-url-distribution-object-store);
+  architecture: [`docs/architecture.md`](docs/architecture.md).
+
+- **Opt-in DuckLake analytics backend** (wave-2G, WS E — `legacy` remains the
+  default; every existing deployment is unaffected until an operator opts
+  in): `analytics.backend: ducklake` (or `AGNES_ANALYTICS_BACKEND=ducklake`)
+  moves the server-side analytics query surface from the rebuilt-and-swapped
+  `server.duckdb` file to a DuckLake catalog — Postgres-backed for
+  multi-process deployments (`ducklake.catalog_dsn` / `AGNES_DUCKLAKE_CATALOG_DSN`,
+  enforced by `app/startup_guards.py::validate_deployment`), a DuckDB-file
+  catalog for single-process `all` mode. The extracts tree
+  (`/data/extracts/{source}/{extract.duckdb, data/*.parquet}`) is untouched
+  and remains the distribution artifact + rollback truth for both backends —
+  neither ever re-extracts from a source system. Building blocks: session
+  management (`src/ducklake_session.py`) with a long-lived reader singleton
+  per api/gateway process (cursor-per-request, snapshot-isolated against
+  concurrent writes, no per-request catalog writes) and a separate writer
+  singleton for the worker; a copy-ingest rebuild path
+  (`src/orchestrator.py::_do_rebuild_ducklake`) that ports the legacy
+  rebuild's view-ownership claim/collision semantics and — unlike the
+  legacy full-rebuild-on-any-change path — re-ingests only the touched
+  source's own catalog schema on a per-source rebuild (e.g. a Jira webhook);
+  a reader path wired into `/api/query` and the BigQuery-hybrid query
+  endpoint; a daily `ducklake-maintenance` job (`merge_adjacent_files` →
+  `ducklake_expire_snapshots` → `ducklake_cleanup_old_files` → catalog
+  `VACUUM`, mutually exclusive with any concurrent rebuild via a shared
+  `rebuild_mutex()`, with a configurable snapshot-retention window floored
+  at 1 hour so a live query's snapshot can never be reclaimed out from
+  under it) plus an m-tier Compose profile flip exercising it end-to-end;
+  and an `agnes admin analytics migrate --to ducklake|legacy`
+  command/`POST /api/admin/analytics/migrate` endpoint (REST+CLI+MCP) that
+  validates prerequisites (extension loadable; for a Postgres catalog, a
+  real reachability probe that auto-repairs a missing catalog database via
+  `CREATE DATABASE` when possible, or reports the exact manual command),
+  enqueues a full rebuild into the named target backend from the on-disk
+  extracts tree regardless of the currently configured backend, and
+  instructs the operator to flip `analytics.backend` and restart once that
+  job completes (config is read once at boot, not hot-reloaded) — the same
+  shape in reverse rolls back to `legacy`. Full architecture:
+  [`docs/architecture.md`](docs/architecture.md#analytics-data-plane-legacy-vs-ducklake);
+  deployment/config guide:
+  [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#ducklake-analytics-backend).
+
+### Changed
+
+- Chat per-user hourly message-rate limiting (wave-2C) moved from a
+  sliding-window deque to a fixed UTC-hour window as part of switching its
+  counter onto the coordination backend. **Disclosure:** this allows up to
+  ~2x the configured rate in a short burst straddling an hour boundary (a
+  full quota just before `:00`, another full quota just after) — standard
+  fixed-window limiter behavior, looser rather than stricter than what it
+  replaced.
+
+- Chat idle reaper no longer dies permanently on a single failed sweep. The
+  loop had no error guard, so one unhandled exception in a sweep (a transient
+  sandbox kill/destroy or DB hiccup) killed the reaper task — after which idle
+  and paused E2B sandboxes accumulated indefinitely (billable) with nothing
+  reaping them (#867, reaper-cadence half). The loop now logs and continues to
+  the next sweep, and the kill phase + paused-TTL teardown are per-item guarded
+  so one bad session can't abort the rest of a sweep. (Note: paused sandboxes
+  are still retained for `chat.paused_ttl_seconds`, default 7 days, by design —
+  lower it to reduce paused-VM cost.)
+
+### Removed
+
+- **BREAKING**: the standalone `services/ws_gateway` process (wave-2F — a
+  separate aiohttp server plus a Unix-socket HTTP dispatch endpoint, with
+  its own in-memory connection registry) is gone; its role folds into the
+  gateway role of the main app process (see Added, above). The
+  `ws-gateway` Docker Compose service is removed — deployments using the
+  `full` profile no longer start it, and Telegram's notification dispatch
+  now publishes through the coordination fabric instead of the removed
+  Unix socket.
+
+### Internal
+
+- **De-flaked the wave-2F chat test suite** (`tests/test_chat_manager.py`,
+  `tests/test_chat_inbound.py`, `tests/test_chat_takeover.py`,
+  `tests/test_chat_replay.py`) under `pytest -n auto`: fixed `asyncio.sleep(0.0x)`
+  waits on async background setup (session `attach()`, cross-gateway
+  publish/takeover, replay) replaced with condition polling via a shared
+  `_wait_until` helper (`tests/chat_fakes.py`). Along the way, fixed two
+  real races these fixed sleeps were masking: a cross-gateway
+  `send_user_message`/`kill`/`cancel` could race `ChatManager._spawn_live`'s
+  routing-lease claim and raise `SessionNotFound`, and a message/control
+  command published in the narrow window before a fresh
+  `_inbound_consumer_loop`'s initial `peek_seq` cursor-seed was silently
+  treated as already-delivered and never seen — both now covered by
+  test-side instrumentation that waits for those steps to actually land
+  before the next action, not just for the `LiveSession` to exist.
+### Security
+
+- Query RBAC: non-admins can no longer reach an un-granted source's rows via a
+  catalog-qualified path. Each source's `extract.duckdb` is ATTACHed as its own
+  catalog, and the previous non-admin gate was a denylist of master-VIEW names
+  in the default catalog — so `<ungranted_source>.main."<table>"` slipped past
+  it (base relations in other catalogs aren't default-catalog views). `/api/query`
+  and `/api/v2/scan (from_query)` now reject any catalog-qualified reference into
+  a local extract catalog for non-admins (the granted surface is the unqualified
+  master views); remote-extension catalogs (`bq`/`kbc`) keep their registry gate.
+  Generalizes the audit M1 internal-table fix (#868). The two duplicated
+  enforcement copies were consolidated into one helper.
+
+## [0.74.121] - 2026-07-20
+
+### Added
+
+- **Per-table timing in the scheduled BigQuery metadata refresh.** A slow
+  refresh cycle (one run taking minutes instead of the usual ~100 s over the
+  same table set, with no errors and no CPU pressure) previously could not be
+  attributed to any specific table — the job logged only a single per-run
+  summary line. `run_bq_metadata_refresh` now emits one INFO line per table
+  (`bq metadata refresh table: run_id=… table_id=… status=… fetch_ms=… total_ms=…`)
+  where `fetch_ms` isolates the BigQuery `bq_metadata.fetch` call (the up-to-4
+  sequential jobs-API round-trips) and `total_ms` covers the whole per-row
+  work including the local DuckDB upsert. The two timings are also returned in
+  the `refresh_one` outcome dict, so `POST /api/v2/metadata-cache/refresh`
+  surfaces them for operator on-demand refreshes. `app/api/bq_metadata_refresh.py`.
+
+## [0.74.120] - 2026-07-20
+
+### Added
+
+- New admin/analyst web page `/catalog/semantics` — a read-only browser for
+  the semantic layer: business metrics (`metric_definitions`) and the
+  glossary (`glossary_terms`), reusing `GET /api/metrics` and
+  `GET /api/glossary(/search)` (no new REST endpoints). Metrics tab is
+  server-rendered and grouped by category with a client-side filter;
+  Glossary tab is a live, debounced search. Row detail expands inline
+  (accordion), source badges (`manual` / `yaml_import` / `openmetadata` /
+  `keboola_semantic_layer`) use the existing 4-slot badge vocabulary. Linked
+  from `/catalog`. `/admin/data-sources` gets a small summary card —
+  "Semantic layer: N metrics, M glossary terms synced from Keboola" — once a
+  connection has synced. Picks up issue #853 plus the glossary.
+
+## [0.74.119] - 2026-07-20
+
+### Changed
+
+- `agnes push` now gzip-compresses session transcript uploads (~10x smaller transfers) when the server advertises the `session-gzip` capability; older client/server combinations keep the plain format automatically. Escape hatch: `AGNES_PUSH_NO_GZIP=1`. The server stream-decompresses uploads at ingest and stores plain JSONL — the size cap binds on decompressed bytes and per-call decompression output is bounded (zip-bomb / peak-memory guard).
+
+## [0.74.118] - 2026-07-18
+
+### Changed
+
+- `/me/connections` Connect / Replace token / Test / Remove buttons now use the
+  design-system button classes (`btn btn-primary` / `btn-secondary` /
+  `btn-danger`, size `btn-sm`) instead of unstyled browser-default buttons, and
+  the row wraps on narrow viewports.
+
+## [0.74.117] - 2026-07-18
+
+### Changed
+
+- `/me/connections` "Test connection" now shows a friendly, actionable failure
+  ("Couldn't connect to <source>. Check that your token is valid and try
+  again.") instead of the raw upstream/SDK exception string (e.g. "unhandled
+  errors in a TaskGroup"). The sanitized cause is logged server-side for
+  operators. Status messages are also styled by state — failures use the
+  design-system danger token, successes the success token — so an error is
+  visually distinct from a neutral message.
+
+## [0.74.116] - 2026-07-18
+
+### Added
+
+- New analyst HOWTO: [Installing skills in Claude Cowork](docs/HOWTO/06-claude-cowork.md)
+  — the download → `Customize → Personal plugins → Upload plugin` loop, the
+  no-sync update model, what packages carry, connector reachability caveat,
+  and troubleshooting for upload-validation failures.
+
+## [0.74.115] - 2026-07-18
+
+### Added
+
+- Keboola glossary import: `semantic-glossary` Metastore items sync into a new `glossary_terms` table (DuckDB + Postgres, schema v93), tagged `source='keboola_semantic_layer'` and upsert+pruned each `keboola-semantic-layer-refresh` run alongside metrics — no new scheduler job. Relevance-ranked search (`GET /api/glossary/search`, `agnes glossary search`, the `glossary_search` MCP tool) uses DuckDB FTS BM25 (Postgres: `ts_rank`) with an ILIKE fallback, mirroring the corporate-memory knowledge search.
+
+## [0.74.114] - 2026-07-18
+
+### Fixed
+
+- Cowork per-plugin zips (`GET /marketplace/cowork/<prefixed_name>.zip`) no
+  longer fail Claude Cowork's upload validation when a skill or plugin
+  `description` exceeds 1024 characters. `sanitize_description` now truncates
+  over-long descriptions on a word boundary with a trailing ellipsis (the
+  validator rejects `description` fields over 1024 characters — previously the
+  packager shipped them through unchanged, so the upload failed with "field
+  'description' in SKILL.md must be at most 1024 characters").
+  `COWORK_FORMAT_VERSION` bumped so cached ETags bust and clients re-download
+  the corrected zip.
+
+### Security
+
+- The `GET`/`PUT`/`DELETE /api/mcp/sources/{id}/my-secret` endpoints now require
+  a grant on the source (the same `_visible_passthrough_tools` intersection the
+  connect page and `/test` use; admin short-circuits). Previously any signed-in
+  user could probe an arbitrary source's existence, scope, and connection
+  timestamp, or store a token against a source they had no grant on. Closes the
+  gap left when the self-service connect flow (#919) grant-gated the page and
+  `/test` but not these three sibling verbs.
+
+## [0.74.113] - 2026-07-18
+
+### Added
+
+- Self-service per-user MCP credential management. A new `/me/connections`
+  page lets any signed-in user connect, replace, test, and remove their own
+  token for the `per_user` MCP sources they are granted — no operator in the
+  loop. Backed by a new `POST /api/mcp/sources/{id}/my-secret/test`
+  connectivity check (gated by scope + grant + rate limit + credential, and
+  reachable via `agnes mcp my-secret test` and the `my_secret_test` MCP tool),
+  an `updated_at` field on the `my-secret` status, and a per-source
+  `connect_hint` (schema v92) that tells the user where to obtain their token
+  (admin-authored, rendered through the safe markdown pipeline). When an
+  unconnected caller invokes a `per_user` tool, the error is now an actionable,
+  web-linked remedy pointing at the connect page (falling back to the CLI hint
+  when no public URL is configured).
+
+## [0.74.112] - 2026-07-17
+
+### Added
+
+- `customer-instance` Terraform module can now deploy the opt-in LLM
+  dispatcher (token-arbitrage PoC) alongside Agnes. Per-VM flag
+  `dispatcher_enabled` on `prod_instance` / `dev_instances` (dev-first
+  rollouts), module-wide config `dispatcher_image` (pin a `:<sha>` tag),
+  `dispatcher_policies` (deployment-owned routing YAML content),
+  `dispatcher_key_secret` and `dispatcher_vertex_sa_secret` (Secret Manager
+  names; module grants the VM SA scoped secretAccessor, fetches fail loudly
+  at boot). The startup script writes `/opt/agnes/dispatcher/{policies,keys,
+  vertex-sa}` plus a `docker-compose.dispatcher.yml` overlay (dispatcher +
+  dedicated ledger postgres on the persistent disk) appended to
+  `COMPOSE_FILE`, and sets `LLM_DISPATCHER_URL=http://dispatcher:8600` +
+  `LLM_DISPATCHER_API_KEY` in `/opt/agnes/.env` so the chat broker's
+  dispatcher opt-in (0.74.108) engages. Disabled instances render a
+  byte-identical startup script — the feature is fully inert unless enabled.
+  The dispatcher ledger Postgres password is minted once and persisted on
+  the same persistent data disk as the ledger data it protects (falls back
+  to reading an existing boot-disk `.env` value for migration, then mints
+  fresh only if neither exists), so a VM recreate never desyncs the
+  password from the surviving database.
+
+## [0.74.111] - 2026-07-17
+
+### Fixed
+
+- **`INSERT OR REPLACE` could crash the whole app process on DuckDB, same class of bug as #909.**
+  `UsageRepository.upsert_summary` (`usage_session_summary`, hit every ~10
+  minutes by the usage session processor) and `ChatRepository.upsert_workdir`
+  (`user_workdirs`) both used `INSERT OR REPLACE`, which deletes-then-inserts
+  the conflicting row internally on DuckDB 1.5.4 — the same PRIMARY KEY index
+  assertion that #909 fixed for the rollup producers, just via a different
+  SQL surface. Observed live twice more in production within 24h of #909
+  shipping, on two different `session_file` keys, each time invalidating the
+  shared connection for every subsequent query until the process restarted.
+  Switched both to `INSERT ... ON CONFLICT DO UPDATE`, which updates the
+  existing row in place instead of deleting it. Postgres siblings already
+  used `ON CONFLICT DO UPDATE` (native syntax, no equivalent bug), so this
+  also removes a semantic difference between the two backends' SQL shape.
+  `src/repositories/usage.py`, `app/chat/persistence.py`.
+
+## [0.74.110] - 2026-07-17
+
+### Internal
+- Tests: `agnes init` / launcher tests can no longer write into the developer's real home — all in-process and subprocess init invocations redirect `HOME` into tmp, and a `tests/conftest.py` autouse guard fails any test that mutates the real shell rc files (legacy-block cleanup) or drops launcher scripts into the real `~/.local/bin`.
+
+## [0.74.109] - 2026-07-17
+
+### Fixed
+
+- Marketplace git smart-HTTP: a `git http-backend` subprocess that exited (or
+  closed its stdin) before the request body was written — e.g. an `info/refs`
+  GET, which never reads stdin — crashed the request with an unhandled
+  `RuntimeError: … the handler is closed` (uvloop transport write-after-close),
+  returning a traceback 500 and leaking the child process. The stdin
+  write/drain/close is now guarded (empty bodies skip the write entirely) and
+  runs inside the cleanup block; a child that produced no output is still
+  reported as a 500 with its stderr and exit code logged.
+  `app/marketplace_server/git_router.py` (race introduced in #887).
+
+## [0.74.108] - 2026-07-17
+
+### Added
+
+- Opt-in LLM dispatcher upstream for chat completions (token-arbitrage PoC).
+  When `LLM_DISPATCHER_URL` (+ `LLM_DISPATCHER_API_KEY`, the dispatcher team
+  key that doubles as the cost-ledger identity) is set in the server env, the
+  chat broker forwards `POST /v1/messages` to the dispatcher instead of
+  `api.anthropic.com`; all other Anthropic subpaths (e.g. `count_tokens`) keep
+  the pinned Anthropic upstream. Takes precedence over `chat.llm_auth`
+  (including `workload_identity`) for `/v1/messages`; deliberately no fallback
+  to direct Anthropic on dispatcher failure. Unset ⇒ behavior unchanged. The
+  broker logs a warning when the URL is set without the key.
+  `app/api/broker.py`, documented in `config/.env.template`.
+
+## [0.74.107] - 2026-07-17
+
+### Security
+
+- **Jira attachment download: SSRF via the webhook-supplied URL (audit L3).**
+  `download_attachment` fetched `attachment.content` straight from the webhook
+  payload — caller-supplied — with redirects followed and no host check, so an
+  HMAC-valid webhook for a nonexistent issue could reach the fetch-failure
+  fallback and make the server GET an arbitrary internal URL (blind; the body
+  landed under `/data`). The content URL is now checked against an explicit
+  **host allowlist** (the configured Jira domain + `api.atlassian.com`, https
+  only, `urlsplit`-parsed so `https://jira.example.com@evil.tld/` resolves to
+  the real host) before any HTTP call. An allowlist rather than a private-IP
+  denylist: a denylist would wrongly break a self-hosted Jira on a private
+  address.
+- **Co-session seed embedded the owner-chosen session title undelimited
+  (audit L5).** The intersection seed interpolated the source session's title
+  raw into a `role="system"` message read by the *invitee's* agent, so an owner
+  could give their own instruction text system-role authority in a session
+  shared with a higher-grant colleague. The title is now length-capped, wrapped
+  in `<untrusted_title>` markers, tag-defanged so a crafted title can't close
+  the wrapper, and explicitly labelled as data-never-instructions (mirrors the
+  `<untrusted_notes>` boundary in the corporate-memory curator). Bounded before
+  and after — a co-session runs under the grant *intersection* and egress is
+  brokered, so the ceiling was behavioral manipulation, not data escalation.
+
+### Changed
+- The one-word workspace launcher installed by `agnes init` is now an executable script in `~/.local/bin` (`<word>.cmd` on Windows) instead of a shell function appended to `~/.zshrc` / `~/.bashrc` / PowerShell profiles. Scripts are visible to `which`, work from non-interactive shells, and on Windows are immune to the default `ExecutionPolicy Restricted` (which silently blocked the old profile function from loading). The collision guard now also refuses to shadow any existing executable on PATH (a workspace named `Node` gets `nodeai`, not `node`). `agnes init` and a new `agnes update` convergence step automatically remove the legacy marked rc-function blocks and install the script — never before the replacement script is in place; users who opted out via `agnes init --no-shortcut` are left untouched. `scripts/dev/agnes-client-reset.sh` removes marker-carrying launcher scripts on reset.
+
+## [0.74.106] - 2026-07-17
+
+### Fixed
+
+- **Keboola export scratch dirs could leak silently, filling the data disk.**
+  `materialize_query` / `_extract_via_legacy` pass `ignore_cleanup_errors=True`
+  to their owning `TemporaryDirectory` so a cleanup failure never masks the
+  export's real exception — but that flag also silently swallows the failure,
+  so a leaked `kbc-export-*` dir was indistinguishable from a hard-kill
+  orphan and the only signal was the disk slowly filling (observed live:
+  disk climbed from 32% to 91% in under two hours on a 15-minute materialize
+  cadence, repeatedly failing table syncs on ENOSPC). Added
+  `warn_if_scratch_survived()`, called right after each export's
+  `TemporaryDirectory` block exits — logs a warning naming the surviving dir
+  instead of leaving operators to discover it via `df -h`.
+  `connectors/keboola/storage_api.py`, `connectors/keboola/extractor.py`.
+- **`UsageRepository.rebuild_rollups()` could crash the whole app process on DuckDB.**
+  The `usage_tool_daily` / `usage_marketplace_item_daily` / `usage_marketplace_item_window`
+  rollup producers deleted a day/period range then bulk-reinserted overlapping
+  keys within the same transaction; on DuckDB 1.5.4 this could hit an internal
+  PRIMARY KEY index assertion ("duplicate key") that aborted the process
+  uncatchably rather than raising a Python exception, taking down the whole
+  instance on the next scheduler tick whenever a key at the rolling window's
+  boundary got deleted and reinserted in the same commit. Switched all three
+  producers to `INSERT ... ON CONFLICT DO UPDATE`, which never deletes the row
+  so it can't hit that path — paired with a targeted anti-join `DELETE` (only
+  keys *absent* from the freshly computed set, never one about to be
+  upserted) so a stale row whose source event was deleted/corrected still
+  gets cleaned up, matching the previous DELETE-then-reinsert behavior
+  without reintroducing the same-key delete+reinsert crash. Postgres sibling
+  is unaffected and intentionally unchanged (documented in `usage_pg.py` —
+  this is a DuckDB engine bug workaround, not a general anti-pattern fix).
+  `src/repositories/usage.py`.
+
+## [0.74.105] - 2026-07-16
+
+### Fixed
+
+- **`agnes pull` no longer aborts when a table's display name contains spaces or punctuation.** The stack sync used a table/package/domain label verbatim as an on-disk path segment; a display name like `Agnes audit log` failed the strict path-segment guard with `unsafe path segment: 'Agnes audit log'` and, because the check ran inside the server-map comprehension (before the per-table `try/except`), aborted the entire sync so `sync_state.json` was never written. Path segments are now sanitized (unsafe runs → `_`, already-safe names preserved verbatim), a genuinely un-nameable row is logged and skipped instead of raising, and the pre-existing `.`/`..` traversal pass-through is closed.
+
+## [0.74.104] - 2026-07-16
+
+### Added
+
+- **Admin hub page (`GET /admin`)** — a settings-style landing page that indexes
+  every `/admin` surface grouped by domain (Activity Center, Users & Access,
+  Data Packages, Sources, Agent Experience, Server, Documentation). It's the
+  scalable home for administration as the surface grows, and the header's Admin
+  menu links to it. Gated by `require_admin` like every other `/admin` route.
+
+### Changed
+
+- **Redesigned the app header into a single compact row** (~57px) at all
+  desktop/laptop widths: product name, primary navigation, then global search,
+  Admin, help, and user profile on one line. When the navigation runs out of
+  room the lowest-priority items collapse into a **"More" overflow menu**
+  (priority-plus, in `app.js`) before anything shrinks or clips; only on mobile
+  (<640px) does it intentionally wrap to two rows. Header height is now a single
+  `--app-header-height` token so sticky sub-toolbars offset off it instead of
+  hard-coded pixels.
+- **Admin is now a first-class header entry for admins** — its own trigger that
+  opens a multi-column **mega-menu** (every admin domain visible at once, versus
+  the previous one-at-a-time accordion) with a link to the new `/admin` hub. It
+  is no longer buried in the user-profile dropdown, which is slimmed back to
+  personal items (Profile, AI Connector, My activity, Logout, Theme). All routes
+  and permissions are unchanged — every `/admin/*` route is still gated by
+  `require_admin`; this is a discoverability/IA change only.
+
+## [0.74.103] - 2026-07-16
+
+### Fixed
+
+- **Fresh Postgres-backend deployments can boot compose from scratch.** On a brand-new `data` volume the `data-migrate` one-shot in `docker-compose.postgres.yml` found no `system.duckdb` to migrate from, exited 2, and wedged the boot — `app` and `scheduler` gate on it via `service_completed_successfully`. The compose command now passes a new `--missing-source-ok` flag: `python -m scripts.migrate_duckdb_to_pg` treats the missing source as "nothing to migrate" (logged no-op, exit 0), so a fresh deployment proceeds straight to the alembic-seeded PG. Operator-driven runs WITHOUT the flag keep exiting 2 — during a real cutover a missing `system.duckdb` means a mis-mounted volume, not a fresh install — and the flag is rejected in combination with `--reset-target`. Covered by a static compose contract test plus a docker-gated e2e that boots the real overlay chain on fresh volumes (`pytest tests/test_e2e_docker_postgres_fresh.py -m docker`).
+
+## [0.74.102] - 2026-07-16
+
+### Fixed
+
+- **`agnes init` and the recommended launch command no longer trip Claude Code's auto-mode classifier during analyst setup.** `agnes refresh-marketplace --bootstrap` (marketplace clone + plugin install) was soft-denied as "Untrusted Code Integration" under `--permission-mode auto`; `agnes init` now declares the configured marketplace host as trusted internal infrastructure in the user-scope `~/.claude/settings.json` (`autoMode.environment`), derived from config at runtime — never hardcoded. Separately, the `/home` onboarding page's recommended launch command now pre-approves `uv tool install` (setup step 1) via `Bash(uv tool install:*)` in `--allowedTools`, so it no longer requires an interactive permission prompt. Existing installs pick up the trust on their next `agnes init`; wiring it into `agnes update` for installs that never re-run init is a tracked follow-up.
+
+## [0.74.101] - 2026-07-16
+
+### Fixed
+
+- Built-in marketplace plugins (`agnes-analyst`, `agnes-operator`) now ship
+  their `SKILL.md` at the canonical `plugins/<name>/skills/<name>/SKILL.md`
+  path instead of the plugin root. At the root the file was discovered by
+  nothing: Claude Code loaded no skill from the installed plugin, and
+  `list_inner_skills()` returned `[]`, so both plugins contributed zero
+  skills to the marketplace listing and the served feed despite installing
+  and being granted correctly. Users who already installed either plugin
+  pick the skill up on the next `agnes refresh-marketplace` (or session
+  start).
+
+## [0.74.100] - 2026-07-16
+
+### Added
+
+- **Search responses now label the retrieval mode** (#898): `GET /api/collections/search`, `GET /api/knowledge/search`, and the MCP tools `collections_search` / `knowledge_search` (both transports, including the stdio offline fallback) carry a `retrieval: "hybrid" | "lexical_only"` field. Previously the lexical-only degradation that kicks in without the `agnes[embeddings]` extra was visible only in a server-side log line, so a client could not tell semantic-scored results from degraded ones.
+
+### Fixed
+
+- Catalog `fetch_via` hint for internal tables (`agnes_audit`, `agnes_sessions`, `agnes_telemetry`) no longer claims "already local" (#898) — on a fresh workspace no local view exists until the usage export lands in the pull manifest, so the old hint misrouted clients into a failing local query. It now points at the auto-routing `agnes query`.
+- MCP `describe` docstrings (stdio + server-side foundation tool) now document the actual sample shape (#898): `sample.rows` is a list of `{column: value}` objects and there is no `sample.columns` key — the docstring previously promised `{"columns": [...], "rows": [...]}`, which broke agents parsing the documented shape on empty tables.
 
 ## [0.74.99] - 2026-07-16
 

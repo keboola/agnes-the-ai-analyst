@@ -20,9 +20,10 @@
 #   3. A one-shot ``data-migrate`` service that runs
 #      ``python -m scripts.migrate_duckdb_to_pg`` on every ``compose up``.
 #      Idempotent (ON CONFLICT DO NOTHING + per-row SHA-256 checksums); when
-#      DuckDB has no rows for a given table the task is a no-op. ``app`` blocks
-#      on this exiting 0 so the cut-over from DuckDB → PG always happens before
-#      first request.
+#      DuckDB has no rows for a given table the task is a no-op, and when no
+#      ``system.duckdb`` exists at all (fresh data volume) the whole run is a
+#      no-op (``--missing-source-ok``). ``app`` blocks on this exiting 0 so
+#      the cut-over from DuckDB → PG always happens before first request.
 #   4. ``DATABASE_URL`` injected into the ``app`` service. The migration
 #      modules in ``src/repositories/*_pg.py`` and ``src/db_pg.py`` activate
 #      when this is set; without the overlay, ``app`` continues to use the
@@ -101,7 +102,14 @@ services:
     # build/image split as for `migrate` above — prod uses the pulled image.
     build: .
     image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
-    command: python -m scripts.migrate_duckdb_to_pg --duckdb-path /data/state/system.duckdb
+    # --missing-source-ok: on a brand-new data volume there is no
+    # system.duckdb yet (nothing has ever run in DuckDB mode) — that is
+    # "nothing to migrate", not a failure. Without the flag the one-shot
+    # exits 2 and app/scheduler (gated below on
+    # service_completed_successfully) never start, so a fresh
+    # Postgres-backend deployment cannot boot compose from scratch.
+    # Guarded by tests/test_docker_compose_postgres.py.
+    command: python -m scripts.migrate_duckdb_to_pg --duckdb-path /data/state/system.duckdb --missing-source-ok
     depends_on:
       postgres:
         condition: service_healthy

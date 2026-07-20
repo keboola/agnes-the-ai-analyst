@@ -225,6 +225,10 @@
           <option value="per_user">per_user (each analyst supplies their own)</option>
         </select>
 
+        <label for="edit-connect-hint">Connect hint</label>
+        <textarea id="edit-connect-hint" autocomplete="off" placeholder="Generate a token in Settings → API, then paste it below."></textarea>
+        <div class="help" style="font-size:11px; color: var(--text-secondary, #9ca3af); margin-top:4px;">Shown to analysts on the connect page for a per_user source — where to obtain their personal token. Markdown supported.</div>
+
         <label for="edit-env">Environment variables (KEY=VALUE per line)</label>
         <textarea id="edit-env" autocomplete="off" placeholder="CRM_API_URL=https://api.example.com&#10;REGION=eu"></textarea>
         <div class="help" style="font-size:11px; color: var(--text-secondary, #9ca3af); margin-top:4px;">Non-secret env vars passed to the stdio subprocess (KEY=VALUE per line).</div>
@@ -433,6 +437,7 @@ document.getElementById("edit-toggle-btn").addEventListener("click", () => {
   document.getElementById("edit-auth-method").value = source.auth_method || "";
   document.getElementById("edit-auth-secret-env").value = source.auth_secret_env || "";
   document.getElementById("edit-scope").value = source.scope || "shared";
+  document.getElementById("edit-connect-hint").value = source.connect_hint || "";
   document.getElementById("edit-env").value =
     Object.entries(source.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");
   document.getElementById("edit-enabled").checked = source.enabled !== false;
@@ -457,6 +462,7 @@ document.getElementById("edit-save-btn").addEventListener("click", async () => {
     auth_method: document.getElementById("edit-auth-method").value || null,
     auth_secret_env: document.getElementById("edit-auth-secret-env").value.trim() || null,
     scope: document.getElementById("edit-scope").value || "shared",
+    connect_hint: document.getElementById("edit-connect-hint").value.trim() || null,
     env: parseEnvText(document.getElementById("edit-env").value),
     enabled: document.getElementById("edit-enabled").checked,
   };

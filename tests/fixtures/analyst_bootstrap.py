@@ -514,6 +514,12 @@ def zero_grants_workspace(
     env = os.environ.copy()
     env["AGNES_CONFIG_DIR"] = str(config_dir)
     env["AGNES_LOCAL_DIR"] = str(workspace)
+    # `agnes init` installs a launcher shortcut into the shell rc under
+    # $HOME — redirect it into tmp so the subprocess cannot append marker
+    # blocks to the developer's real ~/.zshrc (guard in tests/conftest.py).
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir(parents=True, exist_ok=True)
+    env["HOME"] = str(fake_home)
 
     result = subprocess.run(
         cmd + [

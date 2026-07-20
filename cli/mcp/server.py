@@ -139,6 +139,10 @@ def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict
 
     Returns ranked chunks with citations (``filename``, ``ordinal``, ``text``,
     ``score``). Optionally restrict to one collection via ``collection_id``.
+
+    The response's ``retrieval`` field says how results were ranked:
+    ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded mode
+    when the server has no embedding model installed.
     """
     params: dict = {"q": query, "k": k}
     if collection_id:
@@ -158,6 +162,10 @@ def knowledge_search(query: str, k: int = 10) -> dict:
     all RBAC-filtered. Results are typed ``chunk | knowledge | table``;
     a ``table`` hit means structured data: pivot to SQL via the ``query``
     tool with the hit's ``table_id`` instead of reading text chunks.
+
+    The response's ``retrieval`` field labels the chunk engine's mode:
+    ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded mode
+    when no embedding model is installed where the ranking ran.
 
     Offline fallback (K3, #798): if the server is unreachable (network/VPN
     down), falls back to `agnes pull`-shipped knowledge artifacts under
@@ -184,10 +192,15 @@ def knowledge_search(query: str, k: int = 10) -> dict:
                 f"knowledge_search failed: server unreachable ({exc}) and no "
                 "local workspace configured — run `agnes init` + `agnes pull`."
             ) from exc
+        from src.ingest.retrieval import retrieval_mode
+
         results = local_search(query, workspace=Path(ws), k=k)
         return {
             "query": query,
             "results": results,
+            # Mode of the LOCAL ranking that just ran — the laptop may lack
+            # the embeddings extra even when the server has it.
+            "retrieval": retrieval_mode(),
             "source": "local",
             "note": "server unreachable — searched local knowledge artifacts (documents only)",
         }
@@ -239,8 +252,11 @@ def describe(table_id: str, rows: int = 5) -> dict:
         table_id: Table ID from the catalog.
         rows:     How many sample rows to return (default 5, max 50).
 
-    Returns ``{"schema": {...}, "sample": {"columns": [...], "rows": [...]}}``
-    so you can see real values before writing a query.
+    Returns ``{"schema": {...}, "sample": {"table_id": ..., "rows": [...],
+    "source": ...}}`` where ``sample.rows`` is a list of ``{column: value}``
+    objects (empty when the table has no rows — there is no ``columns`` key;
+    column names come from ``schema.columns``), so you can see real values
+    before writing a query.
     """
     rows = min(max(1, rows), 50)
     try:

@@ -7,8 +7,8 @@
 
   /* .tokens-section layout/width is owned by profile.html (.section-card). */
 
-  /* Offset the #tokens deep-link target below the sticky .app-header (~72px). */
-  #tokens { scroll-margin-top: 80px; }
+  /* Offset the #tokens deep-link target below the sticky .app-header. */
+  #tokens { scroll-margin-top: calc(var(--app-header-height) + var(--space-4)); }
 
   /* Section header row: title + New-token button side by side */
   .tokens-section-header {

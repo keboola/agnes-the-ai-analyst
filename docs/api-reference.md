@@ -675,6 +675,39 @@ checks against.
 - /api/admin/knowledge-digests
 - /api/admin/knowledge-digests/{digest_id}
 
+### `/api/jobs` — Job queue (wave-2B worker runtime)
+
+- /api/jobs
+- /api/jobs/{job_id}
+
+Enqueue (`POST /api/jobs`), fetch (`GET /api/jobs/{job_id}`), and list
+(`GET /api/jobs?status=&kind=&limit=`) jobs on the durable job queue
+(`src/repositories/jobs.py`). `kind` must be registered in the server's
+`JOB_KINDS` registry (`app/worker/registry.py`, populated by
+`register_all_kinds()` at startup) — an unrecognized kind 400s with the
+list of currently-registered kinds. Gated by `require_admin`, which also
+accepts the scheduler's shared-secret bearer token
+(`app/auth/scheduler_token.py`) since that token resolves to a synthetic
+user in the `Admin` group. CLI: `agnes admin jobs enqueue|show|list`. MCP:
+`admin_job_enqueue`, `admin_job_get`, `admin_jobs_list`.
+
+### `/api/admin/analytics/migrate` — DuckLake analytics-backend migration (wave-2G)
+
+- /api/admin/analytics/migrate
+
+`POST` with `{"to": "ducklake"}` or `{"to": "legacy"}`. Validates
+prerequisites (`to="ducklake"` only — the DuckLake extension is loadable
+and the catalog is reachable, auto-repairing a missing catalog database
+on an existing Postgres volume) and enqueues an `analytics-migrate` job
+(`app/worker/kinds.py`, HEAVY lane) that rebuilds the named target
+backend from the on-disk extracts tree, via
+`SyncOrchestrator.migrate_to_backend`. Returns 202 with a `job_id` to
+poll via `GET /api/jobs/{job_id}`; 400 with the full list of unmet
+prerequisites; 409 if a migration is already in flight. Never flips
+`analytics.backend` in config — see `docs/DEPLOYMENT.md`'s DuckLake
+section for the full operator flow. CLI: `agnes admin analytics migrate
+--to <target>`. MCP: `admin_analytics_migrate`.
+
 ### `/api/admin/mcp-sources` — MCP source management
 
 - /api/admin/mcp-sources
@@ -982,6 +1015,17 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 
 - /api/debug/throw
 
+### `/api/glossary` — Keboola-imported business-term glossary (user-facing)
+
+Read/search over `glossary_terms`, populated by the Keboola semantic-layer
+importer (`keboola-semantic-layer-refresh` job) — see
+`docs/superpowers/specs/2026-07-17-keboola-glossary-import-design.md`.
+Relevance-ranked search uses DuckDB FTS BM25 with an ILIKE fallback.
+
+- /api/glossary
+- /api/glossary/search
+- /api/glossary/{glossary_id}
+
 ### `/api/health` — Health checks
 
 - /api/health
@@ -1046,6 +1090,7 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/mcp/passthrough/tools/{tool_id}/call
 - /api/mcp/query-table/{table_id}
 - /api/mcp/sources/{source_id}/my-secret
+- /api/mcp/sources/{source_id}/my-secret/test
 
 ### `/api/mcp-connect` — Headless MCP client setup
 

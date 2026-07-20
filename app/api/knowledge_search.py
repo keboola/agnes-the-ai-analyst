@@ -73,8 +73,14 @@ async def knowledge_search(
     Results are typed (``chunk | knowledge | table``); table hits carry a
     pivot hint (query via SQL) instead of rows. Everything is filtered to the
     caller's grants, fail-closed per source.
+
+    ``retrieval`` (``hybrid | lexical_only``) labels the chunk engine's mode:
+    ``lexical_only`` means the embeddings extra is absent and document chunks
+    were ranked without semantic scoring (#898). Knowledge and table hits are
+    lexical by design and unaffected.
     """
     from app.api.collections import _accessible_corpus_ids
+    from src.ingest.retrieval import retrieval_mode
 
     corpus_ids = _accessible_corpus_ids(user)
     groups, domains = _resolve_knowledge_grants(user)
@@ -93,7 +99,7 @@ async def knowledge_search(
         tables=tables,
         k=k,
     )
-    return {"query": q, "results": results}
+    return {"query": q, "results": results, "retrieval": retrieval_mode()}
 
 
 @router.get("/artifacts/{corpus_id}/download")

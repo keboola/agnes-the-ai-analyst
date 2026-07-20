@@ -30,8 +30,10 @@ by ``(action, target)`` pairs since exact wall-clock differs.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Dict, List
 
 import pytest
 from typer.testing import CliRunner
@@ -124,7 +126,6 @@ def _snapshot_audit_actions(conn, prefix: str = "") -> List[str]:
     keep only the resource type prefix. The remaining shape is what we
     actually care about: same action verb + same resource type.
     """
-    import re
 
     if prefix:
         rows = conn.execute(
@@ -132,9 +133,7 @@ def _snapshot_audit_actions(conn, prefix: str = "") -> List[str]:
             [f"{prefix}%"],
         ).fetchall()
     else:
-        rows = conn.execute(
-            "SELECT action, resource FROM audit_log ORDER BY id"
-        ).fetchall()
+        rows = conn.execute("SELECT action, resource FROM audit_log ORDER BY id").fetchall()
     # ``resource`` is canonically ``<type>:<id>``; normalize the id half so
     # uuid-based ids don't break equality on two adjacent runs.
     masked = []
@@ -171,8 +170,12 @@ def _seed_data_package(conn, *, slug: str, name: str = "P") -> str:
     from src.repositories.data_packages import DataPackagesRepository
 
     return DataPackagesRepository(conn).create(
-        name=name, slug=slug, description=None,
-        icon=None, color=None, created_by="test",
+        name=name,
+        slug=slug,
+        description=None,
+        icon=None,
+        color=None,
+        created_by="test",
     )
 
 
@@ -180,13 +183,20 @@ def _seed_memory_domain(conn, *, slug: str, name: str = "D") -> str:
     from src.repositories.memory_domains import MemoryDomainsRepository
 
     return MemoryDomainsRepository(conn).create(
-        name=name, slug=slug, description=None,
-        icon=None, color=None, created_by="test",
+        name=name,
+        slug=slug,
+        description=None,
+        icon=None,
+        color=None,
+        created_by="test",
     )
 
 
 def _seed_grant_for(
-    conn, group_id: str, resource_type: str, resource_id: str,
+    conn,
+    group_id: str,
+    resource_type: str,
+    resource_id: str,
     requirement: str = "available",
 ) -> str:
     grant_id = str(uuid.uuid4())
@@ -282,6 +292,7 @@ def parity_env(seeded_app, monkeypatch):
             "cli.commands.admin_memory_domain",
             "cli.commands.stack",
             "cli.commands.admin",
+            "cli.commands.admin_jobs",
         ],
         client=client,
         token=admin_token,
@@ -336,8 +347,7 @@ class TestStackSubscribeParity:
         conn = get_system_db()
         delta_api = _snapshot_table(
             conn,
-            "SELECT user_id, resource_type, resource_id "
-            "FROM user_stack_subscriptions WHERE resource_id = ?",
+            "SELECT user_id, resource_type, resource_id FROM user_stack_subscriptions WHERE resource_id = ?",
             [pkg_id],
         )
         conn.close()
@@ -356,8 +366,7 @@ class TestStackSubscribeParity:
         conn = get_system_db()
         delta_cli = _snapshot_table(
             conn,
-            "SELECT user_id, resource_type, resource_id "
-            "FROM user_stack_subscriptions WHERE resource_id = ?",
+            "SELECT user_id, resource_type, resource_id FROM user_stack_subscriptions WHERE resource_id = ?",
             [pkg_id],
         )
         conn.close()
@@ -397,8 +406,7 @@ class TestStackUnsubscribeParity:
         conn = get_system_db()
         delta_api = _snapshot_table(
             conn,
-            "SELECT user_id, resource_type, resource_id "
-            "FROM user_stack_subscriptions",
+            "SELECT user_id, resource_type, resource_id FROM user_stack_subscriptions",
         )
         conn.close()
 
@@ -417,8 +425,7 @@ class TestStackUnsubscribeParity:
         conn = get_system_db()
         delta_cli = _snapshot_table(
             conn,
-            "SELECT user_id, resource_type, resource_id "
-            "FROM user_stack_subscriptions",
+            "SELECT user_id, resource_type, resource_id FROM user_stack_subscriptions",
         )
         conn.close()
 
@@ -446,10 +453,9 @@ class TestStackListParity:
 
         # CLI — JSON output for stable comparison
         with _admin_auth_swap(parity_env, parity_env["analyst_token"]):
-            result = parity_env["run_cli"](
-                ["stack", "list", "--type", "data_package", "--json"]
-            )
+            result = parity_env["run_cli"](["stack", "list", "--type", "data_package", "--json"])
         import json
+
         cli_ids = sorted(it["id"] for it in json.loads(result.output))
 
         assert api_ids == cli_ids
@@ -465,9 +471,7 @@ class TestDataPackageCreateParity:
     """``POST /api/admin/data-packages`` ↔ ``agnes admin data-package create``."""
 
     def _snapshot(self, conn) -> tuple:
-        pkg_rows = _snapshot_table(
-            conn, "SELECT slug, name, description, icon, color FROM data_packages"
-        )
+        pkg_rows = _snapshot_table(conn, "SELECT slug, name, description, icon, color FROM data_packages")
         audit_rows = _snapshot_audit_actions(conn, prefix="data_package.create")
         return (pkg_rows, audit_rows)
 
@@ -479,8 +483,7 @@ class TestDataPackageCreateParity:
         # API
         r = parity_env["client"].post(
             "/api/admin/data-packages",
-            json={"name": "API Pkg", "slug": "api-pkg",
-                  "description": "via api", "icon": None, "color": None},
+            json={"name": "API Pkg", "slug": "api-pkg", "description": "via api", "icon": None, "color": None},
             headers=_auth(parity_env["admin_token"]),
         )
         assert r.status_code == 201
@@ -495,9 +498,7 @@ class TestDataPackageCreateParity:
 
         # CLI
         parity_env["run_cli"](
-            ["admin", "data-package", "create",
-             "--name", "API Pkg", "--slug", "api-pkg",
-             "--description", "via api"]
+            ["admin", "data-package", "create", "--name", "API Pkg", "--slug", "api-pkg", "--description", "via api"]
         )
         conn = get_system_db()
         delta_cli = self._snapshot(conn)
@@ -529,27 +530,19 @@ class TestDataPackageEditParity:
         )
         assert r.status_code == 200
         conn = get_system_db()
-        name_api = conn.execute(
-            "SELECT name FROM data_packages WHERE id = ?", [pkg_id]
-        ).fetchone()[0]
+        name_api = conn.execute("SELECT name FROM data_packages WHERE id = ?", [pkg_id]).fetchone()[0]
         audit_api = _snapshot_audit_actions(conn, prefix="data_package.update")
         conn.close()
 
         # Reset to OldName + audit
         conn = get_system_db()
-        conn.execute(
-            "UPDATE data_packages SET name = 'OldName' WHERE id = ?", [pkg_id]
-        )
+        conn.execute("UPDATE data_packages SET name = 'OldName' WHERE id = ?", [pkg_id])
         _reset_audit_log(conn)
         conn.close()
 
-        parity_env["run_cli"](
-            ["admin", "data-package", "edit", pkg_id, "--name", "NewName"]
-        )
+        parity_env["run_cli"](["admin", "data-package", "edit", pkg_id, "--name", "NewName"])
         conn = get_system_db()
-        name_cli = conn.execute(
-            "SELECT name FROM data_packages WHERE id = ?", [pkg_id]
-        ).fetchone()[0]
+        name_cli = conn.execute("SELECT name FROM data_packages WHERE id = ?", [pkg_id]).fetchone()[0]
         audit_cli = _snapshot_audit_actions(conn, prefix="data_package.update")
         conn.close()
 
@@ -582,28 +575,22 @@ class TestDataPackageDeleteParity:
         # shape.
         conn = get_system_db()
         api_live = conn.execute(
-            "SELECT COUNT(*) FROM data_packages "
-            "WHERE id = ? AND deleted_at IS NULL", [pkg_id]
+            "SELECT COUNT(*) FROM data_packages WHERE id = ? AND deleted_at IS NULL", [pkg_id]
         ).fetchone()[0]
         api_soft = conn.execute(
-            "SELECT COUNT(*) FROM data_packages "
-            "WHERE id = ? AND deleted_at IS NOT NULL", [pkg_id]
+            "SELECT COUNT(*) FROM data_packages WHERE id = ? AND deleted_at IS NOT NULL", [pkg_id]
         ).fetchone()[0]
         api_audit = _snapshot_audit_actions(conn, prefix="data_package.delete")
         conn.close()
 
         pkg_id_2 = self._setup()
-        parity_env["run_cli"](
-            ["admin", "data-package", "delete", pkg_id_2, "--yes"]
-        )
+        parity_env["run_cli"](["admin", "data-package", "delete", pkg_id_2, "--yes"])
         conn = get_system_db()
         cli_live = conn.execute(
-            "SELECT COUNT(*) FROM data_packages "
-            "WHERE id = ? AND deleted_at IS NULL", [pkg_id_2]
+            "SELECT COUNT(*) FROM data_packages WHERE id = ? AND deleted_at IS NULL", [pkg_id_2]
         ).fetchone()[0]
         cli_soft = conn.execute(
-            "SELECT COUNT(*) FROM data_packages "
-            "WHERE id = ? AND deleted_at IS NOT NULL", [pkg_id_2]
+            "SELECT COUNT(*) FROM data_packages WHERE id = ? AND deleted_at IS NOT NULL", [pkg_id_2]
         ).fetchone()[0]
         cli_audit = _snapshot_audit_actions(conn, prefix="data_package.delete")
         conn.close()
@@ -636,9 +623,7 @@ class TestDataPackageAddRemoveTableParity:
         )
         assert r.status_code == 200
         conn = get_system_db()
-        api_state = _snapshot_table(
-            conn, "SELECT package_id, table_id FROM data_package_tables"
-        )
+        api_state = _snapshot_table(conn, "SELECT package_id, table_id FROM data_package_tables")
         api_audit = _snapshot_audit_actions(conn, prefix="data_package.add_table")
         conn.close()
 
@@ -648,13 +633,9 @@ class TestDataPackageAddRemoveTableParity:
         _reset_audit_log(conn)
         conn.close()
 
-        parity_env["run_cli"](
-            ["admin", "data-package", "add-table", pkg_id, tbl_id]
-        )
+        parity_env["run_cli"](["admin", "data-package", "add-table", pkg_id, tbl_id])
         conn = get_system_db()
-        cli_state = _snapshot_table(
-            conn, "SELECT package_id, table_id FROM data_package_tables"
-        )
+        cli_state = _snapshot_table(conn, "SELECT package_id, table_id FROM data_package_tables")
         cli_audit = _snapshot_audit_actions(conn, prefix="data_package.add_table")
         conn.close()
 
@@ -667,8 +648,7 @@ class TestDataPackageAddRemoveTableParity:
         # Pre-link
         conn = get_system_db()
         conn.execute(
-            "INSERT INTO data_package_tables(package_id, table_id, added_by) "
-            "VALUES (?, ?, 'test')",
+            "INSERT INTO data_package_tables(package_id, table_id, added_by) VALUES (?, ?, 'test')",
             [pkg_id, tbl_id],
         )
         conn.close()
@@ -679,29 +659,22 @@ class TestDataPackageAddRemoveTableParity:
         )
         assert r.status_code == 204
         conn = get_system_db()
-        api_state = _snapshot_table(
-            conn, "SELECT package_id, table_id FROM data_package_tables"
-        )
+        api_state = _snapshot_table(conn, "SELECT package_id, table_id FROM data_package_tables")
         api_audit = _snapshot_audit_actions(conn, prefix="data_package.remove_table")
         conn.close()
 
         # Re-link
         conn = get_system_db()
         conn.execute(
-            "INSERT INTO data_package_tables(package_id, table_id, added_by) "
-            "VALUES (?, ?, 'test')",
+            "INSERT INTO data_package_tables(package_id, table_id, added_by) VALUES (?, ?, 'test')",
             [pkg_id, tbl_id],
         )
         _reset_audit_log(conn)
         conn.close()
 
-        parity_env["run_cli"](
-            ["admin", "data-package", "remove-table", pkg_id, tbl_id, "--yes"]
-        )
+        parity_env["run_cli"](["admin", "data-package", "remove-table", pkg_id, tbl_id, "--yes"])
         conn = get_system_db()
-        cli_state = _snapshot_table(
-            conn, "SELECT package_id, table_id FROM data_package_tables"
-        )
+        cli_state = _snapshot_table(conn, "SELECT package_id, table_id FROM data_package_tables")
         cli_audit = _snapshot_audit_actions(conn, prefix="data_package.remove_table")
         conn.close()
 
@@ -717,9 +690,7 @@ class TestDataPackageAddRemoveTableParity:
 class TestMemoryDomainCreateParity:
     def _snapshot(self, conn) -> tuple:
         return (
-            _snapshot_table(
-                conn, "SELECT slug, name, description FROM memory_domains"
-            ),
+            _snapshot_table(conn, "SELECT slug, name, description FROM memory_domains"),
             _snapshot_audit_actions(conn, prefix="memory_domain.create"),
         )
 
@@ -730,8 +701,7 @@ class TestMemoryDomainCreateParity:
 
         r = parity_env["client"].post(
             "/api/admin/memory-domains",
-            json={"name": "Finance", "slug": "parity-finance",
-                  "description": "$$$"},
+            json={"name": "Finance", "slug": "parity-finance", "description": "$$$"},
             headers=_auth(parity_env["admin_token"]),
         )
         assert r.status_code == 201
@@ -744,9 +714,17 @@ class TestMemoryDomainCreateParity:
         conn.close()
 
         parity_env["run_cli"](
-            ["admin", "memory-domain", "create",
-             "--name", "Finance", "--slug", "parity-finance",
-             "--description", "$$$"]
+            [
+                "admin",
+                "memory-domain",
+                "create",
+                "--name",
+                "Finance",
+                "--slug",
+                "parity-finance",
+                "--description",
+                "$$$",
+            ]
         )
         conn = get_system_db()
         cli_delta = self._snapshot(conn)
@@ -774,26 +752,18 @@ class TestMemoryDomainEditParity:
         )
         assert r.status_code == 200
         conn = get_system_db()
-        api_name = conn.execute(
-            "SELECT name FROM memory_domains WHERE id = ?", [dom_id]
-        ).fetchone()[0]
+        api_name = conn.execute("SELECT name FROM memory_domains WHERE id = ?", [dom_id]).fetchone()[0]
         api_audit = _snapshot_audit_actions(conn, prefix="memory_domain.update")
         conn.close()
 
         conn = get_system_db()
-        conn.execute(
-            "UPDATE memory_domains SET name = 'Old' WHERE id = ?", [dom_id]
-        )
+        conn.execute("UPDATE memory_domains SET name = 'Old' WHERE id = ?", [dom_id])
         _reset_audit_log(conn)
         conn.close()
 
-        parity_env["run_cli"](
-            ["admin", "memory-domain", "edit", dom_id, "--name", "New"]
-        )
+        parity_env["run_cli"](["admin", "memory-domain", "edit", dom_id, "--name", "New"])
         conn = get_system_db()
-        cli_name = conn.execute(
-            "SELECT name FROM memory_domains WHERE id = ?", [dom_id]
-        ).fetchone()[0]
+        cli_name = conn.execute("SELECT name FROM memory_domains WHERE id = ?", [dom_id]).fetchone()[0]
         cli_audit = _snapshot_audit_actions(conn, prefix="memory_domain.update")
         conn.close()
 
@@ -820,28 +790,22 @@ class TestMemoryDomainDeleteParity:
         # v54: soft delete (see TestDataPackageDeleteParity above).
         conn = get_system_db()
         api_live = conn.execute(
-            "SELECT COUNT(*) FROM memory_domains "
-            "WHERE id = ? AND deleted_at IS NULL", [dom_id]
+            "SELECT COUNT(*) FROM memory_domains WHERE id = ? AND deleted_at IS NULL", [dom_id]
         ).fetchone()[0]
         api_soft = conn.execute(
-            "SELECT COUNT(*) FROM memory_domains "
-            "WHERE id = ? AND deleted_at IS NOT NULL", [dom_id]
+            "SELECT COUNT(*) FROM memory_domains WHERE id = ? AND deleted_at IS NOT NULL", [dom_id]
         ).fetchone()[0]
         api_audit = _snapshot_audit_actions(conn, prefix="memory_domain.delete")
         conn.close()
 
         dom_id_2 = self._setup()
-        parity_env["run_cli"](
-            ["admin", "memory-domain", "delete", dom_id_2, "--yes"]
-        )
+        parity_env["run_cli"](["admin", "memory-domain", "delete", dom_id_2, "--yes"])
         conn = get_system_db()
         cli_live = conn.execute(
-            "SELECT COUNT(*) FROM memory_domains "
-            "WHERE id = ? AND deleted_at IS NULL", [dom_id_2]
+            "SELECT COUNT(*) FROM memory_domains WHERE id = ? AND deleted_at IS NULL", [dom_id_2]
         ).fetchone()[0]
         cli_soft = conn.execute(
-            "SELECT COUNT(*) FROM memory_domains "
-            "WHERE id = ? AND deleted_at IS NOT NULL", [dom_id_2]
+            "SELECT COUNT(*) FROM memory_domains WHERE id = ? AND deleted_at IS NOT NULL", [dom_id_2]
         ).fetchone()[0]
         cli_audit = _snapshot_audit_actions(conn, prefix="memory_domain.delete")
         conn.close()
@@ -882,9 +846,7 @@ class TestMemoryDomainAddRemoveItemParity:
         _reset_audit_log(conn)
         conn.close()
 
-        parity_env["run_cli"](
-            ["admin", "memory-domain", "add-item", dom_id, item_id]
-        )
+        parity_env["run_cli"](["admin", "memory-domain", "add-item", dom_id, item_id])
         conn = get_system_db()
         cli_state = _snapshot_table(
             conn,
@@ -901,8 +863,7 @@ class TestMemoryDomainAddRemoveItemParity:
         dom_id, item_id = self._setup()
         conn = get_system_db()
         conn.execute(
-            "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) "
-            "VALUES (?, ?, 'test')",
+            "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) VALUES (?, ?, 'test')",
             [item_id, dom_id],
         )
         conn.close()
@@ -923,16 +884,13 @@ class TestMemoryDomainAddRemoveItemParity:
         # Re-link
         conn = get_system_db()
         conn.execute(
-            "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) "
-            "VALUES (?, ?, 'test')",
+            "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) VALUES (?, ?, 'test')",
             [item_id, dom_id],
         )
         _reset_audit_log(conn)
         conn.close()
 
-        parity_env["run_cli"](
-            ["admin", "memory-domain", "remove-item", dom_id, item_id, "--yes"]
-        )
+        parity_env["run_cli"](["admin", "memory-domain", "remove-item", dom_id, item_id, "--yes"])
         conn = get_system_db()
         cli_state = _snapshot_table(
             conn,
@@ -966,7 +924,9 @@ class TestGrantCreateRequirementParity:
         from src.repositories.user_group_members import UserGroupMembersRepository
 
         g = UserGroupsRepository(conn).create(
-            name="parity_grant_g", description="", created_by="test",
+            name="parity_grant_g",
+            description="",
+            created_by="test",
         )
         gid = g["id"] if isinstance(g, dict) else g
         UserGroupMembersRepository(conn).add_member("analyst1", gid, source="test")
@@ -988,8 +948,7 @@ class TestGrantCreateRequirementParity:
         # API path: POST (creates available) + PUT (flips to required).
         r1 = parity_env["client"].post(
             "/api/admin/grants",
-            json={"group_id": gid, "resource_type": "data_package",
-                  "resource_id": pkg_id},
+            json={"group_id": gid, "resource_type": "data_package", "resource_id": pkg_id},
             headers=_auth(parity_env["admin_token"]),
         )
         assert r1.status_code == 201, r1.text
@@ -1014,8 +973,7 @@ class TestGrantCreateRequirementParity:
         conn.close()
 
         parity_env["run_cli"](
-            ["admin", "grant", "create", "parity_grant_g",
-             "data_package", pkg_id, "--requirement", "required"]
+            ["admin", "grant", "create", "parity_grant_g", "data_package", pkg_id, "--requirement", "required"]
         )
         conn = get_system_db()
         cli_state = self._snapshot_grant(conn, gid, pkg_id)
@@ -1039,7 +997,9 @@ class TestGrantUpdateRequirementParity:
         from src.repositories.user_group_members import UserGroupMembersRepository
 
         g = UserGroupsRepository(conn).create(
-            name="parity_put_g", description="", created_by="test",
+            name="parity_put_g",
+            description="",
+            created_by="test",
         )
         gid = g["id"] if isinstance(g, dict) else g
         UserGroupMembersRepository(conn).add_member("analyst1", gid, source="test")
@@ -1061,14 +1021,12 @@ class TestGrantUpdateRequirementParity:
         conn = get_system_db()
         api_grants = _snapshot_table(
             conn,
-            "SELECT group_id, resource_type, resource_id, requirement "
-            "FROM resource_grants WHERE id = ?",
+            "SELECT group_id, resource_type, resource_id, requirement FROM resource_grants WHERE id = ?",
             [grant_id],
         )
         api_subs = _snapshot_table(
             conn,
-            "SELECT user_id, resource_type, resource_id "
-            "FROM user_stack_subscriptions WHERE resource_id = ?",
+            "SELECT user_id, resource_type, resource_id FROM user_stack_subscriptions WHERE resource_id = ?",
             [pkg_id],
         )
         conn.close()
@@ -1088,20 +1046,17 @@ class TestGrantUpdateRequirementParity:
         # CLI: same group/resource → POST returns 409 → CLI lists → finds
         # existing grant → PUTs requirement update.
         parity_env["run_cli"](
-            ["admin", "grant", "create", "parity_put_g",
-             "data_package", pkg_id, "--requirement", "available"]
+            ["admin", "grant", "create", "parity_put_g", "data_package", pkg_id, "--requirement", "available"]
         )
         conn = get_system_db()
         cli_grants = _snapshot_table(
             conn,
-            "SELECT group_id, resource_type, resource_id, requirement "
-            "FROM resource_grants WHERE id = ?",
+            "SELECT group_id, resource_type, resource_id, requirement FROM resource_grants WHERE id = ?",
             [grant_id],
         )
         cli_subs = _snapshot_table(
             conn,
-            "SELECT user_id, resource_type, resource_id "
-            "FROM user_stack_subscriptions WHERE resource_id = ?",
+            "SELECT user_id, resource_type, resource_id FROM user_stack_subscriptions WHERE resource_id = ?",
             [pkg_id],
         )
         conn.close()
@@ -1113,11 +1068,84 @@ class TestGrantUpdateRequirementParity:
 
 
 # ---------------------------------------------------------------------------
-# Per-test auth swap helper (re-patches the CLI helpers to a non-admin token)
+# Jobs (wave-2B worker queue) — enqueue
 # ---------------------------------------------------------------------------
 
 
-import contextlib
+class TestJobEnqueueParity:
+    """``POST /api/jobs`` ↔ ``agnes admin jobs enqueue <kind>``."""
+
+    def _snapshot(self, conn, kind: str) -> tuple:
+        job_rows = _snapshot_table(
+            conn,
+            "SELECT kind, status, payload_json FROM jobs WHERE kind = ?",
+            [kind],
+        )
+        # `_enqueued_by_request` (app/job_correlation.py, wave-2D Task 4)
+        # stamps the *live* HTTP request-id onto the payload at enqueue
+        # time — both the API call and the CLI's own `POST /api/jobs`
+        # call go through the same endpoint, but each is a distinct HTTP
+        # request, so they mint distinct request-ids even for an
+        # otherwise byte-identical payload. Mask the value to a
+        # placeholder before comparing (same convention
+        # `_snapshot_audit_actions` already uses for uuid-suffixed audit
+        # resource ids), after first asserting the key actually landed as
+        # a non-empty string — the correlation stamp itself is part of
+        # what parity should verify, just not its exact value.
+        masked_job_rows = []
+        for row_kind, status, payload_json in job_rows:
+            payload = json.loads(payload_json)
+            rid = payload.get("_enqueued_by_request")
+            assert isinstance(rid, str) and rid, f"expected a non-empty _enqueued_by_request, got {rid!r}"
+            payload["_enqueued_by_request"] = "<rid>"
+            masked_job_rows.append((row_kind, status, json.dumps(payload, sort_keys=True)))
+        audit_rows = _snapshot_audit_actions(conn, prefix="job.enqueue")
+        return (sorted(masked_job_rows), audit_rows)
+
+    def test_enqueue_parity(self, parity_env):
+        from app.worker.registry import LIGHT_LANE, JOB_KINDS, JobKind, register_kind
+
+        JOB_KINDS.clear()
+        register_kind(JobKind(name="parity-kind", handler=lambda payload: None, lane=LIGHT_LANE))
+        try:
+            conn = get_system_db()
+            conn.execute("DELETE FROM jobs WHERE kind = 'parity-kind'")
+            _reset_audit_log(conn)
+            conn.close()
+
+            # API
+            r = parity_env["client"].post(
+                "/api/jobs",
+                json={"kind": "parity-kind", "payload": {"x": 1}},
+                headers=_auth(parity_env["admin_token"]),
+            )
+            assert r.status_code == 202, r.text
+            conn = get_system_db()
+            api_delta = self._snapshot(conn, "parity-kind")
+            conn.close()
+
+            # Reset jobs + audit, re-fire via CLI.
+            conn = get_system_db()
+            conn.execute("DELETE FROM jobs WHERE kind = 'parity-kind'")
+            _reset_audit_log(conn)
+            conn.close()
+
+            parity_env["run_cli"](["admin", "jobs", "enqueue", "parity-kind", "--payload", '{"x": 1}'])
+            conn = get_system_db()
+            cli_delta = self._snapshot(conn, "parity-kind")
+            conn.close()
+
+            assert api_delta == cli_delta
+            # Both paths queued exactly one job + one audit row.
+            assert len(api_delta[0]) == 1
+            assert len(api_delta[1]) == 1
+        finally:
+            JOB_KINDS.clear()
+
+
+# ---------------------------------------------------------------------------
+# Per-test auth swap helper (re-patches the CLI helpers to a non-admin token)
+# ---------------------------------------------------------------------------
 
 
 @contextlib.contextmanager

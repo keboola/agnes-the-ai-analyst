@@ -26,6 +26,26 @@ conftest fixture (no restart required because tests share a process)
 and re-enables only inside the dedicated rate-limit test, so
 generous-but-finite limits don't bleed into other test files that
 hammer auth endpoints in tight loops.
+
+Storage backend (wave-2C task 4): in a single-process (``memory``
+coordination backend) deployment, slowapi's default in-memory bucket
+storage is correct — every request lands on the one process holding
+it. In a multi-process deployment (``coordination.backend=redis``),
+buckets kept in each process's own memory would let a client get
+``N ×`` the configured limit by spreading requests across ``N``
+replicas — so the ``Limiter`` is instead pointed at the SAME Redis
+instance the coordination backend already uses
+(``app.coordination.factory.resolve_redis_url()``), via slowapi/
+``limits``' native ``storage_uri=`` support (the ``limits`` package's
+``RedisStorage`` needs only the already-required ``redis`` dependency —
+no extra like ``limits[redis]``/``coredis``). Resolved once at import
+time via :func:`_build_limiter`, for the same "process-restart to pick
+up a backend change" reason ``enabled`` is frozen at construction (see
+above).
+
+FLUSHALL story: a lost bucket just resets that IP's window early — briefly
+looser rate limiting, never a lockout. Nothing to reacquire; the next
+request simply starts a fresh bucket.
 """
 
 from __future__ import annotations
@@ -38,6 +58,8 @@ from slowapi.middleware import SlowAPIMiddleware as _SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+from app.coordination.factory import resolve_backend_name, resolve_redis_url
 
 
 def _client_ip_key(request: Request) -> str:
@@ -59,26 +81,42 @@ def _client_ip_key(request: Request) -> str:
 
 def _enabled_default() -> bool:
     return os.environ.get("AGNES_AUTH_RATELIMIT_ENABLED", "1").lower() not in (
-        "0", "false", "no", "off",
+        "0",
+        "false",
+        "no",
+        "off",
     )
+
+
+def _build_limiter() -> Limiter:
+    """Construct the module-level :class:`Limiter`, split out as its own
+    function so a test can call it after monkeypatching the coordination
+    backend env and assert on the result (``limiter._storage_uri``)
+    without needing a live Redis — see ``tests/test_rate_limit_storage.py``.
+
+    headers_enabled is intentionally OFF: when on, slowapi injects
+    X-RateLimit-* headers via a per-handler response parameter, which
+    forces every decorated endpoint to add ``response: Response`` even on
+    the happy path. The protection here is the 429 with Retry-After
+    (still emitted by the exception handler below) — the diagnostic
+    headers on success responses are not worth the API-shape churn
+    across 5 endpoints.
+    """
+    kwargs: dict = dict(
+        key_func=_client_ip_key,
+        enabled=_enabled_default(),
+        headers_enabled=False,
+        default_limits=[],
+    )
+    if resolve_backend_name() == "redis":
+        kwargs["storage_uri"] = resolve_redis_url()
+    return Limiter(**kwargs)
 
 
 # Module-level singleton — slowapi binds storage at construction and the
 # decorators capture this exact instance at import time. Tests toggle
 # ``limiter.enabled`` and call ``limiter.reset()`` between cases.
-#
-# headers_enabled is intentionally OFF: when on, slowapi injects
-# X-RateLimit-* headers via a per-handler response parameter, which forces
-# every decorated endpoint to add ``response: Response`` even on the happy
-# path. The protection here is the 429 with Retry-After (still emitted by
-# the exception handler below) — the diagnostic headers on success
-# responses are not worth the API-shape churn across 5 endpoints.
-limiter = Limiter(
-    key_func=_client_ip_key,
-    enabled=_enabled_default(),
-    headers_enabled=False,
-    default_limits=[],
-)
+limiter = _build_limiter()
 
 
 async def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:

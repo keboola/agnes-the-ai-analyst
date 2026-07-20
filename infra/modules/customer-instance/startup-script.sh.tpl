@@ -166,6 +166,13 @@ if [ "$DATA_SOURCE" = "keboola" ]; then
     KEBOOLA_TOKEN=$(gcloud secrets versions access latest --secret=keboola-storage-token)
 fi
 JWT_KEY=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}-jwt-secret)
+# SESSION_SECRET — signs session cookies (app/secrets.py::get_session_secret).
+# Single-node deployments would otherwise fall back to a per-node generated-and-
+# persisted file, which desyncs across processes in a role-split deployment and
+# trips the multi-process startup guard (app/startup_guards.py). Fetched the
+# exact same way as JWT_KEY above: a dedicated Secret Manager secret, no on-VM
+# fallback generation.
+SESSION_KEY=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}-session-secret)
 
 # ── Postgres password from Secret Manager + side-car data dir prep ──
 # Task 2A.1 provisioned agnes-<customer>-postgres-password with VM SA bound to
@@ -338,8 +345,110 @@ else
     COMPOSE_FILE_VALUE="docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml"
 fi
 
+%{ if dispatcher_enabled ~}
+# --- 4b. Opt-in LLM dispatcher (token-arbitrage PoC) ---
+# Runs as extra compose services (docker-compose.dispatcher.yml below —
+# module-owned, NOT extracted from the Agnes image) in the same compose
+# project: the app reaches it as http://dispatcher:8600 over compose DNS
+# and nothing is exposed beyond the host loopback. The lifecycle rides the
+# existing scripts for free: agnes-auto-upgrade honors COMPOSE_FILE from
+# .env (pull + up include the overlay), and agnes-state-applier only ever
+# targets named services with --no-deps, so it neither touches nor removes
+# the dispatcher (neither script runs `compose down`/--remove-orphans).
+DISP_DIR="$APP_DIR/dispatcher"
+mkdir -p "$DISP_DIR"
+
+# Both fetches fail LOUDLY (no ||-fallback, same posture as the Keboola
+# token): an enabled dispatcher without its key or Vertex credentials would
+# 401/500 every chat request — better a visible boot failure than a
+# silently broken PoC.
+DISPATCHER_KEY=$(gcloud secrets versions access latest --secret=${dispatcher_key_secret})
+gcloud secrets versions access latest --secret=${dispatcher_vertex_sa_secret} > "$DISP_DIR/vertex-sa.json"
+
+echo "${dispatcher_policies_b64}" | base64 -d > "$DISP_DIR/policies.yaml"
+cat > "$DISP_DIR/keys.yaml" <<KEYSEOF
+keys:
+  "$DISPATCHER_KEY": agnes
+KEYSEOF
+
+# The dispatcher image runs as uid 10001 (non-root): key material readable
+# only by that uid, the policy file by anyone.
+chown 10001 "$DISP_DIR/keys.yaml" "$DISP_DIR/vertex-sa.json"
+chmod 0400 "$DISP_DIR/keys.yaml" "$DISP_DIR/vertex-sa.json"
+chmod 0444 "$DISP_DIR/policies.yaml"
+
+# Ledger postgres password. Same durability concern as AGNES_VAULT_KEY above:
+# /opt/agnes/.env lives on the BOOT disk, which a VM recreate wipes, but the
+# ledger Postgres data dir lives on the persistent DATA disk and only honors
+# POSTGRES_PASSWORD on first initdb — a recreate that re-mints the password
+# would desync it from the surviving database, locking the dispatcher out of
+# its own ledger. Precedence mirrors the vault key: existing keyfile on the
+# data disk > key already in .env (adopted into the keyfile so it survives
+# the NEXT recreate) > mint fresh.
+# --- dispatcher-pg-password begin (extracted + executed by tests/test_startup_dispatcher_pg_password.py) ---
+# The keyfile must NOT live inside $DATA_MNT/dispatcher-postgres — that
+# directory is bind-mounted as the container's PGDATA, and postgres:16-alpine's
+# initdb aborts on first boot if PGDATA contains anything but "lost+found".
+DISPATCHER_PG_PASSWORD_FILE="$DATA_MNT/state/dispatcher-pg-password"
+DISPATCHER_PG_PASSWORD=""
+if [ -f "$DISPATCHER_PG_PASSWORD_FILE" ]; then
+    DISPATCHER_PG_PASSWORD=$(tr -d '[:space:]' < "$DISPATCHER_PG_PASSWORD_FILE" || true)
+fi
+if [ -z "$DISPATCHER_PG_PASSWORD" ] && [ -f "$APP_DIR/.env" ]; then
+    DISPATCHER_PG_PASSWORD=$(grep -E '^DISPATCHER_PG_PASSWORD=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
+fi
+if [ -z "$DISPATCHER_PG_PASSWORD" ]; then
+    DISPATCHER_PG_PASSWORD=$(openssl rand -hex 24)
+fi
+
+mkdir -p "$DATA_MNT/state"
+(umask 077; printf '%s\n' "$DISPATCHER_PG_PASSWORD" > "$DISPATCHER_PG_PASSWORD_FILE")
+chmod 600 "$DISPATCHER_PG_PASSWORD_FILE"
+
+# Ledger data on the persistent disk, kept separate from the keyfile above.
+# postgres:16-alpine's entrypoint runs as root and chowns its data dir to
+# uid 70 on first init itself.
+mkdir -p "$DATA_MNT/dispatcher-postgres"
+# --- dispatcher-pg-password end ---
+
+# Quoted heredoc: the $${...} below are resolved by docker compose from
+# /opt/agnes/.env at `compose up` time, not by this shell.
+cat > "$APP_DIR/docker-compose.dispatcher.yml" <<'DISPYAML'
+services:
+  dispatcher:
+    image: $${DISPATCHER_IMAGE}
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://dispatcher:$${DISPATCHER_PG_PASSWORD}@dispatcher-pg:5432/dispatcher
+      GOOGLE_APPLICATION_CREDENTIALS: /config/vertex-sa.json
+    volumes:
+      - /opt/agnes/dispatcher:/config:ro
+    ports:
+      - "127.0.0.1:8600:8600" # host-side debugging; the app uses compose DNS
+    depends_on:
+      dispatcher-pg:
+        condition: service_healthy
+  dispatcher-pg:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: dispatcher
+      POSTGRES_PASSWORD: $${DISPATCHER_PG_PASSWORD}
+      POSTGRES_DB: dispatcher
+    volumes:
+      - /data/dispatcher-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dispatcher"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+DISPYAML
+
+COMPOSE_FILE_VALUE="$COMPOSE_FILE_VALUE:docker-compose.dispatcher.yml"
+%{ endif ~}
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
+SESSION_SECRET=$SESSION_KEY
 DATA_DIR=$DATA_MNT
 DATA_SOURCE=$DATA_SOURCE
 KEBOOLA_STORAGE_TOKEN=$KEBOOLA_TOKEN
@@ -366,6 +475,12 @@ ${env_name}=$${${env_name}}
 %{ endfor ~}
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 DATABASE_URL=postgresql+psycopg://agnes:$POSTGRES_PASSWORD@postgres:5432/agnes
+%{ if dispatcher_enabled ~}
+DISPATCHER_IMAGE=${dispatcher_image}
+DISPATCHER_PG_PASSWORD=$DISPATCHER_PG_PASSWORD
+LLM_DISPATCHER_URL=http://dispatcher:8600
+LLM_DISPATCHER_API_KEY=$DISPATCHER_KEY
+%{ endif ~}
 COMPOSE_FILE=$COMPOSE_FILE_VALUE
 $CADDY_TLS_LINE
 $AGNES_TEMP_DIR_LINE

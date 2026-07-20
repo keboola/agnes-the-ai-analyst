@@ -208,9 +208,6 @@ async def _run_git_http_backend(env: dict, body: bytes) -> tuple[int, list[tuple
     )
     assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
 
-    proc.stdin.write(body)
-    proc.stdin.close()
-
     # Start draining stderr immediately, concurrently with everything below —
     # see `_drain_stderr` for why this must not happen sequentially after
     # stdout EOF / process exit.
@@ -218,6 +215,30 @@ async def _run_git_http_backend(env: dict, body: bytes) -> tuple[int, list[tuple
     stderr_task = asyncio.ensure_future(_drain_stderr(proc.stderr, stderr_chunks))
 
     try:
+        # Feed the request body. The child can exit — or close its stdin —
+        # before reading any of it: `git http-backend` never reads stdin for
+        # an `info/refs` GET, and a child that dies on a bad env loses the
+        # race against this write. On uvloop that surfaces as
+        # `RuntimeError: unable to perform operation on <WriteUnixTransport
+        # closed=True ...>; the handler is closed`; on vanilla asyncio as
+        # BrokenPipeError/ConnectionResetError out of `drain()`. None of
+        # those are fatal by themselves — the child may have already written
+        # its full response, and a genuine crash is diagnosed below by the
+        # empty-header-block check (stderr + exit code in the log).
+        if body:
+            try:
+                proc.stdin.write(body)
+                await proc.stdin.drain()
+            except (RuntimeError, BrokenPipeError, ConnectionResetError) as exc:
+                logger.warning(
+                    "git http-backend stopped reading stdin before the request body was fully written: %s",
+                    exc,
+                )
+        try:
+            proc.stdin.close()
+        except (RuntimeError, BrokenPipeError, ConnectionResetError):
+            pass
+
         header_block = await _read_cgi_headers(proc.stdout)
     except BaseException:
         # Anything raised while reading headers — a malformed/over-long

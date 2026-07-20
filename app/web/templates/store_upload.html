@@ -249,7 +249,7 @@
     overflow: hidden;
     /* base.html has a sticky top bar; scroll target needs headroom so
        the chevron lands BELOW the bar, not behind it. */
-    scroll-margin-top: 80px;
+    scroll-margin-top: calc(var(--app-header-height) + var(--space-4));
   }
   .guidelines-toggle {
     appearance: none; -webkit-appearance: none;
@@ -265,7 +265,7 @@
     transition: background 0.12s ease;
     /* Same headroom as the wrap so direct .scrollIntoView() on the
        button clears the sticky page header. */
-    scroll-margin-top: 80px;
+    scroll-margin-top: calc(var(--app-header-height) + var(--space-4));
   }
   .guidelines-toggle:hover { background: color-mix(in srgb, var(--ds-primary) 6%, transparent); }
   .guidelines-toggle::before {
