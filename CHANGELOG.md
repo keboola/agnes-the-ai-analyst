@@ -22,6 +22,43 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.75.13] - 2026-07-20
+
+### Added
+
+- `/admin/data-sources` now shows the Keboola semantic-layer sync status
+  (never-synced / last-sync-ok-with-N-items / last-attempt-failed-with-reason)
+  even when the metric/glossary counts are currently zero, plus a "Sync now"
+  button that calls the existing admin refresh endpoint in place. Previously
+  the summary card only rendered once a sync had produced nonzero counts, so
+  an admin who hadn't synced yet — or whose last attempt errored — saw
+  nothing. Status is tracked in-memory (since last process restart); no new
+  DB table.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+- `GET /api/metrics`, `GET /api/metrics/{id}`, and the `/catalog/semantics`
+  Metrics tab now RBAC-gate metric definitions the same way table reads are
+  gated: a metric is only visible if the caller can access its
+  `table_name`/`tables` via their Data Package stack (admins unaffected).
+  Previously any authenticated user could read any metric's SQL, table name,
+  and description regardless of table-stack membership, leaking
+  schema/business information about tables they had no grant to see.
+  Glossary terms are unaffected — they're business vocabulary, not
+  table-derived data. The CLAUDE.md generator's metric summary
+  (`src/claude_md.py`, surfaced via `agnes pull`/session start) had the same
+  gap — metric count and category names were computed from every metric
+  regardless of the requesting user's table-stack — and is now filtered
+  through the same gate.
+
 ## [0.75.12] - 2026-07-20
 
 ### Fixed

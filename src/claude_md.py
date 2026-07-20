@@ -24,7 +24,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import duckdb
-from jinja2 import Environment, StrictUndefined, TemplateError
+from jinja2 import Environment, StrictUndefined
 
 from app.instance_config import (
     get_data_source_type,
@@ -34,6 +34,7 @@ from app.instance_config import (
 )
 
 logger = logging.getLogger(__name__)
+
 
 def _load_default_template() -> str:
     """Load the shipped CLAUDE.md default template.
@@ -98,7 +99,7 @@ def _list_tables(conn: duckdb.DuckDBPyConnection, *, user: dict) -> list[dict[st
     from src.repositories import table_registry_repo
 
     try:
-        allowed_ids = get_accessible_tables(user, conn)   # None=admin, list=non-admin
+        allowed_ids = get_accessible_tables(user, conn)  # None=admin, list=non-admin
         if allowed_ids is not None and not allowed_ids:
             return []
         rows = table_registry_repo().list_all()
@@ -113,11 +114,20 @@ def _list_tables(conn: duckdb.DuckDBPyConnection, *, user: dict) -> list[dict[st
     ]
 
 
-def _metrics_summary() -> dict[str, Any]:
+def _metrics_summary(conn: duckdb.DuckDBPyConnection, *, user: dict) -> dict[str, Any]:
+    """Count/categories for metrics the calling user's table-stack grants
+    cover — same gate as GET /api/metrics (app/api/metrics.py:_first_inaccessible_table).
+    A metric with no table_name/tables (nothing to gate) is always visible.
+    """
+    from app.api.metrics import _first_inaccessible_table
+    from src.rbac import get_accessible_tables
     from src.repositories import metric_repo
 
     try:
         rows = metric_repo().list()
+        allowed = get_accessible_tables(user, conn)  # None=admin, list=non-admin
+        allowed_set = None if allowed is None else set(allowed)
+        rows = [r for r in rows if _first_inaccessible_table(r, allowed_set) is None]
     except _missing_table_excs():
         return {"count": 0, "categories": []}
     return {
@@ -126,9 +136,7 @@ def _metrics_summary() -> dict[str, Any]:
     }
 
 
-def _marketplaces_for_user(
-    conn: duckdb.DuckDBPyConnection, user: dict[str, Any]
-) -> list[dict[str, Any]]:
+def _marketplaces_for_user(conn: duckdb.DuckDBPyConnection, user: dict[str, Any]) -> list[dict[str, Any]]:
     """Return marketplaces with the plugins the user is allowed to see.
 
     Delegates RBAC filtering entirely to resolve_allowed_plugins, which
@@ -140,6 +148,7 @@ def _marketplaces_for_user(
 
     try:
         from src.marketplace_filter import resolve_allowed_plugins
+
         allowed = resolve_allowed_plugins(conn, user)
     except Exception:
         logger.exception("_marketplaces_for_user: marketplace plugin resolution failed")
@@ -192,7 +201,7 @@ def build_claude_md_context(
         "sync_interval": get_sync_interval(),
         "data_source": {"type": get_data_source_type()},
         "tables": _list_tables(conn, user=user),
-        "metrics": _metrics_summary(),
+        "metrics": _metrics_summary(conn, user=user),
         "marketplaces": _marketplaces_for_user(conn, user),
         "user": {
             "id": user.get("id", ""),
