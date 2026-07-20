@@ -654,6 +654,40 @@ class TestMaterializedScanServedLocally:
         got = parse_ipc_bytes(ipc)
         assert got.column("v").to_pylist() == expected_v
 
+    def test_accepts_duckdb_flavor_where(self, reload_db, tmp_path, monkeypatch):
+        """The schema endpoint advertises sql_flavor='duckdb' for materialized
+        rows (#261), so a client following that guidance writes DuckDB syntax
+        (e.g. `::` casts). sqlglot's permissive BigQuery parse accepts it and
+        the execution-dialect render normalizes it — both flavors must work
+        (PR #946 review, schema/scan dialect mismatch)."""
+        self._write_parquet(tmp_path)
+        ipc = self._run(
+            reload_db,
+            monkeypatch,
+            {"table_id": "mat_t", "select": ["v"], "where": "x::BIGINT = 3"},
+        )
+        got = parse_ipc_bytes(ipc)
+        assert got.column("v").to_pylist() == [3]
+
+    def test_runtime_conversion_error_in_data_raises_400_not_500(self, reload_db, tmp_path, monkeypatch):
+        """Pin: DuckDB surfaces data-dependent conversion errors eagerly at
+        execute().arrow() — inside the fail-loud guard. If a future duckdb
+        moved evaluation into lazy batch streaming, the error would fire
+        during IPC serialization (outside the guard) and escape as an
+        unhandled duckdb.Error (500); this test would catch that regression."""
+        import pyarrow.parquet as pq
+
+        bad = pa.table({"v": list(range(10_000)), "x": [str(i) for i in range(9_999)] + ["abc"]})
+        data_dir = tmp_path / "extracts" / "bigquery" / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        pq.write_table(bad, data_dir / "mat_t.parquet")
+        with pytest.raises(ValueError, match="local scan failed"):
+            self._run(
+                reload_db,
+                monkeypatch,
+                {"table_id": "mat_t", "select": ["v"], "where": "CAST(x AS INT64) = 3"},
+            )
+
     def test_unexecutable_where_raises_valueerror_not_500(self, reload_db, tmp_path, monkeypatch):
         """A predicate that validates but fails at DuckDB bind/execution time
         must surface as ValueError (→ 400), not an unhandled duckdb.Error."""

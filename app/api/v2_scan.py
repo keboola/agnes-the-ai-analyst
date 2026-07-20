@@ -69,6 +69,31 @@ def _executes_on_bigquery(row: dict) -> bool:
     return (row.get("source_type") or "") == "bigquery" and (row.get("query_mode") or "") != "materialized"
 
 
+def _validated_where_fragment(req: "ScanRequest", schema: dict, row: dict, use_bq: bool) -> str | None:
+    """Validate ``req.where`` and return the comment-stripped fragment in the
+    EXECUTION dialect.
+
+    Parse dialect follows the source_type (clients are taught BQ flavor for
+    bigquery-sourced tables); render dialect follows the execution engine.
+    For `query_mode='materialized'` BQ rows those differ — the scan runs on a
+    local DuckDB read of the server-side parquet, so the fragment is
+    transpiled BQ → DuckDB.
+
+    Dialect-mismatch note: the schema endpoint advertises
+    ``sql_flavor='duckdb'`` for materialized rows (#261), so clients write
+    either flavor. That is fine — sqlglot's BigQuery parser is permissive
+    and accepts DuckDB-style syntax (``x::int`` parses and normalizes to
+    ``CAST``), and rendering in the execution dialect makes the result
+    correct in both cases (pinned by test_accepts_duckdb_flavor_where)."""
+    if not req.where:
+        return None
+    parse_dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
+    render_dialect = "bigquery" if use_bq else "duckdb"
+    return safe_where_predicate(
+        req.where, req.table_id, schema, dialect=parse_dialect, render_dialect=render_dialect
+    )
+
+
 def _bq_dry_run_bytes(bq: BqAccess, sql: str, *, user: dict | None = None, agent_name: str = "scan") -> int:
     """Run a BQ dry-run via the google-cloud-bigquery client and return totalBytesProcessed.
 
@@ -188,19 +213,10 @@ def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
 
     schema = _resolve_schema(conn, user, req.table_id, bq)
     use_bq = _executes_on_bigquery(row)
-    # Parse dialect follows the source_type (clients write BQ-flavor predicates
-    # for any bigquery-sourced table); render dialect follows the EXECUTION
-    # engine — materialized rows execute on a local DuckDB parquet read, so
-    # the validated fragment is transpiled BQ → DuckDB.
-    parse_dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
-    render_dialect = "bigquery" if use_bq else "duckdb"
 
-    # Validate WHERE and capture the comment-stripped fragment for splicing.
-    safe_where = (
-        safe_where_predicate(req.where, req.table_id, schema, dialect=parse_dialect, render_dialect=render_dialect)
-        if req.where
-        else None
-    )
+    # Validate WHERE and capture the comment-stripped fragment for splicing,
+    # rendered in the execution dialect (see _validated_where_fragment).
+    safe_where = _validated_where_fragment(req, schema, row, use_bq)
     # Validate select columns exist (case-insensitive, matching order_by).
     if req.select:
         _validate_select_columns(req.select, schema)
@@ -460,19 +476,9 @@ def run_scan(
 
     schema = _resolve_schema(conn, user, req.table_id, bq)
     use_bq = _executes_on_bigquery(row)
-    # Parse dialect follows the source_type (clients write BQ-flavor predicates
-    # for any bigquery-sourced table — the deployed skills/docs teach that);
-    # render dialect follows the EXECUTION engine. For materialized rows the
-    # scan runs on a local DuckDB read of the server-side parquet, so the
-    # validated fragment is transpiled BQ → DuckDB by the validator.
-    parse_dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
-    render_dialect = "bigquery" if use_bq else "duckdb"
-    # Validate WHERE and capture the comment-stripped fragment for splicing.
-    safe_where = (
-        safe_where_predicate(req.where, req.table_id, schema, dialect=parse_dialect, render_dialect=render_dialect)
-        if req.where
-        else None
-    )
+    # Validate WHERE and capture the comment-stripped fragment for splicing,
+    # rendered in the execution dialect (see _validated_where_fragment).
+    safe_where = _validated_where_fragment(req, schema, row, use_bq)
     if req.select:
         # Case-insensitive (BQ identifiers are case-insensitive; mixed-case
         # names from INFORMATION_SCHEMA.COLUMNS shouldn't 400-reject the
