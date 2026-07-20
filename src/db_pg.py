@@ -160,12 +160,32 @@ def _pg_revisions() -> tuple[Optional[str], Optional[str], bool]:
     revision is unknown to this image's scripts — the app-rollback case,
     whose remedy differs from plain drift.
     """
-    from alembic.migration import MigrationContext
+    import sqlalchemy as sa
     from alembic.script import ScriptDirectory
 
+    # Read the stamped revision with a plain SELECT rather than
+    # MigrationContext.configure(): the latter logs two INFO lines on the
+    # ``alembic.runtime.migration`` logger ("Context impl …" / "… transactional
+    # DDL") every call, and the 30s ``/api/health`` probe calls this
+    # continuously — thousands of noise lines/day drowning real app logs. A
+    # never-stamped DB (``alembic_version`` table absent) reads as None,
+    # matching ``get_current_revision()``'s old contract.
+    #
+    # ``scalar_one_or_none()`` (not ``scalar()``) keeps the old fail-closed
+    # behavior on a divergent DB: an ``alembic_version`` with >1 row (multiple
+    # heads / a botched manual stamp) raises rather than silently taking the
+    # first row. And only SQLSTATE 42P01 (UndefinedTable) is swallowed to None —
+    # psycopg maps 42501 (InsufficientPrivilege) onto the same ``ProgrammingError``
+    # class, so a permission failure must re-raise and surface as "unreachable"
+    # rather than a masked "never stamped" (which would read as false drift).
     engine = get_engine()
     with engine.connect() as conn:
-        current = MigrationContext.configure(conn).get_current_revision()
+        try:
+            current = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+        except sa.exc.ProgrammingError as exc:
+            if getattr(exc.orig, "sqlstate", None) != "42P01":
+                raise
+            current = None
 
     script = ScriptDirectory.from_config(_alembic_config())
     head = script.get_current_head()
@@ -194,9 +214,9 @@ def assert_pg_at_head() -> None:
     column (issue #636). This converts that silent drift into an
     operator-visible boot refusal.
 
-    Reads the DB's current revision via
-    ``MigrationContext.configure(conn).get_current_revision()`` and the
-    script head via ``ScriptDirectory.get_current_head()``. Raises
+    Reads the DB's current revision (a plain ``SELECT`` from
+    ``alembic_version`` via ``_pg_revisions()``) and the script head via
+    ``ScriptDirectory.get_current_head()``. Raises
     ``RuntimeError`` when they disagree (including the never-stamped
     ``current is None`` case) naming both revisions and the manual
     remediation. A no-op when they match.

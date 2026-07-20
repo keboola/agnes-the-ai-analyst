@@ -10,6 +10,14 @@ updates:
       - "keboola/agnes-team"
     labels:
       - "dependencies"
+    ignore:
+      # FastAPI 0.137+ has a bisected regression: APIRouter.include_router
+      # stops copying routes on Python 3.13, leaving create_app() with zero
+      # /api routes (see CHANGELOG.md's original fix for the incident). The
+      # pyproject.toml cap documents this; without this ignore rule
+      # dependabot re-proposes lifting the cap every week (PR #953).
+      - dependency-name: "fastapi"
+        versions: [">=0.137"]
 
   - package-ecosystem: "github-actions"
     directory: "/"

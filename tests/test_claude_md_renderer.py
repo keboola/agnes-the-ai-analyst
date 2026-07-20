@@ -338,3 +338,102 @@ def test_render_tables_empty_for_user_with_no_grants(conn):
     user_none = {"id": "u-none", "email": "none@example.com", "name": "None", "is_admin": False, "groups": []}
     ctx = build_claude_md_context(conn, user=user_none, server_url="https://example.com")
     assert ctx["tables"] == []
+
+
+# ---------------------------------------------------------------------------
+# RBAC-filtered metrics summary — same table-stack gate as GET /api/metrics
+# ---------------------------------------------------------------------------
+
+
+def _seed_metric(conn, *, metric_id: str, category: str, table_name: str) -> None:
+    from src.repositories import metric_repo
+
+    metric_repo().create(
+        id=metric_id,
+        name=metric_id,
+        display_name=metric_id,
+        category=category,
+        sql="SELECT 1",
+        table_name=table_name,
+        source="manual",
+    )
+
+
+def test_metrics_summary_filtered_by_rbac(conn):
+    """Non-admin users only see counts/categories for metrics whose table
+    is in their stack — same gate as GET /api/metrics (app/api/metrics.py)."""
+    conn.execute(
+        "INSERT INTO table_registry (id, name, description, query_mode, source_type) "
+        "VALUES ('t-a', 'orders', 'Order data', 'local', 'keboola')"
+    )
+    conn.execute(
+        "INSERT INTO table_registry (id, name, description, query_mode, source_type) "
+        "VALUES ('t-b', 'revenue', 'Revenue data', 'local', 'keboola')"
+    )
+    _seed_metric(conn, metric_id="m-orders", category="ops", table_name="orders")
+    _seed_metric(conn, metric_id="m-revenue", category="finance", table_name="revenue")
+
+    _make_user(conn, user_id="ua", email="alice@example.com")
+    gid_a = _make_group(conn, name="group-a")
+    _add_member(conn, user_id="ua", group_id=gid_a)
+    _grant_table(conn, group_id=gid_a, table_id="t-a")
+
+    user_a = {"id": "ua", "email": "alice@example.com", "name": "Alice", "is_admin": False, "groups": []}
+    ctx = build_claude_md_context(conn, user=user_a, server_url="https://example.com")
+    assert ctx["metrics"]["count"] == 1
+    assert ctx["metrics"]["categories"] == ["ops"]
+
+
+def test_metrics_summary_admin_sees_all(conn):
+    """Admin users see the unfiltered metric count/categories."""
+    conn.execute(
+        "INSERT INTO table_registry (id, name, description, query_mode, source_type) "
+        "VALUES ('t-a', 'orders', 'Order data', 'local', 'keboola')"
+    )
+    conn.execute(
+        "INSERT INTO table_registry (id, name, description, query_mode, source_type) "
+        "VALUES ('t-b', 'revenue', 'Revenue data', 'local', 'keboola')"
+    )
+    _seed_metric(conn, metric_id="m-orders", category="ops", table_name="orders")
+    _seed_metric(conn, metric_id="m-revenue", category="finance", table_name="revenue")
+
+    _make_user(conn, user_id="u-admin", email="admin@example.com")
+    admin_gid = conn.execute("SELECT id FROM user_groups WHERE name='Admin'").fetchone()[0]
+    _add_member(conn, user_id="u-admin", group_id=admin_gid)
+
+    user_admin = {"id": "u-admin", "email": "admin@example.com", "name": "Admin", "is_admin": True, "groups": []}
+    ctx = build_claude_md_context(conn, user=user_admin, server_url="https://example.com")
+    assert ctx["metrics"]["count"] == 2
+    assert ctx["metrics"]["categories"] == ["finance", "ops"]
+
+
+def test_metrics_summary_no_table_metric_always_visible(conn):
+    """A metric with no table_name/tables (nothing to gate) is not hidden."""
+    _seed_metric(conn, metric_id="m-untabled", category="misc", table_name=None)
+
+    _make_user(conn, user_id="u-none", email="none@example.com")
+    user_none = {"id": "u-none", "email": "none@example.com", "name": "None", "is_admin": False, "groups": []}
+    ctx = build_claude_md_context(conn, user=user_none, server_url="https://example.com")
+    assert ctx["metrics"]["count"] == 1
+    assert ctx["metrics"]["categories"] == ["misc"]
+
+
+def test_metrics_summary_degrades_when_table_registry_missing(conn, monkeypatch):
+    """A half-migrated DB (metric_definitions present, table_registry not yet
+    created) must degrade to an empty summary for a non-admin caller, not
+    raise — the RBAC gate's table_registry lookup sits inside the same
+    try/except that already tolerates a missing metric_definitions table."""
+    import app.api.metrics as metrics_mod
+
+    class _MissingTableRegistryRepo:
+        def get_by_name(self, name):
+            raise duckdb.CatalogException(f"Table with name {name} does not exist!")
+
+    monkeypatch.setattr(metrics_mod, "table_registry_repo", lambda: _MissingTableRegistryRepo())
+
+    _seed_metric(conn, metric_id="m-orders", category="ops", table_name="orders")
+
+    _make_user(conn, user_id="u-none", email="none@example.com")
+    user_none = {"id": "u-none", "email": "none@example.com", "name": "None", "is_admin": False, "groups": []}
+    ctx = build_claude_md_context(conn, user=user_none, server_url="https://example.com")
+    assert ctx["metrics"] == {"count": 0, "categories": []}

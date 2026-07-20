@@ -10,10 +10,47 @@ from pydantic import BaseModel
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
 
+from src.rbac import get_accessible_tables, table_not_in_stack_message
 from src.repositories import (
     metric_repo,
+    table_registry_repo,
 )
+
 router = APIRouter(tags=["metrics"])
+
+
+def _metric_table_names(metric: dict) -> List[str]:
+    """Table_registry view NAMEs this metric depends on — the single-table
+    ``table_name`` or the relationship-JOIN ``tables`` list."""
+    tables = metric.get("tables") or []
+    if tables:
+        return list(tables)
+    name = metric.get("table_name")
+    return [name] if name else []
+
+
+def _first_inaccessible_table(metric: dict, allowed: Optional[set]) -> Optional[str]:
+    """Id of the first table (of ``metric``'s ``table_name``/``tables``) the
+    caller can't access, or ``None`` if the caller can access all of them
+    (or the metric references no table at all — nothing to gate).
+
+    ``allowed=None`` means "all" (admin / no stack gating).
+
+    ``table_name``/``tables`` store the DuckDB VIEW NAME (``table_registry
+    .name``), not the id — those can differ (e.g. name "Orders EU" slugifies
+    to id "orders_eu"), so each name is resolved via ``get_by_name`` before
+    checking membership in ``allowed`` (which is id-keyed). An unresolvable
+    name (registry row missing) is treated as inaccessible, fail-closed.
+    """
+    if allowed is None:
+        return None
+    repo = table_registry_repo()
+    for name in _metric_table_names(metric):
+        row = repo.get_by_name(name)
+        table_id = row.get("id") if row else None
+        if table_id is None or table_id not in allowed:
+            return table_id or name
+    return None
 
 
 class MetricCreate(BaseModel):
@@ -45,9 +82,18 @@ async def list_metrics(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """List all metric definitions, optionally filtered by category."""
+    """List all metric definitions, optionally filtered by category.
+
+    RBAC-gated (#953): a metric whose ``table_name``/``tables`` reference a
+    table the caller can't access via their Data Package stack is silently
+    omitted — same fail-closed filtering convention as the table catalog
+    (see ``app/api/knowledge_search.py``). Admin sees everything.
+    """
     repo = metric_repo()
     metrics = repo.list(category=category)
+    accessible_ids = get_accessible_tables(user, conn)
+    allowed = None if accessible_ids is None else set(accessible_ids)
+    metrics = [m for m in metrics if _first_inaccessible_table(m, allowed) is None]
     return {"metrics": metrics, "count": len(metrics)}
 
 
@@ -57,11 +103,22 @@ async def get_metric(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Get a single metric definition by ID."""
+    """Get a single metric definition by ID.
+
+    RBAC-gated (#953): 404 if the metric doesn't exist; 403 (using the
+    standard ``table_not_in_stack_message``) if it exists but the caller
+    lacks access to (any of) its table(s).
+    """
     repo = metric_repo()
     metric = repo.get(metric_id)
     if metric is None:
         raise HTTPException(status_code=404, detail=f"Metric '{metric_id}' not found")
+
+    accessible_ids = get_accessible_tables(user, conn)
+    allowed = None if accessible_ids is None else set(accessible_ids)
+    denial_id = _first_inaccessible_table(metric, allowed)
+    if denial_id is not None:
+        raise HTTPException(status_code=403, detail=table_not_in_stack_message(denial_id))
     return metric
 
 
