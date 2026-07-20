@@ -1,4 +1,6 @@
 {% extends 'base_ds.html' %}
+{% import "macros/_agnes_orb.html" as agnes_orb %}
+{% from "macros/_connect_banner.html" import connect_banner %}
 
 {# Cloud chat page. Extends the canonical Agnes design-system base so
    the Agnes top nav, footer, and shared design tokens (colors, type,
@@ -123,6 +125,17 @@
   </aside>
 
   <section class="cloud-chat-main">
+    {# Floating history toggle — rail layout only (issue #896). There the
+       Conversations column is hidden by default like /ask; this always-
+       visible button reveals it. Lives in the main area (not the sidebar
+       header) so it stays reachable while the column is collapsed to zero
+       width. Topnav instances keep the classic always-visible sidebar. #}
+    {% if ui_layout == 'rail' %}
+    <button type="button" id="chat-history-toggle" class="cloud-chat-histtoggle"
+            aria-label="Toggle chat history" aria-pressed="false" title="Chat history">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+    {% endif %}
     {# Active conversation header. JS toggles ``hidden`` based on
        whether we're in an empty-state shell (no current chat) or
        inside a thread. Title text is updated from openSession() and
@@ -139,6 +152,30 @@
        sidebar. Counts (tables, plugins, snapshots) are loaded
        asynchronously by chat.js so we don't block the page render on
        slow catalog reads. #}
+    {# Empty-state — rail layout gets the /ask hero (issue #896), topnav
+       keeps the classic capability cards so default instances are
+       unchanged (guarded by tests/test_ui_layout_theme.py). Both share
+       the ``#chat-capabilities`` id + the ``cloud-chat-cap-suggest`` /
+       ``data-prompt`` suggestion hooks so chat.js's showCapabilities /
+       wireSuggestionButtons work either way. The rail hero drops the
+       cap-data-summary cards; renderCapabilities()'s card accessors are
+       all null-guarded, so their absence is a no-op. #}
+    {% if ui_layout == 'rail' %}
+    {# Empty-state is split around the composer so the composer sits in the
+       middle — under the description — exactly like /ask. Flex ``order``
+       on .cloud-chat-main lays them out brand → composer → extras (see
+       chat.css). ``#chat-empty-extras`` follows the composer in the DOM
+       and auto-hides with #chat-capabilities (sibling rule). #}
+    <aside id="chat-capabilities" class="cloud-chat-capabilities">
+      <div class="ask-hero ask-hero--chat">
+        <div class="ask-brand">
+          {{ agnes_orb.orb(css_class='ask-orb', size=96) }}
+          <h1 class="ask-h1">Ask anything.<br>Reuse <span class="ask-accent">everything.</span></h1>
+          <p class="ask-sub">Your company's knowledge, plus the skills your colleagues built &mdash; in every AI you use.</p>
+        </div>
+      </div>
+    </aside>
+    {% else %}
     <aside id="chat-capabilities" class="cloud-chat-capabilities">
       <header class="cloud-chat-capabilities-header">
         <h2>What can I help you with?</h2>
@@ -184,6 +221,7 @@
         <p>RBAC: I see only the tables your <strong>{{ current_user.email }}</strong> account has access to. Try <code>agnes catalog</code> if you want the explicit list.</p>
       </footer>
     </aside>
+    {% endif %}
 
     <div id="chat-messages" class="cloud-chat-messages" aria-live="polite"></div>
     <form id="chat-form" class="cloud-chat-form">
@@ -201,10 +239,56 @@
       <div class="cloud-chat-form-actions">
         <button type="button" id="cancel-btn"
                 class="btn btn-danger cloud-chat-stop-btn" hidden>Stop</button>
+        {# Rail (issue #896): circular send button matching the /ask
+           composer (paper pill + up-arrow glyph); aria-label carries the
+           "Send" name the visible text used to provide. Topnav keeps the
+           classic ``.btn .btn-primary`` "Send" button unchanged. #}
+        {% if ui_layout == 'rail' %}
+        <button type="submit"
+                class="cloud-chat-send-btn" aria-label="Send">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        {% else %}
         <button type="submit"
                 class="btn btn-primary cloud-chat-send-btn">Send</button>
+        {% endif %}
       </div>
     </form>
+
+    {% if ui_layout == 'rail' %}
+    {# Empty-state extras that sit BELOW the composer (like /ask): the
+       "Operated by Kai" pill, suggested questions, and connect banner.
+       Placed after #chat-form in the DOM; flex order (chat.css) renders
+       it below the composer. Auto-hides once a conversation starts via
+       the ``#chat-capabilities[hidden] ~ #chat-empty-extras`` rule. #}
+    <div id="chat-empty-extras" class="cloud-chat-empty-extras">
+      <div class="ask-hero--chat">
+        <div class="ask-pill">Operated by <b>Kai</b> &middot; using {{ knowledge_source_count }} knowledge source{{ '' if knowledge_source_count == 1 else 's' }} &middot; {{ capability_count }} capabilit{{ 'y' if capability_count == 1 else 'ies' }} from your Stack</div>
+
+        <div class="ask-suggest-label">Suggested questions</div>
+        <div class="ask-suggestions">
+          {% for q in suggested_questions %}
+          <button type="button" class="ask-suggestion cloud-chat-cap-suggest" data-prompt="{{ q }}">
+            <svg class="as-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l1.55 4.35L18 9l-4.45 1.65L12 15l-1.55-4.35L6 9l4.45-1.65L12 3Z" fill="currentColor"/></svg>
+            <span class="as-txt">{{ q }}</span>
+            <svg class="as-arrow" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h13M12 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          {% endfor %}
+        </div>
+
+        {# Same "connect your other AI tools" CTA as /ask, for parity. #}
+        {{ connect_banner('inline', cta_href='/setup') }}
+      </div>
+    </div>
+
+    {# Footer lives inside the empty-state card (not the page-level footer,
+       which stays hidden on chat): it narrows with the card when history
+       opens and disappears once a conversation starts. Same credit as
+       every other page. #}
+    <footer class="cloud-chat-empty-foot">
+      {% include '_footer_keboola.html' %}
+    </footer>
+    {% endif %}
   </section>
 </div>
 {% endblock %}
@@ -219,5 +303,5 @@
   <script id="chat-capabilities-data" type="application/json">
     {{ chat_capabilities | tojson }}
   </script>
-  <script type="module" src="/static/js/chat.js"></script>
+  <script type="module" src="{{ static_url('js/chat.js') }}"></script>
 {% endblock %}

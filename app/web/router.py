@@ -1202,6 +1202,95 @@ def _data_package_entry_dict(
     return out
 
 
+# ── Unified catalog-card normalizers ─────────────────────────────────
+# Adapt each kind's entry dict → the single `c` contract consumed by the
+# reusable catalog_card() macro (templates/macros/_catalog_card.html) and
+# its JS twin. One shape → one component → identical cards everywhere.
+
+
+def _catalog_card_data(e: dict) -> dict:
+    """Data package → catalog_card `c`. Required packages render a locked
+    'Required' pill; everything else gets the Add/Remove stack toggle wired
+    to the generic /api/stack endpoints."""
+    if e.get("requirement") == "required":
+        action = {"mode": "required"}
+    else:
+        rid = e["id"]
+        action = {
+            "mode": "stack",
+            "state": "in" if e.get("in_stack") else "add",
+            "add_url": "/api/stack/subscribe",
+            "remove_url": f"/api/stack/subscription/data_package/{rid}",
+            "rt": "data_package",
+            "rid": rid,
+        }
+    owner = e.get("owner_name")
+    return {
+        "kind": "data",
+        "kind_label": "Data",
+        "title": e["name"],
+        "href": e["drilldown_url"],
+        "curator": f"Curated by {owner}" if owner else "Curated",
+        "category": e.get("category"),
+        "description": e["description"],
+        "tags": e.get("tags") or [],
+        "meta_icon": "tables",
+        "meta_text": e.get("meta") or "",
+        "action": action,
+    }
+
+
+def _catalog_card_memory(d: dict) -> dict:
+    """Memory domain → catalog_card `c`. Stack toggle wired to the generic
+    /api/stack endpoints (resource_type=memory_domain); required domains
+    render the locked pill instead."""
+    rid = d["id"]
+    n = d.get("items_count", 0) or 0
+    if d.get("requirement") == "required":
+        action = {"mode": "required"}
+    else:
+        action = {
+            "mode": "stack",
+            "state": "in" if d.get("in_stack") else "add",
+            "add_url": "/api/stack/subscribe",
+            "remove_url": f"/api/stack/subscription/memory_domain/{rid}",
+            "rt": "memory_domain",
+            "rid": rid,
+        }
+    return {
+        "kind": "memory",
+        "kind_label": "Memory",
+        "title": d["name"],
+        "href": f"/memory/d/{d['slug']}",
+        "curator": None,
+        "category": None,
+        "description": d.get("description") or "Curated organizational knowledge domain.",
+        "tags": [],
+        "meta_icon": "items",
+        "meta_text": f"{n} item{'s' if n != 1 else ''}",
+        "action": action,
+    }
+
+
+def _catalog_card_upload(c: dict) -> dict:
+    """Private upload (file collection) → catalog_card `c`. Uploads aren't
+    stack-toggled (they're owned files); the action opens the collection."""
+    n = c.get("file_count", 0) or 0
+    return {
+        "kind": "library",
+        "kind_label": "Upload",
+        "title": c["name"],
+        "href": f"/library/{c['slug']}",
+        "curator": None,
+        "category": None,
+        "description": c.get("description") or "Your uploaded files — searchable by your agents.",
+        "tags": [],
+        "meta_icon": "doc",
+        "meta_text": f"{n} file{'s' if n != 1 else ''}",
+        "action": {"mode": "link", "href": f"/library/{c['slug']}", "label": "Open"},
+    }
+
+
 @router.get("/catalog", response_class=HTMLResponse)
 async def catalog(
     request: Request,
@@ -1308,15 +1397,28 @@ async def catalog(
     # classic catalog.html unchanged.
     if get_ui_layout() == "rail":
         memory_cards = _unified_memory_cards()
+        # Flag which domains the caller already has in their stack so the
+        # unified card can render the Add/Remove toggle in the right state.
+        try:
+            mem_stack_ids = {e.id for e in resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)}
+        except Exception:
+            mem_stack_ids = set()
+        for d in memory_cards:
+            d["in_stack"] = d["id"] in mem_stack_ids
+        # Normalize both server-rendered kinds into the single catalog_card
+        # `c` contract (Plugins + Recipes normalize client-side in the JS twin).
+        data_cards = [_catalog_card_data(e) for e in entries]
+        memory_card_models = [_catalog_card_memory(d) for d in memory_cards]
         ctx = _build_context(
             request,
             user=user,
             is_admin=is_admin_view,
             entries=entries,
+            data_cards=data_cards,
             stack_entries=stack_entries_adapted,
             source_type_chips=source_type_chips,
             total_registered_tables=total_registered_tables,
-            memory_cards=memory_cards,
+            memory_cards=memory_card_models,
         )
         return templates.TemplateResponse(request, "catalog_unified.html", ctx)
 
@@ -1436,7 +1538,11 @@ async def my_stack_page(
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
 
-    resolver = StackResolver(conn)
+    # No conn: read the effective stack through the factory repos, exactly
+    # like GET /api/stack. Passing the request conn made the resolver read a
+    # connection that didn't observe just-written subscription rows, so the
+    # stack rendered empty even when /api/stack returned entries.
+    resolver = StackResolver()
     pkg_repo = data_packages_repo()
 
     def _adapt_pkg(e):
@@ -1459,10 +1565,12 @@ async def my_stack_page(
         domains_repo = memory_domains_repo()
         for e in resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN):
             slug = None
+            items_count = 0
             try:
                 d = domains_repo.get(e.id)
                 if d:
                     slug = d.get("slug")
+                    items_count = len(domains_repo.list_items_of_domain(e.id, limit=10000))
             except Exception:
                 slug = None
             memory_entries.append(
@@ -1472,6 +1580,8 @@ async def my_stack_page(
                     "description": e.description or "",
                     "requirement": e.requirement,
                     "slug": slug,
+                    "items_count": items_count,
+                    "in_stack": True,
                 }
             )
     except Exception as e:
@@ -1482,12 +1592,21 @@ async def my_stack_page(
     # only the uploads they created (created_by), never group-shared ones.
     upload_entries = _unified_upload_cards(user)
 
+    # Normalize into the shared catalog_card `c` contract so My Stack cards
+    # render identically to the Catalog (same macro + CSS + JS component).
+    data_cards = [_catalog_card_data(e) for e in data_entries]
+    memory_card_models = [_catalog_card_memory(d) for d in memory_entries]
+    upload_card_models = [_catalog_card_upload(c) for c in upload_entries]
+
     ctx = _build_context(
         request,
         user=user,
         data_entries=data_entries,
+        data_cards=data_cards,
         memory_entries=memory_entries,
+        memory_cards=memory_card_models,
         upload_entries=upload_entries,
+        upload_cards=upload_card_models,
     )
     return templates.TemplateResponse(request, "stack_unified.html", ctx)
 
@@ -4007,7 +4126,22 @@ async def chat_page(
 
     if not can_access(user["id"], ResourceType.CHAT.value, "chat", conn):
         return RedirectResponse("/")
-    ctx = _build_context(request, user=user, conn=conn, current_user=user)
+    # The empty-state hero mirrors /ask (issue #896): same orb + "Ask
+    # anything / Reuse everything" headline, the RBAC-filtered "Operated
+    # by Kai · N knowledge sources · M capabilities" pill, and the shared
+    # suggested questions. Computed here the same way ask_landing does so
+    # the two surfaces stay visually 1:1.
+    from src.marketplace_filter import resolve_allowed_plugins
+
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        current_user=user,
+        knowledge_source_count=_ask_knowledge_source_count(user, conn),
+        capability_count=len(resolve_allowed_plugins(conn, user)),
+        suggested_questions=_ASK_SUGGESTED_QUESTIONS[:3],
+    )
     ctx["chat_capabilities"] = _chat_capability_snapshot(conn, user)
     # Deep link: /chat?session=<id>. We DO NOT validate the id here (no
     # 404 on unknown/forbidden) — the page always renders and RBAC is

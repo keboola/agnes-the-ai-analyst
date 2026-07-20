@@ -1451,6 +1451,12 @@ function autosizeComposer() {
   const ta = $("chat-input");
   if (!ta) return;
   ta.style.height = "auto";
+  // Empty composer → keep the CSS height (rows / min-height). In the
+  // centered empty-state column a textarea's scrollHeight comes back as
+  // the column height rather than its single-line content height, which
+  // would pin the composer at its 220px max on load. Only measure to
+  // grow once there is actual content.
+  if (ta.value.trim() === "") return;
   ta.style.height = Math.min(ta.scrollHeight, 220) + "px";
 }
 
@@ -1762,6 +1768,30 @@ function setSidebarCollapsed(collapsed) {
   applySidebarCollapse(isSidebarCollapsed());
   btn.addEventListener("click", () => {
     setSidebarCollapsed(!isSidebarCollapsed());
+  });
+})();
+
+// The Conversations column is hidden by default (mirrors /ask). The
+// floating #chat-history-toggle in the main area adds/removes
+// ``.history-open`` on the shell to reveal it; state persists across
+// reloads. This is independent of the mini-collapse above, which only
+// applies once the column is open.
+(function wireHistoryToggle() {
+  const _HISTORY_KEY = "agnes.chat.historyOpen";
+  const shell = document.querySelector(".cloud-chat-shell");
+  const btn = $("chat-history-toggle");
+  if (!shell || !btn) return;
+  function apply(open) {
+    shell.classList.toggle("history-open", open);
+    btn.setAttribute("aria-pressed", open ? "true" : "false");
+  }
+  let open = false;
+  try { open = localStorage.getItem(_HISTORY_KEY) === "1"; } catch (_) { /* storage off */ }
+  apply(open);
+  btn.addEventListener("click", () => {
+    const next = !shell.classList.contains("history-open");
+    apply(next);
+    try { localStorage.setItem(_HISTORY_KEY, next ? "1" : "0"); } catch (_) { /* storage off */ }
   });
 })();
 
