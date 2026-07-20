@@ -1659,15 +1659,26 @@ def _probe_art_integrity(
     never mask an unrelated failure as "corrupt" and trigger a needless
     rebuild.
     """
+    # Schema-qualify: duckdb_constraints() spans every schema (the FTS
+    # extension grows fts_main_* schemas with their own PK'd internal
+    # tables), so resolving a bare table name via search_path is fragile.
+    # DISTINCT (schema, table) + a qualified identifier probes each real
+    # constraint-backed table exactly once, wherever it lives.
     indexed = conn.execute(
-        "SELECT DISTINCT table_name FROM duckdb_constraints() WHERE constraint_type IN ('PRIMARY KEY', 'UNIQUE')"
+        "SELECT DISTINCT schema_name, table_name FROM duckdb_constraints() "
+        "WHERE constraint_type IN ('PRIMARY KEY', 'UNIQUE')"
     ).fetchall()
-    for (table,) in indexed:
-        ident = '"' + str(table).replace('"', '""') + '"'
+    for schema, table in indexed:
+        ident = '"' + str(schema).replace('"', '""') + '"."' + str(table).replace('"', '""') + '"'
         try:
             row = conn.execute(f"SELECT rowid FROM {ident} LIMIT 1").fetchone()
             if row is None:
-                continue  # empty table — no index entries to corrupt
+                # Empty table: no index entries to delete, so the canary
+                # can't exercise (and thus can't detect) a torn index here.
+                # Known coverage gap — corruption localized to a currently
+                # empty PK/UNIQUE table surfaces on its next real write, the
+                # same way it did before this self-heal existed.
+                continue
             conn.execute("BEGIN")
             conn.execute(f"DELETE FROM {ident} WHERE rowid = {int(row[0])}")
             conn.execute("ROLLBACK")
@@ -1696,13 +1707,14 @@ def _rebuild_system_db(db_path: str) -> Path:
     ``EXPORT DATABASE`` (full table scans, no index use) dumps every row to
     parquet, and ``IMPORT DATABASE`` into a fresh file re-creates every
     table and rebuilds every index from scratch. The rebuilt file is
-    assembled completely *before* the original is touched; the original is
-    then quarantined as ``.broken.<ts>`` (via :func:`_move_to_broken`, which
-    also chmods it ``0o600``) and the rebuilt file moved into place. On any
-    failure the original is left where it is.
+    assembled completely *before* the original is touched. The corrupt
+    original is then preserved as ``.broken.<ts>`` (a copy, chmod ``0o600``)
+    and the rebuilt file swapped in with an atomic ``os.replace`` — so
+    ``db_path`` is never momentarily absent for a concurrent opener. On any
+    failure before the swap the original is left untouched.
 
     Sibling files (``.export``/``.rebuild`` scratch) live next to
-    ``db_path`` so the final move is a same-filesystem rename.
+    ``db_path`` so the final swap is a same-filesystem rename.
     """
     export_dir = f"{db_path}.export.{os.getpid()}"
     rebuilt = f"{db_path}.rebuild.{os.getpid()}"
@@ -1727,10 +1739,31 @@ def _rebuild_system_db(db_path: str) -> Path:
     finally:
         dst.close()
 
-    # 3. Swap: quarantine the corrupt original, move the rebuilt file in.
+    # 3. Swap atomically. Preserve the corrupt original as .broken.<ts> with
+    #    a COPY (so db_path never vanishes), then os.replace() the rebuilt
+    #    file over it. os.replace is an atomic same-filesystem rename, so a
+    #    concurrent opener (a second app instance mid-rolling-restart, or an
+    #    operator running `agnes admin db repair`) always sees either the old
+    #    or the new file — never a missing path, which duckdb.connect() would
+    #    silently re-create as an empty DB whose writes our rename then loses.
     wal_path = Path(db_path + ".wal")
-    broken = _move_to_broken(db_path, wal_path)
-    shutil.move(rebuilt, db_path)
+    broken = Path(db_path + f".broken.{int(time.time())}")
+    shutil.copy2(db_path, broken)
+    try:
+        os.chmod(broken, 0o600)  # holds password hashes / PAT rows / audit log
+    except OSError:
+        pass
+    if wal_path.exists():
+        broken_wal = str(broken) + ".wal"
+        shutil.copy2(str(wal_path), broken_wal)
+        try:
+            os.chmod(broken_wal, 0o600)
+        except OSError:
+            pass
+        # Drop the corrupt file's stale WAL so it cannot replay onto the
+        # rebuilt DB (already CHECKPOINTed above; it needs no WAL).
+        wal_path.unlink()
+    os.replace(rebuilt, db_path)
     try:
         os.chmod(db_path, 0o600)
     except OSError:
