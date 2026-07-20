@@ -224,6 +224,43 @@ def test_upsert_summary_reprocessing_same_session_file_is_stable(usage_repo):
     assert rows[0]["tool_calls"] == 4
 
 
+def test_upsert_summary_backfills_late_resolved_identity(usage_repo):
+    """A session first processed before its user account is resolvable is
+    written with username=<dir_name>, user_id=NULL. When the file is later
+    appended and re-processed after the account exists, the DO UPDATE must
+    upgrade username/user_id to the resolved identity (late-resolution
+    backfill). Removing those columns from the DO UPDATE SET would regress
+    this (Devin review, PR #943), so it is locked in here on both engines."""
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    # First pass: identity not yet resolvable.
+    _seed_summary(
+        repo,
+        session_file="backfill/s1.jsonl",
+        username="dir-uuid-1",
+        user_id=None,
+        started_at=now,
+        tool_calls=1,
+    )
+    # Second pass (same session_file) once the account is resolved.
+    _seed_summary(
+        repo,
+        session_file="backfill/s1.jsonl",
+        username="resolved-user",
+        user_id="uid-resolved",
+        started_at=now,
+        tool_calls=2,
+    )
+    # The row now carries the resolved identity...
+    resolved = repo.list_sessions_for_user_admin(user_id="uid-resolved", username="resolved-user")
+    assert len(resolved) == 1
+    assert resolved[0]["session_file"] == "backfill/s1.jsonl"
+    assert resolved[0]["tool_calls"] == 2
+    # ...and no longer matches the pre-resolution placeholder identity.
+    stale = repo.list_sessions_for_user_admin(user_id="uid-does-not-exist", username="dir-uuid-1")
+    assert len(stale) == 0
+
+
 def test_count_events(usage_repo):
     repo, _, _ = usage_repo
     now = datetime.now(timezone.utc)

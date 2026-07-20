@@ -5,6 +5,7 @@ usage_marketplace_item_window.
 
 Mirrors src/db.py:200-208, 2885-2892, 721-789, 795-839.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, date as _date
@@ -38,14 +39,10 @@ class SessionProcessorState(Base):
         nullable=False,
         server_default=text("CURRENT_TIMESTAMP"),
     )
-    items_extracted: Mapped[int] = mapped_column(
-        Integer, server_default=text("0"), nullable=False
-    )
+    items_extracted: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
     file_hash: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    __table_args__ = (
-        PrimaryKeyConstraint("processor_name", "session_file"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("processor_name", "session_file"),)
 
 
 class UserObservabilityView(Base):
@@ -81,9 +78,7 @@ class UsageEvent(Base):
     skill_name: Mapped[str | None] = mapped_column(String, nullable=True)
     subagent_type: Mapped[str | None] = mapped_column(String, nullable=True)
     command_name: Mapped[str | None] = mapped_column(String, nullable=True)
-    is_error: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("FALSE"), nullable=False
-    )
+    is_error: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), nullable=False)
     source: Mapped[str] = mapped_column(String, nullable=False)
     ref_id: Mapped[str | None] = mapped_column(String, nullable=True)
     model: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -135,26 +130,20 @@ class UsageSessionSummary(Base):
         nullable=False,
         server_default=text("CURRENT_TIMESTAMP"),
     )
-    input_tokens: Mapped[int] = mapped_column(
-        BigInteger, server_default=text("0"), nullable=False
-    )
-    output_tokens: Mapped[int] = mapped_column(
-        BigInteger, server_default=text("0"), nullable=False
-    )
-    cache_read_tokens: Mapped[int] = mapped_column(
-        BigInteger, server_default=text("0"), nullable=False
-    )
-    cache_creation_tokens: Mapped[int] = mapped_column(
-        BigInteger, server_default=text("0"), nullable=False
-    )
+    input_tokens: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), nullable=False)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), nullable=False)
+    cache_read_tokens: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), nullable=False)
+    cache_creation_tokens: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), nullable=False)
     user_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # No secondary indexes here (dropped in the matching Alembic revision,
     # 0041_usage_summary_idx_fix_v94 — mirrors DuckDB _v93_to_v94):
-    # upsert_summary's ON CONFLICT DO UPDATE used to rewrite username /
-    # started_at / user_id on every re-process tick, which on DuckDB made a
-    # corrupt secondary-index entry fatal (INCIDENT 2026-07-20).
-    # session_file remains the sole PRIMARY KEY.
+    # upsert_summary's ON CONFLICT DO UPDATE refreshes username / started_at
+    # / user_id on every re-process tick, and on DuckDB updating an
+    # ART-indexed column made a corrupt secondary-index entry fatal
+    # (INCIDENT 2026-07-20), so the indexes were removed — updating an
+    # unindexed column is safe. Do not re-add them. session_file remains
+    # the sole PRIMARY KEY.
 
 
 class UsageToolDaily(Base):
@@ -168,9 +157,7 @@ class UsageToolDaily(Base):
     distinct_users: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
     distinct_sessions: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
 
-    __table_args__ = (
-        PrimaryKeyConstraint("day", "tool_name", "source"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("day", "tool_name", "source"),)
 
 
 class UsageMarketplaceItemDaily(Base):
@@ -179,9 +166,7 @@ class UsageMarketplaceItemDaily(Base):
     day: Mapped[_date] = mapped_column(Date, nullable=False)
     source: Mapped[str] = mapped_column(String, nullable=False)
     type: Mapped[str] = mapped_column(String, nullable=False)
-    parent_plugin: Mapped[str] = mapped_column(
-        String, server_default=text("''"), nullable=False
-    )
+    parent_plugin: Mapped[str] = mapped_column(String, server_default=text("''"), nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     count: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
     distinct_users: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
@@ -199,9 +184,7 @@ class UsageMarketplaceItemWindow(Base):
     period_label: Mapped[str] = mapped_column(String, nullable=False)
     source: Mapped[str] = mapped_column(String, nullable=False)
     type: Mapped[str] = mapped_column(String, nullable=False)
-    parent_plugin: Mapped[str] = mapped_column(
-        String, server_default=text("''"), nullable=False
-    )
+    parent_plugin: Mapped[str] = mapped_column(String, server_default=text("''"), nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     invocations: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
     distinct_users: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)

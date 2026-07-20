@@ -5942,22 +5942,22 @@ def _v93_to_v94(conn: duckdb.DuckDBPyConnection) -> None:
     (user_id).
 
     INCIDENT 2026-07-20: the periodic usage session-processor calls
-    ``UsageRepository.upsert_summary`` every ~10 minutes, which used to
-    rewrite all three of these columns via ``ON CONFLICT (session_file) DO
-    UPDATE SET ...`` on every re-process tick, even though none of them
-    ever change for a given ``session_file`` once written. Updating an
-    ART-indexed column runs as delete-old-entry + insert-new-entry; a
-    single corrupt secondary-index entry turned that delete into a FATAL
-    ``Failed to delete all rows from index`` error, which invalidates the
-    whole DuckDB connection ("database has been invalidated ... must be
-    restarted") for every subsequent query on the process — including
-    login — and recurred on every scheduler tick since nothing marked the
-    session processed. ``upsert_summary`` no longer rewrites these columns
-    (see ``src/repositories/usage.py``); this migration removes the
-    indexes themselves, both to repair the already-corrupt structure on a
-    live instance and to remove the index-maintenance cost that made the
-    columns dangerous to rewrite in the first place. ``session_file`` (the
-    PRIMARY KEY) is untouched.
+    ``UsageRepository.upsert_summary`` every ~10 minutes, which refreshes
+    all three of these columns via ``ON CONFLICT (session_file) DO UPDATE
+    SET ...`` on every re-process tick. Updating an ART-indexed column runs
+    as delete-old-entry + insert-new-entry; a single corrupt secondary-
+    index entry turned that delete into a FATAL ``Failed to delete all rows
+    from index`` error, which invalidates the whole DuckDB connection
+    ("database has been invalidated ... must be restarted") for every
+    subsequent query on the process — including login — and recurred on
+    every scheduler tick since nothing marked the session processed. This
+    migration removes the indexes themselves — repairing the already-
+    corrupt structure on a live instance and removing the index
+    maintenance that made those column rewrites fatal. ``upsert_summary``
+    still refreshes the columns (safe now that they are unindexed: a plain
+    in-place write with no ART maintenance), so late-resolution identity
+    backfill is preserved; do NOT re-add secondary indexes on them.
+    ``session_file`` (the PRIMARY KEY) is untouched.
 
     Plain ``DROP INDEX IF EXISTS`` rather than a CTAS table rebuild: it is
     a catalog-only structural operation that does not need to walk (and
