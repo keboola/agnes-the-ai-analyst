@@ -167,6 +167,18 @@ class TestCatalogSemanticsContent:
         assert "badge--info" in body
         assert "badge--warn" in body
 
+    def test_glossary_client_fetch_limit_matches_server_count_limit(self, seeded_app):
+        """The tab label's initial count comes from glossary_repo().list(limit=500)
+        (app/web/router.py); the client re-fetch on tab-open must use the same
+        limit, or the displayed count silently shrinks from up to 500 to
+        whatever the client asked for once the user opens the Glossary tab."""
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+        resp = c.get("/catalog/semantics", headers=_auth(token))
+        body = resp.text
+        assert "/api/glossary?limit=500" in body
+        assert "/api/glossary?limit=200" not in body
+
 
 class TestCatalogSemanticsLinkFromCatalog:
     def test_catalog_page_links_to_semantics(self, seeded_app):

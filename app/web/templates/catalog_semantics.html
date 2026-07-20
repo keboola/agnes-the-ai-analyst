@@ -296,7 +296,7 @@
         try {
             const url = q
                 ? '/api/glossary/search?q=' + encodeURIComponent(q) + '&limit=50'
-                : '/api/glossary?limit=200';
+                : '/api/glossary?limit=500';
             const r = await fetch(url, { credentials: 'same-origin' });
             if (!r.ok) throw new Error('HTTP ' + r.status);
             const data = await r.json();
