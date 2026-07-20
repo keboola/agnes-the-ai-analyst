@@ -543,13 +543,13 @@ class TestMaterializedScanServedLocally:
 
     SCHEMA = {"v": "INT64", "d": "DATE", "s": "STRING", "x": "STRING"}
 
-    def _seed_materialized(self, conn):
+    def _seed_materialized(self, conn, table_id="mat_t"):
         _ensure_admin1(conn)
         from src.repositories.table_registry import TableRegistryRepository
 
         TableRegistryRepository(conn).register(
-            id="mat_t",
-            name="mat_t",
+            id=table_id,
+            name=table_id,
             source_type="bigquery",
             bucket="ds",
             source_table="raw_events",
@@ -654,6 +654,56 @@ class TestMaterializedScanServedLocally:
         got = parse_ipc_bytes(ipc)
         assert got.column("v").to_pylist() == expected_v
 
+    def test_accepts_duckdb_flavor_where(self, reload_db, tmp_path, monkeypatch):
+        """The schema endpoint advertises sql_flavor='duckdb' for materialized
+        rows (#261), so a client following that guidance writes DuckDB syntax
+        (e.g. `::` casts). sqlglot's permissive BigQuery parse accepts it and
+        the execution-dialect render normalizes it — both flavors must work
+        (PR #946 review, schema/scan dialect mismatch)."""
+        self._write_parquet(tmp_path)
+        ipc = self._run(
+            reload_db,
+            monkeypatch,
+            {"table_id": "mat_t", "select": ["v"], "where": "x::BIGINT = 3"},
+        )
+        got = parse_ipc_bytes(ipc)
+        assert got.column("v").to_pylist() == [3]
+
+    def test_runtime_conversion_error_in_data_raises_400_not_500(self, reload_db, tmp_path, monkeypatch):
+        """Pin: DuckDB surfaces data-dependent conversion errors eagerly at
+        execute().arrow() — inside the fail-loud guard. If a future duckdb
+        moved evaluation into lazy batch streaming, the error would fire
+        during IPC serialization (outside the guard) and escape as an
+        unhandled duckdb.Error (500); this test would catch that regression."""
+        import pyarrow.parquet as pq
+
+        bad = pa.table({"v": list(range(10_000)), "x": [str(i) for i in range(9_999)] + ["abc"]})
+        data_dir = tmp_path / "extracts" / "bigquery" / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        pq.write_table(bad, data_dir / "mat_t.parquet")
+        with pytest.raises(ValueError, match="local scan failed"):
+            self._run(
+                reload_db,
+                monkeypatch,
+                {"table_id": "mat_t", "select": ["v"], "where": "CAST(x AS INT64) = 3"},
+            )
+
+    def test_corrupt_parquet_propagates_not_client_400(self, reload_db, tmp_path, monkeypatch):
+        """The other side of the fail-loud boundary (PR #946 review round 3):
+        a corrupt/unreadable parquet is an operational failure the caller
+        cannot fix by editing the query, so it must NOT be converted to a
+        client-facing 400. Empirical duckdb quirk: it raises
+        InvalidInputException, which subclasses ProgrammingError — the guard
+        re-raises it explicitly before the client-error catch."""
+        import duckdb
+
+        data_dir = tmp_path / "extracts" / "bigquery" / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "mat_t.parquet").write_bytes(b"not a parquet file")
+        with pytest.raises(duckdb.InvalidInputException) as exc_info:
+            self._run(reload_db, monkeypatch, {"table_id": "mat_t", "select": ["v"]})
+        assert not isinstance(exc_info.value, ValueError)
+
     def test_unexecutable_where_raises_valueerror_not_500(self, reload_db, tmp_path, monkeypatch):
         """A predicate that validates but fails at DuckDB bind/execution time
         must surface as ValueError (→ 400), not an unhandled duckdb.Error."""
@@ -672,6 +722,41 @@ class TestMaterializedScanServedLocally:
         would fail this test if the fallback existed."""
         with pytest.raises(FileNotFoundError):
             self._run(reload_db, monkeypatch, {"table_id": "mat_t", "select": ["v"]})
+
+    def test_missing_parquet_real_schema_path_raises_404(self, reload_db, monkeypatch):
+        """Regression (PR #946 review): with `_resolve_schema` NOT stubbed,
+        the real build_schema raises v2_schema.NotFound for a materialized
+        row whose parquet is absent. That must translate to FileNotFoundError
+        (→ 404), not escape the endpoints' except tuples as a 500.
+
+        Uses a dedicated table_id so the module-level schema TTLCache can
+        never satisfy the lookup from a previous test's cached entry."""
+        from app.api import v2_scan
+
+        def _boom(*a, **kw):
+            raise AssertionError("BigQuery must not be touched for a materialized row")
+
+        monkeypatch.setattr(v2_scan, "_run_bq_scan", _boom)
+        monkeypatch.setattr(v2_scan, "_bq_dry_run_bytes", _boom)
+        # NOTE: _resolve_schema deliberately NOT patched — exercises the real
+        # build_schema path (registry row exists, parquet does not).
+        conn = reload_db.get_system_db()
+        try:
+            self._seed_materialized(conn, table_id="mat_t_cold")
+            user = {"id": "admin1", "email": "a@x.com"}
+            tracker = v2_scan._build_quota_tracker()
+            with pytest.raises(FileNotFoundError):
+                v2_scan.run_scan(
+                    conn,
+                    user,
+                    {"table_id": "mat_t_cold", "select": ["v"]},
+                    bq=_bq(data="proj"),
+                    quota=tracker,
+                )
+            with pytest.raises(FileNotFoundError):
+                v2_scan.estimate(conn, user, {"table_id": "mat_t_cold"}, bq=_bq(data="proj"))
+        finally:
+            conn.close()
 
     def test_counts_result_bytes_toward_daily_quota(self, reload_db, tmp_path, monkeypatch):
         from app.api.v2_quota import QuotaTracker

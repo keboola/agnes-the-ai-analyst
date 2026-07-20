@@ -78,7 +78,7 @@ agnes admin register-table monthly_kpis \
 
 **Cost guardrail:** `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB; set `0` to disable) refuses materialise runs whose query plan exceeds the cap. Catches a typo'd `WHERE` clause that would otherwise scan a year of data.
 
-**Analyst reads are served from the parquet:** `agnes snapshot create` / `POST /api/v2/scan` (and `/estimate`) on a materialized table read the server-side parquet directly — zero upstream BigQuery scan cost, and `/estimate` reports `estimated_scan_bytes: 0`. The scheduled materialize run is the only thing that touches BigQuery. `--where` predicates may use BigQuery flavor (they are transpiled to DuckDB for the local read). Until the first materialize run completes there is no parquet yet, so reads return 404 — they never fall back to scanning the raw upstream table.
+**Analyst reads are served from the parquet:** `agnes snapshot create` / `POST /api/v2/scan` (and `/estimate`) on a materialized table read the server-side parquet directly — zero upstream BigQuery scan cost, and `/estimate` reports `estimated_scan_bytes: 0`. The scheduled materialize run is the only thing that touches BigQuery. `--where` predicates may use BigQuery or DuckDB flavor (both are validated and rendered as DuckDB for the local read). Until the first materialize run completes there is no parquet yet, so reads return 404 — they never fall back to scanning the raw upstream table.
 
 ### Keboola — `query_mode: local` (the production path)
 

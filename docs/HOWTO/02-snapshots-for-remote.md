@@ -86,7 +86,8 @@ DuckDB-style casts (`::date`, `::int`) will fail on remote tables.
 
 The same BQ flavour also works for `query_mode='materialized'` tables — the
 server executes those from its local parquet copy (no BigQuery scan) and
-transpiles the predicate to DuckDB automatically.
+transpiles the predicate to DuckDB automatically. DuckDB flavour (what
+`agnes schema` reports for materialized tables) is accepted there too.
 
 ## Managing snapshots
 
