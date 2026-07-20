@@ -76,6 +76,12 @@ _COHORT: dict[str, tuple[str, str]] = {
     # list/get-by-id are CLI-reachable (`agnes glossary show`) but have no
     # MCP analogue and are _EXEMPT below.
     "/api/glossary/search": ("glossary search", "glossary_search"),
+    # Wave-2B job queue REST surface (Task 5) — `/api/jobs` carries both list
+    # (GET) and enqueue (POST); `/api/jobs/{job_id}` is the detail view.
+    "/api/jobs": ("admin jobs list", "admin_jobs_list"),
+    "/api/jobs/{job_id}": ("admin jobs show", "admin_job_get"),
+    # DuckLake analytics-backend migration (wave-2G Task 6).
+    "/api/admin/analytics/migrate": ("admin analytics migrate", "admin_analytics_migrate"),
 }
 
 

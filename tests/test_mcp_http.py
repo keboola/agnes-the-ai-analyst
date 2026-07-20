@@ -196,6 +196,16 @@ class TestToolRegistration:
             # Triple-surface with GET /api/admin/source-connections +
             # `agnes admin connection list`.
             "admin_source_connections_list",
+            # Job management for scheduler — list, get, enqueue tasks.
+            # Triple-surface with GET /api/jobs + GET /api/jobs/{job_id} +
+            # POST /api/jobs + `agnes admin jobs`.
+            "admin_jobs_list",
+            "admin_job_get",
+            "admin_job_enqueue",
+            # DuckLake analytics-backend migration (wave-2G Task 6). Triple-
+            # surface with POST /api/admin/analytics/migrate + `agnes admin
+            # analytics migrate`.
+            "admin_analytics_migrate",
             # Contributed-skill triple-surface — admin can list, publish, and
             # delete skills in the Agnes Contributed marketplace without leaving
             # the chat. Mirrors REST + `agnes admin skill` CLI surface.

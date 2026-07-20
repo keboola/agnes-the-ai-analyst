@@ -6,20 +6,20 @@ Tests:
 - A message sent by a joiner is attributed to the joiner (sender_email=joiner)
 - Primary owner path threads sender_email into send_user_message
 """
+
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import duckdb
 import pytest
 
 from src.db import _ensure_schema
 from app.chat.config import ChatConfig
-from app.chat.manager import ChatManager, LiveSession, SinkEntry, SessionNotFound
+from app.chat.manager import ChatManager, LiveSession, SinkEntry
 from app.chat.persistence import ChatRepository
 from app.chat.types import SessionState, Surface
 from app.chat.workdir import WorkdirManager
@@ -73,7 +73,10 @@ def _make_manager(tmp_path: Path) -> tuple[ChatManager, ChatRepository]:
 
 
 def _attach_fake_live(
-    manager: ChatManager, chat_id: str, user_email: str, sink,
+    manager: ChatManager,
+    chat_id: str,
+    user_email: str,
+    sink,
     participant_emails=None,
 ) -> LiveSession:
     """Insert a LiveSession with a fake handle + primary sink."""
@@ -98,20 +101,27 @@ def _attach_fake_live(
 # Tests for add_sink + sender_email
 # ---------------------------------------------------------------------------
 
+
 def test_add_sink_called_with_joiner_email(tmp_path):
     """A live participant joining via add_sink has their email recorded."""
+
     async def _run():
         mgr, repo = _make_manager(tmp_path)
         # Create a co-session
         s0 = await mgr.create_session(user_email="owner@x.com", surface=Surface.WEB)
         s1 = repo.fork_session_as_co_session(
             s0.id,
-            owner_email="owner@x.com", owner_user_id="ou1",
-            invitee_email="joiner@x.com", invitee_user_id="ju1",
+            owner_email="owner@x.com",
+            owner_user_id="ou1",
+            invitee_email="joiner@x.com",
+            invitee_user_id="ju1",
         )
         primary_sink = FakeSink()
         live = _attach_fake_live(
-            mgr, s1.id, "owner@x.com", primary_sink,
+            mgr,
+            s1.id,
+            "owner@x.com",
+            primary_sink,
             participant_emails=["owner@x.com", "joiner@x.com"],
         )
 
@@ -129,17 +139,23 @@ def test_add_sink_called_with_joiner_email(tmp_path):
 
 def test_add_sink_rejects_non_participant(tmp_path):
     """A non-participant cannot join via add_sink (SR-9)."""
+
     async def _run():
         mgr, repo = _make_manager(tmp_path)
         s0 = await mgr.create_session(user_email="owner@x.com", surface=Surface.WEB)
         s1 = repo.fork_session_as_co_session(
             s0.id,
-            owner_email="owner@x.com", owner_user_id="ou1",
-            invitee_email="joiner@x.com", invitee_user_id="ju1",
+            owner_email="owner@x.com",
+            owner_user_id="ou1",
+            invitee_email="joiner@x.com",
+            invitee_user_id="ju1",
         )
         primary_sink = FakeSink()
         _attach_fake_live(
-            mgr, s1.id, "owner@x.com", primary_sink,
+            mgr,
+            s1.id,
+            "owner@x.com",
+            primary_sink,
             participant_emails=["owner@x.com", "joiner@x.com"],
         )
 
@@ -152,6 +168,7 @@ def test_add_sink_rejects_non_participant(tmp_path):
 
 def test_send_user_message_joiner_attributed_to_joiner(tmp_path):
     """Messages from the joiner carry sender_email=joiner."""
+
     async def _run():
         mgr, repo = _make_manager(tmp_path)
         s0 = await mgr.create_session(user_email="owner@x.com", surface=Surface.WEB)
@@ -169,6 +186,7 @@ def test_send_user_message_joiner_attributed_to_joiner(tmp_path):
 # ---------------------------------------------------------------------------
 # HTTP-level tests for the co-join WS ticket and route
 # ---------------------------------------------------------------------------
+
 
 def _seed_copresence_app(conn):
     """Seed owner+collab+co-session; return (co_id, owner_token, collab_token,
@@ -191,16 +209,21 @@ def _seed_copresence_app(conn):
     members.add_member("wo1", chat_grp["id"], source="admin", added_by="test")
     members.add_member("wc1", chat_grp["id"], source="admin", added_by="test")
     ResourceGrantsRepository(conn).create(
-        group_id=chat_grp["id"], resource_type="chat",
-        resource_id="chat", assigned_by="test", requirement="required",
+        group_id=chat_grp["id"],
+        resource_type="chat",
+        resource_id="chat",
+        assigned_by="test",
+        requirement="required",
     )
 
     repo = ChatRepository(conn)
     s0 = repo.create_session(user_email="wowner@x.com", surface=Surface.WEB)
     s1 = repo.fork_session_as_co_session(
         s0.id,
-        owner_email="wowner@x.com", owner_user_id="wo1",
-        invitee_email="wcollab@x.com", invitee_user_id="wc1",
+        owner_email="wowner@x.com",
+        owner_user_id="wo1",
+        invitee_email="wcollab@x.com",
+        invitee_user_id="wc1",
     )
 
     owner_token = create_access_token("wo1", "wowner@x.com")
@@ -215,6 +238,7 @@ def co_ws_app(e2e_env):
     from app.main import create_app
     from app.chat.persistence import ChatRepository
     from fastapi.testclient import TestClient
+
     conn = get_system_db()
     co_id, owner_tk, collab_tk, stranger_tk = _seed_copresence_app(conn)
     app = create_app()
@@ -254,9 +278,7 @@ def test_ws_join_route_rejects_invalid_ticket(co_ws_app):
     client, co_id, owner_tk, collab_tk, stranger_tk = co_ws_app
     with pytest.raises(Exception):
         # starlette test client raises on WS close codes
-        with client.websocket_connect(
-            f"/api/chat/sessions/{co_id}/join?ticket=bogus"
-        ) as ws:
+        with client.websocket_connect(f"/api/chat/sessions/{co_id}/join?ticket=bogus") as ws:
             ws.receive_json()
 
 
@@ -268,11 +290,33 @@ def test_ws_join_route_rejects_non_participant_ticket(co_ws_app):
     re-check must reject it.
     """
     client, co_id, owner_tk, collab_tk, stranger_tk = co_ws_app
-    # Directly mint a ticket in _TICKETS for a non-participant
+    # Directly mint a ticket for a non-participant, bypassing join-ticket
     from app.api.chat import _issue_ticket
+
     bad_ticket = _issue_ticket(co_id, "wstranger@x.com")
     with pytest.raises(Exception):
-        with client.websocket_connect(
-            f"/api/chat/sessions/{co_id}/join?ticket={bad_ticket}"
-        ) as ws:
+        with client.websocket_connect(f"/api/chat/sessions/{co_id}/join?ticket={bad_ticket}") as ws:
             ws.receive_json()
+
+
+def test_ws_join_route_closes_4503_on_coordination_unavailable(co_ws_app, monkeypatch):
+    """A coordination backend blip during ticket consume must close the WS
+    with 4503, not propagate an uncaught ``CoordinationUnavailable`` out of
+    the WS handler (FastAPI's HTTP exception handler doesn't cover WS scope).
+    """
+    from starlette.websockets import WebSocketDisconnect
+
+    import app.api.chat as chat_mod
+    from app.coordination.base import CoordinationUnavailable
+
+    client, co_id, owner_tk, collab_tk, stranger_tk = co_ws_app
+
+    def _raise(_ticket: str):
+        raise CoordinationUnavailable("redis blip")
+
+    monkeypatch.setattr(chat_mod, "_consume_ticket", _raise)
+
+    with pytest.raises(WebSocketDisconnect) as excinfo:
+        with client.websocket_connect(f"/api/chat/sessions/{co_id}/join?ticket=anything") as ws:
+            ws.receive_json()
+    assert excinfo.value.code == 4503

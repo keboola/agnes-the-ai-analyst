@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import duckdb
 
@@ -677,6 +678,131 @@ class TestRunProcessorMaxSessionsPerRun:
         assert stats1["capped"] == 0
         assert proc.calls == ["alice/a.jsonl", "alice/b.jsonl"]
         conn.close()
+
+
+class TestRunProcessorTimeBudget:
+    """Prod incident 2026-07-20: a bulk onboarding wave left the "usage"
+    processor (exempt from ``max_sessions_per_run`` — see admin.py) with
+    hundreds of unprocessed sessions. A single ``run_processor`` call drained
+    the entire backlog synchronously, holding the request-serving process for
+    ~6 minutes and causing app-wide 503s on completely unrelated endpoints.
+
+    ``max_sessions_per_run`` alone doesn't bound this: it's an attempt-count
+    cap, and an admin can (as usage did) opt out of it entirely, or a handful
+    of unusually large sessions under a small cap can still blow the
+    wall-clock. ``time_budget_seconds`` is a second, independent guard that
+    bounds elapsed wall-clock time across the whole tick, applied to every
+    processor (including ones exempted from the attempt cap) — once the
+    budget is exceeded, the loop stops visiting new candidates and returns
+    the stats gathered so far. Unlike the per-session
+    ``VerificationProcessor`` budget (which raises), this must NOT raise: a
+    partial tick that successfully processed some sessions is the normal,
+    successful outcome, not an error."""
+
+    def test_stops_early_and_leaves_remaining_for_next_tick(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        # Same user dir so scan order is deterministic (sorted glob within a
+        # user dir; see test_skip_only_candidates_do_not_consume_the_budget).
+        _seed_session(sessions, "alice", "a.jsonl")
+        _seed_session(sessions, "alice", "b.jsonl")
+        _seed_session(sessions, "alice", "c.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+
+        import services.session_pipeline.runner as runner_module
+
+        # monotonic() sequence: [loop_start, check-before-a (under budget),
+        # check-before-b (budget blown)] — "a" gets fully processed, "b"/"c"
+        # never start.
+        monkeypatch.setattr(
+            runner_module.time,
+            "monotonic",
+            MagicMock(side_effect=[0.0, 0.0, 100.0 + 1]),
+        )
+
+        stats = run_processor(
+            conn,
+            proc,
+            session_data_dir=sessions,
+            time_budget_seconds=100.0,
+        )
+
+        assert stats["processed"] == 1
+        assert stats["capped"] == 2
+        assert proc.calls == ["alice/a.jsonl"]
+
+        # Already-processed session is durably marked; the rest remain
+        # eligible scan candidates for the next tick.
+        repo = SessionProcessorStateRepository(conn)
+        h = compute_file_hash(sessions / "alice" / "a.jsonl")
+        assert repo.is_processed(proc.name, "alice/a.jsonl", h) is True
+        assert repo.is_processed(proc.name, "alice/b.jsonl", "anything") is False
+        conn.close()
+
+    def test_deferred_sessions_are_picked_up_on_next_call(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        _seed_session(sessions, "alice", "a.jsonl")
+        _seed_session(sessions, "alice", "b.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+
+        import services.session_pipeline.runner as runner_module
+        from unittest.mock import patch
+
+        # Scope the monotonic() patch to just the first call (via `with`,
+        # not monkeypatch.setattr) — monkeypatch.undo() would also revert
+        # the DATA_DIR env var the _fresh_db fixture set up, breaking the
+        # second call's DB access. Real time is used for call 2, which
+        # completes instantly and never approaches the 100s budget.
+        with patch.object(
+            runner_module.time,
+            "monotonic",
+            MagicMock(side_effect=[0.0, 0.0, 100.0 + 1]),
+        ):
+            stats1 = run_processor(
+                conn,
+                proc,
+                session_data_dir=sessions,
+                time_budget_seconds=100.0,
+            )
+        assert stats1["processed"] == 1
+        assert stats1["capped"] == 1
+
+        stats2 = run_processor(conn, proc, session_data_dir=sessions, time_budget_seconds=100.0)
+        assert stats2["processed"] == 1
+        assert stats2["capped"] == 0
+        assert sorted(proc.calls) == ["alice/a.jsonl", "alice/b.jsonl"]
+        conn.close()
+
+    def test_none_disables_time_budget(self, tmp_path, monkeypatch):
+        """Explicit opt-out preserves pre-existing unbounded-in-one-call
+        behavior — same escape hatch as ``max_sessions_per_run=None``."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        for i in range(5):
+            _seed_session(sessions, f"user{i}", "s.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+        stats = run_processor(conn, proc, session_data_dir=sessions, time_budget_seconds=None)
+        assert stats["processed"] == 5
+        assert stats["capped"] == 0
+        conn.close()
+
+    def test_default_budget_is_applied_when_unset(self):
+        """Every caller (including admin.py's usage-processor invocation,
+        which does not pass this kwarg) gets a bounded tick by default —
+        the fix must not require every call site to opt in."""
+        import inspect
+
+        import services.session_pipeline.runner as runner_module
+
+        sig = inspect.signature(runner_module.run_processor)
+        default = sig.parameters["time_budget_seconds"].default
+        assert default == runner_module._DEFAULT_TIME_BUDGET_SECONDS
+        assert default is not None
+        assert 60 <= default <= 300
 
 
 # ---------------------------------------------------------------------------

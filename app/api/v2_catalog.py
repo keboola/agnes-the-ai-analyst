@@ -218,7 +218,37 @@ def _hint_for_row(
     }
 
 
-def invalidate_for_table(table_id: str) -> None:
+#: Coordination-backend pub/sub channel carrying cache-invalidation events
+#: across api-serving replicas. Payload is ``json.dumps({"scope": "table"|
+#: "all", "table": <id or None>})``. Subscribed in ``app.main``'s lifespan
+#: (every api-serving process); see ``_on_cache_invalidate`` there.
+CACHE_INVALIDATE_CHANNEL = "cache-invalidate"
+
+
+def _publish_cache_invalidate(*, scope: str, table: str | None) -> None:
+    """Broadcast an invalidation on :data:`CACHE_INVALIDATE_CHANNEL` so every
+    OTHER api-serving replica drops the same local caches.
+
+    Best-effort: a coordination-backend hiccup must never fail an admin
+    registry mutation whose local caches (this process's) are already
+    cleared — the other replicas simply keep serving their existing TTL a
+    little longer, same as today's single-process behavior when there is
+    only one replica. Memory backend: publish() only reaches subscribers in
+    THIS process, so this is a harmless no-op fan-out when running as a
+    single all-in-one instance (no other replica to reach).
+    """
+    import json
+
+    from app.coordination.base import CoordinationUnavailable
+    from app.coordination.factory import coordination
+
+    try:
+        coordination().publish(CACHE_INVALIDATE_CHANNEL, json.dumps({"scope": scope, "table": table}))
+    except CoordinationUnavailable:
+        logger.warning("cache-invalidate publish failed (coordination backend unavailable)")
+
+
+def invalidate_for_table(table_id: str, *, _publish: bool = True) -> None:
     """Drop every per-table cache so the next /api/v2/* request reflects
     the just-registered / updated / unregistered row immediately. Owned
     by the catalog module so admin.py doesn't need to know which caches
@@ -228,6 +258,15 @@ def invalidate_for_table(table_id: str) -> None:
     the scheduler-driven refresh owns that lifecycle. Admins who need
     an immediate refresh after a registry edit should hit
     ``POST /api/v2/metadata-cache/refresh?table=<id>``.
+
+    ``_publish`` (default ``True``): also broadcast this invalidation via
+    the coordination backend so every other api-serving replica's local
+    caches are dropped too. The lifespan subscriber in ``app.main`` calls
+    this function with ``_publish=False`` when reacting to an INCOMING
+    event from another replica — that keeps the local-drop path in one
+    place ("route into the same invalidate functions") without ever
+    re-publishing what it just received, so there is no echo loop back
+    onto the channel.
     """
     from app.api import v2_sample, v2_schema
 
@@ -238,21 +277,28 @@ def invalidate_for_table(table_id: str) -> None:
     # frequency (handful per day on a typical instance) doesn't justify
     # adding a prefix-invalidation primitive to TTLCache.
     v2_sample._sample_cache.clear()
+    if _publish:
+        _publish_cache_invalidate(scope="table", table=table_id)
 
 
-def invalidate_all() -> None:
+def invalidate_all(*, _publish: bool = True) -> None:
     """Registry-wide analogue of ``invalidate_for_table`` — drop every per-table
     catalog cache (rows, schema, sample). For operations that rebuild many tables
     at once (e.g. ``POST /api/admin/registry/rebuild``), where clearing one schema
     entry at a time would miss tables and a catalog read taken before the rebuild
     could otherwise serve a stale (no-view) schema until TTL expiry. As with
     ``invalidate_for_table``, the persistent ``bq_metadata_cache`` is left to the
-    scheduler-driven refresh."""
+    scheduler-driven refresh.
+
+    ``_publish`` — see :func:`invalidate_for_table`; identical echo-loop guard.
+    """
     from app.api import v2_sample, v2_schema
 
     _table_rows_cache.clear()
     v2_schema._schema_cache.clear()
     v2_sample._sample_cache.clear()
+    if _publish:
+        _publish_cache_invalidate(scope="all", table=None)
 
 
 def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:

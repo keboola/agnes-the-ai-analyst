@@ -78,10 +78,6 @@ services:
     volumes: !override
       - /data:/data
 
-  ws-gateway:
-    volumes: !override
-      - /data:/data
-
   caddy:
     # Caddy was originally inheriting `data:/srv:ro` from the base
     # service. Once the other services switch to direct binds and
