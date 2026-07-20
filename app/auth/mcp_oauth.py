@@ -154,6 +154,7 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         from src.repositories import oauth_clients_repo
+        from app.secrets import encrypt_client_secret
 
         meta = client_info.model_dump(exclude={"client_id", "client_secret"})
         # redirect_uris is stored separately for fast lookup; remove from meta
@@ -163,7 +164,9 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
 
         oauth_clients_repo().upsert_client(
             client_id=client_info.client_id,
-            client_secret=client_info.client_secret,
+            # #869: encrypt the client_secret at rest so a DB/backup leak can't
+            # read usable secrets; get_client decrypts it back for SDK auth.
+            client_secret=encrypt_client_secret(client_info.client_secret),
             redirect_uris=[str(u) for u in (client_info.redirect_uris or [])],
             client_name=getattr(client_info, "client_name", None),
             client_metadata=meta,
@@ -650,11 +653,16 @@ def _login_url(request: Request, pending: str) -> str:
 
 def _row_to_client_info(row: dict) -> OAuthClientInformationFull:
     """Convert a repo row to an ``OAuthClientInformationFull`` instance."""
+    from app.secrets import decrypt_client_secret
+
     meta: dict = row.get("client_metadata") or {}
     redirect_uris = row.get("redirect_uris") or []
     return OAuthClientInformationFull(
         client_id=row["client_id"],
-        client_secret=row.get("client_secret"),
+        # #869: client_secret is stored encrypted at rest; decrypt to the raw
+        # value the SDK's client-auth path compares by equality. Legacy
+        # plaintext rows pass through unchanged.
+        client_secret=decrypt_client_secret(row.get("client_secret")),
         redirect_uris=[AnyUrl(u) for u in redirect_uris],
         client_name=row.get("client_name"),
         **{k: v for k, v in meta.items() if k not in {"client_id", "client_secret", "redirect_uris", "client_name"}},

@@ -110,3 +110,70 @@ def get_jwt_secret() -> str:
 def get_session_secret() -> str:
     """Get session secret from env, file, or auto-generate."""
     return _load_or_generate("SESSION_SECRET", ".session_secret")
+
+
+# --- OAuth client_secret encryption at rest (#869) -------------------------
+# The MCP OAuth SDK authenticates clients by comparing the presented secret
+# against the value our provider's get_client() returns, so a one-way hash
+# can't be verified inside the SDK's client-auth path. Instead we encrypt the
+# client_secret at rest (reversible with an app-held key) so a DB/backup leak
+# no longer exposes usable client secrets in plaintext; get_client decrypts to
+# the raw value the SDK still compares by equality.
+_CLIENT_SECRET_ENC_PREFIX = "enc:v1:"
+_fernet_lock = threading.Lock()
+_fernet_cached = None
+
+
+def _client_secret_fernet():
+    """Lazily build the Fernet used for client_secret encryption.
+
+    The key is derived (sha256) from an app-managed secret so any key string —
+    the auto-generated hex or an operator's ``AGNES_OAUTH_ENC_KEY`` override —
+    yields a valid 32-byte Fernet key. Cached; the derivation runs once.
+    """
+    global _fernet_cached
+    if _fernet_cached is not None:
+        return _fernet_cached
+    with _fernet_lock:
+        if _fernet_cached is None:
+            import base64
+            import hashlib
+            from cryptography.fernet import Fernet
+
+            key_material = _load_or_generate("AGNES_OAUTH_ENC_KEY", ".oauth_enc_key")
+            fernet_key = base64.urlsafe_b64encode(hashlib.sha256(key_material.encode()).digest())
+            _fernet_cached = Fernet(fernet_key)
+    return _fernet_cached
+
+
+def encrypt_client_secret(raw: Optional[str]) -> Optional[str]:
+    """Encrypt an OAuth client_secret for storage. Idempotent and total:
+    returns ``None``/empty unchanged, and returns an already-encrypted value
+    (``enc:v1:`` prefix) untouched so re-persisting a decrypted-then-stored
+    row never double-encrypts."""
+    if not raw or raw.startswith(_CLIENT_SECRET_ENC_PREFIX):
+        return raw
+    token = _client_secret_fernet().encrypt(raw.encode()).decode()
+    return _CLIENT_SECRET_ENC_PREFIX + token
+
+
+def decrypt_client_secret(stored: Optional[str]) -> Optional[str]:
+    """Decrypt a stored client_secret back to the raw value.
+
+    Legacy rows written before encryption (no ``enc:v1:`` prefix) are returned
+    verbatim, so existing clients keep working until their next re-registration
+    re-encrypts them. If decryption fails (key rotated/corrupt), we fail
+    **closed** — return an unmatchable sentinel so the SDK's constant-time
+    secret comparison rejects the client, rather than returning ``None`` (which
+    the SDK treats as "no secret required" and would let the client in)."""
+    if not stored or not stored.startswith(_CLIENT_SECRET_ENC_PREFIX):
+        return stored
+    token = stored[len(_CLIENT_SECRET_ENC_PREFIX):]
+    try:
+        return _client_secret_fernet().decrypt(token.encode()).decode()
+    except Exception:
+        logger.error(
+            "OAuth client_secret decryption failed (key rotated or ciphertext "
+            "corrupt); failing client authentication closed"
+        )
+        return "\x00invalid-decrypt-" + secrets.token_hex(16)
