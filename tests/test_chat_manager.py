@@ -2017,3 +2017,49 @@ def test_legacy_resume_destroys_old_sandbox_before_clearing(tmp_path):
         mgr._spawn_live.assert_awaited_once()
 
     asyncio.run(_run())
+
+
+def test_spawn_live_destroys_sandbox_on_post_spawn_failure(manager: ChatManager):
+    """#867: a spawn that succeeds but then fails during post-spawn setup —
+    before the kill-on-exit `wait_task` is wired — must tear the sandbox down
+    (else it orphans and later pauses/persists, billable) and not leave a
+    half-registered `live` behind."""
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+
+        # Simulate the runner dying on boot: the ticket push over stdin raises
+        # (broken pipe) after the sandbox is already up.
+        async def _boom(_live):
+            raise RuntimeError("runner died on boot")
+
+        manager._push_ticket_frame = _boom
+
+        with pytest.raises(RuntimeError, match="runner died on boot"):
+            await manager._spawn_live(s)
+
+        assert handle.killed is True, "orphaned sandbox was not torn down"
+        assert s.id not in manager._live, "half-registered live left behind"
+
+    asyncio.run(_run())
+
+
+def test_spawn_live_happy_path_does_not_kill_sandbox(manager: ChatManager):
+    """Guard against the teardown firing on the success path: a clean spawn
+    keeps the sandbox alive and wires the wait_task."""
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+
+        live = await manager._spawn_live(s)
+        try:
+            assert handle.killed is False
+            assert manager._live.get(s.id) is live
+            assert live.current_wait is not None
+        finally:
+            await manager.kill(s.id, reason="test_done")
+            handle.emit_eof()
+
+    asyncio.run(_run())

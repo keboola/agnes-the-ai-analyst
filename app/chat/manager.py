@@ -403,30 +403,51 @@ class ChatManager:
         handle = await self._spawn_runner(session, session_dir)
         import time as _t
 
-        live = LiveSession(
-            chat_id=chat_id,
-            user_email=session.user_email,
-            state=SessionState.ACTIVE,
-            handle=handle,
-            started_at=datetime.now(timezone.utc),
-            last_activity=datetime.now(timezone.utc),
-            surface=getattr(session.surface, "value", str(session.surface)),
-            sinks=[],
-            participant_emails=emails,
-            session_dir=session_dir,
-            active_since=_t.monotonic(),
-        )
-        self._live[chat_id] = live
-        self._repo.set_sandbox_ref(chat_id, sandbox_id=handle.sandbox_id, runner_pid=handle.pid)
-        # Broker: push the session's initial main+mcp tickets before the
-        # session is considered ready to serve messages.
-        await self._push_ticket_frame(live)
-        pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
-        wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
-        live.tasks = [pump_task, wait_task]
-        live.current_pump = pump_task
-        live.current_wait = wait_task
-        return live
+        # #867: the sandbox now exists (spawned) but its kill-on-exit
+        # `wait_task` is not wired yet. If any post-spawn setup below raises —
+        # a DB `set_sandbox_ref`, a broken-pipe on `_push_ticket_frame` when the
+        # runner died on boot (the runner-import P0), a task-creation error — the
+        # microVM would be orphaned: nothing tears it down, and with
+        # `lifecycle.on_timeout=pause` it later pauses and persists (billable).
+        # Destroy it here and drop the half-registered `live` before propagating,
+        # so failure never leaves a zombie for the reaper to miss.
+        try:
+            live = LiveSession(
+                chat_id=chat_id,
+                user_email=session.user_email,
+                state=SessionState.ACTIVE,
+                handle=handle,
+                started_at=datetime.now(timezone.utc),
+                last_activity=datetime.now(timezone.utc),
+                surface=getattr(session.surface, "value", str(session.surface)),
+                sinks=[],
+                participant_emails=emails,
+                session_dir=session_dir,
+                active_since=_t.monotonic(),
+            )
+            self._live[chat_id] = live
+            self._repo.set_sandbox_ref(chat_id, sandbox_id=handle.sandbox_id, runner_pid=handle.pid)
+            # Broker: push the session's initial main+mcp tickets before the
+            # session is considered ready to serve messages.
+            await self._push_ticket_frame(live)
+            pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
+            wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
+            live.tasks = [pump_task, wait_task]
+            live.current_pump = pump_task
+            live.current_wait = wait_task
+            return live
+        except Exception:
+            self._live.pop(chat_id, None)
+            try:
+                await handle.kill(grace_sec=1.0)
+            except Exception:
+                logger.exception(
+                    "_spawn_live: sandbox teardown after post-spawn setup failure "
+                    "failed for %s — sandbox %s may leak",
+                    chat_id,
+                    getattr(handle, "sandbox_id", "?"),
+                )
+            raise
 
     # --- detach / linger / pause --------------------------------------------
 
