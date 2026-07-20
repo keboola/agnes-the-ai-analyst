@@ -109,6 +109,22 @@ class TestCatalogSemanticsContent:
         assert "Daily Active Users" in body
 
     def test_join_tag_shown_for_relationship_metrics(self, seeded_app):
+        from src.db import get_system_db
+        from src.repositories import table_registry_repo
+        from tests.conftest import grant_table_via_package
+
+        conn = get_system_db()
+        for tid in ("orders", "order_items"):
+            table_registry_repo().register(
+                id=tid,
+                name=tid,
+                description="test table",
+                source_type="keboola",
+                query_mode="materialized",
+            )
+            grant_table_via_package(conn, tid, "analyst1")
+        conn.close()
+
         _make_metric(
             id="sales/attach_rate",
             name="attach_rate",
@@ -178,6 +194,80 @@ class TestCatalogSemanticsContent:
         body = resp.text
         assert "/api/glossary?limit=500" in body
         assert "/api/glossary?limit=200" not in body
+
+
+class TestCatalogSemanticsRBAC:
+    """Metric visibility on this page must match `GET /api/metrics` — a
+    metric whose table(s) the analyst can't access via their Data Package
+    stack must not be server-rendered here either (#953 security fix)."""
+
+    def _register_table(self, table_id: str, table_name: str | None = None):
+        from src.repositories import table_registry_repo
+
+        table_registry_repo().register(
+            id=table_id,
+            name=table_name or table_id,
+            description="test table",
+            source_type="keboola",
+            query_mode="materialized",
+        )
+
+    def _grant(self, table_id: str, user_id: str = "analyst1"):
+        from src.db import get_system_db
+        from tests.conftest import grant_table_via_package
+
+        conn = get_system_db()
+        grant_table_via_package(conn, table_id, user_id)
+        conn.close()
+
+    def test_analyst_without_grant_does_not_see_metric_or_category(self, seeded_app):
+        self._register_table("orders_tbl")
+        _make_metric(
+            id="finance/orders_total",
+            name="orders_total",
+            category="finance_only",
+            table_name="orders_tbl",
+        )
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+        resp = c.get("/catalog/semantics", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.text
+        assert "orders_total" not in body
+        # The category has zero visible metrics — its header must not render.
+        assert "finance_only" not in body
+
+    def test_analyst_with_grant_sees_metric(self, seeded_app):
+        self._register_table("orders_tbl2")
+        self._grant("orders_tbl2")
+        _make_metric(
+            id="finance/orders_total2",
+            name="orders_total2",
+            category="finance_only2",
+            table_name="orders_tbl2",
+        )
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+        resp = c.get("/catalog/semantics", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.text
+        assert "orders_total2" in body
+        assert "finance_only2" in body
+
+    def test_admin_sees_metrics_regardless_of_stack(self, seeded_app):
+        self._register_table("orders_tbl3")
+        _make_metric(
+            id="finance/orders_total3",
+            name="orders_total3",
+            category="finance_only3",
+            table_name="orders_tbl3",
+        )
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/catalog/semantics", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.text
+        assert "orders_total3" in body
 
 
 class TestCatalogSemanticsLinkFromCatalog:

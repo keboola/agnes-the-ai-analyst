@@ -1350,6 +1350,7 @@ async def catalog(
 async def catalog_semantics(
     request: Request,
     user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Read-only browser for the semantic layer — business metrics
     (`metric_definitions`) and the glossary (`glossary_terms`) in one page
@@ -1360,13 +1361,24 @@ async def catalog_semantics(
     ``GET /api/metrics`` / ``GET /api/glossary*`` endpoints this page reuses,
     and mirrors /catalog's own gate.
 
+    Metrics are RBAC-filtered the same way ``GET /api/metrics`` is (#953):
+    a metric whose ``table_name``/``tables`` reference a table outside the
+    caller's Data Package stack is omitted before grouping, so a category
+    left with zero visible metrics never renders its header either. Glossary
+    is intentionally NOT gated this way (business vocabulary, not data).
+
     Metrics are server-rendered (grouped by category, same reading order as
     ``agnes catalog --metrics``) — the scale is tens-to-low-hundreds so a
     client-side substring filter over the rendered rows is enough; no new
     search endpoint. Glossary starts empty and is populated client-side via
     the existing ``GET /api/glossary`` / ``GET /api/glossary/search``.
     """
-    metrics = metric_repo().list()
+    from app.api.metrics import _first_inaccessible_table
+    from src.rbac import get_accessible_tables
+
+    accessible_ids = get_accessible_tables(user, conn)
+    allowed = None if accessible_ids is None else set(accessible_ids)
+    metrics = [m for m in metric_repo().list() if _first_inaccessible_table(m, allowed) is None]
     by_category: dict[str, list[dict]] = {}
     for m in metrics:
         by_category.setdefault(m.get("category") or "uncategorized", []).append(m)

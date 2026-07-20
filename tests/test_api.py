@@ -407,6 +407,162 @@ class TestMetricsAPI:
         assert resp.json()["count"] == 1
 
 
+class TestMetricsRBAC:
+    """A metric's `table_name`/`tables` can reveal schema/business info about
+    a table the caller has no Data Package grant on — metric reads must be
+    gated the same way table reads are (#953 security fix)."""
+
+    def _register_table(self, table_id: str, table_name: str):
+        from src.repositories import table_registry_repo
+
+        table_registry_repo().register(
+            id=table_id,
+            name=table_name,
+            description="test table",
+            source_type="keboola",
+            query_mode="materialized",
+        )
+
+    def _grant(self, table_id: str, user_id: str = "analyst1"):
+        from src.db import get_system_db
+        from tests.conftest import grant_table_via_package
+
+        conn = get_system_db()
+        grant_table_via_package(conn, table_id, user_id)
+        conn.close()
+
+    def test_analyst_without_grant_cannot_list_metric(self, seeded_client):
+        client, admin_token, analyst_token = seeded_client
+        self._register_table("orders_tbl", "orders_tbl")
+        metric = {**SAMPLE_METRIC, "id": "finance/orders_total", "name": "orders_total", "table_name": "orders_tbl"}
+        client.post("/api/admin/metrics", json=metric, headers=_auth(admin_token))
+
+        resp = client.get("/api/metrics", headers=_auth(analyst_token))
+        assert resp.status_code == 200
+        ids = {m["id"] for m in resp.json()["metrics"]}
+        assert "finance/orders_total" not in ids
+
+    def test_analyst_without_grant_get_metric_returns_403(self, seeded_client):
+        client, admin_token, analyst_token = seeded_client
+        self._register_table("orders_tbl2", "orders_tbl2")
+        metric = {**SAMPLE_METRIC, "id": "finance/orders_total2", "name": "orders_total2", "table_name": "orders_tbl2"}
+        client.post("/api/admin/metrics", json=metric, headers=_auth(admin_token))
+
+        resp = client.get("/api/metrics/finance/orders_total2", headers=_auth(analyst_token))
+        assert resp.status_code == 403
+        assert "orders_tbl2" in resp.json()["detail"]
+
+    def test_analyst_with_grant_sees_metric(self, seeded_client):
+        client, admin_token, analyst_token = seeded_client
+        self._register_table("orders_tbl3", "orders_tbl3")
+        self._grant("orders_tbl3")
+        metric = {**SAMPLE_METRIC, "id": "finance/orders_total3", "name": "orders_total3", "table_name": "orders_tbl3"}
+        client.post("/api/admin/metrics", json=metric, headers=_auth(admin_token))
+
+        resp = client.get("/api/metrics", headers=_auth(analyst_token))
+        assert resp.status_code == 200
+        ids = {m["id"] for m in resp.json()["metrics"]}
+        assert "finance/orders_total3" in ids
+
+        resp = client.get("/api/metrics/finance/orders_total3", headers=_auth(analyst_token))
+        assert resp.status_code == 200
+        assert resp.json()["id"] == "finance/orders_total3"
+
+    def test_admin_sees_metrics_regardless_of_stack(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        self._register_table("orders_tbl4", "orders_tbl4")
+        metric = {**SAMPLE_METRIC, "id": "finance/orders_total4", "name": "orders_total4", "table_name": "orders_tbl4"}
+        client.post("/api/admin/metrics", json=metric, headers=_auth(admin_token))
+
+        resp = client.get("/api/metrics", headers=_auth(admin_token))
+        assert resp.status_code == 200
+        ids = {m["id"] for m in resp.json()["metrics"]}
+        assert "finance/orders_total4" in ids
+
+        resp = client.get("/api/metrics/finance/orders_total4", headers=_auth(admin_token))
+        assert resp.status_code == 200
+
+    def test_metric_with_no_table_reference_is_always_visible(self, seeded_client):
+        """SAMPLE_METRIC sets no table_name/tables — nothing to gate."""
+        client, admin_token, analyst_token = seeded_client
+        client.post("/api/admin/metrics", json=SAMPLE_METRIC, headers=_auth(admin_token))
+
+        resp = client.get("/api/metrics", headers=_auth(analyst_token))
+        assert resp.status_code == 200
+        ids = {m["id"] for m in resp.json()["metrics"]}
+        assert "finance/mrr" in ids
+
+    def test_join_metric_hidden_unless_all_tables_accessible(self, seeded_client):
+        client, admin_token, analyst_token = seeded_client
+        self._register_table("orders_a", "orders_a")
+        self._register_table("orders_b", "orders_b")
+        metric = {
+            **SAMPLE_METRIC,
+            "id": "finance/join_metric",
+            "name": "join_metric",
+            "table_name": None,
+            "tables": ["orders_a", "orders_b"],
+        }
+        client.post("/api/admin/metrics", json=metric, headers=_auth(admin_token))
+
+        # No access to either table.
+        resp = client.get("/api/metrics", headers=_auth(analyst_token))
+        assert "finance/join_metric" not in {m["id"] for m in resp.json()["metrics"]}
+
+        # Access to only one of the two tables — still hidden.
+        self._grant("orders_a")
+        resp = client.get("/api/metrics", headers=_auth(analyst_token))
+        assert "finance/join_metric" not in {m["id"] for m in resp.json()["metrics"]}
+
+        # Access to both — now visible.
+        self._grant("orders_b")
+        resp = client.get("/api/metrics", headers=_auth(analyst_token))
+        assert "finance/join_metric" in {m["id"] for m in resp.json()["metrics"]}
+
+        resp = client.get("/api/metrics/finance/join_metric", headers=_auth(analyst_token))
+        assert resp.status_code == 200
+
+    def test_table_name_resolved_via_registry_not_used_as_id_directly(self, seeded_client):
+        """`table_name` stores the table_registry NAME, not the id — these can
+        differ (e.g. name 'Orders EU' slugifies to id 'orders_eu'). The gate
+        must resolve via `get_by_name` before checking access, not treat the
+        stored `table_name` as if it were the id."""
+        client, admin_token, analyst_token = seeded_client
+        self._register_table("orders_eu", "Orders EU")
+        self._grant("orders_eu")
+        metric = {
+            **SAMPLE_METRIC,
+            "id": "finance/orders_eu_total",
+            "name": "orders_eu_total",
+            "table_name": "Orders EU",
+        }
+        client.post("/api/admin/metrics", json=metric, headers=_auth(admin_token))
+
+        resp = client.get("/api/metrics", headers=_auth(analyst_token))
+        assert resp.status_code == 200
+        ids = {m["id"] for m in resp.json()["metrics"]}
+        assert "finance/orders_eu_total" in ids
+
+        resp = client.get("/api/metrics/finance/orders_eu_total", headers=_auth(analyst_token))
+        assert resp.status_code == 200
+
+    def test_glossary_endpoints_unaffected_by_table_stack(self, seeded_client):
+        """Regression guard: glossary terms are business vocabulary, not
+        table-derived data — must stay visible with zero table grants."""
+        client, admin_token, analyst_token = seeded_client
+        from src.db import get_system_db
+        from src.repositories.glossary import GlossaryRepository
+
+        conn = get_system_db()
+        GlossaryRepository(conn).create(id="mrr", term="MRR", definition="Monthly Recurring Revenue")
+        conn.close()
+
+        resp = client.get("/api/glossary", headers=_auth(analyst_token))
+        assert resp.status_code == 200
+        terms = {t["id"] for t in resp.json()["terms"]}
+        assert "mrr" in terms
+
+
 class TestMetadataAPI:
     def test_get_metadata_empty(self, seeded_client):
         client, admin_token, _ = seeded_client
