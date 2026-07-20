@@ -130,6 +130,15 @@ def _client_secret_fernet():
     The key is derived (sha256) from an app-managed secret so any key string —
     the auto-generated hex or an operator's ``AGNES_OAUTH_ENC_KEY`` override —
     yields a valid 32-byte Fernet key. Cached; the derivation runs once.
+
+    Durability: the auto-generated key lives in ``${STATE_DIR}/.oauth_enc_key``.
+    It is **irreplaceable** state, exactly like ``.jwt_secret`` /
+    ``.session_secret`` — if STATE_DIR is not persisted across container
+    recreation (or the key is rotated), previously-encrypted ``client_secret``s
+    can no longer be decrypted and those OAuth clients must re-register
+    (fail-closed, see ``decrypt_client_secret``). This adds no new deployment
+    burden beyond the STATE_DIR persistence the other secret files already
+    require — see docs/state-dir.md.
     """
     global _fernet_cached
     if _fernet_cached is not None:
