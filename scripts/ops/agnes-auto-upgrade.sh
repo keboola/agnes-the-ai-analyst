@@ -173,7 +173,12 @@ hash_config_files() {
   # Sort to keep hash stable across operator add/remove, missing files
   # contribute the empty string (sha256 of "" is well-defined). Run
   # from /opt/agnes to keep relative paths terse in the hash input.
-  ( cd /opt/agnes && for f in "${CONFIG_FILES[@]}"; do
+  # docker-compose.gcp-logging.yml is hashed here too (even though it is NOT
+  # in CONFIG_FILES, which are fetched unconditionally) so an overlay-only
+  # refresh triggers a recreate and actually lands on running containers.
+  # Absent on non-GCE hosts it contributes a stable "missing" line, so it
+  # never causes spurious drift there.
+  ( cd /opt/agnes && for f in "${CONFIG_FILES[@]}" docker-compose.gcp-logging.yml; do
       sha256sum "$f" 2>/dev/null || printf 'missing %s\n' "$f"
     done ) | sort | sha256sum | awk '{print $1}'
 }

@@ -16,6 +16,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Auto-upgrade now keeps the placement-driven `docker-compose.gcp-logging.yml`
+  overlay in sync with `@main` (refreshed in place on every tick, but only when
+  the file already exists so non-GCE hosts never acquire it). A service removed
+  from the base compose while a stale, boot-time-only overlay still referenced
+  it (e.g. `ws-gateway`) made the merged compose project invalid, so every
+  `docker compose` in `agnes-auto-upgrade.sh` (`pull`/`config`/`up`) failed and
+  the VM was silently stranded on its cached image. The overlay now also
+  participates in the config-drift hash, so an overlay-only change triggers a
+  recreate on GCE hosts (absent on non-GCE → a stable `missing` entry, no
+  spurious drift).
+
 ### Removed
 
 ### Internal
