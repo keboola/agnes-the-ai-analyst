@@ -289,6 +289,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   work including the local DuckDB upsert. The two timings are also returned in
   the `refresh_one` outcome dict, so `POST /api/v2/metadata-cache/refresh`
   surfaces them for operator on-demand refreshes. `app/api/bq_metadata_refresh.py`.
+- Fixed `tests/test_cli_push.py` and `tests/test_e2e_privacy.py` making real,
+  uncontrolled network calls during the test suite: the gzip-capability
+  health probe added in #929 (`_server_accepts_gzip()`) resolves `api_get`
+  from `push.py`'s own module scope, a separate binding from
+  `cli.commands.push.get_server_url` — the tests' config stubs patched the
+  latter but not the former, so the probe silently hit whatever server the
+  machine running the suite was really configured against. Sandboxed the
+  probe in both files' config-stub helpers and added a regression test
+  guarding against this gap reopening.
 
 ## [0.74.120] - 2026-07-20
 
