@@ -1,0 +1,58 @@
+{# Reusable "connect anywhere" banner component — the "same knowledge,
+   everywhere" card that invites the user to wire Agnes into their AI
+   tools. One macro, two visual variants, so any page can drop the same
+   card in with its own copy + CTA target:
+
+     connect_banner('inline', ...)  compact row — copy on the left, tool
+                                    chips + CTA on the right (used on the
+                                    /ask chat landing).
+     connect_banner('orbit', ...)   illustration-led — the Agnes orb as a
+                                    hub with orbiting tool satellites on
+                                    the left, copy + CTA on the right
+                                    (used on /stack).
+
+   Styling lives in style-custom.css under the `.cbn-*` prefix (shared,
+   so pages carry no per-page banner CSS). Light-green surface, no border.
+   Tool brand icons are the vendored `.ico`s; the orb rides the shared
+   `_agnes_orb` macro. `static_url` is a Jinja global, so it resolves here
+   without `with context`. #}
+{% import "macros/_agnes_orb.html" as _cbn_orb %}
+
+{% macro connect_banner(variant='inline',
+                        title='The same knowledge, everywhere.',
+                        copy='Kai already uses your Stack in Agnes. Connect your AI tools to give them access to the same knowledge.',
+                        cta_label='Connect once →',
+                        cta_href='/setup') %}
+{% if variant == 'orbit' %}
+<div class="cbn cbn--orbit">
+  <div class="cbn-orbit" aria-hidden="true">
+    <span class="ring r1"></span>
+    <span class="ring r2"></span>
+    <span class="dot d1"></span><span class="dot d2"></span><span class="dot d3"></span>
+    <span class="hub">{{ _cbn_orb.orb(css_class='cbn-huborb', size=64) }}</span>
+    <span class="sat s1"><img src="{{ static_url('img/tools/cursor.ico') }}" alt="" width="24" height="24"></span>
+    <span class="sat s2"><img src="{{ static_url('img/tools/vscode.ico') }}" alt="" width="24" height="24"></span>
+    <span class="sat s3"><img src="{{ static_url('img/tools/claude-code.ico') }}" alt="" width="24" height="24"></span>
+  </div>
+  <div class="cbn-body">
+    <div class="cbn-title">{{ title }}</div>
+    <p class="cbn-copy">{{ copy }}</p>
+    <a class="cbn-cta" href="{{ cta_href }}">{{ cta_label }}</a>
+  </div>
+</div>
+{% else %}
+<div class="cbn cbn--inline">
+  <div class="cbn-lead">
+    <div class="cbn-title">{{ title }}</div>
+    <p class="cbn-copy">{{ copy }}</p>
+  </div>
+  <div class="cbn-tools" aria-label="Supported tools">
+    <span class="cbn-tool"><img src="{{ static_url('img/tools/claude-code.ico') }}" alt="Claude Code" width="22" height="22"></span>
+    <span class="cbn-tool"><img src="{{ static_url('img/tools/cursor.ico') }}" alt="Cursor" width="22" height="22"></span>
+    <span class="cbn-tool"><img src="{{ static_url('img/tools/vscode.ico') }}" alt="VS Code" width="22" height="22"></span>
+    <span class="cbn-tool" aria-label="CLI"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M7 9l3 3-3 3M12.5 15H17" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+  </div>
+  <a class="cbn-cta" href="{{ cta_href }}">{{ cta_label }}</a>
+</div>
+{% endif %}
+{% endmacro %}

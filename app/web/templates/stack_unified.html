@@ -1,4 +1,5 @@
 {% extends "base_index.html" %}
+{% from "macros/_connect_banner.html" import connect_banner %}
 {# Unified My Stack — the #896 prototype IA: ONE personal-collection
    surface across kinds (Data · Plugins · Memory) instead of per-page
    stack tabs. Served at /stack; the rail chrome's "My Stack" entry
@@ -46,13 +47,10 @@
   .uc-required { font-size: 11px; font-weight: 600; color: var(--ds-warn-ink); background: var(--ds-warn-bg); border: 1px solid var(--ds-warn-line); border-radius: var(--ds-radius-pill); padding: 3px 10px; }
   .uc-empty { border: 1px dashed var(--ds-border); border-radius: 12px; padding: 40px 20px; text-align: center; color: var(--ds-text-secondary); grid-column: 1 / -1; }
   .uc-empty h3 { margin: 0 0 6px; color: var(--ds-text-primary); }
-  /* "Same knowledge everywhere" band — points at the AI-connector
-     setup, mirroring the prototype's connect strip. */
-  .stk-connect { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-top: 26px; background: var(--ds-agnes-soft); border: 1px solid var(--ds-agnes-line); border-radius: 12px; padding: 16px 18px; }
-  .stk-connect b { color: var(--ds-text-primary); }
-  .stk-connect p { margin: 2px 0 0; font-size: 13px; color: var(--ds-text-secondary); }
-  .stk-connect .uc-act.primary { background: var(--ds-primary); border-color: var(--ds-primary); color: var(--ds-text-inverse); border-radius: var(--ds-radius-pill); padding: 8px 18px; }
-  .stk-connect .uc-act.primary:hover { background: var(--ds-primary-dark); }
+  /* The "same knowledge, everywhere" banner is the shared connect-banner
+     component (macros/_connect_banner.html, `.cbn-*` in style-custom.css);
+     spacing above it is set on the instance here. */
+  .stk-connect { margin-top: 26px; }
   /* New-upload modal */
   .stk-modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
   .stk-modal[hidden] { display: none; }
@@ -170,11 +168,7 @@
 </div>
 
 <div class="stk-connect">
-  <div>
-    <b>Same knowledge and skills, everywhere.</b>
-    <p>Connect once — your stack works inside Claude Code, Cursor, and VS Code with the same trusted knowledge you use here.</p>
-  </div>
-  <a class="uc-act primary" href="/me/ai-connector">Connect once →</a>
+  {{ connect_banner('orbit', cta_href='/me/ai-connector') }}
 </div>
 
 {# ── New-upload modal (creates a private upload owned by the caller,

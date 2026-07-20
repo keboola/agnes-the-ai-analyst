@@ -290,6 +290,97 @@ body {
     margin: 0 auto;
     padding: 28px 32px 48px;
 }
+/* The global `footer` rule adds a 48px top margin for breathing room on
+   content pages; inside the index shell that margin opened a grey gap
+   between the white band and the footer (the band's flex-grow stops at
+   the margin). Zero it so the white band runs flush to the footer. */
+.idx > footer {
+    margin-top: 0;
+    background: var(--ds-surface);
+}
+
+/* ── Connect-anywhere banner component (macros/_connect_banner.html) ─────
+   Reusable "same knowledge, everywhere" card. Two variants share one
+   light-green, borderless surface and one CTA:
+     .cbn--inline  compact row — copy + tool chips + CTA (e.g. /ask).
+     .cbn--orbit   illustration-led — the Agnes orb as a hub with orbiting
+                   tool satellites, then copy + CTA (e.g. /stack).
+   Colours ride the --ds-* tokens; no raw hex, no per-page banner CSS. */
+.cbn {
+    background: var(--ds-agnes-soft);
+    border: none;
+    border-radius: 16px;
+    text-align: left;
+}
+.cbn-title { color: var(--ds-text-primary); font-weight: 750; letter-spacing: -0.02em; }
+.cbn-copy { color: var(--ds-text-secondary); }
+.cbn-cta {
+    display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0;
+    background: var(--ds-primary); color: var(--ds-text-inverse);
+    border: none; border-radius: var(--ds-radius-pill);
+    padding: 11px 22px; font-size: 14px; font-weight: 650; letter-spacing: -0.01em;
+    text-decoration: none; cursor: pointer;
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--ds-primary) 25%, transparent);
+    transition: background 0.15s, transform 0.1s;
+}
+.cbn-cta:hover { background: var(--ds-primary-dark); }
+.cbn-cta:active { transform: translateY(1px); }
+
+/* Shared tool chip */
+.cbn-tool {
+    display: grid; place-items: center;
+    background: var(--ds-surface); border: 1px solid var(--ds-agnes-line);
+    box-shadow: 0 1px 3px color-mix(in srgb, var(--ds-text-primary) 6%, transparent);
+}
+.cbn-tool img { object-fit: contain; display: block; }
+
+/* Inline variant */
+.cbn--inline { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 15px 18px; }
+.cbn--inline .cbn-lead { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 220px; }
+.cbn--inline .cbn-title { font-size: 14.5px; }
+.cbn--inline .cbn-copy { margin: 0; font-size: 12.5px; line-height: 1.45; }
+.cbn--inline .cbn-tools { display: flex; align-items: center; gap: 12px; }
+.cbn--inline .cbn-tool { width: 38px; height: 38px; border-radius: 11px; }
+.cbn--inline .cbn-tool img { width: 22px; height: 22px; }
+.cbn--inline .cbn-tool svg { width: 20px; height: 20px; color: var(--ds-text-secondary); }
+
+/* Orbit variant */
+.cbn--orbit { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; padding: 18px 26px; }
+.cbn--orbit .cbn-body { flex: 1 1 300px; min-width: 240px; }
+.cbn--orbit .cbn-title { font-size: 20px; line-height: 1.14; margin: 0 0 7px; }
+.cbn--orbit .cbn-copy { margin: 0 0 15px; font-size: 13.5px; line-height: 1.5; max-width: 420px; }
+.cbn-orbit { position: relative; width: 200px; height: 168px; flex-shrink: 0; }
+.cbn-orbit .ring { position: absolute; border-radius: 50%; border: 1.5px dashed var(--ds-agnes-line); }
+.cbn-orbit .r1 { width: 156px; height: 156px; left: 22px; top: 6px; opacity: 0.8; }
+.cbn-orbit .r2 {
+    width: 106px; height: 106px; left: 47px; top: 31px; border-style: solid; border-color: transparent;
+    background: radial-gradient(circle, color-mix(in srgb, var(--ds-agnes) 10%, transparent), transparent 70%);
+}
+.cbn-orbit .hub {
+    position: absolute; left: 68px; top: 52px; width: 64px; height: 64px; border-radius: 17px;
+    background: var(--ds-surface); border: 1px solid var(--ds-agnes-line); overflow: hidden;
+    display: grid; place-items: center;
+    box-shadow: 0 10px 22px color-mix(in srgb, var(--ds-agnes) 22%, transparent);
+}
+.cbn-orbit .hub img { width: 46px; height: 46px; object-fit: contain; display: block; }
+.cbn-orbit .sat {
+    position: absolute; width: 36px; height: 36px; border-radius: 11px;
+    background: var(--ds-surface); border: 1px solid var(--ds-agnes-line);
+    display: grid; place-items: center;
+    box-shadow: 0 5px 13px color-mix(in srgb, var(--ds-text-primary) 12%, transparent);
+}
+.cbn-orbit .sat img { width: 19px; height: 19px; object-fit: contain; display: block; }
+.cbn-orbit .s1 { left: 108px; top: 1px; }
+.cbn-orbit .s2 { left: 2px; top: 66px; }
+.cbn-orbit .s3 { left: 52px; top: 130px; }
+.cbn-orbit .dot { position: absolute; width: 4px; height: 4px; border-radius: 50%; background: color-mix(in srgb, var(--ds-agnes) 45%, transparent); }
+.cbn-orbit .d1 { left: 154px; top: 32px; }
+.cbn-orbit .d2 { left: 28px; top: 126px; }
+.cbn-orbit .d3 { left: 108px; top: 150px; }
+@media (max-width: 720px) {
+    .cbn-orbit { display: none; }
+    .cbn--orbit { padding: 18px 20px; }
+}
 
 /* Dashboard */
 .dashboard h2 {
