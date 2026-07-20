@@ -10,20 +10,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.74.119] - 2026-07-20
-
-### Changed
-
-- `agnes push` now gzip-compresses session transcript uploads (~10x smaller transfers) when the server advertises the `session-gzip` capability; older client/server combinations keep the plain format automatically. Escape hatch: `AGNES_PUSH_NO_GZIP=1`. The server stream-decompresses uploads at ingest and stores plain JSONL — the size cap binds on decompressed bytes and per-call decompression output is bounded (zip-bomb / peak-memory guard).
-
-## [0.74.118] - 2026-07-18
-
-### Changed
-
-- `/me/connections` Connect / Replace token / Test / Remove buttons now use the
-  design-system button classes (`btn btn-primary` / `btn-secondary` /
-  `btn-danger`, size `btn-sm`) instead of unstyled browser-default buttons, and
-  the row wraps on narrow viewports.
 ### Added
 
 - **Process roles for multi-process deployments** (wave-1, WS A):
@@ -218,6 +204,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `full` profile no longer start it, and Telegram's notification dispatch
   now publishes through the coordination fabric instead of the removed
   Unix socket.
+
+## [0.74.119] - 2026-07-20
+
+### Changed
+
+- `agnes push` now gzip-compresses session transcript uploads (~10x smaller transfers) when the server advertises the `session-gzip` capability; older client/server combinations keep the plain format automatically. Escape hatch: `AGNES_PUSH_NO_GZIP=1`. The server stream-decompresses uploads at ingest and stores plain JSONL — the size cap binds on decompressed bytes and per-call decompression output is bounded (zip-bomb / peak-memory guard).
 
 ## [0.74.118] - 2026-07-18
 
