@@ -447,6 +447,20 @@ class ChatManager:
                     chat_id,
                     getattr(handle, "sandbox_id", "?"),
                 )
+            # Clear the DB sandbox ref written by set_sandbox_ref above, and
+            # revoke any tickets pushed by _push_ticket_frame — mirroring kill()
+            # (#867 review). Without this the row keeps a stale sandbox_id with
+            # sandbox_paused_at NULL, invisible to the paused-TTL reaper, and any
+            # minted tickets outlive the dead runner. Best-effort: teardown must
+            # never mask the original failure being re-raised.
+            try:
+                self._repo.clear_sandbox_ref(chat_id)
+            except Exception:
+                logger.exception("_spawn_live: clear_sandbox_ref failed for %s", chat_id)
+            try:
+                ticket_repo().revoke_session(chat_id)
+            except Exception:
+                logger.exception("_spawn_live: ticket revoke failed for %s", chat_id)
             raise
 
     # --- detach / linger / pause --------------------------------------------

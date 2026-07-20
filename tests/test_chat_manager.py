@@ -2041,6 +2041,12 @@ def test_spawn_live_destroys_sandbox_on_post_spawn_failure(manager: ChatManager)
 
         assert handle.killed is True, "orphaned sandbox was not torn down"
         assert s.id not in manager._live, "half-registered live left behind"
+        # #867 review: the DB sandbox ref written before the failure must be
+        # cleared, else a row points at a dead sandbox that the paused-TTL
+        # reaper can never find.
+        row = manager._repo.get_session(s.id)
+        assert row.sandbox_id is None, "stale sandbox ref left in DB after failed setup"
+        assert row.runner_pid is None
 
     asyncio.run(_run())
 
