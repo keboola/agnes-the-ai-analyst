@@ -39,7 +39,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   and description regardless of table-stack membership, leaking
   schema/business information about tables they had no grant to see.
   Glossary terms are unaffected — they're business vocabulary, not
-  table-derived data.
+  table-derived data. The CLAUDE.md generator's metric summary
+  (`src/claude_md.py`, surfaced via `agnes pull`/session start) had the same
+  gap — metric count and category names were computed from every metric
+  regardless of the requesting user's table-stack — and is now filtered
+  through the same gate.
 
 ## [0.75.9] - 2026-07-20
 
