@@ -139,7 +139,15 @@
 {# Hero action buttons (Add/Remove from stack + required-state placeholder)
    render via `ds.button` (auto-imported by base_ds). `.btn-required` is
    canonical; per-item vote/dismiss buttons stay page-local. #}
+{# Back-link targets the layout's memory-browse home: the unified
+   Catalog's Memory tab under the rail IA (#896) — /corporate-memory is
+   orphaned there (nothing in _app_rail links to it) — and the standalone
+   /corporate-memory page under the classic topnav chrome. #}
+{% if (ui_layout | default('topnav')) == 'rail' %}
+<a class="back-link" href="/catalog?kind=memory">← All memory domains</a>
+{% else %}
 <a class="back-link" href="/corporate-memory">← All memory domains</a>
+{% endif %}
 
 <div class="dom-detail-header">
   <div class="dom-detail-icon" style="background: {{ domain.color or '#dcfce7' }}">

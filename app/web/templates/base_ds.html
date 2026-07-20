@@ -138,8 +138,7 @@
         </main>
 
         <footer>
-            <p>&copy; {{ now().year if now is defined else 2026 }}
-               {{ config.INSTANCE_COPYRIGHT or 'AI Harness' }}</p>
+            {% include '_footer_keboola.html' %}
         </footer>
     </div>
     {% endblock %}

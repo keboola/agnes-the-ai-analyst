@@ -2,25 +2,28 @@
 
 Endpoints:
 
-  POST   /api/collections                         require_admin
+  POST   /api/collections                         auth (owned by creator)
   GET    /api/collections                         auth (RBAC-filtered list)
-  GET    /api/collections/{collection_id}         require_resource_access(COLLECTION, "{collection_id}")
-  DELETE /api/collections/{collection_id}         require_admin
-  POST   /api/collections/{collection_id}/files   require_resource_access(COLLECTION, "{collection_id}")
-  GET    /api/collections/{collection_id}/files   require_resource_access(COLLECTION, "{collection_id}")
+  GET    /api/collections/{collection_id}         require_collection_access("{collection_id}")
+  DELETE /api/collections/{collection_id}         owner or admin
+  POST   /api/collections/{collection_id}/files   require_collection_access("{collection_id}")
+  GET    /api/collections/{collection_id}/files   require_collection_access("{collection_id}")
   DELETE /api/collections/{collection_id}/files/{file_id}
-                                                  require_resource_access(COLLECTION, "{collection_id}")
+                                                  require_collection_access("{collection_id}")
   POST   /api/collections/{collection_id}/files/{file_id}/reingest
-                                                  require_resource_access(COLLECTION, "{collection_id}")
+                                                  require_collection_access("{collection_id}")
 
-RBAC model: collection **create/delete** = admin-only; file **upload/list/delete**
-and collection **read** = any user whose groups hold an explicit
-``resource_grants`` row for ``(collection, <collection_id>)``. Admins
-short-circuit every grant check.
+RBAC model: **create** = any authenticated user (the corpus is owned by its
+creator and private to them); **delete** = owner or admin; file
+**upload/list/delete** and collection **read** = admin, owner
+(``created_by``), or any user whose groups hold an explicit
+``resource_grants`` row for ``(collection, <collection_id>)`` (see
+``can_access_collection``). Admins short-circuit every grant check.
 
-Fail-closed: the GET list returns only collections the caller can access;
-unknown collections on entity-scoped endpoints return 404 (not 403) so callers
-cannot probe for existence of collections they are not granted.
+Fail-closed: the GET list returns only collections the caller can access
+(granted + owned); unknown collections on entity-scoped endpoints return 404
+(not 403) so callers cannot probe for existence of collections they cannot
+access.
 """
 
 from __future__ import annotations
@@ -34,14 +37,13 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Up
 from pydantic import BaseModel, Field
 
 from app.auth.access import (
-    require_admin,
-    require_resource_access,
+    accessible_collection_ids,
+    is_user_admin,
+    require_collection_access,
 )
 from app.auth.dependencies import get_current_user
-from app.resource_types import ResourceType
 from src.corpus_allowlist import classify
 from src.file_storage import delete_corpus_file, store_corpus_file
-from src.rbac import get_accessible_ids
 from src.repositories import (
     corpus_chunks_repo,
     corpus_files_repo,
@@ -135,9 +137,14 @@ def _file_out(row: dict) -> dict:
 @router.post("", status_code=201)
 async def create_collection(
     payload: CreateCollectionRequest,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(get_current_user),
 ):
-    """Create a new file corpus (admin only).
+    """Create a new file corpus (any authenticated user).
+
+    The corpus is owned by the creator (``created_by``) and is private to
+    them — reachable via ownership without a ``resource_grants`` row (see
+    ``can_access_collection``). Admins may additionally grant a corpus to
+    groups to share it.
 
     Returns the created collection object (id, slug, name, …).
     ``slug`` is auto-generated from ``name`` when omitted, and an explicit
@@ -178,13 +185,13 @@ async def create_collection(
 def _accessible_corpus_ids(user) -> list[str]:
     """The collection ids the caller may access (fail-closed).
 
-    Resolves the grant set **once** via ``get_accessible_ids`` (admin -> None
+    Resolves the set **once** via ``accessible_collection_ids`` (admin -> None
     => every collection; ``SessionPrincipal`` co-session callers get their
-    intersection set; other non-admins get only granted collections) instead
-    of a per-row ``can_access`` check. Goes through the repository factory
+    intersection set; other non-admins get granted collections plus the ones
+    they own) instead of a per-row check. Goes through the repository factory
     (no raw DuckDB conn) → correct on the Postgres backend.
     """
-    allowed = get_accessible_ids(user, ResourceType.COLLECTION.value)
+    allowed = accessible_collection_ids(user)
     rows = file_corpora_repo().list()
     if allowed is None:
         return [r["id"] for r in rows]
@@ -196,7 +203,7 @@ async def list_collections(
     user=Depends(get_current_user),
 ):
     """List collections accessible to the caller (fail-closed)."""
-    allowed = get_accessible_ids(user, ResourceType.COLLECTION.value)  # None => admin
+    allowed = accessible_collection_ids(user)  # None => admin
     rows = [r for r in file_corpora_repo().list() if allowed is None or r["id"] in allowed]
     return {"items": [_collection_out(r) for r in rows]}
 
@@ -230,7 +237,7 @@ async def search_collections(
 @router.get("/{collection_id}")
 async def get_collection(
     collection_id: str,
-    user=Depends(require_resource_access(ResourceType.COLLECTION, "{collection_id}")),
+    user=Depends(require_collection_access("{collection_id}")),
 ):
     """Return a collection's metadata + file list.
 
@@ -362,11 +369,12 @@ def _purge_derived_tabular_row_for_file(corpus_id: str, file_id: str) -> None:
 @router.delete("/{collection_id}", status_code=204)
 async def delete_collection(
     collection_id: str,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(get_current_user),
 ):
-    """Soft-delete a collection (admin only).
+    """Soft-delete a collection (owner or admin).
 
-    Sets ``deleted_at``; the collection becomes invisible on GET list and
+    The creator can delete their own upload; admins can delete any. Sets
+    ``deleted_at``; the collection becomes invisible on GET list and
     returns 404 on entity-scoped reads. Derived table_registry rows, parquets,
     and extract.duckdb views are purged synchronously (they are regenerable from
     the uploaded files; soft-delete of the collection is treated as hard-delete
@@ -375,6 +383,8 @@ async def delete_collection(
     row = file_corpora_repo().get(collection_id)
     if not row:
         raise HTTPException(status_code=404, detail="collection_not_found")
+    if not is_user_admin(user["id"]) and row.get("created_by") != user["id"]:
+        raise HTTPException(status_code=403, detail="collection_not_owned")
     _purge_derived_tabular_rows(collection_id)
     file_corpora_repo().soft_delete(collection_id)
     logger.info("collection deleted id=%s by=%s", collection_id, user.get("email"))
@@ -390,7 +400,7 @@ async def upload_files(
     collection_id: str,
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
-    user=Depends(require_resource_access(ResourceType.COLLECTION, "{collection_id}")),
+    user=Depends(require_collection_access("{collection_id}")),
 ):
     """Upload one or more files into a collection.
 
@@ -525,7 +535,7 @@ async def upload_files(
 @router.get("/{collection_id}/files")
 async def list_files(
     collection_id: str,
-    user=Depends(require_resource_access(ResourceType.COLLECTION, "{collection_id}")),
+    user=Depends(require_collection_access("{collection_id}")),
 ):
     """List all files in a collection (all processing statuses)."""
     corpus = file_corpora_repo().get(collection_id)
@@ -539,7 +549,7 @@ async def list_files(
 async def delete_file(
     collection_id: str,
     file_id: str,
-    user=Depends(require_resource_access(ResourceType.COLLECTION, "{collection_id}")),
+    user=Depends(require_collection_access("{collection_id}")),
 ):
     """Delete a file from a collection.
 
@@ -594,7 +604,7 @@ async def reingest_file(
     collection_id: str,
     file_id: str,
     background_tasks: BackgroundTasks,
-    user=Depends(require_resource_access(ResourceType.COLLECTION, "{collection_id}")),
+    user=Depends(require_collection_access("{collection_id}")),
 ):
     """Re-run ingestion for one file (after a fix, a new extractor, or a
     pre-status-honesty backfill).

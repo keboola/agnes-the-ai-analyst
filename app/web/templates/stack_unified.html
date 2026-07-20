@@ -1,4 +1,4 @@
-{% extends "base_ds.html" %}
+{% extends "base_index.html" %}
 {# Unified My Stack — the #896 prototype IA: ONE personal-collection
    surface across kinds (Data · Plugins · Memory) instead of per-page
    stack tabs. Served at /stack; the rail chrome's "My Stack" entry
@@ -23,6 +23,7 @@
   .uc-dot-data { background: var(--ds-kind-data); }
   .uc-dot-plugins { background: var(--ds-kind-plugin); }
   .uc-dot-memory { background: var(--ds-kind-memory); }
+  .uc-dot-library { background: var(--ds-kind-library); }
   .uc-count { font-size: 11px; background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-pill); padding: 1px 7px; color: var(--ds-text-muted); }
   .uc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; align-items: start; }
   .uc-card { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
@@ -31,6 +32,7 @@
   .uc-tico-data { background: var(--ds-kind-data-soft); }
   .uc-tico-plugins { background: var(--ds-kind-plugin-soft); }
   .uc-tico-memory { background: var(--ds-kind-memory-soft); }
+  .uc-tico-library { background: var(--ds-kind-library-soft); }
   .uc-title { min-width: 0; }
   .uc-title h3 { font-size: 14.5px; line-height: 1.3; margin: 0; }
   .uc-title h3 a { color: inherit; text-decoration: none; }
@@ -51,23 +53,43 @@
   .stk-connect p { margin: 2px 0 0; font-size: 13px; color: var(--ds-text-secondary); }
   .stk-connect .uc-act.primary { background: var(--ds-primary); border-color: var(--ds-primary); color: var(--ds-text-inverse); border-radius: var(--ds-radius-pill); padding: 8px 18px; }
   .stk-connect .uc-act.primary:hover { background: var(--ds-primary-dark); }
+  /* New-upload modal */
+  .stk-modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
+  .stk-modal[hidden] { display: none; }
+  .stk-modal-backdrop { position: absolute; inset: 0; background: rgba(15, 23, 42, .45); }
+  .stk-modal-card { position: relative; z-index: 1; width: min(440px, calc(100vw - 32px)); background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; box-shadow: var(--ds-shadow-md); padding: 20px 22px 22px; }
+  .stk-modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .stk-modal-head h2 { font-size: 18px; margin: 0; }
+  .stk-modal-x { border: none; background: none; font-size: 22px; line-height: 1; cursor: pointer; color: var(--ds-text-muted); padding: 0 4px; font-family: inherit; }
+  .stk-field { display: block; margin-bottom: 14px; }
+  .stk-field > span { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--ds-text-primary); }
+  .stk-field > span em { font-weight: 400; color: var(--ds-text-muted); font-style: normal; }
+  .stk-field input[type=text] { width: 100%; padding: 9px 12px; border: 1px solid var(--ds-border); border-radius: 9px; font: inherit; background: var(--ds-surface); color: var(--ds-text-primary); }
+  .stk-field input[type=file] { width: 100%; font: inherit; font-size: 13px; color: var(--ds-text-secondary); }
+  .stk-modal-hint { font-size: 12.5px; color: var(--ds-text-secondary); margin: 0 0 14px; }
+  .stk-modal-err { font-size: 13px; color: var(--ds-warn-ink); background: var(--ds-warn-bg); border: 1px solid var(--ds-warn-line); border-radius: 9px; padding: 8px 12px; margin-bottom: 12px; }
+  .stk-modal-foot { display: flex; justify-content: flex-end; gap: 10px; }
 </style>
 {% endblock %}
 
-{% block content %}
+{% block page_head %}
 <div class="uc-head">
   <div>
     <h1>My Stack</h1>
     <p class="lede">Personalize what {{ instance_brand_short or 'Agnes' }} knows and can use for you — the knowledge and tools your answers draw on. Add more from the <a href="/catalog">Catalog</a>.</p>
   </div>
+  <button type="button" class="uc-act" data-new-upload style="flex-shrink:0">+ New upload</button>
 </div>
 
 <div class="uc-kindtabs" role="tablist" aria-label="Stack kinds">
   <button class="uc-kindtab on" data-kind="data" role="tab" aria-selected="true"><span class="uc-dot uc-dot-data"></span>Data<span class="uc-count">{{ data_entries|length }}</span></button>
   <button class="uc-kindtab" data-kind="plugins" role="tab" aria-selected="false"><span class="uc-dot uc-dot-plugins"></span>Plugins<span class="uc-count" id="stk-count-plugins">—</span></button>
   <button class="uc-kindtab" data-kind="memory" role="tab" aria-selected="false"><span class="uc-dot uc-dot-memory"></span>Memory<span class="uc-count">{{ memory_entries|length }}</span></button>
+  <button class="uc-kindtab" data-kind="upload" role="tab" aria-selected="false"><span class="uc-dot uc-dot-library"></span>Upload<span class="uc-count">{{ upload_entries|length }}</span></button>
 </div>
+{% endblock %}
 
+{% block page_surface %}
 <div class="uc-grid" data-kind-view="data">
   {% for e in data_entries %}
   <article class="uc-card">
@@ -122,12 +144,65 @@
   {% endfor %}
 </div>
 
+<div class="uc-grid" data-kind-view="upload" hidden>
+  {% for c in upload_entries %}
+  <article class="uc-card">
+    <div class="uc-top">
+      <span class="uc-tico uc-tico-library">📄</span>
+      <div class="uc-title">
+        <h3><a href="/library/{{ c.slug }}">{{ c.name }}</a></h3>
+        <div class="uc-cap"><span class="uc-dot uc-dot-library"></span>Upload · {{ c.file_count }} file{{ 's' if c.file_count != 1 else '' }}</div>
+      </div>
+    </div>
+    <p class="uc-desc">{{ c.description or 'Your uploaded files — searchable by your agents.' }}</p>
+    <div class="uc-foot">
+      <span class="uc-meta">{{ c.file_count }} file{{ 's' if c.file_count != 1 else '' }}</span>
+      <a class="uc-act" href="/library/{{ c.slug }}">Open →</a>
+    </div>
+  </article>
+  {% else %}
+  <div class="uc-empty">
+    <h3>No uploads yet</h3>
+    <p>Add a file with <b>+ New upload</b> — it stays private to you, and your agents can search across it.</p>
+    <button type="button" class="uc-act primary" data-new-upload style="margin-top:12px">+ New upload</button>
+  </div>
+  {% endfor %}
+</div>
+
 <div class="stk-connect">
   <div>
     <b>Same knowledge and skills, everywhere.</b>
     <p>Connect once — your stack works inside Claude Code, Cursor, and VS Code with the same trusted knowledge you use here.</p>
   </div>
   <a class="uc-act primary" href="/me/ai-connector">Connect once →</a>
+</div>
+
+{# ── New-upload modal (creates a private upload owned by the caller,
+     then uploads the chosen file into it) ── #}
+<div class="stk-modal" id="uploadModal" hidden>
+  <div class="stk-modal-backdrop" data-close-upload></div>
+  <div class="stk-modal-card" role="dialog" aria-modal="true" aria-labelledby="uploadModalTitle">
+    <div class="stk-modal-head">
+      <h2 id="uploadModalTitle">New upload</h2>
+      <button type="button" class="stk-modal-x" data-close-upload aria-label="Close">&times;</button>
+    </div>
+    <form id="uploadForm">
+      <label class="stk-field">
+        <span>Name <em>(optional)</em></span>
+        <input type="text" id="uploadName" placeholder="e.g. Q3 board deck" autocomplete="off">
+      </label>
+      <label class="stk-field">
+        <span>File</span>
+        <input type="file" id="uploadFile" required>
+      </label>
+      <p class="stk-modal-hint">Your upload stays private to you. {{ instance_brand_short or 'Agnes' }} indexes it so your agents can search across it.</p>
+      <div class="stk-modal-err" id="uploadErr" hidden></div>
+      <div class="stk-modal-foot">
+        <button type="button" class="uc-act" data-close-upload>Cancel</button>
+        <button type="submit" class="uc-act primary" id="uploadSubmit">Upload</button>
+      </div>
+    </form>
+  </div>
 </div>
 {% endblock %}
 
@@ -175,6 +250,65 @@
         btn.textContent = 'Retry remove';
       }
     });
+  });
+
+  // ── New-upload modal: create a private upload, then upload the file ──
+  const uploadModal = document.getElementById('uploadModal');
+  const uploadForm = document.getElementById('uploadForm');
+  const uploadErr = document.getElementById('uploadErr');
+  const uploadName = document.getElementById('uploadName');
+  const uploadFile = document.getElementById('uploadFile');
+  const uploadSubmit = document.getElementById('uploadSubmit');
+  function openUpload() {
+    if (!uploadModal) return;
+    uploadModal.hidden = false;
+    uploadErr.hidden = true;
+    setTimeout(() => uploadName && uploadName.focus(), 30);
+  }
+  function closeUpload() { if (uploadModal) uploadModal.hidden = true; }
+  function uploadShowErr(msg) { uploadErr.textContent = msg; uploadErr.hidden = false; }
+  document.querySelectorAll('[data-new-upload]').forEach(b => b.addEventListener('click', openUpload));
+  document.querySelectorAll('[data-close-upload]').forEach(b => b.addEventListener('click', closeUpload));
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && uploadModal && !uploadModal.hidden) closeUpload();
+  });
+  if (uploadForm) uploadForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    const file = uploadFile.files && uploadFile.files[0];
+    if (!file) { uploadShowErr('Choose a file to upload.'); return; }
+    let name = (uploadName.value || '').trim();
+    if (!name) name = file.name.replace(/\.[^.]+$/, '') || file.name;
+    uploadSubmit.disabled = true;
+    uploadSubmit.textContent = 'Uploading…';
+    uploadErr.hidden = true;
+    try {
+      // 1. Create the upload — a private collection owned by the caller.
+      const cResp = await fetch('/api/collections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ name }),
+      });
+      if (cResp.status === 409) throw new Error('you already have an upload with that name — try another');
+      if (!cResp.ok) throw new Error('create failed (' + cResp.status + ')');
+      const col = await cResp.json();
+      // 2. Upload the chosen file into it.
+      const fd = new FormData();
+      fd.append('files', file);
+      const fResp = await fetch('/api/collections/' + encodeURIComponent(col.id) + '/files', {
+        method: 'POST',
+        credentials: 'same-origin',
+        body: fd,
+      });
+      // 201 = ok; 422 = stored but some files rejected by the allowlist —
+      // keep the upload and let the detail page show the per-file status.
+      if (!fResp.ok && fResp.status !== 422) throw new Error('upload failed (' + fResp.status + ')');
+      window.location.reload();
+    } catch (err) {
+      uploadSubmit.disabled = false;
+      uploadSubmit.textContent = 'Upload';
+      uploadShowErr('Could not upload: ' + (err && err.message ? err.message : err));
+    }
   });
 
   function esc(s) {

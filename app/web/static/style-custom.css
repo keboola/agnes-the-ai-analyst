@@ -258,6 +258,39 @@ body {
 .container--wide   { max-width: var(--width-wide); }     /* 1400px — admin index lists, marketplace grids */
 .container--full   { max-width: none; padding-left: var(--space-4); padding-right: var(--space-4); }
 
+/* Index / resource-list page layout (#896 prototype) — used via
+   base_index.html by My Stack, Catalog, and similar list pages. The
+   header zone (title + description + actions + search + tabs) stays on
+   the app's light --ds-bg; a full-width white band begins just below
+   the tabs and runs to the foot of the page, carrying the card grid.
+   Shared here so pages carry no per-page background/border styling.
+   Structure/spacing/backgrounds only. */
+.idx {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+.idx-head {
+    width: 100%;
+    max-width: var(--width-wide);
+    margin: 0 auto;
+    padding: 16px 32px 0;
+}
+/* The tab strip is the last row of the header; drop its bottom margin
+   so the white band sits flush beneath it. */
+.idx-head > :last-child { margin-bottom: 0; }
+.idx-band {
+    flex: 1 0 auto;
+    background: var(--ds-surface);
+    border-top: 1px solid var(--ds-border);
+}
+.idx-band-inner {
+    width: 100%;
+    max-width: var(--width-wide);
+    margin: 0 auto;
+    padding: 28px 32px 48px;
+}
+
 /* Dashboard */
 .dashboard h2 {
     font-size: var(--text-xl);

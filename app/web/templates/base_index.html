@@ -1,0 +1,46 @@
+{% extends "base_ds.html" %}
+{# Shared index / resource-list page shell (#896 prototype layout).
+
+   Two zones:
+     - `page_head`    — title, description, actions, search, tabs. Stays
+                        on the app's light --ds-bg background.
+     - `page_surface` — the page body (card grid, etc.) on a full-width
+                        white band with a top hairline border that
+                        begins just below the tabs and runs to the foot
+                        of the page.
+
+   Index/list pages (My Stack, Catalog, and similar resource-list
+   pages) extend THIS instead of base_ds.html and fill the two blocks
+   rather than `content`. The Chat screen and detail pages keep
+   extending base_ds.html directly, so they are unaffected.
+
+   Overrides base_ds's `layout` block to place the white band OUTSIDE
+   the padded `.container` (so it can span the full content area). The
+   `.idx-*` rules live in style-custom.css — structure/spacing/
+   backgrounds only, no per-page styling. #}
+{% block layout %}
+<main class="idx">
+  <div class="idx-head">
+    {% block flash %}
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+      <div class="flash-messages">
+        {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">{{ message }}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    {% endwith %}
+    {% endblock %}
+    {% block page_head %}{% endblock %}
+  </div>
+  <div class="idx-band">
+    <div class="idx-band-inner">
+      {% block page_surface %}{% endblock %}
+    </div>
+  </div>
+  <footer>
+    {% include '_footer_keboola.html' %}
+  </footer>
+</main>
+{% endblock %}

@@ -26,6 +26,12 @@ html[data-ui-layout="rail"] .rail {
     border-right: 1px solid var(--ds-border);
     display: flex;
     flex-direction: column;
+    /* Stretch children to the rail's inner width. The legacy
+     * style-custom.css has a global `nav { align-items: center }` rule
+     * that otherwise cascades onto this <nav>, collapsing every item to
+     * its content width and centering it — which reads as a large,
+     * uneven side padding. Pin stretch here to neutralize it. */
+    align-items: stretch;
     gap: 2px;
     padding: 16px 12px;
     z-index: 40;
@@ -110,42 +116,6 @@ html[data-ui-layout="rail"] .rail-i svg {
     width: 19px;
     height: 19px;
     flex-shrink: 0;
-}
-
-/* Catalog subcategories — indented tree under the Catalog item. */
-html[data-ui-layout="rail"] .rail-sub {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    margin: 1px 0 2px 22px;
-    padding-left: 9px;
-    border-left: 1px solid var(--ds-border);
-}
-
-html[data-ui-layout="rail"] .rail-sub-i {
-    display: block;
-    padding: 6px 10px;
-    border-radius: 7px;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--ds-text-secondary);
-    text-decoration: none;
-}
-
-html[data-ui-layout="rail"] .rail-sub-i:hover {
-    background: var(--ds-surface-dim);
-    color: var(--ds-text-primary);
-}
-
-html[data-ui-layout="rail"] .rail-sub-i.on {
-    background: var(--ds-primary-light);
-    color: var(--ds-primary-dark);
-    font-weight: 600;
-}
-
-html[data-ui-layout="rail"] .rail-sub-i:focus-visible {
-    outline: var(--ds-focus-outline);
-    outline-offset: var(--ds-focus-outline-offset);
 }
 
 html[data-ui-layout="rail"] .rail-i:hover {

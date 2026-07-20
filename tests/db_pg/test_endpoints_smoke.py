@@ -1616,6 +1616,9 @@ KNOWN_UNTESTED = {
     "GET /admin/workspace-prompt",
     # HTML web pages — covered by separate UI test suite
     "GET /activity-center",
+    # Knowledge-search chat landing (#896) — rendering covered by
+    # tests/test_web_ask_landing.py.
+    "GET /ask",
     "GET /catalog",
     "GET /catalog/p/{slug}",
     "GET /catalog/r/{slug}",

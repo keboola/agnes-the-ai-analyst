@@ -51,54 +51,9 @@
         {% endif %}
     </a>
 
-    {% set _path = request.url.path %}
-    {% set _home = home_route or '/dashboard' %}
-    {% set _kind = request.query_params.get('kind') if request.query_params is defined else none %}
-    {% set _on_stack = _path == '/stack' %}
-    {% set _in_catalog = _path.startswith('/catalog') or _path.startswith('/marketplace') or _path.startswith('/library') or _path == '/corporate-memory' %}
-
-    {% if can_chat %}
-    <a class="rail-newchat" href="/chat" data-tour="nav-chat-new">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        New chat
-    </a>
-    {% endif %}
-
-    <div class="rail-nav">
-        {% if can_chat %}
-        <a class="rail-i {% if _path == '/chat' or _path.startswith('/chat/') %}on{% endif %}" href="/chat" data-tour="nav-chat">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            Chat
-        </a>
-        {% else %}
-        <a class="rail-i {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}on{% endif %}" href="{{ _home }}">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 10.5 12 4l9 6.5V20a1 1 0 0 1-1 1h-5.5v-6h-5v6H4a1 1 0 0 1-1-1v-9.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            {% if _home == '/dashboard' %}Dashboard{% else %}Home{% endif %}
-        </a>
-        {% endif %}
-        <a class="rail-i {% if _on_stack %}on{% endif %}" href="/stack" data-tour="nav-stack">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 8.5 12 4l9 4.5-9 4.5-9-4.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            My Stack
-        </a>
-        <a class="rail-i {% if _in_catalog %}on{% endif %}" href="/catalog" data-tour="nav-catalog">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M4 6l1 13a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1l1-13M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            Catalog
-        </a>
-        {# Catalog subcategories — the content surfaces folded under
-           one Catalog destination (prototype IA). Each targets a kind
-           tab of the unified /catalog page; the old standalone pages
-           stay routed (deep links keep working) and light up the same
-           subcategory. #}
-        <div class="rail-sub">
-            <a class="rail-sub-i {% if (_path.startswith('/catalog') and (_kind or 'data') == 'data') %}on{% endif %}" href="/catalog?kind=data">Data Packages</a>
-            <a class="rail-sub-i {% if (_path.startswith('/catalog') and _kind == 'plugins') or _path.startswith('/marketplace') %}on{% endif %}" href="/catalog?kind=plugins" data-tour="nav-marketplace">Plugins</a>
-            <a class="rail-sub-i {% if (_path.startswith('/catalog') and _kind == 'library') or _path.startswith('/library') %}on{% endif %}" href="/catalog?kind=library" data-tour="nav-library">Library</a>
-            <a class="rail-sub-i {% if (_path.startswith('/catalog') and _kind == 'memory') or _path == '/corporate-memory' %}on{% endif %}" href="/catalog?kind=memory" data-tour="nav-memory">Memory</a>
-        </div>
-    </div>
-
-    {# Global search — same combobox contract as the header
-       (js/global_search.js binds #global-search / #globalSearchResults). #}
+    {# Global search — sits between the logo and the first nav item. Same
+       combobox contract as the header (js/global_search.js binds
+       #global-search / #globalSearchResults). #}
     <div class="rail-search app-header-search" id="globalSearchWrap">
         <input type="search"
                id="global-search"
@@ -117,6 +72,43 @@
              role="listbox"
              aria-label="Search results"
              hidden></div>
+    </div>
+
+    {% set _path = request.url.path %}
+    {% set _home = home_route or '/dashboard' %}
+    {% set _on_stack = _path == '/stack' %}
+    {% set _in_catalog = _path.startswith('/catalog') or _path.startswith('/marketplace') or _path.startswith('/library') or _path == '/corporate-memory' %}
+
+    {% if can_chat %}
+    <a class="rail-newchat" href="/chat" data-tour="nav-chat-new">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        New chat
+    </a>
+    {% endif %}
+
+    <div class="rail-nav">
+        {% if can_chat %}
+        <a class="rail-i {% if _path == '/chat' or _path.startswith('/chat/') %}on{% endif %}" href="/chat" data-tour="nav-chat">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            Chat
+        </a>
+        {% else %}
+        {# Prototype IA (#896): the knowledge-search landing (/ask) is the
+           primary "Chat" destination when the sandbox cloud-chat surface
+           is off. Matches the prototype's Chat/My Stack/Catalog rail. #}
+        <a class="rail-i {% if _path == '/ask' %}on{% endif %}" href="/ask" data-tour="nav-chat">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            Chat
+        </a>
+        {% endif %}
+        <a class="rail-i {% if _on_stack %}on{% endif %}" href="/stack" data-tour="nav-stack">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 8.5 12 4l9 4.5-9 4.5-9-4.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            My Stack
+        </a>
+        <a class="rail-i {% if _in_catalog %}on{% endif %}" href="/catalog" data-tour="nav-catalog">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M4 6l1 13a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1l1-13M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            Catalog
+        </a>
     </div>
 
     {% if session.user.is_admin %}

@@ -1300,13 +1300,14 @@ async def catalog(
     # RBAC grants keep working (BC, not a web surface).
 
     # Unified Catalog (rail layout / #896 prototype IA): one page with
-    # kind tabs — Data · Plugins · Memory · Recipes · Library — instead
-    # of separate destinations. Data/Memory/Library render server-side
-    # here; Plugins + Recipes hydrate client-side from their existing
-    # APIs. Topnav instances keep the classic catalog.html unchanged.
+    # kind tabs — Data · Plugins · Memory · Recipes — for the shared,
+    # curated resources. Data/Memory render server-side here; Plugins +
+    # Recipes hydrate client-side from their existing APIs. Uploads
+    # (file collections) are private user resources and live on My Stack
+    # (see /stack), not in the shared Catalog. Topnav instances keep the
+    # classic catalog.html unchanged.
     if get_ui_layout() == "rail":
         memory_cards = _unified_memory_cards()
-        library_cards = _unified_library_cards(user, conn)
         ctx = _build_context(
             request,
             user=user,
@@ -1316,7 +1317,6 @@ async def catalog(
             source_type_chips=source_type_chips,
             total_registered_tables=total_registered_tables,
             memory_cards=memory_cards,
-            library_cards=library_cards,
         )
         return templates.TemplateResponse(request, "catalog_unified.html", ctx)
 
@@ -1390,6 +1390,36 @@ def _unified_library_cards(user: dict, conn) -> list:
     return cards
 
 
+def _unified_upload_cards(user: dict) -> list:
+    """Uploads OWNED by the caller — the private per-user file collections
+    surfaced on My Stack. Owner-scoped (``created_by``), NOT grant-scoped:
+    a user sees only the uploads they created, so admins do not see every
+    collection here (that's the shared /library surface)."""
+    cards: list = []
+    try:
+        uid = user.get("id")
+        cf_repo = corpus_files_repo()
+        for col in file_corpora_repo().list():
+            if col.get("created_by") != uid:
+                continue
+            try:
+                file_count = len(cf_repo.list_for_corpus(col["id"]))
+            except Exception:
+                file_count = 0
+            cards.append(
+                {
+                    "id": col["id"],
+                    "name": col.get("name") or col.get("slug"),
+                    "description": col.get("description") or "",
+                    "slug": col.get("slug"),
+                    "file_count": file_count,
+                }
+            )
+    except Exception as e:
+        logger.warning("/stack: could not enumerate uploads: %s", e)
+    return cards
+
+
 @router.get("/stack", response_class=HTMLResponse)
 async def my_stack_page(
     request: Request,
@@ -1447,11 +1477,17 @@ async def my_stack_page(
     except Exception as e:
         logger.warning("/stack: could not resolve memory stack: %s", e)
 
+    # Uploads (file collections) are private per-user resources — they live
+    # here on My Stack, not in the shared Catalog. Owner-scoped: a user sees
+    # only the uploads they created (created_by), never group-shared ones.
+    upload_entries = _unified_upload_cards(user)
+
     ctx = _build_context(
         request,
         user=user,
         data_entries=data_entries,
         memory_entries=memory_entries,
+        upload_entries=upload_entries,
     )
     return templates.TemplateResponse(request, "stack_unified.html", ctx)
 
@@ -1580,12 +1616,14 @@ async def library(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Library — the caller's accessible file Collections (bring-your-files)."""
-    from src.rbac import get_accessible_ids
-    from app.resource_types import ResourceType
+    """Library — the caller's accessible file Collections (bring-your-files).
+
+    Accessible = admin (all), plus collections owned by the caller
+    (private uploads) or granted to one of their groups (shared)."""
+    from app.auth.access import accessible_collection_ids
 
     is_admin = is_user_admin(user["id"], conn)
-    accessible_ids = get_accessible_ids(user, ResourceType.COLLECTION.value, conn)  # None => admin/all
+    accessible_ids = accessible_collection_ids(user, conn)  # None => admin/all
     allowed = None if accessible_ids is None else set(accessible_ids)
     cf_repo = corpus_files_repo()
     cards = []
@@ -1606,8 +1644,7 @@ async def library_detail(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Collection detail — files + per-file processing status + search box."""
-    from app.auth.access import can_access
-    from app.resource_types import ResourceType
+    from app.auth.access import can_access_collection
 
     col = file_corpora_repo().get_by_slug(slug)
     # Return 404 for both "missing" and "access denied" so an unprivileged
@@ -1616,7 +1653,8 @@ async def library_detail(
     if not col:
         raise HTTPException(status_code=404, detail="collection_not_found")
     is_admin = is_user_admin(user["id"], conn)
-    if not is_admin and not can_access(user["id"], ResourceType.COLLECTION.value, col["id"], conn):
+    # Owner-aware: the creator can open their private upload without a grant.
+    if not is_admin and not can_access_collection(user["id"], col["id"], conn):
         raise HTTPException(status_code=404, detail="collection_not_found")
     files = corpus_files_repo().list_for_corpus(col["id"])
     ctx = _build_context(request, user=user, conn=conn, is_admin=is_admin, collection=col, files=files)
@@ -4037,6 +4075,110 @@ def _chat_capability_snapshot(conn: duckdb.DuckDBPyConnection, user: dict) -> di
         "plugins": plugin_summaries,
         "marketplace_count": marketplace_count,
     }
+
+
+# Curated static list for the /ask landing's "Suggested questions" — there is
+# no real data source for candidate questions (unlike the two RBAC-filtered
+# counts below), so this stays a module-level constant. Only the first 3
+# render; kept as a short list so a future pass can rotate/curate more.
+_ASK_SUGGESTED_QUESTIONS = [
+    "Summarize the pricing deck",
+    "Tell me about our customer segments",
+    "What tables do we have for orders and revenue?",
+]
+
+
+def _ask_knowledge_source_count(user: dict, conn: duckdb.DuckDBPyConnection) -> int:
+    """RBAC-filtered count of "knowledge sources" for the /ask landing's
+    source pill — data packages + memory domains (the same
+    ``StackResolver`` browse used by /catalog and /stack) plus the Library
+    surfaces (collections, recipes, maintained knowledge digests — the
+    resource types the "Library" area of the catalog covers).
+
+    Best-effort per category: a failure counting one resource type (e.g. a
+    repo error) must not blank the whole pill, so each block is wrapped and
+    logged rather than propagated.
+    """
+    from app.services.stack_resolver import StackResolver
+    from app.resource_types import ResourceType
+    from src.rbac import get_accessible_ids
+
+    is_admin = is_user_admin(user["id"], conn)
+    resolver = StackResolver(conn)
+    total = 0
+
+    # Data packages + memory domains — admin sees every entry (god-mode
+    # browse_admin), everyone else sees only what their groups are granted.
+    for rt in (ResourceType.DATA_PACKAGE, ResourceType.MEMORY_DOMAIN):
+        try:
+            entries = resolver.browse_admin(user["id"], rt) if is_admin else resolver.browse(user["id"], rt)
+            total += len(entries)
+        except Exception:
+            logger.warning("ask landing: knowledge source count failed for %s", rt.value)
+
+    # Library: file collections (mirrors GET /library's visibility).
+    try:
+        allowed = get_accessible_ids(user, ResourceType.COLLECTION.value, conn)
+        cols = file_corpora_repo().list()
+        total += len(cols) if allowed is None else sum(1 for c in cols if c["id"] in allowed)
+    except Exception:
+        logger.warning("ask landing: knowledge source count failed for collections")
+
+    # Library: recipes (mirrors GET /api/recipes' visibility — admin sees
+    # every row, everyone else only granted 'prod' rows).
+    try:
+        rows = recipes_repo().list()
+        allowed = get_accessible_ids(user, ResourceType.RECIPE.value, conn)
+        if allowed is None:
+            total += len(rows)
+        else:
+            total += sum(1 for r in rows if (r.get("status") or "prod") == "prod" and r["id"] in allowed)
+    except Exception:
+        logger.warning("ask landing: knowledge source count failed for recipes")
+
+    # Library: maintained knowledge digests — reuses the same fail-closed
+    # per-row grant check the content endpoint gates on.
+    try:
+        from src.repositories import knowledge_digests_repo
+        from app.api.knowledge_search import _caller_can_read_digest
+
+        total += sum(1 for d in knowledge_digests_repo().list() if _caller_can_read_digest(user, d["id"]))
+    except Exception:
+        logger.warning("ask landing: knowledge source count failed for knowledge digests")
+
+    return total
+
+
+@router.get("/ask", response_class=HTMLResponse)
+async def ask_landing(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Knowledge-search chat landing (issue #896 prototype, "Ask anything /
+    Reuse everything"). Visual port of the prototype hero only — no new
+    chat backend: the composer points at the existing /chat route, and the
+    "Operated by Kai · using N knowledge sources · M capabilities" pill is
+    computed server-side, RBAC-filtered for the caller (the counts come
+    from ``_ask_knowledge_source_count`` + ``resolve_allowed_plugins``; the
+    template does the wording + pluralization). Goes through
+    ``_build_context`` so the page inherits the standard Agnes chrome,
+    paper theme, and rail layout (same pattern as /chat,
+    ``app/web/router.py:3946``).
+    """
+    from src.marketplace_filter import resolve_allowed_plugins
+
+    knowledge_source_count = _ask_knowledge_source_count(user, conn)
+    capability_count = len(resolve_allowed_plugins(conn, user))
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        knowledge_source_count=knowledge_source_count,
+        capability_count=capability_count,
+        suggested_questions=_ASK_SUGGESTED_QUESTIONS[:3],
+    )
+    return templates.TemplateResponse(request, "ask_landing.html", ctx)
 
 
 @router.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)

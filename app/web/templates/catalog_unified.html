@@ -1,4 +1,4 @@
-{% extends "base_ds.html" %}
+{% extends "base_index.html" %}
 {# Unified Catalog — the #896 prototype IA: ONE browse surface for
    everything reusable, with kind tabs (Data · Plugins · Memory ·
    Recipes · Library) over a single card grid. Rendered by /catalog
@@ -64,7 +64,7 @@
 </style>
 {% endblock %}
 
-{% block content %}
+{% block page_head %}
 <div class="uc-head">
   <div>
     <h1>Catalog</h1>
@@ -83,9 +83,10 @@
   <button class="uc-kindtab" data-kind="plugins" role="tab" aria-selected="false"><span class="uc-dot uc-dot-plugins"></span>Plugins<span class="uc-count" id="uc-count-plugins">—</span></button>
   <button class="uc-kindtab" data-kind="memory" role="tab" aria-selected="false"><span class="uc-dot uc-dot-memory"></span>Memory<span class="uc-count">{{ memory_cards|length }}</span></button>
   <button class="uc-kindtab" data-kind="recipes" role="tab" aria-selected="false"><span class="uc-dot uc-dot-recipes"></span>Recipes<span class="uc-count" id="uc-count-recipes">—</span></button>
-  <button class="uc-kindtab" data-kind="library" role="tab" aria-selected="false"><span class="uc-dot uc-dot-library"></span>Library<span class="uc-count">{{ library_cards|length }}</span></button>
 </div>
+{% endblock %}
 
+{% block page_surface %}
 {# ── Data packages (server-rendered) ── #}
 <div class="uc-grid" data-kind-view="data">
   {% for e in entries %}
@@ -144,28 +145,6 @@
 {# ── Recipes (client-hydrated from /api/recipes) ── #}
 <div class="uc-grid" data-kind-view="recipes" hidden>
   <div class="uc-empty" data-loading><h3>Loading recipes…</h3></div>
-</div>
-
-{# ── Library collections (server-rendered) ── #}
-<div class="uc-grid" data-kind-view="library" hidden>
-  {% for c in library_cards %}
-  <article class="uc-card" data-search="{{ (c.name ~ ' ' ~ c.description) | lower }}">
-    <div class="uc-top">
-      <span class="uc-tico uc-tico-library">📚</span>
-      <div class="uc-title">
-        <h3><a href="/library/{{ c.slug }}">{{ c.name }}</a></h3>
-        <div class="uc-cap"><span class="uc-dot uc-dot-library"></span>Library · {{ c.file_count }} file{{ 's' if c.file_count != 1 else '' }}</div>
-      </div>
-    </div>
-    <p class="uc-desc">{{ c.description or 'File collection — searchable documents.' }}</p>
-    <div class="uc-foot">
-      <span class="uc-meta">{{ c.file_count }} file{{ 's' if c.file_count != 1 else '' }}</span>
-      <a class="uc-act" href="/library/{{ c.slug }}">Open →</a>
-    </div>
-  </article>
-  {% else %}
-  <div class="uc-empty"><h3>No collections yet</h3><p>Uploaded file collections will appear here.</p></div>
-  {% endfor %}
 </div>
 {% endblock %}
 

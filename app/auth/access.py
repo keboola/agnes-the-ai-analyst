@@ -384,6 +384,88 @@ def require_resource_access(
     return dep
 
 
+def can_access_collection(
+    user_id: str,
+    collection_id: str,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
+) -> bool:
+    """Collection access = admin OR group grant OR ownership.
+
+    An upload is private to its creator: the user whose
+    ``file_corpora.created_by`` matches can always reach it without a
+    ``resource_grants`` row. Admins and group-granted callers keep access
+    via the generic :func:`can_access` path. Ownership is checked here —
+    not in the generic grant primitives — so it never leaks into other
+    resource types.
+    """
+    if can_access(user_id, ResourceType.COLLECTION.value, collection_id, conn):
+        return True
+    from src.repositories import file_corpora_repo
+
+    row = file_corpora_repo().get(collection_id)
+    return bool(row and row.get("created_by") == user_id)
+
+
+def accessible_collection_ids(user, conn=None):
+    """COLLECTION ids the caller may access — group grants (admin => None,
+    meaning "all") unioned with the collections they own. ``None`` means
+    every collection (admin). The list-surface counterpart to
+    :func:`can_access_collection` (My Stack uploads, /library, search)."""
+    from src.rbac import get_accessible_ids
+    from app.auth.session_principal import SessionPrincipal
+
+    granted = get_accessible_ids(user, ResourceType.COLLECTION.value, conn)
+    if granted is None:
+        return None  # admin — sees everything
+    if isinstance(user, SessionPrincipal):
+        return granted
+    user_id = user.get("id")
+    if not user_id:
+        return granted
+    from src.repositories import file_corpora_repo
+
+    owned = frozenset(
+        r["id"] for r in file_corpora_repo().list() if r.get("created_by") == user_id
+    )
+    return frozenset(granted) | owned
+
+
+def require_collection_access(path_template: str):
+    """Dependency factory mirroring :func:`require_resource_access` for
+    COLLECTION, but ownership (``created_by``) also grants access — so a
+    user can manage the files of an upload they created without a group
+    grant. Admin short-circuits; non-admins without grant or ownership
+    raise 403.
+    """
+
+    def dep(
+        request: Request,
+        user=Depends(get_current_user),
+        conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+    ):
+        try:
+            resource_id = path_template.format(**request.path_params)
+        except KeyError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(f"require_collection_access: path_template {path_template!r} references missing path_param {e}"),
+            )
+        if isinstance(user, SessionPrincipal):
+            allowed = can_access_session(user, ResourceType.COLLECTION.value, resource_id)
+        else:
+            allowed = can_access_collection(user["id"], resource_id, conn)
+            if not allowed and _maybe_resync_google_groups(user["id"], user.get("email", "")):
+                allowed = can_access_collection(user["id"], resource_id, conn)
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(f"Access denied to collection {resource_id!r}"),
+            )
+        return user
+
+    return dep
+
+
 def mint_session_jwt(user_email: str, chat_id: str, *, ttl_seconds: int = 3600) -> str:
     """Mint a short-lived service JWT scoped to one chat session.
 

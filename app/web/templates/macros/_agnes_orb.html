@@ -1,0 +1,41 @@
+{# Shared Agnes "orb" mark — the floating brand SVG rendered small in the
+   rail nav logo (`_app_rail.html` `.rail-orb`) and, at prototype scale, on
+   the `/ask` chat-landing hero (issue #896 prototype). Extracted into a
+   macro so the landing page reuses the exact same artwork instead of
+   reimplementing it — see `.claude/skills/agnes-conventions/references/
+   design-system.md`.
+
+   `_app_rail.html` keeps its own inline copy (out of scope for the /ask
+   landing change — no rail-nav edits); this macro is the version new
+   call sites should use going forward.
+
+   `uid` MUST be unique per instance on the page — the gradient/clip IDs
+   are namespaced with it so two orbs in the same document (e.g. the rail
+   logo + this hero) don't collide on duplicate SVG ids. #}
+{% macro orb(uid, css_class='rail-orb', size=30) %}
+<svg class="{{ css_class }}" viewBox="0 0 32 32" width="{{ size }}" height="{{ size }}" aria-hidden="true" focusable="false">
+    <defs>
+        <linearGradient id="agnesOrbGrad-{{ uid }}" x1="6" y1="4" x2="26" y2="28" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#7ff0c8"/>
+            <stop offset=".46" stop-color="#33c1a8"/>
+            <stop offset="1" stop-color="#6d28d9"/>
+        </linearGradient>
+        <radialGradient id="agnesOrbSheen-{{ uid }}" cx="11" cy="9" r="15" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#ffffff" stop-opacity=".55"/>
+            <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+        </radialGradient>
+        <clipPath id="agnesOrbClip-{{ uid }}"><circle cx="16" cy="16" r="14"/></clipPath>
+    </defs>
+    <circle cx="16" cy="16" r="14" fill="url(#agnesOrbGrad-{{ uid }})"/>
+    <g clip-path="url(#agnesOrbClip-{{ uid }})">
+        <path d="M0 19 C 8 14, 12 22, 18 18 S 28 15, 34 20 L 34 34 L 0 34 Z" fill="#ffffff" opacity=".16"/>
+        <path d="M0 22.5 C 9 17.5, 13 25, 20 21 S 30 19.5, 34 23.5" stroke="#ffffff" stroke-opacity=".38" stroke-width="1" fill="none"/>
+        <path d="M9 12 L 15 9.6 L 21 13.6" stroke="#ffffff" stroke-opacity=".5" stroke-width=".6" fill="none"/>
+        <circle cx="9" cy="12" r="1" fill="#ffffff"/>
+        <circle cx="15" cy="9.6" r="1.15" fill="#ffffff"/>
+        <circle cx="21" cy="13.6" r="1" fill="#eaf7ff"/>
+        <ellipse cx="12" cy="10" rx="9.5" ry="7" fill="url(#agnesOrbSheen-{{ uid }})"/>
+    </g>
+    <circle cx="16" cy="16" r="14" fill="none" stroke="#ffffff" stroke-opacity=".3" stroke-width="1"/>
+</svg>
+{% endmacro %}

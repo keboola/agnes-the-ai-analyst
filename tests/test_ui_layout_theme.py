@@ -108,10 +108,12 @@ class TestRailOptIn:
         assert 'data-ui-layout="rail"' in resp.text
 
     def test_rail_keeps_nav_contract(self, web_client, admin_cookie, monkeypatch):
-        """Rail must carry the prototype IA (My Stack + Catalog with the
-        content surfaces as subcategories) and the same JS/id contract
-        as the header: global search combobox, user menu, theme toggle,
-        tour anchors."""
+        """Rail must carry the prototype IA (Chat + My Stack + Catalog as
+        three flat destinations) and the same JS/id contract as the
+        header: global search combobox, user menu, theme toggle, tour
+        anchors. The content surfaces (Plugins/Library/Memory) are reached
+        as kind tabs on the unified /catalog page, not as rail
+        subcategories."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/dashboard", cookies=admin_cookie)
         text = resp.text
@@ -119,24 +121,20 @@ class TestRailOptIn:
             'id="global-search"',
             'id="userMenu"',
             'id="themeToggle"',
+            # prototype IA: Chat (knowledge-search landing) is the primary
+            # destination when the sandbox cloud-chat surface is off
+            'href="/ask"',
             # prototype IA: My Stack page + Catalog parent
             'href="/stack"',
             'data-tour="nav-stack"',
             'data-tour="nav-catalog"',
-            # content surfaces as Catalog subcategories (kind tabs of
-            # the unified /catalog page)
-            'class="rail-sub"',
-            'data-tour="nav-marketplace"',
-            'data-tour="nav-library"',
-            'data-tour="nav-memory"',
-            'href="/catalog?kind=plugins"',
-            'href="/catalog?kind=library"',
-            'href="/catalog?kind=memory"',
             'href="/catalog"',
             # default brand lockup: the orb + wordmark
             'class="rail-orb"',
         ):
             assert anchor in text, f"rail chrome is missing {anchor}"
+        # Catalog is a single flat destination — no nested subcategory tree.
+        assert 'class="rail-sub"' not in text
 
     def test_rail_catalog_renders_unified_page(self, web_client, admin_cookie, monkeypatch):
         """Under the rail layout /catalog is the unified browse surface
@@ -150,15 +148,19 @@ class TestRailOptIn:
             'data-kind="plugins"',
             'data-kind="memory"',
             'data-kind="recipes"',
-            'data-kind="library"',
             'class="uc-kindtabs"',
         ):
             assert anchor in resp.text, f"unified catalog is missing {anchor}"
+        # Uploads (file collections) are private user resources — they
+        # live on My Stack, not in the shared Catalog.
+        assert 'data-kind="library"' not in resp.text
 
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
         assert "My Stack" in resp.text
         assert 'data-kind="plugins"' in resp.text
+        # The Uploads tab moved here from the Catalog.
+        assert 'data-kind="upload"' in resp.text
 
     def test_topnav_catalog_keeps_classic_page(self, web_client, admin_cookie, monkeypatch):
         """Default layout must keep the classic catalog.html — the

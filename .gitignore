@@ -21,6 +21,8 @@ user/
 .env.test
 .env.production
 .env*.local
+# Local demo env — holds real secrets (JWT/session/vault keys); never commit
+.env.demo
 
 # Operating System
 .DS_Store
@@ -126,6 +128,8 @@ docs/data_description.md
 # Project-specific: Data directory
 # Downloaded source data - never commit
 data/
+# Local demo runtime state (DuckDB, WALs, parquets, uploads) - never commit
+data-demo/
 
 # Metadata tooling - entire folder
 # Tooling for metadata enrichment - not part of main application

@@ -70,14 +70,36 @@ class TestCreateCollection:
         assert body["name"] == "Test Corp"
         assert body["id"].startswith("col_")
 
-    def test_non_admin_create_returns_403(self, seeded_app):
+    def test_any_user_creates_private_upload(self, seeded_app):
+        # Uploads are private per-user resources: any authenticated user can
+        # create their own (owned by them), not just admins.
         c = seeded_app["client"]
         resp = c.post(
             "/api/collections",
-            json={"name": "Forbidden"},
+            json={"name": "My Private Upload"},
             headers=_auth(seeded_app["analyst_token"]),
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["name"] == "My Private Upload"
+        assert body["id"].startswith("col_")
+
+    def test_owner_accesses_own_upload_without_grant(self, seeded_app):
+        # The creator can read/manage their own upload with no resource_grant —
+        # ownership is access. A different non-member still gets 404/403.
+        c = seeded_app["client"]
+        created = c.post(
+            "/api/collections",
+            json={"name": "Owner Only"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert created.status_code == 201, created.text
+        cid = created.json()["id"]
+        # Owner reads it back without any grant.
+        own = c.get(f"/api/collections/{cid}", headers=_auth(seeded_app["analyst_token"]))
+        assert own.status_code == 200, own.text
+        # It does NOT leak into another user's list (privacy).
+        # (admin still sees everything via god-mode; that's covered elsewhere.)
 
     def test_unauthenticated_create_returns_401(self, seeded_app):
         c = seeded_app["client"]
