@@ -63,6 +63,14 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     # Per-user MCP credential connectivity check (triple-surface with
     # /api/mcp/sources/{id}/my-secret/test + `agnes mcp my-secret test`).
     "my_secret_test",
+    # Wave-2B job queue (Task 5) — admin CRUD-lite, triple-surface with
+    # /api/jobs* + `agnes admin jobs`.
+    "admin_jobs_list",
+    "admin_job_get",
+    "admin_job_enqueue",
+    # DuckLake analytics-backend migration (wave-2G Task 6), triple-surface
+    # with /api/admin/analytics/migrate + `agnes admin analytics migrate`.
+    "admin_analytics_migrate",
 )
 
 
@@ -922,6 +930,120 @@ def register_foundation_tools(
                 except ValueError:
                     detail = r.text
                 return {"ok": False, "tool_count": None, "message": detail}
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def admin_jobs_list(status: str = "", kind: str = "", limit: int = 50) -> dict:
+        """List jobs on the wave-2B durable job queue (admin only).
+
+        Jobs are the worker-runtime's unit of work (data-refresh, jira-refresh,
+        marketplaces-sync, session-collector, corporate-memory, and any other
+        kind registered in ``JOB_KINDS``). Use this to check whether an
+        enqueued job has started, finished, or is retrying after a failure.
+
+        Args:
+            status: Filter by status: "queued" | "running" | "done" | "failed".
+                    Empty (default) returns all statuses.
+            kind:   Filter by job kind (e.g. "data-refresh"). Empty (default)
+                    returns all kinds.
+            limit:  Max rows to return, most recent first (default 50).
+
+        Returns ``{"jobs": [{"id", "kind", "status", "priority", "attempts",
+        "max_attempts", "payload", "created_at", "started_at", "finished_at",
+        "error", ...}, ...]}``. Mirrors ``GET /api/jobs`` and
+        ``agnes admin jobs list``.
+
+        Requires an admin PAT.
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if status:
+            params["status"] = status
+        if kind:
+            params["kind"] = kind
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}/api/jobs", headers=headers_fn(), params=params, timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def admin_job_get(job_id: str) -> dict:
+        """Show one job's full detail, incl. payload and error (admin only).
+
+        Args:
+            job_id: The job id (from ``admin_jobs_list`` or the id returned by
+                    ``admin_job_enqueue``).
+
+        Mirrors ``GET /api/jobs/{job_id}`` and ``agnes admin jobs show``.
+        Requires an admin PAT. 404 if the job doesn't exist.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}/api/jobs/{job_id}", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def admin_job_enqueue(kind: str, payload: dict | None = None, idempotency_key: str = "") -> dict:
+        """Enqueue a job on the wave-2B worker runtime (admin only).
+
+        ``kind`` must already be registered in the server's ``JOB_KINDS``
+        registry (populated at startup by ``register_all_kinds()``) — an
+        unrecognized kind 400s with the list of currently-registered kinds.
+
+        Args:
+            kind:            Registered job kind (e.g. "data-refresh",
+                             "marketplaces-sync", "session-collector",
+                             "corporate-memory", "jira-refresh").
+            payload:         Job-specific payload dict. Defaults to empty.
+            idempotency_key: Dedup key — if a queued/running job already has
+                             this key, that job is returned unchanged instead
+                             of enqueuing a duplicate. Empty (default) disables
+                             dedup.
+
+        Mirrors ``POST /api/jobs`` and ``agnes admin jobs enqueue``. Requires
+        an admin PAT.
+        """
+        body: dict[str, Any] = {"kind": kind, "payload": payload or {}}
+        if idempotency_key:
+            body["idempotency_key"] = idempotency_key
+        async with httpx.AsyncClient() as c:
+            r = await c.post(f"{base_url}/api/jobs", json=body, headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def admin_analytics_migrate(to: str) -> dict:
+        """Migrate the analytics query surface between backends (admin only).
+
+        Validates prerequisites (``to="ducklake"`` only: the DuckLake DuckDB
+        extension is loadable and the catalog is reachable, auto-repairing a
+        missing catalog database on an existing Postgres volume where the
+        init-script never ran) and enqueues an ``analytics-migrate`` job that
+        rebuilds the named target backend from the on-disk extracts tree —
+        no re-extract from the source system, in either direction.
+
+        This call never flips ``analytics.backend`` in config — it is read
+        once at boot, not hot-reloaded. Once the returned job completes
+        (poll with ``admin_job_get``), set ``analytics.backend`` in
+        ``instance.yaml`` (or ``AGNES_ANALYTICS_BACKEND`` env) on every role
+        process and restart to actually switch query serving over.
+
+        Args:
+            to: Target backend — "ducklake" or "legacy" (rollback).
+
+        Returns ``{status, to, job_id, message}`` on success. Mirrors
+        ``POST /api/admin/analytics/migrate`` and
+        ``agnes admin analytics migrate --to <target>``. Requires an admin
+        PAT. Raises on a 400 (unmet prerequisites — see the error body for
+        the full problem list) or a 409 (a migration is already running).
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/admin/analytics/migrate",
+                json={"to": to},
+                headers=headers_fn(),
+                timeout=30,
+            )
             r.raise_for_status()
             return r.json()
 

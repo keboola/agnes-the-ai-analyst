@@ -932,3 +932,90 @@ class TestFilesystemFallbackMasterViews:
         orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
         # Must not crash.
         orch.rebuild()
+
+
+class TestMigrateToBackend:
+    """``SyncOrchestrator.migrate_to_backend`` (wave-2G Task 6) — the
+    explicit-target rebuild behind ``agnes admin analytics migrate``.
+
+    Unlike ``rebuild()``, this must ignore whatever ``analytics.backend``
+    is currently configured and rebuild into the NAMED target instead —
+    these tests deliberately configure the OPPOSITE backend from the one
+    being migrated to, to prove that property. The ``to="ducklake"``
+    direction needs the real ``ducklake`` extension end-to-end and is
+    covered in ``tests/test_orchestrator_ducklake.py``; this file only
+    needs the legacy rebuild path (no extension required) plus pure
+    dispatch/validation behavior.
+    """
+
+    def test_invalid_target_raises_value_error(self, setup_env):
+        from src.orchestrator import SyncOrchestrator
+
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        with pytest.raises(ValueError, match="ducklake.*legacy"):
+            orch.migrate_to_backend("bogus")
+
+    def test_migrate_to_legacy_rebuilds_regardless_of_configured_backend(self, setup_env, monkeypatch):
+        """Configure ``analytics.backend=ducklake`` (the OPPOSITE of the
+        target) and prove ``migrate_to_backend("legacy")`` still runs the
+        full legacy rebuild-and-swap from the extracts tree — the
+        rollback path never depends on the process's own cached
+        ``analytics_backend()`` resolution."""
+        import src.analytics_backend as ab
+        from src.orchestrator import SyncOrchestrator
+
+        monkeypatch.setenv("AGNES_ANALYTICS_BACKEND", "ducklake")
+        ab.reset_analytics_backend_cache()
+        try:
+            assert ab.analytics_backend() == "ducklake"
+
+            _create_mock_extract(
+                setup_env["extracts_dir"],
+                "keboola",
+                [{"name": "orders", "data": [{"id": "1", "total": "100"}]}],
+            )
+
+            orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+            result = orch.migrate_to_backend("legacy")
+
+            assert "keboola" in result
+            assert result["keboola"] == ["orders"]
+            assert Path(setup_env["analytics_db"]).exists()
+
+            conn = duckdb.connect(setup_env["analytics_db"])
+            try:
+                extract_path = setup_env["extracts_dir"] / "keboola" / "extract.duckdb"
+                conn.execute(f"ATTACH '{extract_path}' AS keboola (READ_ONLY)")
+                row = conn.execute("SELECT total FROM orders WHERE id='1'").fetchone()
+                assert row[0] == "100"
+            finally:
+                conn.close()
+        finally:
+            ab.reset_analytics_backend_cache()
+
+    def test_migrate_dispatches_to_the_named_target_not_the_configured_one(self, setup_env, monkeypatch):
+        """Pure dispatch check (no real DuckLake extension needed): mock
+        both private rebuild methods and assert the CALLED one matches
+        the ``to=`` argument, never the configured
+        ``analytics_backend()``."""
+        import src.analytics_backend as ab
+        from src.orchestrator import SyncOrchestrator
+
+        calls: list[str] = []
+
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        monkeypatch.setattr(orch, "_do_rebuild", lambda: calls.append("legacy") or {})
+        monkeypatch.setattr(orch, "_do_rebuild_ducklake", lambda only_source=None: calls.append("ducklake") or {})
+
+        monkeypatch.setenv("AGNES_ANALYTICS_BACKEND", "legacy")
+        ab.reset_analytics_backend_cache()
+        try:
+            orch.migrate_to_backend("ducklake")
+            assert calls == ["ducklake"]
+
+            monkeypatch.setenv("AGNES_ANALYTICS_BACKEND", "ducklake")
+            ab.reset_analytics_backend_cache()
+            orch.migrate_to_backend("legacy")
+            assert calls == ["ducklake", "legacy"]
+        finally:
+            ab.reset_analytics_backend_cache()

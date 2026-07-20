@@ -1,4 +1,5 @@
 """Auto-generate and persist secrets that survive container restarts."""
+
 import logging
 import os
 import secrets
@@ -28,26 +29,93 @@ def _state_dir() -> Path:
 # both read [X, Y], one writes [X, Y, A], the other writes [X, Y, B] and
 # silently clobbers A. The lock is process-local; we rely on the app being
 # the sole writer to `${STATE_DIR}/.env_overlay` (no out-of-process tools
-# touch it).
+# touch it). Reused (below) to serialize the vault write path too — not for
+# DB atomicity (each vault write is a single-row upsert, already atomic) but
+# to keep the os.environ mutation + publish ordered the same way the file
+# path orders its read-merge-write, for one process writing multiple keys.
 _overlay_lock = threading.Lock()
+
+#: Coordination-backend pub/sub channel: published (with the bare env var
+#: name as the message) every time a vault-mode ``persist_overlay_token``
+#: call changes a key, so every other api/worker/gateway replica can re-read
+#: that one key from the vault and refresh its own ``os.environ`` without a
+#: restart. See ``app/main.py``'s lifespan subscribe/unsubscribe and
+#: ``_state_checkpoint_loop`` (belt-and-braces periodic sweep).
+OVERLAY_CHANGED_CHANNEL = "env-overlay-changed"
+
+#: Vault key namespace for overlay tokens inside the ``system_secrets``
+#: table (shared with Slack bot tokens / datasource secrets under their own
+#: unnamespaced keys — see app/secrets_vault.py). Namespacing avoids
+#: colliding with those other consumers of the same table.
+_OVERLAY_VAULT_PREFIX = "env_overlay/"
+
+# One-time-per-process warning guard for the keyless (no AGNES_VAULT_KEY)
+# fallback path, so a busy admin session doesn't spam the log once per save.
+_warned_vault_unusable = False
+
+
+def _overlay_vault_key(env_name: str) -> str:
+    return f"{_OVERLAY_VAULT_PREFIX}{env_name}"
 
 
 def persist_overlay_token(env_name: str, value: Optional[str]) -> None:
-    """Atomically update a key in ``${STATE_DIR}/.env_overlay`` and ``os.environ``.
+    """Persist a secret env var so it survives restarts, and update ``os.environ``.
 
-    Single shared helper for every code path that writes a secret to the
-    overlay file (today: marketplaces PATs + initial-workspace template
-    PAT). The whole read-merge-write is serialized by ``_overlay_lock``.
+    Single shared helper for every code path that writes a secret this way
+    (today: marketplaces PATs, the initial-workspace template PAT, and the
+    E2B/Anthropic chat-sandbox keys). ``value=None`` or ``value=""`` removes
+    the key; a non-empty value writes/replaces it.
 
-    ``value=None`` or ``value=""`` removes the key from the overlay and the
-    process env. A non-empty value writes/replaces the key.
+    Two storage backends, chosen by whether the control-plane vault is
+    usable (``AGNES_VAULT_KEY`` configured — see
+    ``app.secrets_vault.vault_key_configured``):
 
-    Path resolution matches ``app/main.py``'s startup-time read; without
-    this alignment, PATs persisted under the flat-mount layout
+    * **Vault mode** (production / multi-process): the token is written to
+      the ``system_secrets`` vault table (namespaced ``env_overlay/<name>``,
+      Fernet-encrypted at rest — see ``app/secrets_vault.py``) and an
+      ``env-overlay-changed`` event is published on the coordination backend
+      so every other process re-reads that key (see ``app/main.py``'s
+      subscriber + the periodic belt-and-braces sweep in
+      ``_state_checkpoint_loop``). FLUSHALL story: if the pub/sub event is
+      lost (e.g. a Redis FLUSHALL, or a replica that was briefly
+      disconnected), the affected process serves a stale value until the
+      next periodic re-read (≤ ``AGNES_STATE_CHECKPOINT_INTERVAL_S``,
+      default 300s) or its next restart — acceptable because these tokens
+      change rarely (an admin rotating a PAT), not on a hot path.
+    * **Keyless / S-tier mode** (``AGNES_VAULT_KEY`` unset): unchanged
+      legacy behavior — read-merge-write into ``${STATE_DIR}/.env_overlay``
+      under ``_overlay_lock``, plus a one-time-per-process warning that
+      cross-process reload isn't available in this mode (there's only ever
+      one process here, so there's nothing to synchronize).
+
+    Path resolution for the file mode matches ``app/main.py``'s startup-time
+    read; without this alignment, PATs persisted under the flat-mount layout
     (``STATE_DIR=/data-state``) would land at ``/data/state/.env_overlay``
     while the app reads from ``/data-state/.env_overlay``, silently
     dropping the token on the next restart.
     """
+    from app.secrets_vault import vault_key_configured
+
+    if vault_key_configured():
+        _persist_overlay_token_vault(env_name, value)
+        return
+
+    global _warned_vault_unusable
+    if not _warned_vault_unusable:
+        logger.warning(
+            "AGNES_VAULT_KEY is not configured; persisting %s to the legacy "
+            "'.env_overlay' file instead of the control-plane vault. This is "
+            "expected for a single-process/keyless (S-tier) install; a "
+            "multi-process deployment should set AGNES_VAULT_KEY so overlay "
+            "tokens replicate via the vault instead.",
+            env_name,
+        )
+        _warned_vault_unusable = True
+    _persist_overlay_token_file(env_name, value)
+
+
+def _persist_overlay_token_file(env_name: str, value: Optional[str]) -> None:
+    """Legacy file-backed path — see ``persist_overlay_token``."""
     overlay_path = _state_dir() / ".env_overlay"
 
     with _overlay_lock:
@@ -67,14 +135,97 @@ def persist_overlay_token(env_name: str, value: Optional[str]) -> None:
             existing.pop(env_name, None)
             os.environ.pop(env_name, None)
 
-        overlay_path.write_text(
-            "\n".join(f"{k}={v}" for k, v in existing.items())
-            + ("\n" if existing else "")
-        )
+        overlay_path.write_text("\n".join(f"{k}={v}" for k, v in existing.items()) + ("\n" if existing else ""))
         try:
             overlay_path.chmod(0o600)
         except OSError:
             pass
+
+
+def _persist_overlay_token_vault(env_name: str, value: Optional[str]) -> None:
+    """Vault-backed path — see ``persist_overlay_token``."""
+    from src.repositories import system_secrets_repo
+
+    repo = system_secrets_repo()
+    key = _overlay_vault_key(env_name)
+
+    with _overlay_lock:
+        if value:
+            repo.upsert(key, value)
+            os.environ[env_name] = value
+        else:
+            repo.delete(key)
+            os.environ.pop(env_name, None)
+
+    try:
+        from app.coordination.factory import coordination
+
+        coordination().publish(OVERLAY_CHANGED_CHANNEL, env_name)
+    except Exception:
+        # Non-fatal: this process already applied the change to its own
+        # os.environ above. A lost/failed publish just means other replicas
+        # rely on the periodic re-read (see persist_overlay_token's FLUSHALL
+        # note) instead of the immediate event.
+        logger.exception("env-overlay-changed publish failed for %s (non-fatal)", env_name)
+
+
+def reapply_overlay_token_from_vault(env_name: str) -> None:
+    """Re-read ``env_name``'s current vault value and apply it to ``os.environ``.
+
+    Used by (1) the cross-process ``env-overlay-changed`` subscriber — one
+    key, event-driven — and (2) as the per-key step inside
+    ``reapply_all_overlay_tokens_from_vault`` (boot load + periodic sweep).
+
+    A vault row that no longer exists (the token was cleared on another
+    replica) removes ``env_name`` from THIS process's ``os.environ`` too,
+    mirroring ``persist_overlay_token``'s own delete-on-empty semantics.
+    """
+    from src.repositories import system_secrets_repo
+
+    value = system_secrets_repo().get(_overlay_vault_key(env_name))
+    if value:
+        os.environ[env_name] = value
+    else:
+        os.environ.pop(env_name, None)
+
+
+def reapply_all_overlay_tokens_from_vault() -> None:
+    """Belt-and-braces full sweep of every ``env_overlay/*`` vault row.
+
+    No-ops when the vault isn't usable (keyless/S-tier mode — nothing was
+    ever written there). Otherwise applied:
+
+    * once at boot, AFTER the legacy ``.env_overlay`` file load in
+      ``app.main.create_app`` — the vault wins over the file on a conflict
+      (see that call site's comment for the precedence rationale);
+    * every tick of the periodic state-checkpoint loop
+      (``app.main._state_checkpoint_loop``) as a belt-and-braces catch-all
+      for any ``env-overlay-changed`` event a replica missed (see the
+      FLUSHALL note on ``persist_overlay_token``).
+
+    Each key is applied independently (log-and-continue) so one bad row
+    (decrypt failure after a key rotation, transient DB hiccup) doesn't
+    block every other overlay token from refreshing.
+    """
+    from app.secrets_vault import vault_key_configured
+
+    if not vault_key_configured():
+        return
+
+    from src.repositories import system_secrets_repo
+
+    try:
+        keys = system_secrets_repo().list_names_with_prefix(_OVERLAY_VAULT_PREFIX)
+    except Exception:
+        logger.exception("listing env_overlay/* vault keys failed (non-fatal)")
+        return
+
+    for key in keys:
+        env_name = key[len(_OVERLAY_VAULT_PREFIX) :]
+        try:
+            reapply_overlay_token_from_vault(env_name)
+        except Exception:
+            logger.exception("vault overlay re-read failed for %s (non-fatal)", env_name)
 
 
 def _load_or_generate(env_var: str, file_name: str) -> str:
@@ -97,7 +248,9 @@ def _load_or_generate(env_var: str, file_name: str) -> str:
         pass  # chmod not supported on all platforms (e.g., Windows)
     logger.info(
         "Auto-generated %s -> %s (set %s in .env to use a fixed value)",
-        file_name, secret_path, env_var,
+        file_name,
+        secret_path,
+        env_var,
     )
     return val
 

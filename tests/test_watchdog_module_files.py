@@ -78,6 +78,35 @@ def test_backup_script_verifies_restore():
     assert "-mtime +7" in sh
 
 
+def test_backup_script_pg_dump_restore_canary():
+    """Postgres side-car coverage (WS I task 2): pg_dump the control-plane DB
+    alongside the DuckDB backup, gated on the same persisted backend field
+    startup-script.sh.tpl reads, plus a container-presence check, and prove
+    the dump restores via a throwaway-DB canary before ever declaring
+    success."""
+    sh = (FILES / "agnes-db-backup.sh").read_text()
+    # Same detection field + sed pattern as startup-script.sh.tpl's
+    # PERSISTED_BACKEND check — must stay in lockstep so the two scripts
+    # never disagree about which backend is active.
+    assert "database.backend" in sh or "backend:" in sh
+    assert "side_car" in sh
+    assert "docker ps --format '{{.Names}}'" in sh, "must confirm the postgres container is actually running"
+    # The dump itself: custom format (pg_restore-able), no password (local
+    # trust auth — see scripts/db_state_migrator.py's backup_sidecar_pg).
+    assert "pg_dump -U agnes -F c agnes" in sh
+    # Restore-canary: throwaway DB, trivial sanity query, cleanup.
+    assert "createdb -U agnes" in sh
+    assert "pg_restore -U agnes -d" in sh
+    assert "SELECT count(*) FROM users" in sh
+    assert "dropdb -U agnes --if-exists" in sh
+    # Forward reference to the DuckLake catalog living in the same PG.
+    assert "DuckLake" in sh
+    # Retention: the pg artifacts land in the same dated $DEST as
+    # system.duckdb, so the existing -mtime +7 sweep covers them for free —
+    # no separate retention block should exist.
+    assert sh.count("-mtime +7") == 1
+
+
 def test_webhook_payloads_are_json_escaped():
     """Both scripts embed $MSG (which includes the operator-configurable
     ENV_LABEL) into a JSON payload — an unescaped quote/backslash would
