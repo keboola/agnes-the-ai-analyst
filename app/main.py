@@ -30,6 +30,7 @@ except ImportError:
     )
 
 import asyncio
+import contextlib
 import logging
 import math
 from contextlib import asynccontextmanager
@@ -56,6 +57,19 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.middleware.request_id import RequestIdMiddleware
+
+
+def _chat_coordination_backend() -> str:
+    """Thin wrapper around :func:`app.coordination.factory.resolve_backend_name`
+    so the multi-worker/multi-replica chat gate and the Slack Socket Mode
+    preflight (below) resolve the backend the same way every other
+    coordination-aware call site does, and so tests can monkeypatch this one
+    function (``app.main._chat_coordination_backend``) instead of reaching
+    into ``app.coordination.factory``.
+    """
+    from app.coordination.factory import resolve_backend_name
+
+    return resolve_backend_name()
 
 
 def _chat_jwt_secret_ok(chat_config) -> bool:
@@ -241,6 +255,7 @@ from app.auth.rate_limit import (
 from app.auth.router import router as auth_router
 from app.api.health import router as health_router
 from app.api.sync import router as sync_router
+from app.api.jobs import router as jobs_router
 from app.api.data import router as data_router
 from app.api.query import router as query_router
 from app.api.users import router as users_router
@@ -335,6 +350,7 @@ from app.api.admin_usage_summary import router as admin_usage_summary_router
 from app.api.admin_reports import router as admin_reports_router
 from app.api.admin_adoption import router as admin_adoption_router
 from app.api.db_state import router as db_state_router
+from app.api.admin_analytics import router as admin_analytics_router
 from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import router as marketplace_git_router
 from app.web.router import router as web_router
@@ -342,6 +358,7 @@ from app.api.chat import router as chat_router
 from app.api.chat_copresence import router as chat_copresence_router
 from app.api.slack import router as slack_router
 from app.api.admin_chat import router as admin_chat_router
+from app.api.notifications_ws import router as notifications_ws_router
 from app.api.broker import router as broker_router
 from app.instance_config import get_slack_transport
 from services.slack_bot.socket_mode_client import (
@@ -377,8 +394,40 @@ def _maybe_rebuild_on_boot() -> bool:
 async def _start_slack_socket_transport(app) -> None:
     """If chat.slack.transport=socket, start one Socket Mode WS behind
     fail-closed gates. On any miss -> log + leave Slack HTTP-only; never
-    crash and never start a dead WS. Stashed on app.state for shutdown."""
+    crash and never start a dead WS.
+
+    Gateway-role gating and the token/workers preflight decide whether
+    this PROCESS participates at all — unrelated to cross-process
+    exclusivity, so both stay outside the lease below (a non-gateway
+    replica, or one with a broken Slack config, never even tries to
+    acquire the lease).
+
+    Once a process passes those gates, it races every other
+    Role.GATEWAY replica for the `slack-socket-mode` leader lease (see
+    app/coordination/leases.py) — Slack's Socket Mode protocol allows
+    multiple concurrent WS connections per app, but each delivers a
+    disjoint slice of at-least-once events, so multiple replicas
+    dispatching independently would double-handle events. The lease
+    task is stashed on app.state for shutdown (cancelling it runs the
+    lease's own stop()+release() path — see the lifespan teardown
+    below).
+
+    FLUSHALL story: if the coordination backend loses its state (Redis
+    FLUSHALL/restart, or an outage outliving one ttl_s), this replica's
+    lease renew fails -> the dispatcher is stopped -> the lease loop
+    re-enters acquire-polling -> some gateway replica (maybe this one)
+    re-acquires and reconnects within one ttl_s. In the default `memory`
+    backend (single-process) this never happens — the lease is
+    process-local and always immediately acquired, so behavior is
+    unchanged from before leases existed.
+    """
+    from app.roles import Role, role_enabled
+
     app.state.slack_socket_dispatcher = None
+    app.state.slack_socket_lease_task = None
+    if not role_enabled(Role.GATEWAY):
+        logger.info("slack socket mode: skipped (not a gateway-role process)")
+        return
     if get_slack_transport() != "socket":
         return
     from services.slack_bot.secrets import slack_secret
@@ -393,21 +442,58 @@ async def _start_slack_socket_transport(app) -> None:
         workers=workers,
         app_token=app_token,
         bot_token=bot_token,
+        backend=_chat_coordination_backend(),
     )
     if not ok:
         logger.error("Slack Socket Mode disabled: %s", reason)
         return
-    try:
-        dispatcher = SocketModeDispatcher(
-            app=app,
-            app_token=app_token,
-            bot_token=bot_token,
-        )
-        await dispatcher.start()
-        app.state.slack_socket_dispatcher = dispatcher
-    except Exception:
-        logger.exception("Slack Socket Mode disabled: start() failed")
+
+    async def _start() -> None:
+        try:
+            dispatcher = SocketModeDispatcher(
+                app=app,
+                app_token=app_token,
+                bot_token=bot_token,
+            )
+            await dispatcher.start()
+            app.state.slack_socket_dispatcher = dispatcher
+        except Exception:
+            # Log here (so the failure is attributed to Slack Socket Mode
+            # specifically) then re-raise: a connect failure must propagate
+            # to run_with_lease, which releases the lease and backs off
+            # before retrying (see app/coordination/leases.py). Swallowing
+            # it here would leave this replica believing it holds the
+            # lease — and renewing it forever — while never actually
+            # delivering events, starving every other (possibly healthy)
+            # gateway replica.
+            logger.exception("Slack Socket Mode start() failed")
+            app.state.slack_socket_dispatcher = None
+            raise
+
+    async def _stop() -> None:
+        dispatcher = getattr(app.state, "slack_socket_dispatcher", None)
         app.state.slack_socket_dispatcher = None
+        if dispatcher is not None:
+            try:
+                await dispatcher.stop()
+            except Exception:
+                logger.exception("Slack Socket Mode dispatcher stop failed")
+
+    from app.coordination.leases import default_holder_id, run_with_lease
+
+    app.state.slack_socket_lease_task = asyncio.create_task(
+        run_with_lease("slack-socket-mode", default_holder_id(), ttl_s=15, start=_start, stop=_stop),
+        name="slack-socket-lease",
+    )
+    # Yield one scheduler tick so the lease task gets a chance to run before
+    # this function returns to the lifespan. This does NOT guarantee the
+    # dispatcher's start() (the socket connect) has completed by the time we
+    # return — lease_acquire/renew/release all hop off-loop via
+    # asyncio.to_thread (see app/coordination/leases.py), so completion now
+    # depends on real thread scheduling, not just one tick. Startup simply
+    # kicks the lease loop off without waiting for the connect to finish;
+    # the dispatcher comes up asynchronously shortly after.
+    await asyncio.sleep(0)
 
 
 def _state_checkpoint_interval_s() -> float:
@@ -445,6 +531,7 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
     writes at the mercy of a cross-version WAL replay. CHECKPOINT runs in
     a worker thread — it can block while DuckDB flushes a large WAL.
     """
+    from app.secrets import reapply_all_overlay_tokens_from_vault
     from src.db import checkpoint_operational_db, checkpoint_system_db
 
     while True:
@@ -459,10 +546,144 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
             # checkpoint_*_db already swallow DB errors; this guards the loop
             # itself (e.g. to_thread failure) so it never dies.
             logger.exception("state-checkpoint tick failed; loop continues")
+        try:
+            # Belt-and-braces piggyback (wave 2C task 6): re-apply every
+            # env_overlay/* vault row to os.environ on every tick. Covers a
+            # replica that missed the env-overlay-changed pub/sub event (e.g.
+            # it wasn't subscribed yet, or a Redis FLUSHALL dropped it) — see
+            # app.secrets.persist_overlay_token's FLUSHALL note. Cheap:
+            # no-ops instantly when the vault isn't configured, otherwise one
+            # small indexed table scan plus a handful of decrypts.
+            await asyncio.to_thread(reapply_all_overlay_tokens_from_vault)
+        except Exception:
+            logger.exception("vault overlay periodic re-read failed; loop continues")
+
+
+def _on_cache_invalidate(message: str) -> None:
+    """Coordination-backend subscriber for the ``cache-invalidate`` channel
+    (wave 2C) — drops THIS process's local v2 catalog/schema/sample TTL
+    caches to mirror a table-registry mutation handled by (usually) another
+    api-serving replica.
+
+    ``message`` is ``json.dumps({"scope": "table"|"all", "table": <id or
+    None>})`` — see ``app.api.v2_catalog._publish_cache_invalidate``. Routes
+    into ``v2_catalog.invalidate_for_table`` / ``invalidate_all`` with
+    ``_publish=False`` so reacting to an incoming event never re-publishes
+    it — no echo loop back onto the channel (the process that originated
+    the invalidation already cleared its own caches before publishing).
+    """
+    import json
+
+    try:
+        payload = json.loads(message)
+    except (ValueError, TypeError):
+        logger.warning("cache-invalidate: unparseable message %r", message)
+        return
+
+    from app.api import v2_catalog
+
+    scope = payload.get("scope")
+    if scope == "all":
+        v2_catalog.invalidate_all(_publish=False)
+    elif scope == "table":
+        table = payload.get("table")
+        if table:
+            v2_catalog.invalidate_for_table(table, _publish=False)
+    else:
+        logger.warning("cache-invalidate: unknown scope %r", scope)
+
+
+def _on_env_overlay_changed(env_name: str) -> None:
+    """Coordination-backend subscriber for the ``env-overlay-changed``
+    channel (wave 2C task 6) — re-reads ``env_name``'s current value from
+    the control-plane vault and re-applies it to THIS process's
+    ``os.environ``, so an admin rotating a marketplace PAT / chat-sandbox
+    key on one api-serving replica propagates to every other
+    api/worker/gateway replica without a restart.
+
+    ``message`` is the bare env var name (see
+    ``app.secrets.persist_overlay_token``'s vault-write path) — unlike
+    ``cache-invalidate`` there's no JSON envelope to parse. Log-and-continue:
+    a lookup failure here (vault key rotated mid-flight, transient DB
+    hiccup) must not crash the subscriber dispatch loop — the periodic
+    belt-and-braces sweep in ``_state_checkpoint_loop`` will retry.
+    """
+    from app.secrets import reapply_overlay_token_from_vault
+
+    try:
+        reapply_overlay_token_from_vault(env_name)
+    except Exception:
+        logger.exception("env-overlay-changed handler failed for %s (non-fatal)", env_name)
+
+
+def _register_ducklake_readyz_check() -> None:
+    """Register the DuckLake ``/readyz`` check (``app.api.health_probes``)
+    UNCONDITIONALLY when the analytics backend is ``ducklake`` — i.e.
+    independent of whether the best-effort reader warm-up in the lifespan
+    (right after this call) succeeds.
+
+    Why unconditional (wave-2G Task 5 review carry-over, finding 4): this
+    registration used to happen only *after* the warm-up call
+    (``get_ducklake_read().close()``) had already succeeded, inside the
+    same ``try`` block. The single most likely failure window — the
+    Postgres catalog not yet reachable at boot (e.g. a rolling deploy
+    racing the catalog's own restart) — hit that block's ``except``
+    branch, which swallowed the warm-up failure AND skipped registration
+    in the same step. The result: a replica whose DuckLake attach is
+    actually broken reported ``/readyz`` as fully ready (no ``"ducklake"``
+    entry ever appeared in ``failed_checks`` because the check was never
+    registered at all), so the load balancer kept routing traffic to
+    it — exactly the failure this check exists to surface. Registering
+    here, before any warm-up attempt, means a later periodic ``/readyz``
+    poll still catches a catalog that was unreachable at boot (and
+    recovers if it comes back, or correctly keeps the replica out of
+    rotation if it never does).
+
+    The check function itself is a cheap liveness probe: it calls
+    :func:`src.ducklake_session.get_ducklake_read` directly (which opens
+    the singleton lazily if the warm-up below never ran or failed) and
+    issues ``SELECT 1`` on the returned cursor — safe to call whether or
+    not the session is already warm.
+    """
+    from src.analytics_backend import analytics_backend
+
+    if analytics_backend() != "ducklake":
+        return
+
+    def _ducklake_readyz_check() -> bool:
+        from src.ducklake_session import get_ducklake_read
+
+        try:
+            cur = get_ducklake_read()
+        except Exception:
+            logger.warning("ducklake readyz check: get_ducklake_read() failed", exc_info=True)
+            return False
+        try:
+            cur.execute("SELECT 1").fetchone()
+            return True
+        except Exception:
+            logger.warning("ducklake readyz check: SELECT 1 probe failed", exc_info=True)
+            return False
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+
+    from app.api.health_probes import register_readiness_check
+
+    register_readiness_check("ducklake", _ducklake_readyz_check)
 
 
 @asynccontextmanager
 async def lifespan(app):
+    # Refuse to boot an unsafe multi-process topology (role split or
+    # UVICORN_WORKERS>1) before any DB/backend is touched — spec §3.2.
+    # No-op in default all-in-one, single-worker mode.
+    from app.startup_guards import validate_deployment
+
+    validate_deployment()
+
     # Fail-closed: refuse to serve with a weak/absent JWT signing key in
     # production. Cheap, runs before any request is accepted.
     from app.auth.jwt import validate_jwt_secret_or_raise
@@ -543,9 +764,67 @@ async def lifespan(app):
     except Exception as e:
         logger.warning("failed to bump anyio thread pool capacity: %s", e)
 
+    from app.roles import Role, role_enabled
     from app.api.cache_warmup import maybe_schedule_startup_warmup
 
-    maybe_schedule_startup_warmup()
+    if role_enabled(Role.WORKER):
+        maybe_schedule_startup_warmup()
+
+    # DuckLake reader warm-up (wave-2G Task 5). When analytics.backend is
+    # ducklake, open the long-lived reader singleton (src.ducklake_session
+    # .get_ducklake_read()) here at boot rather than leaving it fully lazy —
+    # so the ``ducklake`` extension INSTALL/LOAD, the catalog ATTACH (a real
+    # libpq connection on a Postgres catalog), and the one-time remote-mode
+    # extract-source attach all happen during startup instead of stalling
+    # the very first analyst query (app/api/query.py, app/api/query_hybrid.py
+    # — the two callers of ``src.db.get_analytics_db_readonly()``, which
+    # dispatches to the DuckLake reader when this backend is active).
+    #
+    # Role scope — api AND gateway, not just api: every role process mounts
+    # the exact same FastAPI app with every router registered (role gating
+    # in this codebase controls which background loops run, not which HTTP
+    # routes exist — see the ``include_router`` calls below, none of which
+    # are role-conditional), so a gateway-role replica can still serve a
+    # query request in principle (e.g. a future in-process agent tool call,
+    # or an operator hitting its internal port directly). Warming there too
+    # is cheap (one extra ATTACH at boot) and removes that latent
+    # cold-start gap; there is no reason to reserve the warm-up for api
+    # only. The worker role deliberately does NOT warm the writer here —
+    # ``get_ducklake_write()`` opens lazily on the worker's first rebuild
+    # (``src.orchestrator``) or ``ducklake-maintenance`` job run
+    # (``app/worker/kinds.py``), matching the existing lazy-open contract
+    # for both DuckLake singletons.
+    #
+    # Fail-soft: a warm-up hiccup (e.g. the catalog is briefly unreachable)
+    # must never block startup — the same reader opens lazily, exactly as
+    # today, on the first real request that needs it.
+    if role_enabled(Role.API) or role_enabled(Role.GATEWAY):
+        # Registered UNCONDITIONALLY, before the warm-up attempt below —
+        # see _register_ducklake_readyz_check's docstring for why this
+        # must not live inside the warm-up's own try/except (finding 4:
+        # a catalog unreachable at boot must still surface via periodic
+        # /readyz polls, the m-tier smoke harness
+        # (scripts/dev/mtier-smoke.sh) asserts on this). Its own
+        # analytics_backend() resolution is wrapped here too, so a
+        # config-resolution error can't block startup either.
+        try:
+            _register_ducklake_readyz_check()
+        except Exception:
+            logger.exception("ducklake readyz-check registration failed at startup (non-fatal)")
+
+        try:
+            from src.analytics_backend import analytics_backend
+
+            if analytics_backend() == "ducklake":
+                from src.ducklake_session import get_ducklake_read
+
+                get_ducklake_read().close()  # closes the cursor only; the underlying attach stays open
+                logger.info("DuckLake reader session warmed at startup")
+        except Exception:
+            logger.exception(
+                "DuckLake reader warm-up failed at startup (non-fatal; opens lazily on first query, "
+                "surfaced via the /readyz check registered above)"
+            )
 
     # Sweep stale materialize parquet locks left behind by previous runs
     # that were SIGKILL'd mid-materialize. Lazy reclaim at next acquire
@@ -572,8 +851,43 @@ async def lifespan(app):
     except Exception:
         logger.exception("internal data-source seed failed; continuing")
 
+    # Subscribe this process to the coordination backend's cache-invalidate
+    # channel (wave 2C) — v2 catalog/schema/sample TTL caches are process-
+    # local, so a registry mutation handled by ONE api-serving replica must
+    # tell every other replica to drop its own copies. Unconditional (not
+    # role-gated): the /api/v2/* routers that own these caches are mounted
+    # in every role combination, not just Role.API. Memory backend: this is
+    # a same-process, in-memory subscriber list — harmless, and behaves
+    # exactly like today's single-process-only invalidation. FLUSHALL story:
+    # not applicable to pub/sub (nothing to lose but in-flight messages);
+    # a message dropped mid-flight just means a stale cache serves until its
+    # own TTL expires, same as if this feature didn't exist.
+    try:
+        from app.coordination.factory import coordination
+
+        app.state.cache_invalidate_unsubscribe = coordination().subscribe("cache-invalidate", _on_cache_invalidate)
+    except Exception:
+        logger.exception("cache-invalidate subscribe failed (non-fatal)")
+        app.state.cache_invalidate_unsubscribe = None
+
+    # Subscribe this process to the coordination backend's env-overlay-changed
+    # channel (wave 2C task 6) — see app.secrets.persist_overlay_token and
+    # _on_env_overlay_changed above. Unconditional/non-role-gated for the same
+    # reason as cache-invalidate above: every role combination (api/worker/
+    # gateway/all) reads these env vars (ANTHROPIC_API_KEY, marketplace PATs,
+    # ...) somewhere. Harmless when the vault isn't configured (keyless
+    # S-tier) — this channel is simply never published to in that mode.
+    try:
+        from app.coordination.factory import coordination
+
+        app.state.env_overlay_unsubscribe = coordination().subscribe("env-overlay-changed", _on_env_overlay_changed)
+    except Exception:
+        logger.exception("env-overlay-changed subscribe failed (non-fatal)")
+        app.state.env_overlay_unsubscribe = None
+
     # Baked-data images (no scheduler) need master views built at boot.
-    _maybe_rebuild_on_boot()
+    if role_enabled(Role.WORKER):
+        _maybe_rebuild_on_boot()
 
     # Rebuild the FTS BM25 index over knowledge_items at boot (issue #121).
     # The migration to schema v47 already does this on first upgrade, but
@@ -626,148 +940,151 @@ async def lifespan(app):
 
         ensure_pg_at_head()
 
-    # Seed default source connections from env/yaml on first boot
-    # (spec 2026-06-12 §3.4). MUST run after ensure_pg_at_head(): on a
-    # Postgres backend the source_connections table is created by Alembic
-    # 0026, which ensure_pg_at_head() applies — seeding earlier hits a
-    # missing table, gets swallowed by the try/except, and silently no-ops
-    # until the next restart (Devin Review on #671). DuckDB is unaffected
-    # (get_system_db lazily runs _ensure_schema). One-time; registry rules after.
-    try:
-        from app.connections_seed import seed_default_connections
+    from src.db_pg import seed_lease
 
-        seed_default_connections()
-    except Exception:
-        logger.exception("source-connection seed failed; continuing")
-
-    # Seed the Admin/Everyone system groups into the ACTIVE state backend.
-    # On DuckDB this duplicates src.db._seed_system_groups (idempotent), but
-    # that runs ONLY on a DuckDB connect — nothing seeds these groups on a
-    # Postgres instance, so without this a fresh PG deploy has no Admin group
-    # (require_admin can never pass) and no Everyone group (Everyone-scoped
-    # grants like Required onboarding never surface). ensure_system is
-    # idempotent and routes through the factory, so it is correct on either
-    # backend.
-    try:
-        from src.db import _SYSTEM_GROUPS_SEED
-
-        _ug_repo = user_groups_repo()
-        for _grp_name, _grp_desc in _SYSTEM_GROUPS_SEED:
-            _ug_repo.ensure_system(_grp_name, _grp_desc)
-    except Exception as e:
-        logger.warning("Could not seed system groups: %s", e)
-
-    # Seed the six canonical memory domains into the ACTIVE state backend.
-    # On DuckDB the schema ladder already seeds them (fresh-install branch /
-    # _v51_to_v52), so ensure_seed no-ops; on Postgres nothing else does —
-    # Alembic creates the table empty. ensure_seed never touches an existing
-    # row (a soft-deleted row still holds its slug), so admin renames and
-    # deletions are not overwritten or resurrected on reboot.
-    try:
-        from src.db import _CANONICAL_MEMORY_DOMAINS_SEED
-
-        _md_repo = memory_domains_repo()
-        for _md_id, _md_slug, _md_name, _md_icon, _md_color in _CANONICAL_MEMORY_DOMAINS_SEED:
-            _md_repo.ensure_seed(
-                domain_id=_md_id,
-                slug=_md_slug,
-                name=_md_name,
-                icon=_md_icon,
-                color=_md_color,
-            )
-    except Exception as e:
-        logger.warning("Could not seed canonical memory domains: %s", e)
-
-    # Seed (or re-bake) the built-in marketplace from the wheel bundle. Runs
-    # after system-groups are ensured so the RBAC seed can look up Admin/Everyone.
-    # Non-fatal: a missing bundle dir only means the plugin cache is empty.
-    try:
-        from src.marketplace import seed_builtin_marketplace
-
-        seed_builtin_marketplace()
-    except Exception as e:
-        logger.warning("Could not seed built-in marketplace: %s", e)
-
-    # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
-    # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
-    # without going through bootstrap; never overwritten if already set.
-    # The Admin/Everyone user_groups were ensured just above (factory →
-    # active backend), so this hook only has to handle membership for the
-    # seed admin — looking the groups up through the factory too, so it gets
-    # the active backend's group ids (a raw DuckDB read returned a DuckDB-only
-    # group id that does not exist on a Postgres instance).
-    # Lives in lifespan (worker-only), NOT create_app(): the latter runs
-    # in the uvicorn --reload master too, and duckdb >=1.5 holds an
-    # exclusive per-process file lock on system.duckdb that would then
-    # block the worker.
-    from app.auth.dependencies import is_local_dev_mode, get_local_dev_email
-
-    seed_email = os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None)
-    if seed_email:
+    with seed_lease():
+        # Seed default source connections from env/yaml on first boot
+        # (spec 2026-06-12 §3.4). MUST run after ensure_pg_at_head(): on a
+        # Postgres backend the source_connections table is created by Alembic
+        # 0026, which ensure_pg_at_head() applies — seeding earlier hits a
+        # missing table, gets swallowed by the try/except, and silently no-ops
+        # until the next restart (Devin Review on #671). DuckDB is unaffected
+        # (get_system_db lazily runs _ensure_schema). One-time; registry rules after.
         try:
-            from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
+            from app.connections_seed import seed_default_connections
 
-            repo = users_repo()
-            groups_repo = user_groups_repo()
-            members_repo = user_group_members_repo()
-            seed_password = os.environ.get("SEED_ADMIN_PASSWORD") or None
-            password_hash = None
-            if seed_password:
-                from argon2 import PasswordHasher
+            seed_default_connections()
+        except Exception:
+            logger.exception("source-connection seed failed; continuing")
 
-                password_hash = PasswordHasher().hash(seed_password)
-            existing = repo.get_by_email(seed_email)
-            if not existing:
-                import uuid
+        # Seed the Admin/Everyone system groups into the ACTIVE state backend.
+        # On DuckDB this duplicates src.db._seed_system_groups (idempotent), but
+        # that runs ONLY on a DuckDB connect — nothing seeds these groups on a
+        # Postgres instance, so without this a fresh PG deploy has no Admin group
+        # (require_admin can never pass) and no Everyone group (Everyone-scoped
+        # grants like Required onboarding never surface). ensure_system is
+        # idempotent and routes through the factory, so it is correct on either
+        # backend.
+        try:
+            from src.db import _SYSTEM_GROUPS_SEED
 
-                user_id = str(uuid.uuid4())
-                repo.create(
-                    id=user_id,
-                    email=seed_email,
-                    name="Admin",
-                    password_hash=password_hash,
-                    # A seeded password is communicated in plaintext (emailed by
-                    # the cloud control-plane, or shared by an operator), so force
-                    # a change on first sign-in. SSO-only seed admins (no
-                    # password) have nothing to rotate and stay unflagged.
-                    must_change_password=bool(password_hash),
-                )
-                logger.info("Seeded admin user: %s (password=%s)", seed_email, "yes" if password_hash else "no")
-            else:
-                user_id = existing["id"]
-                if password_hash and not existing.get("password_hash"):
-                    # Only fires for a still-password-less seed admin, so a user
-                    # who already rotated (has a hash) is never re-flagged on a
-                    # restart. The seeded password must still be changed.
-                    repo.update(id=user_id, password_hash=password_hash, must_change_password=True)
-                    logger.info("Set password on existing seed admin: %s", seed_email)
-            # Make sure the seed admin is actually in the Admin group — this
-            # is what gives them admin access in v12. Idempotent. Look the
-            # group up through the factory so we get the ACTIVE backend's id
-            # (raw DuckDB read returned a DuckDB group id absent from Postgres).
-            admin_group = groups_repo.get_by_name(SYSTEM_ADMIN_GROUP)
-            if admin_group:
-                members_repo.add_member(
-                    user_id=user_id,
-                    group_id=admin_group["id"],
-                    source="system_seed",
-                    added_by="app.main:seed_admin",
-                )
-            # Also seed Everyone membership — Everyone-scoped grants are the
-            # canonical "every-user-sees-this" pattern (Required onboarding,
-            # default reference packages). The seed admin not being in
-            # Everyone meant their own Required grants didn't surface on
-            # /catalog as Required for them, which read as a bug.
-            everyone_group = groups_repo.get_by_name(SYSTEM_EVERYONE_GROUP)
-            if everyone_group:
-                members_repo.add_member(
-                    user_id=user_id,
-                    group_id=everyone_group["id"],
-                    source="system_seed",
-                    added_by="app.main:seed_admin",
+            _ug_repo = user_groups_repo()
+            for _grp_name, _grp_desc in _SYSTEM_GROUPS_SEED:
+                _ug_repo.ensure_system(_grp_name, _grp_desc)
+        except Exception as e:
+            logger.warning("Could not seed system groups: %s", e)
+
+        # Seed the six canonical memory domains into the ACTIVE state backend.
+        # On DuckDB the schema ladder already seeds them (fresh-install branch /
+        # _v51_to_v52), so ensure_seed no-ops; on Postgres nothing else does —
+        # Alembic creates the table empty. ensure_seed never touches an existing
+        # row (a soft-deleted row still holds its slug), so admin renames and
+        # deletions are not overwritten or resurrected on reboot.
+        try:
+            from src.db import _CANONICAL_MEMORY_DOMAINS_SEED
+
+            _md_repo = memory_domains_repo()
+            for _md_id, _md_slug, _md_name, _md_icon, _md_color in _CANONICAL_MEMORY_DOMAINS_SEED:
+                _md_repo.ensure_seed(
+                    domain_id=_md_id,
+                    slug=_md_slug,
+                    name=_md_name,
+                    icon=_md_icon,
+                    color=_md_color,
                 )
         except Exception as e:
-            logger.warning(f"Could not seed admin: {e}")
+            logger.warning("Could not seed canonical memory domains: %s", e)
+
+        # Seed (or re-bake) the built-in marketplace from the wheel bundle. Runs
+        # after system-groups are ensured so the RBAC seed can look up Admin/Everyone.
+        # Non-fatal: a missing bundle dir only means the plugin cache is empty.
+        try:
+            from src.marketplace import seed_builtin_marketplace
+
+            seed_builtin_marketplace()
+        except Exception as e:
+            logger.warning("Could not seed built-in marketplace: %s", e)
+
+        # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
+        # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
+        # without going through bootstrap; never overwritten if already set.
+        # The Admin/Everyone user_groups were ensured just above (factory →
+        # active backend), so this hook only has to handle membership for the
+        # seed admin — looking the groups up through the factory too, so it gets
+        # the active backend's group ids (a raw DuckDB read returned a DuckDB-only
+        # group id that does not exist on a Postgres instance).
+        # Lives in lifespan (worker-only), NOT create_app(): the latter runs
+        # in the uvicorn --reload master too, and duckdb >=1.5 holds an
+        # exclusive per-process file lock on system.duckdb that would then
+        # block the worker.
+        from app.auth.dependencies import is_local_dev_mode, get_local_dev_email
+
+        seed_email = os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None)
+        if seed_email:
+            try:
+                from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
+
+                repo = users_repo()
+                groups_repo = user_groups_repo()
+                members_repo = user_group_members_repo()
+                seed_password = os.environ.get("SEED_ADMIN_PASSWORD") or None
+                password_hash = None
+                if seed_password:
+                    from argon2 import PasswordHasher
+
+                    password_hash = PasswordHasher().hash(seed_password)
+                existing = repo.get_by_email(seed_email)
+                if not existing:
+                    import uuid
+
+                    user_id = str(uuid.uuid4())
+                    repo.create(
+                        id=user_id,
+                        email=seed_email,
+                        name="Admin",
+                        password_hash=password_hash,
+                        # A seeded password is communicated in plaintext (emailed by
+                        # the cloud control-plane, or shared by an operator), so force
+                        # a change on first sign-in. SSO-only seed admins (no
+                        # password) have nothing to rotate and stay unflagged.
+                        must_change_password=bool(password_hash),
+                    )
+                    logger.info("Seeded admin user: %s (password=%s)", seed_email, "yes" if password_hash else "no")
+                else:
+                    user_id = existing["id"]
+                    if password_hash and not existing.get("password_hash"):
+                        # Only fires for a still-password-less seed admin, so a user
+                        # who already rotated (has a hash) is never re-flagged on a
+                        # restart. The seeded password must still be changed.
+                        repo.update(id=user_id, password_hash=password_hash, must_change_password=True)
+                        logger.info("Set password on existing seed admin: %s", seed_email)
+                # Make sure the seed admin is actually in the Admin group — this
+                # is what gives them admin access in v12. Idempotent. Look the
+                # group up through the factory so we get the ACTIVE backend's id
+                # (raw DuckDB read returned a DuckDB group id absent from Postgres).
+                admin_group = groups_repo.get_by_name(SYSTEM_ADMIN_GROUP)
+                if admin_group:
+                    members_repo.add_member(
+                        user_id=user_id,
+                        group_id=admin_group["id"],
+                        source="system_seed",
+                        added_by="app.main:seed_admin",
+                    )
+                # Also seed Everyone membership — Everyone-scoped grants are the
+                # canonical "every-user-sees-this" pattern (Required onboarding,
+                # default reference packages). The seed admin not being in
+                # Everyone meant their own Required grants didn't surface on
+                # /catalog as Required for them, which read as a bug.
+                everyone_group = groups_repo.get_by_name(SYSTEM_EVERYONE_GROUP)
+                if everyone_group:
+                    members_repo.add_member(
+                        user_id=user_id,
+                        group_id=everyone_group["id"],
+                        source="system_seed",
+                        added_by="app.main:seed_admin",
+                    )
+            except Exception as e:
+                logger.warning(f"Could not seed admin: {e}")
 
     # Seed the synthetic scheduler user when SCHEDULER_API_TOKEN is configured,
     # so the very first cron tick after a fresh deploy already has a valid
@@ -933,7 +1250,10 @@ async def lifespan(app):
                 return b""
 
         if app.state.chat_config.enabled:
-            if app.state.chat_config.provider != "e2b":
+            if not role_enabled(Role.GATEWAY):
+                logger.info("chat: disabled in this process (role split; gateway role owns chat)")
+                app.state.chat_manager = None
+            elif app.state.chat_config.provider != "e2b":
                 logger.error(
                     "chat.provider=%r is not supported — only 'e2b' is "
                     "accepted in production (per Q7 owner decision, "
@@ -942,10 +1262,22 @@ async def lifespan(app):
                     app.state.chat_config.provider,
                 )
                 app.state.chat_manager = None
-            elif int(os.environ.get("UVICORN_WORKERS", "1")) > 1:
+            elif int(os.environ.get("UVICORN_WORKERS", "1")) > 1 and _chat_coordination_backend() != "redis":
+                # Multi-worker/multi-replica chat needs its state (tickets,
+                # session-routing leases + takeover, frame replay, inbound
+                # command streams, notifications) shared across processes —
+                # only the redis coordination backend provides that (and
+                # app.startup_guards.validate_deployment already refuses to
+                # boot that combo without Postgres app-state + explicit
+                # secrets, so reaching here with backend=="redis" means the
+                # rest of the multi-process contract is already satisfied).
+                # The default ``memory`` backend keeps process-local state,
+                # so a second worker would silently miss tickets/leases
+                # owned by its sibling — same unsafe posture as before.
                 logger.error(
-                    "chat.enabled=true but UVICORN_WORKERS > 1 — "
-                    "cloud chat requires a single-worker deployment; "
+                    "chat.enabled=true but UVICORN_WORKERS > 1 and "
+                    "coordination.backend != 'redis' — multi-worker/replica "
+                    "cloud chat requires the redis coordination backend; "
                     "chat_manager disabled"
                 )
                 app.state.chat_manager = None
@@ -1044,12 +1376,21 @@ async def lifespan(app):
                 )
                 mgr.start_idle_reaper()
                 app.state.chat_manager = mgr
+                from app.roles import is_all_in_one as _chat_is_all_in_one
+
+                _chat_topology = (
+                    "single-process"
+                    if int(os.environ.get("UVICORN_WORKERS", "1")) <= 1 and _chat_is_all_in_one()
+                    else "multi-worker/replica (coordination.backend=redis)"
+                )
                 logger.info(
                     "chat.enabled: ChatManager started (provider=e2b, "
-                    "template=%s, idle_ttl=%ds, concurrency_per_user=%d)",
+                    "template=%s, idle_ttl=%ds, concurrency_per_user=%d, "
+                    "topology=%s)",
                     app.state.chat_config.e2b_template_id,
                     app.state.chat_config.idle_ttl_seconds,
                     app.state.chat_config.concurrency_per_user,
+                    _chat_topology,
                 )
         else:
             app.state.chat_manager = None
@@ -1106,6 +1447,44 @@ async def lifespan(app):
     else:
         logger.info("Periodic state-DB CHECKPOINT disabled (AGNES_STATE_CHECKPOINT_INTERVAL_S=0)")
 
+    # Background write-canary for /readyz — see app.api.health_probes. Same
+    # placement/lifecycle as the checkpoint task above: started here (in the
+    # uvicorn worker process), not create_app() (the --reload master must not
+    # touch the DB). "Worker" means the uvicorn worker process, not
+    # `Role.WORKER` — this task is intentionally NOT role-gated. Every
+    # replica (api/gateway/worker) serves /readyz and must self-report its
+    # own write-path health, so the canary runs on all of them.
+    from app.api.health_probes import canary_loop
+
+    _canary_task = asyncio.create_task(canary_loop(), name="readiness-canary")
+
+    # Worker runtime loop (wave-2B job queue, spec §3.3) — claims and runs
+    # jobs off the `jobs` table (src/repositories/jobs.py) via heavy/light
+    # lanes (app/worker/runtime.py). Role-gated like the seeds/rebuild-on-boot
+    # blocks above, NOT unconditional like the canary above: only a process
+    # serving Role.WORKER should poll for and execute work. `all` mode (the
+    # default, single-container topology) always includes Role.WORKER, so
+    # this is by design still running there — enqueued work keeps executing
+    # in-process within seconds, no new deployment requirement for existing
+    # single-container operators. Same task-create/cancel placement as the
+    # canary task above (started here, in the uvicorn worker process, not
+    # create_app() — the --reload master must not touch the DB).
+    from app.worker.kinds import register_all_kinds
+    from app.worker.runtime import default_worker_id, worker_loop
+
+    # Populate the process-wide JOB_KINDS registry before the loop starts
+    # claiming work — a lane slot that claims a job whose kind isn't yet
+    # registered fails it outright (see `_lane_slot`'s "no registered
+    # handler" branch). Registration itself is cheap (dict population, no
+    # I/O) and idempotent, so it runs unconditionally here, not gated by
+    # `role_enabled(Role.WORKER)` below — a non-worker process importing
+    # this module (e.g. a one-off script) gets a harmless no-op registry.
+    register_all_kinds()
+
+    _worker_task = None
+    if role_enabled(Role.WORKER):
+        _worker_task = asyncio.create_task(worker_loop(worker_id=default_worker_id()), name="worker-loop")
+
     async with streamable_session_manager_lifespan(app):
         yield
     if _checkpoint_task is not None:
@@ -1114,12 +1493,37 @@ async def lifespan(app):
             await _checkpoint_task
         except (asyncio.CancelledError, Exception):
             pass  # shutdown path — close_system_db() below does the final CHECKPOINT
-    _socket_disp = getattr(app.state, "slack_socket_dispatcher", None)
-    if _socket_disp is not None:
+    _canary_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await _canary_task
+    if _worker_task is not None:
+        _worker_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _worker_task
+    # Cancelling the lease task runs run_with_lease's own cancellation path
+    # (stop() the dispatcher if held, then lease_release) — see
+    # app/coordination/leases.py and _start_slack_socket_transport above.
+    _socket_lease_task = getattr(app.state, "slack_socket_lease_task", None)
+    if _socket_lease_task is not None:
+        _socket_lease_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _socket_lease_task
+    # Unsubscribe from the cache-invalidate channel — see the subscribe call
+    # earlier in this function for why it's unconditional/non-role-gated.
+    _cache_invalidate_unsubscribe = getattr(app.state, "cache_invalidate_unsubscribe", None)
+    if _cache_invalidate_unsubscribe is not None:
         try:
-            await _socket_disp.stop()
+            _cache_invalidate_unsubscribe()
         except Exception:
-            logger.exception("Slack Socket Mode shutdown failed")
+            logger.exception("cache-invalidate unsubscribe failed (non-fatal)")
+    # Unsubscribe from the env-overlay-changed channel — see the subscribe
+    # call earlier in this function.
+    _env_overlay_unsubscribe = getattr(app.state, "env_overlay_unsubscribe", None)
+    if _env_overlay_unsubscribe is not None:
+        try:
+            _env_overlay_unsubscribe()
+        except Exception:
+            logger.exception("env-overlay-changed unsubscribe failed (non-fatal)")
     try:
         from src.observability import get_posthog
 
@@ -1136,6 +1540,20 @@ async def lifespan(app):
     # file; the checkpoint loop folds it periodically, and this closes it
     # cleanly on the way out).
     close_operational_db()
+    # DuckLake reader/writer singletons (wave-2G Task 5) — mirrors the
+    # subprocess-handoff path (src.db.close_singleton_connections(), used
+    # before a DB-migrator subprocess spawns) which already closes these;
+    # graceful process shutdown needs the same release so an open catalog
+    # ATTACH (a held libpq connection on a Postgres catalog, or an
+    # exclusive file lock on a DuckDB-file catalog) doesn't linger past
+    # this process's lifetime. Safe to call unconditionally: a no-op when
+    # analytics.backend is legacy or no DuckLake session was ever opened.
+    try:
+        from src.ducklake_session import close_ducklake_sessions
+
+        close_ducklake_sessions()
+    except Exception:
+        logger.exception("close_ducklake_sessions failed during shutdown (non-fatal)")
 
 
 def _is_truthy_env(name: str) -> bool:
@@ -1425,6 +1843,40 @@ def create_app() -> FastAPI:
     # x-request-id header.
     app.add_middleware(RequestIdMiddleware)
 
+    # HTTP request metrics (three-plane wave 2D, task 1) — registered as an
+    # `@app.middleware("http")` function (not add_middleware) so it becomes
+    # the true OUTERMOST layer, even later than RequestIdMiddleware above:
+    # duration then captures the full per-request latency including every
+    # other middleware (gzip, CORS, session, rate limiting, request-id).
+    # Skips METRICS_PATH itself — scraping must never grow the series it's
+    # reading. Uses the FastAPI-matched route TEMPLATE
+    # (request.scope["route"].path), never the raw path, to keep label
+    # cardinality bounded; falls back to UNMATCHED_PATH when no route
+    # matched at all (e.g. a CORS preflight short-circuited before routing
+    # ran). See app/observability/metrics.py.
+    import time as _time
+
+    from app.observability.metrics import METRICS_PATH, UNMATCHED_PATH, observe_http
+
+    @app.middleware("http")
+    async def _observe_http_metrics(request, call_next):
+        if request.url.path == METRICS_PATH:
+            return await call_next(request)
+        start = _time.monotonic()
+        try:
+            response = await call_next(request)
+            duration = _time.monotonic() - start
+            route = request.scope.get("route")
+            path_template = route.path if route is not None else UNMATCHED_PATH
+            observe_http(request.method, path_template, response.status_code, duration)
+            return response
+        except Exception:
+            duration = _time.monotonic() - start
+            route = request.scope.get("route")
+            path_template = route.path if route is not None else UNMATCHED_PATH
+            observe_http(request.method, path_template, 500, duration)
+            raise
+
     # Load .env_overlay (persisted by /api/admin/configure)
     from app.secrets import _state_dir
 
@@ -1445,6 +1897,20 @@ def create_app() -> FastAPI:
                 # ``os.environ[k] = v`` write semantics — set once at the UI,
                 # win consistently across restarts.
                 os.environ[k.strip()] = v.strip()
+
+    # Vault-mode overlay tokens (wave 2C task 6) — loaded AFTER the legacy
+    # file above so a vault row for the same env_name wins on conflict. This
+    # is the vault-mode analogue of the file load: an admin save under
+    # AGNES_VAULT_KEY goes straight to the vault (see
+    # app.secrets.persist_overlay_token), never touching the file, so this
+    # process must also read the vault to see it. No-ops when the vault
+    # isn't configured (keyless/S-tier) or has no env_overlay/* rows yet.
+    try:
+        from app.secrets import reapply_all_overlay_tokens_from_vault
+
+        reapply_all_overlay_tokens_from_vault()
+    except Exception:
+        logger.exception("vault overlay token load failed at boot (non-fatal)")
 
     # Load instance config on startup
     try:
@@ -1568,7 +2034,16 @@ def create_app() -> FastAPI:
     app.include_router(password_auth_router)
     app.include_router(email_auth_router)  # Always register, check availability per-request
     app.include_router(health_router)
+
+    from app.api import health_probes
+
+    app.include_router(health_probes.router)  # /healthz + /readyz, unauthenticated LB probes
+
+    from app.observability.metrics import router as prometheus_metrics_router
+
+    app.include_router(prometheus_metrics_router)  # /metrics, unauthenticated Prometheus scrape endpoint
     app.include_router(sync_router)
+    app.include_router(jobs_router)
     app.include_router(data_router)
     app.include_router(query_router)
     app.include_router(users_router)
@@ -1709,11 +2184,13 @@ def create_app() -> FastAPI:
     app.include_router(admin_adoption_router)
     app.include_router(admin_contributed_skills_router)
     app.include_router(db_state_router)
+    app.include_router(admin_analytics_router)
     app.include_router(marketplace_server_router)
     app.include_router(chat_router)
     app.include_router(chat_copresence_router)
     app.include_router(slack_router)
     app.include_router(admin_chat_router)
+    app.include_router(notifications_ws_router)
     app.include_router(broker_router)
 
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*

@@ -149,7 +149,6 @@ Self-contained services with own `__main__.py`, run via Docker Compose profiles.
 |-----------|------|
 | `services/scheduler/` | Cron-like job runner (data-refresh, health-check, marketplaces) |
 | `services/telegram_bot/` | Telegram notification bot + dispatch (opt-in, `--profile full`) |
-| `services/ws_gateway/` | WebSocket gateway for desktop app |
 | `services/corporate_memory/` | AI knowledge aggregation from analyst sessions |
 | `services/session_collector/` | Claude Code session metadata collector |
 

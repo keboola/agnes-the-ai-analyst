@@ -2,6 +2,19 @@
 
 Native macOS menu bar application for receiving real-time notifications from the data broker server.
 
+> **Server-side note (wave-2F task 6):** the standalone `services/ws_gateway`
+> systemd service / Unix-socket dispatch described below (and the `nginx`
+> `/ws/notifications` proxy config) has been absorbed into the main app
+> process. The WS endpoint now lives at `app/api/notifications_ws.py`
+> (served only by `Role.GATEWAY` processes, same URL path, same JWT
+> handshake/heartbeat/connection-cap the client below expects), and
+> producers publish via `app/notifications.py::publish_notification`
+> instead of POSTing to a Unix socket. The client-facing protocol
+> (auth/ping/pong/notification JSON shapes) is unchanged; the "Server
+> Components" and "Troubleshooting" sections below describing
+> `ws-gateway.service` / `/run/ws-gateway/ws.sock` reflect the older
+> bare-VM deployment and are kept here for historical reference only.
+
 ## Architecture
 
 ```

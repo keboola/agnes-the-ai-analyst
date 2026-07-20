@@ -9,15 +9,25 @@ import pytest
 
 from connectors.keboola.semantic_layer import (
     MasterTokenRequiredError,
+    assign_glossary_id,
+    build_glossary_row,
     build_metric_row,
+    compose_join_sql,
     compose_sql,
     dataset_lookup_by_table_id,
+    extract_foreign_aliases,
     has_embedded_sql_comment,
     merge_constraints,
+    parse_on_clause,
     references_foreign_alias,
+    relationship_lookup_by_dataset,
     require_master_token,
+    resolve_join_aliases,
+    resolve_relationship,
     resolve_table_name,
+    slugify_term,
     table_lookup_from_registry,
+    try_join_composition,
 )
 
 
@@ -387,11 +397,19 @@ class TestBuildMetricRowSkipsEmbeddedComment:
         assert skip_reason == "embedded_sql_comment"
 
 
-from connectors.keboola.semantic_layer import (
-    assign_glossary_id,
-    build_glossary_row,
-    slugify_term,
-)
+def _relationship_item(name, from_id, to_id, on, rel_type="left", model_uuid="model-1"):
+    return {
+        "type": "semantic-relationship",
+        "id": f"id-{name}",
+        "attributes": {
+            "name": name,
+            "from": from_id,
+            "to": to_id,
+            "on": on,
+            "type": rel_type,
+            "modelUUID": model_uuid,
+        },
+    }
 
 
 class TestSlugifyTerm:
@@ -435,6 +453,364 @@ def _glossary_item(term, definition, see_also=None, model_uuid="model-1"):
             "modelUUID": model_uuid,
         },
     }
+
+
+class TestRelationshipLookupByDataset:
+    def test_indexes_by_both_from_and_to(self):
+        rel = _relationship_item("orders_to_customers", "in.c-a.orders", "in.c-a.customers", 'o."customer_id" = c."id"')
+        lookup = relationship_lookup_by_dataset([rel])
+        assert lookup["in.c-a.orders"] == [rel["attributes"]]
+        assert lookup["in.c-a.customers"] == [rel["attributes"]]
+
+    def test_empty_items_yields_empty_lookup(self):
+        assert relationship_lookup_by_dataset([]) == {}
+
+
+class TestResolveRelationship:
+    def test_resolves_when_dataset_is_verified_to_side(self):
+        rel_attrs = _relationship_item("o_to_c", "in.c-a.orders", "in.c-a.customers", 'o."customer_id" = c."id"')[
+            "attributes"
+        ]
+        lookup = {"in.c-a.customers": [rel_attrs], "in.c-a.orders": [rel_attrs]}
+
+        relationship, skip_reason = resolve_relationship("in.c-a.customers", lookup)
+
+        assert skip_reason is None
+        assert relationship == rel_attrs
+
+    def test_skips_when_dataset_is_unverified_from_side(self):
+        rel_attrs = _relationship_item("o_to_c", "in.c-a.orders", "in.c-a.customers", 'o."customer_id" = c."id"')[
+            "attributes"
+        ]
+        lookup = {"in.c-a.customers": [rel_attrs], "in.c-a.orders": [rel_attrs]}
+
+        relationship, skip_reason = resolve_relationship("in.c-a.orders", lookup)
+
+        assert relationship is None
+        assert skip_reason == "unverified_relationship_direction"
+
+    def test_skips_when_no_relationship_touches_dataset(self):
+        relationship, skip_reason = resolve_relationship("in.c-a.unrelated", {})
+        assert relationship is None
+        assert skip_reason == "ambiguous_relationship"
+
+    def test_skips_when_multiple_relationships_touch_dataset(self):
+        rel1 = _relationship_item("r1", "in.c-a.orders", "in.c-a.customers", 'o."x" = c."y"')["attributes"]
+        rel2 = _relationship_item("r2", "in.c-a.payments", "in.c-a.customers", 'p."x" = c."z"')["attributes"]
+        lookup = {"in.c-a.customers": [rel1, rel2]}
+
+        relationship, skip_reason = resolve_relationship("in.c-a.customers", lookup)
+
+        assert relationship is None
+        assert skip_reason == "ambiguous_relationship"
+
+    def test_skips_unsupported_relationship_type(self):
+        rel_attrs = _relationship_item(
+            "o_to_c", "in.c-a.orders", "in.c-a.customers", 'o."x" = c."y"', rel_type="inner"
+        )["attributes"]
+        lookup = {"in.c-a.customers": [rel_attrs]}
+
+        relationship, skip_reason = resolve_relationship("in.c-a.customers", lookup)
+
+        assert relationship is None
+        assert skip_reason == "unsupported_relationship_type"
+
+
+class TestParseOnClause:
+    def test_parses_standard_shape(self):
+        assert parse_on_clause('o."customer_id" = c."id"') == ("o", "customer_id", "c", "id")
+
+    def test_handles_extra_whitespace(self):
+        assert parse_on_clause('o."customer_id"   =   c."id"') == ("o", "customer_id", "c", "id")
+
+    def test_returns_none_for_unrecognized_shape(self):
+        assert parse_on_clause("o.customer_id = c.id") is None
+        assert parse_on_clause("some garbage") is None
+
+
+class TestResolveJoinAliases:
+    def test_resolves_when_only_one_pairing_matches_known_columns(self):
+        # to_columns (the metric's own table) has "id"; from_columns (the
+        # joined table) has "customer_id" — only alias1=o/from, alias2=c/to
+        # is consistent.
+        on = 'o."customer_id" = c."id"'
+        from_columns = {"customer_id", "name", "email"}
+        to_columns = {"id", "order_date", "amount"}
+
+        result = resolve_join_aliases(on, from_columns, to_columns)
+
+        assert result == ("c", "o")  # (to_alias, from_alias)
+
+    def test_resolves_reversed_operand_order(self):
+        on = 'c."id" = o."customer_id"'
+        from_columns = {"customer_id", "name"}
+        to_columns = {"id", "order_date"}
+
+        result = resolve_join_aliases(on, from_columns, to_columns)
+
+        assert result == ("c", "o")
+
+    def test_returns_none_when_both_pairings_match(self):
+        # Both tables happen to have both column names — genuinely ambiguous.
+        on = 'o."x" = c."y"'
+        from_columns = {"x", "y"}
+        to_columns = {"x", "y"}
+
+        assert resolve_join_aliases(on, from_columns, to_columns) is None
+
+    def test_returns_none_when_neither_pairing_matches(self):
+        on = 'o."missing_a" = c."missing_b"'
+        from_columns = {"customer_id"}
+        to_columns = {"id"}
+
+        assert resolve_join_aliases(on, from_columns, to_columns) is None
+
+    def test_returns_none_for_unparseable_on_clause(self):
+        assert resolve_join_aliases("garbage", {"a"}, {"b"}) is None
+
+
+class TestExtractForeignAliases:
+    def test_extracts_single_alias(self):
+        assert extract_foreign_aliases('SUM(o."amount")') == {"o"}
+
+    def test_extracts_multiple_distinct_aliases(self):
+        # Live-verified real case: a metric used two distinct local alias
+        # spellings for what resolved to the SAME single relationship.
+        expr = 'CASE WHEN p."status" = \'x\' THEN SUM(pay."value") ELSE 0 END'
+        assert extract_foreign_aliases(expr) == {"p", "pay"}
+
+    def test_ignores_t_alias(self):
+        assert extract_foreign_aliases('SUM(t."amount")') == set()
+
+    def test_ignores_dotted_string_literal(self):
+        assert extract_foreign_aliases("COUNT(CASE WHEN \"status\" = 'in.progress' THEN 1 END)") == set()
+
+
+class TestComposeJoinSql:
+    def test_composes_left_join_with_rewritten_aliases(self):
+        expr = 'ROUND(SUM(TRY_CAST(o."amount" AS DECIMAL(18,2))), 2)'
+        sql = compose_join_sql(
+            expr,
+            "crm_activities",
+            "crm_opportunities",
+            'o."opportunity_id" = a."id"',
+            "a",
+            "o",
+        )
+        assert sql == (
+            'SELECT ROUND(SUM(TRY_CAST(j."amount" AS DECIMAL(18,2))), 2) '
+            'FROM "crm_activities" AS t '
+            'LEFT JOIN "crm_opportunities" AS j '
+            'ON j."opportunity_id" = t."id"'
+        )
+
+    def test_rewrites_multiple_distinct_aliases_to_canonical_j(self):
+        expr = 'CASE WHEN p."status" = \'x\' THEN SUM(pay."value") ELSE 0 END'
+        sql = compose_join_sql(
+            expr,
+            "kbc_projects",
+            "kbc_payg_payments",
+            'p."project_id" = k."id"',
+            "k",
+            "p",
+        )
+        assert 'p."status"' not in sql
+        assert 'pay."value"' not in sql
+        # 2 from the rewritten expression (both distinct aliases -> j.) +
+        # 1 from the composed ON clause's own j. reference.
+        assert sql.count('j."') == 3
+
+    def test_does_not_corrupt_alias_qualified_text_inside_a_quoted_literal(self):
+        """Devin Review, PR #944: a string literal containing "<alias>." text
+        (e.g. an enum-like value) must survive untouched — only real
+        alias-qualified column references get rewritten."""
+        expr = "CASE WHEN o.\"status\" = 'o.pending' THEN 1 ELSE 0 END"
+        sql = compose_join_sql(
+            expr,
+            "crm_activities",
+            "crm_opportunities",
+            'o."opportunity_id" = a."id"',
+            "a",
+            "o",
+        )
+        assert "'o.pending'" in sql
+        assert 'j."status"' in sql
+
+    def test_does_not_corrupt_alias_qualified_text_inside_a_quoted_identifier(self):
+        """Devin Review, PR #944: a quoted identifier containing "<alias>."
+        text must survive untouched — only real alias-qualified column
+        references get rewritten."""
+        expr = 'SUM(o."o.legacy_amount")'
+        sql = compose_join_sql(
+            expr,
+            "crm_activities",
+            "crm_opportunities",
+            'o."opportunity_id" = a."id"',
+            "a",
+            "o",
+        )
+        assert '"o.legacy_amount"' in sql
+
+
+class TestTryJoinComposition:
+    def test_composes_join_when_fully_resolvable(self):
+        table_lookup = {
+            ("in.c-a", "activities"): "crm_activities",
+            ("in.c-a", "opportunities"): "crm_opportunities",
+        }
+        relationship_lookup = {
+            "in.c-a.activities": [
+                {
+                    "from": "in.c-a.opportunities",
+                    "to": "in.c-a.activities",
+                    "on": 'o."id" = a."opportunity_id"',
+                    "type": "left",
+                }
+            ],
+        }
+        column_lookup = {
+            "crm_activities": {"opportunity_id", "created_at"},
+            "crm_opportunities": {"id", "amount"},
+        }
+
+        result, skip_reason = try_join_composition(
+            'SUM(o."amount")',
+            "in.c-a.activities",
+            table_lookup,
+            relationship_lookup,
+            column_lookup,
+        )
+
+        assert skip_reason is None
+        assert result["table_name"] == "crm_activities"
+        assert result["tables"] == ["crm_activities", "crm_opportunities"]
+        assert 'FROM "crm_activities" AS t' in result["sql"]
+        assert 'LEFT JOIN "crm_opportunities" AS j' in result["sql"]
+
+    def test_falls_back_when_relationship_unresolvable(self):
+        result, skip_reason = try_join_composition(
+            'SUM(o."amount")',
+            "in.c-a.orphan",
+            {},
+            {},
+            {},
+        )
+        assert result is None
+        assert skip_reason == "ambiguous_relationship"
+
+    def test_falls_back_when_joined_table_not_registered(self):
+        table_lookup = {("in.c-a", "activities"): "crm_activities"}
+        relationship_lookup = {
+            "in.c-a.activities": [
+                {"from": "in.c-a.unregistered", "to": "in.c-a.activities", "on": 'o."x" = a."y"', "type": "left"}
+            ],
+        }
+        result, skip_reason = try_join_composition(
+            'SUM(o."x")',
+            "in.c-a.activities",
+            table_lookup,
+            relationship_lookup,
+            {},
+        )
+        assert result is None
+        assert skip_reason == "foreign_alias_reference"
+
+    def test_falls_back_when_column_metadata_missing(self):
+        table_lookup = {
+            ("in.c-a", "activities"): "crm_activities",
+            ("in.c-a", "opportunities"): "crm_opportunities",
+        }
+        relationship_lookup = {
+            "in.c-a.activities": [
+                {
+                    "from": "in.c-a.opportunities",
+                    "to": "in.c-a.activities",
+                    "on": 'o."id" = a."opportunity_id"',
+                    "type": "left",
+                }
+            ],
+        }
+        result, skip_reason = try_join_composition(
+            'SUM(o."amount")',
+            "in.c-a.activities",
+            table_lookup,
+            relationship_lookup,
+            {},
+        )
+        assert result is None
+        assert skip_reason == "foreign_alias_reference"
+
+
+def _relationship_metric_item(name, sql, dataset, model_uuid="model-1"):
+    return {
+        "type": "semantic-metric",
+        "id": f"id-{name}",
+        "attributes": {"name": name, "sql": sql, "dataset": dataset, "modelUUID": model_uuid},
+    }
+
+
+class TestBuildMetricRowWithRelationships:
+    def test_resolves_join_metric_when_relationship_available(self):
+        table_lookup = {
+            ("in.c-a", "activities"): "crm_activities",
+            ("in.c-a", "opportunities"): "crm_opportunities",
+        }
+        relationship_lookup = {
+            "in.c-a.activities": [
+                {
+                    "from": "in.c-a.opportunities",
+                    "to": "in.c-a.activities",
+                    "on": 'o."id" = a."opportunity_id"',
+                    "type": "left",
+                }
+            ],
+        }
+        column_lookup = {
+            "crm_activities": {"opportunity_id"},
+            "crm_opportunities": {"id", "amount"},
+        }
+        metric = _relationship_metric_item("linked_amount", 'SUM(o."amount")', "in.c-a.activities")
+
+        row, skip_reason = build_metric_row(
+            metric,
+            table_lookup,
+            {},
+            [],
+            "model-1",
+            relationship_lookup=relationship_lookup,
+            column_lookup=column_lookup,
+        )
+
+        assert skip_reason is None
+        assert row["table_name"] == "crm_activities"
+        assert row["tables"] == ["crm_activities", "crm_opportunities"]
+
+    def test_falls_through_to_foreign_alias_reference_without_lookups(self):
+        table_lookup = {("in.c-a", "activities"): "crm_activities"}
+        metric = _relationship_metric_item("linked_amount", 'SUM(o."amount")', "in.c-a.activities")
+
+        row, skip_reason = build_metric_row(metric, table_lookup, {}, [], "model-1")
+
+        assert row is None
+        assert skip_reason == "foreign_alias_reference"
+
+    def test_single_table_metric_unaffected_by_new_params(self):
+        table_lookup = {("in.c-a", "orders"): "crm_orders"}
+        metric = _relationship_metric_item("total", 'SUM("amount")', "in.c-a.orders")
+
+        row, skip_reason = build_metric_row(
+            metric,
+            table_lookup,
+            {},
+            [],
+            "model-1",
+            relationship_lookup={},
+            column_lookup={},
+        )
+
+        assert skip_reason is None
+        assert row["sql"] == 'SELECT SUM("amount") FROM "crm_orders" AS t'
+        assert "tables" not in row
 
 
 class TestBuildGlossaryRow:

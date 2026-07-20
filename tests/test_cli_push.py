@@ -42,10 +42,21 @@ class _FakeResp:
 
 
 def _stub_config(monkeypatch, workspace) -> None:
-    """Wire server/token + the workspace_root anchor to *workspace*."""
+    """Wire server/token + the workspace_root anchor to *workspace*.
+
+    Also stubs the gzip-capability health probe (`api_get`, used by
+    `_server_accepts_gzip()`) to a canned "no gzip" response. `push.py`
+    imports `api_get` into its own module scope (`from cli.client import
+    api_get, ...`), so patching `get_server_url` here does NOT sandbox
+    that probe — without this, `_server_accepts_gzip()` makes a REAL
+    network call to whatever `get_server_url()` resolves to on the
+    machine running the suite. Tests exercising the gzip codepath itself
+    override this via a later `monkeypatch.setattr("cli.commands.push.api_get", ...)`.
+    """
     monkeypatch.setattr("cli.commands.push.get_server_url", lambda: "http://x")
     monkeypatch.setattr("cli.commands.push.get_token", lambda: "test-pat")
     monkeypatch.setattr("cli.commands.push.get_workspace_root", lambda: str(workspace))
+    monkeypatch.setattr("cli.commands.push.api_get", lambda p, **kw: _FakeProbeResp(None))
 
 
 def _stub_sessions(monkeypatch, files) -> None:
@@ -531,6 +542,10 @@ def test_push_real_scan_uses_workspace_root_folder(tmp_path, monkeypatch):
     monkeypatch.setattr("cli.commands.push.get_server_url", lambda: "http://x")
     monkeypatch.setattr("cli.commands.push.get_token", lambda: "test-pat")
     monkeypatch.setattr("cli.commands.push.get_workspace_root", lambda: str(workspace))
+    # Sandbox the gzip-capability probe (see `_stub_config`'s docstring) —
+    # this test hand-rolls its config stubs instead of calling `_stub_config`
+    # so it can leave `list_session_files` real; still needs this patch.
+    monkeypatch.setattr("cli.commands.push.api_get", lambda p, **kw: _FakeProbeResp(None))
     # NOTE: list_session_files is intentionally NOT patched here.
     calls = _record_uploads(monkeypatch)
 
@@ -665,3 +680,34 @@ def test_push_env_killswitch_skips_probe(tmp_path, monkeypatch):
     _path, name, body = [c for c in calls if c[0] == "/api/upload/sessions"][0]
     assert name == "sess-gz-test.jsonl"
     assert body == content
+
+
+def test_gzip_probe_never_builds_a_real_client(tmp_path, monkeypatch):
+    """Regression guard: `_stub_config` must fully sandbox `_server_accepts_gzip()`'s
+    health-check probe. `push.py` calls `api_get` as a bare name resolved from its
+    own module globals (`from cli.client import api_get`), a separate binding from
+    `cli.client.get_client` — patching only `cli.commands.push.get_server_url`
+    does not reach it, so an unpatched probe falls through to a real
+    `cli.client.get_client()` call. Tracks (rather than raising inside)
+    `get_client` so the assertion fires even though `_server_accepts_gzip()`
+    swallows every exception and fails open to False."""
+    import cli.client as client_module
+
+    real_client_calls = {"count": 0}
+
+    def _tracking_get_client(*a, **kw):
+        real_client_calls["count"] += 1
+        raise RuntimeError("blocked: probe must not construct a real httpx client")
+
+    monkeypatch.setattr(client_module, "get_client", _tracking_get_client)
+    _stub_config(monkeypatch, tmp_path)
+
+    from cli.commands.push import _server_accepts_gzip
+
+    _server_accepts_gzip()
+
+    assert real_client_calls["count"] == 0, (
+        "the gzip capability probe bypassed the api_get test stub and tried "
+        "to build a real httpx client — _stub_config no longer sandboxes "
+        "_server_accepts_gzip()"
+    )

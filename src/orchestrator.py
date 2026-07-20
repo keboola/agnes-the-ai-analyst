@@ -27,12 +27,13 @@ re-fetches the metadata token and re-creates the secret each time a read-only
 analytics connection is opened.
 """
 
+import contextlib
 import hashlib
 import logging
 import os
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 import duckdb
 
@@ -48,6 +49,50 @@ from src.orchestrator_security import (
 logger = logging.getLogger(__name__)
 
 _rebuild_lock = threading.Lock()
+
+
+@contextlib.contextmanager
+def rebuild_mutex() -> Iterator[None]:
+    """Combined in-process + cross-process mutual exclusion for the DuckLake
+    write critical section — the exact two locks :meth:`SyncOrchestrator.rebuild`/
+    :meth:`SyncOrchestrator.rebuild_source` take, in the same order (in-process
+    ``_rebuild_lock`` first, then the cross-process ``src.db_pg.rebuild_lease``),
+    exposed as one reusable context manager.
+
+    Why this needs to exist as a shared helper (wave-2G Task 5 review carry-
+    over, finding 1-concurrency): ``ducklake-maintenance``
+    (``app.worker.kinds._run_ducklake_maintenance``) also writes the lake —
+    catalog-wide ``merge_adjacent_files``/``ducklake_expire_snapshots``/
+    ``ducklake_cleanup_old_files`` — via the same ``get_ducklake_write()``
+    singleton a concurrent rebuild uses. ``ducklake-maintenance`` runs in the
+    LIGHT lane, ``data-refresh``/``jira-refresh`` (which call
+    :meth:`rebuild`/:meth:`rebuild_source`) run in the HEAVY lane, and both
+    lanes run in the SAME worker process on independent OS threads
+    (``asyncio.to_thread`` per lane slot — see ``app/worker/runtime.py``), so
+    a long rebuild running past the maintenance job's schedule can race a
+    catalog-wide expire/cleanup pass against an in-progress per-table
+    ``CREATE OR REPLACE TABLE``. Taking the identical lock pair, in the
+    identical order, from both call sites makes them mutually exclusive
+    without risking a lock-order-inversion deadlock (which taking
+    ``_rebuild_lock``/``rebuild_lease()`` in reversed order from a second
+    call site would risk).
+
+    No-op cross-process half on the DuckDB backend (``rebuild_lease()`` is a
+    Postgres advisory lock, itself a no-op there) — the in-process
+    ``_rebuild_lock`` still applies, matching :meth:`rebuild`'s existing
+    behavior.
+    """
+    from src.db_pg import rebuild_lease
+
+    with _rebuild_lock, rebuild_lease():
+        yield
+
+
+# Row count per Arrow RecordBatchReader batch for the DuckLake copy-ingest
+# path (see `_ingest_source_ducklake`). Deliberately small relative to
+# DuckDB's own default (1_000_000) so a single table's ingest never holds
+# more than one batch's worth of rows in Python-process memory at a time.
+_DUCKLAKE_INGEST_BATCH_SIZE = 100_000
 
 
 def _capture_orchestrator_exception(exc: BaseException, **props) -> None:
@@ -116,22 +161,90 @@ class SyncOrchestrator:
     def rebuild(self) -> Dict[str, List[str]]:
         """Scan all extract directories, ATTACH each, create master views.
 
+        Backend dispatch: ``analytics.backend: ducklake`` routes to
+        :meth:`_do_rebuild_ducklake` (copy-ingest into the DuckLake
+        catalog); the default ``legacy`` backend keeps the existing
+        rebuild-and-swap-``server.duckdb`` path (:meth:`_do_rebuild`)
+        completely unchanged.
+
         Returns: {source_name: [table_names]} for logging.
         """
-        with _rebuild_lock:
+        from src.analytics_backend import analytics_backend
+
+        with rebuild_mutex():
             try:
+                if analytics_backend() == "ducklake":
+                    return self._do_rebuild_ducklake()
                 return self._do_rebuild()
             except Exception as exc:
                 _capture_orchestrator_exception(exc, op="rebuild")
                 raise
 
     def rebuild_source(self, source_name: str) -> List[str]:
-        """Rebuild views from a single source (e.g. after Jira webhook)."""
-        with _rebuild_lock:
+        """Rebuild views from a single source (e.g. after Jira webhook).
+
+        Backend dispatch mirrors :meth:`rebuild`. On ``ducklake``, this
+        is the incremental win over the legacy path: only
+        ``source_name``'s own schema is re-ingested — every other
+        source's DuckLake tables/snapshots are left untouched (the
+        legacy path, by contrast, does a full :meth:`_do_rebuild` under
+        the hood because ``server.duckdb`` is rebuilt-and-swapped whole
+        each time).
+        """
+        from src.analytics_backend import analytics_backend
+
+        with rebuild_mutex():
             try:
+                if analytics_backend() == "ducklake":
+                    return self._do_rebuild_ducklake(only_source=source_name).get(source_name, [])
                 return self._do_rebuild_source(source_name)
             except Exception as exc:
                 _capture_orchestrator_exception(exc, op="rebuild_source", source=source_name)
+                raise
+
+    def migrate_to_backend(self, to: str) -> Dict[str, List[str]]:
+        """Full rebuild into an EXPLICITLY named target backend — the
+        engine behind ``agnes admin analytics migrate --to ducklake|legacy``
+        (wave-2G Task 6), as distinct from :meth:`rebuild`, which dispatches
+        on the *currently configured* :func:`src.analytics_backend.analytics_backend`.
+
+        Why a separate entry point instead of temporarily monkeypatching the
+        config and calling :meth:`rebuild`: ``analytics_backend()`` is
+        resolved once and cached for the process lifetime (see that
+        module's docstring) — config is operator-owned and read at boot,
+        not hot-reloaded. The migration flow this method powers is
+        therefore: (1) the admin endpoint validates prerequisites, (2) THIS
+        method populates the target backend from the on-disk extracts tree
+        — the extracts tree is the distribution artifact + rollback truth
+        for both backends, so no re-extract is ever needed for either
+        direction — and (3) the operator flips ``analytics.backend`` in
+        config and restarts every role process to actually switch the live
+        query-serving plane over.
+
+        ``to="ducklake"`` runs the full copy-ingest rebuild
+        (:meth:`_do_rebuild_ducklake`, all sources); ``to="legacy"`` runs
+        the full rebuild-and-swap (:meth:`_do_rebuild`) — the rollback
+        path, since the extracts tree never stopped being legacy's source
+        of truth either. Materialized-SQL tables are NOT re-materialized
+        by this call in either direction — they follow their own
+        scheduler cadence and simply get copied/rebuilt from whatever
+        parquet already sits under their source's ``data/`` directory.
+
+        Takes the same :func:`rebuild_mutex` cross-process/in-process lock
+        pair as :meth:`rebuild`/:meth:`rebuild_source`, so a migration
+        rebuild can never race a concurrent scheduled rebuild or the
+        ``ducklake-maintenance`` job.
+        """
+        if to not in ("ducklake", "legacy"):
+            raise ValueError(f"to must be 'ducklake' or 'legacy', got {to!r}")
+
+        with rebuild_mutex():
+            try:
+                if to == "ducklake":
+                    return self._do_rebuild_ducklake()
+                return self._do_rebuild()
+            except Exception as exc:
+                _capture_orchestrator_exception(exc, op="migrate_to_backend", to=to)
                 raise
 
     def _sync_bq_remote_attach_with_overlay(self, extracts_dir: Path) -> None:
@@ -422,6 +535,476 @@ class SyncOrchestrator:
 
         result = self._do_rebuild()
         return result.get(source_name, [])
+
+    def _do_rebuild_ducklake(self, only_source: Optional[str] = None) -> Dict[str, List[str]]:
+        """DuckLake copy-ingest rebuild — the ``analytics.backend: ducklake``
+        counterpart to :meth:`_do_rebuild` / :meth:`_do_rebuild_source`.
+
+        Unlike the legacy path (fresh temp file + atomic swap of the
+        WHOLE analytics DB), the DuckLake catalog is long-lived and each
+        source's data lives in its own catalog schema
+        (``lake."<source>"``). When ``only_source`` is set, this method
+        touches ONLY that source's schema and its own master views —
+        every other source's DuckLake tables and snapshots are left
+        completely alone. That is the incremental improvement over the
+        legacy full-rebuild-on-webhook path (wave-2G plan, task 3): a
+        Jira webhook no longer has to re-ingest Keboola/BigQuery tables
+        just to refresh one Jira table.
+
+        Runs the exact same pre-pass + view-ownership reconcile/claim
+        machinery as :meth:`_do_rebuild` (BQ ``_remote_attach`` drift
+        sync, ``_scan_meta_pairs`` + ``view_ownership_repo.reconcile``)
+        so cross-connector view-name collision semantics are identical
+        regardless of backend — the reconcile pass only touches
+        system-state bookkeeping (which source owns which view name),
+        never DuckLake data, so running it in full even for a per-source
+        rebuild does not violate the "other sources untouched" property
+        above.
+
+        ``sync_state`` hash/manifest bookkeeping (:meth:`_update_sync_state`)
+        is reused unchanged — it describes the on-disk extracts artifact,
+        not the analytics backend, so it stays identical between legacy
+        and ducklake.
+        """
+        extracts_dir = _get_extracts_dir()
+        if not extracts_dir.exists():
+            logger.warning("Extracts directory %s does not exist", extracts_dir)
+            return {}
+
+        # Same BQ _remote_attach drift pre-pass as the legacy rebuild —
+        # see _sync_bq_remote_attach_with_overlay's docstring (issue #343).
+        try:
+            self._sync_bq_remote_attach_with_overlay(extracts_dir)
+        except Exception as e:
+            logger.warning(
+                "BQ remote_attach drift sync failed: %s — continuing with "
+                "existing extract.duckdb (queries may fail until next "
+                "manual sync if project drifted)",
+                e,
+            )
+
+        # Same view-ownership pre-scan/reconcile as the legacy rebuild
+        # (issue #81 Group C) — reused as-is, same repo, same collision
+        # semantics. See _scan_meta_pairs's docstring for why reconcile
+        # is skipped when the pre-scan is incomplete.
+        from src.repositories import view_ownership_repo
+
+        view_repo = None
+        try:
+            view_repo = view_ownership_repo()
+            current_pairs, pre_scan_clean = self._scan_meta_pairs(extracts_dir)
+            if pre_scan_clean:
+                view_repo.reconcile(current_pairs)
+            else:
+                logger.warning(
+                    "view_ownership: skipping reconcile this rebuild — "
+                    "pre-scan was incomplete; renamed tables will release "
+                    "their names on the next clean rebuild instead"
+                )
+            existing_owners = view_repo.get_all()
+        except Exception as e:
+            logger.warning(
+                "view_ownership pre-scan failed: %s — proceeding without collision detection",
+                e,
+            )
+            existing_owners = {}
+            view_repo = None
+
+        claimed_pairs: List[tuple] = []
+        result: Dict[str, List[str]] = {}
+
+        from src.ducklake_session import get_ducklake_write
+
+        write_conn = get_ducklake_write()
+        try:
+            for ext_dir in sorted(extracts_dir.iterdir()):
+                if not ext_dir.is_dir():
+                    continue
+                if only_source is not None and ext_dir.name != only_source:
+                    continue
+                db_file = ext_dir / "extract.duckdb"
+                if not db_file.exists():
+                    logger.debug("Skipping %s — no extract.duckdb", ext_dir.name)
+                    continue
+                if not _validate_identifier(ext_dir.name, "source_name"):
+                    continue
+
+                tables = self._ingest_source_ducklake(
+                    write_conn,
+                    ext_dir.name,
+                    db_file,
+                    existing_owners=existing_owners,
+                    claimed_pairs=claimed_pairs,
+                    view_repo=view_repo,
+                )
+                if tables:
+                    result[ext_dir.name] = tables
+                    logger.info("DuckLake ingested %s: %d tables", ext_dir.name, len(tables))
+
+            # Remote-mode (query_mode='remote') wrapper views are owned by
+            # the WRITER, created here once per rebuild — NOT on every reader
+            # request. A ``CREATE OR REPLACE VIEW lake.main.<name>`` commits a
+            # new DuckLake catalog snapshot on every call even when the view
+            # body is unchanged (verified vs DuckDB 1.5.2: 5 identical calls →
+            # +5 snapshots); doing it per-request from the api-role reader
+            # would be unbounded catalog write-amplification onto the shared
+            # PG catalog under concurrent load, defeating read/write plane
+            # separation. See _sync_ducklake_remote_views.
+            try:
+                self._sync_ducklake_remote_views(
+                    write_conn,
+                    extracts_dir,
+                    only_source=only_source,
+                    claimed_pairs=claimed_pairs,
+                    view_repo=view_repo,
+                    local_result=result,
+                )
+            except Exception as e:
+                logger.warning("DuckLake remote-view sync failed: %s", e)
+        finally:
+            # get_ducklake_write() hands back a cursor-per-caller (see
+            # src/ducklake_session.py) — .close() only drops this cursor,
+            # never the underlying long-lived writer connection/attach.
+            write_conn.close()
+
+        return result
+
+    def _ingest_source_ducklake(
+        self,
+        write_conn: duckdb.DuckDBPyConnection,
+        source_name: str,
+        db_file: Path,
+        existing_owners: Optional[Dict[str, str]] = None,
+        claimed_pairs: Optional[List[tuple]] = None,
+        view_repo=None,
+    ) -> List[str]:
+        """Copy-ingest one source's LOCAL/MATERIALIZED tables into
+        ``lake."<source_name>"`` and point the matching master views
+        (``lake."main"."<table>"``) at them.
+
+        Mirrors :meth:`_attach_and_create_views`'s ``_meta`` iteration
+        and view-ownership claim semantics exactly, but reads each
+        table via a throwaway READ-ONLY connection opened directly on
+        ``db_file`` (``SELECT * FROM "<table>"`` — the identical
+        expression the legacy master view uses,
+        ``SELECT * FROM {source}."{table}"``) rather than ATTACHing the
+        extract onto the long-lived DuckLake writer connection.
+
+        That choice is deliberate, not cosmetic:
+        :func:`src.ducklake_session.get_ducklake_write` may share its
+        *physical* connection with
+        :func:`src.ducklake_session.get_ducklake_read` when the
+        resolved catalog is a DuckDB-file target (see that module's
+        "same-process file-catalog constraint" docstring), and the
+        reader's own attach loop
+        (:func:`src.ducklake_session._attach_remote_read_sources`, via
+        :func:`src.ducklake_session._ensure_remote_extract_attach`)
+        persistently ATTACHes each *remote-mode* extract source — a
+        source with at least one ``query_mode='remote'`` table_registry
+        row, not every extract source — under its directory-name alias
+        on that shared connection; a second ATTACH of the same alias
+        from here would collide with it for any source that mixes local
+        and remote tables. Reading through a fully independent
+        connection and streaming the result batch-by-batch through an
+        Arrow ``RecordBatchReader`` (DuckDB's replacement scan can
+        reference a local Python variable from either connection's
+        ``execute()`` call) sidesteps that collision regardless of a
+        source's local/remote mix, and is still pure copy-ingest:
+        nothing is ever attached or added as a DuckLake data file
+        directly from the extract's own mutable parquet paths.
+
+        Remote-mode tables (``query_mode='remote'``) are NOT
+        copy-ingested — there is no local parquet backing them, only a
+        view over an externally-ATTACHed extension (BigQuery, Keboola
+        direct-bucket). Their name is still claimed in
+        ``view_ownership`` (so a remote table's name keeps participating
+        in cross-connector collision detection exactly like every other
+        table), but no ``lake`` schema object is created for it and it
+        is not included in this method's returned table list — task 4's
+        reader path resolves remote tables as session views built
+        directly from ``table_registry`` at query time instead, keeping
+        the DuckLake catalog itself free of any BigQuery/foreign-catalog
+        coupling.
+        """
+        if existing_owners is None:
+            existing_owners = {}
+        tables: List[str] = []
+        meta_rows: list = []
+
+        try:
+            ro = _open_duckdb(str(db_file), read_only=True)
+        except Exception as e:
+            logger.error("Failed to open %s for ducklake ingest: %s", db_file, e)
+            return tables
+
+        try:
+            try:
+                meta_rows = ro.execute("SELECT table_name, rows, size_bytes, query_mode FROM _meta").fetchall()
+            except Exception as e:
+                logger.error("Failed to read _meta for %s: %s", source_name, e)
+                return tables
+
+            schema_created = False
+
+            for table_name, rows, size_bytes, query_mode in meta_rows:
+                if not _validate_identifier(table_name, "table_name"):
+                    continue
+
+                if query_mode == "remote":
+                    # Remote-mode tables have no local parquet — their
+                    # "inner object" is the view over an externally-ATTACHed
+                    # extension (BigQuery, Keboola direct-bucket), which we
+                    # don't attempt to read here at all. There is nothing to
+                    # probe for readability, so they claim their name
+                    # unconditionally, same as the legacy path's Group C
+                    # first-come-first-served claim.
+                    if view_repo is not None:
+                        if not view_repo.claim(table_name, source_name):
+                            prior_owner = view_repo.get_owner(table_name) or existing_owners.get(
+                                table_name, "<unknown>"
+                            )
+                            logger.error(
+                                "view_ownership collision: %s already owns view %r; "
+                                "%s.%s will NOT be exposed. Rename `name` in the "
+                                "table_registry on one side to resolve.",
+                                prior_owner,
+                                table_name,
+                                source_name,
+                                table_name,
+                            )
+                            continue
+                        if claimed_pairs is not None:
+                            claimed_pairs.append((source_name, table_name))
+
+                    logger.info(
+                        "DuckLake ingest: %s.%s is query_mode='remote' — "
+                        "skipping copy-ingest (no local parquet); the reader "
+                        "resolves it from table_registry at query time",
+                        source_name,
+                        table_name,
+                    )
+                    continue
+
+                # Determine whether this table has a readable inner object
+                # BEFORE claiming ownership of its name — mirrors legacy's
+                # `if table_name not in inner_objects: continue`, which runs
+                # before its own `view_repo.claim()` call. A `_meta` row
+                # without a backing object (e.g. keboola
+                # use_extension=False) must never claim the name: doing so
+                # would let it win a collision against a DIFFERENT source's
+                # real table of the same name and block that source's
+                # legitimate row from ever being exposed — a divergence
+                # from legacy semantics caught in review.
+                try:
+                    # arrow_batches looks unused to static analysis, but
+                    # DuckDB's replacement scan resolves the bare
+                    # `arrow_batches` name in the `write_conn.execute(...)`
+                    # FROM-clause below against this calling frame's locals —
+                    # it IS the data transfer from the read-only extract
+                    # connection to the DuckLake writer connection. See this
+                    # method's docstring.
+                    #
+                    # `.to_arrow_reader(batch_size=...)` returns a
+                    # `pyarrow.RecordBatchReader`: `write_conn` pulls it
+                    # batch-by-batch (``_DUCKLAKE_INGEST_BATCH_SIZE`` rows at
+                    # a time) as it executes the CTAS below, so at most one
+                    # batch is ever materialized in Python-process memory at
+                    # once. This is deliberate and load-bearing — the whole
+                    # point of this data plane is to keep a runaway ingest
+                    # from OOM-killing the process (see
+                    # docs/superpowers/specs/2026-07-16-three-plane-scalable-architecture.md).
+                    # Do NOT change this to `.to_arrow_table()`, `.fetchall()`,
+                    # or any other form that materializes the full result
+                    # before handing it to `write_conn` — those buffer the
+                    # entire table in memory and will OOM on large analytics
+                    # tables. `tests/test_orchestrator_ducklake.py`'s
+                    # bounded-memory test exists specifically to catch that
+                    # regression.
+                    arrow_batches = ro.sql(f'SELECT * FROM "{table_name}"').to_arrow_reader(  # noqa: F841
+                        batch_size=_DUCKLAKE_INGEST_BATCH_SIZE
+                    )
+                except Exception as e:
+                    # Mirrors the legacy "_meta row without inner object"
+                    # skip (e.g. keboola use_extension=False path) —
+                    # reactive here (try/except) rather than a
+                    # precomputed inner-objects set, since we're not
+                    # holding an ATTACH to introspect information_schema
+                    # against. Deliberately does NOT claim the name (see
+                    # comment above the try block).
+                    logger.info(
+                        "Skipping ducklake ingest for %s.%s — no inner object (%s)",
+                        source_name,
+                        table_name,
+                        e,
+                    )
+                    continue
+
+                # Issue #81 Group C — same first-come-first-served claim as
+                # the legacy path. Only reached once we've confirmed above
+                # that this table actually has data to ingest.
+                if view_repo is not None:
+                    if not view_repo.claim(table_name, source_name):
+                        prior_owner = view_repo.get_owner(table_name) or existing_owners.get(table_name, "<unknown>")
+                        logger.error(
+                            "view_ownership collision: %s already owns view %r; "
+                            "%s.%s will NOT be exposed. Rename `name` in the "
+                            "table_registry on one side to resolve.",
+                            prior_owner,
+                            table_name,
+                            source_name,
+                            table_name,
+                        )
+                        continue
+                    if claimed_pairs is not None:
+                        claimed_pairs.append((source_name, table_name))
+
+                try:
+                    if not schema_created:
+                        write_conn.execute(f'CREATE SCHEMA IF NOT EXISTS lake."{source_name}"')
+                        schema_created = True
+                    write_conn.execute(
+                        f'CREATE OR REPLACE TABLE lake."{source_name}"."{table_name}" AS SELECT * FROM arrow_batches'
+                    )
+                    write_conn.execute(
+                        f'CREATE OR REPLACE VIEW lake."main"."{table_name}" AS '
+                        f'SELECT * FROM lake."{source_name}"."{table_name}"'
+                    )
+                    tables.append(table_name)
+                except Exception as e:
+                    logger.error(
+                        "DuckLake copy-ingest failed for %s.%s: %s",
+                        source_name,
+                        table_name,
+                        e,
+                    )
+        finally:
+            try:
+                ro.close()
+            except Exception:
+                pass
+
+        # sync_state describes the extracts artifact, not the analytics
+        # backend — same call, same contract, as the legacy rebuild path.
+        self._update_sync_state(meta_rows, source_name)
+        return tables
+
+    def _sync_ducklake_remote_views(
+        self,
+        write_conn: duckdb.DuckDBPyConnection,
+        extracts_dir: Path,
+        *,
+        only_source: Optional[str],
+        claimed_pairs: Optional[List[tuple]],
+        view_repo=None,
+        local_result: Optional[Dict[str, List[str]]] = None,
+    ) -> None:
+        """Create the ``lake."main"."<name>"`` wrapper view for every
+        ``query_mode='remote'`` table_registry row, and reconcile away
+        stale wrapper views for de-registered/renamed remote (and, on a
+        full rebuild, local) tables.
+
+        This is the WRITER-side owner of remote wrapper views. The reader
+        path used to (re)create these on every request, which committed a
+        fresh DuckLake catalog snapshot per call regardless of whether the
+        view changed — unbounded write-amplification onto the shared
+        catalog from the read plane. Creating them here is bounded (once
+        per rebuild).
+
+        Each wrapper points at the extract source's own already-correct
+        inner object (``"<source>"."<name>"`` — exactly what the legacy
+        master view references and what the reader wrapper used to
+        reference), so all BigQuery/Keboola addressing (bq_fqn overrides,
+        BASE TABLE vs VIEW ``bigquery_query()`` wrapping) stays owned by
+        the extractor. DuckLake views are NOT late-bound (verified vs
+        DuckDB 1.5.2 — ``CREATE VIEW`` referencing an unattached alias
+        raises a Catalog Error), so the remote extract sources and their
+        external extensions (BigQuery, etc.) are ATTACHed here first,
+        reusing the same helpers the reader uses.
+
+        Ownership: a remote row's name is claimed in
+        :meth:`_ingest_source_ducklake` (first-come-first-served, issue #81
+        Group C). Only the (source, name) pairs that WON their claim this
+        rebuild (``claimed_pairs``) get a wrapper view, so a name that lost
+        a cross-connector collision is not silently exposed by the losing
+        source.
+        """
+        from src.db import _reattach_remote_extensions
+        from src.ducklake_session import _ensure_remote_extract_attach, _remote_registry_rows_by_source
+
+        remote_by_source = _remote_registry_rows_by_source()
+
+        # Attach remote extract sources + external extensions so the view
+        # bodies bind at CREATE time (views are not late-bound). Both
+        # helpers are idempotent (skip already-attached) and only touch
+        # sources with a remote-mode table_registry row — never a
+        # live-in-place connector like Jira.
+        _ensure_remote_extract_attach(write_conn, remote_by_source)
+        _reattach_remote_extensions(write_conn, extracts_dir)
+
+        owned = set(claimed_pairs or [])
+        created_remote_names: set[str] = set()
+        for source_name, rows in remote_by_source.items():
+            if only_source is not None and source_name != only_source:
+                continue
+            if not _validate_identifier(source_name, "source_name"):
+                continue
+            for row in rows:
+                name = row.get("name") or ""
+                if not _validate_identifier(name, "table_name"):
+                    continue
+                # Respect the view-ownership claim made during ingest — only
+                # the winner exposes the name. When view_repo is unavailable
+                # (reconcile skipped), fall back to best-effort create.
+                if view_repo is not None and (source_name, name) not in owned:
+                    continue
+                try:
+                    write_conn.execute(
+                        f'CREATE OR REPLACE VIEW lake."main"."{name}" AS SELECT * FROM {source_name}."{name}"'
+                    )
+                    created_remote_names.add(name)
+                except Exception as e:
+                    logger.warning(
+                        "DuckLake remote view create failed for %s.%s: %s",
+                        source_name,
+                        name,
+                        e,
+                    )
+
+        # Reconcile: drop stale lake.main wrapper views whose backing
+        # table_registry row is gone or renamed. Only on a FULL rebuild —
+        # a per-source rebuild must leave every other source's views alone.
+        if only_source is None:
+            expected: set[str] = set(created_remote_names)
+            for tbls in (local_result or {}).values():
+                expected.update(tbls)
+            self._drop_stale_ducklake_main_views(write_conn, expected)
+
+    def _drop_stale_ducklake_main_views(self, write_conn: duckdb.DuckDBPyConnection, expected_names: set) -> None:
+        """Drop any ``lake.main`` VIEW whose name is not in *expected_names*.
+
+        The long-lived DuckLake catalog (unlike the legacy fresh-temp-file
+        rebuild) accumulates wrapper views forever unless something removes
+        them, so a table de-registered or renamed in table_registry leaves
+        a dangling ``lake.main`` view resolving stale/erroring data. This
+        reconcile — run only on a full rebuild — collects the expected set
+        (all local master-view names + all remote wrapper names created
+        this pass) and drops the rest.
+        """
+        try:
+            rows = write_conn.execute(
+                "SELECT table_name FROM information_schema.views WHERE table_catalog='lake' AND table_schema='main'"
+            ).fetchall()
+        except Exception as e:
+            logger.debug("DuckLake reconcile: could not list lake.main views: %s", e)
+            return
+        for (view_name,) in rows:
+            if view_name in expected_names or not _validate_identifier(view_name, "table_name"):
+                continue
+            try:
+                write_conn.execute(f'DROP VIEW IF EXISTS lake."main"."{view_name}"')
+                logger.info("DuckLake reconcile: dropped stale lake.main view %s", view_name)
+            except Exception as e:
+                logger.warning("DuckLake reconcile: could not drop stale lake.main view %s: %s", view_name, e)
 
     def _attach_and_create_views(
         self,
