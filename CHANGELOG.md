@@ -52,6 +52,114 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the row wraps on narrow viewports.
 ### Added
 
+- **Process roles for multi-process deployments** (wave-1, WS A):
+  `AGNES_ROLE=api|gateway|worker|all` (or `instance.yaml::deployment.role`;
+  default `all` — unchanged single-process behavior) with startup guards
+  (`app/startup_guards.py`) that refuse any multi-process topology (role
+  split, or `UVICORN_WORKERS>1`) unless Postgres app-state, explicit
+  `JWT_SECRET_KEY`/`SESSION_SECRET`, and `coordination.backend: redis` are
+  all configured; unauthenticated `/healthz` (liveness) and `/readyz`
+  (readiness — background write-canary with M-of-N hysteresis) probes for
+  load balancers; lease-guarded startup seeds so concurrent cold boots
+  don't double-seed; role-gated lifecycle (chat manager, Slack socket-mode,
+  startup warmup, rebuild-on-boot run only on their owning role); and an
+  experimental m-tier Compose profile (`docker-compose.mtier.yml` +
+  `scripts/dev/mtier-smoke.sh`) exercising a role-split topology end to
+  end.
+
+- **Durable job queue + worker runtime** (wave-2B, WS B): a `jobs` table
+  (DuckDB and Postgres) backs `POST /api/jobs` (enqueue `{kind, payload?,
+  idempotency_key?}` → 202; unknown `kind` → 400 listing the registered
+  kinds), `GET /api/jobs/{job_id}` and `GET /api/jobs?status=&kind=&limit=`
+  — gated by `require_admin` (also accepts the scheduler's shared-secret
+  token), with `agnes admin jobs enqueue|show|list` CLI and
+  `admin_job_enqueue`/`admin_job_get`/`admin_jobs_list` MCP tools. A worker
+  runtime (`app/worker/runtime.py`, `Role.WORKER`) claims rows through a
+  lease/heartbeat/retry lifecycle across two lanes — heavy (`data-refresh`,
+  `jira-refresh`) and light (`marketplaces-sync`, `session-collector`,
+  `corporate-memory`) — each kind a thin adapter over its existing HTTP
+  handler; rebuilds are additionally serialized across processes via a
+  Postgres advisory lock (`src/db_pg.py::rebuild_lease`, a no-op on the
+  DuckDB backend). The scheduler and `POST /api/sync/trigger` now enqueue
+  these kinds instead of running them inline, and the Jira webhook enqueues
+  `jira-refresh` instead of rebuilding the orchestrator synchronously,
+  collapsing a burst of webhook events into one queued rebuild. See
+  [`docs/jobs-classification.md`](docs/jobs-classification.md) for which
+  scheduler rows moved to the queue and which stay synchronous HTTP.
+
+- **Swappable coordination backend** (wave-2C, WS C):
+  `coordination.backend: memory|redis` (`AGNES_COORDINATION_BACKEND` env
+  override; `memory` remains the default — behavior unchanged for
+  single-process deployments) plus `redis.url`/`AGNES_REDIS_URL` now backs
+  every piece of cross-process ephemeral state that previously lived in
+  in-process module dicts: chat WS auth tickets (including the admin-tail
+  ticket); leader leases for Slack Socket Mode, the Telegram long-poll
+  loop, and the paused-sandbox TTL sweep (exactly one active replica per
+  singleton consumer); shared per-IP auth-endpoint rate limiting and chat
+  per-user hourly-message/daily-token quotas; cache-invalidation pub/sub
+  for the v2 catalog/schema/sample TTL caches; CLI-auth login codes and
+  Slack binding codes (removing one of the two remaining always-RW DuckDB
+  files across a multi-process topology); and `.env_overlay` secret tokens
+  (moved into the control-plane vault with cross-process reload on
+  rotation). `coordination.backend: redis` is also now a third trigger for
+  the wave-1 multi-process startup guard, and every consumer above is
+  designed to recover cleanly from a Redis `FLUSHALL` within its lease TTL
+  — see [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) → *Multi-process* for the
+  disposability invariant.
+
+- **Prometheus `/metrics` on every role** (wave-2D, WS G): an
+  unauthenticated, internal-scrape-only endpoint
+  (`app/observability/metrics.py`, same posture as `/healthz`/`/readyz` —
+  operators must not expose it publicly) exporting HTTP request metrics,
+  job-queue and worker-runtime metrics (queue depth, queue-lag, lane
+  occupancy, claim/failure counters, job duration), coordination-backend
+  health, and the readiness signal — every series labeled `role` and
+  `replica`. A job enqueued within a request now carries that request's
+  `request_id` in its payload, and the worker binds it into its logging
+  context while running the job, so a job's logs correlate back to the
+  request that triggered it. The `mtier` Compose profile gains
+  `prometheus` (scraping all role containers) and `cadvisor` services for
+  a working local example. See
+  [`observability.md`](docs/observability.md).
+
+- **Role-split-aware ops tooling** (wave-2E, WS I): the
+  `customer-instance` Terraform module's startup script now provisions
+  `SESSION_SECRET` the same way it already handles `JWT_SECRET_KEY`,
+  closing the gap that tripped the wave-1 multi-process guard on a
+  role-split deployment through this module; the daily backup script also
+  `pg_dump`s the Postgres control-plane DB (same retention + a
+  restore-canary) when that backend is in use; the auto-upgrade script
+  does a sequential, `/readyz`-gated rolling recreate (worker + gateway
+  first, then API replicas one at a time) instead of a one-shot recreate
+  when it detects a role-split topology, and its sync-in-flight defer
+  probe also checks for a running `data-refresh` job; and the watchdog now
+  monitors every role container instead of a single hardcoded `app`, with
+  a new coordination-backend-unreachable incident signature. Single-container
+  deployments are unaffected in all four cases.
+
+- **Multi-replica chat HA** (wave-2F, WS D): `ChatManager` state —
+  previously in-process dicts, unusable across replicas — is now
+  coordination-backed, so multi-worker/multi-replica chat is allowed
+  whenever `coordination.backend: redis` (previously refused outright
+  regardless of backend). Building blocks: a per-session routing lease
+  (`chat:{chat_id}`) naming the gateway currently hosting a session's
+  sandbox; a monotonic frame envelope feeding a bounded outbound replay
+  stream so a WS reconnect gets exactly the frames it missed (or a
+  `full_refresh` signal when the gap can't be confidently closed); an
+  inbound command stream forwarding a message landing on a non-owning
+  gateway to whichever gateway owns the session instead of racing a second
+  runner; a WS reconnect landing on a gateway that doesn't hold the lease
+  claims (steals) it and takes over — destroys the old sandbox, spawns a
+  fresh runner, and replays recent turns for continuity (v1 semantics, not
+  a live handoff: an in-flight turn on the old gateway is lost, the same
+  trade-off a plain process restart already accepts); and Slack webhook
+  handlers on `api`-role replicas (which run no `ChatManager`) degrade to
+  a thin-producer path that publishes straight to the inbound stream
+  instead of crashing. Desktop/browser notifications are absorbed into
+  the same coordination fabric (see Removed, below). Under the default
+  `memory` backend every mechanism above is a no-op — single-process
+  behavior is unchanged.
+
 - **Opt-in signed-URL distribution** (wave-2H, WS F — off by default; no
   behavior change unless an operator configures an object store): when
   `distribution.object_store` is set (bucket + optional S3-compatible
@@ -116,6 +224,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   deployment/config guide:
   [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#ducklake-analytics-backend).
 
+### Changed
+
+- Chat per-user hourly message-rate limiting (wave-2C) moved from a
+  sliding-window deque to a fixed UTC-hour window as part of switching its
+  counter onto the coordination backend. **Disclosure:** this allows up to
+  ~2x the configured rate in a short burst straddling an hour boundary (a
+  full quota just before `:00`, another full quota just after) — standard
+  fixed-window limiter behavior, looser rather than stricter than what it
+  replaced.
+
+### Removed
+
+- **BREAKING**: the standalone `services/ws_gateway` process (wave-2F — a
+  separate aiohttp server plus a Unix-socket HTTP dispatch endpoint, with
+  its own in-memory connection registry) is gone; its role folds into the
+  gateway role of the main app process (see Added, above). The
+  `ws-gateway` Docker Compose service is removed — deployments using the
+  `full` profile no longer start it, and Telegram's notification dispatch
+  now publishes through the coordination fabric instead of the removed
+  Unix socket.
+
 ## [0.74.118] - 2026-07-18
 
 ### Changed
@@ -136,33 +265,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   operators. Status messages are also styled by state — failures use the
   design-system danger token, successes the success token — so an error is
   visually distinct from a neutral message.
-### Added
-
-- **Multi-replica chat HA** (wave-2F): `ChatManager` state — previously in-process dicts, unusable across replicas — is now coordination-backed, and multi-worker/multi-replica chat is allowed whenever `coordination.backend: redis` (previously refused outright regardless of backend). Building blocks: a **routing lease** per session (`app/chat/routing.py`, key `chat:{chat_id}`, `claim_session`/`renew_session`/`release_session`/`owner_of`) names the one gateway currently hosting a session's sandbox, claimed on spawn and renewed on the existing idle-reaper heartbeat; a **monotonic frame envelope** (`app/chat/frame_seq.py` — `seq`/`id` stamped on every outbound frame, counter backed by `chat-seq:{chat_id}`) feeds an **outbound replay stream** (`app/chat/replay.py`, `chat-out:{chat_id}`, `MAXLEN` 1000) so a WS reconnect with `?last_seq=` gets exactly the missed frames, or a `full_refresh` control frame when the gap can't be confidently closed; an **inbound command stream** (`app/chat/inbound.py`, `chat-in:{chat_id}`) forwards a message/command landing on a non-owning gateway to whichever gateway owns the lease instead of racing a second runner; and a WS reconnect landing on a gateway that doesn't hold the lease **claims (steals) it and takes over** (`ChatManager.attach` / `_takeover_foreign_session`) — destroys the old sandbox, spawns a fresh runner, and replays recent turns for continuity (v1 semantics, NOT a live handoff: any turn in flight on the old gateway at that moment is lost, the same trade-off a plain process restart already accepts). Desktop/browser notifications are absorbed into the same coordination fabric, replacing the standalone `ws_gateway` service (see Removed): `app/notifications.py::publish_notification` publishes per-user on `notify:{user}`, and `app/api/notifications_ws.py` (`/api/notifications/ws`, `Role.GATEWAY` only) serves it with the same JWT handshake, per-user connection cap, and ping/pong heartbeat the old service used. `app/startup_guards.py::validate_deployment`'s existing Postgres-app-state + explicit-secrets requirement for any multi-process topology covers the rest of the gate-lift condition; Slack Socket Mode's own `workers > 1` preflight is relaxed the same way (its `slack-socket-mode` leader lease already serializes ownership once the backend is shared). Under the default `memory` backend every mechanism above is a no-op — a single process can never see a foreign owner, so behavior there is unchanged.
-
-### Removed
-
-- **BREAKING**: the standalone `services/ws_gateway` process (a separate aiohttp server on `127.0.0.1:8765` plus a Unix-socket HTTP dispatch endpoint, with its own in-memory `connections` registry) is gone — its role folds into the main app process (see the `Added` entry above). The `ws-gateway` Docker Compose service (and its `docker-compose.*.yml` overrides) is removed; deployments using the `full` profile no longer start it. Telegram's notification dispatch (`services/telegram_bot/dispatch.py`) now calls `publish_notification` instead of POSTing to the removed Unix socket.
-
-### Fixed
-
-- Multi-replica chat: webhook/REST paths that still assumed local session ownership now honor the routing lease (wave-2F gate-lift review findings). `/agnes` slash commands landing on a non-owning replica forward over the inbound stream instead of firing an unwanted cross-gateway takeover, and the response_url gets a standard ack; `ChatManager.kill`/`cancel` on a non-owning replica publish typed `control` entries (`kill`/`cancel`) on the `chat-in:{chat_id}` stream that the owning replica's inbound consumer executes locally (so DELETE `/api/chat/sessions/{id}`, `/agnes-new`, the New-session button, and the Slack Stop button work no matter which replica the request lands on — the sandbox is destroyed exactly once, by its owner); Slack-surfaced sessions get their `SlackSinkBridge` re-established after a takeover (owner-side webhook handlers seat one in the live-but-sinkless window, and forwarded messages carry their Slack origin so the owner's consumer does the same); and the per-user concurrency cap is now lease-derived — it counts the user's live sessions across all gateways (fail-open to the local count if the coordination backend is unreachable). Under the default `memory` backend all of this is unreachable and behavior is unchanged.
-- Chat reconnect replay silent-gap race: a WS reconnect used to compute the gap replay before seating the connection as a live sink, so a frame broadcast in that window was silently lost. `app/api/chat.py` now seats the connection live FIRST via a new `app.chat.replay.GapReplayGate` (buffers frames until the gap replay is computed, then releases them merged + de-duplicated + seq-sorted), closing the gap.
-- Chat replay's `full_refresh` decision is now eviction-based (`last_seq + 1 < min_retained_seq`) instead of strict seq contiguity, so a legitimate hole from a private, never-broadcast frame (the per-sink `ready`/`runner_not_ready` sends) no longer forces an unnecessary `full_refresh`.
-- `ChatManager._broadcast` no longer holds the per-session `_broadcast_lock` across the chat-out replay-stream append (a coordination-backend round trip), removing that latency from every streamed token. `CoordinationBackend.stream_read` (both backends) now sorts entries by the frame's own `seq` field to stay correct despite appends that can now complete out of order.
-- `ChatManager._resume_live` is now serialized per session (`LiveSession._resume_lock`): with the inbound-consumer task (wave-2F task 4) added as a third concurrent caller alongside `attach()` and `send_user_message`, two callers racing a single PAUSED session could both resume/spawn a sandbox — leaking one (never destroyed, still billable) and leaving its crash-respawn wait task orphaned. The lock plus a post-acquire PAUSED re-check makes a losing caller a no-op instead.
-- Cross-gateway takeover hardening (`app/chat/manager.py`, `app/chat/routing.py`, three related races closed together): (1) `attach()`'s entire ACTIVE/PAUSED/takeover/resume-from-row/spawn decision tree now serializes on one per-chat_id lock (`ChatManager._get_session_lock`, replacing the narrower `_takeover_locks`) — previously a second `attach()` call for the same chat_id landing mid-takeover could read past a still-spawning, state=NEW `LiveSession` stub and trigger an independent second spawn, leaking a sandbox and its tasks. (2) `ChatManager._wait_for_exit_and_respawn`'s crash-respawn path now checks `app.chat.routing.owner_of` before respawning — if this gateway no longer positively holds the session's routing lease (another gateway's takeover already destroyed the sandbox it's watching), it tears its own local bookkeeping down instead of respawning and clobbering the new owner's already-persisted sandbox refs (a split-brain: two live runners for one chat_id). (3) `ChatManager._renew_routing_leases` no longer tears a session down on every failed lease renew — `renew_session` returning `False` is ambiguous between "genuinely stolen" and "coordination backend unreachable"; it now only tears down when a second, independent `owner_of` read positively confirms a *different* concrete gateway holds the lease, so a transient backend blip no longer causes every replica to drop every session it hosts. `tests/chat_fakes.py`'s `FakeProvider.destroy()` now breaks the corresponding `FakeHandle.wait()` (mirroring a real sandbox kill), which had been masking the cross-owner destroy race in tests.
-- `ChatManager.send_user_message`'s "no local live session yet" resume-from-row/spawn decision now serializes on the same per-chat_id `_get_session_lock` as `attach()`, re-checking `_live` after acquiring it. Previously this decision ran unlocked: a WS `attach()` and a `send_user_message` call (e.g. an inbound webhook) racing the same fresh or post-restart chat_id could each independently resume/spawn a runner via `_resume_from_row`, leaking one sandbox and its tasks.
-- Slack webhook handlers (`services/slack_bot/events.py::_handle_dm`/`_handle_mention`, wave-2F task 7) no longer assume this process owns the session: a webhook can land on any gateway replica behind the load balancer, and attaching locally when a *different*, still-live gateway already owns the session used to trigger `ChatManager.attach`'s cross-gateway takeover (destroy + respawn the runner on this replica) for no reason other than load-balancer luck. Both handlers now check `app.chat.routing.owner_of` first and, when a foreign owner is live, skip attach/`wait_until_live` entirely and go straight to `send_user_message` (which already forwards over the `chat-in:{chat_id}` coordination stream — wave-2F task 4).
-- Slack webhooks no longer crash on **api-role** replicas, which run no `ChatManager` at all (`app.state.chat_manager` is `None` outside `Role.GATEWAY`): every handler (DM, mention, `/agnes`, `/agnes-new`, `/agnes-status`, Stop and New-session buttons) now detects the missing manager and degrades to a chat-manager-free **thin-producer** path — resolve/create the session row, enforce the same sender limits, persist the user message, and publish it to the `chat-in:{chat_id}` stream with its Slack origin (kills/cancels forward as `control` entries) via new module-level helpers in `app/chat/manager.py` that the ChatManager methods themselves delegate to. The reference m-tier Caddy config (`deploy/caddy/Caddyfile.mtier`) previously routed ALL HTTP to the api replicas — webhook-mode Slack chat was 100% dead in that topology; it now routes `/api/chat/*`, `/api/notifications/ws`, and `/api/slack/*` to the `gateway` upstream ahead of the api catch-all, and the rule is documented in `docs/DEPLOYMENT.md`'s chat-HA section.
-- `ChatManager.kill()` now runs under the same per-chat_id session lock as `attach()`/`send_user_message()`, and `_respawn_fresh` re-checks for a raced teardown after its spawn completes (destroying the just-spawned sandbox instead of registering it). Previously a kill racing a takeover's spawn window popped the state=NEW stub, after which the completing spawn registered an ACTIVE handle and wrote fresh sandbox refs onto the already-archived row — a leaked, untracked, still-billable sandbox.
-- A cross-gateway takeover (or any fresh consumer start for a session with history) no longer re-reads the `chat-in:{chat_id}` stream from the beginning — the inbound consumer now seeds its dedup cursor from the current `chat-in-seq` counter (`amount=0` peek). Reading from 0 re-fed up to 1000 retained, already-delivered user messages to the fresh runner (duplicate LLM answers) and re-executed retained `control` entries (a stale kill tore the just-taken-over session right back down). Trade-off, documented in the consumer: an entry published but not yet delivered at the moment of an ownership change is skipped — at-most-once across a takeover.
-
-### Internal
-
-- `send_user_message` now documents the accepted ordering gap between direct-owner delivery and stream-forwarded delivery: each path is internally ordered, but the two share no total order against each other (acceptable under the current sticky-WS topology; see the method's docstring).
-- `ChatManager._inbound_consumer_loop` uses `asyncio.get_running_loop()` instead of the deprecated `asyncio.get_event_loop()`.
-- `ChatManager._session_locks` (the per-chat_id attach-serialization lock registry) is now bounded: an LRU `OrderedDict` capped at 10,000 entries, evicting only currently-unlocked locks once past the cap, instead of growing by one entry per chat_id ever attached for the process's lifetime. Eager eviction in `kill()` was rejected as racy — `asyncio.Lock` exposes no public pending-waiters query and `.locked()` is momentarily `False` between a `release()` and the next waiter's scheduled wakeup, so eviction there could hand two callers two different locks for the same session (the exact double-spawn class the lock prevents); see the field's docstring for the full analysis.
 
 ## [0.74.116] - 2026-07-18
 
@@ -192,156 +294,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   'description' in SKILL.md must be at most 1024 characters").
   `COWORK_FORMAT_VERSION` bumped so cached ETags bust and clients re-download
   the corrected zip.
-### Added
-
-- **Swappable coordination backend for multi-process/multi-replica deployments**
-  (`app/coordination/`): `coordination.backend: memory|redis` in `instance.yaml`
-  (`AGNES_COORDINATION_BACKEND` env override) selects the `CoordinationBackend`
-  — a TTL key/value store, counters, leader leases, and pub/sub — behind
-  every cross-process coordination point in the app, pointed at Redis via
-  `redis.url`/`AGNES_REDIS_URL` when configured. `memory` (default) keeps
-  today's single-process, in-process behavior unchanged; `redis` makes the
-  same state visible across every replica and is itself now a third
-  multi-process trigger in `app/startup_guards.py`, alongside `DATABASE_URL`
-  and `UVICORN_WORKERS > 1`. It now backs: chat WS auth tickets and the
-  admin-tail WS ticket (`_issue_ticket`/`_consume_ticket`,
-  `_issue_admin_ticket`/`_consume_admin_ticket`, single-use, 60s TTL);
-  leader leases for Slack Socket Mode, the Telegram long-poll loop, and the
-  paused-sandbox TTL sweep (`app/coordination/leases.py::run_with_lease`,
-  exactly one active replica per singleton consumer, reacquired within the
-  lease TTL if the holder dies); shared per-IP auth-endpoint rate limiting
-  (slowapi `storage_uri` pointed at the same Redis instance) and chat
-  per-user hourly message / daily Anthropic token quotas (`incr` counters,
-  the latter seeded from the DB aggregate on a post-restart miss so a
-  mid-day deploy can't silently re-open a user's spent budget); cache-
-  invalidation pub/sub for the v2 catalog/schema/sample TTL caches (every
-  api replica drops its own matching entries on
-  `invalidate_for_table`/`invalidate_all` instead of serving stale data for
-  up to the TTL); CLI-auth login codes and Slack binding codes
-  (`cli-auth:`/`slack-bind:` KV prefixes, same TTLs and single-use
-  semantics, replacing `operational.duckdb` reads/writes — one fewer
-  always-RW DuckDB file across a multi-process topology); and
-  `.env_overlay` token rotation (marketplace/template PATs, chat-sandbox
-  E2B/Anthropic keys — written to the control-plane vault instead of the
-  file when `AGNES_VAULT_KEY` is configured, then broadcast via an
-  `env-overlay-changed` event so every api/worker/gateway replica refreshes
-  its own `os.environ`, with a periodic re-read piggybacked on the
-  existing state-checkpoint loop as a belt-and-braces catch-all for a
-  missed event). The Redis client uses bounded socket timeouts so a
-  hung/unreachable Redis surfaces as a timely `CoordinationUnavailable`
-  instead of blocking a lease-heartbeat thread indefinitely. A single
-  non-HA Redis is the supported deployment shape, and every consumer above
-  is designed to recover cleanly from a `FLUSHALL` — see
-  [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) → *Multi-process* for the
-  disposability invariant. Deliberately out of scope for this wave: chat
-  session/frame-stream routing and cross-gateway takeover, per-user chat
-  concurrency across replicas (stays process-local; becomes lease-derived
-  once per-session routing leases exist), request-id correlation across
-  processes, and Redis HA (single instance is the supported stance, not a
-  gap).
-- **Prometheus `/metrics` on every role** (`app/observability/metrics.py`):
-  an unauthenticated, internal-scrape-only endpoint (same posture as
-  `/healthz`/`/readyz` — operators must not expose it publicly) exporting
-  HTTP request metrics (`agnes_http_requests_total`,
-  `agnes_http_request_duration_seconds`), job-queue and worker-runtime
-  metrics (`agnes_jobs_queued`/`_capped`, `agnes_jobs_oldest_queued_age_seconds`
-  (queue-lag — `now - min(created_at)` per kind, sampled off the same
-  bounded scan `agnes_jobs_queued` already runs), `agnes_jobs_running`,
-  `agnes_job_duration_seconds`, `agnes_job_claims_total`,
-  `agnes_job_failures_total`, `agnes_worker_lane_active`), coordination
-  backend health (`agnes_coordination_up`,
-  `agnes_coordination_backend_info`), and readiness
-  (`agnes_readiness`, the same signal `/readyz` reports). Every series
-  carries `role`/`replica` labels; `agnes_jobs_queued`/`_capped`/
-  `agnes_jobs_oldest_queued_age_seconds` are global values every replica
-  samples identically (use `max()`, not `sum()` — see
-  `docs/observability.md`), the rest are genuinely additive
-  per-replica state. A new `app/job_correlation.py` stamps the
-  originating HTTP request's `request_id` onto a job payload at enqueue
-  time and re-binds it for the duration of the worker's handler
-  invocation, so log lines emitted while a job runs carry the
-  `request_id` of the request that triggered it. The `mtier` Compose
-  profile (`docker-compose.mtier.yml`) adds `prometheus` (scrapes all
-  four role containers, `deploy/prometheus/prometheus.yml`) and
-  `cadvisor` (container resource metrics) services for a working local
-  example. See [`observability.md`](docs/observability.md) → *Prometheus
-  `/metrics`* and [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) → *Multi-process*
-  → *Metrics (Prometheus)*.
-- `infra/modules/customer-instance`'s daily backup script
-  (`agnes-db-backup.sh`) now also covers the on-VM Postgres side-car: when
-  `instance.yaml::database.backend == side_car` and the container is
-  actually running, it `pg_dump`s the control-plane DB into the same dated
-  backup dir and restore-canaries it (restore into a throwaway database,
-  run a trivial sanity query, drop) before declaring success — same 7-day
-  retention and webhook alerting as the existing `system.duckdb` path.
-  DuckDB-only deployments are unaffected. Once the DuckLake catalog lands
-  it lives in the same Postgres instance, so this dump already covers it.
-- `scripts/ops/agnes-auto-upgrade.sh` now does a sequential `/readyz`-gated
-  rolling recreate when it detects a role-split (m-tier) topology (dedicated
-  `worker` + `gateway` services alongside 2+ named `api` replicas in the
-  resolved compose config — set `COMPOSE_FILE`/`COMPOSE_PROFILES` in
-  `/opt/agnes/.env` to opt in): pulls the new image, recreates
-  `worker`+`gateway` first, then walks the `api` replicas **one at a time**,
-  waiting for each to report `/readyz` ready before touching the next. A
-  replica that never becomes ready within a bounded timeout aborts the whole
-  rollout (webhook alert, non-zero exit) **without** recreating the
-  remaining replicas, which stay on the previous image and keep serving.
-  Single-container deployments keep the exact one-shot `docker compose up
-  -d` recreate. Its sync-in-flight defer probe also now queries `GET
-  /api/jobs?kind=data-refresh&status=running` (authenticated with
-  `SCHEDULER_API_TOKEN`, alongside the existing `/api/sync/status` check) so
-  it defers correctly when sync runs in a separate worker container.
-- `infra/modules/customer-instance/files/agnes-watchdog.sh` now scans every
-  agnes role container in the fleet instead of a single hardcoded `app`
-  — enumerated via `docker compose ps` (services matching `app`, `worker`,
-  `gateway`, `api<N>`; falls back to the legacy `agnes-app-1` name when
-  compose can't be resolved from the working directory). Every existing
-  incident signature (crash loop, zombie-DB, WAL salvage, index desync,
-  restart bursts, OOM, dead health endpoint) now runs per container, naming
-  it in the alert. New signature: coordination-backend unreachable — when
-  `coordination.backend: redis` is configured, 3+ `CoordinationUnavailable`
-  hits in one container's logs within a scan window alerts (gated on redis
-  actually being configured; threshold-gated so a single tolerated blip
-  doesn't fire, matching the existing streak-style signatures). Single-
-  container deployments are unaffected — the enumeration just finds the
-  one `app` container.
-
-### Fixed
-
-- `ws_stream`/`ws_join` (`app/api/chat.py`) and `admin_tail`
-  (`app/api/admin_chat.py`) now catch `CoordinationUnavailable` around the
-  ticket-consume call and close the WebSocket with code 4503 instead of
-  letting the exception propagate uncaught — FastAPI's HTTP exception
-  handler doesn't cover the WS scope, so a coordination backend blip (e.g.
-  Redis unreachable) previously dropped the connection ungracefully with a
-  traceback.
-- `infra/modules/customer-instance`'s startup script now provisions and
-  writes `SESSION_SECRET` the same way it already handled `JWT_SECRET_KEY`
-  (a dedicated Secret Manager secret, fetched fresh on every boot, no on-VM
-  fallback generation) — previously it only wrote `JWT_SECRET_KEY` +
-  `AGNES_VAULT_KEY`, so a role-split deployment through this module tripped
-  `app/startup_guards.py`'s multi-process guard, which hard-fails without
-  `SESSION_SECRET` set explicitly.
-- `scripts/ops/agnes-auto-upgrade.sh`'s role-split rolling recreate no
-  longer proceeds to recreate `api` replicas when the initial `worker`+
-  `gateway` recreate itself hard-fails. `set -e` doesn't propagate out of a
-  function called as an `if` test, so a failing `docker compose up -d
-  --no-deps worker gateway` was silently swallowed and the rollout rolled
-  the api replicas forward anyway, against a worker/gateway pair that never
-  came up. The initial recreate's exit status is now checked explicitly —
-  a failure alerts via the existing webhook and aborts the rollout before
-  any api replica is touched, the same abort posture as a persistent
-  `/readyz` failure.
-
-### Changed
-
-- Chat per-user hourly message-rate limiting moved from a sliding-window
-  deque to a fixed UTC-hour window as part of switching its counter onto
-  the coordination backend. **Disclosure:** this allows up to ~2x the
-  configured rate in a short burst straddling an hour boundary (a full
-  quota just before `:00`, another full quota just after) — standard
-  fixed-window limiter behavior, looser rather than stricter than what it
-  replaced.
 
 ### Security
 
@@ -475,78 +427,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 - The one-word workspace launcher installed by `agnes init` is now an executable script in `~/.local/bin` (`<word>.cmd` on Windows) instead of a shell function appended to `~/.zshrc` / `~/.bashrc` / PowerShell profiles. Scripts are visible to `which`, work from non-interactive shells, and on Windows are immune to the default `ExecutionPolicy Restricted` (which silently blocked the old profile function from loading). The collision guard now also refuses to shadow any existing executable on PATH (a workspace named `Node` gets `nodeai`, not `node`). `agnes init` and a new `agnes update` convergence step automatically remove the legacy marked rc-function blocks and install the script — never before the replacement script is in place; users who opted out via `agnes init --no-shortcut` are left untouched. `scripts/dev/agnes-client-reset.sh` removes marker-carrying launcher scripts on reset.
-### Added
-
-- **Durable job queue + worker runtime.** A `jobs` table (both DuckDB and
-  Postgres backends) backs a new out-of-band execution path: `POST
-  /api/jobs` enqueues `{kind, payload?, idempotency_key?}` (202 + job row;
-  unknown `kind` → 400 listing the registered kinds), `GET
-  /api/jobs/{job_id}` and `GET /api/jobs?status=&kind=&limit=` read it
-  back — gated by `require_admin` (accepts the scheduler's shared-secret
-  token), with CLI (`agnes admin jobs enqueue|show|list`) and MCP
-  (`admin_job_enqueue`, `admin_job_get`, `admin_jobs_list`) surfaces. A
-  worker runtime (`app/worker/runtime.py`) claims rows via a
-  lease/heartbeat/retry lifecycle across two lanes — heavy (`data-refresh`,
-  `jira-refresh`) and light (`marketplaces-sync`, `session-collector`,
-  `corporate-memory`) — with five kinds registered
-  (`app/worker/kinds.py::register_all_kinds()`, called from
-  `app/main.py`'s lifespan), each a thin adapter over the existing handler
-  behind its HTTP counterpart. The scheduler now enqueues these kinds via
-  `/api/jobs` instead of calling their endpoints inline; `POST
-  /api/sync/trigger` enqueues a `data-refresh` job instead of running the
-  extractor synchronously; and the Jira webhook path
-  (`connectors/jira/service.py`) enqueues `jira-refresh` instead of
-  rebuilding the orchestrator inline, so a burst of webhook events
-  collapses into one queued rebuild. See
-  [`docs/jobs-classification.md`](docs/jobs-classification.md) for which
-  scheduler rows moved to the queue and which stay synchronous HTTP, and
-  the "Background Jobs" section in
-  [`docs/architecture.md`](docs/architecture.md) for the runtime design.
-- Process roles (`AGNES_ROLE=api|gateway|worker|all`) with startup guards for
-  multi-process topologies, `/healthz` + `/readyz` LB probes (write-canary with
-  hysteresis), lease-guarded startup seeds, and an experimental m-tier
-  role-split compose profile (`docker-compose.mtier.yml`).
-
-### Fixed
-
-- **`POST /api/sync/trigger` could report 200 "triggered" for a job it
-  didn't create.** The handler used to peek for an in-flight `data-refresh`
-  job *before* calling `enqueue()`; two near-simultaneous triggers could
-  both see "nothing in flight" and both get 200, even though the job
-  queue's own idempotency dedup meant only one job actually existed.
-  `JobsRepository.enqueue()`/`JobsPgRepository.enqueue()` (both backends)
-  now return a `"deduped"` key alongside the row — `True` when the call
-  collapsed onto an existing queued/running job, `False` for a fresh
-  insert — and the trigger handler branches on that instead of a
-  pre-check, closing the race: exactly one of two concurrent triggers now
-  gets 200, the other 409, always sharing the same `job_id`.
-- **Orchestrator rebuilds now serialize across processes on Postgres, and a
-  jira-refresh dedup gap that could strand a webhook update is closed.**
-  In a role-split topology (a dedicated `api` process handling
-  `/api/sync/trigger` + the Jira webhook, and a separate `worker` process
-  running enqueued jobs), `SyncOrchestrator`'s `_rebuild_lock` is a
-  `threading.Lock` — invisible across processes — so a job-triggered
-  rebuild and an HTTP-triggered rebuild could hit `analytics.duckdb`
-  concurrently, a known DuckDB corruption class. `rebuild()`/
-  `rebuild_source()` now also acquire a new `src/db_pg.py:rebuild_lease()`
-  (a Postgres advisory lock, no-op on the DuckDB backend where the
-  startup guard already enforces single-process) around the same
-  critical section. Separately, `connectors/jira/service.py`'s webhook
-  path enqueues a coalescing `jira-refresh-followup` job whenever its
-  primary `jira-refresh` enqueue dedups onto an already-`running` job —
-  that running job may have already read pre-write data, so without the
-  follow-up the write would sit stale until the next webhook.
-- **Worker shutdown drain no longer leaves stray heartbeats running or
-  lets a DB error abort shutdown.** An abandoned (drain-timed-out)
-  in-flight job's heartbeat task was left uncancelled, so it kept
-  extending that job's lease after `worker_loop` had already returned and
-  handed the job off to lease-expiry recovery. Separately, a
-  `complete()`/`fail()` failure while finalizing a different in-flight
-  job during the drain could propagate out of `worker_loop`'s shutdown
-  path and abort the rest of lifespan shutdown (including closing the
-  system DB). Both paths now cancel/await the heartbeat task and
-  log-and-continue on a finalization error, matching the existing
-  hardening pattern used elsewhere in the runtime.
 
 ## [0.74.106] - 2026-07-17
 
