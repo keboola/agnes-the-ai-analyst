@@ -782,6 +782,41 @@ paid. Put plainly: **no stickiness is REQUIRED for correctness — affinity
 is RECOMMENDED for UX** (fewer needless takeovers, fewer dropped in-flight
 turns on an ordinary reconnect).
 
+### Chat LLM credential failures (runbook)
+
+When the LLM API key the chat broker uses is invalid, expired, or the account
+is unfunded, chat is effectively down: the in-sandbox agent returns a synthetic
+error message and the failure is otherwise opaque. Agnes classifies the failure
+and surfaces it to admins so the cause is unambiguous.
+
+**Where the signal shows up:**
+
+- **Admin UI** — the *Cloud chat readiness* panel in **Admin → Server config**
+  shows a red banner naming the exact fault:
+  - *LLM key rejected* — the key is invalid, expired, or lacks permission (HTTP 401/403).
+  - *LLM account unfunded* — the key is valid but the account has no credit
+    ("credit balance too low", HTTP 400).
+  - *LLM provider error* — network / rate-limit / provider outage.
+- **API** — `GET /admin/chat/readiness` returns an `llm_runtime` object
+  (`{reason, detail, status_code, at}`), or `null` when the last forward succeeded.
+- **Audit log** — each failure records a `broker_llm_auth_failure` row
+  (reason + status only, never the key value).
+
+**Remediation:**
+
+1. In **Admin → Server config → Cloud chat**, set/rotate the Anthropic key via
+   the *configure secrets* field and save. This persists to the env-overlay and
+   survives restarts.
+2. Click **Test connection** to confirm the new key authenticates (and that the
+   account is funded — an *unfunded* fault means the key is fine but the LLM
+   provider account needs credit added on the provider's side).
+3. The `llm_runtime` signal clears automatically on the next successful chat
+   forward.
+
+Keyless (workload-identity) auth for the LLM is out of scope here (tracked
+separately); in that mode use **Test connection**, which probes the federated
+token path instead of a static key.
+
 ## Related documentation
 
 - [`ONBOARDING.md`](ONBOARDING.md) — end-to-end Terraform onboarding checklist

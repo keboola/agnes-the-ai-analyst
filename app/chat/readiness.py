@@ -16,12 +16,20 @@ only fails at the first sandbox spawn, deep inside a user's chat.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 # Env-var names chat reads — the single source of truth for what it needs.
 ENV_ANTHROPIC = "ANTHROPIC_API_KEY"
 ENV_E2B = "E2B_API_KEY"
 ENV_JWT = "JWT_SECRET_KEY"
+
+# Machine-readable LLM-failure reasons. Shared by the admin "test connection"
+# probe and the runtime broker forward path so both classify an auth/credit/
+# outage failure identically (#884).
+LLM_REASON_AUTH = "auth_invalid"        # 401/403 — key invalid, expired, or lacking permission
+LLM_REASON_CREDIT = "credit_exhausted"  # 400 "credit balance too low" — valid key, unfunded account
+LLM_REASON_PROVIDER = "provider_error"  # network / rate-limit / provider outage / other
 
 # Mirror the threshold app/main.py's ``_chat_jwt_secret_ok`` enforces.
 _JWT_MIN_BYTES = 32
@@ -69,22 +77,107 @@ def secret_status(chat_config: Any) -> dict:
     }
 
 
+def classify_llm_failure(
+    status_code: Optional[int],
+    message: str = "",
+    *,
+    exc_name: str = "",
+) -> dict:
+    """Classify an LLM API failure into an actionable operator reason.
+
+    Distinguishes the three cases #884 calls out:
+      - invalid / expired / insufficient-permission key (HTTP 401/403)
+      - valid key but unfunded account ("credit balance too low", HTTP 400)
+      - everything else (network / rate-limit / provider outage)
+
+    Returns ``{reason, detail}`` where ``reason`` is one of the ``LLM_REASON_*``
+    constants. One classifier, two call sites — the SDK-exception path
+    (``_classify``, admin "test connection") and the broker forward path
+    (an ``httpx.Response`` at chat runtime) — so the admin surface and the live
+    signal never diverge.
+    """
+    text = (message or "").lower()
+    # Credit exhaustion is a 400 with a distinctive body — check it before the
+    # generic status buckets (a valid key can still hit this).
+    if "credit balance is too low" in text or ("credit" in text and "balance" in text):
+        return {
+            "reason": LLM_REASON_CREDIT,
+            "detail": "credit balance too low — the LLM key is valid but the account is unfunded",
+        }
+    if status_code in (401, 403):
+        suffix = f" ({exc_name})" if exc_name else f" (HTTP {status_code})"
+        return {
+            "reason": LLM_REASON_AUTH,
+            "detail": f"authentication failed{suffix} — LLM key invalid, expired, or lacking permission",
+        }
+    base = exc_name or (f"HTTP {status_code}" if status_code else "provider error")
+    msg = (message or "").strip()
+    detail = f"{base}: {msg[:200]}" if msg else base
+    return {"reason": LLM_REASON_PROVIDER, "detail": detail}
+
+
 def _classify(exc: Exception) -> str:
     """Turn an SDK exception into a short admin-facing reason.
 
-    Distinguishes auth failures (wrong key) from everything else (network,
-    rate-limit, provider outage) so the admin knows whether to fix the key
-    or look at connectivity.
+    Thin wrapper over ``classify_llm_failure`` (the shared classifier) that
+    pulls the status code / name / message off the SDK exception. Distinguishes
+    auth failures (wrong key), credit exhaustion (unfunded account), and
+    everything else (network, rate-limit, provider outage) so the admin knows
+    whether to fix the key, fund the account, or look at connectivity.
     """
     status = getattr(exc, "status_code", None)
     if status is None:
         resp = getattr(exc, "response", None)
         status = getattr(resp, "status_code", None)
     name = type(exc).__name__
-    if status in (401, 403) or "authentication" in name.lower() or "permission" in name.lower():
-        return f"authentication failed ({name})"
-    msg = str(exc).strip()
-    return f"{name}: {msg[:200]}" if msg else name
+    msg = str(exc)
+    # Some SDK versions signal auth via the exception *type* name without a
+    # status_code — normalize those to 401 so the auth branch fires.
+    if status is None and ("authentication" in name.lower() or "permission" in name.lower()):
+        status = 401
+    return classify_llm_failure(status, msg, exc_name=name)["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Runtime LLM-failure signal
+# ---------------------------------------------------------------------------
+# The chat broker (app/api/broker.py) forwards agent traffic to the LLM API; a
+# 401/400 there otherwise surfaces only as an opaque synthetic assistant
+# message inside a user's chat (#884). The broker records the classified
+# failure here, keyed on the app instance's ``state``, so the admin readiness
+# surface can show a clear, actionable banner ("LLM key invalid" vs "account
+# unfunded" vs "provider outage") instead of operators guessing.
+_LLM_DIAG_ATTR = "llm_runtime_diagnostic"
+
+
+def record_llm_runtime_failure(app_state: Any, status_code: Optional[int], message: str = "") -> dict:
+    """Classify and store the latest runtime LLM failure on ``app_state``.
+
+    Returns the recorded diagnostic (``{reason, detail, status_code, at}``).
+    Never raises — a failed record must not break the request path.
+    """
+    diag = classify_llm_failure(status_code, message)
+    diag["status_code"] = status_code
+    diag["at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        setattr(app_state, _LLM_DIAG_ATTR, diag)
+    except Exception:  # noqa: BLE001 — best-effort signal, never fatal
+        pass
+    return diag
+
+
+def clear_llm_runtime_diagnostic(app_state: Any) -> None:
+    """Clear any recorded runtime LLM failure (called on a successful call)."""
+    try:
+        if getattr(app_state, _LLM_DIAG_ATTR, None) is not None:
+            setattr(app_state, _LLM_DIAG_ATTR, None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def get_llm_runtime_diagnostic(app_state: Any) -> Optional[dict]:
+    """Return the last recorded runtime LLM failure, or ``None`` if healthy."""
+    return getattr(app_state, _LLM_DIAG_ATTR, None)
 
 
 async def test_e2b_key(api_key: Optional[str] = None, *, timeout: float = 8.0) -> dict:

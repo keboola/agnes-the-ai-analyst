@@ -17,6 +17,7 @@ from src.repositories import audit_repo
 from app.chat.readiness import (
     ENV_ANTHROPIC,
     ENV_E2B,
+    get_llm_runtime_diagnostic,
     secret_status,
     test_anthropic_key,
     test_e2b_key,
@@ -111,8 +112,16 @@ class ChatSecretsBody(BaseModel):
 
 @router.get("/readiness")
 async def chat_readiness(request: Request, _admin: dict = Depends(require_admin)):
-    """Presence-only readiness snapshot (no secret values leak)."""
-    return secret_status(getattr(request.app.state, "chat_config", None))
+    """Presence-only readiness snapshot (no secret values leak).
+
+    ``llm_runtime`` carries the last classified LLM-credential failure the chat
+    broker hit at runtime (``{reason, detail, status_code, at}``) or ``None``
+    when healthy — so the admin banner distinguishes an invalid/expired key, an
+    unfunded account, and a provider outage instead of guessing from an opaque
+    chat error (#884)."""
+    status = secret_status(getattr(request.app.state, "chat_config", None))
+    status["llm_runtime"] = get_llm_runtime_diagnostic(request.app.state)
+    return status
 
 
 @router.post("/secrets")
