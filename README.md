@@ -162,7 +162,7 @@ pytest tests/ -v
 │   ├── bigquery/           # BigQuery: extractor.py (remote-only via DuckDB BQ extension)
 │   └── jira/               # Jira: webhook + incremental parquet → extract.duckdb
 ├── cli/                    # CLI tool (`agnes pull`, `agnes query`, `agnes admin`)
-├── services/               # Standalone services (scheduler, telegram_bot, ws_gateway, etc.)
+├── services/               # Standalone services (scheduler, telegram_bot, etc.)
 ├── scripts/                # Utility + migration scripts
 ├── config/                 # Configuration templates (instance.yaml.example)
 ├── docs/                   # Documentation + metric YAML definitions

@@ -107,6 +107,10 @@ def test_no_bare_duckdb_connect_in_production_code():
         # Developer POC script — standalone, not part of the production
         # app path, not imported by any FastAPI handler or CLI command.
         "scripts/dev/poc_mcp_e2e.py",
+        # Jira parquet bloom-filter benchmark (#749) — standalone dev/benchmark
+        # script, not imported by any handler/CLI; its in-memory DuckDB conns
+        # measure parquet write/read and never touch tz-sensitive request data.
+        "connectors/jira/scripts/bloom_benchmark.py",
         # tests/db_pg/ existing fixtures predate the _open_duckdb rollout
         # and intentionally use bare connect for fixture isolation. Each
         # is listed by file path so any NEW bare connect in tests/db_pg/
@@ -136,6 +140,16 @@ def test_no_bare_duckdb_connect_in_production_code():
         "tests/db_pg/test_table_registry_delete_corpus_contract.py",
         # K4 knowledge_digests contract — fixture isolation, intentional bare connect.
         "tests/db_pg/test_knowledge_digests_contract.py",
+        # wave-2G DuckLake session contract — bare :memory: connects are an
+        # extension-availability probe + a direct postgres-attach round-trip
+        # (no tz-sensitive writes; the module under test routes its real
+        # sessions through _open_duckdb).
+        "tests/db_pg/test_ducklake_pg_catalog.py",
+        "tests/db_pg/test_ducklake_reader_pg_catalog.py",
+        "tests/db_pg/test_ducklake_maintenance_pg.py",
+        # wave-2G Task 6 migration-prerequisite contract — same extension-
+        # availability probe pattern as the three files above.
+        "tests/db_pg/test_ducklake_migrate_prereqs_pg.py",
     )
 
     pat = re.compile(r"duckdb\.connect\(")

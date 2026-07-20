@@ -153,6 +153,21 @@ class SystemSecretsPgRepository:
             ).fetchone()
         return row is not None
 
+    def list_names_with_prefix(self, prefix: str) -> list[str]:
+        """Names of every row whose ``name`` starts with ``prefix``, sorted.
+
+        Signature-compatible with the DuckDB sibling
+        (``app.secrets_vault.SystemSecretsRepository.list_names_with_prefix``)
+        — see its docstring for why ``position(... IN ...)`` is used instead
+        of ``LIKE``.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text("SELECT name FROM system_secrets WHERE position(:prefix IN name) = 1 ORDER BY name"),
+                {"prefix": prefix},
+            ).fetchall()
+        return [r[0] for r in rows]
+
 
 class PerUserSecretsPgRepository:
     """Per-user MCP source secrets (PG). One row per ``(source_id, user_id)``.

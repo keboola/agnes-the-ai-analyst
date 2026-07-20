@@ -135,6 +135,7 @@ def safe_where_predicate(
     schema: Mapping[str, str],
     *,
     dialect: str = "bigquery",
+    render_dialect: str | None = None,
 ) -> str:
     """Validate `predicate` and return the canonical comment-stripped SQL fragment.
 
@@ -144,13 +145,22 @@ def safe_where_predicate(
     like ``1=1 --`` validates clean (AST sees just ``1=1``) but the raw
     string commented out everything after it in the final SQL — bypassing
     LIMIT, ORDER BY, and the server-enforced row caps.
+
+    ``render_dialect``, when set, re-renders the validated AST in a different
+    dialect than it was parsed with — i.e. transpiles the predicate. Used for
+    `query_mode='materialized'` BigQuery tables: clients write BQ-flavor
+    predicates (per the source_type), but the scan executes on a local DuckDB
+    read of the materialized parquet, so the fragment must be emitted as
+    DuckDB SQL (e.g. ``DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)`` →
+    DuckDB date arithmetic). ``None`` (default) keeps the historical
+    parse-dialect rendering byte-identical.
     """
     where = validate_where(predicate, table_id, schema, dialect=dialect)
     # `where.this` is the expression inside WHERE (without the WHERE keyword).
     # `.sql(comments=False)` re-renders the parsed AST and explicitly drops
     # `/* ... */` block comments that sqlglot otherwise attaches to nodes
     # as metadata (line `--` comments are already lost during parsing).
-    return where.this.sql(dialect=dialect, comments=False)
+    return where.this.sql(dialect=render_dialect or dialect, comments=False)
 
 
 def _walk_structural(node: exp.Expression, table_id: str, schema: Mapping[str, str]) -> None:
