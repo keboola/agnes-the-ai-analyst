@@ -5,7 +5,7 @@ Agnes splits its persistent data into two tiers:
 | Tier | Path | Contents | Backup posture |
 |---|---|---|---|
 | **data** | `/data` | analytics workspace, extracts, DuckDB caches | regenerable |
-| **state** | `${STATE_DIR}` | `system.duckdb`, `.session_secret`, `.jwt_secret`, `certs/*` | irreplaceable |
+| **state** | `${STATE_DIR}` | `system.duckdb`, `.session_secret`, `.jwt_secret`, `.oauth_enc_key`, `certs/*` | irreplaceable |
 
 `STATE_DIR` is an environment variable that selects the host path the state tier is mounted from. Two layouts are supported:
 
@@ -97,7 +97,7 @@ Verify: `sudo docker exec agnes-app-1 ls /data-state` should show `system.duckdb
 
 App code:
 - `src/db.py::_get_state_dir()` — the canonical helper. Used by `get_system_db()` and the schema migration snapshot.
-- `app/secrets.py::_state_dir()` — for `.session_secret`, `.jwt_secret`. Mirrors the helper since `app/` shouldn't import from `src/`.
+- `app/secrets.py::_state_dir()` — for `.session_secret`, `.jwt_secret`, and `.oauth_enc_key` (the OAuth `client_secret` encryption key, #869). Mirrors the helper since `app/` shouldn't import from `src/`. Like the other secret files it is **irreplaceable**: if it is lost (STATE_DIR not persisted) or rotated, previously-encrypted `client_secret`s can no longer be decrypted and those OAuth clients must re-register (fail-closed by design) — the same STATE_DIR durability requirement that already applies to `.jwt_secret` / `.session_secret`.
 - `app/main.py` — for the `.env_overlay` startup file (loaded at process start).
 - `app/instance_config.py` — for the writable `instance.yaml` overlay (read at every config-load).
 - `app/api/admin.py` — for the writable `instance.yaml` overlay (write site of `POST /api/admin/server-config` and `POST /api/admin/configure`) and for `.env_overlay` (write site of `POST /api/admin/configure`).
