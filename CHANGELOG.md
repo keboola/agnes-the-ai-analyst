@@ -22,6 +22,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.75.10] - 2026-07-20
+
+### Fixed
+
+- Dropped the 3 non-unique secondary indexes on `usage_session_summary`
+  (on `username`, `started_at`, `user_id`). A corrupt entry in one of them
+  turned the periodic usage session-processor's routine upsert into a
+  fatal, connection-invalidating DuckDB error ("Failed to delete all rows
+  from index" → "database has been invalidated") that took down the whole
+  instance (including login) and recurred every scheduler tick. Schema
+  v94 → v95 (DuckDB migration + matching Alembic revision) repairs existing
+  instances on upgrade; `session_file` remains the primary key and the
+  upsert keeps refreshing all columns (safe once unindexed).
+
 ## [0.75.9] - 2026-07-20
 
 ### Added
