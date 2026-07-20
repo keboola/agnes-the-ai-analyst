@@ -9,6 +9,8 @@ import pytest
 
 from connectors.keboola.semantic_layer import (
     MasterTokenRequiredError,
+    assign_glossary_id,
+    build_glossary_row,
     build_metric_row,
     compose_join_sql,
     compose_sql,
@@ -23,6 +25,7 @@ from connectors.keboola.semantic_layer import (
     resolve_join_aliases,
     resolve_relationship,
     resolve_table_name,
+    slugify_term,
     table_lookup_from_registry,
     try_join_composition,
 )
@@ -409,13 +412,6 @@ def _relationship_item(name, from_id, to_id, on, rel_type="left", model_uuid="mo
     }
 
 
-from connectors.keboola.semantic_layer import (
-    assign_glossary_id,
-    build_glossary_row,
-    slugify_term,
-)
-
-
 class TestSlugifyTerm:
     def test_lowercases_and_replaces_spaces(self):
         assert slugify_term("Monthly Recurring Revenue") == "monthly_recurring_revenue"
@@ -623,6 +619,37 @@ class TestComposeJoinSql:
         # 2 from the rewritten expression (both distinct aliases -> j.) +
         # 1 from the composed ON clause's own j. reference.
         assert sql.count('j."') == 3
+
+    def test_does_not_corrupt_alias_qualified_text_inside_a_quoted_literal(self):
+        """Devin Review, PR #944: a string literal containing "<alias>." text
+        (e.g. an enum-like value) must survive untouched — only real
+        alias-qualified column references get rewritten."""
+        expr = "CASE WHEN o.\"status\" = 'o.pending' THEN 1 ELSE 0 END"
+        sql = compose_join_sql(
+            expr,
+            "crm_activities",
+            "crm_opportunities",
+            'o."opportunity_id" = a."id"',
+            "a",
+            "o",
+        )
+        assert "'o.pending'" in sql
+        assert 'j."status"' in sql
+
+    def test_does_not_corrupt_alias_qualified_text_inside_a_quoted_identifier(self):
+        """Devin Review, PR #944: a quoted identifier containing "<alias>."
+        text must survive untouched — only real alias-qualified column
+        references get rewritten."""
+        expr = 'SUM(o."o.legacy_amount")'
+        sql = compose_join_sql(
+            expr,
+            "crm_activities",
+            "crm_opportunities",
+            'o."opportunity_id" = a."id"',
+            "a",
+            "o",
+        )
+        assert '"o.legacy_amount"' in sql
 
 
 class TestTryJoinComposition:

@@ -151,6 +151,24 @@ def has_embedded_sql_comment(expression: str) -> bool:
     return "--" in _mask_quoted_regions(expression)
 
 
+_QUOTED_REGION_RE = re.compile(f"({_SQL_IDENTIFIER_RE.pattern}|{_SQL_STRING_LITERAL_RE.pattern})")
+
+
+def _sub_outside_quotes(pattern: str, repl: str, expression: str) -> str:
+    """Like re.sub(pattern, repl, expression), but never touches text inside
+    a single-quoted string literal or a double-quoted identifier.
+
+    Splits on quoted regions (kept verbatim as a capture group, so they land
+    at odd indices) and only substitutes in the unquoted segments — unlike
+    _mask_quoted_regions, this preserves the exact original text, so it's
+    safe to use for a rewrite (not just detection).
+    """
+    parts = _QUOTED_REGION_RE.split(expression)
+    for i in range(0, len(parts), 2):
+        parts[i] = re.sub(pattern, repl, parts[i])
+    return "".join(parts)
+
+
 def compose_sql(expression: str, table_name: str) -> str:
     """Compose a full, runnable metric_definitions.sql from a Keboola
     semantic-metric.sql fragment (a bare aggregation expression, verified
@@ -690,7 +708,10 @@ def compose_join_sql(
     """
     rewritten_expression = expression
     for alias in extract_foreign_aliases(expression):
-        rewritten_expression = re.sub(rf"\b{re.escape(alias)}\s*\.", "j.", rewritten_expression)
+        # Devin Review, PR #944: rewrite outside quoted regions only, so an
+        # alias-qualified-looking substring inside a string literal or a
+        # quoted identifier (e.g. `'o.pending'`) is never corrupted.
+        rewritten_expression = _sub_outside_quotes(rf"\b{re.escape(alias)}\s*\.", "j.", rewritten_expression)
 
     on_alias1, on_col1, on_alias2, on_col2 = parse_on_clause(on)  # type: ignore[misc]
     remapped_alias1 = "t" if on_alias1 == to_alias else "j"
