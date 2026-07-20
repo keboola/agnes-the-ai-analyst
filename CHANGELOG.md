@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- BigQuery cost attribution: the billable job on the fully-materialized
+  remote-select path (`agnes query --remote --auto-snapshot` /
+  `run_remote_select_to_arrow`) now runs via labeled
+  `client.query(labels=...)` instead of the unlabeled DuckDB `bigquery_query()`
+  extension, so those jobs carry per-user `workload_type` / `agent_name` /
+  `environment` / `user_id` labels for `INFORMATION_SCHEMA.JOBS` / billing-export
+  attribution (#752). Shared with `/api/v2/scan` via a new
+  `connectors.bigquery.access.run_bq_query_to_arrow` helper. The interactive,
+  LIMIT-capped `/api/query --remote` path (small, bounded byte volume) still
+  runs through the extension — see
+  [docs/planning/752-bq-billable-labels.md](docs/planning/752-bq-billable-labels.md).
+
 ## [0.74.118] - 2026-07-18
 
 ### Changed
