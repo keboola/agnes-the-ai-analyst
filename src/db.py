@@ -1655,9 +1655,14 @@ def _probe_art_integrity(
     Returns ``(True, None)`` when every probe succeeds. Returns
     ``(False, detail)`` when a probe raises the ART-corruption signature —
     at which point ``conn`` is invalidated and the caller must discard it
-    and rebuild. Any *other* DuckDB error is re-raised: this canary must
-    never mask an unrelated failure as "corrupt" and trigger a needless
-    rebuild.
+    and rebuild. Any *other* DuckDB error on a given table (e.g. a
+    foreign-key ``ConstraintException`` from a referenced row) is caught,
+    that table's probe transaction is rolled back, and the loop moves on
+    to the next table — this canary's sole job is spotting the ART-
+    corruption signature, so it must never itself abort the DB open or
+    trigger a needless rebuild over an unrelated per-table quirk
+    (Devin Review, PR #948 — this docstring previously said such errors
+    are "re-raised", which never matched the implementation below).
     """
     indexed = conn.execute(
         "SELECT DISTINCT table_name FROM duckdb_constraints() WHERE constraint_type IN ('PRIMARY KEY', 'UNIQUE')"
@@ -1749,8 +1754,18 @@ def _rebuild_system_db(db_path: str) -> Path:
         elif os.path.exists(stale):
             os.remove(stale)
 
-    # 1. Export the readable data from the (index-corrupt) live file.
-    src = _open_duckdb(db_path, read_only=True)
+    # 1. Export the readable data from the (index-corrupt) live file. A
+    # normal (read-write) open, not read-only: read-only bypasses WAL
+    # replay entirely (see _peek_schema_version's docstring), so any
+    # transactions committed since the last checkpoint but still only in
+    # ``db_path + ".wal"`` would silently be missing from the export —
+    # the opposite of this function's "data preserved" contract (Devin
+    # Review, PR #948). A normal open is safe here: the whole premise of
+    # this self-heal path is that the file OPENS fine on a plain
+    # read-write connection — only an explicit write against the corrupt
+    # index fails — and EXPORT DATABASE itself only does full table
+    # scans, no index writes, so it can't re-trigger the corruption.
+    src = _open_duckdb(db_path)
     try:
         src.execute(f"EXPORT DATABASE '{export_dir}' (FORMAT PARQUET)")
     finally:
