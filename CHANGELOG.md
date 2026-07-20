@@ -16,11 +16,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
-- **Session processors could hold the request-serving process for minutes under a large session backlog (e.g. a bulk onboarding wave), causing app-wide `503`s on completely unrelated endpoints.** `run_processor()` (`services/session_pipeline/runner.py`) now enforces a per-tick wall-clock time budget (default 150s) across the whole cross-session loop, in addition to the existing per-tick attempt-count cap — once the budget is exceeded, the loop stops visiting new candidates and leaves the rest for the next scheduler tick (already-processed sessions in that tick stay marked processed; no exception is raised, since a partial tick is a normal outcome). This closes a gap the attempt-count cap alone didn't cover: one processor (`usage`) is deliberately exempt from the attempt-count cap as cheap/local-only, so a large backlog could previously drain unboundedly in one tick.
-
 ### Removed
 
 ### Internal
+
+## [0.74.122] - 2026-07-20
+
+### Fixed
+
+- **Session processors could hold the request-serving process for minutes under a large session backlog (e.g. a bulk onboarding wave), causing app-wide `503`s on completely unrelated endpoints.** `run_processor()` (`services/session_pipeline/runner.py`) now enforces a per-tick wall-clock time budget (default 150s) across the whole cross-session loop, in addition to the existing per-tick attempt-count cap — once the budget is exceeded, the loop stops visiting new candidates and leaves the rest for the next scheduler tick (already-processed sessions in that tick stay marked processed; no exception is raised, since a partial tick is a normal outcome). This closes a gap the attempt-count cap alone didn't cover: one processor (`usage`) is deliberately exempt from the attempt-count cap as cheap/local-only, so a large backlog could previously drain unboundedly in one tick.
 
 ## [0.74.121] - 2026-07-20
 
