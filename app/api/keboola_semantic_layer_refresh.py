@@ -32,7 +32,35 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _refresh_lock = asyncio.Lock()
-_refresh_state: dict[str, Any] = {"run_id": None, "started_at": None}
+# In-flight tracking (`run_id`/`started_at`, cleared once a run finishes) plus
+# the LAST COMPLETED run's summary (`last_completed_at`/`last_status`/
+# `last_result`), so an admin who hasn't synced yet — or whose last sync
+# failed — sees that state instead of nothing (#953). Deliberately in-memory
+# (since last process restart) rather than a new DB table/migration: cheap,
+# low-risk v1 for a status display.
+_refresh_state: dict[str, Any] = {
+    "run_id": None,
+    "started_at": None,
+    "last_completed_at": None,
+    "last_status": None,
+    "last_result": None,
+}
+
+
+def get_last_refresh_summary() -> dict[str, Any]:
+    """Read accessor for the admin UI — the last completed run's summary,
+    without reaching into the module-private `_refresh_state` dict directly."""
+    return {
+        "last_completed_at": _refresh_state.get("last_completed_at"),
+        "last_status": _refresh_state.get("last_status"),
+        "last_result": _refresh_state.get("last_result"),
+    }
+
+
+def _record_completion(status: str, result: Any) -> None:
+    _refresh_state["last_completed_at"] = datetime.now(timezone.utc).isoformat()
+    _refresh_state["last_status"] = status
+    _refresh_state["last_result"] = result
 
 
 @router.post("/api/admin/run-keboola-semantic-layer-refresh")
@@ -62,7 +90,13 @@ async def run_keboola_semantic_layer_refresh(
         try:
             result = await asyncio.to_thread(sync_semantic_layer)
         except MasterTokenRequiredError as e:
+            _record_completion("error", str(e))
             raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            _record_completion("error", str(e))
+            raise
+        else:
+            _record_completion("ok", result)
         finally:
             _refresh_state["run_id"] = None
             _refresh_state["started_at"] = None

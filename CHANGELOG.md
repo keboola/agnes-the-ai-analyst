@@ -12,6 +12,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- `/admin/data-sources` now shows the Keboola semantic-layer sync status
+  (never-synced / last-sync-ok-with-N-items / last-attempt-failed-with-reason)
+  even when the metric/glossary counts are currently zero, plus a "Sync now"
+  button that calls the existing admin refresh endpoint in place. Previously
+  the summary card only rendered once a sync had produced nonzero counts, so
+  an admin who hadn't synced yet — or whose last attempt errored — saw
+  nothing. Status is tracked in-memory (since last process restart); no new
+  DB table.
+
 ### Changed
 
 ### Fixed
