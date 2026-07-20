@@ -68,6 +68,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the row wraps on narrow viewports.
 ### Added
 
+- **Opt-in signed-URL distribution** (wave-2H, WS F — off by default; no
+  behavior change unless an operator configures an object store): when
+  `distribution.object_store` is set (bucket + optional S3-compatible
+  `endpoint_url`, credentials via `access_key_env`/`secret_key_env`
+  indirection) and `distribution.signed_urls` is `auto`/`on`, the worker
+  mirrors distribution parquets to the bucket after each sync (a new
+  `distribution-mirror` LIGHT job chained off `data-refresh`, md5-keyed and
+  idempotent), the `/api/sync/manifest` per-table entries gain a short-TTL
+  (~15 min) presigned `signed_url` + `signed_url_expires_at` next to the
+  existing md5/size, and `agnes pull` prefers the presigned URL — fetching
+  the parquet straight from object storage — with automatic fallback to the
+  app-served `/api/data/{id}/download` on any failure, md5-verifying the
+  bytes on both paths. Moves download bandwidth off the single app NIC onto
+  object storage at L tier; the S/M default (app-served path + reverse-proxy
+  file-server bypass) is unchanged. Vendor-agnostic by construction — one
+  S3-compatible client (`boto3`, shipped as the optional `[distribution]`
+  extra) covers AWS S3, GCS's S3-interop endpoint, SeaweedFS, and managed
+  buckets; there is no bundled object store. Presigned URLs never widen
+  access (emitted only for tables the caller can already download, and never
+  for row-level-RBAC internal tables), and the `agnes pull` fetch is
+  DNS-rebinding-guarded with redirects disabled. Config guide:
+  [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#signed-url-distribution-object-store);
+  architecture: [`docs/architecture.md`](docs/architecture.md).
+
 - **Opt-in DuckLake analytics backend** (wave-2G, WS E — `legacy` remains the
   default; every existing deployment is unaffected until an operator opts
   in): `analytics.backend: ducklake` (or `AGNES_ANALYTICS_BACKEND=ducklake`)

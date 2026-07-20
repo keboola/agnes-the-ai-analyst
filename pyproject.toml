@@ -232,6 +232,17 @@ slack-socket = [
     # `ModuleNotFoundError: No module named 'aiohttp'` until it is declared here.
     "aiohttp>=3.9",
 ]
+distribution = [
+    # S3-compatible client for signed-URL distribution (three-plane wave
+    # 2-H): src/object_store.py's S3ObjectStore uses boto3's V4 signer
+    # against AWS S3, GCS's S3-interop endpoint, SeaweedFS, or any other
+    # managed bucket that speaks the S3 API — vendor-agnostic by design,
+    # so this stays a single optional extra rather than per-vendor SDKs.
+    # Import is guarded (`try: import boto3 except ImportError`); without
+    # this extra installed, signed-URL distribution simply stays off
+    # (object_store() returns None) instead of crashing at boot.
+    "boto3>=1.34",
+]
 dev = [
     "pytest>=9.0.0",
     "pytest-timeout>=2.0.0",
@@ -274,6 +285,13 @@ dev = [
     # pipeline/WATCH — deliberately no Lua scripting dependency, see that
     # module's docstring).
     "fakeredis>=2.20",
+    # boto3 for tests/test_object_store.py — S3ObjectStore is exercised
+    # against a monkeypatched `boto3.client`, but the module still needs
+    # boto3 (and its bundled botocore.exceptions.ClientError) importable
+    # in CI. Production installs opt in via the `distribution` extra
+    # above (mirrored here so `.[dev]` — what CI installs — pulls it in
+    # too; see the matching entry in `[tool.uv] dev-dependencies` below).
+    "boto3>=1.34",
 ]
 
 [project.scripts]
@@ -326,6 +344,7 @@ dev-dependencies = [
     "pytest-postgresql>=6",
     "pixeltable-pgserver>=0.5.1",
     "fakeredis>=2.20",
+    "boto3>=1.34",
 ]
 # Override the urllib3<2.0.0 ceiling kbcstorage 0.9.5 declares (upstream
 # hasn't relaxed it as of 2026-05-12 but the SDK works fine against

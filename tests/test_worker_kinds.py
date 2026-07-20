@@ -1,15 +1,20 @@
 """Tests for ``app/worker/kinds.py`` (wave-2B Task 4; ``ducklake-maintenance``
 added in wave-2G Task 5 — see ``tests/test_ducklake_maintenance.py`` for its
-dedicated coverage; ``analytics-migrate`` added in wave-2G Task 6).
+dedicated coverage; ``analytics-migrate`` added in wave-2G Task 6;
+``distribution-mirror`` added in wave-2H Task WF-3 — see
+``tests/test_distribution_mirror.py`` for its dedicated coverage).
 
 Verifies:
 
 - ``register_all_kinds()`` registers all five wave-2B job kinds with the
-  correct lane (the sixth, ``ducklake-maintenance``, and the seventh,
-  ``analytics-migrate``, are asserted alongside them here too — just their
-  presence/lane; ``ducklake-maintenance``'s handler behavior lives in
+  correct lane (the sixth, ``ducklake-maintenance``, the seventh,
+  ``analytics-migrate``, and the eighth, ``distribution-mirror``, are
+  asserted alongside them here too — just their presence/lane;
+  ``ducklake-maintenance``'s handler behavior lives in
   ``tests/test_ducklake_maintenance.py``, ``analytics-migrate``'s dispatch
-  behavior in ``TestAnalyticsMigrateHandler`` below).
+  behavior in ``TestAnalyticsMigrateHandler`` below, and
+  ``distribution-mirror``'s handler behavior in
+  ``tests/test_distribution_mirror.py``).
 - Each kind's handler is a thin adapter that DELEGATES to the existing
   function it wraps — no logic is reimplemented here. Verified by
   monkeypatching the wrapped target and asserting it was called (with
@@ -51,7 +56,7 @@ def jobs_db(tmp_path, monkeypatch):
 
 
 class TestRegisterAllKinds:
-    def test_registers_seven_kinds(self):
+    def test_registers_eight_kinds(self):
         from app.worker.kinds import register_all_kinds
         from app.worker.registry import JOB_KINDS
 
@@ -65,6 +70,7 @@ class TestRegisterAllKinds:
             "jira-refresh",
             "ducklake-maintenance",
             "analytics-migrate",
+            "distribution-mirror",
         }
 
     def test_lanes_are_correct(self):
@@ -80,6 +86,7 @@ class TestRegisterAllKinds:
         assert JOB_KINDS["corporate-memory"].lane == LIGHT_LANE
         assert JOB_KINDS["ducklake-maintenance"].lane == LIGHT_LANE
         assert JOB_KINDS["analytics-migrate"].lane == HEAVY_LANE
+        assert JOB_KINDS["distribution-mirror"].lane == LIGHT_LANE
 
     def test_idempotent_reregistration(self):
         """Calling register_all_kinds() twice (e.g. test re-imports, or a
@@ -90,7 +97,7 @@ class TestRegisterAllKinds:
         register_all_kinds()
         register_all_kinds()
 
-        assert len(JOB_KINDS) == 7
+        assert len(JOB_KINDS) == 8
 
 
 class TestDataRefreshHandler:
