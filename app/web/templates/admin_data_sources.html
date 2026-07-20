@@ -23,13 +23,15 @@
   .ds-vault-banner .vault-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
   .ds-vault-banner strong { display: block; margin-bottom: 2px; font-weight: 600; }
 
-  /* Semantic-layer sync summary — same shape as the vault banner but the
-     success accent (informational, not blocking). */
+  /* Semantic-layer sync summary — same shape as the vault banner. Accent
+     tracks the last-run status: success (ok), danger (error), neutral
+     (never synced yet). */
   .ds-semantic-summary {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
+    flex-wrap: wrap;
     background: var(--ds-accent-success-bg);
     border: 1px solid var(--ds-accent-success-line);
     border-radius: 10px;
@@ -38,7 +40,19 @@
     font-size: 13px;
     color: var(--ds-accent-success-ink);
   }
+  .ds-semantic-summary.ds-semantic-summary--pending {
+    background: var(--ds-surface-dim);
+    border-color: var(--ds-border);
+    color: var(--text-secondary, var(--ds-text-secondary));
+  }
+  .ds-semantic-summary.ds-semantic-summary--error {
+    background: var(--ds-accent-danger-bg);
+    border-color: var(--ds-accent-danger-line);
+    color: var(--ds-accent-danger-ink);
+  }
   .ds-semantic-summary a { color: inherit; font-weight: 600; text-decoration: underline; }
+  .ds-semantic-actions { display: flex; align-items: center; gap: 10px; }
+  .ds-semantic-actions button { font-size: 12px; padding: 6px 12px; }
 
   .ds-section-header {
     display: flex;
@@ -278,21 +292,31 @@
   </div>
   {% endif %}
 
-  {# Semantic-layer sync summary (#853 + #920 follow-up) — shows once a
-     Keboola connection has synced metrics and/or glossary terms. Counts
-     are global (metric_definitions / glossary_terms carry no
-     per-connection column) and scoped to source='keboola_semantic_layer'
-     rows only. #}
-  {% if semantic_metric_count or semantic_glossary_count %}
-  <div class="ds-semantic-summary">
+  {# Semantic-layer sync status (#853 + #920 follow-up, #953 status
+     visibility) — always visible, not just after a successful sync: an
+     admin who hasn't synced yet, or whose last attempt failed, needs to see
+     that state instead of nothing. Counts are global (metric_definitions /
+     glossary_terms carry no per-connection column) and scoped to
+     source='keboola_semantic_layer' rows only. #}
+  {% set rs = semantic_refresh_summary or {} %}
+  <div class="ds-semantic-summary {{ 'ds-semantic-summary--error' if rs.last_status == 'error' else ('ds-semantic-summary--pending' if not rs.last_status else '') }}">
     <span>
       <strong>Semantic layer:</strong>
       {{ semantic_metric_count }} metric{{ 's' if semantic_metric_count != 1 else '' }},
       {{ semantic_glossary_count }} glossary term{{ 's' if semantic_glossary_count != 1 else '' }} synced from Keboola.
+      {% if rs.last_status == 'ok' %}
+        Last sync {{ rs.last_completed_at }} — OK.
+      {% elif rs.last_status == 'error' %}
+        Last sync attempt ({{ rs.last_completed_at }}) failed: {{ rs.last_result }}
+      {% else %}
+        Never synced yet.
+      {% endif %}
     </span>
-    <a href="/catalog/semantics">Browse it →</a>
+    <span class="ds-semantic-actions">
+      <a href="/catalog/semantics">Browse it →</a>
+      <button type="button" class="btn btn-secondary" id="ds-semantic-sync-btn">Sync now</button>
+    </span>
   </div>
-  {% endif %}
 
   <div class="ds-section-header">
     <div>
@@ -840,6 +864,37 @@ document.getElementById("ds-wizard-overlay").addEventListener("click", function 
 });
 document.getElementById("ds-wizard-overlay").addEventListener("keydown", function (e) {
   if (e.key === "Escape") closeWizard();
+});
+
+/* ── Semantic-layer "Sync now" (#953) ───────────────────────────────────── */
+
+const SEMANTIC_REFRESH_URL = "/api/admin/run-keboola-semantic-layer-refresh";
+
+document.getElementById("ds-semantic-sync-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("ds-semantic-sync-btn");
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Syncing…";
+  try {
+    const r = await fetch(SEMANTIC_REFRESH_URL, { method: "POST", credentials: "include" });
+    const body = await r.json().catch(() => ({}));
+    if (r.ok) {
+      showToast(`Synced: ${body.created_or_updated ?? 0} updated, ${body.pruned ?? 0} pruned`, true);
+      setTimeout(() => window.location.reload(), 1200);
+      return;
+    }
+    if (r.status === 409) {
+      showToast("A sync is already running", false);
+    } else {
+      const detail = typeof body.detail === "string" ? body.detail : (body.detail && body.detail.reason) || r.statusText;
+      showToast("Sync failed: " + detail, false);
+    }
+  } catch (e) {
+    showToast("Sync failed: " + e.message, false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
 });
 
 loadConnections();
