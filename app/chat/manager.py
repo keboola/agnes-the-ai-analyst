@@ -1390,7 +1390,18 @@ class ChatManager:
     async def _idle_reaper_loop(self) -> None:
         while True:
             await asyncio.sleep(60)
-            await self._reap_once()
+            # #867: never let a single failed sweep kill the reaper task. Before
+            # this guard, one unhandled error in _reap_once (a transient kill /
+            # destroy / DB hiccup) propagated out of the loop and the reaper
+            # died silently — after which paused/idle sandboxes accumulated
+            # indefinitely (billable) with nothing reaping them. Log and carry
+            # on to the next sweep instead.
+            try:
+                await self._reap_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("chat idle reaper sweep failed; continuing to next sweep")
 
     async def _reap_once(self) -> None:
         """One sweep of the reaper.
@@ -1463,16 +1474,33 @@ class ChatManager:
                     await self.kill(chat_id, reason="reaper_pause_failed")
 
         for chat_id, reason in to_kill:
-            await self.kill(chat_id, reason=reason)
+            # #867: per-item guard so one session that fails to kill doesn't
+            # abort the rest of the sweep (and, with the loop guard above, can't
+            # kill the reaper). Each sweep makes as much progress as it can.
+            try:
+                await self.kill(chat_id, reason=reason)
+            except Exception:
+                logger.exception("reaper kill failed for %s (%s); continuing", chat_id, reason)
 
         # Paused-TTL sweep: destroy sandboxes that have been paused too long.
         # Works purely from repo rows — catches pre-restart leftovers too.
         paused_cutoff = now - timedelta(seconds=self._config.paused_ttl_seconds)
-        for session in self._repo.list_paused_sessions(paused_before=paused_cutoff):
+        try:
+            paused_sessions = self._repo.list_paused_sessions(paused_before=paused_cutoff)
+        except Exception:
+            logger.exception("reaper: list_paused_sessions failed; skipping paused sweep this cycle")
+            paused_sessions = []
+        for session in paused_sessions:
+            # #867: guard the whole per-session teardown — a destroy failure was
+            # already tolerated, but a failing clear_sandbox_ref (DB hiccup)
+            # previously aborted the sweep and, unguarded above, killed the loop.
             try:
-                await self._provider.destroy(sandbox_id=session.sandbox_id)
+                try:
+                    await self._provider.destroy(sandbox_id=session.sandbox_id)
+                except Exception:
+                    logger.debug("destroy sandbox %s failed (already gone?)", session.sandbox_id)
+                self._repo.clear_sandbox_ref(session.id)
+                # Drop any in-memory entry
+                self._live.pop(session.id, None)
             except Exception:
-                logger.debug("destroy sandbox %s failed (already gone?)", session.sandbox_id)
-            self._repo.clear_sandbox_ref(session.id)
-            # Drop any in-memory entry
-            self._live.pop(session.id, None)
+                logger.exception("reaper: paused-TTL teardown failed for %s; continuing", session.id)

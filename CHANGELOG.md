@@ -18,9 +18,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Chat idle reaper no longer dies permanently on a single failed sweep. The
+  loop had no error guard, so one unhandled exception in a sweep (a transient
+  sandbox kill/destroy or DB hiccup) killed the reaper task — after which idle
+  and paused E2B sandboxes accumulated indefinitely (billable) with nothing
+  reaping them (#867, reaper-cadence half). The loop now logs and continues to
+  the next sweep, and the kill phase + paused-TTL teardown are per-item guarded
+  so one bad session can't abort the rest of a sweep. (Note: paused sandboxes
+  are still retained for `chat.paused_ttl_seconds`, default 7 days, by design —
+  lower it to reduce paused-VM cost.)
+
 ### Removed
 
 ### Internal
+
+### Security
+
+- Query RBAC: non-admins can no longer reach an un-granted source's rows via a
+  catalog-qualified path. Each source's `extract.duckdb` is ATTACHed as its own
+  catalog, and the previous non-admin gate was a denylist of master-VIEW names
+  in the default catalog — so `<ungranted_source>.main."<table>"` slipped past
+  it (base relations in other catalogs aren't default-catalog views). `/api/query`
+  and `/api/v2/scan (from_query)` now reject any catalog-qualified reference into
+  a local extract catalog for non-admins (the granted surface is the unqualified
+  master views); remote-extension catalogs (`bq`/`kbc`) keep their registry gate.
+  Generalizes the audit M1 internal-table fix (#868). The two duplicated
+  enforcement copies were consolidated into one helper.
 
 ## [0.74.121] - 2026-07-20
 
