@@ -75,9 +75,10 @@ Accurate as of this date; cite before extending.
   under `app/` rather than `src/repositories/` — a structural asymmetry, not a
   gap.)
 - **Schema** — two ladders kept in lockstep: DuckDB `src/db.py`
-  (`SCHEMA_VERSION = 94`, 63 `_vN_to_v(N+1)` steps, self-migrates on every
-  connect) and Alembic `migrations/` (41 revisions, head `0041_jobs_v94` = DuckDB
-  v94). A sync-map rule requires both ladders to reach the same version.
+  (`SCHEMA_VERSION = 95`, `_vN_to_v(N+1)` steps, self-migrates on every
+  connect) and Alembic `migrations/` (42 revisions, head
+  `0042_usage_summary_idx_fix_v95` = DuckDB v95). A sync-map rule requires both
+  ladders to reach the same version.
 - **PG schema application** — `app/main.py` lifespan calls
   `src.db_pg.ensure_pg_at_head()` when `use_pg()`, which runs `alembic upgrade
   head` **in-process under a PG advisory lock** (replica-safe) when behind, and
