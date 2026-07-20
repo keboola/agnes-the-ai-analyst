@@ -20,6 +20,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.75.3] - 2026-07-20
+
+### Added
+
+- Keboola relationship-based JOIN metrics: `semantic-metric` expressions previously skipped as `foreign_alias_reference` now compose a two-table `LEFT JOIN` when exactly one `semantic-relationship` connects the metric's dataset (on the live-verified `to` side) to a registered Agnes table, resolved by real column metadata rather than alias-name matching (verified live: alias names in `semantic-relationship.on` never matched the aliases metric authors used). Anything ambiguous, an unverified join direction, or an unsupported relationship type still skips and counts under a specific reason — never a guessed JOIN.
+
 ## [0.75.2] - 2026-07-20
 
 ### Added
