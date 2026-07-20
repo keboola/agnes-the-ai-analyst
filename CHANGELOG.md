@@ -20,6 +20,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.74.121] - 2026-07-20
+
+### Internal
+
 - Fixed `tests/test_cli_push.py` and `tests/test_e2e_privacy.py` making real,
   uncontrolled network calls during the test suite: the gzip-capability
   health probe added in #929 (`_server_accepts_gzip()`) resolves `api_get`
