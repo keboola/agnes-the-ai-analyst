@@ -22,6 +22,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.75.9] - 2026-07-20
+
+### Added
+
+- E2B SDK contract tests (`tests/test_e2b_sdk_contract.py`) that assert against
+  the *installed* `e2b` package — `AsyncSandbox.list` is a lazy paginator
+  factory (not a coroutine), `AsyncSandbox.create` still accepts the `network`
+  kwarg, and the symbols `app/chat` calls still exist. These catch SDK contract
+  drift at `pip install` time (zero network, normal CI) — the class of breakage
+  that hit chat three times but stayed green because the unit mocks encoded the
+  old shape (#872). Plus a key-gated real-SDK smoke test
+  (`tests/test_e2b_smoke.py`, `-m e2b`, skipped unless `E2B_API_KEY` is set) that
+  drives the real `list() → await next_items()` auth round trip.
+
 ## [0.75.8] - 2026-07-20
 
 ### Security
