@@ -13,6 +13,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 - **Actionable diagnostic when the chat LLM credential fails at runtime.** An invalid/expired key (HTTP 401/403), an unfunded account ("credit balance too low", HTTP 400), or a provider outage forwarding chat traffic through the broker previously surfaced only as an opaque synthetic assistant message. The broker now classifies the failure (reusing `app/chat/readiness.py::classify_llm_failure`, shared with the admin "test connection" probe), records a key-free signal, and audits it as `broker_llm_auth_failure`. `GET /admin/chat/readiness` gains an `llm_runtime` field and the *Cloud chat readiness* admin panel shows a red banner naming the exact fault; the signal clears on the next successful forward. Operator remediation runbook added to `docs/DEPLOYMENT.md`.
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.75.1] - 2026-07-20
+
+### Added
+
 - Jira parquet: reproducible bloom-filter benchmark
   (`connectors/jira/scripts/bloom_benchmark.py`) and a decision record
   ([docs/planning/749-jira-parquet-bloom-filters.md](docs/planning/749-jira-parquet-bloom-filters.md)).
@@ -22,13 +34,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   our selective queries — so bloom filters are intentionally not added. Closes
   the benchmark acceptance criterion left open since #406/#665.
 
-### Changed
-
 ### Fixed
 
-### Removed
-
-### Internal
+- **Session processors could hold the request-serving process for minutes under a large session backlog (e.g. a bulk onboarding wave), causing app-wide `503`s on completely unrelated endpoints.** `run_processor()` (`services/session_pipeline/runner.py`) now enforces a per-tick wall-clock time budget (default 150s) across the whole cross-session loop, in addition to the existing per-tick attempt-count cap — once the budget is exceeded, the loop stops visiting new candidates and leaves the rest for the next scheduler tick (already-processed sessions in that tick stay marked processed; no exception is raised, since a partial tick is a normal outcome). This closes a gap the attempt-count cap alone didn't cover: one processor (`usage`) is deliberately exempt from the attempt-count cap as cheap/local-only, so a large backlog could previously drain unboundedly in one tick.
 
 ## [0.75.0] - 2026-07-20
 
@@ -225,7 +233,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   so one bad session can't abort the rest of a sweep. (Note: paused sandboxes
   are still retained for `chat.paused_ttl_seconds`, default 7 days, by design —
   lower it to reduce paused-VM cost.)
-- **Session processors could hold the request-serving process for minutes under a large session backlog (e.g. a bulk onboarding wave), causing app-wide `503`s on completely unrelated endpoints.** `run_processor()` (`services/session_pipeline/runner.py`) now enforces a per-tick wall-clock time budget (default 150s) across the whole cross-session loop, in addition to the existing per-tick attempt-count cap — once the budget is exceeded, the loop stops visiting new candidates and leaves the rest for the next scheduler tick (already-processed sessions in that tick stay marked processed; no exception is raised, since a partial tick is a normal outcome). This closes a gap the attempt-count cap alone didn't cover: one processor (`usage`) is deliberately exempt from the attempt-count cap as cheap/local-only, so a large backlog could previously drain unboundedly in one tick.
 
 ### Removed
 
