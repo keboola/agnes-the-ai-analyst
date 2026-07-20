@@ -320,3 +320,29 @@ def test_pg_revisions_no_migrationcontext_log_noise(pg_under_app, caplog):
     assert db_ahead is False
     noise = [r for r in caplog.records if r.name.startswith("alembic.runtime.migration")]
     assert not noise, f"health probe logged alembic migration noise: {[r.message for r in noise]}"
+
+
+def test_pg_revisions_multiple_heads_fail_closed(pg_under_app):
+    """A divergent DB (``alembic_version`` with >1 row — multiple heads or a
+    botched manual stamp) must fail closed, not silently pick the first row.
+    ``scalar_one_or_none()`` preserves the pre-plain-SELECT MigrationContext
+    behavior (``get_current_revision()`` raised on multiple rows)."""
+    import sqlalchemy as sa
+
+    from src.db_pg import _pg_revisions, get_engine
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text("CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) NOT NULL)")
+        )
+        conn.execute(sa.text("DELETE FROM alembic_version"))
+        conn.execute(
+            sa.text(
+                "INSERT INTO alembic_version (version_num) "
+                "VALUES ('aaaaaaaaaaaa'), ('bbbbbbbbbbbb')"
+            )
+        )
+
+    with pytest.raises(sa.exc.MultipleResultsFound):
+        _pg_revisions()

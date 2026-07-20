@@ -168,16 +168,23 @@ def _pg_revisions() -> tuple[Optional[str], Optional[str], bool]:
     # ``alembic.runtime.migration`` logger ("Context impl …" / "… transactional
     # DDL") every call, and the 30s ``/api/health`` probe calls this
     # continuously — thousands of noise lines/day drowning real app logs. A
-    # never-stamped DB (no ``alembic_version`` table) reads as None, matching
-    # ``get_current_revision()``'s old contract. Only the missing-table error
-    # (``ProgrammingError``) is swallowed — a transient connectivity/permission
-    # error must propagate so callers see "unreachable" rather than a masked
-    # "never stamped" (which would falsely read as schema drift).
+    # never-stamped DB (``alembic_version`` table absent) reads as None,
+    # matching ``get_current_revision()``'s old contract.
+    #
+    # ``scalar_one_or_none()`` (not ``scalar()``) keeps the old fail-closed
+    # behavior on a divergent DB: an ``alembic_version`` with >1 row (multiple
+    # heads / a botched manual stamp) raises rather than silently taking the
+    # first row. And only SQLSTATE 42P01 (UndefinedTable) is swallowed to None —
+    # psycopg maps 42501 (InsufficientPrivilege) onto the same ``ProgrammingError``
+    # class, so a permission failure must re-raise and surface as "unreachable"
+    # rather than a masked "never stamped" (which would read as false drift).
     engine = get_engine()
     with engine.connect() as conn:
         try:
-            current = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
-        except sa.exc.ProgrammingError:
+            current = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+        except sa.exc.ProgrammingError as exc:
+            if getattr(exc.orig, "sqlstate", None) != "42P01":
+                raise
             current = None
 
     script = ScriptDirectory.from_config(_alembic_config())
