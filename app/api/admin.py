@@ -4127,14 +4127,27 @@ def run_session_processor(
     # factory and ignore ``conn``; on Postgres pass None so the system DuckDB is
     # never opened (forbidden invariant).
     job_conn = None if use_pg() else get_system_db()
-    # The cap exists to bound wall-clock/CPU from processors that make
-    # synchronous, blocking LLM calls per session (verification). "usage" is
-    # pure local jsonl parsing + repository writes — no network I/O — so
-    # capping it too just throttles telemetry-extraction throughput for no
-    # safety benefit (Devin Review, PR #894: a bulk backfill/onboarding wave
-    # would otherwise drain at cap-size-per-tick instead of clearing in one
-    # run). Default-capped for any other/future processor (safe-by-default);
-    # explicitly exempt "usage" since it's verified cheap.
+    # This attempt-count cap exists to bound wall-clock/CPU from processors
+    # that make synchronous, blocking LLM calls per session (verification).
+    # "usage" is pure local jsonl parsing + repository writes — no network
+    # I/O — so it stays exempt from THIS cap (Devin Review, PR #894: capping
+    # it too would just throttle telemetry-extraction throughput, draining a
+    # bulk backfill/onboarding wave at cap-size-per-tick instead of clearing
+    # it in one run). Default-capped for any other/future processor
+    # (safe-by-default).
+    #
+    # CORRECTION (incident 2026-07-20): the #894 claim that exempting usage
+    # from a per-tick cap has "no safety benefit" was wrong — an uncapped
+    # usage run against a large onboarding-wave backlog held the
+    # request-serving process for ~6 minutes (app-wide 503s), because an
+    # attempt-count cap was never the only lever. run_processor() now also
+    # enforces a per-tick WALL-CLOCK time budget
+    # (services/session_pipeline/runner.py, time_budget_seconds, default
+    # 150s) that applies to every processor regardless of this exemption —
+    # that budget is the load-bearing guard against a repeat of this
+    # incident, so usage stays safely exempt from the attempt-count cap
+    # without being unbounded in wall-clock terms. Do not re-exempt usage
+    # from the time budget too.
     session_processor_cap = None if processor == "usage" else _session_processor_max_per_run()
     stats: dict = {}
     job_error: Optional[Exception] = None
