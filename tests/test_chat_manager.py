@@ -23,6 +23,24 @@ from app.chat.workdir import WorkdirManager
 from app.coordination.factory import reset_coordination_for_tests
 
 
+async def _wait_until(predicate, *, timeout: float = 3.0, interval: float = 0.01) -> bool:
+    """Poll ``predicate()`` until true or ``timeout`` elapses (default 3s).
+
+    Replaces a bare ``await asyncio.sleep(0.05)`` before asserting on state a
+    background task (e.g. ``manager.attach``) is expected to have set. Under
+    CI's pytest-xdist parallel CPU contention a fixed 50 ms sleep can elapse
+    before the task's coroutine reaches that mutation, flaking the assert;
+    polling is deterministic under any load.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(interval)
+    return predicate()
+
+
 @pytest.fixture(autouse=True)
 def _reset_coordination():
     """The per-sender message-rate window and daily-token counters
@@ -2439,7 +2457,9 @@ def test_renew_outage_keeps_serving_but_genuine_steal_tears_down(manager: ChatMa
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        # Poll (not a fixed 50ms sleep) for attach to register the session —
+        # under CI xdist CPU contention the bare sleep flaked this assert.
+        await _wait_until(lambda: s.id in manager._live)
         assert s.id in manager._live
 
         # --- Scenario A: coordination-backend outage. Both renew_session
