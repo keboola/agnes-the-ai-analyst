@@ -20,6 +20,7 @@ Uses asyncio.run() per the project convention (no pytest-asyncio required)
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextvars
 import json
 from pathlib import Path
@@ -28,11 +29,11 @@ import duckdb
 import pytest
 
 from src.db import _ensure_schema
-from tests.chat_fakes import FakeHandle, FakeProvider, FakeWS
+from tests.chat_fakes import FakeHandle, FakeProvider, FakeWS, _wait_until
 
 import app.chat.manager as manager_mod
 import app.chat.routing as routing_mod
-from app.chat import routing
+from app.chat import inbound, routing
 from app.chat.config import ChatConfig
 from app.chat.manager import ChatManager
 from app.chat.persistence import ChatRepository
@@ -49,6 +50,42 @@ def _reset_coordination():
     reset_coordination_for_tests()
     yield
     reset_coordination_for_tests()
+
+
+# Per-chat_id count of `inbound.peek_seq` calls — i.e. how many separate
+# consumers (the original owner's, then a takeover's fresh one, ...) have
+# performed their initial cursor seed. See tests/test_chat_inbound.py's
+# `_track_inbound_peeks` for the full rationale: without this, a
+# cross-gateway publish/control message landing in the narrow window
+# between a consumer TASK existing and it actually running its first peek
+# is silently treated as already-delivered and never seen. A plain "has
+# been peeked at least once" set isn't enough here — a takeover reuses the
+# same chat_id with a SECOND, fresh consumer, and some tests need to wait
+# specifically for THAT second peek (not just the original owner's).
+_peeked_chat_ids: "collections.Counter[str]" = collections.Counter()
+
+
+@pytest.fixture(autouse=True)
+def _track_inbound_peeks(monkeypatch):
+    _peeked_chat_ids.clear()
+    orig_peek_seq = inbound.peek_seq
+
+    def _tracking_peek_seq(chat_id: str) -> int:
+        result = orig_peek_seq(chat_id)
+        _peeked_chat_ids[chat_id] += 1
+        return result
+
+    monkeypatch.setattr(inbound, "peek_seq", _tracking_peek_seq)
+    yield
+    _peeked_chat_ids.clear()
+
+
+# asyncio only holds a WEAK reference to a task from `create_task()` —
+# `_spawn_owned_session` fires `attach()` fire-and-forget; keep a strong
+# reference until it's done so a GC pass during a long poll loop can't
+# collect it mid-flight (see tests/test_chat_inbound.py's `_BACKGROUND_TASKS`
+# for the full rationale).
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
 class _FakeTicketRepo:
@@ -159,25 +196,39 @@ async def _spawn_owned_session(mgr: ChatManager) -> tuple[str, FakeHandle]:
     Polls rather than a single fixed sleep: ``ChatManager._spawn_live``
     registers the ``LiveSession`` as ``state=ACTIVE`` in ``self._live``
     BEFORE it awaits the routing-lease claim (``self._claim_routing_lease``,
-    which hops through ``asyncio.to_thread``), so a short fixed sleep can
-    observe ACTIVE state while the lease claim is still in flight. Under a
-    loaded CI runner (8 shards x pytest -n auto) that window can outlast a
-    fixed 50ms sleep — and callers' very next line is typically an assertion
-    on ``routing.owner_of``. Wait for both the live state AND the lease
-    itself to settle instead of guessing a duration.
+    which hops through ``asyncio.to_thread``) and before it starts the
+    inbound-stream consumer (``live.inbound_task``) — so a short fixed sleep,
+    or even a poll that stops at "state ACTIVE + lease claimed", can still
+    race ahead of the consumer's initial ``peek_seq`` cursor-seed. A
+    cross-gateway publish/control message landing in that gap is silently
+    treated as already-delivered and never seen (see ``_track_inbound_peeks``
+    above). Waiting for the lease, the inbound task, AND its initial peek
+    to all have landed makes every caller of this helper deterministic
+    regardless of scheduling delays.
     """
     session = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
     ws = FakeWS()
-    asyncio.create_task(mgr.attach(session.id, ws))
+    task = asyncio.create_task(mgr.attach(session.id, ws))
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
     this_gw = routing.this_gateway_id()
-    for _ in range(200):  # up to ~2s
+
+    def _ready() -> bool:
         live = mgr._live.get(session.id)
-        if live is not None and live.state == SessionState.ACTIVE and routing.owner_of(session.id) == this_gw:
-            return session.id, live.handle
-        await asyncio.sleep(0.01)
-    raise AssertionError(
-        f"session {session.id} never reached ACTIVE with a claimed routing lease for gateway {this_gw!r}"
-    )
+        return (
+            live is not None
+            and live.state == SessionState.ACTIVE
+            and live.inbound_task is not None
+            and routing.owner_of(session.id) == this_gw
+            and session.id in _peeked_chat_ids
+        )
+
+    ok = await _wait_until(_ready)
+    if not ok:
+        raise AssertionError(
+            f"session {session.id} never reached ACTIVE with a claimed routing lease for gateway {this_gw!r}"
+        )
+    return session.id, mgr._live[session.id].handle
 
 
 def _stdin_texts(handle: FakeHandle) -> list[str]:
@@ -299,7 +350,9 @@ def test_old_owner_renew_fails_tears_down_without_second_destroy(two_gateways, m
         assert chat_id not in mgr_a._live
         assert chat_id not in mgr_a._known_protocol_sessions
 
-        await asyncio.sleep(0.05)  # let cancellation propagate
+        await _wait_until(  # let cancellation propagate
+            lambda: all(t.done() for t in a_tasks) and (a_inbound_task.cancelled() or a_inbound_task.done())
+        )
         assert all(t.done() for t in a_tasks), "A's pump/wait tasks must be cancelled on lost-ownership teardown"
         assert a_inbound_task.cancelled() or a_inbound_task.done()
 
@@ -492,10 +545,7 @@ def test_old_owner_crash_path_does_not_respawn_after_foreign_takeover(two_gatewa
 
         # Give A's own background wait task time to notice the crash and
         # run its ownership check and teardown.
-        for _ in range(100):
-            await asyncio.sleep(0.02)
-            if chat_id not in mgr_a._live:
-                break
+        await _wait_until(lambda: chat_id not in mgr_a._live)
         assert chat_id not in mgr_a._live, "A's crash-respawn path must tear itself down after losing ownership"
 
         # Exactly the spawns we expect: A's original + B's takeover spawn —
@@ -783,10 +833,7 @@ def test_takeover_seeds_inbound_cursor_skips_retained_entries(two_gateways, monk
         # stays RETAINED in the chat-in:{chat_id} stream after delivery.
         _as_gateway(monkeypatch, "gw-b")
         await mgr_b.send_user_message(chat_id, "m1")
-        for _ in range(150):
-            if "m1" in _stdin_texts(handle_a):
-                break
-            await asyncio.sleep(0.02)
+        await _wait_until(lambda: "m1" in _stdin_texts(handle_a))
         assert "m1" in _stdin_texts(handle_a), "precondition: A must deliver the forwarded turn"
 
         # Freeze A's consumer (simulating the old owner wedged mid-handoff)
@@ -795,7 +842,7 @@ def test_takeover_seeds_inbound_cursor_skips_retained_entries(two_gateways, monk
         live_a = mgr_a._live[chat_id]
         assert live_a.inbound_task is not None
         live_a.inbound_task.cancel()
-        await asyncio.sleep(0.02)
+        await _wait_until(lambda: live_a.inbound_task.cancelled() or live_a.inbound_task.done())
         await inbound_mod.publish_control(chat_id, "kill", reason="stale")
 
         # B takes over: fresh LiveSession, fresh consumer, cursor seeded.
@@ -805,8 +852,15 @@ def test_takeover_seeds_inbound_cursor_skips_retained_entries(two_gateways, monk
         handle_b = live_b.handle
         assert handle_b is not None
 
-        # Give B's consumer time for its initial read (+ a poll tick).
-        await asyncio.sleep(0.3)
+        # Wait for B's fresh consumer to have performed ITS OWN initial
+        # peek (the SECOND peek of this chat_id — A's original spawn did
+        # the first) before checking it didn't re-execute the stale kill —
+        # a fixed sleep here raced the same "peek swallows a pre-published
+        # entry" class of flake `_spawn_owned_session` guards against above.
+        await _wait_until(lambda: _peeked_chat_ids[chat_id] >= 2)
+        # A few extra ticks to let the fresh consumer's first read/dispatch
+        # actually run past the peek before asserting on its effects.
+        await asyncio.sleep(0.05)
 
         # The stale kill was NOT re-executed against the fresh session...
         assert chat_id in mgr_b._live, "a retained stale control:kill must not tear the takeover down"
@@ -818,10 +872,7 @@ def test_takeover_seeds_inbound_cursor_skips_retained_entries(two_gateways, monk
 
         # A message published AFTER the takeover IS delivered.
         await inbound_mod.publish_inbound(chat_id, "after-takeover")
-        for _ in range(150):
-            if "after-takeover" in _stdin_texts(handle_b):
-                break
-            await asyncio.sleep(0.02)
+        await _wait_until(lambda: "after-takeover" in _stdin_texts(handle_b))
         assert "after-takeover" in _stdin_texts(handle_b), "post-takeover publishes must still be delivered"
 
         await mgr_b.kill(chat_id, reason="test_done")

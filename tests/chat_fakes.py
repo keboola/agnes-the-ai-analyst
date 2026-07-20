@@ -4,13 +4,47 @@ FakeHandle and FakeWS were originally inline in tests/test_chat_manager.py;
 they live here so the pause/resume test suite can reuse them without circular
 imports. FakeProvider is new: a stateful in-memory SandboxProvider that
 mirrors E2B semantics (pause parks the handle; resume returns the same handle
-with its memory intact).
+with its memory intact). ``_wait_until`` is the shared poll helper used by
+tests/test_chat_manager.py, tests/test_chat_inbound.py,
+tests/test_chat_takeover.py and tests/test_chat_replay.py to de-flake
+fixed-``asyncio.sleep`` waits on async background setup (session attach,
+cross-gateway publish, replay) under CI's pytest-xdist CPU contention.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+from typing import Callable
+
+
+async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 15.0, interval: float = 0.01) -> bool:
+    """Poll ``predicate()`` until true or ``timeout`` elapses (default 15s).
+
+    Replaces a bare ``await asyncio.sleep(0.0x)`` before asserting on state a
+    background task (e.g. ``manager.attach``, a cross-gateway publish, or a
+    replay consumer) is expected to have set. Under CI's pytest-xdist
+    parallel CPU contention a fixed short sleep can elapse before the task's
+    coroutine reaches that mutation, flaking the assert; polling is
+    deterministic under any load. The generous 15s ceiling absorbs real
+    worst-case scheduling delays observed under ``-n auto`` on a loaded
+    runner (a chain of several internal 0.05s poll ticks — e.g.
+    ``ChatManager._linger_then_pause`` or a full spawn+claim+consumer-start
+    sequence — can be stretched well past several seconds when many xdist
+    workers compete for the same cores) without slowing the common case: the
+    loop returns the moment the predicate is true, so a fast machine sees no
+    difference. Stays comfortably inside this suite's global per-test
+    ``--timeout=60`` (pytest.ini). Returns whether the predicate was
+    eventually true (callers typically keep their own assert afterwards for
+    a clear failure message).
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(interval)
+    return predicate()
 
 
 class FakeWS:

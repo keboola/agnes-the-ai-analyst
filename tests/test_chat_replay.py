@@ -33,7 +33,7 @@ fakeredis = pytest.importorskip("fakeredis")
 from starlette.websockets import WebSocketDisconnect  # noqa: E402
 
 from src.db import _ensure_schema  # noqa: E402
-from tests.chat_fakes import FakeHandle, FakeWS  # noqa: E402
+from tests.chat_fakes import FakeHandle, FakeWS, _wait_until  # noqa: E402
 
 import app.api.chat as chat_mod  # noqa: E402
 from app.chat.config import ChatConfig  # noqa: E402
@@ -396,16 +396,15 @@ class TestWsReconnectIntegration:
 
             s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
             ws1 = FakeWS()
-            await manager.attach(s.id, ws1)
-            await asyncio.sleep(0.02)
+            await manager.attach(s.id, ws1)  # fully synchronous: ws1 is already seated
             handle.emit({"type": "token", "text": "a"})
-            await asyncio.sleep(0.02)
+            await _wait_until(lambda: len(ws1.sent) >= 2)
             handle.emit({"type": "token", "text": "b"})
-            await asyncio.sleep(0.02)
+            await _wait_until(lambda: len(ws1.sent) >= 3)
             handle.emit({"type": "token", "text": "c"})
-            await asyncio.sleep(0.02)
+            await _wait_until(lambda: len(ws1.sent) >= 4)
             handle.emit({"type": "done"})  # clears turn_buffer
-            await asyncio.sleep(0.05)
+            await _wait_until(lambda: len(ws1.sent) >= 5)
 
             # ws1 saw: ready(1), token a(2), token b(3), token c(4), done(5).
             seqs_seen = [m["seq"] for m in ws1.sent if isinstance(m.get("seq"), int)]
@@ -456,13 +455,12 @@ class TestWsReconnectIntegration:
             s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
             ws1 = FakeWS()
             await manager.attach(s.id, ws1)
-            await asyncio.sleep(0.02)
             handle.emit({"type": "token", "text": "a"})
-            await asyncio.sleep(0.02)
+            await _wait_until(lambda: len(ws1.sent) >= 2)
             handle.emit({"type": "token", "text": "b"})
-            await asyncio.sleep(0.02)
+            await _wait_until(lambda: len(ws1.sent) >= 3)
             handle.emit({"type": "token", "text": "c"})
-            await asyncio.sleep(0.05)
+            await _wait_until(lambda: len(manager._live[s.id].turn_buffer) >= 3)
             # Turn still in flight — no "done"/"assistant_message" yet, so
             # turn_buffer still holds all three token frames.
             assert manager._live[s.id].turn_buffer, "test setup expects an in-flight turn"
@@ -527,11 +525,9 @@ class TestWsReconnectIntegration:
                 s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
                 ws1 = FakeWS()
                 await manager.attach(s.id, ws1)
-                await asyncio.sleep(0.02)
                 for i in range(5):
                     handle.emit({"type": "token", "text": f"t{i}"})
-                    await asyncio.sleep(0.01)
-                await asyncio.sleep(0.05)
+                    await _wait_until(lambda i=i: len(ws1.sent) >= i + 2)
                 await manager.detach_sink(s.id, ws1)
 
                 # last_seq=1 (the `ready` frame) is long past the 2-entry
@@ -565,9 +561,8 @@ class TestWsReconnectIntegration:
             s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
             ws1 = FakeWS()
             await manager.attach(s.id, ws1)
-            await asyncio.sleep(0.02)
             handle.emit({"type": "token", "text": "a"})
-            await asyncio.sleep(0.05)
+            await _wait_until(lambda: len(ws1.sent) >= 2)
             await manager.detach_sink(s.id, ws1)
 
             seqs_seen = [m["seq"] for m in ws1.sent if isinstance(m.get("seq"), int)]
@@ -611,11 +606,10 @@ class TestWsReconnectIntegration:
             s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
             ws1 = FakeWS()
             await manager.attach(s.id, ws1)
-            await asyncio.sleep(0.02)
             handle.emit({"type": "token", "text": "a"})
-            await asyncio.sleep(0.02)
+            await _wait_until(lambda: len(ws1.sent) >= 2)
             handle.emit({"type": "done"})  # clears turn_buffer
-            await asyncio.sleep(0.05)
+            await _wait_until(lambda: len(ws1.sent) >= 3)
 
             seqs_seen = [m["seq"] for m in ws1.sent if isinstance(m.get("seq"), int)]
             last_seq = max(seqs_seen)  # client is fully caught up
@@ -670,11 +664,10 @@ class TestWsReconnectIntegration:
             s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
             ws1 = FakeWS()
             await manager.attach(s.id, ws1)
-            await asyncio.sleep(0.02)
             handle.emit({"type": "token", "text": "a"})
-            await asyncio.sleep(0.02)
+            await _wait_until(lambda: len(ws1.sent) >= 2)
             handle.emit({"type": "token", "text": "b"})
-            await asyncio.sleep(0.05)
+            await _wait_until(lambda: len(manager._live[s.id].turn_buffer) >= 2)
             # Turn still in flight.
             assert manager._live[s.id].turn_buffer
 

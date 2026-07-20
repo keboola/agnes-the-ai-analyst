@@ -25,7 +25,7 @@ import duckdb
 import pytest
 
 from src.db import _ensure_schema
-from tests.chat_fakes import FakeHandle
+from tests.chat_fakes import FakeHandle, _wait_until
 
 import app.chat.routing as routing_mod
 from app.chat import inbound
@@ -46,6 +46,46 @@ def _reset_coordination():
     reset_coordination_for_tests()
     yield
     reset_coordination_for_tests()
+
+
+# chat_ids whose owning consumer (ChatManager._inbound_consumer_loop) has
+# performed its initial `inbound.peek_seq` cursor seed — see
+# `_track_inbound_peeks` below for why `_spawn_owned_session` needs this.
+_peeked_chat_ids: set[str] = set()
+
+
+@pytest.fixture(autouse=True)
+def _track_inbound_peeks(monkeypatch):
+    """Test-only instrumentation: wrap ``inbound.peek_seq`` to record which
+    chat_ids have been peeked.
+
+    ``_inbound_consumer_loop`` seeds its dedup cursor via a single
+    ``inbound.peek_seq(chat_id)`` call BEFORE it starts reading — by design
+    (see that method's docstring), any entry published before this peek is
+    silently treated as already-delivered, even if no consumer ever actually
+    read it. `_spawn_owned_session`'s wait used to only confirm
+    ``live.inbound_task is not None`` (the task OBJECT exists) — not that the
+    task had progressed far enough to actually perform the peek. A
+    cross-gateway kill/cancel/message published in that narrow gap (task
+    created, peek not yet run) gets silently swallowed: the owner's consumer
+    peeks a cursor that already covers it and never sees it, so the
+    assertion that follows either hangs until `_wait_until`'s timeout or
+    (worse) observes a handle killed via some unrelated later path with no
+    matching counted call. Reproduced deterministically with a 400-iteration
+    stress loop before this fix, clean after. Polling
+    ``session.id in _peeked_chat_ids`` closes the gap.
+    """
+    _peeked_chat_ids.clear()
+    orig_peek_seq = inbound.peek_seq
+
+    def _tracking_peek_seq(chat_id: str) -> int:
+        result = orig_peek_seq(chat_id)
+        _peeked_chat_ids.add(chat_id)
+        return result
+
+    monkeypatch.setattr(inbound, "peek_seq", _tracking_peek_seq)
+    yield
+    _peeked_chat_ids.clear()
 
 
 def _make_workdir_mgr(tmp_path: Path, repo: ChatRepository) -> WorkdirManager:
@@ -94,17 +134,62 @@ def _as_gateway(monkeypatch: pytest.MonkeyPatch, gateway_id: str) -> None:
     monkeypatch.setattr(routing_mod, "this_gateway_id", lambda: gateway_id)
 
 
+# asyncio only holds a WEAK reference to a task from `create_task()` — per
+# the stdlib docs, "save a reference to the result of this function, to
+# avoid a task disappearing mid-execution." `_spawn_owned_session` fires
+# `attach()` fire-and-forget and previously discarded the return value
+# entirely; with nothing else referencing it, the task was eligible for GC
+# mid-flight, and a `_wait_until` poll loop (which allocates plenty of
+# short-lived objects across many ticks) can trigger a collection before
+# `attach()` finishes — silently aborting the spawn/takeover instead of
+# raising, which surfaced as assertions on `handle`/`kills` seeing a state
+# that was never actually reached. Keeping tasks alive in this set until
+# they're done closes that gap.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
 async def _spawn_owned_session(mgr: ChatManager) -> tuple[str, FakeHandle]:
     """Create + attach a session on ``mgr`` so it becomes the live owner —
     claims the routing lease under whatever gateway id is currently patched
-    onto app.chat.routing.this_gateway_id."""
+    onto app.chat.routing.this_gateway_id.
+
+    Polls for the FULL settle of ``attach()``'s spawn path rather than a
+    fixed sleep: ``ChatManager._spawn_live`` registers the LiveSession into
+    ``mgr._live`` synchronously, well before it claims the ``chat:{id}``
+    routing lease (``_claim_routing_lease``) or starts the inbound-stream
+    consumer (``live.inbound_task``). A cross-gateway caller's
+    ``send_user_message``/``kill``/``cancel`` on the OTHER manager consults
+    ``routing.owner_of(chat_id)`` to decide whether to forward — if that
+    read races ahead of the real claim, it sees ``None``, falls through to
+    the "no local live session, no resumable repo row" branch, and raises
+    ``SessionNotFound`` (this was a confirmed CI flake under pytest-xdist
+    CPU contention, since a fixed 50ms sleep isn't reliably enough time for
+    the claim to land). Also waits for the inbound consumer's initial
+    ``peek_seq`` cursor-seed (see ``_track_inbound_peeks``) — otherwise a
+    cross-gateway publish landing before that peek runs is silently treated
+    as already-delivered and never reaches the runner. Together these make
+    every cross-gateway test that calls this helper deterministic regardless
+    of scheduling delays.
+    """
     handle = FakeHandle()
     mgr._provider.spawn = AsyncMock(return_value=handle)
     session = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
     ws = MagicMock()
     ws.send_json = AsyncMock()
-    asyncio.create_task(mgr.attach(session.id, ws))
-    await asyncio.sleep(0.05)
+    task = asyncio.create_task(mgr.attach(session.id, ws))
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+    def _owned_and_ready() -> bool:
+        live = mgr._live.get(session.id)
+        return (
+            live is not None
+            and live.inbound_task is not None
+            and routing_mod.owner_of(session.id) is not None
+            and session.id in _peeked_chat_ids
+        )
+
+    await _wait_until(_owned_and_ready)
     return session.id, handle
 
 
@@ -115,14 +200,6 @@ def _stdin_texts(handle: FakeHandle) -> list[str]:
         if frame.get("type") == "user_msg":
             out.append(frame["text"])
     return out
-
-
-async def _wait_until(predicate, *, attempts: int = 40, interval: float = 0.05) -> None:
-    for _ in range(attempts):
-        if predicate():
-            return
-        await asyncio.sleep(interval)
-    assert predicate(), "condition never became true"
 
 
 # ---------------------------------------------------------------------------
@@ -557,7 +634,7 @@ class TestCrossGatewayRouting:
             assert not task.done()
 
             await mgr_a.kill(chat_id, reason="test_done")
-            await asyncio.sleep(0.05)
+            await _wait_until(lambda: task.cancelled() or task.done())
             assert task.cancelled() or task.done()
 
         asyncio.run(_run())

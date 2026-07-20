@@ -13,7 +13,7 @@ import duckdb
 import pytest
 
 from src.db import _ensure_schema
-from tests.chat_fakes import FakeHandle, FakeWS
+from tests.chat_fakes import FakeHandle, FakeWS, _wait_until
 
 from app.chat.config import ChatConfig
 from app.chat.manager import ChatManager, SinkEntry
@@ -21,24 +21,6 @@ from app.chat.persistence import ChatRepository
 from app.chat.types import SessionState, Surface
 from app.chat.workdir import WorkdirManager
 from app.coordination.factory import reset_coordination_for_tests
-
-
-async def _wait_until(predicate, *, timeout: float = 3.0, interval: float = 0.01) -> bool:
-    """Poll ``predicate()`` until true or ``timeout`` elapses (default 3s).
-
-    Replaces a bare ``await asyncio.sleep(0.05)`` before asserting on state a
-    background task (e.g. ``manager.attach``) is expected to have set. Under
-    CI's pytest-xdist parallel CPU contention a fixed 50 ms sleep can elapse
-    before the task's coroutine reaches that mutation, flaking the assert;
-    polling is deterministic under any load.
-    """
-    loop = asyncio.get_event_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        if predicate():
-            return True
-        await asyncio.sleep(interval)
-    return predicate()
 
 
 @pytest.fixture(autouse=True)
@@ -209,9 +191,13 @@ def test_attach_pumps_tokens_to_ws(manager: ChatManager):
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        # Wait for ws to be seated as a sink (not just the LiveSession to
+        # exist) — the pump task can drain an already-queued emit() and
+        # broadcast it before _seat_sink runs, in which case the frame is
+        # gone for good (broadcast doesn't replay to late-seated sinks).
+        await _wait_until(lambda: _ws_seated(manager, s.id, ws))
         handle.emit({"type": "token", "text": "Hi"})
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: any(m.get("type") == "token" for m in ws.sent))
         # Frames now also carry seq/id (wave-2F task 2 envelope) — assert on
         # the original fields via subset containment rather than exact dict
         # equality so this test doesn't couple to the envelope's shape.
@@ -248,7 +234,7 @@ def test_send_writes_to_stdin(manager: ChatManager):
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: s.id in manager._live)
         await manager.send_user_message(s.id, "hello")
         assert any(b'"hello"' in b for b in handle._stdin_buf)
         await manager.kill(s.id, reason="test_done")
@@ -284,7 +270,7 @@ def test_send_user_message_emits_chat_message_usage_event(manager: ChatManager, 
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: s.id in manager._live)
         await manager.send_user_message(s.id, "hello")
         await manager.kill(s.id, reason="test_done")
         handle.emit_eof()
@@ -315,7 +301,7 @@ def test_send_user_message_emit_failure_does_not_break_send(manager: ChatManager
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: s.id in manager._live)
         await manager.send_user_message(s.id, "hello")
         assert any(b'"hello"' in b for b in handle._stdin_buf)
         await manager.kill(s.id, reason="test_done")
@@ -345,7 +331,7 @@ def test_send_user_message_emits_slack_surface(manager: ChatManager, monkeypatch
         s = await manager.create_session(user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="D123")
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: s.id in manager._live)
         await manager.send_user_message(s.id, "hello")
         await manager.kill(s.id, reason="test_done")
         handle.emit_eof()
@@ -366,11 +352,11 @@ def test_cancel_emits_synthetic_tool_result(manager: ChatManager):
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: _ws_seated(manager, s.id, ws))
         handle.emit({"type": "tool_call", "tool": "run_query", "args": {}})
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: any(m.get("type") == "tool_call" for m in ws.sent))
         await manager.cancel(s.id)
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: any(m.get("type") == "cancelled" for m in ws.sent))
         cancelled = [m for m in ws.sent if m.get("type") == "cancelled"]
         assert cancelled, "expected a {'type': 'cancelled'} frame after cancel"
         # Synthetic tool_result must be emitted before the `cancelled` frame
@@ -411,11 +397,13 @@ def test_crash_respawns_with_notice(manager: ChatManager):
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: _ws_seated(manager, s.id, ws))
         # Simulate crash by signalling EOF and non-zero exit
         handles[0].emit_eof()
         handles[0].killed = True  # makes wait() return 137 immediately
-        await asyncio.sleep(0.1)
+        await _wait_until(
+            lambda: any(m.get("type") == "error" and m.get("kind") == "subprocess_crashed" for m in ws.sent)
+        )
         crashed = [m for m in ws.sent if m.get("type") == "error" and m.get("kind") == "subprocess_crashed"]
         assert crashed, "expected crash notice"
         ready = [m for m in ws.sent if m.get("type") == "ready"]
@@ -632,17 +620,29 @@ def test_crash_respawn_does_not_accumulate_pump_tasks(manager: ChatManager):
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        # _spawn_live inserts the LiveSession into self._live BEFORE it
+        # creates+assigns the pump/wait tasks, so bare `_live` membership
+        # races ahead of `live.tasks` being populated — wait for the tasks
+        # too, matching the very first assertion below.
+        await _wait_until(lambda: s.id in manager._live and len(manager._live[s.id].tasks) == 2)
         live = manager._live[s.id]
         initial_tasks = list(live.tasks)
         assert len(initial_tasks) == 2  # pump + wait
         assert live.current_pump is not None
         assert live.current_pump in initial_tasks
 
-        # First crash → respawn
+        # First crash → respawn. `live.handle` is reassigned to the new
+        # handle well before the new pump task replaces the old one in
+        # `live.tasks` (history replay + ticket push happen in between) —
+        # poll for the actual pump-task swap, not just the handle change,
+        # or the "still exactly two tasks" assert below can race ahead of
+        # the respawn actually finishing.
+        old_pump = live.current_pump
         handles[0].emit_eof()
         handles[0].killed = True
-        await asyncio.sleep(0.1)
+        await _wait_until(
+            lambda: live.current_pump is not old_pump and len([t for t in live.tasks if not t.done()]) == 2
+        )
         # After respawn, still exactly two tasks (one wait + one pump),
         # not three.  current_pump points at the NEW pump.
         post_crash_tasks = [t for t in live.tasks if not t.done()]
@@ -651,9 +651,12 @@ def test_crash_respawn_does_not_accumulate_pump_tasks(manager: ChatManager):
         assert live.current_pump in post_crash_tasks
 
         # Second crash → respawn again
+        old_pump = live.current_pump
         handles[1].emit_eof()
         handles[1].killed = True
-        await asyncio.sleep(0.1)
+        await _wait_until(
+            lambda: live.current_pump is not old_pump and len([t for t in live.tasks if not t.done()]) == 2
+        )
         post_crash2_tasks = [t for t in live.tasks if not t.done()]
         assert len(post_crash2_tasks) == 2, f"expected 2 live tasks after 2nd respawn, got {len(post_crash2_tasks)}"
 
@@ -894,19 +897,23 @@ def test_double_crash_dies_after_three(manager: ChatManager):
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        # Wait for ws to actually be seated as a sink, not just for the
+        # LiveSession to exist — _broadcast (the crash-notice/ready frames
+        # below) only reaches sinks already in live.sinks, so racing ahead
+        # of _seat_sink can silently drop the first crash notice.
+        await _wait_until(lambda: _ws_seated(manager, s.id, ws))
         # First crash → respawn
         handles[0].emit_eof()
         handles[0].killed = True
-        await asyncio.sleep(0.1)
+        await _wait_until(lambda: manager._live.get(s.id) is not None and manager._live[s.id].handle is handles[1])
         # Second crash → respawn
         handles[1].emit_eof()
         handles[1].killed = True
-        await asyncio.sleep(0.1)
-        # Third crash → DEAD
+        await _wait_until(lambda: manager._live.get(s.id) is not None and manager._live[s.id].handle is handles[2])
+        # Third crash → DEAD (no further respawn — 3x-crash terminal state)
         handles[2].emit_eof()
         handles[2].killed = True
-        await asyncio.sleep(0.1)
+        await _wait_until(lambda: (live := manager._live.get(s.id)) is None or live.state == SessionState.DEAD)
         # Should have three crashed notices, at least three ready notices
         crashed = [m for m in ws.sent if m.get("type") == "error" and m.get("kind") == "subprocess_crashed"]
         ready = [m for m in ws.sent if m.get("type") == "ready"]
@@ -990,7 +997,7 @@ def test_midturn_sink_gets_buffered_frames_replayed(manager: ChatManager):
         pump_task = asyncio.create_task(manager._pump_subprocess_to_ws(live))
         live.handle.emit({"type": "token", "text": "Hel"})
         live.handle.emit({"type": "token", "text": "lo"})
-        await asyncio.sleep(0.05)  # let pump process frames
+        await _wait_until(lambda: len(live.turn_buffer) >= 2)  # let pump process frames
 
         # Now add ws2 mid-turn — must see the two buffered token frames
         ws2 = FakeWS()
@@ -1037,7 +1044,7 @@ def test_turn_buffer_cleared_after_assistant_message(manager: ChatManager):
                 "tokens_out": 1,
             }
         )
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: not live.turn_in_flight)
 
         # Add a sink after the turn completed — should see no token replay
         ws2 = FakeWS()
@@ -1074,7 +1081,7 @@ def test_kill_midturn_persists_partial_assistant_message(manager: ChatManager):
         pump_task = asyncio.create_task(manager._pump_subprocess_to_ws(live))
         live.handle.emit({"type": "token", "text": "Hel"})
         live.handle.emit({"type": "token", "text": "lo"})
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: len(live.turn_buffer) >= 2)
 
         # Kill mid-turn
         await manager.kill(s.id, reason="idle_ttl")
@@ -1118,7 +1125,7 @@ def test_kill_between_turns_persists_nothing_extra(manager: ChatManager):
                 "tokens_out": 1,
             }
         )
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: not live.turn_in_flight)
 
         # Kill between turns (buffer should be empty)
         await manager.kill(s.id, reason="test_done")
@@ -1200,6 +1207,27 @@ def monkeypatch_workdir(mgr: ChatManager) -> None:
     mgr._workdir_mgr.prepare_session_dir = mock.MagicMock(return_value=Path("/tmp/fake-session-dir"))
 
 
+def _ws_seated(mgr: ChatManager, chat_id: str, ws) -> bool:
+    """True once ``ws`` is registered as a sink on ``chat_id``'s live session.
+
+    ``chat_id in mgr._live`` alone is NOT a reliable "attach() is done"
+    signal: ``ChatManager._spawn_live`` inserts the ``LiveSession`` into
+    ``self._live`` (and, for a fresh spawn, sets ``live.handle``) well
+    before ``attach()`` gets around to calling ``_seat_sink`` and actually
+    registering ``ws`` in ``live.sinks``. A caller that polls on bare
+    membership and then immediately calls ``detach_sink(chat_id, ws)`` can
+    race ahead of that seating step: it observes ``live.sinks`` still empty
+    (a fresh LiveSession starts with none), treats it as "last sink gone",
+    and fires the linger→pause task — which, when the real ``_seat_sink``
+    call lands moments later, sees a non-empty ``live.sinks`` and bails out
+    thinking "a sink came back", permanently skipping the pause. Under
+    pytest-xdist CPU contention this reliably reproduced as ``provider.paused``
+    staying empty forever (not just late). Polling for the sink being seated
+    instead of bare ``_live`` membership closes this race."""
+    live = mgr._live.get(chat_id)
+    return live is not None and any(e.sink is ws for e in live.sinks)
+
+
 def test_detach_last_sink_does_not_kill(tmp_path):
     """With on_detach='pause', removing the last sink must NOT kill the session;
     it stays in _live with state ACTIVE through the linger window."""
@@ -1210,7 +1238,7 @@ def test_detach_last_sink_does_not_kill(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: _ws_seated(mgr, s.id, ws))
         assert s.id in mgr._live
         await mgr.detach_sink(s.id, ws)
         await asyncio.sleep(0.05)
@@ -1239,9 +1267,9 @@ def test_linger_then_pause_persists_refs(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: _ws_seated(mgr, s.id, ws))
         await mgr.detach_sink(s.id, ws)
-        await asyncio.sleep(0.15)  # linger=0, pause should have fired
+        await _wait_until(lambda: provider.paused)  # linger=0, pause should have fired
         # Provider should have paused the sandbox
         assert provider.paused, "expected sandbox to be paused in provider"
         # Repo row should reflect the pause
@@ -1273,7 +1301,7 @@ def test_reattach_during_linger_cancels_pause(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws1 = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: _ws_seated(mgr, s.id, ws1))
         await mgr.detach_sink(s.id, ws1)
         await asyncio.sleep(0.02)  # inside linger window
         # Re-attach before linger expires
@@ -1305,7 +1333,7 @@ def test_pause_waits_for_inflight_turn(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: _ws_seated(mgr, s.id, ws))
         live = mgr._live[s.id]
         # Mark a turn in flight before detaching
         live.turn_in_flight = True
@@ -1315,7 +1343,7 @@ def test_pause_waits_for_inflight_turn(tmp_path):
         assert not provider.paused, "pause should wait for in-flight turn"
         # Simulate turn completing
         live.turn_in_flight = False
-        await asyncio.sleep(0.15)
+        await _wait_until(lambda: provider.paused)
         # Now pause should fire
         assert provider.paused, "expected pause after turn_in_flight cleared"
 
@@ -1345,7 +1373,7 @@ def test_linger_bails_when_runner_dies_during_inflight_turn(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: _ws_seated(mgr, s.id, ws))
         live = mgr._live[s.id]
         # Set up: turn in flight, no sinks, runner declared DEAD
         # (the 3× crash terminal state — _wait_for_exit_and_respawn sets
@@ -1356,7 +1384,7 @@ def test_linger_bails_when_runner_dies_during_inflight_turn(tmp_path):
         # The linger task should bail out promptly rather than spinning
         # forever waiting for the turn to "complete." We grant it a few
         # tick cycles to notice the state transition.
-        await asyncio.sleep(0.2)
+        await _wait_until(lambda: live.linger_task is None or live.linger_task.done())
         assert live.linger_task is None or live.linger_task.done(), (
             "linger task must complete (not spin) when runner died mid-turn with no sinks attached"
         )
@@ -1383,15 +1411,15 @@ def test_attach_to_paused_resumes_same_handle(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws1 = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: _ws_seated(mgr, s.id, ws1))
         await mgr.detach_sink(s.id, ws1)
-        await asyncio.sleep(0.15)  # let pause fire
+        await _wait_until(lambda: provider.paused)  # let pause fire
         assert provider.paused
 
         # Re-attach: should resume
         ws2 = FakeWS()
         attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
-        await asyncio.sleep(0.1)
+        await _wait_until(lambda: (live := mgr._live.get(s.id)) is not None and live.state == SessionState.ACTIVE)
         live = mgr._live.get(s.id)
         assert live is not None
         assert live.state == SessionState.ACTIVE
@@ -1400,7 +1428,7 @@ def test_attach_to_paused_resumes_same_handle(tmp_path):
 
         # Emit a frame and verify ws2 receives it
         live.handle.emit({"type": "token", "text": "hi"})
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: any(f.get("type") == "token" for f in ws2.sent))
         token_frames = [f for f in ws2.sent if f.get("type") == "token"]
         assert token_frames, "resumed session should deliver frames to new sink"
 
@@ -1425,12 +1453,17 @@ def test_attach_to_live_session_does_not_spawn_second_runner(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws1 = FakeWS()
         attach_task1 = asyncio.create_task(mgr.attach(s.id, ws1))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: s.id in mgr._live)
         assert len(provider.spawned) == 1
 
+        # ws1's session is already ACTIVE, so polling on that alone would be
+        # trivially true before attach_task2 ever gets scheduled — wait for
+        # the actual effect of the second attach() completing (ws2 seated as
+        # a sink) so the "must NOT spawn" assertion below genuinely covers
+        # the second attach having run, not just raced past it.
         ws2 = FakeWS()
         attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: any(e.sink is ws2 for e in mgr._live[s.id].sinks))
         assert len(provider.spawned) == 1, "second attach must NOT spawn another runner"
 
         await mgr.kill(s.id, reason="test_done")
@@ -1454,16 +1487,16 @@ def test_resume_failure_falls_back_to_fresh_spawn(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws1 = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: _ws_seated(mgr, s.id, ws1))
         await mgr.detach_sink(s.id, ws1)
-        await asyncio.sleep(0.15)  # pause fires
+        await _wait_until(lambda: provider.paused)  # pause fires
         assert provider.paused
         # Make resume fail
         provider.fail_resume = True
 
         ws2 = FakeWS()
         attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
-        await asyncio.sleep(0.2)
+        await _wait_until(lambda: (live := mgr._live.get(s.id)) is not None and live.state == SessionState.ACTIVE)
         live = mgr._live.get(s.id)
         assert live is not None
         assert live.state == SessionState.ACTIVE, "should fall back to fresh spawn"
@@ -1492,9 +1525,9 @@ def test_send_user_message_resumes_paused_session(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws1 = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: _ws_seated(mgr, s.id, ws1))
         await mgr.detach_sink(s.id, ws1)
-        await asyncio.sleep(0.15)  # pause fires
+        await _wait_until(lambda: provider.paused)  # pause fires
         assert provider.paused
 
         # send_user_message should resume first
@@ -1523,9 +1556,9 @@ def test_attach_after_restart_resumes_from_repo_row(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws1 = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: _ws_seated(mgr, s.id, ws1))
         await mgr.detach_sink(s.id, ws1)
-        await asyncio.sleep(0.15)  # pause fires, refs persisted in repo
+        await _wait_until(lambda: provider.paused)  # pause fires, refs persisted in repo
         assert provider.paused
 
         # Simulate server restart: clear in-memory _live
@@ -1534,7 +1567,7 @@ def test_attach_after_restart_resumes_from_repo_row(tmp_path):
         # Re-attach must resume purely from repo row
         ws2 = FakeWS()
         attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
-        await asyncio.sleep(0.15)
+        await _wait_until(lambda: (live := mgr._live.get(s.id)) is not None and live.state == SessionState.ACTIVE)
         live = mgr._live.get(s.id)
         assert live is not None
         assert live.state == SessionState.ACTIVE
@@ -1559,9 +1592,9 @@ def test_on_detach_kill_preserves_legacy_behavior(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: _ws_seated(mgr, s.id, ws))
         await mgr.detach_sink(s.id, ws)
-        await asyncio.sleep(0.1)
+        await _wait_until(lambda: s.id not in mgr._live)
         assert s.id not in mgr._live, "on_detach=kill: session should be dead after detach"
 
         attach_task.cancel()
@@ -1588,7 +1621,7 @@ def test_idle_ttl_pauses_instead_of_kills(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: s.id in mgr._live)
         live = mgr._live[s.id]
         # Empty sinks without triggering linger
         live.sinks = []
@@ -1633,9 +1666,9 @@ def test_paused_ttl_really_kills(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: _ws_seated(mgr, s.id, ws))
         await mgr.detach_sink(s.id, ws)
-        await asyncio.sleep(0.15)  # pause fires
+        await _wait_until(lambda: provider.paused)  # pause fires
         assert provider.paused
 
         # Push sandbox_paused_at into the past past the TTL
@@ -1676,7 +1709,7 @@ def test_max_session_seconds_counts_active_time_only(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: s.id in mgr._live)
         live = mgr._live[s.id]
         # 1 hour accumulated, currently paused (active_since barely recent)
         live.active_seconds_accum = 3600.0
@@ -1727,7 +1760,7 @@ def test_shutdown_pauses_active_sessions(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: s.id in mgr._live)
         assert s.id in mgr._live
 
         await mgr.shutdown()
@@ -2042,7 +2075,7 @@ def test_spawn_pushes_ticket_frame(manager: ChatManager, monkeypatch):
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: s.id in manager._live)
         await manager.kill(s.id, reason="test_done")
         attach_task.cancel()
         try:
@@ -2078,9 +2111,9 @@ def test_resume_pushes_fresh_ticket_before_messages(tmp_path, monkeypatch):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: _ws_seated(mgr, s.id, ws))
         await mgr.detach_sink(s.id, ws)
-        await asyncio.sleep(0.15)  # pause fires
+        await _wait_until(lambda: provider.paused)  # pause fires
         assert provider.paused
 
         # Discard the initial-spawn mint calls/frame — only the resume matters.
@@ -2091,7 +2124,7 @@ def test_resume_pushes_fresh_ticket_before_messages(tmp_path, monkeypatch):
 
         ws2 = FakeWS()
         attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
-        await asyncio.sleep(0.15)
+        await _wait_until(lambda: (live := mgr._live.get(s.id)) is not None and live.state == SessionState.ACTIVE)
 
         live = mgr._live.get(s.id)
         assert live is not None and live.state == SessionState.ACTIVE
@@ -2133,9 +2166,9 @@ def test_legacy_runner_force_respawned(tmp_path, monkeypatch):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: _ws_seated(mgr, s.id, ws))
         await mgr.detach_sink(s.id, ws)
-        await asyncio.sleep(0.15)  # pause fires
+        await _wait_until(lambda: provider.paused)  # pause fires
         assert provider.paused
         assert len(provider.spawned) == 1
 
@@ -2145,7 +2178,10 @@ def test_legacy_runner_force_respawned(tmp_path, monkeypatch):
 
         ws2 = FakeWS()
         attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
-        await asyncio.sleep(0.15)
+        # Poll for BOTH the force-respawn (2nd spawn) and the old sandbox's
+        # destroy landing — the exact-count asserts right after must not be
+        # masked by returning before either side effect has actually fired.
+        await _wait_until(lambda: len(provider.spawned) == 2 and len(provider.destroyed) == 1)
 
         assert len(provider.spawned) == 2, "legacy session must be force-respawned, not resumed"
         # provider.resume() was never invoked (fresh spawn instead), AND the old
@@ -2328,7 +2364,7 @@ def test_spawn_claims_routing_lease(manager: ChatManager):
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: routing.owner_of(s.id) is not None)
 
         assert routing.owner_of(s.id) == routing.this_gateway_id()
 
@@ -2350,7 +2386,7 @@ def test_kill_releases_routing_lease(manager: ChatManager):
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: routing.owner_of(s.id) is not None)
         assert routing.owner_of(s.id) is not None
 
         await manager.kill(s.id, reason="test_done")
@@ -2375,8 +2411,8 @@ def test_renew_routing_leases_keeps_ownership(manager: ChatManager):
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        await asyncio.sleep(0.05)
         gw = routing.this_gateway_id()
+        await _wait_until(lambda: routing.owner_of(s.id) == gw)
         assert routing.owner_of(s.id) == gw
 
         await manager._renew_routing_leases()
@@ -2411,7 +2447,7 @@ def test_spawn_continues_when_routing_lease_contended(manager: ChatManager):
 
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: s.id in manager._live and routing.owner_of(s.id) == routing.this_gateway_id())
 
         assert s.id in manager._live  # served locally via takeover
         assert routing.owner_of(s.id) == routing.this_gateway_id(), "takeover claims the lease for real"
@@ -2644,10 +2680,10 @@ def test_concurrent_resume_live_serialized_no_double_spawn(tmp_path, monkeypatch
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await asyncio.sleep(0.1)
+        await _wait_until(lambda: s.id in mgr._known_protocol_sessions)
         assert s.id in mgr._known_protocol_sessions, "precondition: non-legacy (known-protocol) resume path"
         await mgr.detach_sink(s.id, ws)
-        await asyncio.sleep(0.15)  # linger=0, pause fires
+        await _wait_until(lambda: provider.paused)  # linger=0, pause fires
         assert provider.paused, "precondition: sandbox must be parked (paused) before the race"
         assert len(provider.spawned) == 1
         live = mgr._live[s.id]
@@ -2739,10 +2775,10 @@ def test_concurrent_attach_and_send_user_message_no_double_spawn(tmp_path, monke
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws1 = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: s.id in mgr._known_protocol_sessions)
         assert s.id in mgr._known_protocol_sessions, "precondition: non-legacy (known-protocol) resume path"
         await mgr.detach_sink(s.id, ws1)
-        await asyncio.sleep(0.15)  # linger=0, pause fires
+        await _wait_until(lambda: provider.paused)  # linger=0, pause fires
         assert provider.paused, "precondition: sandbox must be parked (paused) before the race"
         assert len(provider.spawned) == 1
 
