@@ -2252,6 +2252,8 @@ def test_spawn_live_destroys_sandbox_on_post_spawn_failure(manager: ChatManager)
     before the kill-on-exit `wait_task` is wired — must tear the sandbox down
     (else it orphans and later pauses/persists, billable) and not leave a
     half-registered `live` behind."""
+    from app.chat import routing
+
     async def _run():
         handle = FakeHandle()
         manager._provider.spawn = AsyncMock(return_value=handle)
@@ -2275,6 +2277,11 @@ def test_spawn_live_destroys_sandbox_on_post_spawn_failure(manager: ChatManager)
         row = manager._repo.get_session(s.id)
         assert row.sandbox_id is None, "stale sandbox ref left in DB after failed setup"
         assert row.runner_pid is None
+        # Devin Review, PR #935: the routing lease claimed before the failure
+        # must be released too — else a stale self-claim lingers until its
+        # TTL and can misroute a reconnect under the redis multi-gateway
+        # backend.
+        assert routing.owner_of(s.id) is None, "stale routing lease left after failed setup"
 
     asyncio.run(_run())
 
@@ -2282,6 +2289,7 @@ def test_spawn_live_destroys_sandbox_on_post_spawn_failure(manager: ChatManager)
 def test_spawn_live_happy_path_does_not_kill_sandbox(manager: ChatManager):
     """Guard against the teardown firing on the success path: a clean spawn
     keeps the sandbox alive and wires the wait_task."""
+
     async def _run():
         handle = FakeHandle()
         manager._provider.spawn = AsyncMock(return_value=handle)

@@ -882,6 +882,13 @@ class ChatManager:
                 ticket_repo().revoke_session(chat_id)
             except Exception:
                 logger.exception("_spawn_live: ticket revoke failed for %s", chat_id)
+            # Release the routing lease claimed above, mirroring kill() — else a
+            # stale self-claim lingers until its TTL and can misroute reconnects
+            # under the redis multi-gateway backend (Devin Review, PR #935).
+            try:
+                await self._release_routing_lease(chat_id)
+            except Exception:
+                logger.exception("_spawn_live: routing lease release failed for %s", chat_id)
             raise
 
     # --- detach / linger / pause --------------------------------------------
