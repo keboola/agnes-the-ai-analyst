@@ -12,62 +12,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-### Changed
-
-### Fixed
-
-### Removed
-
-### Internal
-
-## [0.74.121] - 2026-07-20
-
-### Added
-
-- **Per-table timing in the scheduled BigQuery metadata refresh.** A slow
-  refresh cycle (one run taking minutes instead of the usual ~100 s over the
-  same table set, with no errors and no CPU pressure) previously could not be
-  attributed to any specific table — the job logged only a single per-run
-  summary line. `run_bq_metadata_refresh` now emits one INFO line per table
-  (`bq metadata refresh table: run_id=… table_id=… status=… fetch_ms=… total_ms=…`)
-  where `fetch_ms` isolates the BigQuery `bq_metadata.fetch` call (the up-to-4
-  sequential jobs-API round-trips) and `total_ms` covers the whole per-row
-  work including the local DuckDB upsert. The two timings are also returned in
-  the `refresh_one` outcome dict, so `POST /api/v2/metadata-cache/refresh`
-  surfaces them for operator on-demand refreshes. `app/api/bq_metadata_refresh.py`.
-
-## [0.74.120] - 2026-07-20
-
-### Added
-
-- New admin/analyst web page `/catalog/semantics` — a read-only browser for
-  the semantic layer: business metrics (`metric_definitions`) and the
-  glossary (`glossary_terms`), reusing `GET /api/metrics` and
-  `GET /api/glossary(/search)` (no new REST endpoints). Metrics tab is
-  server-rendered and grouped by category with a client-side filter;
-  Glossary tab is a live, debounced search. Row detail expands inline
-  (accordion), source badges (`manual` / `yaml_import` / `openmetadata` /
-  `keboola_semantic_layer`) use the existing 4-slot badge vocabulary. Linked
-  from `/catalog`. `/admin/data-sources` gets a small summary card —
-  "Semantic layer: N metrics, M glossary terms synced from Keboola" — once a
-  connection has synced. Picks up issue #853 plus the glossary.
-
-## [0.74.119] - 2026-07-20
-
-### Changed
-
-- `agnes push` now gzip-compresses session transcript uploads (~10x smaller transfers) when the server advertises the `session-gzip` capability; older client/server combinations keep the plain format automatically. Escape hatch: `AGNES_PUSH_NO_GZIP=1`. The server stream-decompresses uploads at ingest and stores plain JSONL — the size cap binds on decompressed bytes and per-call decompression output is bounded (zip-bomb / peak-memory guard).
-
-## [0.74.118] - 2026-07-18
-
-### Changed
-
-- `/me/connections` Connect / Replace token / Test / Remove buttons now use the
-  design-system button classes (`btn btn-primary` / `btn-secondary` /
-  `btn-danger`, size `btn-sm`) instead of unstyled browser-default buttons, and
-  the row wraps on narrow viewports.
-### Added
-
 - **Process roles for multi-process deployments** (wave-1, WS A):
   `AGNES_ROLE=api|gateway|worker|all` (or `instance.yaml::deployment.role`;
   default `all` — unchanged single-process behavior) with startup guards
@@ -277,6 +221,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   treated as already-delivered and never seen — both now covered by
   test-side instrumentation that waits for those steps to actually land
   before the next action, not just for the `LiveSession` to exist.
+
+## [0.74.121] - 2026-07-20
+
+### Added
+
+- **Per-table timing in the scheduled BigQuery metadata refresh.** A slow
+  refresh cycle (one run taking minutes instead of the usual ~100 s over the
+  same table set, with no errors and no CPU pressure) previously could not be
+  attributed to any specific table — the job logged only a single per-run
+  summary line. `run_bq_metadata_refresh` now emits one INFO line per table
+  (`bq metadata refresh table: run_id=… table_id=… status=… fetch_ms=… total_ms=…`)
+  where `fetch_ms` isolates the BigQuery `bq_metadata.fetch` call (the up-to-4
+  sequential jobs-API round-trips) and `total_ms` covers the whole per-row
+  work including the local DuckDB upsert. The two timings are also returned in
+  the `refresh_one` outcome dict, so `POST /api/v2/metadata-cache/refresh`
+  surfaces them for operator on-demand refreshes. `app/api/bq_metadata_refresh.py`.
 
 ## [0.74.120] - 2026-07-20
 
