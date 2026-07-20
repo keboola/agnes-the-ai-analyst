@@ -22,6 +22,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+- `GET /api/metrics`, `GET /api/metrics/{id}`, and the `/catalog/semantics`
+  Metrics tab now RBAC-gate metric definitions the same way table reads are
+  gated: a metric is only visible if the caller can access its
+  `table_name`/`tables` via their Data Package stack (admins unaffected).
+  Previously any authenticated user could read any metric's SQL, table name,
+  and description regardless of table-stack membership, leaking
+  schema/business information about tables they had no grant to see.
+  Glossary terms are unaffected — they're business vocabulary, not
+  table-derived data.
+
 ## [0.75.9] - 2026-07-20
 
 ### Added
