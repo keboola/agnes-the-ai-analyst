@@ -1218,6 +1218,17 @@ class UsagePgRepository:
         return event_id
 
     def upsert_summary(self, summary: dict, *, processor_version: int) -> None:
+        """Upsert on session_file PK.
+
+        Mirrors ``UsageRepository.upsert_summary`` (src/repositories/usage.py):
+        the DO UPDATE SET refreshes every column, including ``username``,
+        ``started_at`` and ``user_id``, so a session first processed before
+        its user account existed gets its identity backfilled on reprocess.
+        Postgres never hit the DuckDB ART secondary-index corruption
+        (INCIDENT 2026-07-20); the shared schema simply no longer carries
+        those secondary indexes, keeping write semantics identical across
+        backends.
+        """
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(

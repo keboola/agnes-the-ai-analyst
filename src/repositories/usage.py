@@ -1118,6 +1118,22 @@ class UsageRepository:
         apart, taking down the whole app process both times. Switched to
         `INSERT ... ON CONFLICT DO UPDATE`, which updates the existing row
         in place instead of deleting it.
+
+        INCIDENT 2026-07-20: ``usage_session_summary`` carried 3 non-unique
+        secondary ART indexes (on ``username``, ``started_at`` and
+        ``user_id``). The DO UPDATE SET below refreshes those columns on
+        every ~10-minute re-process tick; updating an ART-indexed column
+        runs as delete-old-entry + insert-new-entry, and a single corrupt
+        index entry turned that delete into a FATAL, connection-
+        invalidating error that recurred each tick. The fix drops those 3
+        indexes (v95, see ``src/db.py::_v94_to_v95``): updating an
+        *unindexed* column is a plain in-place write with no ART
+        maintenance, so the DO UPDATE keeps refreshing all columns —
+        including the late-resolution backfill of ``user_id``/``username``
+        for a session first processed before its user account existed. Do
+        NOT re-add secondary indexes on ``username``/``started_at``/
+        ``user_id`` — that index maintenance on update is what made the
+        rewrite fatal.
         """
         self.conn.execute(
             """

@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 94
+SCHEMA_VERSION = 95
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1153,10 +1153,15 @@ CREATE TABLE IF NOT EXISTS usage_session_summary (
     cache_creation_tokens BIGINT DEFAULT 0,
     user_id               VARCHAR
 );
-CREATE INDEX IF NOT EXISTS idx_usage_session_user ON usage_session_summary(username);
-CREATE INDEX IF NOT EXISTS idx_usage_session_started ON usage_session_summary(started_at);
--- idx_usage_session_user_id is created by _v44_to_v45, not here — see the
--- note on idx_usage_events_user_id above.
+-- No secondary indexes here (deliberately, since v95): idx_usage_session_user
+-- (username), idx_usage_session_started (started_at) and idx_usage_session_user_id
+-- (user_id) used to be created here / by _v44_to_v45, but upsert_summary's
+-- ON CONFLICT DO UPDATE rewrites all three columns on every re-process tick,
+-- and a single corrupt ART entry on any of them turned that rewrite's
+-- delete-old-entry step into a FATAL, connection-invalidating error
+-- (INCIDENT 2026-07-20). _v94_to_v95 drops the indexes on upgrade; fresh
+-- installs simply never create them. See _v94_to_v95 for the full incident
+-- writeup.
 
 -- usage_tool_daily: legacy rollup of tool invocations by day/source. Currently
 -- only consumed by `src/usage_ask.py` SCHEMA_DIGEST + admin reprocess endpoint;
@@ -4133,8 +4138,9 @@ def _v41_to_v42(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_tool ON usage_events(tool_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_skill ON usage_events(skill_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_ref ON usage_events(source, ref_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session_user ON usage_session_summary(username)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session_started ON usage_session_summary(started_at)")
+    # No idx_usage_session_user / idx_usage_session_started here (removed in
+    # v95 — see the comment on usage_session_summary in _SYSTEM_SCHEMA and
+    # _v94_to_v95's incident writeup).
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_attr_skill_lookup ON usage_attribution_skills(skill_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_attr_agent_lookup ON usage_attribution_agents(agent_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_attr_command_lookup ON usage_attribution_commands(command_name)")
@@ -4201,10 +4207,14 @@ def _v44_to_v45(conn: duckdb.DuckDBPyConnection) -> None:
     (re)process run. Existing rows get backfilled when
     ``USAGE_PROCESSOR_VERSION`` bumps, which triggers the session-pipeline
     reprocess loop.
+
+    No index on ``usage_session_summary.user_id`` here (removed in v95 —
+    see _v94_to_v95): it used to be created in this step, but it is one of
+    the three secondary indexes ``upsert_summary``'s ON CONFLICT DO UPDATE
+    kept rewriting, which is what made a corrupt entry fatal.
     """
     conn.execute("ALTER TABLE usage_session_summary ADD COLUMN IF NOT EXISTS user_id VARCHAR")
     conn.execute("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS user_id VARCHAR")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session_user_id ON usage_session_summary(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_user_id ON usage_events(user_id)")
 
 
@@ -6088,6 +6098,41 @@ def _v93_to_v94(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 94")
 
 
+def _v94_to_v95(conn: duckdb.DuckDBPyConnection) -> None:
+    """v94→v95: drop the 3 secondary (non-unique) ART indexes on
+    ``usage_session_summary`` — ``idx_usage_session_user`` (username),
+    ``idx_usage_session_started`` (started_at), ``idx_usage_session_user_id``
+    (user_id).
+
+    INCIDENT 2026-07-20: the periodic usage session-processor calls
+    ``UsageRepository.upsert_summary`` every ~10 minutes, which refreshes
+    all three of these columns via ``ON CONFLICT (session_file) DO UPDATE
+    SET ...`` on every re-process tick. Updating an ART-indexed column runs
+    as delete-old-entry + insert-new-entry; a single corrupt secondary-
+    index entry turned that delete into a FATAL ``Failed to delete all rows
+    from index`` error, which invalidates the whole DuckDB connection
+    ("database has been invalidated ... must be restarted") for every
+    subsequent query on the process — including login — and recurred on
+    every scheduler tick since nothing marked the session processed. This
+    migration removes the indexes themselves — repairing the already-
+    corrupt structure on a live instance and removing the index maintenance
+    that made those column rewrites fatal. ``upsert_summary`` still
+    refreshes the columns (safe now that they are unindexed: a plain
+    in-place write with no ART maintenance), so late-resolution identity
+    backfill is preserved; do NOT re-add secondary indexes on them.
+    ``session_file`` (the PRIMARY KEY) is untouched.
+
+    Plain ``DROP INDEX IF EXISTS`` rather than a CTAS table rebuild: it is
+    a catalog-only structural operation that does not need to walk (and
+    therefore does not need to trust) the corrupted index's contents, so
+    it succeeds even against a broken ART.
+    """
+    conn.execute("DROP INDEX IF EXISTS idx_usage_session_user")
+    conn.execute("DROP INDEX IF EXISTS idx_usage_session_started")
+    conn.execute("DROP INDEX IF EXISTS idx_usage_session_user_id")
+    conn.execute("UPDATE schema_version SET version = 95")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6472,6 +6517,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # foundation). _SYSTEM_SCHEMA already creates it on fresh
             # installs (no-op CREATE IF NOT EXISTS here).
             _v93_to_v94(conn)
+            # v94→v95: drop usage_session_summary's 3 secondary indexes
+            # (index-corruption hotfix). No-op here — _SYSTEM_SCHEMA never
+            # creates them on fresh installs.
+            _v94_to_v95(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -6713,6 +6762,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v92_to_v93(conn)
             if current < 94:
                 _v93_to_v94(conn)
+            if current < 95:
+                _v94_to_v95(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
