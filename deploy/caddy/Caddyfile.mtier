@@ -1,0 +1,36 @@
+:8080 {
+	# Gateway-role paths (chat HA — see docs/DEPLOYMENT.md -> "Multi-replica
+	# chat HA" -> the LB routing rule). Only Role.GATEWAY processes run a
+	# ChatManager, so the chat WS + session lifecycle REST, the
+	# notifications WS, and — when Slack runs in webhook mode — the Slack
+	# webhooks must reach the gateway upstream. Slack webhooks that land on
+	# an api replica anyway degrade to the thin-producer forward path
+	# (services/slack_bot), so this rule is the reference topology, and the
+	# producer path is the fallback — not the other way around. This
+	# matcher-scoped reverse_proxy is evaluated BEFORE the api catch-all
+	# below (Caddy preserves the order of same-name directives).
+	@gateway path /api/chat/* /api/notifications/ws /api/slack/*
+	reverse_proxy @gateway gateway:8000 {
+		health_uri /readyz
+		health_interval 5s
+		fail_duration 10s
+	}
+
+	# `/metrics` is an internal-scrape-only surface (Prometheus scrapes each
+	# role container directly by Compose DNS — see
+	# deploy/prometheus/prometheus.yml — never through Caddy). Without this
+	# deny the api catch-all below would forward it to the replicas, exposing
+	# the unauthenticated observability payload (queue depth, worker-lane
+	# occupancy, replica hostname:pid, per-route latency histograms) to
+	# anyone who can reach the public :8080 LB port. `/healthz` + `/readyz`
+	# stay reachable — they leak only status and double as LB/uptime probes.
+	@metrics path /metrics
+	respond @metrics 404
+
+	reverse_proxy api1:8000 api2:8000 {
+		health_uri /readyz
+		health_interval 5s
+		fail_duration 10s
+		lb_policy round_robin
+	}
+}

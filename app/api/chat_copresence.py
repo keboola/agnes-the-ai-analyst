@@ -10,6 +10,7 @@ App-state accessors mirror app/api/chat.py:
   _get_repo(request)    → ChatRepository from request.app.state.chat_repo
   _get_manager(request) → ChatManager from request.app.state.chat_manager
 """
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -30,7 +31,6 @@ class InviteBody(BaseModel):
 
 def _get_repo(request: Request):
     """Return the ChatRepository from app state (mirrors chat.py)."""
-    from app.chat.persistence import ChatRepository
     repo = getattr(request.app.state, "chat_repo", None)
     if repo is None:
         raise HTTPException(503, "chat repository not available")
@@ -69,9 +69,7 @@ async def co_session_messages(
     is_participant = False
     if s.is_co_session:
         parts = repo.get_session_participants(session_id)
-        is_participant = any(
-            p.user_email == user["email"] and p.left_at is None for p in parts
-        )
+        is_participant = any(p.user_email == user["email"] and p.left_at is None for p in parts)
     if s.user_email != user["email"] and not is_participant:
         raise HTTPException(403, "not a participant of this session")
     msgs = repo.list_messages(session_id)
@@ -116,9 +114,8 @@ async def invite(
 
     # SR-8: seed with a summary, never a raw clone.
     from app.chat.copresence_summary import build_intersection_summary
-    seed = build_intersection_summary(
-        session_id, [user["email"], body.invitee_email]
-    )
+
+    seed = build_intersection_summary(session_id, [user["email"], body.invitee_email])
 
     s1 = repo.fork_session_as_co_session(
         source_id=session_id,
@@ -130,6 +127,7 @@ async def invite(
     )
 
     from app.chat.audit import write_audit
+
     write_audit(
         user_email=user["email"],
         action="co_session_fork",
@@ -150,8 +148,9 @@ async def join_ticket(
     SR-9: only a user with an active (left_at IS NULL) participant row
     can obtain a ticket.  Strangers receive 403.
 
-    The ticket is an opaque secret (same _TICKETS mechanism as the primary
-    stream path) carrying (session_id, participant_email).  The WS join
+    The ticket is an opaque secret (same coordination-backed ticket
+    mechanism as the primary stream path) carrying
+    (session_id, participant_email).  The WS join
     route /api/chat/sessions/{id}/join consumes it, re-verifies
     participant membership (SR-9), and calls add_sink.
     """
@@ -161,6 +160,7 @@ async def join_ticket(
     if not any(p.user_email == user["email"] and p.left_at is None for p in parts):
         raise HTTPException(403, "not a live participant")
     from app.api.chat import _issue_ticket
+
     ticket = _issue_ticket(session_id, user["email"])
     return {
         "ticket": ticket,
@@ -220,7 +220,5 @@ async def fork(
     parts = repo.get_session_participants(session_id)
     if not any(p.user_email == user["email"] and p.left_at is None for p in parts):
         raise HTTPException(403, "not a participant")
-    new_id = repo.fork_co_session_to_private(
-        source_session_id=session_id, owner_email=user["email"]
-    )
+    new_id = repo.fork_co_session_to_private(source_session_id=session_id, owner_email=user["email"])
     return {"session_id": new_id}
