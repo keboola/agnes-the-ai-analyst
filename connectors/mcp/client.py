@@ -251,8 +251,19 @@ async def _open_session(
     raise NotImplementedError(f"transport {transport!r} not supported (expected stdio | http | sse)")
 
 
-async def list_tools_async(source: Dict[str, Any]) -> List[ToolInfo]:
-    async with _open_session(source) as session:
+async def list_tools_async(
+    source: Dict[str, Any],
+    *,
+    caller_user_id: Optional[str] = None,
+) -> List[ToolInfo]:
+    """List the upstream's tools.
+
+    ``caller_user_id`` is threaded to the secret lookup so a ``scope='per_user'``
+    source is introspected under the caller's own credential (used by the
+    per-user ``…/my-secret/test`` endpoint). Materialize/admin callers leave it
+    ``None`` and stay on the shared vault path.
+    """
+    async with _open_session(source, caller_user_id=caller_user_id) as session:
         result = await session.list_tools()
         out: List[ToolInfo] = []
         for t in result.tools:
@@ -261,9 +272,9 @@ async def list_tools_async(source: Dict[str, Any]) -> List[ToolInfo]:
         return out
 
 
-def list_tools(source: Dict[str, Any]) -> List[ToolInfo]:
+def list_tools(source: Dict[str, Any], *, caller_user_id: Optional[str] = None) -> List[ToolInfo]:
     """Sync wrapper around list_tools_async."""
-    return asyncio.run(list_tools_async(source))
+    return asyncio.run(list_tools_async(source, caller_user_id=caller_user_id))
 
 
 async def call_tool_async(

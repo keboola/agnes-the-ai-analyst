@@ -347,7 +347,7 @@ def sync_semantic_layer(
     from app.datasource_secrets import datasource_secret
     from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
     from connectors.keboola.metastore_client import MetastoreApiError, MetastoreClient
-    from src.repositories import table_registry_repo, metric_repo, column_metadata_repo
+    from src.repositories import table_registry_repo, metric_repo, column_metadata_repo, glossary_repo
 
     url = keboola_url or os.environ.get("KEBOOLA_STACK_URL", "")
     token = keboola_token or datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
@@ -387,6 +387,9 @@ def sync_semantic_layer(
         "skipped_ambiguous_relationship": 0,
         "skipped_unsupported_relationship_type": 0,
         "skipped_unverified_relationship_direction": 0,
+        "glossary_created_or_updated": 0,
+        "glossary_pruned": 0,
+        "skipped_missing_term": 0,
     }
     if not models:
         return empty_result
@@ -403,6 +406,7 @@ def sync_semantic_layer(
         metrics = metastore.list_items("semantic-metric", model_uuid)
         constraints = metastore.list_items("semantic-constraint", model_uuid)
         relationships = metastore.list_items("semantic-relationship", model_uuid)
+        glossary_items = metastore.list_items("semantic-glossary", model_uuid)
     except (MetastoreApiError, requests.RequestException) as e:
         logger.error("Keboola Metastore fetch failed (model %s): %s", model_uuid, e)
         return {"status": "error", "error": f"Metastore fetch failed: {e}"}
@@ -480,6 +484,52 @@ def sync_semantic_layer(
                 repo.delete(m["id"])
                 pruned += 1
 
+    glossary_repository = glossary_repo()
+    used_glossary_ids: set[str] = set()
+    seen_glossary_ids: set[str] = set()
+    skipped_missing_term = 0
+
+    for item in glossary_items:
+        row, skip_reason = build_glossary_row(item, model_uuid, used_glossary_ids)
+        if row is None:
+            if skip_reason == "missing_term":
+                skipped_missing_term += 1
+            else:
+                logger.warning(
+                    "Keboola glossary item skipped (%s): %r",
+                    skip_reason,
+                    (item.get("attributes") or {}).get("term"),
+                )
+            continue
+        # refresh_fts=False: rebuilding the BM25 index is O(N) per call, so
+        # doing it once per imported term is O(N^2) over a sync. Refresh once
+        # after the full create+prune loop below instead.
+        glossary_repository.create(**row, refresh_fts=False)
+        seen_glossary_ids.add(row["id"])
+
+    existing_glossary = [
+        g for g in glossary_repository.list(limit=100000) if g.get("source") == "keboola_semantic_layer"
+    ]
+    glossary_pruned = 0
+    if not seen_glossary_ids and existing_glossary:
+        # Same safety valve as the metric prune above: a successful-but-empty
+        # glossary response must not wipe every previously-imported term.
+        logger.warning(
+            "Keboola glossary: upstream returned zero usable terms while %d "
+            "existing rows are present; skipping prune to avoid a full wipe.",
+            len(existing_glossary),
+        )
+    else:
+        for g in existing_glossary:
+            if g["id"] not in seen_glossary_ids:
+                glossary_repository.delete(g["id"])
+                glossary_pruned += 1
+
+    if seen_glossary_ids:
+        # Single rebuild for the whole batch (see the refresh_fts=False note
+        # in the create loop above).
+        glossary_repository.refresh_search_index()
+
     return {
         "status": "ok",
         "created_or_updated": len(seen_ids),
@@ -490,6 +540,9 @@ def sync_semantic_layer(
         "skipped_ambiguous_relationship": skipped_ambiguous_relationship,
         "skipped_unsupported_relationship_type": skipped_unsupported_relationship_type,
         "skipped_unverified_relationship_direction": skipped_unverified_relationship_direction,
+        "glossary_created_or_updated": len(seen_glossary_ids),
+        "glossary_pruned": glossary_pruned,
+        "skipped_missing_term": skipped_missing_term,
     }
 
 
@@ -645,3 +698,69 @@ def compose_join_sql(
     remapped_on = f'{remapped_alias1}."{on_col1}" = {remapped_alias2}."{on_col2}"'
 
     return f'SELECT {rewritten_expression} FROM "{primary_table}" AS t LEFT JOIN "{joined_table}" AS j ON {remapped_on}'
+
+
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def slugify_term(term: str) -> str:
+    """Lowercase, replace runs of non-alphanumeric characters with a single
+    underscore, strip leading/trailing underscores.
+
+    Keboola glossary terms are natural-language phrases ("Monthly Recurring
+    Revenue") — unlike semantic-metric.name, which is already a slug — so a
+    stable primary key requires this normalization step (verified live,
+    2026-07-17: terms contain spaces/uppercase/punctuation).
+    """
+    slug = _NON_ALNUM_RE.sub("_", term.lower()).strip("_")
+    return slug
+
+
+def assign_glossary_id(term: str, model_uuid: str, used_ids: set[str]) -> str:
+    """Build a stable glossary_terms.id from (model_uuid, slugified term),
+    resolving a slug collision within the same model with a numeric
+    ``-2``, ``-3``, ... suffix on first-seen order.
+
+    Mutates ``used_ids`` by adding the returned id — callers processing a
+    list of glossary items must reuse the same set across the whole run so
+    collisions are detected against everything assigned so far.
+    """
+    base = f"keboola/{model_uuid}/{slugify_term(term)}"
+    candidate = base
+    suffix = 2
+    while candidate in used_ids:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    used_ids.add(candidate)
+    return candidate
+
+
+def build_glossary_row(
+    item: dict,
+    model_uuid: str,
+    used_ids: set[str],
+) -> tuple[Optional[dict], Optional[str]]:
+    """Map one semantic-glossary item to a glossary_terms row dict.
+
+    Returns (row, None) on success, or (None, skip_reason) where
+    skip_reason is "missing_term" or "missing_definition" — both fields
+    are NOT NULL on glossary_terms, so a missing value is skipped
+    defensively rather than written as an empty string.
+    """
+    attrs = item.get("attributes") or {}
+    term = attrs.get("term")
+    definition = attrs.get("definition")
+
+    if not term:
+        return None, "missing_term"
+    if not definition:
+        return None, "missing_definition"
+
+    return {
+        "id": assign_glossary_id(term, model_uuid, used_ids),
+        "term": term,
+        "definition": definition,
+        "see_also": list(attrs.get("seeAlso") or []),
+        "model_uuid": model_uuid,
+        "source": "keboola_semantic_layer",
+    }, None

@@ -85,7 +85,16 @@ def test_repo_list_for_source_returns_user_ids_only():
 # ── REST: PUT / GET / DELETE /my-secret ───────────────────────────────────
 
 
-def _seed_per_user_source(scope: str = "per_user", source_id: str = "src_pu") -> None:
+def _seed_per_user_source(
+    scope: str = "per_user", source_id: str = "src_pu", grant_to: str = "analyst1"
+) -> None:
+    """Seed the source plus one passthrough tool granted to ``grant_to`` — the
+    my-secret endpoints require a grant on the source, so tests acting as a
+    non-admin must be entitled to it."""
+    from src.repositories.tool_registry import PASSTHROUGH, ToolRegistryRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
+
     conn = get_system_db()
     MCPSourceRepository(conn).upsert(
         id=source_id,
@@ -95,6 +104,18 @@ def _seed_per_user_source(scope: str = "per_user", source_id: str = "src_pu") ->
         auth_method="bearer",
         scope=scope,
     )
+    tools = ToolRegistryRepository(conn)
+    tools.upsert(
+        tool_id=f"{source_id}.lookup",
+        source_id=source_id,
+        original_name="lookup",
+        exposed_name="lookup",
+        mode=PASSTHROUGH,
+        description="grant target",
+    )
+    grp = UserGroupsRepository(conn).create(name=f"grant-{source_id}", description=None)
+    tools.add_grant(f"{source_id}.lookup", grp["id"])
+    UserGroupMembersRepository(conn).add_member(grant_to, grp["id"], source="system_seed")
     conn.close()
 
 
@@ -130,6 +151,29 @@ def test_my_secret_returns_409_without_vault_key(seeded_app, monkeypatch):
     )
     assert r.status_code == 409
     assert "vault_key_not_configured" in r.json()["detail"]
+
+
+def test_my_secret_requires_grant(seeded_app):
+    """A caller with no grant on the source gets 403 on GET/PUT/DELETE — can't
+    probe or manage a credential for a source they aren't entitled to."""
+    # Unique source id so no sibling test's grant leaks into the shared DB.
+    _seed_per_user_source(source_id="src_nogrant", grant_to="nobody")
+    client = seeded_app["client"]
+    hdr = {"Authorization": f"Bearer {seeded_app['analyst_token']}"}
+    assert client.get("/api/mcp/sources/src_nogrant/my-secret", headers=hdr).status_code == 403
+    assert client.put("/api/mcp/sources/src_nogrant/my-secret", headers=hdr, json={"value": "x"}).status_code == 403
+    assert client.delete("/api/mcp/sources/src_nogrant/my-secret", headers=hdr).status_code == 403
+
+
+def test_my_secret_admin_bypasses_grant(seeded_app):
+    """Admin short-circuits the grant check (can manage any source's secret)."""
+    _seed_per_user_source(source_id="src_adminbypass", grant_to="nobody")
+    client = seeded_app["client"]
+    r = client.get(
+        "/api/mcp/sources/src_adminbypass/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+    )
+    assert r.status_code == 200, r.text
 
 
 def test_my_secret_404_for_unknown_source(seeded_app):

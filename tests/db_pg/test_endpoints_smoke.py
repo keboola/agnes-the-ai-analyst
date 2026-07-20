@@ -483,6 +483,33 @@ class TestMetricsSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Glossary
+# ---------------------------------------------------------------------------
+
+
+class TestGlossarySmoke:
+    COVERED_ROUTES = {
+        "GET /api/glossary",
+        "GET /api/glossary/search",
+        "GET /api/glossary/{glossary_id}",
+    }
+
+    def test_glossary_list(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/glossary", headers=_admin_headers(seeded_app_both))
+        assert r.status_code == 200
+
+    def test_glossary_search(self, seeded_app_both):
+        r = seeded_app_both["client"].get(
+            "/api/glossary/search", params={"q": "revenue"}, headers=_admin_headers(seeded_app_both)
+        )
+        assert r.status_code == 200
+
+    def test_glossary_get_by_id(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/glossary/does-not-exist", headers=_admin_headers(seeded_app_both))
+        assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # Memory
 # ---------------------------------------------------------------------------
 
@@ -1619,6 +1646,9 @@ KNOWN_UNTESTED = {
     "GET /activity-center",
     "GET /catalog",
     "GET /catalog/p/{slug}",
+    # Semantic-layer browser (#853 + glossary) — covered by
+    # tests/test_catalog_semantics_page.py.
+    "GET /catalog/semantics",
     "GET /catalog/r/{slug}",
     "GET /catalog/t/{table_id}",
     "GET /chat",
@@ -1648,6 +1678,7 @@ KNOWN_UNTESTED = {
     "GET /marketplace/info",
     "GET /me/activity",
     "GET /me/ai-connector",
+    "GET /me/connections",  # per-user MCP connect page tested in tests/test_me_connections_page.py
     "GET /me/cowork",
     "GET /me/mcp",
     "GET /me/profile",
@@ -1925,6 +1956,7 @@ KNOWN_UNTESTED = {
     "GET /api/mcp/sources/{source_id}/my-secret",
     "POST /api/mcp/passthrough/tools/{tool_id}/call",
     "POST /api/mcp/query-table/{table_id}",
+    "POST /api/mcp/sources/{source_id}/my-secret/test",  # gates tested in tests/test_mcp_passthrough_api.py
     "PUT /api/mcp/sources/{source_id}/my-secret",
     # Memory advanced routes (audit, votes, tree, etc.)
     "DELETE /api/memory/{item_id}/dismiss",

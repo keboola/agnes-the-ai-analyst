@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -65,6 +66,30 @@ class _SubprocessRecorder:
             if tuple(cmd[: len(prefix)]) == prefix:
                 return scripted
         return subprocess.CompletedProcess(args=list(cmd), returncode=0, stdout="", stderr="")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_marketplace_host_env(monkeypatch):
+    """Prevent AGNES_SERVER/AGNES_MARKETPLACE_URL leaking in from another
+    test in the same pytest-xdist worker.
+
+    `cli/commands/auth.py` and `cli/commands/setup.py` set
+    `os.environ["AGNES_SERVER"]` directly (a deliberate production side
+    effect: a freshly-logged-in CLI session picks up the new server without
+    a subprocess restart) rather than via monkeypatch, so it survives past
+    the end of whichever test exercised that login/setup path. Under
+    xdist's shared-worker-process model that leak reaches every later test
+    in this file, making `configured_marketplace_host()` non-None and
+    triggering `_origin_host_mismatch()`'s `git remote get-url origin`
+    pre-check where a test doesn't expect it (observed in CI: an extra git
+    call shifted `git_calls[0]` away from the expected `fetch`, though not
+    reproducible in an isolated local run — xdist worker/test ordering is
+    the variable). Clearing both env vars here, before each test in this
+    file, removes the ambient variable regardless of which earlier test
+    caused it.
+    """
+    monkeypatch.delenv("AGNES_SERVER", raising=False)
+    monkeypatch.delenv("AGNES_MARKETPLACE_URL", raising=False)
 
 
 @pytest.fixture
@@ -210,6 +235,17 @@ def test_refresh_marketplace_no_token_friendly_exit(with_clone, tmp_path, monkey
     assert result.exit_code == 1
     assert "Traceback" not in (_clean(result.output) + _clean(result.stderr or ""))
     assert recorder.calls == []
+
+
+def test_autouse_env_isolation_clears_preexisting_agnes_server():
+    """Direct regression test for `_isolate_marketplace_host_env`: proves
+    AGNES_SERVER / AGNES_MARKETPLACE_URL are unset at the start of every
+    test in this file, regardless of a raw (non-monkeypatch) os.environ
+    write left behind by an earlier test in the same pytest-xdist worker
+    (see `cli/commands/auth.py`/`setup.py`, which set AGNES_SERVER directly
+    as a deliberate production side effect)."""
+    assert os.environ.get("AGNES_SERVER") is None
+    assert os.environ.get("AGNES_MARKETPLACE_URL") is None
 
 
 def test_refresh_marketplace_uses_fetch_plus_reset_not_pull(

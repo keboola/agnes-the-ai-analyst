@@ -14,6 +14,152 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - Keboola relationship-based JOIN metrics: `semantic-metric` expressions previously skipped as `foreign_alias_reference` now compose a two-table `LEFT JOIN` when exactly one `semantic-relationship` connects the metric's dataset (on the live-verified `to` side) to a registered Agnes table, resolved by real column metadata rather than alias-name matching (verified live: alias names in `semantic-relationship.on` never matched the aliases metric authors used). Anything ambiguous, an unverified join direction, or an unsupported relationship type still skips and counts under a specific reason — never a guessed JOIN.
 
+### Changed
+
+### Fixed
+
+- Chat idle reaper no longer dies permanently on a single failed sweep. The
+  loop had no error guard, so one unhandled exception in a sweep (a transient
+  sandbox kill/destroy or DB hiccup) killed the reaper task — after which idle
+  and paused E2B sandboxes accumulated indefinitely (billable) with nothing
+  reaping them (#867, reaper-cadence half). The loop now logs and continues to
+  the next sweep, and the kill phase + paused-TTL teardown are per-item guarded
+  so one bad session can't abort the rest of a sweep. (Note: paused sandboxes
+  are still retained for `chat.paused_ttl_seconds`, default 7 days, by design —
+  lower it to reduce paused-VM cost.)
+
+### Removed
+
+### Internal
+
+### Security
+
+- Query RBAC: non-admins can no longer reach an un-granted source's rows via a
+  catalog-qualified path. Each source's `extract.duckdb` is ATTACHed as its own
+  catalog, and the previous non-admin gate was a denylist of master-VIEW names
+  in the default catalog — so `<ungranted_source>.main."<table>"` slipped past
+  it (base relations in other catalogs aren't default-catalog views). `/api/query`
+  and `/api/v2/scan (from_query)` now reject any catalog-qualified reference into
+  a local extract catalog for non-admins (the granted surface is the unqualified
+  master views); remote-extension catalogs (`bq`/`kbc`) keep their registry gate.
+  Generalizes the audit M1 internal-table fix (#868). The two duplicated
+  enforcement copies were consolidated into one helper.
+
+## [0.74.121] - 2026-07-20
+
+### Added
+
+- **Per-table timing in the scheduled BigQuery metadata refresh.** A slow
+  refresh cycle (one run taking minutes instead of the usual ~100 s over the
+  same table set, with no errors and no CPU pressure) previously could not be
+  attributed to any specific table — the job logged only a single per-run
+  summary line. `run_bq_metadata_refresh` now emits one INFO line per table
+  (`bq metadata refresh table: run_id=… table_id=… status=… fetch_ms=… total_ms=…`)
+  where `fetch_ms` isolates the BigQuery `bq_metadata.fetch` call (the up-to-4
+  sequential jobs-API round-trips) and `total_ms` covers the whole per-row
+  work including the local DuckDB upsert. The two timings are also returned in
+  the `refresh_one` outcome dict, so `POST /api/v2/metadata-cache/refresh`
+  surfaces them for operator on-demand refreshes. `app/api/bq_metadata_refresh.py`.
+
+## [0.74.120] - 2026-07-20
+
+### Added
+
+- New admin/analyst web page `/catalog/semantics` — a read-only browser for
+  the semantic layer: business metrics (`metric_definitions`) and the
+  glossary (`glossary_terms`), reusing `GET /api/metrics` and
+  `GET /api/glossary(/search)` (no new REST endpoints). Metrics tab is
+  server-rendered and grouped by category with a client-side filter;
+  Glossary tab is a live, debounced search. Row detail expands inline
+  (accordion), source badges (`manual` / `yaml_import` / `openmetadata` /
+  `keboola_semantic_layer`) use the existing 4-slot badge vocabulary. Linked
+  from `/catalog`. `/admin/data-sources` gets a small summary card —
+  "Semantic layer: N metrics, M glossary terms synced from Keboola" — once a
+  connection has synced. Picks up issue #853 plus the glossary.
+
+## [0.74.119] - 2026-07-20
+
+### Changed
+
+- `agnes push` now gzip-compresses session transcript uploads (~10x smaller transfers) when the server advertises the `session-gzip` capability; older client/server combinations keep the plain format automatically. Escape hatch: `AGNES_PUSH_NO_GZIP=1`. The server stream-decompresses uploads at ingest and stores plain JSONL — the size cap binds on decompressed bytes and per-call decompression output is bounded (zip-bomb / peak-memory guard).
+
+## [0.74.118] - 2026-07-18
+
+### Changed
+
+- `/me/connections` Connect / Replace token / Test / Remove buttons now use the
+  design-system button classes (`btn btn-primary` / `btn-secondary` /
+  `btn-danger`, size `btn-sm`) instead of unstyled browser-default buttons, and
+  the row wraps on narrow viewports.
+
+## [0.74.117] - 2026-07-18
+
+### Changed
+
+- `/me/connections` "Test connection" now shows a friendly, actionable failure
+  ("Couldn't connect to <source>. Check that your token is valid and try
+  again.") instead of the raw upstream/SDK exception string (e.g. "unhandled
+  errors in a TaskGroup"). The sanitized cause is logged server-side for
+  operators. Status messages are also styled by state — failures use the
+  design-system danger token, successes the success token — so an error is
+  visually distinct from a neutral message.
+
+## [0.74.116] - 2026-07-18
+
+### Added
+
+- New analyst HOWTO: [Installing skills in Claude Cowork](docs/HOWTO/06-claude-cowork.md)
+  — the download → `Customize → Personal plugins → Upload plugin` loop, the
+  no-sync update model, what packages carry, connector reachability caveat,
+  and troubleshooting for upload-validation failures.
+
+## [0.74.115] - 2026-07-18
+
+### Added
+
+- Keboola glossary import: `semantic-glossary` Metastore items sync into a new `glossary_terms` table (DuckDB + Postgres, schema v93), tagged `source='keboola_semantic_layer'` and upsert+pruned each `keboola-semantic-layer-refresh` run alongside metrics — no new scheduler job. Relevance-ranked search (`GET /api/glossary/search`, `agnes glossary search`, the `glossary_search` MCP tool) uses DuckDB FTS BM25 (Postgres: `ts_rank`) with an ILIKE fallback, mirroring the corporate-memory knowledge search.
+
+## [0.74.114] - 2026-07-18
+
+### Fixed
+
+- Cowork per-plugin zips (`GET /marketplace/cowork/<prefixed_name>.zip`) no
+  longer fail Claude Cowork's upload validation when a skill or plugin
+  `description` exceeds 1024 characters. `sanitize_description` now truncates
+  over-long descriptions on a word boundary with a trailing ellipsis (the
+  validator rejects `description` fields over 1024 characters — previously the
+  packager shipped them through unchanged, so the upload failed with "field
+  'description' in SKILL.md must be at most 1024 characters").
+  `COWORK_FORMAT_VERSION` bumped so cached ETags bust and clients re-download
+  the corrected zip.
+
+### Security
+
+- The `GET`/`PUT`/`DELETE /api/mcp/sources/{id}/my-secret` endpoints now require
+  a grant on the source (the same `_visible_passthrough_tools` intersection the
+  connect page and `/test` use; admin short-circuits). Previously any signed-in
+  user could probe an arbitrary source's existence, scope, and connection
+  timestamp, or store a token against a source they had no grant on. Closes the
+  gap left when the self-service connect flow (#919) grant-gated the page and
+  `/test` but not these three sibling verbs.
+
+## [0.74.113] - 2026-07-18
+
+### Added
+
+- Self-service per-user MCP credential management. A new `/me/connections`
+  page lets any signed-in user connect, replace, test, and remove their own
+  token for the `per_user` MCP sources they are granted — no operator in the
+  loop. Backed by a new `POST /api/mcp/sources/{id}/my-secret/test`
+  connectivity check (gated by scope + grant + rate limit + credential, and
+  reachable via `agnes mcp my-secret test` and the `my_secret_test` MCP tool),
+  an `updated_at` field on the `my-secret` status, and a per-source
+  `connect_hint` (schema v92) that tells the user where to obtain their token
+  (admin-authored, rendered through the safe markdown pipeline). When an
+  unconnected caller invokes a `per_user` tool, the error is now an actionable,
+  web-linked remedy pointing at the connect page (falling back to the CLI hint
+  when no public URL is configured).
+
 ## [0.74.112] - 2026-07-17
 
 ### Added

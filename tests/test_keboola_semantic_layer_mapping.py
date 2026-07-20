@@ -409,6 +409,56 @@ def _relationship_item(name, from_id, to_id, on, rel_type="left", model_uuid="mo
     }
 
 
+from connectors.keboola.semantic_layer import (
+    assign_glossary_id,
+    build_glossary_row,
+    slugify_term,
+)
+
+
+class TestSlugifyTerm:
+    def test_lowercases_and_replaces_spaces(self):
+        assert slugify_term("Monthly Recurring Revenue") == "monthly_recurring_revenue"
+
+    def test_strips_punctuation(self):
+        assert slugify_term("Q4 (Actuals)!") == "q4_actuals"
+
+    def test_collapses_repeated_separators(self):
+        assert slugify_term("A -- B") == "a_b"
+
+    def test_strips_leading_trailing_separators(self):
+        assert slugify_term("  MRR  ") == "mrr"
+
+
+class TestAssignGlossaryId:
+    def test_builds_id_from_model_and_slug(self):
+        used: set[str] = set()
+        assert assign_glossary_id("MRR", "model-1", used) == "keboola/model-1/mrr"
+        assert used == {"keboola/model-1/mrr"}
+
+    def test_appends_numeric_suffix_on_collision(self):
+        used = {"keboola/model-1/mrr"}
+        assert assign_glossary_id("MRR", "model-1", used) == "keboola/model-1/mrr-2"
+        assert "keboola/model-1/mrr-2" in used
+
+    def test_appends_third_suffix_on_second_collision(self):
+        used = {"keboola/model-1/mrr", "keboola/model-1/mrr-2"}
+        assert assign_glossary_id("MRR", "model-1", used) == "keboola/model-1/mrr-3"
+
+
+def _glossary_item(term, definition, see_also=None, model_uuid="model-1"):
+    return {
+        "type": "semantic-glossary",
+        "id": "some-uuid",
+        "attributes": {
+            "term": term,
+            "definition": definition,
+            "seeAlso": see_also or [],
+            "modelUUID": model_uuid,
+        },
+    }
+
+
 class TestRelationshipLookupByDataset:
     def test_indexes_by_both_from_and_to(self):
         rel = _relationship_item("orders_to_customers", "in.c-a.orders", "in.c-a.customers", 'o."customer_id" = c."id"')
@@ -734,3 +784,57 @@ class TestBuildMetricRowWithRelationships:
         assert skip_reason is None
         assert row["sql"] == 'SELECT SUM("amount") FROM "crm_orders" AS t'
         assert "tables" not in row
+
+
+class TestBuildGlossaryRow:
+    def test_builds_row_for_simple_term(self):
+        used: set[str] = set()
+        item = _glossary_item("Monthly Recurring Revenue", "Revenue normalized monthly.")
+
+        row, skip_reason = build_glossary_row(item, "model-1", used)
+
+        assert skip_reason is None
+        assert row["id"] == "keboola/model-1/monthly_recurring_revenue"
+        assert row["term"] == "Monthly Recurring Revenue"
+        assert row["definition"] == "Revenue normalized monthly."
+        assert row["see_also"] == []
+        assert row["model_uuid"] == "model-1"
+        assert row["source"] == "keboola_semantic_layer"
+
+    def test_carries_see_also_list(self):
+        used: set[str] = set()
+        item = _glossary_item("MRR", "def", see_also=["arr", "churn"])
+
+        row, skip_reason = build_glossary_row(item, "model-1", used)
+
+        assert skip_reason is None
+        assert row["see_also"] == ["arr", "churn"]
+
+    def test_skips_missing_term(self):
+        used: set[str] = set()
+        item = _glossary_item(None, "def")
+
+        row, skip_reason = build_glossary_row(item, "model-1", used)
+
+        assert row is None
+        assert skip_reason == "missing_term"
+
+    def test_skips_missing_definition(self):
+        used: set[str] = set()
+        item = _glossary_item("MRR", None)
+
+        row, skip_reason = build_glossary_row(item, "model-1", used)
+
+        assert row is None
+        assert skip_reason == "missing_definition"
+
+    def test_second_call_with_colliding_slug_gets_suffix(self):
+        used: set[str] = set()
+        item_a = _glossary_item("MRR", "first def")
+        item_b = _glossary_item("MRR", "second def, different casing collides on slug")
+
+        row_a, _ = build_glossary_row(item_a, "model-1", used)
+        row_b, _ = build_glossary_row(item_b, "model-1", used)
+
+        assert row_a["id"] == "keboola/model-1/mrr"
+        assert row_b["id"] == "keboola/model-1/mrr-2"

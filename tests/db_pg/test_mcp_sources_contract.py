@@ -8,6 +8,7 @@ Follows the pattern established in ``test_data_packages_contract.py``.
 Closes the Devin Review follow-up on PR #474 (cross-engine contract
 tests missing for the 3 new repository pairs landed by Cowork + MCP).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,6 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # ---------------------------------------------------------------------------
 # repo construction helpers — one per backend
 # ---------------------------------------------------------------------------
+
 
 def _make_duckdb_repo(tmp_path):
     # Route through `_open_duckdb` (rather than bare `duckdb.connect`) so
@@ -49,10 +51,12 @@ def _make_pg_repo(pg_engine, monkeypatch):
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
     import src.db_pg as db_pg
+
     db_pg.dispose()
     db_pg.get_engine()
 
     from src.repositories.mcp_sources_pg import MCPSourcePgRepository
+
     return MCPSourcePgRepository(db_pg.get_engine()), None
 
 
@@ -74,10 +78,14 @@ def repo(request, tmp_path, pg_engine, monkeypatch):
 # contract tests — same calls, same answers from both engines
 # ---------------------------------------------------------------------------
 
+
 def test_upsert_then_get_returns_same_shape(repo):
     repo.upsert(
-        id="s1", name="filesystem", transport="stdio",
-        command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        id="s1",
+        name="filesystem",
+        transport="stdio",
+        command="npx",
+        args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
         enabled=True,
     )
     row = repo.get("s1")
@@ -95,7 +103,10 @@ def test_upsert_then_get_returns_same_shape(repo):
 def test_env_round_trips_on_both_backends(repo):
     """Per-source non-secret env survives upsert→get as a dict on both engines."""
     repo.upsert(
-        id="s1", name="crm", transport="stdio", command="crm-mcp",
+        id="s1",
+        name="crm",
+        transport="stdio",
+        command="crm-mcp",
         env={"CRM_API_URL": "https://x"},
         auth_secret_env="CRM_TOKEN",
     )
@@ -173,7 +184,10 @@ def test_transport_validation_is_consistent(repo):
 def test_scope_validation_is_consistent(repo):
     with pytest.raises(ValueError):
         repo.upsert(
-            id="s1", name="x", transport="stdio", command="x",
+            id="s1",
+            name="x",
+            transport="stdio",
+            command="x",
             scope="weird-scope",  # type: ignore[arg-type]
         )
 
@@ -186,3 +200,24 @@ def test_stdio_without_command_rejected(repo):
 def test_http_without_url_rejected(repo):
     with pytest.raises(ValueError):
         repo.upsert(id="s1", name="x", transport="http")
+
+
+def test_connect_hint_round_trips_on_both_backends(repo):
+    repo.upsert(
+        id="s1",
+        name="crm",
+        transport="stdio",
+        command="crm-mcp",
+        scope="per_user",
+        connect_hint="Generate a token in Settings → API.",
+    )
+    row = repo.get("s1")
+    assert row is not None
+    assert row["connect_hint"] == "Generate a token in Settings → API."
+
+
+def test_connect_hint_omitted_is_null_on_both_backends(repo):
+    repo.upsert(id="s1", name="legacy", transport="stdio", command="legacy-mcp")
+    row = repo.get("s1")
+    assert row is not None
+    assert row.get("connect_hint") is None

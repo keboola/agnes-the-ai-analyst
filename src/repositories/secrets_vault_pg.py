@@ -221,6 +221,16 @@ class PerUserSecretsPgRepository:
             ).fetchone()
         return row is not None
 
+    def get_updated_at(self, source_id: str, user_id: str) -> Optional[str]:
+        """ISO-8601 timestamp of the last upsert for ``(source_id, user_id)``,
+        or ``None`` when not connected. Never returns the secret value."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text("SELECT updated_at FROM mcp_user_secrets WHERE source_id = :source_id AND user_id = :user_id"),
+                {"source_id": source_id, "user_id": user_id},
+            ).fetchone()
+        return row[0].isoformat() if row and row[0] is not None else None
+
     def list_for_source(self, source_id: str) -> list[str]:
         """List of user_ids that have stored a secret for this source.
 

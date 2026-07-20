@@ -44,8 +44,10 @@ from src.repositories import (
     corpus_files_repo,
     data_packages_repo,
     file_corpora_repo,
+    glossary_repo,
     knowledge_repo,
     memory_domains_repo,
+    metric_repo,
     news_template_repo,
     profile_repo,
     recipes_repo,
@@ -1044,6 +1046,46 @@ async def mcp_connect_page(
     return templates.TemplateResponse(request, "mcp_connect.html", ctx)
 
 
+@router.get("/me/connections", response_class=HTMLResponse)
+async def me_connections_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Self-service page: connect / replace / test / remove your own credential
+    for the per_user MCP sources you are granted. Any authenticated user."""
+    from app.api.mcp_passthrough import _visible_passthrough_tools
+    from app.markdown_render import render_safe
+    from src.repositories import mcp_sources_repo, per_user_secrets_repo
+
+    granted_ids = {t["source_id"] for t in _visible_passthrough_tools(user)}
+    sources = []
+    for src in mcp_sources_repo().list_all(enabled_only=True):
+        if src["id"] not in granted_ids:
+            continue
+        if (src.get("scope") or "shared").lower() != "per_user":
+            continue
+        sources.append(
+            {
+                "id": src["id"],
+                "name": src["name"],
+                "transport": src.get("transport"),
+                "hint_html": render_safe(src.get("connect_hint")),
+                "has_secret": per_user_secrets_repo().has(src["id"], user["id"]),
+                "updated_at": per_user_secrets_repo().get_updated_at(src["id"], user["id"]),
+            }
+        )
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=is_user_admin(user["id"], conn),
+        connect_sources=sources,
+        highlight_source=request.query_params.get("source") or "",
+    )
+    return templates.TemplateResponse(request, "me_connections.html", ctx)
+
+
 @router.get("/me/activity", response_class=HTMLResponse)
 async def me_activity_page(
     request: Request,
@@ -1302,6 +1344,52 @@ async def catalog(
         total_registered_tables=total_registered_tables,
     )
     return templates.TemplateResponse(request, "catalog.html", ctx)
+
+
+@router.get("/catalog/semantics", response_class=HTMLResponse)
+async def catalog_semantics(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Read-only browser for the semantic layer — business metrics
+    (`metric_definitions`) and the glossary (`glossary_terms`) in one page
+    (issue #853 + the Keboola glossary import, #920).
+
+    Analyst-facing tier: ``get_current_user``, no admin gate and no
+    per-resource grant — matches the RBAC tier of the underlying
+    ``GET /api/metrics`` / ``GET /api/glossary*`` endpoints this page reuses,
+    and mirrors /catalog's own gate.
+
+    Metrics are server-rendered (grouped by category, same reading order as
+    ``agnes catalog --metrics``) — the scale is tens-to-low-hundreds so a
+    client-side substring filter over the rendered rows is enough; no new
+    search endpoint. Glossary starts empty and is populated client-side via
+    the existing ``GET /api/glossary`` / ``GET /api/glossary/search``.
+    """
+    metrics = metric_repo().list()
+    by_category: dict[str, list[dict]] = {}
+    for m in metrics:
+        by_category.setdefault(m.get("category") or "uncategorized", []).append(m)
+    metric_categories = [
+        {"name": cat, "metrics": sorted(items, key=lambda m: m.get("name") or "")}
+        for cat, items in sorted(by_category.items())
+    ]
+
+    # Total glossary count for the tab label. GlossaryRepository.list() has
+    # no unlimited mode (deliberately, to bound a full-table scan) — 500 is
+    # the endpoint's own max `limit` (app/api/glossary.py), comfortably above
+    # the "tens-to-low-hundreds" scale this feature targets, so it's an
+    # exact count in practice rather than a true cap.
+    glossary_count = len(glossary_repo().list(limit=500))
+
+    ctx = _build_context(
+        request,
+        user=user,
+        metric_categories=metric_categories,
+        metric_count=len(metrics),
+        glossary_count=glossary_count,
+    )
+    return templates.TemplateResponse(request, "catalog_semantics.html", ctx)
 
 
 @router.get("/catalog/p/{slug}", response_class=HTMLResponse)
@@ -2899,6 +2987,18 @@ async def admin_data_sources_page(
 
     ctx = _build_context(request, user=user)
     ctx["vault_key_configured"] = vault_key_configured()
+
+    # Semantic-layer sync summary (#853 + #920 follow-up): metric_definitions
+    # / glossary_terms carry no per-connection column, so the counts are
+    # global — scoped to source='keboola_semantic_layer' so a manual/
+    # yaml_import/openmetadata row doesn't inflate the "synced from Keboola"
+    # figure. The card only renders once something has actually synced.
+    semantic_metric_count = sum(1 for m in metric_repo().list() if m.get("source") == "keboola_semantic_layer")
+    semantic_glossary_count = sum(
+        1 for t in glossary_repo().list(limit=500) if t.get("source") == "keboola_semantic_layer"
+    )
+    ctx["semantic_metric_count"] = semantic_metric_count
+    ctx["semantic_glossary_count"] = semantic_glossary_count
     return templates.TemplateResponse(request, "admin_data_sources.html", ctx)
 
 

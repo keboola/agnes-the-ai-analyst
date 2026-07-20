@@ -33,15 +33,39 @@ class TestSanitizeDescription:
     def test_non_string_is_safe(self):
         assert cp.sanitize_description(None) == ""
 
+    def test_long_description_truncated_to_limit(self):
+        out = cp.sanitize_description("word " * 400)
+        assert len(out) <= cp._MAX_DESCRIPTION_CHARS
+        assert out.endswith("…")
+
+    def test_truncation_breaks_on_word_boundary(self):
+        out = cp.sanitize_description("alpha " * 300)
+        assert not out.rstrip("…").endswith("alph")
+        assert out.rstrip("…").endswith("alpha")
+
+    def test_exactly_at_limit_untouched(self):
+        desc = "a" * cp._MAX_DESCRIPTION_CHARS
+        assert cp.sanitize_description(desc) == desc
+
+    def test_single_giant_word_hard_truncated(self):
+        out = cp.sanitize_description("x" * 5000)
+        assert len(out) <= cp._MAX_DESCRIPTION_CHARS
+        assert out.endswith("…")
+
+    def test_limit_applies_after_whitespace_collapse(self):
+        # 1500 chars of "a\n" collapse to 1500 chars of "a " → still over
+        # the limit post-collapse, so truncation must run on the collapsed
+        # form, not the raw input length.
+        out = cp.sanitize_description("a\n" * 1500)
+        assert len(out) <= cp._MAX_DESCRIPTION_CHARS
+
 
 # ─────────────────────────────── plugin.json ───────────────────────────────
 
 
 class TestTransformPluginJson:
     def _t(self, data, manifest_name="my-plugin", raw=None):
-        return cp.transform_plugin_json(
-            data, manifest_name=manifest_name, raw=raw or {}
-        )
+        return cp.transform_plugin_json(data, manifest_name=manifest_name, raw=raw or {})
 
     def test_hex_version_coerced_to_semver(self):
         assert self._t({"name": "flea", "version": "f92bc28"})["version"] == "0.0.1"
@@ -116,25 +140,19 @@ class TestSkillFrontmatter:
 
     def test_plain_scalar_for_clean_description(self):
         # Reference uses a plain one-line scalar (not folded) for clean text.
-        out = cp.filter_skill_frontmatter(
-            "---\nname: x\ndescription: A clean one liner\n---\nbody\n", "x"
-        )
+        out = cp.filter_skill_frontmatter("---\nname: x\ndescription: A clean one liner\n---\nbody\n", "x")
         assert "description: A clean one liner" in out
         assert ">-" not in out
 
     def test_hazardous_description_quoted_and_roundtrips(self):
         # A colon-space would break a plain scalar → the YAML dumper quotes it.
-        out = cp.filter_skill_frontmatter(
-            "---\nname: x\ndescription: Ratio is this: that\n---\nbody\n", "x"
-        )
+        out = cp.filter_skill_frontmatter("---\nname: x\ndescription: Ratio is this: that\n---\nbody\n", "x")
         assert '"' not in out  # never double quotes (Cowork rejects them)
         assert yaml.safe_load(out.split("---")[1])["description"] == "Ratio is this: that"
 
     def test_typed_scalar_description_stays_string(self):
         # "123"/"true" must not deserialize to int/bool.
-        out = cp.filter_skill_frontmatter(
-            "---\nname: x\ndescription: '123'\n---\nbody\n", "x"
-        )
+        out = cp.filter_skill_frontmatter("---\nname: x\ndescription: '123'\n---\nbody\n", "x")
         assert yaml.safe_load(out.split("---")[1])["description"] == "123"
 
     def test_bracket_folder_name_stays_string(self):
@@ -184,8 +202,7 @@ def _make_plugin(tmp_path):
     d = tmp_path / "marketplaces" / "mkt" / "plugins" / "demo"
     (d / ".claude-plugin").mkdir(parents=True)
     (d / ".claude-plugin" / "plugin.json").write_text(
-        json.dumps({"name": "demo", "version": "deadbeef",
-                    "homepage": "https://internal.example/demo"}),
+        json.dumps({"name": "demo", "version": "deadbeef", "homepage": "https://internal.example/demo"}),
         encoding="utf-8",
     )
     (d / "skills" / "create").mkdir(parents=True)
@@ -204,9 +221,7 @@ def _make_plugin(tmp_path):
     (d / "data" / "catalog.json").write_text('{"k": 1}', encoding="utf-8")
     (d / "data" / "confluence" / "AMR").mkdir(parents=True)
     for i in range(3):
-        (d / "data" / "confluence" / "AMR" / f"page{i}.md").write_text(
-            f"# page {i}\ncontent {i}\n", encoding="utf-8"
-        )
+        (d / "data" / "confluence" / "AMR" / f"page{i}.md").write_text(f"# page {i}\ncontent {i}\n", encoding="utf-8")
     # Stripped.
     (d / ".DS_Store").write_text("junk", encoding="utf-8")
     # Kept root docs.
@@ -233,16 +248,22 @@ class TestBuildCoworkZip:
         assert not any(n.startswith("plugins/") for n in names)
 
     def test_no_marketplace_json(self, tmp_path):
-        assert ".claude-plugin/marketplace.json" not in _read_zip(
-            cp.build_cowork_zip(_make_plugin(tmp_path))[0]
-        )
+        assert ".claude-plugin/marketplace.json" not in _read_zip(cp.build_cowork_zip(_make_plugin(tmp_path))[0])
 
     def test_content_kept(self, tmp_path):
         names = set(_read_zip(cp.build_cowork_zip(_make_plugin(tmp_path))[0]))
         # The reference keeps these — they must survive.
-        for kept in ("CLAUDE.md", "settings.json", "scripts/query.mjs",
-                     "vendor/lib.js", "data/catalog.json", "README.md",
-                     ".mcp.json", "skills/create/SKILL.md", "agents/reviewer.md"):
+        for kept in (
+            "CLAUDE.md",
+            "settings.json",
+            "scripts/query.mjs",
+            "vendor/lib.js",
+            "data/catalog.json",
+            "README.md",
+            ".mcp.json",
+            "skills/create/SKILL.md",
+            "agents/reviewer.md",
+        ):
             assert kept in names, kept
 
     def test_dsstore_stripped(self, tmp_path):
@@ -281,6 +302,7 @@ class TestBuildCoworkZip:
 
     def test_symlink_to_host_file_excluded(self, tmp_path):
         import os
+
         secret = tmp_path / "secret.env"
         secret.write_text("API_KEY=supersecret", encoding="utf-8")
         plugin = _make_plugin(tmp_path)
@@ -308,9 +330,7 @@ class TestBuildCoworkZip:
         # Collisions resolve at the DIRECTORY level: both skills keep an intact
         # `SKILL.md` (a renamed `SKILL-1.md` would make Cowork drop the skill).
         skill_arcs = [n for n in names if n.startswith("skills/") and "/" in n]
-        assert all(
-            n.rsplit("/", 1)[1] == "SKILL.md" for n in skill_arcs
-        ), f"a SKILL.md got renamed: {skill_arcs}"
+        assert all(n.rsplit("/", 1)[1] == "SKILL.md" for n in skill_arcs), f"a SKILL.md got renamed: {skill_arcs}"
         # The two colliding dirs survive as distinct directories.
         skill_dirs = {n.rsplit("/", 1)[0] for n in skill_arcs}
         assert {"skills/dyn-id", "skills/dyn-id-1"} <= skill_dirs, skill_dirs

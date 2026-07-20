@@ -106,3 +106,59 @@ class TestDataSourcesPageVaultBanner:
         body = resp.text
         assert "Vault key not configured" not in body
         assert 'id="ds-add-btn" disabled' not in body
+
+
+class TestDataSourcesPageSemanticLayerSummary:
+    """Small summary card: 'Semantic layer: N metrics, M glossary terms
+    synced' — surfaces the Keboola semantic-layer sync (#920) result and
+    links to /catalog/semantics. Counts are global (metric_definitions /
+    glossary_terms carry no per-connection column), scoped to
+    source='keboola_semantic_layer' rows only — manual/yaml_import/
+    openmetadata rows don't count toward "synced from Keboola"."""
+
+    def test_no_card_when_nothing_synced_yet(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/admin/data-sources", headers=_auth(token))
+        assert resp.status_code == 200
+        assert "Semantic layer" not in resp.text
+
+    def test_card_shows_counts_and_links_after_sync(self, seeded_app):
+        from src.repositories import glossary_repo, metric_repo
+
+        metric_repo().create(
+            id="revenue/mrr",
+            name="mrr",
+            display_name="MRR",
+            category="revenue",
+            sql="SELECT 1",
+            source="keboola_semantic_layer",
+        )
+        metric_repo().create(
+            id="revenue/arr",
+            name="arr",
+            display_name="ARR",
+            category="revenue",
+            sql="SELECT 1",
+            source="keboola_semantic_layer",
+        )
+        # A manual metric must NOT count toward the "synced from Keboola" total.
+        metric_repo().create(
+            id="manual/x",
+            name="x",
+            display_name="X",
+            category="manual",
+            sql="SELECT 1",
+            source="manual",
+        )
+        glossary_repo().create(id="kb/m/mrr", term="MRR", definition="…", source="keboola_semantic_layer")
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/admin/data-sources", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Semantic layer" in body
+        assert "2 metrics" in body
+        assert "1 glossary term" in body
+        assert "/catalog/semantics" in body

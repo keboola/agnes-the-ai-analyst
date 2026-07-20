@@ -31,6 +31,7 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "collection_get",
     "collections_search",
     "knowledge_search",
+    "glossary_search",
     "collections_reingest",
     "schema",
     "describe",
@@ -59,6 +60,9 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "admin_knowledge_digest_create",
     "admin_knowledge_digest_update",
     "admin_knowledge_digest_delete",
+    # Per-user MCP credential connectivity check (triple-surface with
+    # /api/mcp/sources/{id}/my-secret/test + `agnes mcp my-secret test`).
+    "my_secret_test",
 )
 
 
@@ -199,6 +203,29 @@ def register_foundation_tools(
                 headers=headers_fn(),
                 params={"q": query, "k": k},
                 timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def glossary_search(query: str, k: int = 10) -> dict:
+        """Search Keboola-imported business-term definitions (glossary).
+
+        Relevance-ranked (BM25) search across term + definition, RBAC tier
+        matches knowledge_search (any authenticated user). Use this to
+        resolve business terminology (e.g. "what does MRR mean here?")
+        before assuming a term's meaning.
+
+        Args:
+            query: Natural-language or keyword query.
+            k: Max results (default 10).
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/glossary/search",
+                headers=headers_fn(),
+                params={"q": query, "limit": k},
+                timeout=30,
             )
             r.raise_for_status()
             return r.json()
@@ -861,5 +888,41 @@ def register_foundation_tools(
             )
             r.raise_for_status()
         return {"deleted": digest_id}
+
+    @mcp.tool()
+    async def my_secret_test(source_id: str) -> dict:
+        """Verify your own stored credential for a per_user MCP source.
+
+        Runs a live connectivity check against the upstream under YOUR
+        credential (not the shared one). Returns ``{ok, tool_count, message}``.
+        If you are not connected (or another 4xx condition applies — not
+        granted, rate-limited, ...), ``ok`` is ``False`` and ``message``
+        carries the server's remedy text (e.g. where to add your token).
+
+        Args:
+            source_id: The MCP source id (``src_*``).
+
+        Mirrors ``POST /api/mcp/sources/{id}/my-secret/test`` and
+        ``agnes mcp my-secret test``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/mcp/sources/{source_id}/my-secret/test",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            # 4xx bodies carry the connect remedy (e.g. the not-connected 403's
+            # `detail` — see mcp_user_secrets.py) — raise_for_status() would
+            # discard it and surface only a generic "403 Forbidden" to the
+            # model, defeating the "tells you where to add your token" promise
+            # above. Only genuine 5xx/transport errors still raise.
+            if 400 <= r.status_code < 500:
+                try:
+                    detail = r.json().get("detail", r.text)
+                except ValueError:
+                    detail = r.text
+                return {"ok": False, "tool_count": None, "message": detail}
+            r.raise_for_status()
+            return r.json()
 
     return list(FOUNDATION_TOOL_NAMES)
