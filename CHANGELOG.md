@@ -12,20 +12,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-- `system.duckdb` now **self-heals on-disk ART-index corruption on start**. DuckDB
-  backs `PRIMARY KEY`/`UNIQUE` constraints with an ART index; a termination that
-  bypasses the graceful `CHECKPOINT`-and-close path (OOM `SIGKILL`, VM `-replace`
-  destroy, host crash) can leave that index torn while the base table stays intact —
-  the file opens fine, then the first index write fails with `Failed to delete all
-  rows from index` / `database has been invalidated` and a plain restart cannot fix
-  it. On open, a rollback-only canary probe detects that signature and transparently
-  rebuilds the database via `EXPORT`/`IMPORT` (data preserved; the corrupt original
-  is quarantined as `system.duckdb.broken.<ts>`). Disable with `AGNES_DB_SELF_HEAL=0`.
-- `agnes admin db repair` — force the same `EXPORT`/`IMPORT` rebuild of a corrupt
-  `system.duckdb` from the CLI (operates on the state file directly, since the HTTP
-  API is unusable while the DB is invalidated; stop the app first — DuckDB is
-  single-writer). No-ops on a Postgres app-state backend.
-
 ### Changed
 
 ### Fixed
@@ -35,6 +21,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 ### Security
+
+## [0.75.10] - 2026-07-20
+
+### Added
+
+- `system.duckdb` now **self-heals on-disk ART-index corruption on start**. DuckDB
+  backs `PRIMARY KEY`/`UNIQUE` constraints with an ART index; a termination that
+  bypasses the graceful `CHECKPOINT`-and-close path (OOM `SIGKILL`, VM `-replace`
+  destroy, host crash) can leave that index torn while the base table stays intact —
+  the file opens fine, then the first index write fails with `Failed to delete all
+  rows from index` / `database has been invalidated` and a plain restart cannot fix
+  it. On open, a rollback-only canary probe detects that signature and transparently
+  rebuilds the database via `EXPORT`/`IMPORT` (data preserved; the corrupt original
+  is quarantined as `system.duckdb.broken.<ts>`). Runs on every successful-open path
+  (clean open, WAL-salvage recovery, and pre-migrate snapshot restore) — the same
+  abrupt termination that dirties the WAL can also tear the ART index. Disable with
+  `AGNES_DB_SELF_HEAL=0`.
+- `agnes admin db repair` — force the same `EXPORT`/`IMPORT` rebuild of a corrupt
+  `system.duckdb` from the CLI (operates on the state file directly, since the HTTP
+  API is unusable while the DB is invalidated; stop the app first — DuckDB is
+  single-writer). No-ops on a Postgres app-state backend.
 
 ## [0.75.9] - 2026-07-20
 
