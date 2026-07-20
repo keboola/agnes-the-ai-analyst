@@ -2642,7 +2642,18 @@ class ChatManager:
     async def _idle_reaper_loop(self) -> None:
         while True:
             await asyncio.sleep(60)
-            await self._reap_once()
+            # #867: never let a single failed sweep kill the reaper task. Before
+            # this guard, one unhandled error in _reap_once (a transient kill /
+            # destroy / DB hiccup) propagated out of the loop and the reaper
+            # died silently — after which paused/idle sandboxes accumulated
+            # indefinitely (billable) with nothing reaping them. Log and carry
+            # on to the next sweep instead.
+            try:
+                await self._reap_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("chat idle reaper sweep failed; continuing to next sweep")
 
     async def _reap_once(self) -> None:
         """One sweep of the reaper.
@@ -2720,7 +2731,13 @@ class ChatManager:
                     await self.kill(chat_id, reason="reaper_pause_failed")
 
         for chat_id, reason in to_kill:
-            await self.kill(chat_id, reason=reason)
+            # #867: per-item guard so one session that fails to kill doesn't
+            # abort the rest of the sweep (and, with the loop guard above, can't
+            # kill the reaper). Each sweep makes as much progress as it can.
+            try:
+                await self.kill(chat_id, reason=reason)
+            except Exception:
+                logger.exception("reaper kill failed for %s (%s); continuing", chat_id, reason)
 
         # Paused-TTL sweep: destroy sandboxes that have been paused too long.
         # Works purely from repo rows — catches pre-restart leftovers too.
@@ -2765,28 +2782,42 @@ class ChatManager:
         if acquired_sweep_lease:
             try:
                 paused_cutoff = now - timedelta(seconds=self._config.paused_ttl_seconds)
-                for session in self._repo.list_paused_sessions(paused_before=paused_cutoff):
+                # #867: a failing list_paused_sessions (DB hiccup) must skip
+                # this cycle's sweep, not propagate out and kill the reaper.
+                try:
+                    paused_sessions = self._repo.list_paused_sessions(paused_before=paused_cutoff)
+                except Exception:
+                    logger.exception("reaper: list_paused_sessions failed; skipping paused sweep this cycle")
+                    paused_sessions = []
+                for session in paused_sessions:
+                    # #867: guard the whole per-session teardown — a destroy
+                    # failure was already tolerated, but a failing
+                    # clear_sandbox_ref (DB hiccup) previously aborted the
+                    # sweep. Each session makes as much progress as it can.
                     try:
-                        await self._provider.destroy(sandbox_id=session.sandbox_id)
+                        try:
+                            await self._provider.destroy(sandbox_id=session.sandbox_id)
+                        except Exception:
+                            logger.debug("destroy sandbox %s failed (already gone?)", session.sandbox_id)
+                        self._repo.clear_sandbox_ref(session.id)
+                        # Drop any in-memory entry
+                        self._live.pop(session.id, None)
+                        # This sweep destroys the sandbox directly rather than
+                        # going through kill() (the usual _release_routing_lease
+                        # call site), so without an explicit release here the
+                        # routing lease would only self-heal at its own TTL
+                        # (_ROUTING_LEASE_TTL_SEC, ~180s) instead of freeing
+                        # immediately. Best-effort: a release failure must not
+                        # break the rest of the sweep.
+                        try:
+                            await self._release_routing_lease(session.id)
+                        except Exception:
+                            logger.debug(
+                                "routing lease release failed for %s during paused-sandbox sweep",
+                                session.id,
+                            )
                     except Exception:
-                        logger.debug("destroy sandbox %s failed (already gone?)", session.sandbox_id)
-                    self._repo.clear_sandbox_ref(session.id)
-                    # Drop any in-memory entry
-                    self._live.pop(session.id, None)
-                    # This sweep destroys the sandbox directly rather than
-                    # going through kill() (the usual _release_routing_lease
-                    # call site), so without an explicit release here the
-                    # routing lease would only self-heal at its own TTL
-                    # (_ROUTING_LEASE_TTL_SEC, ~180s) instead of freeing
-                    # immediately. Best-effort: a release failure must not
-                    # break the rest of the sweep.
-                    try:
-                        await self._release_routing_lease(session.id)
-                    except Exception:
-                        logger.debug(
-                            "routing lease release failed for %s during paused-sandbox sweep",
-                            session.id,
-                        )
+                        logger.exception("reaper: paused-TTL teardown failed for %s; continuing", session.id)
             finally:
                 try:
                     await asyncio.to_thread(coordination().lease_release, _PAUSED_SWEEP_LEASE_NAME, default_holder_id())

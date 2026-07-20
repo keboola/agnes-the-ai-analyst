@@ -2843,4 +2843,74 @@ def test_concurrent_attach_and_send_user_message_no_double_spawn(tmp_path, monke
             except (asyncio.CancelledError, Exception):
                 pass
 
+
+def test_idle_reaper_loop_survives_sweep_error(tmp_path, monkeypatch):
+    """#867: a single failing sweep must NOT kill the reaper task. Before the
+    guard, one unhandled error in _reap_once propagated out of the loop and the
+    reaper died silently — after which sandboxes accumulated with nothing
+    reaping them."""
+    import app.chat.manager as manager_mod
+
+    mgr = _make_pause_manager(tmp_path)
+
+    attempts = {"n": 0}
+
+    async def flaky_reap():
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("transient sweep failure")
+
+    mgr._reap_once = flaky_reap
+
+    sleeps = {"n": 0}
+
+    async def fake_sleep(_secs):
+        sleeps["n"] += 1
+        if sleeps["n"] >= 3:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(manager_mod.asyncio, "sleep", fake_sleep)
+
+    async def _run():
+        with pytest.raises(asyncio.CancelledError):
+            await mgr._idle_reaper_loop()
+
+    asyncio.run(_run())
+    assert attempts["n"] >= 2, "reaper loop died after the first failing sweep"
+
+
+def test_reap_once_paused_sweep_runs_even_if_kill_raises(tmp_path):
+    """#867: a failure in the kill phase must not abort the sweep — the
+    paused-TTL teardown still runs (per-phase/per-item guards)."""
+
+    async def _run():
+        from datetime import datetime as _dt, timedelta, timezone as _tz
+
+        mgr = _make_pause_manager(tmp_path)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+
+        # An expired paused session (repo row only — no live entry needed).
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        mgr._repo.set_sandbox_ref(s.id, sandbox_id="sbx-paused", runner_pid=1)
+        mgr._repo.set_sandbox_paused_at(s.id, _dt.now(_tz.utc) - timedelta(seconds=mgr._config.paused_ttl_seconds + 1))
+
+        # A DEAD live entry → reaper's to_kill (dead_gc); make kill blow up.
+        s2 = await mgr.create_session(user_email="u2@x", surface=Surface.WEB)
+        ws = FakeWS()
+        await mgr.attach(s2.id, ws)
+        mgr._live[s2.id].state = SessionState.DEAD
+
+        async def boom_kill(chat_id, reason=None):
+            raise RuntimeError("kill boom")
+
+        mgr.kill = boom_kill
+
+        await mgr._reap_once()
+
+        # Despite the kill phase raising, the paused-TTL sweep still destroyed
+        # the expired sandbox and cleared its ref.
+        assert "sbx-paused" in provider.destroyed, "paused sweep did not run after kill raised"
+        assert mgr._repo.get_session(s.id).sandbox_id is None
+
     asyncio.run(_run())
