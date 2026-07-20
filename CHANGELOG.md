@@ -20,11 +20,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
-## [0.75.4] - 2026-07-20
+## [0.75.5] - 2026-07-20
 
 ### Changed
 
 - The Admin nav dropdown's catch-all "Agent Experience" section is split into three intent-based groups — **Moderation queues** (Curated memory reviews, Flea Submissions), **Marketplace & knowledge distribution** (Curated Marketplaces, Maintained digests), and **Onboarding & messaging** (Initial Workspace, News, Prompts) — so an admin lands on the right page by the job they're doing instead of scanning seven loosely-related items. Nav-only change in `app/web/templates/_app_header.html`; same links, same routes, same RBAC.
+
+## [0.75.4] - 2026-07-20
+
+### Changed
+
 - BigQuery cost attribution: the billable job on the fully-materialized
   remote-select path (`agnes query --remote --auto-snapshot` /
   `run_remote_select_to_arrow`) now runs via labeled
