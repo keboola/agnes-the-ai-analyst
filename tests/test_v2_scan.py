@@ -543,13 +543,13 @@ class TestMaterializedScanServedLocally:
 
     SCHEMA = {"v": "INT64", "d": "DATE", "s": "STRING", "x": "STRING"}
 
-    def _seed_materialized(self, conn):
+    def _seed_materialized(self, conn, table_id="mat_t"):
         _ensure_admin1(conn)
         from src.repositories.table_registry import TableRegistryRepository
 
         TableRegistryRepository(conn).register(
-            id="mat_t",
-            name="mat_t",
+            id=table_id,
+            name=table_id,
             source_type="bigquery",
             bucket="ds",
             source_table="raw_events",
@@ -672,6 +672,41 @@ class TestMaterializedScanServedLocally:
         would fail this test if the fallback existed."""
         with pytest.raises(FileNotFoundError):
             self._run(reload_db, monkeypatch, {"table_id": "mat_t", "select": ["v"]})
+
+    def test_missing_parquet_real_schema_path_raises_404(self, reload_db, monkeypatch):
+        """Regression (PR #946 review): with `_resolve_schema` NOT stubbed,
+        the real build_schema raises v2_schema.NotFound for a materialized
+        row whose parquet is absent. That must translate to FileNotFoundError
+        (→ 404), not escape the endpoints' except tuples as a 500.
+
+        Uses a dedicated table_id so the module-level schema TTLCache can
+        never satisfy the lookup from a previous test's cached entry."""
+        from app.api import v2_scan
+
+        def _boom(*a, **kw):
+            raise AssertionError("BigQuery must not be touched for a materialized row")
+
+        monkeypatch.setattr(v2_scan, "_run_bq_scan", _boom)
+        monkeypatch.setattr(v2_scan, "_bq_dry_run_bytes", _boom)
+        # NOTE: _resolve_schema deliberately NOT patched — exercises the real
+        # build_schema path (registry row exists, parquet does not).
+        conn = reload_db.get_system_db()
+        try:
+            self._seed_materialized(conn, table_id="mat_t_cold")
+            user = {"id": "admin1", "email": "a@x.com"}
+            tracker = v2_scan._build_quota_tracker()
+            with pytest.raises(FileNotFoundError):
+                v2_scan.run_scan(
+                    conn,
+                    user,
+                    {"table_id": "mat_t_cold", "select": ["v"]},
+                    bq=_bq(data="proj"),
+                    quota=tracker,
+                )
+            with pytest.raises(FileNotFoundError):
+                v2_scan.estimate(conn, user, {"table_id": "mat_t_cold"}, bq=_bq(data="proj"))
+        finally:
+            conn.close()
 
     def test_counts_result_bytes_toward_daily_quota(self, reload_db, tmp_path, monkeypatch):
         from app.api.v2_quota import QuotaTracker

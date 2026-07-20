@@ -26,7 +26,7 @@ from src.repositories import (
     audit_repo,
     table_registry_repo,
 )
-from app.api.v2_schema import build_schema  # reused for column resolution
+from app.api.v2_schema import NotFound, build_schema  # reused for column resolution
 from app.api.v2_arrow import CONTENT_TYPE, arrow_to_ipc_bytes_capped
 from app.api.v2_quota import QuotaTracker, QuotaExceededError
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
@@ -46,7 +46,16 @@ class ScanRequest(BaseModel):
 
 def _resolve_schema(conn, user, table_id: str, bq: BqAccess) -> dict:
     """Get {column: type} dict for the target table — used by validator + projection check."""
-    s = build_schema(conn, user, table_id, bq=bq)
+    try:
+        s = build_schema(conn, user, table_id, bq=bq)
+    except NotFound as e:
+        # build_schema raises its own NotFound (a plain Exception) for a
+        # missing registry row OR a materialized/local row whose parquet
+        # hasn't been written yet. The scan/estimate endpoints map
+        # FileNotFoundError → 404; without this translation NotFound would
+        # escape their except tuples and surface as a 500 from the global
+        # handler (PR #946 review).
+        raise FileNotFoundError(str(e)) from e
     return {c["name"]: c["type"] for c in s.get("columns", [])}
 
 
