@@ -110,7 +110,8 @@ class TestRegistration:
         """Regression guard for the wave-2B `register_all_kinds` test
         (`tests/test_worker_kinds.py`), which asserts the exact registered
         set — this proves `ducklake-maintenance` (and wave-2G Task 6's
-        `analytics-migrate`) coexist without disturbing the others."""
+        `analytics-migrate`, and wave-2H Task WF-3's `distribution-mirror`)
+        coexist without disturbing the others."""
         from app.worker.kinds import register_all_kinds
         from app.worker.registry import JOB_KINDS
 
@@ -124,6 +125,7 @@ class TestRegistration:
             "jira-refresh",
             "ducklake-maintenance",
             "analytics-migrate",
+            "distribution-mirror",
         }
 
 

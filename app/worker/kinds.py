@@ -1,9 +1,12 @@
 """Real job kinds for the worker runtime (wave-2B, spec §3.3 — Task 4;
 ``ducklake-maintenance`` added in wave-2G Task 5; ``analytics-migrate``
-added in wave-2G Task 6).
+added in wave-2G Task 6; ``distribution-mirror`` added in wave-2H Task
+WF-3 — see
+``docs/superpowers/plans/2026-07-20-three-plane-wave2h-distribution.md``).
 
-``register_all_kinds()`` registers the seven kinds the scheduler's
-current HTTP-driven jobs (plus the analytics migrate command) map onto:
+``register_all_kinds()`` registers the eight kinds the scheduler's
+current HTTP-driven jobs (plus the analytics migrate command and the
+distribution mirror) map onto:
 
 - ``data-refresh``       (HEAVY) — wraps ``app.api.sync._run_sync``, the
   body behind ``POST /api/sync/trigger``.
@@ -25,6 +28,15 @@ current HTTP-driven jobs (plus the analytics migrate command) map onto:
   ``SyncOrchestrator().migrate_to_backend(to)``, the body behind
   ``POST /api/admin/analytics/migrate``. Admin-triggered only (no
   scheduler row) — see ``_run_analytics_migrate`` below.
+- ``distribution-mirror`` (LIGHT) — mirrors every downloadable local/
+  materialized parquet whose ``sync_state.hash`` differs from the
+  configured object store's stamped metadata, then writes a marker index
+  of what's currently mirrored. No-ops (clean, no ``boto3`` import) when
+  ``src.object_store.object_store()`` returns ``None`` — signed-URL
+  distribution off or no store configured — see
+  ``_run_distribution_mirror`` below. Enqueued automatically after a
+  successful ``data-refresh`` (see ``_maybe_enqueue_distribution_mirror``);
+  no scheduler row — event-chained, not cron.
 
 Every handler below is a THIN ADAPTER — it imports and calls the existing
 function/method and does not reimplement any of its logic. Each import is
@@ -135,6 +147,39 @@ def _run_data_refresh(payload: dict) -> None:
     ok = _run_sync(payload.get("tables"), payload.get("source"))
     if ok is False:
         raise RuntimeError("data-refresh sync failed — see server logs and sync_state for per-table errors")
+    if ok:
+        # `ok is True` here (the `False` branch above already raised) — a
+        # real sync just completed in THIS call, so the extracts tree is
+        # settled and safe to mirror. `ok is None` (another same-process
+        # `_run_sync` held the lock) is deliberately excluded: that means a
+        # sync may still be in flight elsewhere, and mirroring now could
+        # read a half-written parquet.
+        _maybe_enqueue_distribution_mirror()
+
+
+def _maybe_enqueue_distribution_mirror() -> None:
+    """Enqueue a ``distribution-mirror`` job after a successful
+    ``data-refresh`` (wave-2H WF-3) — but only when signed-URL distribution
+    is actually configured. Legacy/no-store instances must never accumulate
+    ``distribution-mirror`` rows in the ``jobs`` table for nothing; checking
+    ``object_store()`` here (not just relying on the handler's own no-op
+    guard) keeps the queue clean on every sync for the common case.
+
+    Mirrors the Jira webhook's enqueue-and-log-on-failure shape
+    (``connectors/jira/service.py::trigger_incremental_transform``):
+    best-effort, a failure to enqueue must never fail the ``data-refresh``
+    job that already succeeded.
+    """
+    from src.object_store import object_store
+
+    if object_store() is None:
+        return
+    try:
+        from src.repositories import jobs_repo
+
+        jobs_repo().enqueue("distribution-mirror", {}, idempotency_key="distribution-mirror")
+    except Exception:
+        logger.warning("distribution-mirror: failed to enqueue follow-up job", exc_info=True)
 
 
 def _run_marketplaces_sync(payload: dict) -> None:
@@ -323,8 +368,113 @@ def _run_analytics_migrate(payload: dict) -> None:
     SyncOrchestrator().migrate_to_backend(payload.get("to"))
 
 
+def _run_distribution_mirror(payload: dict) -> None:
+    """Mirror every downloadable local/materialized parquet to the
+    configured object store, then write the marker index of what's
+    currently mirrored (wave 2-H, WF-3 — see
+    ``docs/superpowers/plans/2026-07-20-three-plane-wave2h-distribution.md``).
+
+    **Clean no-op, no ``boto3`` import** when
+    ``src.object_store.object_store()`` returns ``None`` (signed-URL
+    distribution off, or no store configured) — the common case for
+    every S/M-tier instance and any instance that never installed the
+    ``distribution`` extra. This check happens before any other import in
+    this function, so a legacy instance never even imports ``boto3``.
+
+    Enumerates the same download set ``agnes pull`` computes
+    (``cli/lib/pull.py``): ``sync_state`` rows whose registry
+    ``query_mode`` is ``local`` or ``materialized``, excluding
+    ``server_only`` rows (kept fresh server-side, never distributed as a
+    parquet) — joined by ``table_registry.name`` the same way
+    ``app/api/sync.py::_build_manifest_for_user`` does (``sync_state.table_id``
+    is sourced from ``_meta.table_name``, which equals registry ``name``,
+    not ``id``).
+
+    The md5 compared/stamped is ``sync_state.hash`` — the SAME hash the
+    manifest exposes to ``agnes pull`` (computed once, in
+    ``src.orchestrator._update_sync_state`` / the materialized-pass
+    equivalent) — never recomputed here, so the marker index and the
+    manifest never disagree about "is this the current content".
+
+    Idempotent: a table whose object already carries the current md5
+    (``head_md5(key) == current_md5``) is skipped, not re-uploaded. Per-file
+    failures (network blip, permissions) are logged and do not abort the
+    run — a partial mirror is safe, since the marker index below only
+    lists tables that ARE currently mirrored; WF-2's manifest presign reads
+    that index and simply omits ``signed_url`` for anything not in it, so
+    the client falls back to the app-served download path.
+    """
+    from src.object_store import object_store
+
+    store = object_store()
+    if store is None:
+        logger.info("distribution mirror: no object store configured, skipping")
+        return
+
+    from app.utils import resolve_local_parquet
+    from src.distribution import write_mirror_index
+    from src.repositories import sync_state_repo, table_registry_repo
+
+    registry_by_name = {t["name"]: t for t in table_registry_repo().list_all()}
+
+    uploaded = 0
+    skipped = 0
+    failed = 0
+    mirrored: dict[str, str] = {}
+
+    for state in sync_state_repo().get_all_states():
+        table_id = state["table_id"]
+        reg = registry_by_name.get(table_id, {})
+        query_mode = reg.get("query_mode") or "local"
+        if query_mode not in ("local", "materialized"):
+            continue
+        if reg.get("server_only"):
+            continue
+        current_md5 = state.get("hash") or ""
+        if not current_md5:
+            # Never successfully synced yet — nothing on disk to mirror.
+            continue
+        parquet_path = resolve_local_parquet(table_id, reg.get("source_type"))
+        if parquet_path is None:
+            logger.warning("distribution mirror: no on-disk parquet found for %s, skipping", table_id)
+            continue
+
+        key = f"{table_id}.parquet"
+        try:
+            existing_md5 = store.head_md5(key)
+        except Exception:
+            logger.exception("distribution mirror: head_md5 failed for %s", table_id)
+            failed += 1
+            continue
+
+        if existing_md5 == current_md5:
+            skipped += 1
+            mirrored[table_id] = current_md5
+            continue
+
+        try:
+            store.put_file(parquet_path, key, md5=current_md5)
+        except Exception:
+            logger.exception("distribution mirror: upload failed for %s", table_id)
+            failed += 1
+            continue
+
+        uploaded += 1
+        mirrored[table_id] = current_md5
+
+    write_mirror_index(store, mirrored)
+
+    logger.info(
+        "distribution mirror: uploaded=%d skipped=%d failed=%d mirrored_total=%d",
+        uploaded,
+        skipped,
+        failed,
+        len(mirrored),
+    )
+
+
 def register_all_kinds() -> None:
-    """Register the seven real job kinds. Idempotent — safe to call more
+    """Register the eight real job kinds. Idempotent — safe to call more
     than once (e.g. across test re-imports); ``register_kind`` replaces
     any existing entry of the same name rather than erroring."""
     register_kind(
@@ -391,6 +541,20 @@ def register_all_kinds() -> None:
             # generous lease default/override knob rather than inventing a
             # second one.
             lease_seconds=_data_refresh_lease_seconds(),
+            retry_in_seconds=300,
+        )
+    )
+    register_kind(
+        JobKind(
+            name="distribution-mirror",
+            handler=_run_distribution_mirror,
+            lane=LIGHT_LANE,
+            # Same LIGHT-lane default as marketplaces-sync/session-collector/
+            # corporate-memory: bounded by the number of tables + their
+            # individual upload times, not multi-minute by design. No
+            # dedicated env override — a mirror run is bounded work, unlike
+            # the ducklake catalog operations that justified their own knob.
+            lease_seconds=_DEFAULT_LIGHT_LEASE_S,
             retry_in_seconds=300,
         )
     )
