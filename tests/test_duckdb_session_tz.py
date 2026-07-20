@@ -107,6 +107,10 @@ def test_no_bare_duckdb_connect_in_production_code():
         # Developer POC script — standalone, not part of the production
         # app path, not imported by any FastAPI handler or CLI command.
         "scripts/dev/poc_mcp_e2e.py",
+        # Jira parquet bloom-filter benchmark (#749) — standalone dev/benchmark
+        # script, not imported by any handler/CLI; its in-memory DuckDB conns
+        # measure parquet write/read and never touch tz-sensitive request data.
+        "connectors/jira/scripts/bloom_benchmark.py",
         # tests/db_pg/ existing fixtures predate the _open_duckdb rollout
         # and intentionally use bare connect for fixture isolation. Each
         # is listed by file path so any NEW bare connect in tests/db_pg/
