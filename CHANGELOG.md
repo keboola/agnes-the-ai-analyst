@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.75.13] - 2026-07-20
+
+### Added
+
 - `/admin/data-sources` now shows the Keboola semantic-layer sync status
   (never-synced / last-sync-ok-with-N-items / last-attempt-failed-with-reason)
   even when the metric/glossary counts are currently zero, plus a "Sync now"
@@ -44,6 +58,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   gap — metric count and category names were computed from every metric
   regardless of the requesting user's table-stack — and is now filtered
   through the same gate.
+
 ## [0.75.12] - 2026-07-20
 
 ### Fixed
