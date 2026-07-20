@@ -416,3 +416,24 @@ def test_metrics_summary_no_table_metric_always_visible(conn):
     ctx = build_claude_md_context(conn, user=user_none, server_url="https://example.com")
     assert ctx["metrics"]["count"] == 1
     assert ctx["metrics"]["categories"] == ["misc"]
+
+
+def test_metrics_summary_degrades_when_table_registry_missing(conn, monkeypatch):
+    """A half-migrated DB (metric_definitions present, table_registry not yet
+    created) must degrade to an empty summary for a non-admin caller, not
+    raise — the RBAC gate's table_registry lookup sits inside the same
+    try/except that already tolerates a missing metric_definitions table."""
+    import app.api.metrics as metrics_mod
+
+    class _MissingTableRegistryRepo:
+        def get_by_name(self, name):
+            raise duckdb.CatalogException(f"Table with name {name} does not exist!")
+
+    monkeypatch.setattr(metrics_mod, "table_registry_repo", lambda: _MissingTableRegistryRepo())
+
+    _seed_metric(conn, metric_id="m-orders", category="ops", table_name="orders")
+
+    _make_user(conn, user_id="u-none", email="none@example.com")
+    user_none = {"id": "u-none", "email": "none@example.com", "name": "None", "is_admin": False, "groups": []}
+    ctx = build_claude_md_context(conn, user=user_none, server_url="https://example.com")
+    assert ctx["metrics"] == {"count": 0, "categories": []}

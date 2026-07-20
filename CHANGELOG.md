@@ -31,6 +31,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+- `GET /api/metrics`, `GET /api/metrics/{id}`, and the `/catalog/semantics`
+  Metrics tab now RBAC-gate metric definitions the same way table reads are
+  gated: a metric is only visible if the caller can access its
+  `table_name`/`tables` via their Data Package stack (admins unaffected).
+  Previously any authenticated user could read any metric's SQL, table name,
+  and description regardless of table-stack membership, leaking
+  schema/business information about tables they had no grant to see.
+  Glossary terms are unaffected — they're business vocabulary, not
+  table-derived data. The CLAUDE.md generator's metric summary
+  (`src/claude_md.py`, surfaced via `agnes pull`/session start) had the same
+  gap — metric count and category names were computed from every metric
+  regardless of the requesting user's table-stack — and is now filtered
+  through the same gate.
+
 ## [0.75.11] - 2026-07-20
 
 ### Added
@@ -65,19 +79,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   v94 → v95 (DuckDB migration + matching Alembic revision) repairs existing
   instances on upgrade; `session_file` remains the primary key and the
   upsert keeps refreshing all columns (safe once unindexed).
-- `GET /api/metrics`, `GET /api/metrics/{id}`, and the `/catalog/semantics`
-  Metrics tab now RBAC-gate metric definitions the same way table reads are
-  gated: a metric is only visible if the caller can access its
-  `table_name`/`tables` via their Data Package stack (admins unaffected).
-  Previously any authenticated user could read any metric's SQL, table name,
-  and description regardless of table-stack membership, leaking
-  schema/business information about tables they had no grant to see.
-  Glossary terms are unaffected — they're business vocabulary, not
-  table-derived data. The CLAUDE.md generator's metric summary
-  (`src/claude_md.py`, surfaced via `agnes pull`/session start) had the same
-  gap — metric count and category names were computed from every metric
-  regardless of the requesting user's table-stack — and is now filtered
-  through the same gate.
 
 ## [0.75.9] - 2026-07-20
 

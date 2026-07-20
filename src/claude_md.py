@@ -126,10 +126,10 @@ def _metrics_summary(conn: duckdb.DuckDBPyConnection, *, user: dict) -> dict[str
     try:
         rows = metric_repo().list()
         allowed = get_accessible_tables(user, conn)  # None=admin, list=non-admin
+        allowed_set = None if allowed is None else set(allowed)
+        rows = [r for r in rows if _first_inaccessible_table(r, allowed_set) is None]
     except _missing_table_excs():
         return {"count": 0, "categories": []}
-    allowed_set = None if allowed is None else set(allowed)
-    rows = [r for r in rows if _first_inaccessible_table(r, allowed_set) is None]
     return {
         "count": len(rows),
         "categories": sorted({r.get("category") for r in rows if r.get("category")}),
