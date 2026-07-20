@@ -201,7 +201,10 @@ def main() -> None:
 
     # Params per shape: one existing key per month, one absent key, five hits.
     absent = [["SUPPORT-999999999"]]
-    in_hits = [lookup_keys[:5]] if len(lookup_keys) >= 5 else [lookup_keys * 5]
+    # Pad to exactly 5 keys for the 5-placeholder IN query. `lookup_keys * 5`
+    # alone yields 10/15/20 entries for 2/3/4 months → DuckDB param-count
+    # mismatch; slice back to 5 (#931 review).
+    in_hits = [lookup_keys[:5]] if len(lookup_keys) >= 5 else [(lookup_keys * 5)[:5]]
     shape_params = {
         "point lookup (hit/month)": [[k] for k in lookup_keys],
         "absent key": absent,
