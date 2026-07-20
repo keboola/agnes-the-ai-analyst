@@ -16,6 +16,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+## [0.75.7] - 2026-07-20
+
+### Fixed
+
 - `/api/v2/scan` and `/api/v2/scan/estimate` on a `source_type='bigquery'` +
   `query_mode='materialized'` table previously re-ran a billable BigQuery scan
   of the raw upstream table on every snapshot, ignoring the server-side parquet
@@ -26,9 +34,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   DuckDB execution returns a clean 400 instead of an unhandled 500. A missing
   parquet (materialize not yet run) is a 404 — never a fallback to a billable
   raw-table scan.
-### Removed
-
-### Internal
 
 ## [0.75.6] - 2026-07-20
 
