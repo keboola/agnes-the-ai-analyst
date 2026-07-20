@@ -1,0 +1,328 @@
+{% extends "base_page.html" %}
+
+{% block title %}Semantic layer — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% set page_hero_eyebrow = "Data" %}
+{% set page_hero_title = "Semantic layer" %}
+{% set page_hero_subtitle = "Business metrics and the glossary — the shared vocabulary your team's queries and dashboards should agree on." %}
+
+{#- Source badge — maps a `metric_definitions.source` / `glossary_terms.source`
+   value onto the codebase's 4-slot badge vocabulary (.badge / .badge--info /
+   .badge--success / .badge--warn / .badge--danger, style-custom.css). There
+   are only 4 accent slots and potentially more than 4 distinct source
+   values, so: `keboola_semantic_layer` gets its own success-accent slot
+   since it's the primary "synced from an external source" case worth
+   calling out at a glance; `yaml_import` -> info (admin-authored, bulk);
+   `openmetadata` -> warn (catalog-sourced, less curated); `manual` and any
+   other/unknown value fall back to the neutral default badge (no accent
+   modifier) rather than inventing new colors. The `.badge--danger` slot is
+   intentionally unused here — none of these sources represent an error
+   state. Kept in one macro so the mapping lives in exactly one place. -#}
+{% macro source_badge(source) -%}
+{%- if source == 'keboola_semantic_layer' -%}
+<span class="badge badge--success">Keboola sync</span>
+{%- elif source == 'yaml_import' -%}
+<span class="badge badge--info">YAML import</span>
+{%- elif source == 'openmetadata' -%}
+<span class="badge badge--warn">OpenMetadata</span>
+{%- else -%}
+<span class="badge">{{ source or 'manual' }}</span>
+{%- endif -%}
+{%- endmacro %}
+
+{% block head_extra %}
+<style>
+/* Page-local CSS only — canonical primitives (.tab-strip, .badge,
+   .search-input, spacing/color --ds-* tokens) come from style-custom.css /
+   design-tokens.css. What's genuinely page-specific: the tab panels, the
+   metrics/glossary row list, and the click-to-expand accordion detail. */
+
+.sl-panel { display: none; }
+.sl-panel.is-active { display: block; }
+
+.sl-toolbar { margin-bottom: var(--space-4); }
+
+.sl-category-heading {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ds-text-muted);
+    margin: var(--space-5) 0 var(--space-2);
+}
+.sl-category-block:first-of-type .sl-category-heading { margin-top: 0; }
+
+.sl-list {
+    border: 1px solid var(--ds-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+}
+.sl-list + .sl-list { margin-top: var(--space-3); }
+
+.sl-item { border-bottom: 1px solid var(--ds-border); }
+.sl-item:last-child { border-bottom: none; }
+.sl-item[hidden] { display: none; }
+
+.sl-row {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    background: var(--ds-surface);
+    border: none;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+}
+.sl-row:hover { background: var(--ds-surface-dim); }
+
+.sl-row__main { flex: 1; min-width: 0; }
+.sl-row__name { font-weight: 600; color: var(--ds-text-primary); font-size: 14px; }
+.sl-row__desc {
+    font-size: 12px;
+    color: var(--ds-text-muted);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.sl-row__chevron {
+    color: var(--ds-text-muted);
+    flex-shrink: 0;
+    transition: transform 0.15s ease;
+}
+.sl-item.is-open .sl-row__chevron { transform: rotate(90deg); }
+
+.sl-detail {
+    display: none;
+    padding: var(--space-4);
+    background: var(--ds-surface-dim);
+    border-top: 1px solid var(--ds-border);
+    font-size: 13px;
+    color: var(--ds-text-secondary);
+}
+.sl-item.is-open .sl-detail { display: block; }
+.sl-detail p { margin: 0 0 var(--space-2); }
+.sl-detail p:last-child { margin-bottom: 0; }
+.sl-detail ul { margin: 0 0 var(--space-2); padding-left: var(--space-4); }
+.sl-detail pre {
+    background: var(--ds-code-bg);
+    color: var(--ds-code-ink);
+    padding: var(--space-3);
+    border-radius: var(--radius-md);
+    overflow-x: auto;
+    font-size: 12px;
+    margin: 0 0 var(--space-2);
+}
+
+.sl-empty { color: var(--ds-text-muted); padding: var(--space-4); text-align: center; }
+</style>
+{% endblock %}
+
+{% block page %}
+<nav class="tab-strip" role="tablist" aria-label="Semantic layer sections">
+    <button type="button" role="tab" class="tab-strip__item is-active" id="tab-metrics"
+            data-tab="metrics" aria-selected="true">Metrics ({{ metric_count }})</button>
+    <button type="button" role="tab" class="tab-strip__item" id="tab-glossary"
+            data-tab="glossary" aria-selected="false">Glossary (<span id="glossary-tab-count">{{ glossary_count }}</span>)</button>
+</nav>
+
+<section class="sl-panel is-active" id="panel-metrics" role="tabpanel" aria-labelledby="tab-metrics">
+    <div class="sl-toolbar">
+        <input id="metric-filter" type="search" class="search-input"
+               placeholder="Filter metrics by name or description…" autocomplete="off">
+    </div>
+    {% if metric_categories %}
+    <div id="metrics-list">
+        {% for cat in metric_categories %}
+        <div class="sl-category-block">
+            <div class="sl-category-heading">{{ cat.name }}</div>
+            <div class="sl-list">
+                {% for m in cat.metrics %}
+                <div class="sl-item"
+                     data-filter-text="{{ ((m.name or '') ~ ' ' ~ (m.display_name or '') ~ ' ' ~ (m.description or '')) | lower }}">
+                    <button type="button" class="sl-row">
+                        <div class="sl-row__main">
+                            <div class="sl-row__name">{{ m.display_name or m.name }}</div>
+                            {% if m.description %}<div class="sl-row__desc">{{ m.description }}</div>{% endif %}
+                        </div>
+                        {{ source_badge(m.source) }}
+                        {% if m.tables %}<span class="badge" title="Relationship-based JOIN metric">JOIN</span>{% endif %}
+                        <span class="sl-row__chevron">&rsaquo;</span>
+                    </button>
+                    <div class="sl-detail">
+                        {% if m.tables %}
+                        <p><strong>Tables:</strong> {{ m.tables | join(', ') }}</p>
+                        {% elif m.table_name %}
+                        <p><strong>Table:</strong> {{ m.table_name }}</p>
+                        {% endif %}
+                        <pre><code>{{ m.sql }}</code></pre>
+                        {% if m.synonyms %}<p><strong>Synonyms:</strong> {{ m.synonyms | join(', ') }}</p>{% endif %}
+                        {% if m.notes %}
+                        <p><strong>Notes:</strong></p>
+                        <ul>{% for n in m.notes %}<li>{{ n }}</li>{% endfor %}</ul>
+                        {% endif %}
+                        {% if m.validation %}<p><strong>Validation:</strong> <code>{{ m.validation }}</code></p>{% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">No metrics registered yet. Import a starter pack with <code>agnes admin metrics import docs/metrics/</code>.</div>
+    {% endif %}
+</section>
+
+<section class="sl-panel" id="panel-glossary" role="tabpanel" aria-labelledby="tab-glossary">
+    <div class="sl-toolbar">
+        <input id="glossary-search" type="search" class="search-input"
+               placeholder="Search the glossary…" autocomplete="off">
+    </div>
+    <div id="glossary-list" class="sl-list">
+        <div class="sl-empty">Loading…</div>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    function escapeHtml(s) {
+        const d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function truncate(s, n) {
+        if (!s) return '';
+        return s.length > n ? s.slice(0, n) + '…' : s;
+    }
+
+    // Mirrors the `source_badge` Jinja macro above — same 4-slot mapping,
+    // duplicated here because glossary rows are rendered client-side after
+    // an /api/glossary(/search) fetch. Keep both in sync if the mapping
+    // changes.
+    function sourceBadgeHtml(source) {
+        if (source === 'keboola_semantic_layer') return '<span class="badge badge--success">Keboola sync</span>';
+        if (source === 'yaml_import') return '<span class="badge badge--info">YAML import</span>';
+        if (source === 'openmetadata') return '<span class="badge badge--warn">OpenMetadata</span>';
+        return '<span class="badge">' + escapeHtml(source || 'manual') + '</span>';
+    }
+
+    // ----- Accordion (event delegation — covers both server-rendered
+    // metric rows and client-rendered glossary rows without re-binding). -----
+    document.addEventListener('click', (e) => {
+        const row = e.target.closest('.sl-row');
+        if (!row) return;
+        const item = row.closest('.sl-item');
+        if (!item) return;
+        item.classList.toggle('is-open');
+    });
+
+    // ----- Tabs -----
+    function activateTab(name) {
+        document.querySelectorAll('.tab-strip__item').forEach((b) => {
+            const on = b.dataset.tab === name;
+            b.classList.toggle('is-active', on);
+            b.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        document.querySelectorAll('.sl-panel').forEach((p) => {
+            p.classList.toggle('is-active', p.id === 'panel-' + name);
+        });
+        if (name === 'glossary' && !glossaryLoaded) {
+            glossaryLoaded = true;
+            loadGlossary('');
+        }
+    }
+    document.querySelectorAll('.tab-strip__item').forEach((b) => {
+        b.addEventListener('click', () => {
+            activateTab(b.dataset.tab);
+            window.location.hash = b.dataset.tab;
+        });
+    });
+
+    // ----- Metrics: client-side substring filter (no new endpoint — the
+    // scale is tens-to-low-hundreds, see the route docstring). -----
+    const metricFilter = document.getElementById('metric-filter');
+    if (metricFilter) {
+        metricFilter.addEventListener('input', () => {
+            const q = metricFilter.value.trim().toLowerCase();
+            document.querySelectorAll('.sl-category-block').forEach((block) => {
+                let anyVisible = false;
+                block.querySelectorAll('.sl-item').forEach((item) => {
+                    const match = !q || (item.dataset.filterText || '').includes(q);
+                    item.hidden = !match;
+                    if (match) anyVisible = true;
+                });
+                block.hidden = !anyVisible;
+            });
+        });
+    }
+
+    // ----- Glossary: live search via the existing GET /api/glossary(/search). -----
+    let glossaryLoaded = false;
+    let glossaryDebounce;
+    const glossaryList = document.getElementById('glossary-list');
+    const glossaryInput = document.getElementById('glossary-search');
+    const glossaryTabCount = document.getElementById('glossary-tab-count');
+
+    function renderGlossaryRow(t) {
+        return (
+            '<div class="sl-item">' +
+            '<button type="button" class="sl-row">' +
+            '<div class="sl-row__main">' +
+            '<div class="sl-row__name">' + escapeHtml(t.term) + '</div>' +
+            '<div class="sl-row__desc">' + escapeHtml(truncate(t.definition, 140)) + '</div>' +
+            '</div>' +
+            sourceBadgeHtml(t.source) +
+            '<span class="sl-row__chevron">&rsaquo;</span>' +
+            '</button>' +
+            '<div class="sl-detail">' +
+            '<p>' + escapeHtml(t.definition) + '</p>' +
+            (t.see_also && t.see_also.length
+                ? '<p><strong>See also:</strong> ' + t.see_also.map(escapeHtml).join(', ') + '</p>'
+                : '') +
+            '</div>' +
+            '</div>'
+        );
+    }
+
+    async function loadGlossary(q) {
+        glossaryList.innerHTML = '<div class="sl-empty">Loading…</div>';
+        try {
+            const url = q
+                ? '/api/glossary/search?q=' + encodeURIComponent(q) + '&limit=50'
+                : '/api/glossary?limit=500';
+            const r = await fetch(url, { credentials: 'same-origin' });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const data = await r.json();
+            const terms = data.terms || [];
+            if (!q && glossaryTabCount) glossaryTabCount.textContent = String(data.count);
+            if (terms.length === 0) {
+                glossaryList.innerHTML = '<div class="sl-empty">No glossary terms found.</div>';
+                return;
+            }
+            glossaryList.innerHTML = terms.map(renderGlossaryRow).join('');
+        } catch (e) {
+            glossaryList.innerHTML = '<div class="sl-empty">Could not load the glossary: ' + escapeHtml(e.message) + '</div>';
+        }
+    }
+
+    if (glossaryInput) {
+        glossaryInput.addEventListener('input', () => {
+            clearTimeout(glossaryDebounce);
+            glossaryDebounce = setTimeout(() => loadGlossary(glossaryInput.value.trim()), 250);
+        });
+    }
+
+    // Initial tab from the URL hash (#metrics / #glossary) so a reload or
+    // shared link preserves the active tab.
+    const initial = (window.location.hash || '').replace('#', '');
+    activateTab(initial === 'glossary' ? 'glossary' : 'metrics');
+})();
+</script>
+{% endblock %}

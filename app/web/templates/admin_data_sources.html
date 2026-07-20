@@ -23,6 +23,23 @@
   .ds-vault-banner .vault-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
   .ds-vault-banner strong { display: block; margin-bottom: 2px; font-weight: 600; }
 
+  /* Semantic-layer sync summary — same shape as the vault banner but the
+     success accent (informational, not blocking). */
+  .ds-semantic-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: var(--ds-accent-success-bg);
+    border: 1px solid var(--ds-accent-success-line);
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin-bottom: 20px;
+    font-size: 13px;
+    color: var(--ds-accent-success-ink);
+  }
+  .ds-semantic-summary a { color: inherit; font-weight: 600; text-decoration: underline; }
+
   .ds-section-header {
     display: flex;
     align-items: center;
@@ -258,6 +275,22 @@
       <code>python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"</code>
       then add <code>AGNES_VAULT_KEY=&lt;value&gt;</code> to your <code>.env</code>.
     </div>
+  </div>
+  {% endif %}
+
+  {# Semantic-layer sync summary (#853 + #920 follow-up) — shows once a
+     Keboola connection has synced metrics and/or glossary terms. Counts
+     are global (metric_definitions / glossary_terms carry no
+     per-connection column) and scoped to source='keboola_semantic_layer'
+     rows only. #}
+  {% if semantic_metric_count or semantic_glossary_count %}
+  <div class="ds-semantic-summary">
+    <span>
+      <strong>Semantic layer:</strong>
+      {{ semantic_metric_count }} metric{{ 's' if semantic_metric_count != 1 else '' }},
+      {{ semantic_glossary_count }} glossary term{{ 's' if semantic_glossary_count != 1 else '' }} synced from Keboola.
+    </span>
+    <a href="/catalog/semantics">Browse it →</a>
   </div>
   {% endif %}
 
