@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.75.0] - 2026-07-20
+
 ### Added
 
 - **Process roles for multi-process deployments** (wave-1, WS A):
@@ -28,7 +30,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   end.
 
 - **Durable job queue + worker runtime** (wave-2B, WS B): a `jobs` table
-  (DuckDB and Postgres) backs `POST /api/jobs` (enqueue `{kind, payload?,
+  (DuckDB and Postgres, schema v94) backs `POST /api/jobs` (enqueue `{kind, payload?,
   idempotency_key?}` → 202; unknown `kind` → 400 listing the registered
   kinds), `GET /api/jobs/{job_id}` and `GET /api/jobs?status=&kind=&limit=`
   — gated by `require_admin` (also accepts the scheduler's shared-secret
