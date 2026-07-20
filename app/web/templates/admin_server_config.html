@@ -1572,9 +1572,27 @@ async function chatReadinessLoad() {
       : (s.ready
           ? '<span style="color: #2a8c4a;">✓ ready</span>'
           : '<span style="color: #c0392b;">✗ not ready — missing ' + escHtml(s.missing.join(", ")) + '</span>');
+    // Runtime LLM-credential diagnostic: the broker records the last auth /
+    // credit / provider failure it hit forwarding chat traffic, so a live
+    // credential problem shows here even when all secrets are present. (#884)
+    let llmBanner = "";
+    const d = s.llm_runtime;
+    if (d && d.detail) {
+      const label = d.reason === "credit_exhausted"
+        ? "LLM account unfunded"
+        : (d.reason === "auth_invalid" ? "LLM key rejected" : "LLM provider error");
+      const when = d.at ? " (last seen " + escHtml(d.at) + ")" : "";
+      llmBanner =
+        '<div style="margin: 8px 0; padding: 8px 10px; border-left: 3px solid #c0392b; background: #fdf1f0;">' +
+        '<strong style="color: #c0392b;">⚠ ' + escHtml(label) + '</strong> — ' +
+        escHtml(d.detail) + when +
+        '<div style="margin-top: 4px; color: #666;">Fix via the Anthropic key field above (persists to the overlay), then re-test. See DEPLOYMENT.md → "Chat LLM credential failures".</div>' +
+        '</div>';
+    }
     el.className = "";
     el.innerHTML =
       '<div style="margin-bottom: 8px;"><strong>Status:</strong> ' + overall + '</div>' +
+      llmBanner +
       '<ul style="list-style: none; padding: 0; margin: 0;">' +
       rows.map(([name, v]) =>
         `<li style="padding: 2px 0;"><code>${escHtml(name)}</code> — ${chatBadge(v.set, v.required)}</li>`

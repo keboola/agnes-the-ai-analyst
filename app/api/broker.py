@@ -393,4 +393,67 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
         from app.auth.wif import clear_token_cache
 
         clear_token_cache()
+
+    # Surface an actionable operator diagnostic for LLM-credential failures.
+    # An auth (401/403) or credit-exhaustion (400) response otherwise reaches
+    # the in-sandbox agent and becomes an opaque synthetic assistant message —
+    # operators get no clear signal the cause is the LLM credential (#884). We
+    # classify it (reusing readiness.classify_llm_failure) into a health signal
+    # the admin readiness banner reads, and audit it (never the key itself).
+    _record_llm_health(request.app.state, resp)
     return _to_response(resp)
+
+
+# LLM-credential failure statuses worth an operator signal: auth (invalid /
+# expired / unfunded-permission key) and 400 (candidate "credit balance too
+# low"). Other 4xx/5xx are the agent's own request errors, not a credential fault.
+_LLM_DIAG_STATUSES = (400, 401, 403)
+
+
+def _anthropic_error_message(resp: httpx.Response) -> str:
+    """Best-effort extract the provider error message from an error response.
+
+    The Anthropic API returns ``{"error": {"type": ..., "message": ...}}`` on
+    failures; fall back to raw text. Never raises."""
+    try:
+        body = resp.json()
+        err = body.get("error") if isinstance(body, dict) else None
+        if isinstance(err, dict) and err.get("message"):
+            return str(err["message"])
+    except Exception:
+        pass
+    try:
+        return resp.text[:500]
+    except Exception:
+        return ""
+
+
+def _record_llm_health(app_state: Any, resp: httpx.Response) -> None:
+    """Record or clear the runtime LLM-credential diagnostic from a forward.
+
+    A successful (2xx) forward clears any stale signal; an auth/credit failure
+    records a classified, key-free diagnostic + an audit row. Never raises."""
+    from app.chat.readiness import clear_llm_runtime_diagnostic, record_llm_runtime_failure
+
+    status = resp.status_code
+    if 200 <= status < 300:
+        clear_llm_runtime_diagnostic(app_state)
+        return
+    if status not in _LLM_DIAG_STATUSES:
+        return
+    message = _anthropic_error_message(resp)
+    # A plain 400 that isn't a credit-balance error is an agent request bug, not
+    # a credential fault — don't raise a false operator alarm for it.
+    if status == 400 and "credit" not in message.lower():
+        return
+    diag = record_llm_runtime_failure(app_state, status, message)
+    try:
+        audit_repo().log(
+            action="broker_llm_auth_failure",
+            params={"reason": diag.get("reason"), "status_code": status, "detail": diag.get("detail")},
+            result="error",
+            client_kind="broker",
+        )
+    except Exception:
+        # Audit logging must never break the request path itself.
+        pass

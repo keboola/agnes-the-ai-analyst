@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Actionable diagnostic when the chat LLM credential fails at runtime.** An invalid/expired key (HTTP 401/403), an unfunded account ("credit balance too low", HTTP 400), or a provider outage forwarding chat traffic through the broker previously surfaced only as an opaque synthetic assistant message. The broker now classifies the failure (reusing `app/chat/readiness.py::classify_llm_failure`, shared with the admin "test connection" probe), records a key-free signal, and audits it as `broker_llm_auth_failure`. `GET /admin/chat/readiness` gains an `llm_runtime` field and the *Cloud chat readiness* admin panel shows a red banner naming the exact fault; the signal clears on the next successful forward. Operator remediation runbook added to `docs/DEPLOYMENT.md`.
+
 ## [0.74.99] - 2026-07-16
 
 ### Added

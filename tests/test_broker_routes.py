@@ -352,6 +352,100 @@ def test_anthropic_proxy_wif_failure_returns_generic_detail(broker_app, monkeypa
     assert "workload_identity token exchange failed" in body
 
 
+class _StubResponseClient:
+    """Fake httpx.AsyncClient whose outbound forward returns a canned upstream
+    response, so we can drive the broker's LLM-credential health signal (#884).
+
+    Follows the ``_HeaderCapturingClient`` pattern: when constructed with a
+    ``transport`` kwarg it is the harness's ASGI-driving client and delegates to
+    the real ``httpx.AsyncClient``; otherwise it is the broker's outbound
+    anthropic client and returns the canned ``status_code`` / ``body``. Without
+    this delegation, monkeypatching ``httpx.AsyncClient`` also breaks the test's
+    own request into the app (no ``.post``) and leaks the stub across tests."""
+
+    status_code = 200
+    body = b"{}"
+    _real_cls = httpx.AsyncClient
+
+    def __init__(self, *a, **k):
+        self._real = self._real_cls(*a, **k) if "transport" in k else None
+
+    async def __aenter__(self):
+        return await self._real.__aenter__() if self._real else self
+
+    async def __aexit__(self, *a):
+        return await self._real.__aexit__(*a) if self._real else False
+
+    async def request(self, *a, **k):
+        if self._real:
+            return await self._real.request(*a, **k)
+        cls = type(self)
+
+        class _R:
+            status_code = cls.status_code
+            headers = {"content-type": "application/json"}
+            content = cls.body
+            text = cls.body.decode()
+
+            def json(self):
+                import json as _json
+
+                return _json.loads(cls.body)
+
+        return _R()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _forward_anthropic(broker_app, tok):
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                "/api/broker/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {tok}"},
+                content=b'{"model":"x"}',
+            )
+
+    return asyncio.run(_run())
+
+
+def test_anthropic_proxy_records_credit_diagnostic(broker_app, monkeypatch):
+    """A 400 'credit balance too low' upstream response is classified and
+    recorded on app.state so the admin readiness banner can surface it (#884)."""
+    import app.api.broker as broker_mod
+    from app.chat.readiness import LLM_REASON_CREDIT, get_llm_runtime_diagnostic
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static")
+    _StubResponseClient.status_code = 400
+    _StubResponseClient.body = b'{"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the API."}}'
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _StubResponseClient)
+    tok = ticket_repo().mint("chat_credit", "main", ttl_seconds=60)
+
+    r = _forward_anthropic(broker_app, tok)
+    assert r.status_code == 400  # the upstream status is passed through unchanged
+    diag = get_llm_runtime_diagnostic(broker_app.state)
+    assert diag is not None and diag["reason"] == LLM_REASON_CREDIT
+
+
+def test_anthropic_proxy_success_clears_diagnostic(broker_app, monkeypatch):
+    """A healthy (2xx) forward clears any stale LLM-credential signal."""
+    import app.api.broker as broker_mod
+    from app.chat.readiness import get_llm_runtime_diagnostic, record_llm_runtime_failure
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static")
+    record_llm_runtime_failure(broker_app.state, 401, "stale")
+    _StubResponseClient.status_code = 200
+    _StubResponseClient.body = b"{}"
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _StubResponseClient)
+    tok = ticket_repo().mint("chat_ok", "main", ttl_seconds=60)
+
+    r = _forward_anthropic(broker_app, tok)
+    assert r.status_code == 200
+    assert get_llm_runtime_diagnostic(broker_app.state) is None
+
+
 def test_normalize_broker_path_rejects_smuggling():
     """Unit: the path canonicalizer returns the EXACT URL the ASGI dispatch
     routes on (percent-decoded, dot-segments collapsed) and rejects authority
