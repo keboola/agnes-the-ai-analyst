@@ -10,9 +10,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-### Changed
-
-- The Admin nav dropdown's catch-all "Agent Experience" section is split into three intent-based groups — **Moderation queues** (Curated memory reviews, Flea Submissions), **Marketplace & knowledge distribution** (Curated Marketplaces, Maintained digests), and **Onboarding & messaging** (Initial Workspace, News, Prompts) — so an admin lands on the right page by the job they're doing instead of scanning seven loosely-related items. Nav-only change in `app/web/templates/_app_header.html`; same links, same routes, same RBAC.
 ### Added
 
 ### Changed
@@ -22,6 +19,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+## [0.75.4] - 2026-07-20
+
+### Changed
+
+- The Admin nav dropdown's catch-all "Agent Experience" section is split into three intent-based groups — **Moderation queues** (Curated memory reviews, Flea Submissions), **Marketplace & knowledge distribution** (Curated Marketplaces, Maintained digests), and **Onboarding & messaging** (Initial Workspace, News, Prompts) — so an admin lands on the right page by the job they're doing instead of scanning seven loosely-related items. Nav-only change in `app/web/templates/_app_header.html`; same links, same routes, same RBAC.
 
 ## [0.75.3] - 2026-07-20
 
