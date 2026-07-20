@@ -16,6 +16,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Release smoke-test no longer rolls `:stable` back on a transient container
+  registry blip. The GHCR login and app-image pull in the `smoke-test` job now
+  retry with backoff, so a `ghcr.io/v2/` timeout (an infra flake, not a broken
+  build) can't fail smoke-test and trip the auto-rollback. Root cause of #892:
+  a `Client.Timeout exceeded` pulling the image rolled prod back from
+  `stable-2026.07.525` to `520`; the identical commit passed smoke on re-run.
+  See [docs/runbooks/892-spurious-rollback.md](docs/runbooks/892-spurious-rollback.md).
+
 ### Removed
 
 ### Internal
