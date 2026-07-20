@@ -6,12 +6,14 @@ import typer
 
 from cli.client import api_get, api_post, api_delete, api_put
 from cli.commands.admin_activity import activity_app
+from cli.commands.admin_analytics import analytics_app as admin_analytics_app
 from cli.commands.admin_connection import admin_connection_app
 from cli.commands.admin_ask import app as admin_ask_app
 from cli.commands.admin_autodoc import autodoc_tables
 from cli.commands.admin_data_package import admin_data_package_app
 from cli.commands.admin_data_semantics import admin_data_semantics_app
 from cli.commands.admin_digest import admin_digest_app
+from cli.commands.admin_jobs import admin_jobs_app
 from cli.commands.admin_mcp import mcp_app as admin_mcp_app
 from cli.commands.admin_memory_domain import admin_memory_domain_app
 from cli.commands.admin_skills import admin_skills_app
@@ -58,6 +60,8 @@ admin_app.add_typer(
     admin_connection_app, name="connection", help="Named source-connection CRUD (multi-project Keboola)"
 )
 admin_app.add_typer(admin_skills_app, name="skill", help="Contributed skills management")
+admin_app.add_typer(admin_jobs_app, name="jobs", help="Job queue admin (wave-2B worker runtime)")
+admin_app.add_typer(admin_analytics_app, name="analytics", help="DuckLake analytics-backend migration (wave-2G)")
 # Single direct command (mirrors `register-table` / `discover-and-register`):
 # LLM-generate descriptions for undescribed tables (#399).
 admin_app.command("autodoc-tables")(autodoc_tables)
@@ -485,17 +489,25 @@ def sync(
 ):
     """Trigger a data sync. `--source` scopes a partial rebuild to one source.
 
-    Posts to `/api/sync/trigger`; `--source` is passed through as the
-    `?source=` query param so only that source's local + materialized rows
-    are rebuilt, leaving the other source's extract untouched. Returns 409
-    if a sync is already running.
+    Posts to `/api/sync/trigger`, which enqueues a `data-refresh` job
+    (worker runtime, wave-2B) instead of running the sync inline;
+    `--source` is passed through as the `?source=` query param so only
+    that source's local + materialized rows are rebuilt, leaving the
+    other source's extract untouched. Returns 409 (with the in-flight
+    job's `job_id`) if a `data-refresh` job is already queued or running —
+    poll it with `agnes admin jobs show <job_id>`.
     """
     params = {"source": source} if source else None
     json_body = {"tables": list(tables)} if tables else None
     resp = api_post("/api/sync/trigger", params=params, json=json_body)
 
     if resp.status_code == 409:
-        typer.echo("A sync is already in progress — try again shortly.", err=True)
+        detail = resp.json().get("detail")
+        job_id = detail.get("job_id") if isinstance(detail, dict) else None
+        msg = "A sync is already in progress — try again shortly."
+        if job_id:
+            msg += f" (job_id={job_id}, check `agnes admin jobs show {job_id}`)"
+        typer.echo(msg, err=True)
         raise typer.Exit(1)
     if resp.status_code != 200:
         typer.echo(f"Failed: {resp.json().get('detail', resp.text)}", err=True)
@@ -507,7 +519,9 @@ def sync(
     else:
         scope = data.get("source", "all")
         which = data.get("tables", "all")
-        typer.echo(f"Sync triggered (source={scope}, tables={which}).")
+        job_id = data.get("job_id")
+        suffix = f" (job_id={job_id})" if job_id else ""
+        typer.echo(f"Sync triggered (source={scope}, tables={which}).{suffix}")
 
 
 @admin_app.command("list-tables")

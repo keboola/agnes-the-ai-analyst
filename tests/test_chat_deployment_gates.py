@@ -1,14 +1,21 @@
 """Deployment-gate tests for the cloud-chat feature.
 
 Two gates verified here:
-1. UVICORN_WORKERS > 1  → chat_manager is None after lifespan runs.
+1. UVICORN_WORKERS > 1 with the default ``memory`` coordination backend →
+   chat_manager is None after lifespan runs (unchanged S-tier posture).
+   As of wave-2F task 7, this is no longer an unconditional refusal — see
+   tests/test_chat_gate_lift.py for the redis-backend case, where
+   UVICORN_WORKERS > 1 (multi-worker/replica) is now ALLOWED because
+   tickets/leases/replay/inbound/notifications are all coordination-backed.
 2. chat_manager absent  → POST /api/chat/sessions returns 503 with
    kind == "chat_disabled".
 
 The multi-worker test uses a minimal app whose lifespan replicates only
 the UVICORN_WORKERS branch of app/main.py's CHAT-INIT block — avoiding
 the full app.main lifespan (DuckDB, BQ config, PostHog, …) while still
-exercising the exact code path under test.
+exercising the exact code path under test, via
+``app.main._chat_coordination_backend`` so a monkeypatch of that one
+function drives the mirrored branch exactly like the real lifespan would.
 
 The 503 test reuses the api_client_chat_disabled / logged_in_user
 fixtures defined in test_chat_api.py.
@@ -22,6 +29,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import app.main as main_mod
 from tests.test_chat_api import api_client_chat_disabled, logged_in_user  # noqa: F401
 
 
@@ -41,7 +49,7 @@ def _make_app_with_worker_gate() -> FastAPI:
         app.state.chat_config = ChatConfig(enabled=True)  # chat enabled
 
         if app.state.chat_config.enabled:
-            if int(os.environ.get("UVICORN_WORKERS", "1")) > 1:
+            if int(os.environ.get("UVICORN_WORKERS", "1")) > 1 and main_mod._chat_coordination_backend() != "redis":
                 app.state.chat_manager = None
             else:
                 # Normally we'd create a real ChatManager here; in tests
@@ -60,8 +68,11 @@ def _make_app_with_worker_gate() -> FastAPI:
 
 
 def test_multi_worker_disables_chat(monkeypatch):
-    """UVICORN_WORKERS=2 → chat_manager is None after lifespan startup."""
+    """UVICORN_WORKERS=2 with the default memory backend → chat_manager is
+    None after lifespan startup (needs backend=memory to hold as of
+    wave-2F task 7 — see test_chat_gate_lift.py for the redis case)."""
     monkeypatch.setenv("UVICORN_WORKERS", "2")
+    monkeypatch.setattr(main_mod, "_chat_coordination_backend", lambda: "memory")
 
     app = _make_app_with_worker_gate()
 

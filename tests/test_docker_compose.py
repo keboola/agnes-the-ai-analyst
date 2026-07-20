@@ -24,14 +24,12 @@ class TestComposeServicesRemoved:
 
     def test_corporate_memory_service_removed(self, compose):
         assert "corporate-memory" not in compose["services"], (
-            "corporate-memory was dropped in #176 — scheduler drives it via HTTP. "
-            "Do not re-add the service stanza."
+            "corporate-memory was dropped in #176 — scheduler drives it via HTTP. Do not re-add the service stanza."
         )
 
     def test_session_collector_service_removed(self, compose):
         assert "session-collector" not in compose["services"], (
-            "session-collector was dropped in #176 — scheduler drives it via HTTP. "
-            "Do not re-add the service stanza."
+            "session-collector was dropped in #176 — scheduler drives it via HTTP. Do not re-add the service stanza."
         )
 
 
@@ -54,13 +52,11 @@ class TestComposeNoBootLoopProfile:
 
     def test_only_scheduler_is_unconditional_long_running(self, compose):
         # Services WITHOUT a `profiles:` key run on default `docker compose up`.
-        always_running = [
-            name
-            for name, svc in compose["services"].items()
-            if "profiles" not in svc
-        ]
+        always_running = [name for name, svc in compose["services"].items() if "profiles" not in svc]
         # Expected always-running set on a default deploy: app + scheduler.
-        # extract is one-shot so it has profiles=[extract]; caddy/telegram-bot/
-        # ws-gateway are all behind profiles too.
+        # extract is one-shot so it has profiles=[extract]; caddy/telegram-bot
+        # are behind profiles too. ws-gateway was removed (wave-2F task 6) —
+        # its notifications now ride the coordination pub/sub channel served
+        # by the GATEWAY-role app process, see app/api/notifications_ws.py.
         for boot_loop_offender in ("corporate-memory", "session-collector"):
             assert boot_loop_offender not in always_running

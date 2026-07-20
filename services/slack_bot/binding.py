@@ -27,16 +27,61 @@ from typing import Optional
 
 import duckdb
 
+from app.coordination.factory import coordination, resolve_backend_name
+
 _CODE_TTL_SECONDS = 10 * 60
 _MAX_ISSUE_PER_WINDOW = 3  # max codes issued in a 10-minute sliding window
 _MAX_REDEEM_ATTEMPTS = 5  # max FAILED redeem attempts per caller per window
 _REDEEM_WINDOW_SECONDS = 10 * 60  # sliding window for the redeem throttle
+
+# Coordination-backend KV key prefixes for the binding CODE itself (redis
+# mode only — see _store_binding_code_redis / _claim_binding_code_redis
+# below). The issuance/redeem THROTTLE LOGS (slack_binding_issue_log /
+# slack_binding_redeem_log) are durable, control-plane bookkeeping and stay
+# on the DuckDB path unconditionally — only the ephemeral code moves.
+_SLACK_BIND_CODE_PREFIX = "slack-bind:code:"
+_SLACK_BIND_ACTIVE_PREFIX = "slack-bind:active:"
 
 
 class BindingThrottled(Exception):
     """Raised by issue_verification_code (issuance rate limit) or
     redeem_verification_code (per-caller redeem rate limit) when the caller
     has exceeded the allowed attempts in the sliding window."""
+
+
+def _binding_backend_is_redis() -> bool:
+    return resolve_backend_name() == "redis"
+
+
+def _store_binding_code_redis(code: str, slack_user_id: str) -> None:
+    """redis coordination backend: store the code as coordination() KV
+    instead of a ``slack_binding_codes`` DuckDB row.
+
+    Enforces the same "one active code per slack_user_id" invariant as the
+    DuckDB path (SR-12) — deletes any prior outstanding code for this user
+    before minting the new one, so the old code can no longer be redeemed
+    even though its TTL hasn't elapsed yet.
+    """
+    coord = coordination()
+    prior_code = coord.kv_get(f"{_SLACK_BIND_ACTIVE_PREFIX}{slack_user_id}")
+    if prior_code:
+        coord.kv_delete(f"{_SLACK_BIND_CODE_PREFIX}{prior_code}")
+    coord.kv_set(f"{_SLACK_BIND_CODE_PREFIX}{code}", slack_user_id, ttl_s=_CODE_TTL_SECONDS)
+    coord.kv_set(f"{_SLACK_BIND_ACTIVE_PREFIX}{slack_user_id}", code, ttl_s=_CODE_TTL_SECONDS)
+
+
+def _claim_binding_code_redis(code: str) -> Optional[str]:
+    """redis coordination backend: atomically claim (get-and-delete) a
+    code, returning its bound ``slack_user_id`` or ``None`` if the code is
+    unknown, expired (the KV's own TTL), or already consumed by a
+    concurrent redeem. Also best-effort clears the user's active-code
+    pointer so a stale pointer can't linger past this redeem."""
+    coord = coordination()
+    slack_user_id = coord.kv_delete(f"{_SLACK_BIND_CODE_PREFIX}{code}")
+    if slack_user_id is None:
+        return None
+    coord.kv_delete(f"{_SLACK_BIND_ACTIVE_PREFIX}{slack_user_id}")
+    return slack_user_id
 
 
 def bind_link(public_url: str, code: str) -> str:
@@ -139,19 +184,28 @@ def issue_verification_code(conn: duckdb.DuckDBPyConnection, *, slack_user_id: s
         ).fetchone()[0]
         if recent >= _MAX_ISSUE_PER_WINDOW:
             raise BindingThrottled(slack_user_id)
-        # One active code per user — delete any prior outstanding code.
-        conn.execute("DELETE FROM slack_binding_codes WHERE slack_user_id = ?", [slack_user_id])
         code = f"{secrets.randbelow(1_000_000):06d}"
-        # Store issued_at as naive UTC from Python (not SQL current_timestamp): the
-        # redeem TTL check compares it against datetime.now(UTC), and DuckDB's
-        # current_timestamp timezone basis is not guaranteed to match Python's, so
-        # mixing the two skewed the TTL by the host's UTC offset. Python-UTC on both
-        # sides keeps the expiry correct on any host.
-        issued_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        conn.execute(
-            "INSERT INTO slack_binding_codes(code, slack_user_id, issued_at, attempts) VALUES (?, ?, ?, 0)",
-            [code, slack_user_id, issued_at],
-        )
+        # Storage strategy for the code itself: redis coordination backend ⇒
+        # coordination() KV (see _store_binding_code_redis — also enforces
+        # "one active code per user" there); memory backend (default) ⇒
+        # unchanged DuckDB slack_binding_codes table. The issuance THROTTLE
+        # LOG below stays on the DuckDB path unconditionally either way —
+        # it's durable control-plane bookkeeping, not the ephemeral code.
+        if _binding_backend_is_redis():
+            _store_binding_code_redis(code, slack_user_id)
+        else:
+            # One active code per user — delete any prior outstanding code.
+            conn.execute("DELETE FROM slack_binding_codes WHERE slack_user_id = ?", [slack_user_id])
+            # Store issued_at as naive UTC from Python (not SQL current_timestamp): the
+            # redeem TTL check compares it against datetime.now(UTC), and DuckDB's
+            # current_timestamp timezone basis is not guaranteed to match Python's, so
+            # mixing the two skewed the TTL by the host's UTC offset. Python-UTC on both
+            # sides keeps the expiry correct on any host.
+            issued_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            conn.execute(
+                "INSERT INTO slack_binding_codes(code, slack_user_id, issued_at, attempts) VALUES (?, ?, ?, 0)",
+                [code, slack_user_id, issued_at],
+            )
         conn.execute(
             "INSERT INTO slack_binding_issue_log(slack_user_id, issued_at) VALUES (?, current_timestamp)",
             [slack_user_id],
@@ -206,24 +260,37 @@ def redeem_verification_code(
                 [user_email],
             )
 
-        row = conn.execute(
-            "SELECT slack_user_id, issued_at FROM slack_binding_codes WHERE code = ?",
-            [code],
-        ).fetchone()
-        if not row:
-            # Wrong code — record a failed attempt against this caller's window.
-            _record_failure()
-            return False
-        slack_user_id, issued_at = row
-        # ``issued_at`` was written with SQL ``current_timestamp``, which is naive
-        # UTC. Compare against naive UTC — ``datetime.now()`` is local time, so on a
-        # host whose timezone is not UTC the TTL was skewed by the UTC offset
-        # (codes expired early on UTC+ hosts, never on UTC- hosts).
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        if (now - issued_at).total_seconds() > _CODE_TTL_SECONDS:
-            conn.execute("DELETE FROM slack_binding_codes WHERE code = ?", [code])
-            _record_failure()
-            return False
+        # Code lookup/claim strategy mirrors issue_verification_code: redis
+        # backend claims atomically (get-and-delete) from coordination() KV —
+        # the KV's own TTL means an expired code is simply absent, no
+        # separate expiry check needed. Memory backend keeps the existing
+        # DuckDB SELECT + explicit TTL check + DELETE path.
+        if _binding_backend_is_redis():
+            slack_user_id = _claim_binding_code_redis(code)
+            if slack_user_id is None:
+                # Wrong/expired/already-consumed code — record a failed
+                # attempt against this caller's window.
+                _record_failure()
+                return False
+        else:
+            row = conn.execute(
+                "SELECT slack_user_id, issued_at FROM slack_binding_codes WHERE code = ?",
+                [code],
+            ).fetchone()
+            if not row:
+                # Wrong code — record a failed attempt against this caller's window.
+                _record_failure()
+                return False
+            slack_user_id, issued_at = row
+            # ``issued_at`` was written with SQL ``current_timestamp``, which is naive
+            # UTC. Compare against naive UTC — ``datetime.now()`` is local time, so on a
+            # host whose timezone is not UTC the TTL was skewed by the UTC offset
+            # (codes expired early on UTC+ hosts, never on UTC- hosts).
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            if (now - issued_at).total_seconds() > _CODE_TTL_SECONDS:
+                conn.execute("DELETE FROM slack_binding_codes WHERE code = ?", [code])
+                _record_failure()
+                return False
         # Bind: write slack_user_id to the user row through the factory so the
         # binding lands in the active state backend (Postgres or DuckDB) — a raw
         # UPDATE on the DuckDB connection never reached the PG-resident users table.
@@ -232,7 +299,9 @@ def redeem_verification_code(
         _u = users_repo().get_by_email(user_email)
         if _u:
             users_repo().update(id=_u["id"], slack_user_id=slack_user_id)
-        conn.execute("DELETE FROM slack_binding_codes WHERE code = ?", [code])
+        if not _binding_backend_is_redis():
+            # redis path already claimed (deleted) the code atomically above.
+            conn.execute("DELETE FROM slack_binding_codes WHERE code = ?", [code])
         # Success — clear this caller's failed-attempt history so a future
         # legitimate re-bind isn't penalised by earlier typos.
         conn.execute("DELETE FROM slack_binding_redeem_log WHERE user_email = ?", [user_email])
