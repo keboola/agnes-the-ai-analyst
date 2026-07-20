@@ -167,3 +167,29 @@ def test_detailed_schema_check_shares_liveness_cache(seeded_app, monkeypatch):
     assert r.status_code == 200, r.text
     assert r.json()["services"]["db_schema"]["db_schema"] == "ok", r.text
     assert calls["n"] == 1, f"detailed endpoint re-read the DB instead of reusing the 30s cache: {calls['n']} reads"
+
+
+def test_detailed_check_does_not_pollute_liveness_cache(seeded_app):
+    """`/api/health/detailed` stamps an `audience` label onto each check in
+    place. Since the schema check now reuses the shared 30s cache object, the
+    detailed handler must copy it — otherwise `audience` bleeds into the cached
+    dict the unauthenticated `/api/health` probe spreads into its flat body,
+    silently changing the liveness contract for up to 30s."""
+    _reset_cache()
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    # A clean liveness body never carries `audience`.
+    assert "audience" not in c.get("/api/health").json()
+
+    # Run the detailed check that tags every check with an audience...
+    r = c.get(
+        "/api/health/detailed?include=schema",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["services"]["db_schema"]["audience"] == "operator", r.text
+
+    # ...the liveness body must STILL be clean (cached dict not mutated).
+    body = c.get("/api/health").json()
+    assert "audience" not in body, f"detailed check leaked `audience` into liveness body: {body}"

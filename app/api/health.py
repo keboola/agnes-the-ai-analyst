@@ -445,8 +445,11 @@ async def health_check_detailed(
         # Offload to a worker thread + reuse the 30s liveness cache: the schema
         # read is a synchronous PG round-trip and this handler is `async def`,
         # so running it inline blocks the event loop when the dashboard polls
-        # `?include=schema`.
-        checks["db_schema"] = await asyncio.to_thread(_cached_db_schema)
+        # `?include=schema`. Copy the cached dict — `_cached_db_schema` returns
+        # the shared `_schema_cache` object, and the audience-tagging loop below
+        # mutates each check in place; without the copy that `audience` key would
+        # bleed into the cached result the public `/api/health` probe returns.
+        checks["db_schema"] = dict(await asyncio.to_thread(_cached_db_schema))
 
     # Sync state summary
     try:
