@@ -205,6 +205,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   now publishes through the coordination fabric instead of the removed
   Unix socket.
 
+## [0.74.121] - 2026-07-20
+
+### Added
+
+- **Per-table timing in the scheduled BigQuery metadata refresh.** A slow
+  refresh cycle (one run taking minutes instead of the usual ~100 s over the
+  same table set, with no errors and no CPU pressure) previously could not be
+  attributed to any specific table — the job logged only a single per-run
+  summary line. `run_bq_metadata_refresh` now emits one INFO line per table
+  (`bq metadata refresh table: run_id=… table_id=… status=… fetch_ms=… total_ms=…`)
+  where `fetch_ms` isolates the BigQuery `bq_metadata.fetch` call (the up-to-4
+  sequential jobs-API round-trips) and `total_ms` covers the whole per-row
+  work including the local DuckDB upsert. The two timings are also returned in
+  the `refresh_one` outcome dict, so `POST /api/v2/metadata-cache/refresh`
+  surfaces them for operator on-demand refreshes. `app/api/bq_metadata_refresh.py`.
+
 ## [0.74.120] - 2026-07-20
 
 ### Added
