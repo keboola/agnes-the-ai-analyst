@@ -1,0 +1,241 @@
+# M-tier role-split overlay (spec §3.8). Compose profile: mtier.
+#
+# Layer over docker-compose.yml + docker-compose.postgres.yml:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.postgres.yml \
+#       -f docker-compose.mtier.yml --profile mtier up
+#
+# Redis is a placeholder for WS C — the startup guard (app/startup_guards.py)
+# only checks instance.yaml::coordination.backend == "redis" today;
+# coordination itself lands next wave.
+#
+# The base docker-compose.yml `app` and `scheduler` services carry no
+# `profiles:` (they're "always on" per Compose semantics), so they'd start
+# alongside the role-split services on `--profile mtier up` and fight over
+# the same `data` volume / DATABASE_URL wiring. Gate them behind an unused
+# profile here so only the role services boot for this topology.
+#
+# Wave-2G Task 5: this overlay also flips `analytics.backend: ducklake`
+# (config/instance.mtier.yaml) so the smoke test exercises the multi-process
+# DuckLake path — a Postgres-backed DuckLake catalog is the whole reason a
+# role-split harness needs to touch this at all (a DuckDB-file catalog is
+# hard single-process, per src/analytics_backend.py). `postgres` below gets
+# an init script creating a dedicated `agnes_ducklake` database (kept
+# separate from the `agnes` app-state database — DuckLake's own
+# `ducklake_*` catalog tables land directly in the target database's
+# `public` schema, so sharing `agnes` would mix them with Alembic-managed
+# app-state tables); every role service gets `AGNES_DUCKLAKE_CATALOG_DSN`
+# pointed at it, mirroring how `DATABASE_URL` is wired for the `agnes` DB.
+services:
+  app:
+    profiles: ["standalone"]
+  scheduler:
+    profiles: ["standalone"]
+
+  # Additive: docker-compose.postgres.yml already defines this service
+  # (image, POSTGRES_* env, healthcheck, the postgres_data volume, host
+  # port). No `profiles:` override here — like that base definition, this
+  # service must stay available in every profile (`standalone` local dev,
+  # `mtier` role split), so it keeps running unconditionally. This stanza
+  # only adds the ducklake-catalog-database init script via Compose's
+  # additive volumes-list merge (same mechanism the `data-migrate`
+  # `depends_on` merge lower in this file relies on).
+  postgres:
+    volumes:
+      - ./deploy/postgres/init-ducklake-db.sql:/docker-entrypoint-initdb.d/init-ducklake-db.sql:ro
+
+  # api1/api2 are intentionally two full, explicit stanzas rather than a
+  # YAML anchor (`&api_role` / `<<: *api_role`) — verified via
+  # `docker compose config` that Compose's `!reset` merge tag does not
+  # propagate through a `<<:` alias merge (api2 kept the inherited
+  # `ports: ["8000:8000"]` from the base `app` service, defeating the
+  # proxy-only-exposure intent). Explicit stanzas sidestep that.
+  api1:
+    extends: { file: docker-compose.yml, service: app }
+    ports: !reset []            # proxy-only exposure — no host ports
+    volumes:
+      # Mounted at a dedicated path, NOT shadowed onto a sub-path of the
+      # inherited `./config:/app/config:ro` mount — nesting a file bind
+      # mount inside an already-read-only host directory mount fails at
+      # container start ("read-only file system" creating the mountpoint).
+      # CONFIG_DIR below repoints the loader (config/loader.py) here so the
+      # startup guard sees coordination.backend=redis.
+      - ./config/instance.mtier.yaml:/app/mtier-config/instance.yaml:ro
+    environment:
+      AGNES_ROLE: api
+      CONFIG_DIR: /app/mtier-config
+      # coordination.backend=redis (see instance.mtier.yaml) but
+      # resolve_redis_url() (app/coordination/factory.py) falls back to
+      # redis://localhost:6379/0 absent this override — inside a container
+      # "localhost" is the container itself, not the compose `redis`
+      # service, so every redis-backed coordination call (leases, rate
+      # limiter storage) would silently fail without this.
+      AGNES_REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+      # Dedicated database (see the postgres service's init script
+      # above) — separate from `agnes` app-state, per
+      # config/instance.mtier.yaml's analytics.backend=ducklake note.
+      AGNES_DUCKLAKE_CATALOG_DSN: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes_ducklake
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      SESSION_SECRET: ${SESSION_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      data-migrate:
+        condition: service_completed_successfully
+    profiles: [mtier]
+  api2:
+    extends: { file: docker-compose.yml, service: app }
+    ports: !reset []
+    volumes:
+      - ./config/instance.mtier.yaml:/app/mtier-config/instance.yaml:ro
+    environment:
+      AGNES_ROLE: api
+      CONFIG_DIR: /app/mtier-config
+      AGNES_REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+      # Dedicated database (see the postgres service's init script
+      # above) — separate from `agnes` app-state, per
+      # config/instance.mtier.yaml's analytics.backend=ducklake note.
+      AGNES_DUCKLAKE_CATALOG_DSN: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes_ducklake
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      SESSION_SECRET: ${SESSION_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      data-migrate:
+        condition: service_completed_successfully
+    profiles: [mtier]
+  gateway:
+    extends: { file: docker-compose.yml, service: app }
+    ports: !reset []
+    volumes:
+      - ./config/instance.mtier.yaml:/app/mtier-config/instance.yaml:ro
+    environment:
+      AGNES_ROLE: gateway
+      CONFIG_DIR: /app/mtier-config
+      AGNES_REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+      # Dedicated database (see the postgres service's init script
+      # above) — separate from `agnes` app-state, per
+      # config/instance.mtier.yaml's analytics.backend=ducklake note.
+      AGNES_DUCKLAKE_CATALOG_DSN: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes_ducklake
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      SESSION_SECRET: ${SESSION_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      data-migrate:
+        condition: service_completed_successfully
+    profiles: [mtier]
+  worker:
+    extends: { file: docker-compose.yml, service: app }
+    ports: !reset []
+    volumes:
+      - ./config/instance.mtier.yaml:/app/mtier-config/instance.yaml:ro
+    environment:
+      AGNES_ROLE: worker
+      CONFIG_DIR: /app/mtier-config
+      AGNES_REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+      # Dedicated database (see the postgres service's init script
+      # above) — separate from `agnes` app-state, per
+      # config/instance.mtier.yaml's analytics.backend=ducklake note.
+      AGNES_DUCKLAKE_CATALOG_DSN: postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes_ducklake
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      SESSION_SECRET: ${SESSION_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      data-migrate:
+        condition: service_completed_successfully
+    profiles: [mtier]
+  # docker-compose.postgres.yml's `data-migrate` one-shot is a *cutover*
+  # tool — it copies rows from an already-existing `system.duckdb` into
+  # Postgres, and mounts the `data` volume read-only so it never mutates
+  # DuckDB state. On a brand-new `data` volume (first-ever boot of this
+  # harness) there is no `system.duckdb` yet, so `data-migrate` fails with
+  # "DuckDB file not found" — that gap is pre-existing in the Postgres-
+  # cutover machinery, not something Tasks 1-6 touched, and out of scope to
+  # fix here. This one-shot bootstraps an empty, schema-migrated
+  # `system.duckdb` first so `data-migrate` has something (empty) to read.
+  # No DATABASE_URL here deliberately — `get_system_db()` raises if
+  # `use_pg()` is true, so this must run in plain DuckDB mode.
+  duckdb-seed:
+    extends: { file: docker-compose.yml, service: app }
+    ports: !reset []
+    command: ["python", "-c", "from src.db import get_system_db; get_system_db(); print('duckdb-seed: system.duckdb ready')"]
+    restart: "no"
+    profiles: [mtier]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    profiles: [mtier]
+  caddy-mtier:
+    image: caddy:2-alpine
+    ports: ["8080:8080"]
+    volumes:
+      - ./deploy/caddy/Caddyfile.mtier:/etc/caddy/Caddyfile:ro
+    depends_on: [api1, api2]
+    profiles: [mtier]
+
+  # Wave 2D (observability): scrapes every role's unauthenticated
+  # `GET /metrics` (app/observability/metrics.py) plus cadvisor below.
+  # Config lives outside the repo's app image so it can be edited without a
+  # rebuild — see deploy/prometheus/prometheus.yml. Host port 9090 is for
+  # local debugging of the Prometheus UI/API only; it is not required by
+  # scripts/dev/mtier-smoke.sh, which scrapes it from inside the compose
+  # network by DNS name (see that script for why).
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+    depends_on: [api1, api2, gateway, worker]
+    profiles: [mtier]
+
+  # Container resource-usage metrics (cpu/mem/network per container),
+  # scraped by prometheus above as job "cadvisor". The bind mounts and
+  # `privileged: true` below are the standard Linux cAdvisor recipe
+  # (rootfs + cgroups + docker state).
+  #
+  # macOS caveat: Docker Desktop runs the daemon inside its own hidden
+  # Linux VM, so these host paths resolve to that VM's filesystem, not the
+  # Mac's — cAdvisor still starts and scrapes (enough to exercise the
+  # Prometheus wiring end-to-end locally), but the reported cpu/mem/disk
+  # figures are unreliable on macOS and should not be trusted. Treat
+  # cAdvisor data as authoritative on Linux hosts (customer VMs) only.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports: ["8081:8080"]
+    profiles: [mtier]
+
+  # Additive depends_on merge onto docker-compose.postgres.yml's
+  # `data-migrate` definition — see the duckdb-seed comment above.
+  data-migrate:
+    depends_on:
+      duckdb-seed:
+        condition: service_completed_successfully
+
+volumes:
+  # docker-compose.postgres.yml binds `postgres_data` straight to
+  # /data/postgres on the host (customer-instance VMs pre-create + chown it
+  # via the startup-script). That path doesn't exist on a laptop checkout;
+  # fall back to a plain Docker-managed volume for this local harness.
+  postgres_data: !override
+    driver: local

@@ -359,44 +359,21 @@ def _run_bq_scan(bq: BqAccess, sql: str, *, user: dict | None = None) -> tuple[p
     `client.query(...).to_arrow()` is shape-equivalent to the extension call
     it replaces.
 
-    The remote-select path (`agnes query --remote` / `run_remote_select_to_arrow`)
-    stays on the DuckDB extension for Storage Read API streaming + predicate
-    pushdown — its labeling is deferred upstream.
+    The fully-materialized remote-select path (`agnes query --remote
+    --auto-snapshot` / `run_remote_select_to_arrow`) is labeled the same way,
+    via the shared `run_bq_query_to_arrow` helper (#752). The interactive,
+    LIMIT-capped `/api/query --remote` path still runs its billable job through
+    the DuckDB `bigquery_query()` extension (small, bounded byte volume);
+    labeling it is deferred — see docs/planning/752-bq-billable-labels.md.
 
     Returns (arrow_table, job_info) where job_info has keys
     bq_job_id/bytes_scanned/bytes_billed for the caller's audit log.
 
     SQL here is user-derived → BadRequest → 400 (`bad_request_status="client_error"`).
     """
-    from google.cloud import bigquery
-    from connectors.bigquery.access import translate_bq_error
+    from connectors.bigquery.access import run_bq_query_to_arrow
 
-    client = bq.client()  # raises BqAccessError(bq_lib_missing/auth_failed) — propagates
-    try:
-        job = client.query(
-            sql,
-            job_config=bigquery.QueryJobConfig(labels=job_labels_for(user, "scan")),
-        )
-        try:
-            table = job.to_arrow()
-        except Exception as storage_exc:
-            # Mirrors register_bq's fallback (#751): some SAs lack BQ Storage
-            # Read API access; fall back to the slower REST-based fetch
-            # rather than failing the whole scan.
-            if "readsessions" in str(storage_exc) or "PERMISSION_DENIED" in str(storage_exc):
-                logger.warning("BQ Storage API unavailable for scan, falling back to REST")
-                table = job.to_arrow(create_bqstorage_client=False)
-            else:
-                raise
-    except Exception as e:
-        raise translate_bq_error(e, bq.projects, bad_request_status="client_error")
-
-    job_info = {
-        "bq_job_id": getattr(job, "job_id", None),
-        "bytes_scanned": getattr(job, "total_bytes_processed", None),
-        "bytes_billed": getattr(job, "total_bytes_billed", None),
-    }
-    return table, job_info
+    return run_bq_query_to_arrow(bq, sql, labels=job_labels_for(user, "scan"))
 
 
 def run_scan(

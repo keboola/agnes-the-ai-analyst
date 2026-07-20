@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.74.121"
+version = "0.75.6"
 description = "Agnes — self-hosted AI harness for organizations: governed data access, skills marketplace, corporate memory, and agent workspaces"
 requires-python = ">=3.11,<3.14"
 license = {file = "LICENSE"}
@@ -91,8 +91,11 @@ dependencies = [
     # can't silently TypeError on spawn (Devin Review on #846).
     "e2b>=2.25.1,<3.0.0",
     # Per-IP rate limiting on auth endpoints (#45). In-process counters by
-    # default — fine for single-replica deploys. Multi-replica rollouts can
-    # swap the storage backend via slowapi's `storage_uri` (Redis, Memcached).
+    # default — fine for single-replica deploys. Multi-replica rollouts
+    # (`coordination.backend=redis`) automatically point slowapi's
+    # `storage_uri` at the same Redis (see `app/auth/rate_limit.py`); the
+    # `redis` dependency below (also used by the coordination backend) is
+    # all `limits`' `RedisStorage` needs — no extra like `limits[redis]`.
     "slowapi>=0.1.9",
     # LLM provider SDKs — core (not dev) because connectors/llm/*_provider.py
     # is imported by services/{corporate_memory, verification_detector} which
@@ -158,6 +161,24 @@ dependencies = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.1",
     "alembic>=1.13",
+    # Multi-process coordination backend (app/coordination/redis_backend.py):
+    # leases, TTL kv, counters, pub/sub for the `redis` coordination.backend
+    # option (three-plane deployments). Floor 5.0 — the first line with the
+    # modern `Redis.from_url` + `GETDEL` + WATCH/MULTI/EXEC pipeline surface
+    # this module relies on. Core dep, not an extra: mirrors the dual-backend
+    # discipline already applied to sqlalchemy/psycopg/alembic just above —
+    # both coordination backends (memory default, redis for multi-process)
+    # must always be importable, same rationale as always shipping the PG
+    # driver even though DuckDB is the default state backend.
+    "redis>=5.0",
+    # Prometheus client for the /metrics scrape endpoint
+    # (app/observability/metrics.py, three-plane wave 2D observability).
+    # Pure-Python, no compilation, no network calls of its own — the app
+    # just exposes an in-process CollectorRegistry for an operator's
+    # Prometheus server to scrape. Core dep (not the `observability` extra
+    # below, which is PostHog-only) so /metrics is always served with zero
+    # extra config, mirroring the always-on /healthz probe.
+    "prometheus_client>=0.20.0",
 ]
 
 [project.optional-dependencies]
@@ -211,6 +232,17 @@ slack-socket = [
     # `ModuleNotFoundError: No module named 'aiohttp'` until it is declared here.
     "aiohttp>=3.9",
 ]
+distribution = [
+    # S3-compatible client for signed-URL distribution (three-plane wave
+    # 2-H): src/object_store.py's S3ObjectStore uses boto3's V4 signer
+    # against AWS S3, GCS's S3-interop endpoint, SeaweedFS, or any other
+    # managed bucket that speaks the S3 API — vendor-agnostic by design,
+    # so this stays a single optional extra rather than per-vendor SDKs.
+    # Import is guarded (`try: import boto3 except ImportError`); without
+    # this extra installed, signed-URL distribution simply stays off
+    # (object_store() returns None) instead of crashing at boot.
+    "boto3>=1.34",
+]
 dev = [
     "pytest>=9.0.0",
     "pytest-timeout>=2.0.0",
@@ -245,6 +277,21 @@ dev = [
     # Ideal for laptop/sandbox dev environments where installing PG
     # system-wide is not an option.
     "pixeltable-pgserver>=0.5.1",
+    # In-memory Redis-protocol fake (no real Redis server / Docker needed)
+    # for `tests/test_coordination_contract.py` — the redis-backed half of
+    # the coordination backend contract matrix runs against
+    # `fakeredis.FakeStrictRedis`, a drop-in for the redis-py client
+    # interface `app/coordination/redis_backend.py` consumes (GETDEL,
+    # pipeline/WATCH — deliberately no Lua scripting dependency, see that
+    # module's docstring).
+    "fakeredis>=2.20",
+    # boto3 for tests/test_object_store.py — S3ObjectStore is exercised
+    # against a monkeypatched `boto3.client`, but the module still needs
+    # boto3 (and its bundled botocore.exceptions.ClientError) importable
+    # in CI. Production installs opt in via the `distribution` extra
+    # above (mirrored here so `.[dev]` — what CI installs — pulls it in
+    # too; see the matching entry in `[tool.uv] dev-dependencies` below).
+    "boto3>=1.34",
 ]
 
 [project.scripts]
@@ -296,6 +343,8 @@ dev-dependencies = [
     "testcontainers[postgres]>=4",
     "pytest-postgresql>=6",
     "pixeltable-pgserver>=0.5.1",
+    "fakeredis>=2.20",
+    "boto3>=1.34",
 ]
 # Override the urllib3<2.0.0 ceiling kbcstorage 0.9.5 declares (upstream
 # hasn't relaxed it as of 2026-05-12 but the SDK works fine against
