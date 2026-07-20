@@ -37,7 +37,8 @@ from src.remote_query import _strip_leading_sql_comments
 # leaves under app.api).
 from app.api.v2_quota import _build_quota_tracker, QuotaExceededError
 from app.api.v2_scan import _bq_dry_run_bytes
-from connectors.bigquery.access import get_bq_access, BqAccessError
+from connectors.bigquery.access import get_bq_access, BqAccessError, run_bq_query_to_arrow
+from connectors.bigquery.labels import job_labels_for
 
 logger = logging.getLogger(__name__)
 
@@ -1224,7 +1225,38 @@ def _rewrite_user_sql_for_bigquery_query(
     """Rewrite user SQL so the entire query ships to BQ as a single
     ``bigquery_query(<project>, <inner-sql>)`` call.
 
-    Returns ``(rewritten_sql, did_rewrite)``. When ``did_rewrite`` is
+    Thin wrapper over :func:`_bq_remote_execution_plan` preserving the
+    long-standing ``(rewritten_sql, did_rewrite)`` return shape used by
+    ``execute_query`` and this module's tests. Callers that also need the
+    labeled ``client.query`` path (cost attribution, #752) use
+    ``_bq_remote_execution_plan`` directly to get the BQ-native inner SQL and
+    billing project.
+    """
+    rewritten, did_rewrite, _billing_project, _inner_sql = _bq_remote_execution_plan(
+        user_sql, conn
+    )
+    return rewritten, did_rewrite
+
+
+def _bq_remote_execution_plan(
+    user_sql: str,
+    conn: duckdb.DuckDBPyConnection,
+) -> tuple[str, bool, str | None, str | None]:
+    """Plan how a remote (BQ) SELECT should execute.
+
+    Returns ``(rewritten_sql, did_rewrite, billing_project, inner_sql)``:
+
+    - ``rewritten_sql`` — the DuckDB ``SELECT * FROM bigquery_query(...)`` form
+      for the extension path (equals ``user_sql`` when ``did_rewrite`` is False).
+    - ``did_rewrite`` — whether the whole query could be pushed to BQ.
+    - ``billing_project`` / ``inner_sql`` — the BQ execution/billing project and
+      the BQ-native inner SQL, populated **only** when ``did_rewrite`` is True.
+      They let a caller run the billable job via
+      ``connectors.bigquery.access.run_bq_query_to_arrow`` (labeled
+      ``client.query``, #752) instead of the unlabeled DuckDB
+      ``bigquery_query()`` extension. ``None`` when not rewritten.
+
+    When ``did_rewrite`` is
     ``False``, the caller MUST execute the original ``user_sql`` via the
     ATTACH-catalog path (slow but correct); the rewriter is conservative
     on purpose — wrapping cross-source queries in ``bigquery_query()``
@@ -1269,7 +1301,7 @@ def _rewrite_user_sql_for_bigquery_query(
     """
     # Skip 2: don't double-wrap. Cheap pre-check before any registry I/O.
     if "bigquery_query(" in user_sql.lower():
-        return user_sql, False
+        return user_sql, False, None, None
 
     # Find all referenced BQ remote-mode rows (bare-name + direct bq.path).
     # Mirrors the non-RBAC parts of `_bq_guardrail_inputs`. Issue #201:
@@ -1294,7 +1326,7 @@ def _rewrite_user_sql_for_bigquery_query(
         # Registry read failure — let the original SQL run through the
         # ATTACH-catalog path. The handler's generic error path will
         # surface anything user-visible.
-        return user_sql, False
+        return user_sql, False, None, None
 
     # Multi-project guard (devil's-advocate R1 finding #5): the rewriter
     # assumes every BQ-remote table resolves under the single
@@ -1319,7 +1351,7 @@ def _rewrite_user_sql_for_bigquery_query(
             # Project-qualified bucket — can't safely wrap under our
             # single-project assumption. Bail out completely so we don't
             # mix rewritten and non-rewritten BQ paths in one query.
-            return user_sql, False
+            return user_sql, False, None, None
         pattern = r"\b" + re.escape(str(name).lower()) + r"\b"
         if re.search(pattern, sql_lower_masked):
             key = (bucket.lower(), source_table.lower())
@@ -1349,7 +1381,7 @@ def _rewrite_user_sql_for_bigquery_query(
 
     if not name_lookups and not direct_paths and not has_backtick_paths:
         # Skip 1: no BQ tables referenced.
-        return user_sql, False
+        return user_sql, False, None, None
 
     # Skip 3: cross-source query (BQ + local-mode). If user SQL also
     # references a non-BQ master view, we can't push the whole thing to
@@ -1367,14 +1399,14 @@ def _rewrite_user_sql_for_bigquery_query(
         if name_lc in bq_names_lc:
             # Same name registered both BQ-remote and local? Pathological;
             # skip as a safety measure.
-            return user_sql, False
+            return user_sql, False, None, None
         if re.search(r"\b" + re.escape(name_lc) + r"\b", sql_lower_masked):
             logger.info(
                 "rewrite_skip_cross_source: user SQL references both "
                 "BQ-remote and local-mode tables; falling back to "
                 "ATTACH-catalog path",
             )
-            return user_sql, False
+            return user_sql, False, None, None
 
     # Skip 4: BQ project not configured.
     try:
@@ -1392,9 +1424,9 @@ def _rewrite_user_sql_for_bigquery_query(
         # identical so the fix is a no-op there.
         billing_project = bq.projects.billing or data_project
     except Exception:
-        return user_sql, False
+        return user_sql, False, None, None
     if not data_project:
-        return user_sql, False
+        return user_sql, False, None, None
 
     # Rewrite identifiers using the DATA project — backtick paths
     # `<data-project>.<dataset>.<table>` resolve to the same logical
@@ -1418,7 +1450,7 @@ def _rewrite_user_sql_for_bigquery_query(
         rewritten = f"SELECT * FROM bigquery_query('{billing_project}', '{escaped_inner}')"
     else:
         rewritten = f"SELECT * FROM bigquery_query('{billing_project}', {DOLLAR_TAG}{inner_sql}{DOLLAR_TAG})"
-    return rewritten, True
+    return rewritten, True, billing_project, inner_sql
 
 
 def _view_targets_in(dry_run_set: list) -> list[str]:
@@ -1728,6 +1760,14 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
     the analyst is bypassing). Daily-byte budget and concurrent-slot quotas
     still apply via ``quota``.
 
+    When the rewrite fully pushes the query to BQ, the billable job runs via
+    ``connectors.bigquery.access.run_bq_query_to_arrow`` (labeled
+    ``client.query``) rather than the unlabeled DuckDB ``bigquery_query()``
+    extension, so the job carries per-user cost-attribution labels (#752). The
+    result is fully materialized either way, so this is shape-equivalent. Queries
+    that can't be pushed (cross-source joins, DuckDB-only syntax) fall back to
+    the extension path unlabeled.
+
     Returns a ``pyarrow.Table`` of the FULL result. Raises:
         HTTPException — on RBAC / registry / SELECT-only rejection (same
             shapes as /api/query), surfaced by the v2_scan endpoint.
@@ -1795,14 +1835,38 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
                         },
                     ) from exc
 
-            execution_sql, did_rewrite = _rewrite_user_sql_for_bigquery_query(
-                sql,
-                conn,
+            execution_sql, did_rewrite, billing_project, inner_sql = (
+                _bq_remote_execution_plan(sql, conn)
             )
             try:
                 try:
-                    table = analytics.execute(execution_sql).arrow()
+                    if did_rewrite and inner_sql is not None:
+                        # #752: this path fully materializes the result to Arrow
+                        # anyway, so run the billable job through
+                        # google-cloud-bigquery `client.query(labels=...)` (like
+                        # /api/v2/scan) instead of the unlabeled DuckDB
+                        # `bigquery_query()` extension. The job then carries
+                        # cost-attribution labels for the requesting user. The
+                        # BQ-native `inner_sql` is what the extension would have
+                        # sent to `jobs.query`. The bq client bills under
+                        # `bq.projects.billing` (quota_project_id), matching the
+                        # billing_project the extension path passes as
+                        # bigquery_query()'s first arg.
+                        table, _job_info = run_bq_query_to_arrow(
+                            bq,
+                            inner_sql,
+                            labels=job_labels_for(user, "query"),
+                        )
+                    else:
+                        table = analytics.execute(execution_sql).arrow()
+                except HTTPException:
+                    raise
                 except Exception as exc:
+                    # A rewritten query rejected by BQ (DuckDB-only syntax that
+                    # survived identifier rewrite) falls back to the original SQL
+                    # via the ATTACH-catalog extension path — slower but correct.
+                    # This fallback job is unlabeled (extension-owned), matching
+                    # the interactive /api/query fallback contract.
                     if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
                         table = analytics.execute(sql).arrow()
                     else:
@@ -1810,6 +1874,13 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
             except HTTPException:
                 # Don't re-wrap structured rejections raised below (RBAC,
                 # SELECT-only, registry) — let them propagate.
+                raise
+            except BqAccessError:
+                # #752: the labeled client.query path raises BqAccessError with
+                # a kind (auth_failed / bq_forbidden / bq_bad_request / …). Let
+                # it propagate so scan_endpoint maps it to the right HTTP status
+                # (500 / 502 / 400) instead of flattening every BQ failure into
+                # a generic 400 duckdb_execution_error.
                 raise
             except Exception as exc:
                 # Map DuckDB execution errors (syntax error, missing table,
