@@ -820,35 +820,76 @@ class ChatManager:
         handle = await self._spawn_runner(session, session_dir)
         import time as _t
 
-        live = LiveSession(
-            chat_id=chat_id,
-            user_email=session.user_email,
-            state=SessionState.ACTIVE,
-            handle=handle,
-            started_at=datetime.now(timezone.utc),
-            last_activity=datetime.now(timezone.utc),
-            surface=getattr(session.surface, "value", str(session.surface)),
-            sinks=[],
-            participant_emails=emails,
-            session_dir=session_dir,
-            active_since=_t.monotonic(),
-        )
-        self._live[chat_id] = live
-        await self._claim_routing_lease(chat_id)
-        self._repo.set_sandbox_ref(chat_id, sandbox_id=handle.sandbox_id, runner_pid=handle.pid)
-        # Broker: push the session's initial main+mcp tickets before the
-        # session is considered ready to serve messages.
-        await self._push_ticket_frame(live)
-        pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
-        wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
-        live.tasks = [pump_task, wait_task]
-        live.current_pump = pump_task
-        live.current_wait = wait_task
-        # wave-2F task 4: start this session's inbound-stream consumer once,
-        # for the LiveSession object's whole lifetime — see LiveSession.
-        # inbound_task's docstring for why this is NOT part of `tasks`.
-        live.inbound_task = asyncio.create_task(self._inbound_consumer_loop(live))
-        return live
+        # #867: the sandbox now exists (spawned) but its kill-on-exit
+        # `wait_task` is not wired yet. If any post-spawn setup below raises —
+        # a DB `set_sandbox_ref`, a broken-pipe on `_push_ticket_frame` when the
+        # runner died on boot (the runner-import P0), a task-creation error — the
+        # microVM would be orphaned: nothing tears it down, and with
+        # `lifecycle.on_timeout=pause` it later pauses and persists (billable).
+        # Destroy it here and drop the half-registered `live` before propagating,
+        # so failure never leaves a zombie for the reaper to miss.
+        try:
+            live = LiveSession(
+                chat_id=chat_id,
+                user_email=session.user_email,
+                state=SessionState.ACTIVE,
+                handle=handle,
+                started_at=datetime.now(timezone.utc),
+                last_activity=datetime.now(timezone.utc),
+                surface=getattr(session.surface, "value", str(session.surface)),
+                sinks=[],
+                participant_emails=emails,
+                session_dir=session_dir,
+                active_since=_t.monotonic(),
+            )
+            self._live[chat_id] = live
+            await self._claim_routing_lease(chat_id)
+            self._repo.set_sandbox_ref(chat_id, sandbox_id=handle.sandbox_id, runner_pid=handle.pid)
+            # Broker: push the session's initial main+mcp tickets before the
+            # session is considered ready to serve messages.
+            await self._push_ticket_frame(live)
+            pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
+            wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
+            live.tasks = [pump_task, wait_task]
+            live.current_pump = pump_task
+            live.current_wait = wait_task
+            # wave-2F task 4: start this session's inbound-stream consumer once,
+            # for the LiveSession object's whole lifetime — see LiveSession.
+            # inbound_task's docstring for why this is NOT part of `tasks`.
+            live.inbound_task = asyncio.create_task(self._inbound_consumer_loop(live))
+            return live
+        except Exception:
+            self._live.pop(chat_id, None)
+            try:
+                await handle.kill(grace_sec=1.0)
+            except Exception:
+                logger.exception(
+                    "_spawn_live: sandbox teardown after post-spawn setup failure failed for %s — sandbox %s may leak",
+                    chat_id,
+                    getattr(handle, "sandbox_id", "?"),
+                )
+            # Clear the DB sandbox ref written by set_sandbox_ref above, and
+            # revoke any tickets pushed by _push_ticket_frame — mirroring kill()
+            # (#867 review). Without this the row keeps a stale sandbox_id with
+            # sandbox_paused_at NULL, invisible to the paused-TTL reaper, and any
+            # minted tickets outlive the dead runner. Best-effort: teardown must
+            # never mask the original failure being re-raised.
+            try:
+                self._repo.clear_sandbox_ref(chat_id)
+            except Exception:
+                logger.exception("_spawn_live: clear_sandbox_ref failed for %s", chat_id)
+            try:
+                ticket_repo().revoke_session(chat_id)
+            except Exception:
+                logger.exception("_spawn_live: ticket revoke failed for %s", chat_id)
+            # Release the routing lease claimed above, mirroring kill() — else a
+            # stale self-claim lingers until its TTL and can misroute reconnects
+            # under the redis multi-gateway backend (Devin Review, PR #935).
+            try:
+                await self._release_routing_lease(chat_id)
+            except Exception:
+                logger.exception("_spawn_live: routing lease release failed for %s", chat_id)
+            raise
 
     # --- detach / linger / pause --------------------------------------------
 

@@ -20,6 +20,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.75.6] - 2026-07-20
+
+### Fixed
+
+- Chat: a sandbox that spawned but then failed post-spawn setup (a broken-pipe
+  ticket push when the runner died on boot, a DB `set_sandbox_ref` error, etc.)
+  before its kill-on-exit `wait_task` was wired is now torn down immediately
+  instead of being orphaned. Orphaned microVMs later paused and persisted
+  (billable) with the reaper unable to find them (#867, early-crash leak; the
+  reaper-cadence half is tracked separately).
+
 ## [0.75.5] - 2026-07-20
 
 ### Changed
