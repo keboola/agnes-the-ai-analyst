@@ -1118,6 +1118,19 @@ class UsageRepository:
         apart, taking down the whole app process both times. Switched to
         `INSERT ... ON CONFLICT DO UPDATE`, which updates the existing row
         in place instead of deleting it.
+
+        INCIDENT 2026-07-20: the DO UPDATE SET list used to also rewrite
+        ``username``, ``user_id`` and ``started_at`` — all secondary-ART-
+        indexed columns at the time, and all immutable for a given
+        ``session_file`` (they're derived once from the session's JSONL
+        path/first event and never change on re-process). Rewriting an
+        ART-indexed column runs as delete-old-entry + insert-new-entry; a
+        single corrupt index entry turned that delete into a FATAL,
+        connection-invalidating error on every ~10-minute re-process tick.
+        The indexes are gone now (v94, see ``src/db.py::_v93_to_v94``), but
+        these 3 columns are left out of the update set anyway since
+        rewriting them was always pointless — they're set once on the
+        initial INSERT below and never touched again.
         """
         self.conn.execute(
             """
@@ -1131,8 +1144,6 @@ class UsageRepository:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (session_file) DO UPDATE SET
                 session_id = EXCLUDED.session_id,
-                username = EXCLUDED.username,
-                started_at = EXCLUDED.started_at,
                 ended_at = EXCLUDED.ended_at,
                 active_seconds = EXCLUDED.active_seconds,
                 wall_seconds = EXCLUDED.wall_seconds,
@@ -1151,8 +1162,7 @@ class UsageRepository:
                 output_tokens = EXCLUDED.output_tokens,
                 cache_read_tokens = EXCLUDED.cache_read_tokens,
                 cache_creation_tokens = EXCLUDED.cache_creation_tokens,
-                processor_version = EXCLUDED.processor_version,
-                user_id = EXCLUDED.user_id
+                processor_version = EXCLUDED.processor_version
             """,
             [
                 summary["session_file"],

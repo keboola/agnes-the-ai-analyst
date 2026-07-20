@@ -62,7 +62,7 @@ Only reached when the DB file itself will not open after the WAL is discarded.
    (chmod `0o600`).
 2. `<STATE_DIR>/system.duckdb.pre-migrate` is inspected read-only via
    `_peek_schema_version` to confirm its `schema_version.version` matches the
-   running binary's `SCHEMA_VERSION` (currently `93`, in `src/db.py`).
+   running binary's `SCHEMA_VERSION` (currently `94`, in `src/db.py`).
 3. If the versions match, the snapshot is copied in as the new
    `system.duckdb` and the migration ladder re-runs (idempotent). App starts.
 4. If the versions do **not** match, auto-recovery is refused with:
@@ -212,7 +212,7 @@ cp "${STATE_DIR}/system.duckdb.pre-migrate" "${STATE_DIR}/system.duckdb"
 ```
 
 The app will re-run the migration ladder on the next start (idempotent) and
-land at `SCHEMA_VERSION=93`.
+land at `SCHEMA_VERSION=94`.
 
 #### Option C — restore from a VM or volume snapshot
 

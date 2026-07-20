@@ -1218,6 +1218,17 @@ class UsagePgRepository:
         return event_id
 
     def upsert_summary(self, summary: dict, *, processor_version: int) -> None:
+        """Upsert on session_file PK.
+
+        Mirrors ``UsageRepository.upsert_summary`` (src/repositories/usage.py):
+        ``username``, ``user_id`` and ``started_at`` are set on the initial
+        INSERT only and left out of the DO UPDATE SET — they're immutable
+        for a given ``session_file`` once written, so re-processing the same
+        session never needs to rewrite them. Kept for write-semantics
+        parity across backends, even though Postgres never hit the DuckDB
+        ART secondary-index corruption (INCIDENT 2026-07-20) that made
+        rewriting them dangerous there.
+        """
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
@@ -1237,8 +1248,6 @@ class UsagePgRepository:
                             :cct, :pv, :uid)
                     ON CONFLICT (session_file) DO UPDATE SET
                       session_id           = EXCLUDED.session_id,
-                      username             = EXCLUDED.username,
-                      started_at           = EXCLUDED.started_at,
                       ended_at             = EXCLUDED.ended_at,
                       active_seconds       = EXCLUDED.active_seconds,
                       wall_seconds         = EXCLUDED.wall_seconds,
@@ -1257,8 +1266,7 @@ class UsagePgRepository:
                       output_tokens        = EXCLUDED.output_tokens,
                       cache_read_tokens    = EXCLUDED.cache_read_tokens,
                       cache_creation_tokens= EXCLUDED.cache_creation_tokens,
-                      processor_version    = EXCLUDED.processor_version,
-                      user_id              = EXCLUDED.user_id
+                      processor_version    = EXCLUDED.processor_version
                     """
                 ),
                 {

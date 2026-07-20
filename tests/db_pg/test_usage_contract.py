@@ -159,8 +159,69 @@ def _seed_processor_state(repo, processor_name, session_file="ps/s.jsonl"):
 
 
 # ---------------------------------------------------------------------------
-# contract tests
+# usage_session_summary schema + upsert stability (index-corruption hotfix,
+# 2026-07-20)
 # ---------------------------------------------------------------------------
+
+
+def test_usage_session_summary_has_no_secondary_indexes(usage_repo):
+    """The 3 non-unique secondary indexes on usage_session_summary
+    (idx_usage_session_user, idx_usage_session_started,
+    idx_usage_session_user_id) were dropped — DuckDB v94 / the matching
+    Alembic revision: a corrupt entry in one of them, rewritten by
+    upsert_summary's ON CONFLICT DO UPDATE on every re-process tick, was
+    invalidating the whole DuckDB connection. session_file (the PRIMARY
+    KEY) remains the only index-backed constraint on either engine."""
+    repo, conn, backend = usage_repo
+    if backend == "duckdb":
+        names = {
+            r[0]
+            for r in conn.execute(
+                "SELECT index_name FROM duckdb_indexes WHERE table_name='usage_session_summary'"
+            ).fetchall()
+        }
+    else:
+        with repo._engine.connect() as c:
+            names = {
+                r[0]
+                for r in c.execute(
+                    sa.text("SELECT indexname FROM pg_indexes WHERE tablename='usage_session_summary'")
+                ).fetchall()
+            }
+    for idx in ("idx_usage_session_user", "idx_usage_session_started", "idx_usage_session_user_id"):
+        assert idx not in names, f"{idx} must have been dropped, found in {names}"
+
+
+def test_upsert_summary_reprocessing_same_session_file_is_stable(usage_repo):
+    """Re-processing the same session_file (the steady-state usage
+    session-processor tick) must succeed repeatedly and leave the row
+    correct — the scenario that used to force an ART index delete+insert
+    on username/user_id/started_at every ~10 minutes."""
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    _seed_summary(
+        repo,
+        session_file="reprocess/s1.jsonl",
+        username="ivan",
+        user_id="uid-ivan",
+        started_at=now,
+        tool_calls=1,
+    )
+    # Re-process repeatedly with growing counters — same session_file each time.
+    for i in range(2, 5):
+        _seed_summary(
+            repo,
+            session_file="reprocess/s1.jsonl",
+            username="ivan",
+            user_id="uid-ivan",
+            started_at=now,
+            tool_calls=i,
+        )
+
+    rows = repo.list_sessions_for_user_admin(user_id="uid-ivan", username="ivan")
+    assert len(rows) == 1
+    assert rows[0]["session_file"] == "reprocess/s1.jsonl"
+    assert rows[0]["tool_calls"] == 4
 
 
 def test_count_events(usage_repo):

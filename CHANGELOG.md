@@ -16,6 +16,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Dropped the 3 non-unique secondary indexes on `usage_session_summary`
+  (on `username`, `started_at`, `user_id`) and stopped rewriting those
+  columns on every re-process tick. A corrupt entry in one of them could
+  turn the periodic usage session-processor's routine upsert into a
+  fatal, connection-invalidating error that took down the whole instance
+  (including login) and recurred every scheduler tick. Schema v93 → v94
+  (DuckDB migration + matching Alembic revision) repairs existing
+  instances on upgrade; `session_file` remains the primary key.
+
 ### Removed
 
 ### Internal

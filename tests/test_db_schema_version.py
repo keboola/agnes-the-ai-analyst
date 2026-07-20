@@ -194,6 +194,11 @@ def test_schema_version_is_62():
     #            admin_disabled on marketplace_plugins.
     # v81 → v82: collections (file_corpora / corpus_files / corpus_chunks).
     # v88 → v89: knowledge_digests table — maintained digests (K4, #799).
+    # v93 → v94: drop usage_session_summary's 3 secondary indexes
+    #            (idx_usage_session_user, idx_usage_session_started,
+    #            idx_usage_session_user_id) — a corrupt entry in one of
+    #            them, rewritten on every usage session-processor tick,
+    #            was invalidating the whole DuckDB connection.
     assert SCHEMA_VERSION >= 80
 
 
@@ -832,6 +837,7 @@ def test_v89_knowledge_digests_table(tmp_path):
     _v88_to_v89(conn)
     conn.close()
 
+
 def test_v90_chat_broker_tickets_table(tmp_path):
     """v90 (#849): chat_broker_tickets exists on fresh installs, the ladder is
     idempotent, and schema_version lands at SCHEMA_VERSION."""
@@ -846,4 +852,63 @@ def test_v90_chat_broker_tickets_table(tmp_path):
     from src.db import _v89_to_v90
 
     _v89_to_v90(conn)
+    conn.close()
+
+
+def test_v94_fresh_install_has_no_usage_session_summary_secondary_indexes(tmp_path):
+    """v94 (index-corruption hotfix): a fresh install never creates
+    idx_usage_session_user / idx_usage_session_started / idx_usage_session_user_id
+    on usage_session_summary, and the migration step is idempotent."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    idx_names = {
+        r[0]
+        for r in conn.execute(
+            "SELECT index_name FROM duckdb_indexes WHERE table_name='usage_session_summary'"
+        ).fetchall()
+    }
+    assert idx_names == set(), f"usage_session_summary must have no secondary indexes, found {idx_names}"
+
+    # idempotency — re-running the step must not raise
+    from src.db import _v93_to_v94
+
+    _v93_to_v94(conn)
+    conn.close()
+
+
+def test_v93_db_with_indexes_upgrades_to_v94_and_drops_them(tmp_path):
+    """A pre-v94 DB that still carries the 3 secondary indexes (the state a
+    live instance was in before this hotfix) climbs to v94, loses the
+    indexes, and keeps the session_file PRIMARY KEY plus existing rows
+    intact."""
+    db_path = tmp_path / "v93.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    # Force back to the pre-v94 state that still has the 3 indexes.
+    conn.execute("UPDATE schema_version SET version = 93")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session_user ON usage_session_summary(username)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session_started ON usage_session_summary(started_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session_user_id ON usage_session_summary(user_id)")
+    conn.execute(
+        "INSERT INTO usage_session_summary (session_file, session_id, username, processor_version) "
+        "VALUES ('s/keep.jsonl', 's1', 'keeper', 1)"
+    )
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    idx_names = {
+        r[0]
+        for r in conn.execute(
+            "SELECT index_name FROM duckdb_indexes WHERE table_name='usage_session_summary'"
+        ).fetchall()
+    }
+    assert idx_names == set(), f"upgrade must drop all 3 indexes, found {idx_names}"
+    row = conn.execute("SELECT username FROM usage_session_summary WHERE session_file='s/keep.jsonl'").fetchone()
+    assert row == ("keeper",)
     conn.close()
