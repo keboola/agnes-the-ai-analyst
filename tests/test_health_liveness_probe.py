@@ -137,3 +137,33 @@ def test_detailed_schema_check_does_not_block_event_loop(seeded_app, monkeypatch
     elapsed, r1, r2 = asyncio.run(fire())
     assert r1.status_code == 200 and r2.status_code == 200
     assert elapsed < 0.9, f"detailed probes serialized ({elapsed:.2f}s) — event loop blocked"
+
+
+def test_detailed_schema_check_shares_liveness_cache(seeded_app, monkeypatch):
+    """`/api/health/detailed?include=schema` must reuse the same 30s cache as
+    `/api/health`, not re-read the DB on every dashboard poll. Guards against a
+    regression to `await asyncio.to_thread(_check_db_schema)` (off-loop but
+    uncached), which would keep the event-loop test green while restoring a PG
+    round-trip per poll."""
+    _reset_cache()
+    calls = {"n": 0}
+    orig = health_mod._check_db_schema
+
+    def counting():
+        calls["n"] += 1
+        return orig()
+
+    monkeypatch.setattr(health_mod, "_check_db_schema", counting)
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    # Warm the shared cache via the liveness probe...
+    assert c.get("/api/health").status_code == 200
+    # ...then the detailed endpoint must hit that cache, not re-read the DB.
+    r = c.get(
+        "/api/health/detailed?include=schema",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["services"]["db_schema"]["db_schema"] == "ok", r.text
+    assert calls["n"] == 1, f"detailed endpoint re-read the DB instead of reusing the 30s cache: {calls['n']} reads"
