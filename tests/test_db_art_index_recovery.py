@@ -155,6 +155,32 @@ def test_rebuild_leaves_a_usable_db_even_if_original_had_no_wal(db_path):
     conn.close()
 
 
+def test_move_to_broken_does_not_clobber_an_existing_quarantine(db_path, tmp_path):
+    """Devin Review, PR #948: two quarantines of the same db_path within the
+    same wall-clock second (e.g. STEP B's own quarantine, immediately
+    followed by _rebuild_system_db's quarantine of the restored-but-still-
+    corrupt snapshot) must NOT resolve to the same .broken.<ts> path —
+    shutil.move silently overwrites an existing destination, which would
+    destroy the first quarantined file's forensics value."""
+    wal_path = Path(db_path + ".wal")
+
+    # First quarantine: db_path -> some .broken.<ts>.
+    first_broken = db_mod._move_to_broken(db_path, wal_path)
+    assert first_broken.exists()
+    first_content = first_broken.read_bytes()
+
+    # A second file lands at db_path (mirrors the pre-migrate snapshot copy
+    # in STEP B) and must be quarantined too, without erasing the first.
+    Path(db_path).write_bytes(b"second-generation-content")
+    second_broken = db_mod._move_to_broken(db_path, wal_path)
+
+    assert second_broken != first_broken, "second quarantine reused the first quarantine's path"
+    assert first_broken.exists(), "first quarantine was destroyed by the second"
+    assert first_broken.read_bytes() == first_content, "first quarantine's content was overwritten"
+    assert second_broken.exists()
+    assert second_broken.read_bytes() == b"second-generation-content"
+
+
 # ---------------------------------------------------------------------------
 # 3. Wiring into _try_open_system_db
 # ---------------------------------------------------------------------------
@@ -191,6 +217,56 @@ def test_self_heal_can_be_disabled_by_env(db_path, monkeypatch):
     with patch.object(db_mod, "_probe_art_integrity") as probe:
         conn = db_mod._try_open_system_db(db_path)
     probe.assert_not_called()
+    conn.close()
+
+
+def test_open_probes_and_heals_after_wal_salvage_recovery(db_path, monkeypatch):
+    """Devin Review, PR #948: the same abrupt termination that dirties the
+    WAL can also tear the on-disk ART index — a DB that needed WAL
+    recovery (STEP A salvage) is not evidence the index survived. The
+    probe must run on the salvage-recovered connection too, not only on a
+    cleanly-opened one."""
+    real_connect = duckdb.connect
+    real_probe = db_mod._probe_art_integrity
+
+    # Force the FIRST open of db_path to raise the WAL-replay error class
+    # so _try_open_system_db takes the STEP A salvage branch.
+    fake_wal_error = duckdb.Error(
+        "INTERNAL Error: Failure while replaying WAL file: "
+        "Calling DatabaseManager::GetDefaultDatabase with no default database set"
+    )
+    call_count = {"n": 0}
+
+    def flaky_connect(path, *args, **kwargs):
+        if str(path) == db_path and call_count["n"] == 0:
+            call_count["n"] += 1
+            raise fake_wal_error
+        return real_connect(path, *args, **kwargs)
+
+    # A .wal file must exist for _salvage_discard_wal to have something to
+    # discard aside (mirrors _corrupt_wal_so_replay_fails in
+    # test_db_wal_recovery.py).
+    Path(db_path + ".wal").write_bytes(b"\x00" * 64)
+
+    probe_calls = {"n": 0}
+
+    def probe(conn):
+        probe_calls["n"] += 1
+        if probe_calls["n"] == 1:
+            return (False, "Failed to delete all rows from index.")
+        return real_probe(conn)  # after rebuild → healthy
+
+    with (
+        patch("src.db.duckdb.connect", side_effect=flaky_connect),
+        patch.object(db_mod, "_probe_art_integrity", side_effect=probe),
+    ):
+        conn = db_mod._try_open_system_db(db_path)
+
+    assert probe_calls["n"] >= 1, "the salvage-recovered connection must still be probed"
+    assert list(Path(db_path).parent.glob("system.duckdb.broken.*")), (
+        "corruption surfaced after WAL salvage should still trigger the EXPORT/IMPORT rebuild"
+    )
+    assert conn.execute("SELECT count(*) FROM jobs").fetchone()[0] == 2
     conn.close()
 
 
