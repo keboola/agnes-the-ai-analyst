@@ -35,7 +35,7 @@ Full step-by-step (local dev, Docker, TLS) lives in [`docs/QUICKSTART.md`](docs/
 │   └── jira/               # Jira: webhook + incremental parquet → extract.duckdb
 ├── cli/                    # CLI tool (`agnes pull`, `agnes query`, `agnes admin`)
 ├── app/auth/               # Authentication (FastAPI-based providers)
-├── services/               # Standalone services (scheduler, telegram_bot, ws_gateway, etc.)
+├── services/               # Standalone services (scheduler, telegram_bot, etc.)
 ├── server/                 # Legacy deployment infrastructure
 ├── scripts/                # Utility + migration scripts
 ├── config/                 # Configuration templates (instance.yaml.example)
@@ -343,9 +343,15 @@ HTML dashboard pages use the design-system **page shell** (#367/#482): `{% exten
 
 ### Files NOT to modify (stable infrastructure)
 - `connectors/jira/file_lock.py` — advisory file locking
-- `services/ws_gateway/` — WebSocket notification gateway
 
-(`connectors/jira/transform.py` was previously listed here but has been
+(`services/ws_gateway/` was previously listed here but the standalone
+service no longer exists: wave-2F task 6 absorbed its WS + auth + heartbeat
+logic into `app/api/notifications_ws.py` (gated to `Role.GATEWAY` processes)
+and its dispatch path into `app/notifications.py::publish_notification`,
+which rides the coordination pub/sub channel `notify:{user}` instead of the
+old in-memory `connections` dict + Unix-socket HTTP dispatch.
+
+`connectors/jira/transform.py` was previously listed here but has been
 removed: the `_remote_links` hardening in 0.54.19 required modifying
 `transform_remote_links` and `transform_all` to honor a new "overlay
 absent → preserve existing rows" contract. The transform module remains

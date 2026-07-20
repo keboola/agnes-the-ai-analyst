@@ -1,7 +1,6 @@
 """v41 → v42 migration: 7 new usage_* tables for telemetry."""
 
 import duckdb
-import pytest
 from src.db import _ensure_schema as init_database, SCHEMA_VERSION
 
 
@@ -50,18 +49,25 @@ def test_v42_indices_exist(tmp_path):
     }
     # v46 dropped: idx_usage_attr_*_lookup.
     # v46 added: idx_mid_lookup, idx_miw_lookup on the new marketplace tables.
+    # v95 dropped: idx_usage_session_user, idx_usage_session_started,
+    # idx_usage_session_user_id (index-corruption hotfix — see
+    # test_db_schema_version.py::test_v95_fresh_install_has_no_usage_session_summary_secondary_indexes).
     for idx in [
         "idx_usage_events_session",
         "idx_usage_events_user_time",
         "idx_usage_events_tool",
         "idx_usage_events_skill",
         "idx_usage_events_ref",
-        "idx_usage_session_user",
-        "idx_usage_session_started",
         "idx_mid_lookup",
         "idx_miw_lookup",
     ]:
         assert idx in idx_names, f"missing index {idx}"
+    for idx in [
+        "idx_usage_session_user",
+        "idx_usage_session_started",
+        "idx_usage_session_user_id",
+    ]:
+        assert idx not in idx_names, f"index {idx} should have been dropped in v95"
     conn.close()
 
 

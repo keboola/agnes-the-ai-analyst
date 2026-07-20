@@ -141,14 +141,22 @@
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/datasource-credentials') %}is-active{% endif %}" role="menuitem" href="/admin/datasource-credentials">Instance secrets</a>
                     </section>
 
+                    {# The former catch-all "Agent Experience" column split into
+                       three intent-based groups (same column, stacked headers —
+                       mirrors the Data Packages/Sources and Server/Documentation
+                       columns below) so an admin lands on the right page by the
+                       job they're doing rather than scanning seven loosely-related
+                       items. #}
                     <section class="app-admin-menu-col">
-                        <div class="app-admin-menu-section">Agent Experience</div>
+                        <div class="app-admin-menu-section">Moderation queues</div>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/admin/corporate-memory">Curated memory reviews</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
+                        <div class="app-admin-menu-section">Marketplace &amp; knowledge distribution</div>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" role="menuitem" href="/admin/marketplaces">Curated Marketplaces</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/knowledge-digests') %}is-active{% endif %}" role="menuitem" href="/admin/knowledge-digests">Maintained digests</a>
+                        <div class="app-admin-menu-section">Onboarding &amp; messaging</div>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/initial-workspace') %}is-active{% endif %}" role="menuitem" href="/admin/initial-workspace">Initial Workspace</a>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/news') %}is-active{% endif %}" role="menuitem" href="/admin/news">News</a>
-                        <a class="app-nav-menu-item {% if _path.startswith('/admin/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/admin/corporate-memory">Curated memory reviews</a>
-                        <a class="app-nav-menu-item {% if _path.startswith('/admin/knowledge-digests') %}is-active{% endif %}" role="menuitem" href="/admin/knowledge-digests">Maintained digests</a>
-                        <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/prompts') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/prompts">Prompts</a>
                     </section>
 
