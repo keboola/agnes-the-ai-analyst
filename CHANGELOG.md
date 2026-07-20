@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- Chat idle reaper no longer dies permanently on a single failed sweep. The
+  loop had no error guard, so one unhandled exception in a sweep (a transient
+  sandbox kill/destroy or DB hiccup) killed the reaper task — after which idle
+  and paused E2B sandboxes accumulated indefinitely (billable) with nothing
+  reaping them (#867, reaper-cadence half). The loop now logs and continues to
+  the next sweep, and the kill phase + paused-TTL teardown are per-item guarded
+  so one bad session can't abort the rest of a sweep. (Note: paused sandboxes
+  are still retained for `chat.paused_ttl_seconds`, default 7 days, by design —
+  lower it to reduce paused-VM cost.)
+
 ## [0.74.118] - 2026-07-18
 
 ### Changed
