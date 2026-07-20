@@ -44,6 +44,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   gap — metric count and category names were computed from every metric
   regardless of the requesting user's table-stack — and is now filtered
   through the same gate.
+## [0.75.12] - 2026-07-20
+
+### Fixed
+
+- Health probe no longer emits `alembic.runtime.migration` INFO noise every ~30s. The Postgres schema-revision read now uses a plain `SELECT` from `alembic_version` instead of configuring an Alembic `MigrationContext` per call, and `/api/health/detailed?include=schema` runs the read off the event loop (worker thread + reuse of the 30s liveness cache) so it no longer does a synchronous DB round-trip on the loop.
 
 ## [0.75.11] - 2026-07-20
 
