@@ -149,11 +149,14 @@ class UsageSessionSummary(Base):
     )
     user_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    __table_args__ = (
-        Index("idx_usage_session_user", "username"),
-        Index("idx_usage_session_started", "started_at"),
-        Index("idx_usage_session_user_id", "user_id"),
-    )
+    # No secondary indexes here (dropped in the matching Alembic revision,
+    # 0042_usage_summary_idx_fix_v95 — mirrors DuckDB _v94_to_v95):
+    # upsert_summary's ON CONFLICT DO UPDATE refreshes username / started_at
+    # / user_id on every re-process tick, and on DuckDB updating an
+    # ART-indexed column made a corrupt secondary-index entry fatal
+    # (INCIDENT 2026-07-20), so the indexes were removed — updating an
+    # unindexed column is safe. Do not re-add them. session_file remains
+    # the sole PRIMARY KEY.
 
 
 class UsageToolDaily(Base):

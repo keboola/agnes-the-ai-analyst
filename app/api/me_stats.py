@@ -278,8 +278,8 @@ def get_tokens(
     (lifetime), top-10 biggest sessions (by total tokens, lifetime),
     and the lifetime grand total. Single round-trip via three
     sub-queries — each scans the same per-user partition of
-    ``usage_session_summary`` which the
-    ``idx_usage_session_user`` index supports.
+    ``usage_session_summary`` (filtered on ``username``; no secondary
+    index — see ``src/db.py::_v94_to_v95`` for why).
     """
     username = _username_for_stats(user)
 
