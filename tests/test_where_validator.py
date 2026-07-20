@@ -103,6 +103,44 @@ class TestStructural:
         assert "country_code" in out.lower()
 
 
+class TestRenderDialect:
+    """`render_dialect` transpiles the validated fragment — parse in one
+    dialect, emit in another. Used for `query_mode='materialized'` BQ tables
+    whose scans execute on a local DuckDB parquet read."""
+
+    def test_transpiles_bq_date_sub_to_duckdb(self):
+        from app.api.where_validator import safe_where_predicate
+        out = safe_where_predicate(
+            "event_date >= DATE_SUB(DATE '2026-02-01', INTERVAL 30 DAY)",
+            TABLE_ID, SCHEMA,
+            dialect="bigquery", render_dialect="duckdb",
+        )
+        # BQ's DATE_SUB(...) has no DuckDB equivalent by name — the rendered
+        # fragment must be DuckDB date arithmetic instead.
+        assert out == "event_date >= CAST('2026-02-01' AS DATE) - INTERVAL '30' DAY"
+
+    def test_transpiles_bq_regexp_contains_to_duckdb(self):
+        from app.api.where_validator import safe_where_predicate
+        out = safe_where_predicate(
+            "REGEXP_CONTAINS(country_code, r'^C')",
+            TABLE_ID, SCHEMA,
+            dialect="bigquery", render_dialect="duckdb",
+        )
+        assert out == "REGEXP_MATCHES(country_code, '^C')"
+
+    def test_render_dialect_none_keeps_parse_dialect_rendering(self):
+        """Default (render_dialect omitted / None) must stay byte-identical
+        to the historical single-dialect behavior."""
+        from app.api.where_validator import safe_where_predicate
+        pred = "event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)"
+        legacy = safe_where_predicate(pred, TABLE_ID, SCHEMA, dialect="bigquery")
+        explicit_none = safe_where_predicate(
+            pred, TABLE_ID, SCHEMA, dialect="bigquery", render_dialect=None,
+        )
+        assert legacy == explicit_none
+        assert "DATE_SUB" in legacy  # BQ form preserved when not transpiling
+
+
 class TestFunctionAllowList:
     @pytest.mark.parametrize(
         "predicate",

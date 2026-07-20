@@ -533,3 +533,150 @@ class TestMaxResultBytesTruncation:
         got = parse_ipc_bytes(ipc)
         assert got.num_rows == 100
         assert got.column_names == ["v"]
+
+
+class TestMaterializedScanServedLocally:
+    """A `source_type='bigquery'` + `query_mode='materialized'` row must be
+    served from the server-side parquet the scheduled materialize run wrote —
+    never by re-scanning the raw upstream BQ table (a billable-scan cost
+    regression). Mirrors the v2_schema materialized branch, issue #261."""
+
+    SCHEMA = {"v": "INT64", "d": "DATE", "s": "STRING", "x": "STRING"}
+
+    def _seed_materialized(self, conn):
+        _ensure_admin1(conn)
+        from src.repositories.table_registry import TableRegistryRepository
+
+        TableRegistryRepository(conn).register(
+            id="mat_t",
+            name="mat_t",
+            source_type="bigquery",
+            bucket="ds",
+            source_table="raw_events",
+            query_mode="materialized",
+        )
+
+    def _write_parquet(self, tmp_path):
+        """Write the materialized parquet exactly where materialize_query()
+        puts it: ${DATA_DIR}/extracts/bigquery/data/<table_id>.parquet."""
+        import datetime
+
+        import pyarrow.parquet as pq
+
+        table = pa.table(
+            {
+                "v": [1, 2, 3, 4, 5],
+                "d": [
+                    datetime.date(2026, 1, 1),
+                    datetime.date(2026, 1, 15),
+                    datetime.date(2026, 2, 1),
+                    datetime.date(2026, 2, 15),
+                    datetime.date(2026, 3, 1),
+                ],
+                "s": ["alpha", "beta", "gamma", "delta", "epsilon"],
+                "x": ["1", "2", "3", "4", "5"],
+            }
+        )
+        data_dir = tmp_path / "extracts" / "bigquery" / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        pq.write_table(table, data_dir / "mat_t.parquet")
+        return table
+
+    def _patch_no_bq(self, monkeypatch):
+        """Every BQ touchpoint raises — proving materialized scans never
+        reach BigQuery, on the happy path or any error path."""
+        from app.api import v2_scan
+
+        def _boom(*a, **kw):
+            raise AssertionError("BigQuery must not be touched for a materialized row")
+
+        monkeypatch.setattr(v2_scan, "_run_bq_scan", _boom)
+        monkeypatch.setattr(v2_scan, "_bq_dry_run_bytes", _boom)
+        monkeypatch.setattr(v2_scan, "_resolve_schema", lambda *a, **kw: dict(self.SCHEMA))
+
+    def _run(self, reload_db, monkeypatch, req, tracker=None):
+        from app.api import v2_scan
+
+        self._patch_no_bq(monkeypatch)
+        conn = reload_db.get_system_db()
+        try:
+            self._seed_materialized(conn)
+            user = {"id": "admin1", "email": "a@x.com"}
+            tracker = tracker or v2_scan._build_quota_tracker()
+            return v2_scan.run_scan(conn, user, req, bq=_bq(data="proj"), quota=tracker)
+        finally:
+            conn.close()
+
+    def test_served_from_parquet_without_bq(self, reload_db, tmp_path, monkeypatch):
+        self._write_parquet(tmp_path)
+        ipc = self._run(reload_db, monkeypatch, {"table_id": "mat_t", "select": ["v"]})
+        got = parse_ipc_bytes(ipc)
+        assert got.column_names == ["v"]
+        assert sorted(got.column("v").to_pylist()) == [1, 2, 3, 4, 5]
+
+    def test_applies_select_where_limit_order(self, reload_db, tmp_path, monkeypatch):
+        self._write_parquet(tmp_path)
+        ipc = self._run(
+            reload_db,
+            monkeypatch,
+            {
+                "table_id": "mat_t",
+                "select": ["v"],
+                "where": "v > 2",
+                "order_by": ["v DESC"],
+                "limit": 2,
+            },
+        )
+        got = parse_ipc_bytes(ipc)
+        assert got.column("v").to_pylist() == [5, 4]
+
+    @pytest.mark.parametrize(
+        "where,expected_v",
+        [
+            # The exact BQ-flavor patterns deployed workspaces teach agents
+            # to copy into `agnes snapshot create --where`. Each must
+            # validate (parse=bigquery), transpile (render=duckdb), and
+            # filter the parquet correctly.
+            ("d >= DATE_SUB(DATE '2026-02-01', INTERVAL 30 DAY)", [2, 3, 4, 5]),
+            ("d >= DATE '2026-02-01'", [3, 4, 5]),
+            ("REGEXP_CONTAINS(s, r'^(al|be)')", [1, 2]),
+            ("CAST(x AS INT64) = 3", [3]),
+            ("DATE_TRUNC(d, MONTH) = DATE '2026-02-01'", [3, 4]),
+        ],
+    )
+    def test_transpiles_bq_where_flavor(self, reload_db, tmp_path, monkeypatch, where, expected_v):
+        self._write_parquet(tmp_path)
+        ipc = self._run(
+            reload_db,
+            monkeypatch,
+            {"table_id": "mat_t", "select": ["v"], "where": where, "order_by": ["v"]},
+        )
+        got = parse_ipc_bytes(ipc)
+        assert got.column("v").to_pylist() == expected_v
+
+    def test_unexecutable_where_raises_valueerror_not_500(self, reload_db, tmp_path, monkeypatch):
+        """A predicate that validates but fails at DuckDB bind/execution time
+        must surface as ValueError (→ 400), not an unhandled duckdb.Error."""
+        self._write_parquet(tmp_path)
+        with pytest.raises(ValueError, match="local scan failed"):
+            self._run(
+                reload_db,
+                monkeypatch,
+                # validates fine, but DuckDB can't convert 'abc' to INT64
+                {"table_id": "mat_t", "select": ["v"], "where": "v = 'abc'"},
+            )
+
+    def test_missing_parquet_raises_404_no_bq_fallback(self, reload_db, monkeypatch):
+        """Materialize hasn't run yet → 404. NEVER a fallback to a billable
+        raw-table scan (the incident lesson) — the raising _run_bq_scan patch
+        would fail this test if the fallback existed."""
+        with pytest.raises(FileNotFoundError):
+            self._run(reload_db, monkeypatch, {"table_id": "mat_t", "select": ["v"]})
+
+    def test_counts_result_bytes_toward_daily_quota(self, reload_db, tmp_path, monkeypatch):
+        from app.api.v2_quota import QuotaTracker
+
+        self._write_parquet(tmp_path)
+        tracker = QuotaTracker(max_concurrent_per_user=5, max_daily_bytes_per_user=10**9)
+        self._run(reload_db, monkeypatch, {"table_id": "mat_t", "select": ["v"]}, tracker=tracker)
+        assert tracker.bytes_used_today("a@x.com") > 0

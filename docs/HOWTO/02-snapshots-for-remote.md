@@ -84,6 +84,10 @@ CAST(user_id AS INT64)
 
 DuckDB-style casts (`::date`, `::int`) will fail on remote tables.
 
+The same BQ flavour also works for `query_mode='materialized'` tables — the
+server executes those from its local parquet copy (no BigQuery scan) and
+transpiles the predicate to DuckDB automatically.
+
 ## Managing snapshots
 
 ```bash
