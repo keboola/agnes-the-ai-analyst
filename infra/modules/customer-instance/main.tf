@@ -98,6 +98,29 @@ resource "google_secret_manager_secret_version" "jwt" {
   secret_data = random_password.jwt.result
 }
 
+# SESSION_SECRET — signs the app's session cookies (app/secrets.py::get_session_secret).
+# Single-node deployments fall back to a per-node generated-and-persisted file, but a
+# role-split (multi-process) deployment needs every process to agree on the same value,
+# so this module provisions it the same way as the JWT secret: minted once here, fetched
+# fresh from Secret Manager on every boot (no on-VM fallback generation).
+resource "google_secret_manager_secret" "session" {
+  secret_id = "agnes-${var.customer_name}-session-secret"
+  project   = var.gcp_project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "random_password" "session" {
+  length  = 48
+  special = false
+}
+
+resource "google_secret_manager_secret_version" "session" {
+  secret      = google_secret_manager_secret.session.id
+  secret_data = random_password.session.result
+}
+
 # Postgres password for the side-car postgres:16-alpine container.
 # Startup-script pulls this and writes POSTGRES_PASSWORD + DATABASE_URL
 # into /opt/agnes/.env before docker compose up.
@@ -133,6 +156,14 @@ resource "google_service_account" "vm" {
 resource "google_secret_manager_secret_iam_member" "vm_jwt" {
   project   = var.gcp_project_id
   secret_id = google_secret_manager_secret.jwt.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
+# Same scoped read access for the session secret — mirrors vm_jwt above.
+resource "google_secret_manager_secret_iam_member" "vm_session" {
+  project   = var.gcp_project_id
+  secret_id = google_secret_manager_secret.session.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.vm.email}"
 }
@@ -401,11 +432,13 @@ resource "google_compute_instance" "vm" {
   # the startup script's `gcloud secrets versions access` can 403 due to IAM lag.
   depends_on = [
     google_secret_manager_secret_iam_member.vm_jwt,
+    google_secret_manager_secret_iam_member.vm_session,
     google_secret_manager_secret_iam_member.vm_runtime,
     google_secret_manager_secret_iam_member.vm_runtime_env,
     google_secret_manager_secret_iam_member.vm_oauth,
     google_secret_manager_secret_iam_member.vm_dispatcher,
     google_secret_manager_secret_version.jwt,
+    google_secret_manager_secret_version.session,
   ]
 }
 

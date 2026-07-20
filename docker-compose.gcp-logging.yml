@@ -36,9 +36,6 @@ services:
   telegram-bot:
     logging:
       driver: gcplogs
-  ws-gateway:
-    logging:
-      driver: gcplogs
   extract:
     logging:
       driver: gcplogs

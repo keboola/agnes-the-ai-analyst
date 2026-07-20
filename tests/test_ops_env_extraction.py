@@ -28,7 +28,13 @@ _OPS = Path("scripts/ops")
 
 # script -> the infra-controlled keys it legitimately reads from .env
 _SCRIPTS: dict[str, set[str]] = {
-    "agnes-auto-upgrade.sh": {"AGNES_TAG", "STATE_DIR", "COMPOSE_FILE"},
+    "agnes-auto-upgrade.sh": {
+        "AGNES_TAG",
+        "STATE_DIR",
+        "COMPOSE_FILE",
+        "SCHEDULER_API_TOKEN",
+        "COMPOSE_PROFILES",
+    },
     "agnes-state-applier.sh": {"AGNES_TAG"},
     "agnes-tls-rotate.sh": {
         "TLS_FULLCHAIN_URL",
@@ -50,6 +56,8 @@ _HOSTILE_ENV = textwrap.dedent(
     TLS_FULLCHAIN_URL=sm://certs/fullchain
     TLS_PRIVKEY_URL=
     TLS_CSR_SUBJECT="/C=US/ST=Illinois/L=Chicago/O=Some Org, Inc./CN=agnes.example.com"
+    SCHEDULER_API_TOKEN=hostile-scheduler-token-`whoami`
+    COMPOSE_PROFILES=mtier
     AGNES_INSTANCE_CUSTOM_PREAMBLE=NOTE `agnes` secure > all $HOME & <svg> 'quoted' | pipe
     """
 )
@@ -62,6 +70,8 @@ _EXPECTED = {
     "TLS_FULLCHAIN_URL": "sm://certs/fullchain",
     "TLS_PRIVKEY_URL": "",
     "TLS_CSR_SUBJECT": "/C=US/ST=Illinois/L=Chicago/O=Some Org, Inc./CN=agnes.example.com",
+    "SCHEDULER_API_TOKEN": "hostile-scheduler-token-`whoami`",
+    "COMPOSE_PROFILES": "mtier",
 }
 
 _BASH = shutil.which("bash")
@@ -97,21 +107,16 @@ def test_env_get_extracts_keys_from_hostile_env(script_name, keys, tmp_path):
 
     env_get = _extract_env_get((_OPS / script_name).read_text())
     # Point the helper's hardcoded path at the temp file (both path forms).
-    env_get = env_get.replace('"$COMPOSE_DIR/.env"', f'"{env_file}"').replace(
-        "/opt/agnes/.env", str(env_file)
-    )
+    env_get = env_get.replace('"$COMPOSE_DIR/.env"', f'"{env_file}"').replace("/opt/agnes/.env", str(env_file))
 
-    queries = "\n".join(
-        f'printf "%s=[%s]\\n" {k} "$(_env_get {k})"' for k in sorted(keys)
-    )
+    queries = "\n".join(f'printf "%s=[%s]\\n" {k} "$(_env_get {k})"' for k in sorted(keys))
     prog = f"set -euo pipefail\n{env_get}\n{queries}\n"
     res = subprocess.run([_BASH, "-c", prog], capture_output=True, text=True)
 
     assert res.returncode == 0, f"{script_name}: _env_get crashed: {res.stderr}"
     for k in keys:
         assert f"{k}=[{_EXPECTED[k]}]" in res.stdout, (
-            f"{script_name}: {k} not extracted correctly from a hostile .env\n"
-            f"stdout={res.stdout!r}"
+            f"{script_name}: {k} not extracted correctly from a hostile .env\nstdout={res.stdout!r}"
         )
     # The free-text preamble (backtick `agnes`) must never have been executed.
     assert "command not found" not in res.stderr

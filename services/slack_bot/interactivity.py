@@ -6,8 +6,10 @@ Slack Web API / response_url and never raise (each dispatch runs under
 events._run_logged, so an exception becomes a logged best-effort failure,
 never a Slack retry).
 """
+
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 import time as _time
@@ -23,8 +25,19 @@ logger = logging.getLogger(__name__)
 
 # Share-to-channel answer store. A /agnes answer can exceed the 2000-char
 # Slack button `value` cap, so only a token rides in the button; the body
-# lives here keyed by token with a short TTL. In-memory + single-worker
-# (chat is disabled under multiple uvicorn workers — see app/main.py).
+# lives here keyed by token with a short TTL.
+#
+# WARNING — PROCESS-LOCAL, NOT MULTI-REPLICA SAFE. The old justification
+# ("chat is disabled under multiple uvicorn workers") is no longer true:
+# the multi-worker/replica chat gate is lifted for coordination.backend=
+# redis (wave-2F task 7), so a share-button click can land on a replica
+# that never stored the token and would miss. This dict is currently
+# DORMANT — no production code path calls store_share_answer (the Share
+# button producer was never wired) — so nothing is broken today.
+# TODO(multi-replica): before wiring any producer to store_share_answer,
+# move this store to the coordination backend (kv_set/kv_get with the same
+# TTL), like the other cross-replica chat state. Do NOT ship a producer on
+# top of this process-local dict.
 _SHARE_TTL_SECONDS = 30 * 60
 _SHARE_ANSWERS: dict[str, tuple[float, str]] = {}
 
@@ -92,15 +105,28 @@ async def _on_stop(app, it: Interaction) -> None:
     chat_id = it.value.get("chat_id", "")
     owner = it.value.get("owner", "")
     if not clicker_email:
-        await sender.send_ephemeral(
-            it.response_url, "Bind your Slack identity first (DM Agnes to start)."
-        )
+        await sender.send_ephemeral(it.response_url, "Bind your Slack identity first (DM Agnes to start).")
         return
     if clicker_email != owner:
         await sender.send_ephemeral(
             it.response_url,
             "Only the session owner can stop it.",
         )
+        return
+    if mgr is None:
+        # api-role replica (no ChatManager — only Role.GATEWAY builds one):
+        # mirror ChatManager.cancel's non-owner branch and publish a
+        # control:cancel for the owning gateway's consumer to execute
+        # (wave-2F final review F1). No owner -> idempotent no-op, same as
+        # cancel() with no live session.
+        from app.chat import inbound, routing
+
+        lease_owner = await asyncio.to_thread(routing.owner_of, chat_id)
+        if lease_owner is not None and lease_owner != routing.this_gateway_id():
+            try:
+                await inbound.publish_control(chat_id, "cancel")
+            except inbound.InboundPublishFailed:
+                logger.warning("cross-gateway cancel for %s could not be published", chat_id)
         return
     await mgr.cancel(chat_id)  # idempotent; sink strips the button on `cancelled`
 
@@ -110,9 +136,7 @@ async def _on_share(app, it: Interaction) -> None:
     conn = repo._conn
     clicker_email = lookup_user_email(repo, it.slack_user_id)
     if not clicker_email:
-        await sender.send_ephemeral(
-            it.response_url, "Bind your Slack identity first (DM Agnes to start)."
-        )
+        await sender.send_ephemeral(it.response_url, "Bind your Slack identity first (DM Agnes to start).")
         return
     channel_id = it.value.get("channel_id", "")
     # SECURITY: re-check the allowlist at click time against the
@@ -124,9 +148,7 @@ async def _on_share(app, it: Interaction) -> None:
         return
     body = get_share_answer(it.value.get("token", ""))
     if body is None:
-        await sender.send_ephemeral(
-            it.response_url, "That answer expired — re-run /agnes to share again."
-        )
+        await sender.send_ephemeral(it.response_url, "That answer expired — re-run /agnes to share again.")
         return
     await sender.post_channel_message(channel_id, body)
     # Clear the ephemeral; the public post already landed, so a response_url
@@ -136,7 +158,8 @@ async def _on_share(app, it: Interaction) -> None:
     except Exception:
         logger.warning("response_url clear failed after share (post already public)")
     write_audit(
-        user_email=clicker_email, action="slack_share",
+        user_email=clicker_email,
+        action="slack_share",
         details={"channel_id": channel_id},
     )
 
@@ -152,6 +175,4 @@ async def _on_new_session(app, it: Interaction) -> None:
         )
         return
     await _soft_archive_dm(app, owner, channel_id)
-    await sender.send_ephemeral(
-        it.response_url, "Started a fresh session — your next message begins anew."
-    )
+    await sender.send_ephemeral(it.response_url, "Started a fresh session — your next message begins anew.")

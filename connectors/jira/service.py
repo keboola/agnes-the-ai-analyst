@@ -102,13 +102,33 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
 
         if success:
             logger.info(f"Incremental transform completed for {issue_key}")
-            # Rebuild Jira views in master analytics.duckdb
+            # Rebuild Jira views in master analytics.duckdb — enqueued
+            # (wave-2B job queue) rather than run inline. The webhook
+            # response must stay fast; the orchestrator rebuild is a full
+            # re-ATTACH + view rebuild over analytics.duckdb, cheap per
+            # call but wasteful to run once per webhook event during a
+            # burst. `idempotency_key="jira-refresh"` collapses any
+            # number of pending webhook events into a single queued
+            # rebuild — see `app.worker.kinds._run_jira_refresh`.
             try:
-                from src.orchestrator import SyncOrchestrator
+                from app.job_correlation import stamp_request_id
+                from src.repositories import jobs_repo
 
-                SyncOrchestrator().rebuild_source("jira")
-            except Exception as orch_err:
-                logger.warning(f"Orchestrator rebuild failed: {orch_err}")
+                result = jobs_repo().enqueue("jira-refresh", stamp_request_id({}), idempotency_key="jira-refresh")
+                # Invariant: every parquet write (above, via transform_single_issue)
+                # must be followed by a rebuild that starts AFTER it. Dedup above
+                # matches against status IN ('queued', 'running') — if it collapsed
+                # onto a job that is already RUNNING, that job may have started (and
+                # read parquet) BEFORE this write landed, so this write would
+                # otherwise sit stale until some future webhook happens to fire.
+                # Enqueue a coalescing follow-up (distinct idempotency key, so it
+                # doesn't dedup against the primary) to guarantee a rebuild strictly
+                # after this write. Repeated webhooks mid-run all dedup onto this
+                # same follow-up row, bounding the pile-up at 1 running + 1 queued.
+                if result.get("status") == "running":
+                    jobs_repo().enqueue("jira-refresh", stamp_request_id({}), idempotency_key="jira-refresh-followup")
+            except Exception as enqueue_err:
+                logger.warning(f"Failed to enqueue jira-refresh job: {enqueue_err}")
         else:
             logger.warning(f"Incremental transform failed for {issue_key}")
 

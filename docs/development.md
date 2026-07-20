@@ -2,7 +2,7 @@
 
 ## Logging
 
-All processes (FastAPI app, scheduler, telegram_bot, ws_gateway, corporate_memory,
+All processes (FastAPI app, scheduler, telegram_bot, corporate_memory,
 session_collector, verification_detector, CLI scripts) use
 `app.logging_config.setup_logging` to configure the root logger. Each entrypoint
 calls it once:

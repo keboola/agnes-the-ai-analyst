@@ -69,7 +69,18 @@ in `CHANGELOG.md`. Adding a schema version means:
 
 ## Files NOT to modify
 
-`connectors/jira/file_lock.py` and `services/ws_gateway/` — stable
-infrastructure. (`connectors/jira/transform.py` was previously off-limits
-but as of 0.54.19 is no longer; it remains sensitive — touch only with
-end-to-end understanding of the JSON-overlay / parquet-rewrite pipeline.)
+- `connectors/jira/file_lock.py` — advisory file locking
+
+(`services/ws_gateway/` was previously listed here but the standalone
+service no longer exists: wave-2F task 6 absorbed its WS + auth + heartbeat
+logic into `app/api/notifications_ws.py` (gated to `Role.GATEWAY` processes)
+and its dispatch path into `app/notifications.py::publish_notification`,
+which rides the coordination pub/sub channel `notify:{user}` instead of the
+old in-memory `connections` dict + Unix-socket HTTP dispatch.
+
+`connectors/jira/transform.py` was previously listed here but has been
+removed: the `_remote_links` hardening in 0.54.19 required modifying
+`transform_remote_links` and `transform_all` to honor a new "overlay
+absent → preserve existing rows" contract. The transform module remains
+sensitive — touch it only when you understand the JSON-overlay /
+parquet-rewrite pipeline end-to-end — but it is no longer off-limits.)

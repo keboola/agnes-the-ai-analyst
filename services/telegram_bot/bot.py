@@ -10,6 +10,7 @@ Usage:
 """
 
 import asyncio
+import contextlib
 import grp
 import json
 import logging
@@ -21,7 +22,7 @@ from aiohttp import web
 from app.logging_config import setup_logging
 
 from . import config
-from .dispatch import dispatch_to_ws_gateway
+from .dispatch import dispatch_desktop_notification
 from .runner import run_user_script
 from .sender import (
     answer_callback_query,
@@ -210,8 +211,8 @@ async def handle_callback_query(callback_query: dict) -> None:
     else:
         await send_message(chat_id, f"`{script_name}` produced no output.", parse_mode="Markdown")
 
-    # Also dispatch to WebSocket gateway for desktop app
-    await asyncio.to_thread(dispatch_to_ws_gateway, username, output, script_name)
+    # Also publish a desktop-app notification (coordination pub/sub — wave-2F task 6)
+    await asyncio.to_thread(dispatch_desktop_notification, username, output, script_name)
 
 
 async def polling_loop() -> None:
@@ -232,6 +233,73 @@ async def polling_loop() -> None:
         except Exception:
             logger.exception("Polling loop error")
             await asyncio.sleep(config.POLL_ERROR_RETRY_SECONDS)
+
+
+# --- Leader lease around polling (wave-2C task 3) -------------------------
+#
+# This service is a standalone process (its own systemd unit / container),
+# potentially run with more than one replica for HA. Telegram's getUpdates
+# long-poll advances a single global `offset` cursor server-side — two
+# replicas polling concurrently would race on acking/dropping each other's
+# updates, so at most one replica may run `polling_loop` at a time.
+#
+# `app.coordination.leases.run_with_lease` needs `app.coordination`'s config
+# plumbing (instance.yaml / env) to resolve the coordination backend. This
+# module already imports `from app.logging_config import setup_logging`
+# above, confirming the `app` package is importable in this process's
+# context; `app.coordination.factory.resolve_backend_name()` reads
+# `AGNES_COORDINATION_BACKEND` (falling back to `instance.yaml` via
+# `app.instance_config.get_value`, which fails soft to defaults if no
+# instance.yaml is reachable from this process) — so this works whether or
+# not this standalone service has its own instance.yaml wired up, via the
+# already-documented env override.
+_poll_task: "asyncio.Task | None" = None
+
+
+async def _start_polling() -> None:
+    """run_with_lease `start` callback: launch `polling_loop` as a
+    background task. It must be a cancellable task (not just a cooperative
+    stop-flag check) because `get_updates` long-polls Telegram for up to
+    `POLL_TIMEOUT_SECONDS`; only cancellation interrupts that promptly."""
+    global _poll_task
+    _poll_task = asyncio.create_task(polling_loop(), name="telegram-polling")
+
+
+async def _stop_polling() -> None:
+    """run_with_lease `stop` callback: cancel the polling task and wait for
+    it to unwind.
+
+    FLUSHALL story: if the coordination backend loses its state (Redis
+    FLUSHALL/restart, or an outage outliving one ttl_s), this replica's
+    lease renew fails -> `_stop_polling` cancels `polling_loop` -> the lease
+    loop re-enters acquire-polling -> some replica (maybe this one)
+    re-acquires and resumes polling within one `ttl_s`. Under the default
+    `memory` backend (single-replica deployment) this never fires — the
+    lease is process-local and always immediately acquired.
+    """
+    global _poll_task
+    task = _poll_task
+    _poll_task = None
+    if task is not None:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def run_polling_with_lease() -> None:
+    """Entry point used by `main()` in place of a bare `await polling_loop()`
+    — wraps the long-poll loop in the `telegram-poll` leader lease so only
+    one replica of this service polls Telegram at a time. Never returns
+    (mirrors `polling_loop`'s own never-returns contract)."""
+    from app.coordination.leases import default_holder_id, run_with_lease
+
+    await run_with_lease(
+        "telegram-poll",
+        default_holder_id(),
+        ttl_s=15,
+        start=_start_polling,
+        stop=_stop_polling,
+    )
 
 
 # --- HTTP Send API (unix socket) ---
@@ -338,7 +406,7 @@ async def main() -> None:
     os.makedirs(config.NOTIFICATIONS_DIR, exist_ok=True)
 
     await start_http_server()
-    await polling_loop()
+    await run_polling_with_lease()
 
 
 if __name__ == "__main__":
