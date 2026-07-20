@@ -2493,9 +2493,15 @@ def test_renew_outage_keeps_serving_but_genuine_steal_tears_down(manager: ChatMa
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))
-        # Poll (not a fixed 50ms sleep) for attach to register the session —
-        # under CI xdist CPU contention the bare sleep flaked this assert.
-        await _wait_until(lambda: s.id in manager._live)
+        # Poll for attach to BOTH register the session locally AND finish
+        # claiming the routing lease. `s.id in _live` is set *before*
+        # `_claim_routing_lease`'s to_thread completes, so waiting only on
+        # `_live` let Scenario A's `_renew_routing_leases` (and the "still
+        # ours" sanity assert) run before the lease existed — `owner_of`
+        # returned None and the assert flaked under CI xdist contention.
+        # Wait on the real precondition the whole test depends on: we own it.
+        _gw0 = routing.this_gateway_id()
+        await _wait_until(lambda: s.id in manager._live and routing.owner_of(s.id) == _gw0)
         assert s.id in manager._live
 
         # --- Scenario A: coordination-backend outage. Both renew_session
