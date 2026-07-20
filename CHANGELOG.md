@@ -22,7 +22,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.75.10] - 2026-07-20
+## [0.75.11] - 2026-07-20
 
 ### Added
 
@@ -42,6 +42,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `system.duckdb` from the CLI (operates on the state file directly, since the HTTP
   API is unusable while the DB is invalidated; stop the app first — DuckDB is
   single-writer). No-ops on a Postgres app-state backend.
+
+## [0.75.10] - 2026-07-20
+
 ### Fixed
 
 - Dropped the 3 non-unique secondary indexes on `usage_session_summary`
