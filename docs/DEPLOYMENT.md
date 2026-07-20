@@ -399,7 +399,7 @@ the only download path. Full architecture:
 
 **Why (L-tier only).** A single app NIC serving every analyst's `agnes pull`
 is the S/M-tier reality and is fine at that scale — it's what this repo's
-load-testing (see **Bod-3 live verification** below) actually exercises.
+load-testing (see the **Live verification checklist** below) actually exercises.
 At L tier (many analysts, large parquets, frequent pulls) that NIC becomes
 the bottleneck; moving the bytes onto object storage — built for exactly
 this fan-out — offloads it. There is no reason to turn this on below that
@@ -561,7 +561,7 @@ option — an operator opts a VM in manually (set `COMPOSE_FILE`/
 own variables to do it. The load-testing / smoke harness exercises the
 `mtier` Compose profile directly rather than through the module.
 
-### Bod-3 live verification
+### Live verification checklist (before production)
 
 The checks above are covered by the bash-harness unit tests (fakes for
 `docker`/`curl`/`logger`/`flock`) and are static-validated (`shellcheck`,
