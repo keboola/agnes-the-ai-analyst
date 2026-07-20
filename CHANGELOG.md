@@ -12,6 +12,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- Jira parquet: reproducible bloom-filter benchmark
+  (`connectors/jira/scripts/bloom_benchmark.py`) and a decision record
+  ([docs/planning/749-jira-parquet-bloom-filters.md](docs/planning/749-jira-parquet-bloom-filters.md)).
+  Measured before/after numbers show bloom filters on `issue_key` give ≤1.12× on
+  the real hive-partitioned layout at +47 % file size and ~11× slower writes —
+  the existing hive partitioning + min/max statistics + page index already prune
+  our selective queries — so bloom filters are intentionally not added. Closes
+  the benchmark acceptance criterion left open since #406/#665.
+
 ### Changed
 
 ### Fixed
