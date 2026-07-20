@@ -527,11 +527,23 @@ def run_scan(
                     sql += f" LIMIT {int(req.limit)}"
                 try:
                     table = local.execute(sql, [str(parquet)]).arrow()
-                except duckdb.Error as e:
+                except duckdb.InvalidInputException:
+                    # Corrupt/unreadable parquet ("No magic bytes found…").
+                    # duckdb files it under ProgrammingError, but it is an
+                    # operational failure the caller cannot fix by editing
+                    # the query — re-raise before the client-error catch
+                    # below so it reaches the logged, sanitized 500 handler.
+                    raise
+                except (duckdb.DataError, duckdb.ProgrammingError) as e:
                     # Fail loud, not 500: a predicate can pass validation (and
                     # BQ→DuckDB transpile for materialized rows) yet still hit
-                    # a construct DuckDB can't bind. Surface as ValueError so
-                    # the endpoint maps it to a clean 400 with the real reason.
+                    # a construct DuckDB can't bind or resolve (Binder/
+                    # CatalogException → ProgrammingError) or a data value it
+                    # can't convert (ConversionException → DataError). Those
+                    # are request-attributable → ValueError → 400 with the
+                    # real reason. Other failures (IO → OperationalError,
+                    # out-of-memory, internal errors) stay un-caught and reach
+                    # the 500 handler.
                     raise ValueError(f"local scan failed for {req.table_id!r}: {e}") from e
             finally:
                 local.close()

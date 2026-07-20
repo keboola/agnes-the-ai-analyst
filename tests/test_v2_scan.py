@@ -688,6 +688,22 @@ class TestMaterializedScanServedLocally:
                 {"table_id": "mat_t", "select": ["v"], "where": "CAST(x AS INT64) = 3"},
             )
 
+    def test_corrupt_parquet_propagates_not_client_400(self, reload_db, tmp_path, monkeypatch):
+        """The other side of the fail-loud boundary (PR #946 review round 3):
+        a corrupt/unreadable parquet is an operational failure the caller
+        cannot fix by editing the query, so it must NOT be converted to a
+        client-facing 400. Empirical duckdb quirk: it raises
+        InvalidInputException, which subclasses ProgrammingError — the guard
+        re-raises it explicitly before the client-error catch."""
+        import duckdb
+
+        data_dir = tmp_path / "extracts" / "bigquery" / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "mat_t.parquet").write_bytes(b"not a parquet file")
+        with pytest.raises(duckdb.InvalidInputException) as exc_info:
+            self._run(reload_db, monkeypatch, {"table_id": "mat_t", "select": ["v"]})
+        assert not isinstance(exc_info.value, ValueError)
+
     def test_unexecutable_where_raises_valueerror_not_500(self, reload_db, tmp_path, monkeypatch):
         """A predicate that validates but fails at DuckDB bind/execution time
         must surface as ValueError (→ 400), not an unhandled duckdb.Error."""
