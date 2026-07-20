@@ -12,6 +12,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.75.0] - 2026-07-20
+
+### Added
+
 - **Process roles for multi-process deployments** (wave-1, WS A):
   `AGNES_ROLE=api|gateway|worker|all` (or `instance.yaml::deployment.role`;
   default `all` — unchanged single-process behavior) with startup guards
