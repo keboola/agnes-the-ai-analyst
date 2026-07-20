@@ -8,6 +8,7 @@ push module so the scan is deterministic; the encoder itself is covered by
 `test_session_paths.py`.
 """
 
+import gzip
 import json
 import re
 from contextlib import contextmanager
@@ -568,3 +569,99 @@ def test_push_json_shape_consistent_across_paths(tmp_path, monkeypatch):
     assert keys_none == keys_real, (keys_none, keys_real)
     for k in ("sessions", "dropped_permanent", "skipped_failed", "workspace_root"):
         assert k in keys_none
+
+
+class _FakeProbeResp:
+    def __init__(self, caps: str | None) -> None:
+        self.status_code = 200
+        self.headers = {} if caps is None else {"X-Agnes-Accepts": caps}
+
+
+def _record_upload_bodies(monkeypatch) -> list[tuple[str, str, bytes]]:
+    """Patch api_post to record (path, part_filename, part_bytes) and succeed."""
+    calls: list[tuple[str, str, bytes]] = []
+
+    def _fake(path, **kwargs):
+        files = kwargs.get("files")
+        if files:
+            name, buf = files["file"]
+            calls.append((path, name, buf.getvalue()))
+        else:
+            calls.append((path, "", b""))
+        return _FakeResp(200)
+
+    monkeypatch.setattr("cli.commands.push.api_post", _fake)
+    return calls
+
+
+def _one_transcript(tmp_path, monkeypatch, content: bytes):
+    t = tmp_path / "sess-gz-test.jsonl"
+    t.write_bytes(content)
+    _stub_config(monkeypatch, tmp_path)
+    _stub_sessions(monkeypatch, [t])
+    return t
+
+
+def test_push_gzips_when_server_advertises(tmp_path, monkeypatch):
+    content = b'{"type": "message"}\n' * 20
+    _one_transcript(tmp_path, monkeypatch, content)
+    monkeypatch.setattr("cli.commands.push.api_get", lambda p, **kw: _FakeProbeResp("session-gzip"))
+    calls = _record_upload_bodies(monkeypatch)
+    result = runner.invoke(push_app, [])
+    assert result.exit_code == 0
+    session_calls = [c for c in calls if c[0] == "/api/upload/sessions"]
+    assert len(session_calls) == 1
+    _path, name, body = session_calls[0]
+    assert name == "sess-gz-test.jsonl.gz"
+    assert gzip.decompress(body) == content  # redaction is a no-op for this content
+
+
+def test_push_plain_when_capability_absent(tmp_path, monkeypatch):
+    content = b'{"type": "message"}\n'
+    _one_transcript(tmp_path, monkeypatch, content)
+    monkeypatch.setattr("cli.commands.push.api_get", lambda p, **kw: _FakeProbeResp(None))
+    calls = _record_upload_bodies(monkeypatch)
+    result = runner.invoke(push_app, [])
+    assert result.exit_code == 0
+    _path, name, body = [c for c in calls if c[0] == "/api/upload/sessions"][0]
+    assert name == "sess-gz-test.jsonl"
+    assert body == content
+
+
+def test_push_plain_when_probe_fails(tmp_path, monkeypatch):
+    content = b'{"type": "message"}\n'
+    _one_transcript(tmp_path, monkeypatch, content)
+
+    def _boom(p, **kw):
+        raise RuntimeError("server unreachable")
+
+    monkeypatch.setattr("cli.commands.push.api_get", _boom)
+    calls = _record_upload_bodies(monkeypatch)
+    result = runner.invoke(push_app, [])
+    assert result.exit_code == 0
+    _path, name, body = [c for c in calls if c[0] == "/api/upload/sessions"][0]
+    assert name == "sess-gz-test.jsonl"
+    assert body == content
+
+
+def test_push_env_killswitch_skips_probe(tmp_path, monkeypatch):
+    content = b'{"type": "message"}\n'
+    _one_transcript(tmp_path, monkeypatch, content)
+    monkeypatch.setenv("AGNES_PUSH_NO_GZIP", "1")
+
+    probe_calls: list[str] = []
+
+    def _record_probe(p, **kw):
+        probe_calls.append(p)
+        return _FakeProbeResp("session-gzip")
+
+    monkeypatch.setattr("cli.commands.push.api_get", _record_probe)
+    calls = _record_upload_bodies(monkeypatch)
+    result = runner.invoke(push_app, [])
+    assert result.exit_code == 0
+    # With the kill-switch set, the capability probe must never fire...
+    assert probe_calls == []
+    # ...and the upload must fall back to the plain (non-gzip) filename.
+    _path, name, body = [c for c in calls if c[0] == "/api/upload/sessions"][0]
+    assert name == "sess-gz-test.jsonl"
+    assert body == content
