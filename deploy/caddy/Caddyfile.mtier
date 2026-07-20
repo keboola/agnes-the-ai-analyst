@@ -16,6 +16,17 @@
 		fail_duration 10s
 	}
 
+	# `/metrics` is an internal-scrape-only surface (Prometheus scrapes each
+	# role container directly by Compose DNS — see
+	# deploy/prometheus/prometheus.yml — never through Caddy). Without this
+	# deny the api catch-all below would forward it to the replicas, exposing
+	# the unauthenticated observability payload (queue depth, worker-lane
+	# occupancy, replica hostname:pid, per-route latency histograms) to
+	# anyone who can reach the public :8080 LB port. `/healthz` + `/readyz`
+	# stay reachable — they leak only status and double as LB/uptime probes.
+	@metrics path /metrics
+	respond @metrics 404
+
 	reverse_proxy api1:8000 api2:8000 {
 		health_uri /readyz
 		health_interval 5s

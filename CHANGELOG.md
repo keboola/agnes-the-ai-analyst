@@ -84,7 +84,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   end.
 
 - **Durable job queue + worker runtime** (wave-2B, WS B): a `jobs` table
-  (DuckDB and Postgres) backs `POST /api/jobs` (enqueue `{kind, payload?,
+  (DuckDB and Postgres, schema v94) backs `POST /api/jobs` (enqueue `{kind, payload?,
   idempotency_key?}` → 202; unknown `kind` → 400 listing the registered
   kinds), `GET /api/jobs/{job_id}` and `GET /api/jobs?status=&kind=&limit=`
   — gated by `require_admin` (also accepts the scheduler's shared-secret
@@ -260,6 +260,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `full` profile no longer start it, and Telegram's notification dispatch
   now publishes through the coordination fabric instead of the removed
   Unix socket.
+
+### Internal
+
+- **De-flaked the wave-2F chat test suite** (`tests/test_chat_manager.py`,
+  `tests/test_chat_inbound.py`, `tests/test_chat_takeover.py`,
+  `tests/test_chat_replay.py`) under `pytest -n auto`: fixed `asyncio.sleep(0.0x)`
+  waits on async background setup (session `attach()`, cross-gateway
+  publish/takeover, replay) replaced with condition polling via a shared
+  `_wait_until` helper (`tests/chat_fakes.py`). Along the way, fixed two
+  real races these fixed sleeps were masking: a cross-gateway
+  `send_user_message`/`kill`/`cancel` could race `ChatManager._spawn_live`'s
+  routing-lease claim and raise `SessionNotFound`, and a message/control
+  command published in the narrow window before a fresh
+  `_inbound_consumer_loop`'s initial `peek_seq` cursor-seed was silently
+  treated as already-delivered and never seen — both now covered by
+  test-side instrumentation that waits for those steps to actually land
+  before the next action, not just for the `LiveSession` to exist.
 
 ## [0.74.120] - 2026-07-20
 
