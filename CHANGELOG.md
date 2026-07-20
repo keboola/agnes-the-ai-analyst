@@ -14,6 +14,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.75.4] - 2026-07-20
+
+### Changed
+
 - BigQuery cost attribution: the billable job on the fully-materialized
   remote-select path (`agnes query --remote --auto-snapshot` /
   `run_remote_select_to_arrow`) now runs via labeled
@@ -25,12 +35,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   LIMIT-capped `/api/query --remote` path (small, bounded byte volume) still
   runs through the extension — see
   [docs/planning/752-bq-billable-labels.md](docs/planning/752-bq-billable-labels.md).
-
-### Fixed
-
-### Removed
-
-### Internal
 
 ## [0.75.3] - 2026-07-20
 
