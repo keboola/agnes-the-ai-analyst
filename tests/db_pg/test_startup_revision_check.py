@@ -295,3 +295,28 @@ def test_ensure_concurrent_callers_serialize(pg_under_app):
 
     assert not errors
     assert _current_revision(pg_under_app) == head
+
+
+def test_pg_revisions_no_migrationcontext_log_noise(pg_under_app, caplog):
+    """The 30s health probe calls ``_pg_revisions()`` continuously; it
+    must read the revision with a plain SELECT, not ``MigrationContext.configure``
+    — the latter logs two ``alembic.runtime.migration`` INFO lines every call
+    (thousands/day drowning real app logs). Revision value stays correct."""
+    import logging
+
+    from alembic import command
+
+    from src.db_pg import _pg_revisions
+
+    cfg = _alembic_config(str(pg_under_app.url))
+    command.upgrade(cfg, "head")
+
+    head, _prev = _head_and_prev()
+    with caplog.at_level(logging.INFO, logger="alembic.runtime.migration"):
+        current, resolved_head, db_ahead = _pg_revisions()
+
+    assert current == head
+    assert resolved_head == head
+    assert db_ahead is False
+    noise = [r for r in caplog.records if r.name.startswith("alembic.runtime.migration")]
+    assert not noise, f"health probe logged alembic migration noise: {[r.message for r in noise]}"

@@ -442,7 +442,11 @@ async def health_check_detailed(
     # `?include=schema` (the dashboard / admin UI passes this; default
     # CLI does not).
     if "schema" in include_set:
-        checks["db_schema"] = _check_db_schema()
+        # Offload to a worker thread + reuse the 30s liveness cache: the schema
+        # read is a synchronous PG round-trip and this handler is `async def`,
+        # so running it inline blocks the event loop when the dashboard polls
+        # `?include=schema`.
+        checks["db_schema"] = await asyncio.to_thread(_cached_db_schema)
 
     # Sync state summary
     try:

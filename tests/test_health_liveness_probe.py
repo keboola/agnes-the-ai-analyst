@@ -105,3 +105,35 @@ def test_health_does_not_block_event_loop(seeded_app, monkeypatch):
     elapsed, r1, r2 = asyncio.run(fire())
     assert r1.status_code == 200 and r2.status_code == 200
     assert elapsed < 0.9, f"probes serialized ({elapsed:.2f}s) — event loop blocked"
+
+
+def test_detailed_schema_check_does_not_block_event_loop(seeded_app, monkeypatch):
+    """`/api/health/detailed?include=schema` must not do its synchronous PG
+    round-trip on the event loop. Two concurrent authenticated probes against a
+    slow schema read must overlap, proving the read runs off the loop (via
+    `asyncio.to_thread`). If it blocked, they'd serialize to ~2x latency."""
+    _reset_cache()
+    app = seeded_app["client"].app
+    token = seeded_app["admin_token"]
+    orig = health_mod._check_db_schema
+
+    def slow():
+        time.sleep(0.5)
+        return orig()
+
+    monkeypatch.setattr(health_mod, "_check_db_schema", slow)
+
+    async def fire():
+        transport = httpx.ASGITransport(app=app)
+        headers = {"Authorization": f"Bearer {token}"}
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as ac:
+            t0 = time.monotonic()
+            r1, r2 = await asyncio.gather(
+                ac.get("/api/health/detailed?include=schema", headers=headers),
+                ac.get("/api/health/detailed?include=schema", headers=headers),
+            )
+            return time.monotonic() - t0, r1, r2
+
+    elapsed, r1, r2 = asyncio.run(fire())
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert elapsed < 0.9, f"detailed probes serialized ({elapsed:.2f}s) — event loop blocked"
