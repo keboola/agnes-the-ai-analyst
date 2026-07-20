@@ -1,8 +1,26 @@
 """End-to-end tests for the three bq_metadata_refresh endpoints."""
 
+import logging
+import re
 from unittest.mock import patch
 
 from app.api._metadata_models import TableMetadata
+
+
+def _per_table_lines(caplog):
+    """The per-table timing INFO lines emitted by run_bq_metadata_refresh."""
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith("bq metadata refresh table:")
+    ]
+
+
+def _field(line: str, name: str) -> str:
+    """Pull a ``name=value`` token out of a per-table log line."""
+    m = re.search(rf"{name}=(\S+)", line)
+    assert m is not None, f"no {name}= in {line!r}"
+    return m.group(1)
 
 
 def _register_remote(seeded_app, table_id: str):
@@ -154,6 +172,85 @@ def test_concurrent_refresh_returns_409_already_running(seeded_app):
     assert detail["reason"] == "already_running"
     assert detail["run_id"] == "abcd1234"
     assert detail["started_at"] == "2026-05-12T13:00:00+00:00"
+
+
+# ─── Per-table timing ───────────────────────────────
+
+
+def test_run_refresh_logs_per_table_timing(seeded_app, caplog):
+    """Every table gets one INFO line carrying fetch_ms + total_ms so a slow
+    refresh cycle is attributable to specific tables from the logs alone."""
+    _register_remote(seeded_app, "timed_a")
+    _register_remote(seeded_app, "timed_b")
+
+    fake = TableMetadata(rows=5, size_bytes=512)
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    with caplog.at_level(logging.INFO, logger="app.api.bq_metadata_refresh"):
+        with patch("connectors.bigquery.metadata.fetch", return_value=fake):
+            r = c.post(
+                "/api/admin/run-bq-metadata-refresh",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert r.status_code == 200, r.text
+
+    lines = _per_table_lines(caplog)
+    for tid in ("timed_a", "timed_b"):
+        line = next(m for m in lines if f"table_id={tid}" in m)
+        assert "status=ok" in line
+        # Both timings render as non-negative ints (not "None").
+        for field in ("fetch_ms", "total_ms"):
+            value = _field(line, field)
+            assert value != "None", f"{field} unexpectedly None in {line!r}"
+            assert int(value) >= 0
+
+
+def test_run_refresh_per_table_log_on_error_has_fetch_ms(seeded_app, caplog):
+    """On the provider-exception path the fetch was attempted, so the
+    per-table line reports status=error with a real (non-None) fetch_ms."""
+    _register_remote(seeded_app, "boom_timed")
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    with caplog.at_level(logging.INFO, logger="app.api.bq_metadata_refresh"):
+        with patch(
+            "connectors.bigquery.metadata.fetch",
+            side_effect=RuntimeError("BQ throttle"),
+        ):
+            r = c.post(
+                "/api/admin/run-bq-metadata-refresh",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert r.status_code == 200
+
+    line = next(m for m in _per_table_lines(caplog) if "table_id=boom_timed" in m)
+    assert "status=error" in line
+    assert _field(line, "fetch_ms") != "None"
+    assert int(_field(line, "total_ms")) >= 0
+
+
+def test_refresh_one_returns_timing_fields_on_success(seeded_app):
+    """refresh_one carries fetch_ms/total_ms as ints on the happy path —
+    these also pass straight through the single-row refresh endpoint."""
+    from app.api.bq_metadata_refresh import refresh_one
+
+    fake = TableMetadata(rows=1, size_bytes=1)
+    with patch("connectors.bigquery.metadata.fetch", return_value=fake):
+        out = refresh_one({"id": "one_timed", "bucket": "dwh_base", "source_table": "one_timed"})
+    assert out["status"] == "ok"
+    assert isinstance(out["fetch_ms"], int) and out["fetch_ms"] >= 0
+    assert isinstance(out["total_ms"], int) and out["total_ms"] >= 0
+
+
+def test_refresh_one_invalid_identifier_has_null_fetch_ms(seeded_app):
+    """The identifier-validation early return never calls fetch, so
+    fetch_ms is None while total_ms still reports the (tiny) wall time."""
+    from app.api.bq_metadata_refresh import refresh_one
+
+    out = refresh_one({"id": "bad_ident", "bucket": "bad bucket", "source_table": "t"})
+    assert out["status"] == "error"
+    assert out["fetch_ms"] is None
+    assert isinstance(out["total_ms"], int) and out["total_ms"] >= 0
 
 
 # ─── POST /api/v2/metadata-cache/refresh?table= ───────────────────────────
