@@ -166,6 +166,13 @@ if [ "$DATA_SOURCE" = "keboola" ]; then
     KEBOOLA_TOKEN=$(gcloud secrets versions access latest --secret=keboola-storage-token)
 fi
 JWT_KEY=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}-jwt-secret)
+# SESSION_SECRET — signs session cookies (app/secrets.py::get_session_secret).
+# Single-node deployments would otherwise fall back to a per-node generated-and-
+# persisted file, which desyncs across processes in a role-split deployment and
+# trips the multi-process startup guard (app/startup_guards.py). Fetched the
+# exact same way as JWT_KEY above: a dedicated Secret Manager secret, no on-VM
+# fallback generation.
+SESSION_KEY=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}-session-secret)
 
 # ── Postgres password from Secret Manager + side-car data dir prep ──
 # Task 2A.1 provisioned agnes-<customer>-postgres-password with VM SA bound to
@@ -441,6 +448,7 @@ COMPOSE_FILE_VALUE="$COMPOSE_FILE_VALUE:docker-compose.dispatcher.yml"
 %{ endif ~}
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
+SESSION_SECRET=$SESSION_KEY
 DATA_DIR=$DATA_MNT
 DATA_SOURCE=$DATA_SOURCE
 KEBOOLA_STORAGE_TOKEN=$KEBOOLA_TOKEN

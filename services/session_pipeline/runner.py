@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -81,12 +82,36 @@ def resolve_user_id(username: str) -> str | None:
 
 DEFAULT_SESSION_DATA_DIR = Path(os.environ.get("SESSION_DATA_DIR", "/data/user_sessions"))
 
+# Wall-clock budget (seconds) for the *whole tick* — the cross-session loop
+# in run_processor(), not any single session. Incident 2026-07-20: the
+# "usage" processor is explicitly exempted from max_sessions_per_run (see
+# admin.py — cheap, no network I/O, so an attempt-count cap "just throttles
+# telemetry"). A bulk onboarding wave left it with a large backlog; the
+# uncapped run drained the whole backlog synchronously — hundreds of
+# sessions' worth of jsonl parsing + repository writes plus the post-tick
+# rollup rebuild — and held the request-serving process for ~6 minutes,
+# producing app-wide 503s on completely unrelated endpoints (classic
+# event-loop/threadpool starvation).
+#
+# max_sessions_per_run alone doesn't close this: it's an attempt-count cap,
+# so (a) a processor can be exempted from it entirely, as usage was, and
+# (b) even under a cap, a handful of unusually large sessions can still blow
+# the wall-clock. This budget bounds the thing that actually caused the
+# outage — elapsed time holding the process — for every processor,
+# regardless of any attempt-count cap. 150s: comfortably under the
+# multi-minute range that caused the incident, while still generous enough
+# for a normal tick to finish uninterrupted (same order of magnitude as the
+# 180s per-session budget PR #893 gave VerificationProcessor, but applied at
+# the tick level across all sessions rather than per session).
+_DEFAULT_TIME_BUDGET_SECONDS = 150.0
+
 
 def run_processor(
     conn: duckdb.DuckDBPyConnection,
     processor: SessionProcessor,
     session_data_dir: Path | None = None,
     max_sessions_per_run: int | None = None,
+    time_budget_seconds: float | None = _DEFAULT_TIME_BUDGET_SECONDS,
 ) -> dict[str, Any]:
     """Run *processor* against every unprocessed session in
     *session_data_dir* (defaults to $SESSION_DATA_DIR or /data/user_sessions).
@@ -124,6 +149,21 @@ def run_processor(
     capped or not) rather than a new failure mode introduced by capping —
     revisit together if it bites in practice (e.g. a separate error quota
     or least-recently-attempted ordering).
+
+    ``time_budget_seconds``, when set, bounds the wall-clock time spent in
+    the candidate loop below (independent of, and in addition to,
+    ``max_sessions_per_run``). Checked before each candidate is visited —
+    once elapsed time exceeds the budget, the loop stops (no new candidate
+    is hashed, skip-checked, or processed) and the remaining candidates are
+    left for the next scheduler tick, same as an attempt-count cap. This
+    does NOT raise: a partial tick that already processed some sessions
+    successfully is a normal, successful outcome, not an error — contrast
+    with ``VerificationProcessor``'s per-session ``TimeBudgetExceeded``
+    (services/session_processors/verification.py), which raises so a
+    partially-worked *session* is retried whole. Reuses the ``capped``
+    counter — from the caller's perspective a time-budget stop and an
+    attempt-count stop have the same effect (some candidates deferred to
+    next tick).
     """
     effective_dir = session_data_dir if session_data_dir is not None else DEFAULT_SESSION_DATA_DIR
 
@@ -155,6 +195,7 @@ def run_processor(
     # collector (OS-username dir).
     _identity_cache: dict[str, tuple[str | None, str | None]] = {}
     attempts = 0
+    loop_start = time.monotonic()
 
     for idx, (dir_name, jsonl_path) in enumerate(candidates):
         if max_sessions_per_run is not None and attempts >= max_sessions_per_run:
@@ -163,6 +204,17 @@ def run_processor(
                 "Processor %s: hit %d-attempt budget after %d candidates; %d left for next tick",
                 processor.name,
                 max_sessions_per_run,
+                idx,
+                stats["capped"],
+            )
+            break
+
+        if time_budget_seconds is not None and time.monotonic() - loop_start > time_budget_seconds:
+            stats["capped"] = len(candidates) - idx
+            logger.info(
+                "Processor %s: hit %.0fs tick time budget after %d candidates; %d left for next tick",
+                processor.name,
+                time_budget_seconds,
                 idx,
                 stats["capped"],
             )

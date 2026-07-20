@@ -10,6 +10,7 @@ SocketModeClient; we just own the lifecycle.
 `slack_sdk` is an OPTIONAL dependency (`pip install '.[slack-socket]'`)
 imported lazily inside `start()` so HTTP-only deployments never need it.
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,23 +36,41 @@ def _slack_sdk_importable() -> bool:
     preflight gate is unit-testable without the package present."""
     try:
         import slack_sdk  # noqa: F401
+
         return True
     except ImportError:
         return False
 
 
 def socket_mode_preflight(
-    *, workers: int, app_token: str, bot_token: str,
+    *,
+    workers: int,
+    app_token: str,
+    bot_token: str,
+    backend: str = "memory",
 ) -> tuple[bool, str]:
     """Fail-closed gate for the socket transport.
 
     Returns (ok, reason). On any failure the lifespan caller logs `reason`
     and disables Slack — it never starts a dead WS or crashes the app.
+
+    ``workers > 1`` used to be an unconditional refusal: N uvicorn worker
+    processes would each try to open a Socket Mode WS, and with no shared
+    state, dedup would fracture (every worker independently believing it
+    owns the connection). That's no longer true once the `slack-socket-mode`
+    leader lease (app/coordination/leases.py, wired in
+    ``_start_slack_socket_transport``) is backed by the ``redis``
+    coordination backend — the lease serializes ownership to exactly one
+    process across the whole fleet regardless of how many workers/replicas
+    race for it, so ``workers > 1`` is only unsafe with the process-local
+    ``memory`` backend (each worker would "win" its own in-process lease and
+    all would connect).
     """
-    if workers > 1:
+    if workers > 1 and backend != "redis":
         return False, (
-            "Socket Mode requires a single worker (one WS; N workers "
-            "fracture dedup) but UVICORN_WORKERS > 1"
+            "Socket Mode requires a single worker (UVICORN_WORKERS > 1) "
+            "unless coordination.backend='redis' — without shared "
+            "coordination state, N workers fracture dedup"
         )
     if not app_token:
         return False, "SLACK_APP_TOKEN missing (required for Socket Mode)"
@@ -62,10 +81,7 @@ def socket_mode_preflight(
     if not bot_token.startswith("xoxb-"):
         return False, "SLACK_BOT_TOKEN must be a bot token (xoxb- prefix)"
     if not _slack_sdk_importable():
-        return False, (
-            "Socket Mode requires the 'slack-socket' extra — install with: "
-            "pip install '.[slack-socket]'"
-        )
+        return False, ("Socket Mode requires the 'slack-socket' extra — install with: pip install '.[slack-socket]'")
     return True, ""
 
 
@@ -103,9 +119,7 @@ class SocketModeDispatcher:
                 "text": _help_body() if slash_is_help else "_Working on it…_",
             }
 
-        await client.send_socket_mode_response(
-            SocketModeResponse(envelope_id=req.envelope_id, payload=ack_payload)
-        )
+        await client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id, payload=ack_payload))
         # 2. Funnel into the SAME dispatchers the HTTP webhooks use. No
         #    payload translation — req.payload["event"] is byte-identical
         #    to the HTTP body's payload["event"], and the slash payload dict
@@ -116,10 +130,12 @@ class SocketModeDispatcher:
         if req.type == "events_api" and req.payload.get("type") == "event_callback":
             _schedule(_run_logged(dispatch_event(self._app, req.payload["event"])))
         elif is_slash and not slash_is_help:
-            _cmd_schedule(_cmd_run_logged(
-                dispatch_command(self._app, req.payload),
-                response_url=req.payload.get("response_url"),
-            ))
+            _cmd_schedule(
+                _cmd_run_logged(
+                    dispatch_command(self._app, req.payload),
+                    response_url=req.payload.get("response_url"),
+                )
+            )
         # interactive routing arrives in a later phase.
 
     async def start(self) -> None:

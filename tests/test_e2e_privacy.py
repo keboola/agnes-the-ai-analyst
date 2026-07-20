@@ -32,6 +32,14 @@ class _FakeResp:
         self.status_code = status_code
 
 
+class _FakeHealthResp:
+    """No-gzip-capability stand-in for the `/api/health` probe response."""
+
+    def __init__(self) -> None:
+        self.status_code = 200
+        self.headers: dict[str, str] = {}
+
+
 def _record_uploads(monkeypatch) -> list[tuple[str, dict]]:
     calls: list[tuple[str, dict]] = []
 
@@ -48,6 +56,12 @@ def _stub_push(monkeypatch, workspace, files) -> None:
     monkeypatch.setattr("cli.commands.push.get_token", lambda: "test-pat")
     monkeypatch.setattr("cli.commands.push.get_workspace_root", lambda: str(workspace))
     monkeypatch.setattr("cli.commands.push.list_session_files", lambda _ws: list(files))
+    # `_server_accepts_gzip()`'s health-check probe calls `api_get` as a name
+    # bound in push.py's own module scope — patching `get_server_url` above
+    # does not sandbox it, so without this the probe makes a REAL network
+    # call to whatever `get_server_url()` resolves to on the machine running
+    # the suite (see `_stub_config` in test_cli_push.py for the full story).
+    monkeypatch.setattr("cli.commands.push.api_get", lambda p, **kw: _FakeHealthResp())
 
 
 def _mark_private(workspace, session_id, monkeypatch) -> None:

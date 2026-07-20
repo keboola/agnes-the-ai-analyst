@@ -544,8 +544,9 @@ class _FakeMgr:
     async def wait_until_live(self, chat_id, *, timeout=30.0):
         return True
 
-    async def send_user_message(self, chat_id, text):
+    async def send_user_message(self, chat_id, text, **kw):
         self.sent.append((chat_id, text))
+        self.sent_kwargs = kw
 
 
 def test_mention_bot_loop_guard_returns_silently(monkeypatch):

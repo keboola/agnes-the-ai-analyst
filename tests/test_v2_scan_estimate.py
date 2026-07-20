@@ -1,5 +1,4 @@
 # tests/test_v2_scan_estimate.py
-import asyncio
 import importlib
 from unittest.mock import MagicMock
 import pytest
@@ -202,3 +201,42 @@ class TestBqAccessErrors:
         assert isinstance(detail, dict)
         assert detail["error"] == "bq_bad_request"
         assert "Syntax error" in detail["message"]
+
+
+class TestMaterializedEstimate:
+    def test_materialized_estimate_zero_cost_without_bq_dry_run(self, reload_db, monkeypatch):
+        """A `query_mode='materialized'` BQ row is served from the server-side
+        parquet, so /scan/estimate must report zero scan cost and never run a
+        BQ dry-run (the raising patch proves it). Mirrors the run_scan routing."""
+        from app.api import v2_scan
+
+        def _boom(*a, **kw):
+            raise AssertionError("BQ dry-run must not run for a materialized row")
+
+        monkeypatch.setattr(v2_scan, "_bq_dry_run_bytes", _boom)
+        monkeypatch.setattr(
+            v2_scan,
+            "_resolve_schema",
+            lambda *a, **kw: {"v": "INT64", "d": "DATE"},
+        )
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            from src.repositories.table_registry import TableRegistryRepository
+
+            TableRegistryRepository(conn).register(
+                id="mat_t", name="mat_t", source_type="bigquery",
+                bucket="ds", source_table="raw_events", query_mode="materialized",
+            )
+            user = {"id": "admin1", "email": "a@x.com"}
+            req = {
+                "table_id": "mat_t",
+                "select": ["v"],
+                # BQ-flavor predicate must still validate on the estimate path
+                "where": "d >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)",
+            }
+            data = v2_scan.estimate(conn, user, req, bq=_bq(data="proj"))
+        finally:
+            conn.close()
+        assert data["estimated_scan_bytes"] == 0
+        assert data["bq_cost_estimate_usd"] == 0.0
