@@ -20,6 +20,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+### Security
+
+## [0.75.8] - 2026-07-20
+
+### Security
+
+- OAuth `client_secret` is now encrypted at rest instead of stored in plaintext,
+  so a database or backup leak no longer exposes usable MCP client secrets
+  (#869, audit M4 follow-up). Secrets are encrypted (Fernet, key derived from an
+  app-managed secret / `AGNES_OAUTH_ENC_KEY`) on `register_client` and decrypted
+  in `get_client` for the SDK's client-auth comparison. Legacy plaintext rows
+  keep working and re-encrypt on next registration; a decrypt failure fails
+  authentication **closed**. (Hashing was not possible: the MCP SDK verifies the
+  presented secret by equality against the value `get_client` returns.)
+
 ## [0.75.7] - 2026-07-20
 
 ### Fixed
