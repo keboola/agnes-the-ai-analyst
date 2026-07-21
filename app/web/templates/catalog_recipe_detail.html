@@ -1,138 +1,85 @@
 {% extends "base.html" %}
 
-{% block title %}{{ recipe.title }} — Recipe{% endblock %}
+{% block title %}{{ recipe.title }} — Recipe — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
+
+{% block body_attrs %}class="detail-page"{% endblock %}
 
 {% block head_extra %}
+{% import "macros/_detail.html" as detail %}
+{{ detail.styles() }}
 <style>
-  .rcp-back {
-    display: inline-flex; align-items: center; gap: 4px;
-    color: var(--text-secondary, #5f6368); text-decoration: none;
-    font-size: 13px; margin-bottom: 12px;
-  }
-  .rcp-back:hover { color: var(--ds-primary); }
-  .rcp-header {
-    display: flex; align-items: flex-start; gap: 16px;
-    padding: 24px; background: var(--surface, #fff);
-    border: 1px solid var(--border); border-radius: 12px;
-    margin-bottom: 20px;
-  }
-  .rcp-header__icon {
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 56px; height: 56px; border-radius: 12px; flex-shrink: 0;
-    font-size: 22px; font-weight: 700; color: #fff;
-    background: var(--ds-primary);
-  }
-  .rcp-header h1 {
-    margin: 0 0 6px; font-size: 22px; font-weight: 700;
-    letter-spacing: -0.2px;
-  }
-  .rcp-header .desc {
-    color: var(--text-primary); font-size: 14px; line-height: 1.5;
-    margin: 0;
-  }
-  /* .rcp-section sits on top of .ds-card (rendered by ds.panel) — base
-     surface/border/shadow comes from .ds-card; this rule overrides only
-     the radius (8 → 12, matches /catalog) and padding (24 → 20). The
-     page-local h2 inside acts as the section eyebrow. */
-  .rcp-section {
-    border-radius: var(--radius-xl);
-    padding: var(--space-5);
-    margin-bottom: var(--space-4);
-  }
-  .rcp-section h2 {
-    margin: 0 0 12px; font-size: 14px; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.5px;
-    color: var(--text-secondary, #5f6368);
-  }
   .rcp-sql {
     background: #0a0a0a; color: #dcdcdc;
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--ds-font-mono, ui-monospace, Menlo, monospace);
     font-size: 12px; line-height: 1.5;
-    padding: 14px; border-radius: 8px;
-    overflow-x: auto; white-space: pre;
+    padding: 14px; border-radius: 8px; overflow-x: auto; white-space: pre;
   }
-  .rcp-related-tables {
-    display: flex; gap: 8px; flex-wrap: wrap;
-  }
+  .rcp-related-tables { display: flex; gap: 8px; flex-wrap: wrap; }
   .rcp-related-tables a {
-    display: inline-block; padding: 6px 12px;
-    background: var(--border-light, #f3f4f6);
-    border-radius: 6px; text-decoration: none;
-    color: var(--text-primary); font-size: 13px;
+    display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px;
+    background: var(--ds-surface-dim); border: 1px solid var(--ds-border-light);
+    border-radius: 8px; text-decoration: none; color: var(--ds-text-primary); font-size: 13px;
+    font-family: var(--ds-font-mono, ui-monospace, Menlo, monospace);
   }
-  .rcp-related-tables a:hover {
-    background: var(--ds-primary-light, #e0f2fe);
-    color: var(--ds-primary);
-  }
-  .rcp-empty { color: var(--text-secondary); font-style: italic; font-size: 13px; }
+  .rcp-related-tables a:hover { border-color: var(--kind); color: var(--kind); }
+  .rcp-related-tables a svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--kind); }
+  .rcp-copy-btn svg { width: 14px; height: 14px; }
+  .rcp-empty { color: var(--ds-text-secondary); font-style: italic; font-size: 13px; }
   .rcp-copy-btn {
     display: inline-flex; align-items: center; gap: 4px;
-    padding: 4px 10px; border-radius: 6px;
-    background: var(--border-light, #f3f4f6);
-    border: 1px solid var(--border); cursor: pointer;
-    font-size: 12px; color: var(--text-primary);
-    margin-bottom: 8px;
+    padding: 5px 11px; border-radius: 8px;
+    background: var(--ds-surface-dim); border: 1px solid var(--ds-border); cursor: pointer;
+    font-size: 12px; color: var(--ds-text-primary); margin-bottom: 10px;
   }
-  .rcp-copy-btn:hover { background: var(--ds-primary-light, #e0f2fe); }
+  .rcp-copy-btn:hover { border-color: var(--kind); color: var(--kind); }
 </style>
 {% endblock %}
 
 {% block content %}
-{# Design-system component macros — 2 `.rcp-section` panels render via
-   `ds.panel`. Bespoke `.rcp-header` hero (icon block + body layout)
-   and `.rcp-copy-btn` (page-local dark-on-light pill) stay as-is. #}
 {% import "_components.html" as ds %}
-<a class="rcp-back" href="/catalog#recipes">← Back to recipes</a>
+{% import "macros/_detail.html" as detail %}
 
-<div class="rcp-header">
-  <div class="rcp-header__icon" style="background: {{ recipe.color or 'var(--ds-primary)' }};">
-    {% set _name_parts = (recipe.title or '?').split() %}
-    {% if _name_parts|length >= 2 %}
-      {{ (_name_parts[0][0] ~ _name_parts[1][0])|upper }}
-    {% else %}
-      {{ (recipe.title or '?')[:2]|upper }}
-    {% endif %}
-  </div>
-  <div style="flex:1;">
-    <h1>{{ recipe.title }}</h1>
-    {% if recipe.description %}
-    <p class="desc">{{ recipe.description }}</p>
-    {% endif %}
-  </div>
-</div>
+{% set _meta = [] %}
+{% if related_tables %}{% set _ = _meta.append({'icon': 'table', 'text': (related_tables|length|string) ~ ' table' ~ ('s' if related_tables|length != 1 else '')}) %}{% endif %}
 
-{# SQL template — copyable. The template is meant to be adapted, not
-   executed as-is; render in a code block with a copy button. #}
-{% call ds.panel(tag='section', klass='rcp-section') %}
-  <h2>Query template</h2>
+{% call detail.hero(
+     kind='recipe', name=recipe.title, color=recipe.color,
+     description=recipe.description, meta=_meta,
+     back_href='/catalog?kind=recipes', back_label='All recipes') %}
+  {{ detail.ask_kai('Walk me through the ' ~ recipe.title ~ ' recipe and adapt it to my data.') }}
+{% endcall %}
+
+{# Query template — copyable; meant to be adapted, not run as-is. #}
+{{ detail.section_open('Query template', icon='code') }}
   {% if recipe.sql_template %}
-  <button class="rcp-copy-btn" type="button" onclick="copyRecipeSql(this)">Copy SQL</button>
+  <button class="rcp-copy-btn" type="button" onclick="copyRecipeSql(this)">{{ detail.ico('code') }} Copy SQL</button>
   <pre class="rcp-sql" id="rcp-sql">{{ recipe.sql_template }}</pre>
   <script>
     function copyRecipeSql(btn) {
       const sql = document.getElementById('rcp-sql').textContent;
       navigator.clipboard.writeText(sql).then(() => {
-        const orig = btn.textContent;
+        const orig = btn.innerHTML;
         btn.textContent = '✓ Copied';
-        setTimeout(() => { btn.textContent = orig; }, 1500);
+        setTimeout(() => { btn.innerHTML = orig; }, 1500);
       });
     }
   </script>
   {% else %}
   <p class="rcp-empty">No SQL template authored yet.</p>
   {% endif %}
-{% endcall %}
+{{ detail.section_close() }}
 
-{% call ds.panel(tag='section', klass='rcp-section') %}
-  <h2>Touches tables</h2>
+{{ detail.section_open('Touches tables', icon='table') }}
   {% if related_tables %}
   <div class="rcp-related-tables">
     {% for t in related_tables %}
-      <a href="/catalog/t/{{ t.id }}">{{ t.name }}</a>
+      <a href="/catalog/t/{{ t.id }}">{{ detail.ico('table') }}{{ t.name }}</a>
     {% endfor %}
   </div>
   {% else %}
   <p class="rcp-empty">No related tables linked.</p>
   {% endif %}
-{% endcall %}
+{{ detail.section_close() }}
+
+</div>
 {% endblock %}
