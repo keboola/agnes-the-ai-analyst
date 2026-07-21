@@ -51,3 +51,45 @@ def test_container_spec_defaults_and_overrides():
     assert spec["env"]["AGNES_URL"] == "http://app:8000"
     assert spec["env"]["FOO"] == "bar"
     assert "DATA_LOADER_API_URL" not in spec["env"]
+
+
+def test_config_json_external_repo():
+    app_external = {
+        "id": "app_ext",
+        "slug": "custom-app",
+        "repo_mode": "external",
+        "repo_url": "https://github.com/user/repo.git",
+        "repo_branch": "feature-x",
+        "runtime_tag": "",
+        "mem_limit": "",
+        "cpu_limit": "",
+        "env": "{}",
+    }
+    cfg = build_config_json(app_external, secrets={}, clone_url="", clone_token="")
+    git = cfg["dataApp"]["git"]
+    assert git["repository"] == "https://github.com/user/repo.git"
+    assert git["branch"] == "feature-x"
+    assert "username" not in git
+    assert "#password" not in git
+
+
+def test_container_spec_malformed_env_json():
+    app_bad_env = APP.copy()
+    app_bad_env["env"] = '{"invalid": json}'
+    try:
+        build_container_spec(app_bad_env, defaults=DEFAULTS, data_dir="/data")
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "invalid env JSON" in str(exc)
+        assert "sales" in str(exc)
+
+
+def test_container_spec_malformed_cpu_limit():
+    app_bad_cpu = APP.copy()
+    app_bad_cpu["cpu_limit"] = "not-a-number"
+    try:
+        build_container_spec(app_bad_cpu, defaults=DEFAULTS, data_dir="/data")
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "invalid cpu_limit" in str(exc)
+        assert "sales" in str(exc)

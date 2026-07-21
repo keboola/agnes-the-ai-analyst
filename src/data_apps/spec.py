@@ -28,12 +28,21 @@ def build_config_json(app_row: dict, *, secrets: dict[str, str], clone_url: str,
 
 def build_container_spec(app_row: dict, *, defaults: dict, data_dir: str) -> dict:
     slug = app_row["slug"]
-    env = {k: str(v) for k, v in json.loads(app_row.get("env") or "{}").items()}
+    try:
+        env_dict = json.loads(app_row.get("env") or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"data app {slug}: invalid env JSON: {exc}") from exc
+    env = {k: str(v) for k, v in env_dict.items()}
     env["AGNES_URL"] = AGNES_INTERNAL_URL
     env["AGNES_APP_ID"] = app_row["id"]
     image = defaults["runtime_image"]
     if app_row.get("runtime_tag"):
         image = image.rsplit(":", 1)[0] + ":" + app_row["runtime_tag"]
+    cpu_str = app_row.get("cpu_limit") or defaults["default_cpus"]
+    try:
+        cpus = float(cpu_str)
+    except ValueError as exc:
+        raise ValueError(f"data app {slug}: invalid cpu_limit '{cpu_str}': {exc}") from exc
     return {
         "name": f"agnes-dataapp-{slug}",
         "image": image,
@@ -42,6 +51,6 @@ def build_container_spec(app_row: dict, *, defaults: dict, data_dir: str) -> dic
         "config_dir": f"{data_dir}/apps/{slug}",
         "cache_volume": f"agnes-dataapp-cache-{slug}",
         "mem_limit": app_row.get("mem_limit") or defaults["default_mem_limit"],
-        "cpus": float(app_row.get("cpu_limit") or defaults["default_cpus"]),
+        "cpus": cpus,
         "env": env,
     }
