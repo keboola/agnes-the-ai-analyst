@@ -346,6 +346,68 @@ def query_local(sql: str, limit: int = 1000) -> dict:
 
 
 @mcp.tool()
+def chat_upload_file(
+    file_path: str,
+    kind: str = "data",
+    register_as_table: bool = False,
+    table_name: str = "",
+) -> dict:
+    """Upload a local file into your chat workspace (POST /api/chat/uploads).
+
+    The file at ``file_path`` (local filesystem path) is read and posted to
+    the Agnes server, landing in your per-user workspace ``uploads/`` folder
+    so Claude can access it in the next chat sandbox session.
+
+    For data files (CSV, parquet, XLSX) set ``register_as_table=True`` to
+    register the file as a workspace-local queryable table so
+    ``agnes query`` can reach it without an admin table-registry entry.
+
+    Args:
+        file_path: Local path to the file to upload.
+        kind: One of ``data``, ``image``, ``document``. Default ``data``.
+        register_as_table: When True (data files only), register the uploaded
+            file as a workspace-local queryable table.
+        table_name: Optional table name for registration. Derived from the
+            filename stem when omitted.
+
+    Returns the upload response with ``workspace_path``, ``filename``,
+    ``size_bytes``, ``kind``, ``table_name`` (if registered), and ``hint``.
+
+    Mirrors ``POST /api/chat/uploads`` and ``agnes chat upload``.
+    """
+    import mimetypes
+
+    path = Path(file_path)
+    if not path.exists():
+        raise ValueError(f"File not found: '{file_path}'. Check the path and try again.")
+
+    content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+    data: dict[str, str] = {"kind": kind}
+    if register_as_table:
+        data["register_as_table"] = "true"
+    if table_name:
+        data["table_name"] = table_name
+
+    server_url = get_server_url()
+    token = get_token()
+    if not token:
+        raise ValueError("No Agnes token configured. Run setup.py from Terminal to authenticate.")
+
+    import httpx
+
+    with path.open("rb") as fh, httpx.Client() as c:
+        r = c.post(
+            f"{server_url}/api/chat/uploads",
+            headers={"Authorization": f"Bearer {token}"},
+            data=data,
+            files={"file": (path.name, fh, content_type)},
+            timeout=60,
+        )
+    r.raise_for_status()
+    return r.json()
+
+
+@mcp.tool()
 def pull(skip_materialize: bool = False) -> dict:
     """Sync the latest data from the Agnes server to local disk.
 

@@ -59,6 +59,8 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "admin_knowledge_digest_create",
     "admin_knowledge_digest_update",
     "admin_knowledge_digest_delete",
+    # Chat workspace file upload — any authenticated user.
+    "chat_upload_file",
 )
 
 
@@ -861,5 +863,43 @@ def register_foundation_tools(
             )
             r.raise_for_status()
         return {"deleted": digest_id}
+
+    @mcp.tool()
+    async def chat_upload_file(
+        file_path: str,
+        kind: str = "data",
+        register_as_table: bool = False,
+        table_name: str = "",
+    ) -> dict:
+        """Upload a local file into your chat workspace (client-side only).
+
+        Uploading a file by naming a path is inherently a CLIENT-SIDE action:
+        the path is resolved on the machine that runs the MCP server.  This
+        HTTP/server-hosted MCP surface therefore does NOT read files by path —
+        doing so would let a caller name any path the Agnes server can read
+        (``/etc/passwd``, the state DB, …) and exfiltrate it into their
+        workspace.  It is disabled here on purpose.
+
+        To upload a file into your chat workspace, use one of:
+          * ``agnes chat upload <file>`` — the CLI reads the file from your
+            laptop and POSTs it to ``POST /api/chat/uploads``.
+          * the local (stdio) ``chat_upload_file`` MCP tool, which runs on your
+            machine and reads your local filesystem.
+
+        Args:
+            file_path: (unused on this surface) path to the local file.
+            kind: One of ``data``, ``image``, ``document``.
+            register_as_table: Register a data file as a workspace-local table.
+            table_name: Optional table name for registration.
+
+        Mirrors ``POST /api/chat/uploads`` and ``agnes chat upload``; the actual
+        byte upload happens through those client-side surfaces.
+        """
+        raise ValueError(
+            "chat_upload_file by path is not available on the server-hosted MCP "
+            "surface (it would allow reading arbitrary server files). Upload the "
+            "file with `agnes chat upload <file>` from your machine, or use the "
+            "local stdio MCP tool which reads your local filesystem."
+        )
 
     return list(FOUNDATION_TOOL_NAMES)

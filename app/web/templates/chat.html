@@ -236,10 +236,49 @@
            role="listbox" aria-label="Skills and commands">
         <ul id="chat-slash-menu-results" class="cloud-chat-slash-menu-results"></ul>
       </div>
+      {# "+" upload menu — popover anchored inside the form's
+         position:relative. chat.js opens/closes it and wires the three
+         items to their upload flows. #}
+      <ul id="chat-plus-menu" class="cloud-chat-plus-menu" hidden
+          role="menu" aria-label="Upload options">
+        <li class="cloud-chat-plus-menu-item" role="menuitem" tabindex="0"
+            data-upload-action="data">
+          <span class="cloud-chat-plus-menu-item-icon" aria-hidden="true">&#x1F4C8;</span>
+          <span class="cloud-chat-plus-menu-item-text">
+            <span class="cloud-chat-plus-menu-item-label">Data file</span>
+            <span class="cloud-chat-plus-menu-item-hint">CSV, Parquet, Excel &mdash; land in your chat workspace</span>
+          </span>
+        </li>
+        <li class="cloud-chat-plus-menu-item" role="menuitem" tabindex="0"
+            data-upload-action="store">
+          <span class="cloud-chat-plus-menu-item-icon" aria-hidden="true">&#x1F9E9;</span>
+          <span class="cloud-chat-plus-menu-item-text">
+            <span class="cloud-chat-plus-menu-item-label">Skill / Agent / Plugin</span>
+            <span class="cloud-chat-plus-menu-item-hint">Submit to the shared Store for everyone</span>
+          </span>
+        </li>
+        <li class="cloud-chat-plus-menu-item" role="menuitem" tabindex="0"
+            data-upload-action="media">
+          <span class="cloud-chat-plus-menu-item-icon" aria-hidden="true">&#x1F5BC;&#xFE0F;</span>
+          <span class="cloud-chat-plus-menu-item-text">
+            <span class="cloud-chat-plus-menu-item-label">Image / Document</span>
+            <span class="cloud-chat-plus-menu-item-hint">PDF, image, text &mdash; attach to your workspace</span>
+          </span>
+        </li>
+      </ul>
       <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes… (try / for skills)" rows="2"></textarea>
       <div class="cloud-chat-form-actions">
         <button type="button" id="cancel-btn"
                 class="btn btn-danger cloud-chat-stop-btn" hidden>Stop</button>
+        {# "+" button — opens the upload menu popover.  Sits to the left of
+           the send/stop buttons.  aria-haspopup="menu" + aria-expanded are
+           toggled by chat.js to reflect the open state for screen readers. #}
+        <button type="button" id="chat-plus-btn"
+                class="cloud-chat-plus-btn"
+                aria-label="Upload a file"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-controls="chat-plus-menu">+</button>
         {# Rail (issue #896): circular send button matching the /ask
            composer (paper pill + up-arrow glyph); aria-label carries the
            "Send" name the visible text used to provide. Topnav keeps the
@@ -255,6 +294,137 @@
         {% endif %}
       </div>
     </form>
+
+    {# ── Upload dialogs ─────────────────────────────────────────────────────
+       Three lightweight modal overlays — one per upload action. They sit
+       OUTSIDE the form so they don't accidentally submit or conflict with the
+       composer's form submission. chat.js opens/closes them.
+
+       Design-system notes:
+         • All colours via --ds-* tokens (no raw hex).
+         • .btn / .btn-primary / .btn-secondary from style-custom.css.
+         • Keyboard trap handled in chat.js (focus lock + Esc to close).
+    #}
+
+    {# Dialog 1: Data file upload #}
+    <div id="chat-upload-data-overlay" class="cloud-chat-upload-overlay" hidden
+         role="dialog" aria-modal="true" aria-labelledby="chat-upload-data-title">
+      <div class="cloud-chat-upload-panel">
+        <div class="cloud-chat-upload-panel-head">
+          <h2 id="chat-upload-data-title" class="cloud-chat-upload-panel-title">Upload a data file</h2>
+          <button type="button" class="cloud-chat-upload-close" data-close-upload aria-label="Close">&#x2715;</button>
+        </div>
+        <p class="cloud-chat-upload-desc">
+          CSV, Parquet, or Excel files land in your chat workspace so Agnes can read them in the next session.
+          Optionally register the file as a queryable table (workspace-local, no admin required).
+          Max 20 MB.
+        </p>
+        <div id="chat-data-drop" class="cloud-chat-drop-zone" role="button" tabindex="0"
+             aria-label="Drop a CSV, Parquet, or Excel file here, or click to browse">
+          <span class="cloud-chat-drop-zone-icon" aria-hidden="true">&#x1F4C2;</span>
+          <span class="cloud-chat-drop-zone-label">Drop file here or click to browse</span>
+          <span class="cloud-chat-drop-zone-hint">CSV &middot; Parquet &middot; Excel &middot; Max 20 MB</span>
+          <span id="chat-data-drop-filename" class="cloud-chat-drop-zone-filename" hidden></span>
+          <input type="file" id="chat-data-file" hidden
+                 accept=".csv,.parquet,.xlsx,.xls,text/csv,application/octet-stream,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+        </div>
+        <label class="cloud-chat-upload-table-row">
+          <input type="checkbox" id="chat-data-register">
+          <span class="cloud-chat-upload-table-row-text">
+            <span class="cloud-chat-upload-table-row-label">Save as queryable table</span>
+            <span class="cloud-chat-upload-table-row-hint">Registers the file so <code>agnes query</code> can reach it in-session (workspace-local, not the admin registry).</span>
+          </span>
+        </label>
+        <div id="chat-data-table-name-row" class="cloud-chat-upload-table-name-row" hidden>
+          <label class="cloud-chat-upload-table-name-label" for="chat-data-table-name">Table name (optional, defaults to filename)</label>
+          <input type="text" id="chat-data-table-name" class="cloud-chat-upload-table-name"
+                 placeholder="my_data" autocomplete="off" spellcheck="false">
+        </div>
+        <div id="chat-data-error" class="cloud-chat-upload-error" hidden></div>
+        <div class="cloud-chat-upload-actions">
+          <button type="button" class="btn btn-secondary" data-close-upload>Cancel</button>
+          <button type="button" id="chat-data-submit" class="btn btn-primary" disabled>Upload</button>
+        </div>
+      </div>
+    </div>
+
+    {# Dialog 2: Skill / Agent / Plugin — submit to store #}
+    <div id="chat-upload-store-overlay" class="cloud-chat-upload-overlay" hidden
+         role="dialog" aria-modal="true" aria-labelledby="chat-upload-store-title">
+      <div class="cloud-chat-upload-panel">
+        <div class="cloud-chat-upload-panel-head">
+          <h2 id="chat-upload-store-title" class="cloud-chat-upload-panel-title">Submit to the Store</h2>
+          <button type="button" class="cloud-chat-upload-close" data-close-upload aria-label="Close">&#x2715;</button>
+        </div>
+        <p class="cloud-chat-upload-desc">
+          Upload a Skill, Agent, or Plugin ZIP (or <code>.skill</code> file) to the shared Store.
+          It goes through the same validation as <a href="/store/upload" target="_blank" rel="noopener" style="color:var(--ds-primary)">the full upload page</a>.
+        </p>
+        <div class="cloud-chat-store-tiles" id="chat-store-type-tiles">
+          <label class="cloud-chat-store-tile is-active">
+            <input type="radio" name="chat-store-type" value="skill" checked>
+            <div class="cloud-chat-store-tile-name">Skill</div>
+            <div class="cloud-chat-store-tile-hint">Folder with SKILL.md</div>
+          </label>
+          <label class="cloud-chat-store-tile">
+            <input type="radio" name="chat-store-type" value="agent">
+            <div class="cloud-chat-store-tile-name">Agent</div>
+            <div class="cloud-chat-store-tile-hint">.md + frontmatter</div>
+          </label>
+          <label class="cloud-chat-store-tile">
+            <input type="radio" name="chat-store-type" value="plugin">
+            <div class="cloud-chat-store-tile-name">Plugin</div>
+            <div class="cloud-chat-store-tile-hint">.claude-plugin/</div>
+          </label>
+        </div>
+        <div id="chat-store-drop" class="cloud-chat-drop-zone" role="button" tabindex="0"
+             aria-label="Drop a ZIP or .skill file here, or click to browse">
+          <span class="cloud-chat-drop-zone-icon" aria-hidden="true">&#x1F4E6;</span>
+          <span class="cloud-chat-drop-zone-label">Drop ZIP or .skill here or click to browse</span>
+          <span class="cloud-chat-drop-zone-hint">Max 50 MB</span>
+          <span id="chat-store-drop-filename" class="cloud-chat-drop-zone-filename" hidden></span>
+          <input type="file" id="chat-store-file" hidden accept=".zip,.skill">
+        </div>
+        <p class="cloud-chat-upload-desc" style="font-size:var(--text-xs)">
+          Name, description, and other metadata will be pre-filled from the ZIP's frontmatter.
+          You can edit them on the <a href="/store/upload" target="_blank" rel="noopener" style="color:var(--ds-primary)">full upload page</a> after the quick submit.
+        </p>
+        <div id="chat-store-error" class="cloud-chat-upload-error" hidden></div>
+        <div class="cloud-chat-upload-actions">
+          <button type="button" class="btn btn-secondary" data-close-upload>Cancel</button>
+          <button type="button" id="chat-store-submit" class="btn btn-primary" disabled>Submit to Store</button>
+        </div>
+      </div>
+    </div>
+
+    {# Dialog 3: Image / Document #}
+    <div id="chat-upload-media-overlay" class="cloud-chat-upload-overlay" hidden
+         role="dialog" aria-modal="true" aria-labelledby="chat-upload-media-title">
+      <div class="cloud-chat-upload-panel">
+        <div class="cloud-chat-upload-panel-head">
+          <h2 id="chat-upload-media-title" class="cloud-chat-upload-panel-title">Upload image or document</h2>
+          <button type="button" class="cloud-chat-upload-close" data-close-upload aria-label="Close">&#x2715;</button>
+        </div>
+        <p class="cloud-chat-upload-desc">
+          PDF, images (PNG/JPEG/WebP/SVG/GIF), or plain text files land in your workspace
+          so Agnes can read them in the next session. Max 20 MB.
+        </p>
+        <div id="chat-media-drop" class="cloud-chat-drop-zone" role="button" tabindex="0"
+             aria-label="Drop an image or document here, or click to browse">
+          <span class="cloud-chat-drop-zone-icon" aria-hidden="true">&#x1F5BC;&#xFE0F;</span>
+          <span class="cloud-chat-drop-zone-label">Drop file here or click to browse</span>
+          <span class="cloud-chat-drop-zone-hint">PDF &middot; PNG &middot; JPEG &middot; WebP &middot; SVG &middot; GIF &middot; TXT &middot; MD &middot; Max 20 MB</span>
+          <span id="chat-media-drop-filename" class="cloud-chat-drop-zone-filename" hidden></span>
+          <input type="file" id="chat-media-file" hidden
+                 accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.svg,.txt,.md,.markdown,image/*,application/pdf,text/plain,text/markdown">
+        </div>
+        <div id="chat-media-error" class="cloud-chat-upload-error" hidden></div>
+        <div class="cloud-chat-upload-actions">
+          <button type="button" class="btn btn-secondary" data-close-upload>Cancel</button>
+          <button type="button" id="chat-media-submit" class="btn btn-primary" disabled>Upload</button>
+        </div>
+      </div>
+    </div>
 
     {% if ui_layout == 'rail' %}
     {# Empty-state extras that sit BELOW the composer (like /ask): the
