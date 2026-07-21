@@ -33,6 +33,127 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   bakes a bare `<name>.md` instead of `<name>/SKILL.md`). Plus a new Studio
   landing page (`/admin/studio`) listing every authoring domain, and a
   top-level "Studio" primary-nav link.
+## [0.75.16] - 2026-07-21
+
+### Fixed
+
+- DuckDB→Postgres migrator (`scripts.migrate_duckdb_to_pg`) no longer aborts a
+  cutover on a dangling RBAC grant: `resource_grants` rows whose typed-FK
+  target (table / data-package / memory-domain / memory-item / recipe) was
+  deleted from the source are now dropped-with-warning instead of raising a
+  `ForeignKeyViolation` that fails the whole copy.
+- The migrator's post-copy validation now treats the DuckDB source being a
+  **subset** of the Postgres target as success, instead of requiring exact
+  equality. After cutover the app writes new rows to Postgres and the compose
+  `data-migrate` one-shot re-runs on every deploy; the old equality check
+  failed once Postgres had grown and — because `app` gates on `data-migrate`
+  exiting 0 — took the instance down. A genuine copy failure (a source row
+  missing from the target) still fails via the new `missing_count`.
+
+## [0.75.15] - 2026-07-21
+
+### Fixed
+
+- `system.duckdb` ART-index self-heal: the rebuild now swaps the corrupt
+  file for the rebuilt one with an atomic `os.replace` (copy-to-`.broken`
+  first) instead of move-aside-then-move-in, closing a window where
+  `db_path` was momentarily absent and a concurrent opener could create a
+  fresh empty DB that the swap then orphaned. The corruption canary also
+  schema-qualifies table identifiers so it probes robustly across
+  FTS-created schemas instead of relying on `search_path`.
+
+## [0.75.14] - 2026-07-20
+
+### Fixed
+
+- Auto-upgrade now keeps the placement-driven `docker-compose.gcp-logging.yml`
+  overlay in sync with `@main` (refreshed in place on every tick, but only when
+  the file already exists so non-GCE hosts never acquire it). A service removed
+  from the base compose while a stale, boot-time-only overlay still referenced
+  it (e.g. `ws-gateway`) made the merged compose project invalid, so every
+  `docker compose` in `agnes-auto-upgrade.sh` (`pull`/`config`/`up`) failed and
+  the VM was silently stranded on its cached image. The overlay now also
+  participates in the config-drift hash, so an overlay-only change triggers a
+  recreate on GCE hosts (absent on non-GCE → a stable `missing` entry, no
+  spurious drift).
+
+## [0.75.13] - 2026-07-20
+
+### Added
+
+- `/admin/data-sources` now shows the Keboola semantic-layer sync status
+  (never-synced / last-sync-ok-with-N-items / last-attempt-failed-with-reason)
+  even when the metric/glossary counts are currently zero, plus a "Sync now"
+  button that calls the existing admin refresh endpoint in place. Previously
+  the summary card only rendered once a sync had produced nonzero counts, so
+  an admin who hadn't synced yet — or whose last attempt errored — saw
+  nothing. Status is tracked in-memory (since last process restart); no new
+  DB table.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+- `GET /api/metrics`, `GET /api/metrics/{id}`, and the `/catalog/semantics`
+  Metrics tab now RBAC-gate metric definitions the same way table reads are
+  gated: a metric is only visible if the caller can access its
+  `table_name`/`tables` via their Data Package stack (admins unaffected).
+  Previously any authenticated user could read any metric's SQL, table name,
+  and description regardless of table-stack membership, leaking
+  schema/business information about tables they had no grant to see.
+  Glossary terms are unaffected — they're business vocabulary, not
+  table-derived data. The CLAUDE.md generator's metric summary
+  (`src/claude_md.py`, surfaced via `agnes pull`/session start) had the same
+  gap — metric count and category names were computed from every metric
+  regardless of the requesting user's table-stack — and is now filtered
+  through the same gate.
+
+## [0.75.12] - 2026-07-20
+
+### Fixed
+
+- Health probe no longer emits `alembic.runtime.migration` INFO noise every ~30s. The Postgres schema-revision read now uses a plain `SELECT` from `alembic_version` instead of configuring an Alembic `MigrationContext` per call, and `/api/health/detailed?include=schema` runs the read off the event loop (worker thread + reuse of the 30s liveness cache) so it no longer does a synchronous DB round-trip on the loop.
+
+## [0.75.11] - 2026-07-20
+
+### Added
+
+- `system.duckdb` now **self-heals on-disk ART-index corruption on start**. DuckDB
+  backs `PRIMARY KEY`/`UNIQUE` constraints with an ART index; a termination that
+  bypasses the graceful `CHECKPOINT`-and-close path (OOM `SIGKILL`, VM `-replace`
+  destroy, host crash) can leave that index torn while the base table stays intact —
+  the file opens fine, then the first index write fails with `Failed to delete all
+  rows from index` / `database has been invalidated` and a plain restart cannot fix
+  it. On open, a rollback-only canary probe detects that signature and transparently
+  rebuilds the database via `EXPORT`/`IMPORT` (data preserved; the corrupt original
+  is quarantined as `system.duckdb.broken.<ts>`). Runs on every successful-open path
+  (clean open, WAL-salvage recovery, and pre-migrate snapshot restore) — the same
+  abrupt termination that dirties the WAL can also tear the ART index. Disable with
+  `AGNES_DB_SELF_HEAL=0`.
+- `agnes admin db repair` — force the same `EXPORT`/`IMPORT` rebuild of a corrupt
+  `system.duckdb` from the CLI (operates on the state file directly, since the HTTP
+  API is unusable while the DB is invalidated; stop the app first — DuckDB is
+  single-writer). No-ops on a Postgres app-state backend.
+
+## [0.75.10] - 2026-07-20
+
+### Fixed
+
+- Dropped the 3 non-unique secondary indexes on `usage_session_summary`
+  (on `username`, `started_at`, `user_id`). A corrupt entry in one of them
+  turned the periodic usage session-processor's routine upsert into a
+  fatal, connection-invalidating DuckDB error ("Failed to delete all rows
+  from index" → "database has been invalidated") that took down the whole
+  instance (including login) and recurred every scheduler tick. Schema
+  v94 → v95 (DuckDB migration + matching Alembic revision) repairs existing
+  instances on upgrade; `session_file` remains the primary key and the
+  upsert keeps refreshing all columns (safe once unindexed).
 
 ## [0.75.9] - 2026-07-20
 

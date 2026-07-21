@@ -295,3 +295,54 @@ def test_ensure_concurrent_callers_serialize(pg_under_app):
 
     assert not errors
     assert _current_revision(pg_under_app) == head
+
+
+def test_pg_revisions_no_migrationcontext_log_noise(pg_under_app, caplog):
+    """The 30s health probe calls ``_pg_revisions()`` continuously; it
+    must read the revision with a plain SELECT, not ``MigrationContext.configure``
+    — the latter logs two ``alembic.runtime.migration`` INFO lines every call
+    (thousands/day drowning real app logs). Revision value stays correct."""
+    import logging
+
+    from alembic import command
+
+    from src.db_pg import _pg_revisions
+
+    cfg = _alembic_config(str(pg_under_app.url))
+    command.upgrade(cfg, "head")
+
+    head, _prev = _head_and_prev()
+    with caplog.at_level(logging.INFO, logger="alembic.runtime.migration"):
+        current, resolved_head, db_ahead = _pg_revisions()
+
+    assert current == head
+    assert resolved_head == head
+    assert db_ahead is False
+    noise = [r for r in caplog.records if r.name.startswith("alembic.runtime.migration")]
+    assert not noise, f"health probe logged alembic migration noise: {[r.message for r in noise]}"
+
+
+def test_pg_revisions_multiple_heads_fail_closed(pg_under_app):
+    """A divergent DB (``alembic_version`` with >1 row — multiple heads or a
+    botched manual stamp) must fail closed, not silently pick the first row.
+    ``scalar_one_or_none()`` preserves the pre-plain-SELECT MigrationContext
+    behavior (``get_current_revision()`` raised on multiple rows)."""
+    import sqlalchemy as sa
+
+    from src.db_pg import _pg_revisions, get_engine
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text("CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) NOT NULL)")
+        )
+        conn.execute(sa.text("DELETE FROM alembic_version"))
+        conn.execute(
+            sa.text(
+                "INSERT INTO alembic_version (version_num) "
+                "VALUES ('aaaaaaaaaaaa'), ('bbbbbbbbbbbb')"
+            )
+        )
+
+    with pytest.raises(sa.exc.MultipleResultsFound):
+        _pg_revisions()
