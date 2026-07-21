@@ -2,6 +2,7 @@
 {% block title %}AI Connector — {{ instance_brand }}{% endblock %}
 
 {% import "_components.html" as ds %}
+{% import "macros/_icon.html" as ico %}
 
 {% block head_extra %}
 <style>
@@ -570,7 +571,7 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
           <p class="cg-sub">Use it in Copilot</p>
           <ol class="cg-steps">
             <li>Open <strong>Copilot Chat</strong> and switch the mode selector to <strong>Agent</strong>.</li>
-            <li>Click the tools icon (🔧) and enable <strong>agnes</strong>.</li>
+            <li>Click the tools icon ({{ ico.icon('tools', 15) }}) and enable <strong>agnes</strong>.</li>
             <li>Verify by asking the agent to run <code>server_info</code> — it should return your account email.</li>
           </ol>
           <div class="cg-note">

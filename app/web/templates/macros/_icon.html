@@ -1,0 +1,35 @@
+{# Shared inline-icon set for the UI — meaningful line icons that replace
+   the pictographic emoji we used to sprinkle around (#no-emoji policy).
+
+   Usage:  {% import "macros/_icon.html" as ico %}
+           {{ ico.icon('package', 28) }}
+           {{ ico.icon('warning', 18, 'my-class') }}
+
+   Icons inherit `currentColor` for stroke, so color them via the parent's
+   `color`. `size` sets both width + height (px). Keep names semantic, not
+   shape-based, so callers read cleanly.
+
+   New surfaces that need a glyph should reach for one of these (or add a
+   new named case) instead of typing an emoji — enforced by
+   tests/test_no_ui_emoji.py. #}
+{% macro icon(name, size=20, cls='') %}
+{%- set a = 'width="' ~ size ~ '" height="' ~ size ~ '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"' -%}
+{%- if name == 'warning' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+{%- elif name == 'data' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6" rx="0.5"/><rect x="12" y="8" width="3" height="10" rx="0.5"/><rect x="17" y="5" width="3" height="13" rx="0.5"/></svg>
+{%- elif name == 'package' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.3 7 12 12l8.7-5M12 22V12"/></svg>
+{%- elif name == 'tools' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/></svg>
+{%- elif name == 'puzzle' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="M10 4a2 2 0 1 1 4 0v2h3v3a2 2 0 1 0 0 4v4h-4v-2a2 2 0 1 0-4 0v2H5v-4a2 2 0 1 0 0-4V6h5z"/></svg>
+{%- elif name == 'bulb' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg>
+{%- elif name == 'brain' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="M9 3a3 3 0 0 0-3 3 3 3 0 0 0-1 5.8V15a3 3 0 0 0 3 3h1V3H9zM15 3a3 3 0 0 1 3 3 3 3 0 0 1 1 5.8V15a3 3 0 0 1-3 3h-1V3h1z"/></svg>
+{%- elif name == 'folder' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+{%- elif name == 'recipe' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+{%- elif name == 'image' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+{%- elif name == 'check-circle' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-4.5"/></svg>
+{%- elif name == 'refresh' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v4h-4"/></svg>
+{%- elif name == 'link' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>
+{%- elif name == 'doc' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>
+{%- elif name == 'table' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
+{%- elif name == 'rows' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><g fill="currentColor" stroke="none"><circle cx="12" cy="4" r="1.3"/><circle cx="17.66" cy="6.34" r="1.3"/><circle cx="20" cy="12" r="1.3"/><circle cx="17.66" cy="17.66" r="1.3"/><circle cx="12" cy="20" r="1.3"/><circle cx="6.34" cy="17.66" r="1.3"/><circle cx="4" cy="12" r="1.3"/><circle cx="6.34" cy="6.34" r="1.3"/></g></svg>
+{%- elif name == 'pie' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+{%- endif -%}
+{% endmacro %}

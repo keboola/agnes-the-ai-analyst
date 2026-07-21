@@ -1,9 +1,10 @@
 {% extends "base_ds.html" %}
+{% import "macros/_icon.html" as ico %}
 
 {% block content %}
 <div class="container">
   {% if bind_status == "ok" %}
-    <h1>✅ Slack connected</h1>
+    <h1>{{ ico.icon('check-circle', 22) }} Slack connected</h1>
     <p>Your Slack identity is now linked to <strong>{{ user.email }}</strong>.</p>
     <p>Head back to Slack and message <strong>Agnes</strong> — it will recognize you and answer with your data. You only need to do this once.</p>
   {% elif bind_status == "invalid" %}

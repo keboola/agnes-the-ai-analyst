@@ -5602,3 +5602,8 @@ details.section-card > summary {
    prompt rendered \n as line breaks (e.g. bulleted error lists). The
    page-local admin_users copy never needed this (its modals are static). */
 .modal-card h3, .modal-card p.sub { white-space: pre-wrap; }
+
+/* Shared inline-icon glyphs (macros/_icon.html) — replaces the pictographic
+   emoji we used to inline. Nudge the baseline so an icon sits centered next
+   to heading/label text. Block-level empty-state icons ignore this. */
+.ui-ico { vertical-align: -0.18em; }

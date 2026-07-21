@@ -1,4 +1,5 @@
 {% extends "base_ds.html" %}
+{% import "macros/_icon.html" as ico %}
 {% from "macros/_stack_card.html" import card %}
 
 {% block title %}Data Packages — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
@@ -149,7 +150,7 @@
        know there IS data to package). Non-admins get a different copy
        because the admin path is gated. #}
     <div class="stack-empty">
-      <span class="icon">📦</span>
+      <span class="icon">{{ ico.icon('package', 40) }}</span>
       <h3>No Data Packages yet</h3>
       {% if user.is_admin %}
         {% if total_registered_tables and total_registered_tables > 0 %}
@@ -184,7 +185,7 @@
       {% endfor %}
     </div>
     <div class="stack-empty"{% if stack_entries %} hidden{% endif %}>
-      <span class="icon">🗂️</span>
+      <span class="icon">{{ ico.icon('folder', 40) }}</span>
       <h3>Your stack is empty</h3>
       <p>Browse available packages and click <strong>+ Add to stack</strong>.
          Required packages will appear here automatically.</p>
@@ -214,7 +215,7 @@
     </div>
     <div class="stack-grid" id="catalog-grid-recipes">
       <div class="stack-empty" id="catalog-recipes-loading">
-        <span class="icon">📑</span>
+        <span class="icon">{{ ico.icon('recipe', 40) }}</span>
         <h3>Loading recipes…</h3>
       </div>
     </div>
@@ -704,7 +705,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
     if (_recipesLoaded && !force) return;
     const grid = document.getElementById('catalog-grid-recipes');
     if (!grid) return;
-    grid.innerHTML = '<div class="stack-empty"><span class="icon">📑</span><h3>Loading recipes…</h3></div>';
+    grid.innerHTML = '<div class="stack-empty"><span class="icon">{{ ico.icon('recipe', 40) }}</span><h3>Loading recipes…</h3></div>';
     try {
       const r = await fetch('/api/recipes', { credentials: 'same-origin' });
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -713,7 +714,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
       const badge = document.querySelector('.stack-tabs .count[data-count="recipes"]');
       if (badge) badge.textContent = String(items.length);
       if (!items.length) {
-        grid.innerHTML = '<div class="stack-empty"><span class="icon">📑</span>'
+        grid.innerHTML = '<div class="stack-empty"><span class="icon">{{ ico.icon('recipe', 40) }}</span>'
           + '<h3>No recipes yet</h3>'
           + '<p>Recipes are admin-curated query templates — copy + adapt.</p></div>';
         _recipesLoaded = true;

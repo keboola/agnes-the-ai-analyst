@@ -1,5 +1,6 @@
 {% extends 'base_ds.html' %}
 {% import "macros/_agnes_orb.html" as agnes_orb %}
+{% import "macros/_icon.html" as ico %}
 {% from "macros/_connect_banner.html" import connect_banner %}
 
 {# Cloud chat page. Extends the canonical Agnes design-system base so
@@ -183,13 +184,13 @@
       </header>
       <div class="cloud-chat-capabilities-grid">
         <div class="ds-card cloud-chat-cap-card" data-card="data">
-          <h3>📊 Your data</h3>
+          <h3>{{ ico.icon('data', 18) }} Your data</h3>
           <p id="cap-data-summary">Loading catalog…</p>
           <ul id="cap-data-sources"></ul>
         </div>
 
         <div class="ds-card cloud-chat-cap-card" data-card="tools">
-          <h3>🧰 Built-in tools</h3>
+          <h3>{{ ico.icon('tools', 18) }} Built-in tools</h3>
           <ul>
             <li><code>agnes catalog</code> — list tables you can query</li>
             <li><code>agnes schema &lt;table&gt;</code> — see column types</li>
@@ -201,13 +202,13 @@
         </div>
 
         <div class="ds-card cloud-chat-cap-card" data-card="marketplace">
-          <h3>🧩 Marketplace &amp; skills</h3>
+          <h3>{{ ico.icon('puzzle', 18) }} Marketplace &amp; skills</h3>
           <p id="cap-marketplace-summary">Loading plugins…</p>
           <ul id="cap-marketplace-list"></ul>
         </div>
 
         <div class="ds-card cloud-chat-cap-card" data-card="examples">
-          <h3>💡 Try asking</h3>
+          <h3>{{ ico.icon('bulb', 18) }} Try asking</h3>
           <ul class="cloud-chat-cap-examples">
             <li><button type="button" class="btn btn-secondary btn-sm cloud-chat-cap-suggest" data-prompt="What tables do I have access to in Agnes?">What tables do I have access to?</button></li>
             <li><button type="button" class="btn btn-secondary btn-sm cloud-chat-cap-suggest" data-prompt="Show me 5 example rows from the largest table I have access to.">Show me example rows</button></li>

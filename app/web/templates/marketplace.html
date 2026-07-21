@@ -1,4 +1,5 @@
 {% extends "base_ds.html" %}
+{% import "macros/_icon.html" as ico %}
 {% block title %}Marketplace — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
@@ -367,7 +368,7 @@ function buildCard(it) {
     const isPending = it.visibility_status === 'pending'
       || it.visibility_status === 'pending_inline'
       || it.visibility_status === 'pending_llm';
-    const label = isPending ? '⟳ Under review' : '⚠ Quarantined';
+    const label = isPending ? '{{ ico.icon('refresh', 13) }} Under review' : '{{ ico.icon('warning', 13) }} Quarantined';
     const palette = isPending
       ? 'background:#fef3c7;color:#92400e;border:1px solid #fde68a;'
       : 'background:#fee2e2;color:#991b1b;border:1px solid #fecaca;';

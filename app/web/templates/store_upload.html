@@ -1,4 +1,5 @@
 {% extends "base_ds.html" %}
+{% import "macros/_icon.html" as ico %}
 {% block title %}Upload to Store — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
@@ -435,7 +436,7 @@
              label→input click pickup doesn't fire on top of our explicit
              JS handler — that combination opened the file picker twice. #}
           <div class="file-drop" id="zip-drop">
-            <div class="icon">📦</div>
+            <div class="icon">{{ ico.icon('package', 28) }}</div>
             <div class="file-info">
               <div class="label" id="zip-label">No file selected</div>
               <div class="meta" id="zip-meta">Drag & drop a .zip or .skill here, or click Choose file</div>
@@ -563,7 +564,7 @@
         <div class="field">
           <label class="field-label">Cover photo <span style="color:var(--text-secondary,#6b7280);font-weight:400;">(optional)</span></label>
           <div class="file-drop" id="photo-drop">
-            <div class="icon">🖼</div>
+            <div class="icon">{{ ico.icon('image', 28) }}</div>
             <div class="file-info">
               <div class="label" id="photo-label">No photo</div>
               <div class="meta">Drag & drop or click Choose · PNG / JPEG / WebP only · Max 5 MB</div>

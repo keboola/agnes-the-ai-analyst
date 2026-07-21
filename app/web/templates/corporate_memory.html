@@ -1,4 +1,5 @@
 {% extends "base_ds.html" %}
+{% import "macros/_icon.html" as ico %}
 {% from "macros/_stack_card.html" import card %}
 
 {% block title %}Memory — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
@@ -129,7 +130,7 @@
     {% else %}
     {# Empty state — friendly + actionable, same shape as /catalog. #}
     <div class="stack-empty">
-      <span class="icon">🧠</span>
+      <span class="icon">{{ ico.icon('brain', 40) }}</span>
       <h3>No Memory Domains yet</h3>
       {% if user.is_admin %}
       <p>Memory Domains bundle related knowledge items (playbooks, runbooks,
@@ -164,7 +165,7 @@
       {% endfor %}
     </div>
     <div class="stack-empty"{% if stack_entries %} hidden{% endif %}>
-      <span class="icon">🗂️</span>
+      <span class="icon">{{ ico.icon('folder', 40) }}</span>
       <h3>Your stack is empty</h3>
       {% if entries %}
       <p>Browse the {{ entries|length }} available domain{{ '' if entries|length == 1 else 's' }}

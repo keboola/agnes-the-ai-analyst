@@ -1,4 +1,5 @@
 {% extends "base_ds.html" %}
+{% import "macros/_icon.html" as ico %}
 {% block title %}Edit {{ entity.name | store_display_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
@@ -158,7 +159,7 @@
         </div>
       </div>
       <div class="field-help warn">
-        ⚠ Changing the name renames the plugin slug for existing
+        {{ ico.icon('warning', 15) }} Changing the name renames the plugin slug for existing
         installers. They'll see the plugin renamed on their next sync
         and may need to re-add it to their stack.
       </div>
@@ -200,7 +201,7 @@
     <div class="field">
       <label class="field-label">Cover photo</label>
       <div class="file-drop" id="photo-drop">
-        <div class="icon">🖼</div>
+        <div class="icon">{{ ico.icon('image', 28) }}</div>
         <div class="file-info">
           <div class="label" id="photo-label">
             {% if entity.photo_path %}Replace existing photo{% else %}No photo{% endif %}
@@ -218,7 +219,7 @@
     <div class="field">
       <label class="field-label">Upload new version <span style="color:var(--text-secondary,#6b7280);font-weight:400;">(optional)</span></label>
       <div class="file-drop" id="zip-drop">
-        <div class="icon">📦</div>
+        <div class="icon">{{ ico.icon('package', 28) }}</div>
         <div class="file-info">
           <div class="label" id="zip-label">No file selected</div>
           <div class="meta" id="zip-meta">
