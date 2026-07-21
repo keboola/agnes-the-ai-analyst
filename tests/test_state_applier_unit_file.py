@@ -121,7 +121,7 @@ def test_bootstrap_unit_chowns_data_postgres_to_70_70():
     owned by whatever uid the *previous* instance's postgres container
     mapped to 70, so a fresh container on the recreated VM hit
     "Permission denied" reading its own data directory. Observed live
-    on agnes-dev 2026-07-21 after a VM delete+insert."""
+    on a customer VM after a delete+insert."""
     from pathlib import Path
 
     unit = Path("scripts/ops/agnes-state-applier-bootstrap.service").read_text()

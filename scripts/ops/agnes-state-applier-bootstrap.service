@@ -31,7 +31,7 @@ ExecStart=/bin/chown -R agnes-applier:agnes-applier /data/state
 # nested files (verified live: global/pg_filenode.map) owned by whatever the
 # previous instance's postgres container mapped uid 70 to, so a fresh
 # container on the recreated VM hit "Permission denied" reading its own data
-# directory. Observed live on agnes-dev 2026-07-21 after a VM delete+insert.
+# directory. Observed live on a customer VM after a delete+insert.
 ExecStart=/bin/bash -c 'chown -R 70:70 /data/postgres && chmod 700 /data/postgres'
 # Make /opt/agnes/.env readable by the applier. The applier reads only
 # AGNES_TAG from it (via its _env_get helper — it does NOT shell-source
