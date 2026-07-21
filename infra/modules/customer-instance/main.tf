@@ -386,6 +386,7 @@ resource "google_compute_instance" "vm" {
     oauth_client_secret_secret_name = try(local.per_vm_oauth[each.value.name].secret, "")
     runtime_secret_env              = var.runtime_secret_env
     home_route                      = var.home_route
+    studio_enabled                  = var.studio_enabled
     enable_watchdog                 = var.enable_watchdog
     alert_webhook_url               = var.alert_webhook_url
     watchdog_files_b64              = local.watchdog_files_b64

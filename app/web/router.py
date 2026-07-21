@@ -38,6 +38,7 @@ from app.instance_config import (
     get_instance_custom_preamble,
     get_instance_theme,
     get_custom_scripts,
+    get_studio_enabled,
 )
 from src.repositories import (
     audit_repo,
@@ -683,6 +684,10 @@ def _build_context(
             ctx["can_chat"] = bool(has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat"))
     except Exception:
         ctx["can_chat"] = False
+    # Studio nav visibility. Pure instance-level toggle (no per-user grant,
+    # unlike can_chat) — the enclosing `{% if session.user %}` already scopes
+    # the nav to signed-in users. The hard gate lives on the routes.
+    ctx["can_studio"] = get_studio_enabled()
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
     for k, v in extra.items():
@@ -2028,6 +2033,10 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         "instance_theme": get_instance_theme(),
         "home_automode": {"show": get_home_automode_visibility()},
         "custom_scripts": get_custom_scripts(),
+        # Set here too (not only in _build_context) so the Studio nav link
+        # survives on pages that render via _chrome_ctx — including the studio
+        # pages themselves and the command palette.
+        "can_studio": get_studio_enabled(),
     }
 
 
@@ -2092,12 +2101,16 @@ async def studio_index(
 ):
     """Studio landing page — a card grid linking to every authoring domain.
 
-    Available to all signed-in users (same gate as ``/admin/studio/{domain}``,
-    not admin-only — most domains route non-admins through the suggestions
-    queue instead of blocking them outright). Registered as a static path
+    When Studio is enabled, available to all signed-in users (same gate as
+    ``/admin/studio/{domain}``, not admin-only — most domains route non-admins
+    through the suggestions queue instead of blocking them outright); when the
+    instance-level toggle is off, every viewer is redirected home.
+    Registered as a static path
     alongside (and before) ``/admin/studio/{domain}`` so it does not fall
     through to the dynamic domain matcher.
     """
+    if not get_studio_enabled():
+        return RedirectResponse("/")
     return templates.TemplateResponse(
         request,
         "admin_studio_index.html",
@@ -2119,6 +2132,8 @@ async def studio_suggestions_admin(
     Registered BEFORE ``/admin/studio/{domain}`` so the static ``suggestions``
     path wins over the dynamic domain matcher.
     """
+    if not get_studio_enabled():
+        return RedirectResponse("/")
     return templates.TemplateResponse(request, "admin_studio_suggestions.html", _chrome_ctx(request, user))
 
 
@@ -2128,7 +2143,8 @@ async def studio(
     request: Request,
     user: dict = Depends(get_current_user),
 ):
-    """Authoring-agent studio — available to all signed-in users.
+    """Authoring-agent studio — available to all signed-in users while the
+    instance-level Studio toggle is on (off → redirect home).
 
     A generic form-based builder with an embedded assistant panel. The domain
     config (``app/web/studio.py``) drives the fields, the chat profile, and the
@@ -2139,6 +2155,8 @@ async def studio(
     queue entirely — everyone posts straight to ``endpoint``, which runs its
     own guardrail/review pipeline instead.
     """
+    if not get_studio_enabled():
+        return RedirectResponse("/")
     spec = get_studio_domain(domain)
     if spec is None:
         raise HTTPException(status_code=404, detail="unknown studio domain")

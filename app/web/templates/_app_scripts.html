@@ -331,6 +331,7 @@
           { label: 'Telemetry',                   hint: 'admin',        href: '/admin/telemetry' },
           { label: 'Sessions',                    hint: 'admin',        href: '/admin/sessions' },
           { label: 'Curated Marketplaces',        hint: 'admin · g c',  href: '/admin/marketplaces' },
+          {% if can_studio %}
           { label: 'Studio',                       hint: 'authoring',    href: '/admin/studio' },
           { label: 'Studio · Data package',       hint: 'authoring',    href: '/admin/studio/data-package' },
           { label: 'Studio · MCP connection',     hint: 'authoring',    href: '/admin/studio/mcp' },
@@ -339,6 +340,7 @@
           { label: 'Studio · Skill',              hint: 'authoring',    href: '/admin/studio/skill' },
           { label: 'Studio · Agent',              hint: 'authoring',    href: '/admin/studio/agent' },
           { label: 'Studio · Suggestions queue',  hint: 'admin',        href: '/admin/studio/suggestions' },
+          {% endif %}
           { label: 'Tokens',                      hint: 'admin · g k',  href: '/admin/tokens' },
           { label: 'Flea Submissions',            hint: 'admin · g r',  href: '/admin/store/submissions' },
           { label: 'Prompts',                     hint: 'admin',        href: '/admin/prompts' },

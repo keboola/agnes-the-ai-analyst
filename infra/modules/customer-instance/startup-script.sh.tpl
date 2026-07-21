@@ -604,6 +604,9 @@ AGNES_SCHEDULER_CPUS=${scheduler_cpus}
 %{ if home_route != "" ~}
 AGNES_HOME_ROUTE=${home_route}
 %{ endif ~}
+%{ if !studio_enabled ~}
+AGNES_STUDIO_ENABLED=false
+%{ endif ~}
 ACME_EMAIL=$ACME_EMAIL
 GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
