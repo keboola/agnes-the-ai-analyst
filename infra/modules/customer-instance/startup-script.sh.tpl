@@ -393,7 +393,11 @@ fi
 # trips app/main.py's RFC 8414 issuer check so the streamable MCP connector
 # degrades gracefully — both intended for a direct-access plain-HTTP
 # deployment; a fronted deployment should set a domain or hand-set
-# SERVER_URL.
+# SERVER_URL. AGNES_INTERNAL_URL is not a module-level knob: the .env
+# heredoc below rewrites the file wholesale each boot and has never carried
+# that variable, so no module-provisioned VM can rely on it and auto-setting
+# SERVER_URL shadows nothing here (split-horizon support would be a new
+# module variable, not an .env edit).
 EXISTING_SERVER_URL=""
 if [ -f "$APP_DIR/.env" ]; then
     EXISTING_SERVER_URL=$(grep -E '^SERVER_URL=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
