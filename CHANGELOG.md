@@ -16,6 +16,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.75.14] - 2026-07-20
+
+### Fixed
+
 - Auto-upgrade now keeps the placement-driven `docker-compose.gcp-logging.yml`
   overlay in sync with `@main` (refreshed in place on every tick, but only when
   the file already exists so non-GCE hosts never acquire it). A service removed
@@ -26,12 +36,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   participates in the config-drift hash, so an overlay-only change triggers a
   recreate on GCE hosts (absent on non-GCE → a stable `missing` entry, no
   spurious drift).
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.75.13] - 2026-07-20
 
