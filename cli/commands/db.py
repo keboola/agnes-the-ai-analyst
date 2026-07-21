@@ -5,6 +5,10 @@ Talks to the live server through the `/api/admin/db/*` endpoints
 `agnes admin news`, `agnes admin add-user`, etc.). Direct-DB access would
 race the running server's DuckDB write lock; HTTP is the right boundary.
 
+Exception: `repair` deliberately bypasses the API and operates on the
+state file directly — the HTTP API is unusable exactly when it's needed
+(the DB is invalidated), so it expects the app stopped. See its docstring.
+
 Spec: docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md
 """
 
