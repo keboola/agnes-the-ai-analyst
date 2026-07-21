@@ -1081,6 +1081,36 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path) -> None:
                     conn.execute(f"CREATE VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{abs_path}')")
                 except duckdb.Error:
                     continue
+
+        # Workspace-local uploaded tables (chat "+" upload → register_as_table):
+        # a self-contained `uploads/extract.duckdb` holds materialized tables.
+        # ATTACH it read-only and copy each table into analytics.duckdb so
+        # `agnes query` reaches it in-session — the extract.duckdb's tables are
+        # materialized (not views over external files), so this survives the
+        # workspace→sandbox sync. A view referencing the attached catalog would
+        # dangle once the connection closes, hence the materialize. A missing or
+        # broken file is a no-op (never aborts the parquet rebuild above).
+        uploads_extract = workspace / "uploads" / "extract.duckdb"
+        if uploads_extract.exists():
+            try:
+                conn.execute(f"ATTACH '{uploads_extract.resolve()}' AS _uploads (READ_ONLY)")
+                try:
+                    up_tables = conn.execute(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_catalog='_uploads' AND table_type='BASE TABLE' "
+                        "AND table_name <> '_meta'"
+                    ).fetchall()
+                    for (t_name,) in up_tables:
+                        try:
+                            conn.execute(
+                                f'CREATE OR REPLACE TABLE "{t_name}" AS SELECT * FROM _uploads."{t_name}"'
+                            )
+                        except duckdb.Error:
+                            continue
+                finally:
+                    conn.execute("DETACH _uploads")
+            except duckdb.Error:
+                pass
     finally:
         conn.close()
 

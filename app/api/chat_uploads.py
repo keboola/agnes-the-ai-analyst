@@ -220,9 +220,13 @@ def _register_workspace_table(
     """Register a data file as a workspace-local queryable table.
 
     Writes/refreshes an ``extract.duckdb`` under ``uploads_dir`` following
-    the connector _meta contract so `agnes query` and the orchestrator see it
-    in-session.  Uses a read-only view over the file rather than copying data
-    into DuckDB, so the parquet/CSV remains the source of truth.
+    the connector _meta contract so `agnes query` sees it in-session.  The
+    data is **materialized** into a real DuckDB table (not a view over the
+    source file) so the ``extract.duckdb`` is self-contained: when the
+    workspace syncs into the chat sandbox, the table travels with it and
+    stays queryable regardless of where the source file lands (a view over
+    an absolute file path would dangle after the sync).  Chat uploads are
+    capped at 20 MB, so materializing is cheap.
 
     This intentionally does NOT mutate the server-side admin table_registry.
     """
@@ -245,7 +249,7 @@ def _register_workspace_table(
             )
             """
         )
-        # Create or replace a view pointing at the file.
+        # Materialize the file into a self-contained table (see docstring).
         suffix = file_path.suffix.lower()
         if suffix == ".csv":
             read_expr = f"read_csv_auto('{file_path}')"
@@ -256,7 +260,7 @@ def _register_workspace_table(
         else:
             read_expr = f"read_csv_auto('{file_path}')"
 
-        conn.execute(f'CREATE OR REPLACE VIEW "{table_name}" AS SELECT * FROM {read_expr}')
+        conn.execute(f'CREATE OR REPLACE TABLE "{table_name}" AS SELECT * FROM {read_expr}')
 
         # Count rows for _meta (best-effort; zero on error).
         try:
@@ -341,6 +345,7 @@ async def chat_upload(
     # --- stream file to temp ------------------------------------------------
     tmp_path, size_bytes = await _stream_to_temp(file)
 
+    dest: Optional[Path] = None  # set once the temp file is moved into place
     try:
         # --- write to workspace uploads dir --------------------------------
         email: str = user["email"]

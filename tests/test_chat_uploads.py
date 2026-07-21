@@ -168,6 +168,38 @@ def test_register_as_table_auto_name(client: TestClient, data_dir: Path) -> None
     assert body["table_name"] == "my_data"
 
 
+def test_registered_table_is_queryable_after_rebuild(client: TestClient, data_dir: Path) -> None:
+    """End-to-end: a register_as_table upload is queryable via the local
+    analytics.duckdb once `agnes pull` rebuilds views — i.e. the hint's
+    `agnes query "SELECT * FROM <name>"` promise actually holds in-session."""
+    csv_content = b"city,pop\nPrague,1300000\nBrno,380000\n"
+    resp = client.post(
+        "/api/chat/uploads",
+        data={"kind": "data", "register_as_table": "true", "table_name": "cities"},
+        files={"file": ("cities.csv", io.BytesIO(csv_content), "text/csv")},
+    )
+    assert resp.status_code == 200, resp.text
+
+    from app.chat.workdir import _safe_email_dir
+    from cli.lib.pull import _rebuild_duckdb_views
+
+    ws = data_dir / "users" / _safe_email_dir(TEST_USER["email"]) / "workspace"
+    # Rebuild the local analytics DB (no parquets pulled → the uploads extract
+    # is the only source). parquet_dir intentionally does not exist.
+    _rebuild_duckdb_views(ws, ws / "server" / "parquet")
+
+    import duckdb
+
+    analytics = ws / "user" / "duckdb" / "analytics.duckdb"
+    assert analytics.exists(), f"expected analytics.duckdb at {analytics}"
+    conn = duckdb.connect(str(analytics), read_only=True)
+    try:
+        rows = conn.execute('SELECT city, pop FROM "cities" ORDER BY pop DESC').fetchall()
+    finally:
+        conn.close()
+    assert rows == [("Prague", 1300000), ("Brno", 380000)]
+
+
 def test_register_as_table_requires_data_kind(client: TestClient) -> None:
     """register_as_table=true on a non-data kind is rejected with 400."""
     resp = client.post(
