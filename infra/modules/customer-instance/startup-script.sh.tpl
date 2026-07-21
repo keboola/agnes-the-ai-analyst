@@ -383,13 +383,17 @@ fi
 # configured domain, else plain HTTP on the VM's external IP (the same :8000
 # the firewall exposes for tls_mode=none deployments).
 #
-# On domain-less VMs the pinned http://<ip>:8000 also becomes the
-# public_base_url origin (OAuth redirects, magic links — previously
-# request-derived) and, being plain-HTTP non-localhost, deliberately trips
-# app/main.py's RFC 8414 issuer check so the streamable MCP connector
-# degrades gracefully. Both are the intended origins for a direct-access
-# plain-HTTP deployment; a fronted deployment should set a domain (or
-# hand-set SERVER_URL, which this block preserves).
+# Setting SERVER_URL reaches beyond chat: it pins the public_base_url origin
+# (OAuth redirects, magic links, MCP issuer — previously request-derived).
+# On domain VMs that origin becomes https://<domain>, the canonical address
+# for both supported TLS shapes; a VM reached under several hostnames (or a
+# public origin that differs from the configured domain) should hand-set
+# SERVER_URL, which this block preserves. On domain-less VMs it becomes the
+# pinned http://<ip>:8000 and, being plain-HTTP non-localhost, deliberately
+# trips app/main.py's RFC 8414 issuer check so the streamable MCP connector
+# degrades gracefully — both intended for a direct-access plain-HTTP
+# deployment; a fronted deployment should set a domain or hand-set
+# SERVER_URL.
 EXISTING_SERVER_URL=""
 if [ -f "$APP_DIR/.env" ]; then
     EXISTING_SERVER_URL=$(grep -E '^SERVER_URL=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
