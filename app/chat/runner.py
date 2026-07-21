@@ -436,8 +436,13 @@ async def _real_agent_loop(
     - query() for every user_msg (the previous connect(text)-on-first-message
       pattern spawned a SECOND CLI on top of the one ``__aenter__`` already
       started — a full CLI boot added to first-message latency)
-    - receive_response() (async-iter) to consume each turn's messages
-    - interrupt() for cancel frames
+    - each turn's receive_response() drains in a CONCURRENT task
+      (_consume_turn) while this loop keeps watching the stdin queue — a
+      cancel frame arriving mid-turn interrupts the live turn (with the old
+      single-consumer design it sat in the queue until the turn finished on
+      its own, so Stop did nothing)
+    - interrupt() for cancel frames; user_msg/_eof frames arriving mid-turn
+      are buffered and processed after the turn, preserving order
 
     Message type mapping (SDK → outbound JSON frames):
     - StreamEvent text deltas → token frames as the model produces them
@@ -450,33 +455,14 @@ async def _real_agent_loop(
     - ResultMessage → assistant_message frame (turn end, carries usage/model)
     """
     from claude_agent_sdk import (  # type: ignore[import-untyped]
-        AssistantMessage,
         ClaudeAgentOptions,
         ClaudeSDKClient,
-        ResultMessage,
-        TextBlock,
-        ToolResultBlock,
-        ToolUseBlock,
-        UserMessage,
     )
 
     try:  # StreamEvent ships in newer claude-agent-sdk releases only
         from claude_agent_sdk import StreamEvent  # type: ignore[attr-defined]
     except ImportError:
         StreamEvent = None
-
-    def _emit_tool_result(block) -> None:
-        result = block.content
-        if isinstance(result, list):
-            result = " ".join(item.get("text", "") if isinstance(item, dict) else str(item) for item in result)
-        _emit(
-            {
-                "type": "tool_result",
-                "id": block.tool_use_id,
-                "tool": block.tool_use_id,
-                "result": result,
-            }
-        )
 
     # ``bypassPermissions`` so the agent can run its tools (Bash → ``agnes
     # catalog``/``query``/…) autonomously. The SDK's default permission mode
@@ -517,27 +503,52 @@ async def _real_agent_loop(
     if partial_streaming:
         options_kwargs["include_partial_messages"] = True
 
+    async def _interrupt(client) -> None:
+        # interrupt() is a coroutine — an un-awaited call never reaches the
+        # CLI and the turn keeps running (the historical cancel-does-nothing
+        # bug). Best-effort: a cancel racing the turn's natural end must not
+        # kill the runner.
+        try:
+            await client.interrupt()
+        except Exception as exc:  # noqa: BLE001
+            print(f"interrupt failed: {exc}", file=sys.stderr, flush=True)
+
     async with ClaudeSDKClient(options=ClaudeAgentOptions(**options_kwargs)) as client:
         # ``__aenter__`` above already connected (empty-stream streaming mode)
         # — the CLI subprocess is booting from this point on, typically
         # finishing before the first user_msg arrives.
 
+        # Frames that arrived while a turn was in flight (queued follow-up
+        # user_msg, an _eof) — processed in order before the queue is read
+        # again, preserving the pre-concurrency single-consumer semantics.
+        pending_frames: list[dict] = []
+        # Persistent queue.get() task. NEVER cancelled — cancelling a
+        # Queue.get() that has already been handed an item loses the frame;
+        # instead the outstanding task is carried across turns and awaited by
+        # whichever loop (outer or mid-turn watcher) runs next.
+        next_frame_task: asyncio.Task | None = None
+
+        def _frame_task() -> asyncio.Task:
+            nonlocal next_frame_task
+            if next_frame_task is None:
+                next_frame_task = asyncio.create_task(queue.get())
+            return next_frame_task
+
         while True:
-            frame = await queue.get()
+            if pending_frames:
+                frame = pending_frames.pop(0)
+            else:
+                frame = await _frame_task()
+                next_frame_task = None
             t = frame.get("type")
 
             if t == "_eof":
                 return
 
             if t == "cancel":
-                # interrupt() is a coroutine — an un-awaited call never
-                # reaches the CLI and the turn keeps running (the historical
-                # cancel-does-nothing bug). Best-effort: a cancel racing the
-                # turn's natural end must not kill the runner.
-                try:
-                    await client.interrupt()
-                except Exception as exc:  # noqa: BLE001
-                    print(f"interrupt failed: {exc}", file=sys.stderr, flush=True)
+                # Between turns: nothing is running, but the interrupt may
+                # still race a just-finished turn — best-effort.
+                await _interrupt(client)
                 continue
 
             if t != "user_msg":
@@ -547,107 +558,165 @@ async def _real_agent_loop(
 
             await client.query(text)
 
-            # Consume the response for this turn
-            collected_text: list[str] = []
-            tokens_in = 0
-            tokens_out = 0
-            model = ""
-            # Per-turn tool-call budget: count tool_call emissions; on
-            # overflow emit a confirmation_required frame and break the loop
-            # so the agent pauses until the next user_msg (which counts as
-            # confirmation). Safety net against runaway tool chains.
-            tool_calls_this_turn = 0
-            budget_hit = False
-            # True once any StreamEvent text delta was emitted this turn —
-            # the completed TextBlock then repeats text the user has already
-            # seen, so its whole-block token frame is suppressed (it still
-            # feeds collected_text for the turn-end assistant_message).
-            deltas_this_turn = False
+            # Consume the turn as a concurrent task while this loop keeps
+            # watching the stdin queue. A single-consumer design (await
+            # queue.get() only at the top of the loop) meant a `cancel`
+            # arriving MID-TURN sat in the queue until the turn finished
+            # naturally — by which point interrupt() was a no-op and the
+            # Stop button did nothing (Devin Review on #975).
+            turn_task = asyncio.create_task(_consume_turn(client, tool_calls_per_turn=tool_calls_per_turn))
+            while not turn_task.done():
+                ft = _frame_task()
+                await asyncio.wait({turn_task, ft}, return_when=asyncio.FIRST_COMPLETED)
+                if ft.done():
+                    next_frame_task = None
+                    mid = ft.result()
+                    if mid.get("type") == "cancel":
+                        # Interrupt the LIVE turn; receive_response() then
+                        # winds down and turn_task completes.
+                        await _interrupt(client)
+                    else:
+                        # user_msg / _eof: keep for after the turn, in order.
+                        pending_frames.append(mid)
+            await turn_task  # propagate a crashed turn (outer handler emits error frame)
 
-            async for msg in client.receive_response():
-                if budget_hit:
-                    break
-                if StreamEvent is not None and isinstance(msg, StreamEvent):
-                    # Token-level delta straight off the model stream. Only
-                    # top-level assistant text — subagent/tool-side streams
-                    # carry parent_tool_use_id and stay internal.
-                    if getattr(msg, "parent_tool_use_id", None) is None:
-                        piece = _stream_event_delta_text(msg.event)
-                        if piece:
-                            _emit({"type": "token", "text": piece})
-                            deltas_this_turn = True
-                    continue
-                if isinstance(msg, AssistantMessage):
-                    for block in msg.content:
-                        if isinstance(block, TextBlock):
-                            if not deltas_this_turn:
-                                _emit({"type": "token", "text": block.text})
-                            collected_text.append(block.text)
-                        elif isinstance(block, ToolUseBlock):
-                            if tool_calls_this_turn >= tool_calls_per_turn:
-                                _emit(
-                                    {
-                                        "type": "confirmation_required",
-                                        "reason": "tool_call_budget",
-                                        "budget": tool_calls_per_turn,
-                                    }
-                                )
-                                budget_hit = True
-                                break
-                            # ``id`` is the per-call ``tool_use_id`` —
-                            # echoed back verbatim by ``ToolResultBlock``
-                            # so the frontend can pair a tool_call with
-                            # its result even when several calls to the
-                            # same tool are in flight. ``tool`` carries
-                            # the human-readable name for the inline
-                            # block header.
+
+async def _consume_turn(client, *, tool_calls_per_turn: int = 50) -> None:
+    """Drain one turn's ``receive_response()`` stream into outbound frames.
+
+    Runs as its own task so ``_real_agent_loop`` can keep consuming stdin
+    frames (cancel!) while the turn is in flight. Always ends by emitting a
+    ``done`` frame.
+    """
+    from claude_agent_sdk import (  # type: ignore[import-untyped]
+        AssistantMessage,
+        ResultMessage,
+        TextBlock,
+        ToolResultBlock,
+        ToolUseBlock,
+        UserMessage,
+    )
+
+    try:  # StreamEvent ships in newer claude-agent-sdk releases only
+        from claude_agent_sdk import StreamEvent  # type: ignore[attr-defined]
+    except ImportError:
+        StreamEvent = None
+
+    def _emit_tool_result(block) -> None:
+        result = block.content
+        if isinstance(result, list):
+            result = " ".join(item.get("text", "") if isinstance(item, dict) else str(item) for item in result)
+        _emit(
+            {
+                "type": "tool_result",
+                "id": block.tool_use_id,
+                "tool": block.tool_use_id,
+                "result": result,
+            }
+        )
+
+    collected_text: list[str] = []
+    tokens_in = 0
+    tokens_out = 0
+    model = ""
+    # Per-turn tool-call budget: count tool_call emissions; on
+    # overflow emit a confirmation_required frame and break the loop
+    # so the agent pauses until the next user_msg (which counts as
+    # confirmation). Safety net against runaway tool chains.
+    tool_calls_this_turn = 0
+    budget_hit = False
+    # True once any StreamEvent text delta was emitted this turn —
+    # the completed TextBlock then repeats text the user has already
+    # seen, so its whole-block token frame is suppressed (it still
+    # feeds collected_text for the turn-end assistant_message).
+    deltas_this_turn = False
+
+    try:
+        async for msg in client.receive_response():
+            if budget_hit:
+                break
+            if StreamEvent is not None and isinstance(msg, StreamEvent):
+                # Token-level delta straight off the model stream. Only
+                # top-level assistant text — subagent/tool-side streams
+                # carry parent_tool_use_id and stay internal.
+                if getattr(msg, "parent_tool_use_id", None) is None:
+                    piece = _stream_event_delta_text(msg.event)
+                    if piece:
+                        _emit({"type": "token", "text": piece})
+                        deltas_this_turn = True
+                continue
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        if not deltas_this_turn:
+                            _emit({"type": "token", "text": block.text})
+                        collected_text.append(block.text)
+                    elif isinstance(block, ToolUseBlock):
+                        if tool_calls_this_turn >= tool_calls_per_turn:
                             _emit(
                                 {
-                                    "type": "tool_call",
-                                    "id": block.id,
-                                    "tool": block.name,
-                                    "args": block.input,
+                                    "type": "confirmation_required",
+                                    "reason": "tool_call_budget",
+                                    "budget": tool_calls_per_turn,
                                 }
                             )
-                            tool_calls_this_turn += 1
-                        elif isinstance(block, ToolResultBlock):
+                            budget_hit = True
+                            break
+                        # ``id`` is the per-call ``tool_use_id`` —
+                        # echoed back verbatim by ``ToolResultBlock``
+                        # so the frontend can pair a tool_call with
+                        # its result even when several calls to the
+                        # same tool are in flight. ``tool`` carries
+                        # the human-readable name for the inline
+                        # block header.
+                        _emit(
+                            {
+                                "type": "tool_call",
+                                "id": block.id,
+                                "tool": block.name,
+                                "args": block.input,
+                            }
+                        )
+                        tool_calls_this_turn += 1
+                    elif isinstance(block, ToolResultBlock):
+                        _emit_tool_result(block)
+                model = msg.model
+                if msg.usage:
+                    tokens_in += msg.usage.get("input_tokens", 0)
+                    tokens_out += msg.usage.get("output_tokens", 0)
+
+            elif isinstance(msg, UserMessage):
+                # The SDK feeds tool results back as a UserMessage carrying
+                # ToolResultBlock(s) — NOT inside the AssistantMessage. Without
+                # handling this branch the runner never emits a tool_result
+                # frame, so the inline tool block in the UI is stuck on
+                # "running…" forever even though the tool finished.
+                if isinstance(msg.content, list):
+                    for block in msg.content:
+                        if isinstance(block, ToolResultBlock):
                             _emit_tool_result(block)
-                    model = msg.model
-                    if msg.usage:
-                        tokens_in += msg.usage.get("input_tokens", 0)
-                        tokens_out += msg.usage.get("output_tokens", 0)
 
-                elif isinstance(msg, UserMessage):
-                    # The SDK feeds tool results back as a UserMessage carrying
-                    # ToolResultBlock(s) — NOT inside the AssistantMessage. Without
-                    # handling this branch the runner never emits a tool_result
-                    # frame, so the inline tool block in the UI is stuck on
-                    # "running…" forever even though the tool finished.
-                    if isinstance(msg.content, list):
-                        for block in msg.content:
-                            if isinstance(block, ToolResultBlock):
-                                _emit_tool_result(block)
-
-                elif isinstance(msg, ResultMessage):
-                    if msg.usage:
-                        tokens_in = msg.usage.get("input_tokens", tokens_in)
-                        tokens_out = msg.usage.get("output_tokens", tokens_out)
-                    # ResultMessage signals turn end; receive_response() stops after it
-                    _emit(
-                        {
-                            "type": "assistant_message",
-                            "content": "".join(collected_text),
-                            "tokens_in": tokens_in,
-                            "tokens_out": tokens_out,
-                            "model": model,
-                        }
-                    )
-
-            # Turn finished (receive_response() drained, or budget gate broke
-            # the loop). Emit a `done` frame so the UI hides the Stop button —
-            # without it the composer is wedged in the "running" state because
-            # the frontend only clears it on done/error/cancelled.
-            _emit({"type": "done"})
+            elif isinstance(msg, ResultMessage):
+                if msg.usage:
+                    tokens_in = msg.usage.get("input_tokens", tokens_in)
+                    tokens_out = msg.usage.get("output_tokens", tokens_out)
+                # ResultMessage signals turn end; receive_response() stops after it
+                _emit(
+                    {
+                        "type": "assistant_message",
+                        "content": "".join(collected_text),
+                        "tokens_in": tokens_in,
+                        "tokens_out": tokens_out,
+                        "model": model,
+                    }
+                )
+    finally:
+        # Turn finished (receive_response() drained, budget gate broke the
+        # loop, or the turn was interrupted). Emit a `done` frame so the UI
+        # hides the Stop button — without it the composer is wedged in the
+        # "running" state because the frontend only clears it on
+        # done/error/cancelled.
+        _emit({"type": "done"})
 
 
 async def _start_relay() -> int:
