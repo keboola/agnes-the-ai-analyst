@@ -44,6 +44,11 @@
         {# Curated Memory — analyst-facing read surface for shared org
            knowledge; not admin-gated, so it sits in the primary nav. #}
         <a class="app-nav-link {% if _path == '/corporate-memory' %}is-active{% endif %}" href="/corporate-memory" data-tour="nav-memory">Memory</a>
+        {# Studio — the authoring-agent landing page (chat-assisted builders
+           for skills, agents, data packages, connections, and content). Not
+           admin-gated (most domains route non-admins through the
+           suggestions queue), so it sits in the primary nav like Memory. #}
+        <a class="app-nav-link {% if _path.startswith('/admin/studio') %}is-active{% endif %}" href="/admin/studio" data-tour="nav-studio">Studio</a>
 
         {# Overflow menu — populated by the priority-plus logic in app.js when
            the nav can't fit on one line. Hidden while empty; lowest-priority

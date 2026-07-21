@@ -456,6 +456,21 @@ class TestStorePublishMarkdownTool:
         posted = mock_post.call_args[1]["json"]
         assert posted == {"type": "skill", "name": "bare-skill", "skill_md": "# Bare Skill"}
 
+    def test_accepts_agent_type(self):
+        """type="agent" (#865) — MCP callers can now publish an agent, not just a skill."""
+        mod = _import_mod()
+        data = {"id": "ent_3", "name": "my-agent", "version": 1, "visibility_status": "pending"}
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_post = AsyncMock(return_value=_mock_resp(data, status=201))
+            MC.return_value.__aenter__.return_value.post = mock_post
+            result = _run(mod.store_publish_markdown("my-agent", "# My Agent\n\nBody text.", type="agent"))
+
+        assert result == data
+        posted = mock_post.call_args[1]["json"]
+        assert posted == {"type": "agent", "name": "my-agent", "skill_md": "# My Agent\n\nBody text."}
+
 
 # ── server_info tool ────────────────────────────────────────────────────────────
 

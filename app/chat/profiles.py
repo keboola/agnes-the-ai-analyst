@@ -213,12 +213,71 @@ _SKILL_AUTHOR = ChatProfile(
     ),
 )
 
+_AGENT_AUTHOR = ChatProfile(
+    slug="agent-author",
+    claude_md=(
+        "# Agent Builder\n\n"
+        "You help a user author a **reusable subagent** — a Claude Code "
+        "subagent definition (one Markdown file with frontmatter) that the "
+        "store reviews and distributes to analysts' AI harnesses.\n\n"
+        "Rules:\n"
+        "- Check the store for near-duplicates first; suggest improving an "
+        "existing agent instead if one already covers the need.\n"
+        "- The frontmatter `description` must encode a clear *'use when …'* "
+        "trigger — that is how the orchestrating agent decides to delegate "
+        "to this subagent.\n"
+        "- The body is the subagent's system prompt: its role, "
+        "responsibilities, and how it should approach the task. Keep it "
+        "focused, not a documentation dump.\n"
+        "- Optional frontmatter fields (`tools`, `model`) constrain what the "
+        "subagent can do; leave them out of the field UI and let the user "
+        "add them directly in the Markdown body if needed.\n"
+        "- Agents are plain Markdown — write them harness-agnostic, never "
+        "assuming one specific AI product.\n"
+        "- Draft into the builder fields; never claim the agent is "
+        "published until the user clicks Publish.\n"
+        "- Use the `agnes-agent-authoring` skill for the contract and "
+        "endpoints.\n"
+    ),
+    skill_name="agnes-agent-authoring",
+    skill_body=(
+        "---\n"
+        "name: agnes-agent-authoring\n"
+        "description: How subagents work in Agnes — the frontmatter "
+        "contract, the store review pipeline that distributes them, and "
+        "the publish endpoints.\n"
+        "---\n\n"
+        "# Agents in Agnes\n\n"
+        "An agent = a single Markdown file (YAML frontmatter `name` + "
+        "`description`, optionally `tools`/`model`, then the subagent's "
+        "system prompt), stored as a `store_entities` row with "
+        "`type=agent` and served to analysts through the aggregated "
+        "marketplace.\n\n"
+        "## Contract\n"
+        "- `name`: lowercase letters, digits, dashes (`^[a-z][a-z0-9-]{0,63}$`).\n"
+        "- `description`: one line encoding the *use when …* delegation "
+        "trigger (>= 60 chars, >= 5 distinct words).\n"
+        "- Body: >= 200 chars system prompt; keep it under ~5k tokens.\n\n"
+        "## Publish\n"
+        "- `POST /api/store/entities/from-markdown` — JSON `{type: "
+        "'agent', name, description, category, skill_md}`; the server "
+        "wraps it into the same guardrail + review pipeline as ZIP "
+        "uploads.\n"
+        "- `POST /api/store/entities/dryrun` — validate a full ZIP before "
+        "publishing.\n"
+        "- Uploads may be held for automated review "
+        "(`visibility_status: pending`) before appearing in the "
+        "marketplace.\n"
+    ),
+)
+
 _PROFILES: dict[str, ChatProfile] = {
     _DATA_PACKAGE_BUILDER.slug: _DATA_PACKAGE_BUILDER,
     _MCP_CONNECT.slug: _MCP_CONNECT,
     _MARKETPLACE_AUTHOR.slug: _MARKETPLACE_AUTHOR,
     _CORPORATE_MEMORY.slug: _CORPORATE_MEMORY,
     _SKILL_AUTHOR.slug: _SKILL_AUTHOR,
+    _AGENT_AUTHOR.slug: _AGENT_AUTHOR,
 }
 
 
