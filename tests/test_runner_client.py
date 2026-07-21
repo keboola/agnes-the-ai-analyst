@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from src.data_apps.runner_client import RunnerClient, RunnerUnavailable
+from src.data_apps.runner_client import RunnerClient, RunnerError, RunnerUnavailable
 
 
 def _client(handler):
@@ -28,3 +28,69 @@ def test_unavailable_raises():
 
     with pytest.raises(RunnerUnavailable):
         _client(handler).status("s")
+
+
+def test_sidecar_400_with_json_detail():
+    def handler(request):
+        return httpx.Response(400, json={"detail": "image_not_allowed"})
+
+    c = _client(handler)
+    with pytest.raises(RunnerError) as exc_info:
+        c.up("s", {}, {})
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "image_not_allowed"
+
+
+def test_sidecar_502_with_text_fallback():
+    def handler(request):
+        return httpx.Response(502, text="Bad Gateway")
+
+    c = _client(handler)
+    with pytest.raises(RunnerError) as exc_info:
+        c.status("s")
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail == "Bad Gateway"
+
+
+def test_stop_url_construction():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["json"] = request.content
+        return httpx.Response(200, json={"ok": True})
+
+    c = _client(handler)
+    c.stop("myapp", mode="pause")
+    assert seen["method"] == "POST"
+    assert seen["url"].endswith("/apps/myapp/stop")
+
+
+def test_resume_url_construction():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"ok": True})
+
+    c = _client(handler)
+    c.resume("myapp")
+    assert seen["method"] == "POST"
+    assert seen["url"].endswith("/apps/myapp/resume")
+
+
+def test_logs_url_construction():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"logs": "output"})
+
+    c = _client(handler)
+    result = c.logs("myapp", tail=500)
+    assert seen["method"] == "GET"
+    assert seen["url"].endswith("/apps/myapp/logs?tail=500")
+    assert result == "output"

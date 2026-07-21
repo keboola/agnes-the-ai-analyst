@@ -10,6 +10,15 @@ class RunnerUnavailable(RuntimeError):
     pass
 
 
+class RunnerError(RuntimeError):
+    """Sidecar answered with an error status (4xx/5xx)."""
+
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(f"runner {status_code}: {detail}")
+        self.status_code = status_code
+        self.detail = detail
+
+
 class RunnerClient:
     def __init__(
         self,
@@ -21,7 +30,7 @@ class RunnerClient:
         self._token = token or os.environ.get("APPS_RUNNER_TOKEN", "")
         self._transport = transport
 
-    def _request(self, method: str, path: str, **kw) -> dict[str, Any]:
+    def _request(self, method: str, path: str, **kw: Any) -> dict[str, Any]:
         try:
             with httpx.Client(transport=self._transport, timeout=60) as c:
                 r = c.request(
@@ -32,7 +41,12 @@ class RunnerClient:
                 )
         except httpx.TransportError as exc:
             raise RunnerUnavailable(str(exc)) from exc
-        r.raise_for_status()
+        if r.status_code >= 400:
+            try:
+                detail = r.json().get("detail", r.text)
+            except Exception:
+                detail = r.text
+            raise RunnerError(r.status_code, detail)
         return r.json()
 
     def up(self, slug: str, spec: dict, config_json: dict) -> dict:
@@ -52,4 +66,4 @@ class RunnerClient:
         return self._request("GET", f"/apps/{slug}/status")
 
     def logs(self, slug: str, tail: int = 200) -> str:
-        return self._request("GET", f"/apps/{slug}/logs", params={"tail": tail})["logs"]
+        return self._request("GET", f"/apps/{slug}/logs", params={"tail": tail}).get("logs", "")
