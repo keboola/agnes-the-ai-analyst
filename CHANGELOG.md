@@ -16,6 +16,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Install prompt (`/setup` clipboard payload) no longer instructs the agent to
+  suppress its own security judgment around the freshly-minted PAT. Removed the
+  step-3 NOTE that told the agent not to warn / not to mark the session private
+  / not to run `agnes mark-private`, the `!`-prefix "bypass the auto-classifier"
+  paragraph, the `--token` "credential-exfil pattern" framing, and the step-4
+  "never run it for them" clause. Hardened Claude Code security protocols read
+  that copy as an attempt to bypass their protections and blocked the whole
+  install; the legitimate mechanics (write the PAT to a file so it stays out of
+  the command-line argv) are unchanged. Also dropped the step-4 `/agnes-private`
+  private-session tip — that guidance belongs in the workspace docs, not the
+  one-shot setup prompt.
+
 ### Removed
 
 ### Internal
