@@ -16,6 +16,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.75.16] - 2026-07-21
+
+### Fixed
+
 - DuckDB→Postgres migrator (`scripts.migrate_duckdb_to_pg`) no longer aborts a
   cutover on a dangling RBAC grant: `resource_grants` rows whose typed-FK
   target (table / data-package / memory-domain / memory-item / recipe) was
@@ -28,12 +38,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   failed once Postgres had grown and — because `app` gates on `data-migrate`
   exiting 0 — took the instance down. A genuine copy failure (a source row
   missing from the target) still fails via the new `missing_count`.
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.75.14] - 2026-07-20
 
