@@ -1984,6 +1984,53 @@ def test_spawn_agnes_server_falls_back_to_internal_url(manager: ChatManager, tmp
     assert captured["env"]["AGNES_SERVER"] == "http://10.0.0.5:8000"
 
 
+def test_spawn_uploads_wheel_before_workspace_and_sets_sentinel_env(manager: ChatManager, tmp_path, monkeypatch):
+    """The wheel is a single small write whose sentinel unblocks the runner's
+    in-sandbox pip install — it must be staged BEFORE the (much slower)
+    workspace push so the install overlaps the upload. The runner env carries
+    the workspace-ready sentinel path so the runner knows to gate the agent
+    CLI spawn on it (empty when the provider mounts the workspace itself)."""
+    monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "tok")
+
+    import app.chat.e2b_workspace_sync as sync_mod
+    from app.chat.e2b_workspace_sync import SANDBOX_WORKSPACE_READY
+
+    order: list[str] = []
+
+    async def fake_wheel(sandbox):
+        order.append("wheel")
+
+    async def fake_workspace(sandbox, root, *, max_bytes):
+        order.append("workspace")
+        return 0
+
+    monkeypatch.setattr(sync_mod, "upload_agnes_wheel", fake_wheel)
+    monkeypatch.setattr(sync_mod, "upload_workspace", fake_workspace)
+
+    handle = FakeHandle()
+    handle._sandbox = MagicMock()  # sandbox present → E2B sync branch taken
+    captured = {}
+
+    async def fake_spawn(**kw):
+        captured.update(kw)
+        return handle
+
+    manager._provider.spawn = fake_spawn
+    # The fixture's provider is a MagicMock whose auto-attribute would be
+    # truthy — pin the real E2BProvider value so the sync branch runs.
+    manager._provider.syncs_workspace = False
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        sess = manager._repo.get_session(s.id)
+        await manager._spawn_runner(sess, tmp_path)
+
+    asyncio.run(_run())
+
+    assert order == ["wheel", "workspace"]
+    assert captured["env"]["AGNES_WORKSPACE_SYNC_SENTINEL"] == SANDBOX_WORKSPACE_READY
+
+
 def test_agnes_server_url_resolution_chain(monkeypatch):
     """SERVER_URL → AGNES_INTERNAL_URL → loopback; the same chain feeds both
     the sandbox env (AGNES_SERVER) and the workspace seed (WorkdirManager)."""

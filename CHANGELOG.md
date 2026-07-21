@@ -14,7 +14,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- **Cloud-chat spawn and first-response latency cut across the whole E2B
+  path.** The per-session workspace now travels as one gzipped tarball
+  extracted in-sandbox (one E2B round-trip instead of one per file; per-file
+  writes remain as a fallback); the agnes CLI wheel is staged before the
+  workspace push so the in-sandbox `pip install` overlaps the upload (the
+  runner gates the agent-CLI spawn on a new workspace-ready sentinel,
+  `AGNES_WORKSPACE_SYNC_SENTINEL`); the `claude` CLI boots eagerly at runner
+  start and every user message goes through `query()` — previously the first
+  message re-connected and paid a second full CLI boot; and assistant text
+  now streams token-by-token (`include_partial_messages` stream-event deltas,
+  falling back to whole-block frames on older SDKs).
+
 ### Fixed
+
+- **Chat Stop button actually interrupts the running turn.** The runner
+  called the SDK's async `interrupt()` without awaiting it, so cancel frames
+  never reached the agent and the turn ran to completion.
 
 ### Removed
 
