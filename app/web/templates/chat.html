@@ -36,8 +36,12 @@
         // (after parse) or the html attribute as a transitional
         // signal. chat.js promotes this to a class on the shell once
         // the page is interactive.
+        // Rail has no mini-collapse (the column is a slide-open panel and
+        // the un-collapse toggle is hidden), so never pre-paint mini there —
+        // a stored flag from a topnav session must not carry into rail.
         var c = localStorage.getItem("agnes-chat-sidebar-collapsed");
-        if (c === "1") {
+        var railLayout = document.documentElement.getAttribute("data-ui-layout") === "rail";
+        if (c === "1" && !railLayout) {
           document.documentElement.setAttribute("data-chat-sidebar", "mini");
         }
       } catch (_) { /* private mode / storage disabled — no-op */ }

@@ -1682,9 +1682,21 @@ html[data-ui-layout="rail"] .cloud-chat-send-btn:disabled { opacity: .55; cursor
    it (``.history-open`` on the shell). Overrides the base 280px / mini
    56px track when the shell is not open. */
 html[data-ui-layout="rail"] .cloud-chat-shell:not(.history-open) { --chat-sidebar-width: 0px; }
+/* Closed: the shell must show NO grey gutter and the sidebar must truly
+   collapse. The sidebar's own 8px padding does NOT vanish just because its
+   grid track is 0px — it renders as a ~16px grey sliver between the app rail
+   and the chat surface. Zero the padding + background so the column is gone. */
+html[data-ui-layout="rail"] .cloud-chat-shell:not(.history-open) {
+  padding: 0;
+  gap: 0;
+  background: var(--ds-surface);
+}
 html[data-ui-layout="rail"] .cloud-chat-shell:not(.history-open) .cloud-chat-sidebar {
   border-right: none;
   overflow: hidden;
+  width: 0;
+  padding: 0;
+  background: transparent;
 }
 html[data-ui-layout="rail"] .cloud-chat-main { position: relative; }
 html[data-ui-layout="rail"] .cloud-chat-histtoggle {
@@ -1709,22 +1721,26 @@ html[data-ui-layout="rail"] .cloud-chat-histtoggle svg { width: 18px; height: 18
    mini-collapse hamburger is hidden (the floating toggle owns open/close),
    and the active row uses the agnes accent instead of the classic info
    accent — matching the /ask history column. */
+/* Tighter side gutter than the base 16px — the column reads cramped with
+   both the sidebar padding and the list padding stacked. Keep a small
+   8px rail so the hover pills have a little breathing room from the edge. */
+html[data-ui-layout="rail"] .cloud-chat-sidebar { padding: var(--space-3) 4px var(--space-2); }
 html[data-ui-layout="rail"] .cloud-chat-sidebar-header {
   flex-direction: column;
   align-items: stretch;
-  gap: 8px;
-  padding: 12px 8px 6px;
+  gap: 6px;
+  padding: 4px 4px 2px;
   border-bottom: none;
 }
 html[data-ui-layout="rail"] .cloud-chat-sidebar-toggle { display: none; }
-html[data-ui-layout="rail"] .cloud-chat-sidebar-title { padding: 4px 8px; }
+html[data-ui-layout="rail"] .cloud-chat-sidebar-title { padding: 2px 4px; }
 /* New chat → full-width outline button (like /ask .ash-new). The
    .cloud-chat-sidebar ancestor lifts specificity above .btn.btn-primary. */
 html[data-ui-layout="rail"] .cloud-chat-sidebar .cloud-chat-new-btn {
   width: 100%;
   justify-content: flex-start;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 9px 10px;
   border: 1px solid var(--ds-border);
   border-radius: 12px;
   background: var(--ds-surface);
@@ -1739,26 +1755,61 @@ html[data-ui-layout="rail"] .cloud-chat-sidebar .cloud-chat-new-btn:hover {
 }
 /* List rows + date-group headers matched to /ask (.ash-item / .ash-label):
    9px/12px padding, 9px radius, surface-dim hover, agnes-accent active. */
-html[data-ui-layout="rail"] .cloud-chat-list { padding: var(--space-2) 8px; }
+html[data-ui-layout="rail"] .cloud-chat-list { padding: 2px 4px; }
 html[data-ui-layout="rail"] .cloud-chat-list li {
-  padding: 9px 12px;
-  border-radius: 9px;
+  padding: 7px 9px;
+  border-radius: 8px;
   font-size: 13.5px;
+  line-height: 1.3;
   color: var(--ds-text-secondary);
 }
-html[data-ui-layout="rail"] .cloud-chat-list li + li { margin-top: 1px; }
-html[data-ui-layout="rail"] .cloud-chat-list li:hover {
-  background: var(--ds-surface-dim);
+/* Even 2px rhythm between conversation rows — the old 1px read as
+   cramped/uneven next to the larger group gaps. Scoped to [data-id]+[data-id]
+   (two real rows) so it does NOT apply to a group header that follows a row —
+   otherwise this out-specifies the header's `margin-top: 16px` and the date
+   buckets lose their separation. */
+html[data-ui-layout="rail"] .cloud-chat-list li[data-id] + li[data-id] { margin-top: 2px; }
+/* Hover applies ONLY to real conversation rows (they carry data-id). The
+   date-group headers are <li> too, so a bare `li:hover` also lit them up —
+   scope to [data-id] to exclude headers. Hover pops to the surface color
+   (not surface-dim, which equals the sidebar background and read as no
+   change at all). */
+html[data-ui-layout="rail"] .cloud-chat-list li[data-id]:hover {
+  background: var(--ds-surface);
   color: var(--ds-text-primary);
 }
-html[data-ui-layout="rail"] .cloud-chat-list-group-header {
-  font-size: 11px;
-  letter-spacing: 0.08em;
+/* Date-group headers never react to the pointer (high specificity so it
+   wins over the base `.cloud-chat-list li:hover`). */
+html[data-ui-layout="rail"] .cloud-chat-list li.cloud-chat-list-group-header,
+html[data-ui-layout="rail"] .cloud-chat-list li.cloud-chat-list-group-header:hover {
+  background: transparent;
   color: var(--ds-text-muted);
-  padding: 12px 12px 6px;
-  margin-top: 4px;
+  cursor: default;
 }
-html[data-ui-layout="rail"] .cloud-chat-list-group-header:first-child { margin-top: 0; }
+/* Drop the "paused" pill in the rail history — it reports an infra state
+   (sandbox snapshotted) the user can't act on and that doesn't change what
+   clicking the row does, so it was just noise. "Slack" (origin) stays.
+   Rail-scoped: topnav keeps the pill. */
+html[data-ui-layout="rail"] .cloud-chat-paused-badge { display: none; }
+/* Delete button: hidden until its own row is hovered (or focused for
+   keyboard nav) — never persistently visible. */
+html[data-ui-layout="rail"] .cloud-chat-list-del { opacity: 0; }
+html[data-ui-layout="rail"] .cloud-chat-list li[data-id]:hover .cloud-chat-list-del,
+html[data-ui-layout="rail"] .cloud-chat-list-del:focus-visible { opacity: 1; }
+/* Group headers bind to the group BELOW them: generous space above (16px
+   separates one date bucket from the previous group's last row), tight
+   space below (4px) so the header reads as a label for its items. Text is
+   indented to line up with the row labels (list 4px + header 10px = row
+   label's 4px + 10px). */
+html[data-ui-layout="rail"] .cloud-chat-list-group-header {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  color: var(--ds-text-muted);
+  padding: 0 10px 4px;
+  margin-top: 16px;
+}
+html[data-ui-layout="rail"] .cloud-chat-list-group-header:first-child { margin-top: 2px; }
 html[data-ui-layout="rail"] .cloud-chat-list li.is-active,
 html[data-ui-layout="rail"] .cloud-chat-list li.active {
   background: var(--ds-agnes-soft);
@@ -1799,6 +1850,9 @@ html[data-ui-layout="rail"] .cloud-chat-shell.history-open {
   padding: 14px;
   gap: 14px;
   background: var(--ds-bg);
+  /* Narrower than the base 280px — the tighter internal padding leaves the
+     column feeling roomy at 244px, and gives the chat surface more width. */
+  --chat-sidebar-width: 244px;
 }
 html[data-ui-layout="rail"] .cloud-chat-shell.history-open .cloud-chat-sidebar {
   border-right: none;
@@ -2301,7 +2355,12 @@ html[data-ui-layout="rail"] .msg-assistant .msg-bubble {
 }
 html[data-ui-layout="rail"] .msg-user .msg-bubble {
   max-width: 82%;
-  padding: 12px 16px;
+  /* Hug the text: the base 1.55 line-height + 12px vertical padding made a
+     one-line message read as a tall block. Tighter padding + line-height so
+     the bubble wraps close to the content (still comfortable when it wraps
+     to 2+ lines). */
+  padding: 8px 14px;
+  line-height: 1.4;
   border: none;
   border-radius: 16px;
   background: var(--ds-agnes);

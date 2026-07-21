@@ -1759,6 +1759,12 @@ function applySidebarCollapse(collapsed) {
 }
 
 function isSidebarCollapsed() {
+  // Rail has no mini-collapse: the conversations column is a slide-open
+  // panel (`history-open`), and the rail layout hides the un-collapse
+  // toggle (chat.css). A stored "collapsed" flag would therefore trap the
+  // user on an initials-only rail with no UI way back to the titled list.
+  // Always report expanded under rail; the mini feature stays for topnav.
+  if (document.documentElement.getAttribute("data-ui-layout") === "rail") return false;
   try { return localStorage.getItem(_SIDEBAR_KEY) === "1"; }
   catch (_) { return false; }
 }
