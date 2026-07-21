@@ -499,14 +499,6 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "",
         "   This should list the tables your account has grants for. Empty list",
         "   means your admin hasn't granted you access yet — contact them.",
-        "",
-        "   Tip: this setup session's transcript uploads to the server like any",
-        "   other (`agnes push` scrubs the PAT client-side first — see step 3).",
-        "   If a FUTURE session covers something the user does not want uploaded,",
-        "   they can type `/agnes-private` themselves — that session's transcript",
-        "   is then skipped by `agnes push` (audit-logged to",
-        "   `.claude/agnes-sessions-private-skipped.txt`) and the statusbar shows",
-        "   `🔒 agnes-private`.",
     ]
 
 

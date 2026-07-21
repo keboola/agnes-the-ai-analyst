@@ -75,18 +75,20 @@ def test_init_step_has_no_security_judgment_suppression():
     assert "! agnes init" not in joined
 
 
-def test_step4_tip_documents_agnes_private_without_suppression():
-    """The step-4 tip still documents `/agnes-private` for future
-    sensitive sessions, but no longer frames marking a session private as
-    off-limits to the agent ("deliberate action ... never run it for them").
-    The auto-mark-era claim stays gone too."""
+def test_step4_has_no_agnes_private_tip():
+    """The install prompt must NOT carry the `/agnes-private` private-session
+    tip — private-session guidance belongs in the workspace docs, not the
+    one-shot setup prompt. Step 4 ends at the catalog-grants hint."""
     from app.web.setup_instructions import _init_lines
 
     joined = "\n".join(_init_lines())
-    assert "/agnes-private" in joined
-    assert "already auto-marked" not in joined
+    assert "/agnes-private" not in joined
+    assert "agnes-sessions-private-skipped" not in joined
     assert "deliberate action" not in joined
     assert "never run it for them" not in joined
+    # Step 4 still verifies the data plane.
+    assert "4) Verify the data is queryable:" in joined
+    assert "agnes catalog" in joined
 
 
 def test_resolve_lines_no_plugins_unified_layout():

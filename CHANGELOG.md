@@ -24,7 +24,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   "never run it for them" clause. Hardened Claude Code security protocols read
   that copy as an attempt to bypass their protections and blocked the whole
   install; the legitimate mechanics (write the PAT to a file so it stays out of
-  the command-line argv) are unchanged.
+  the command-line argv) are unchanged. Also dropped the step-4 `/agnes-private`
+  private-session tip — that guidance belongs in the workspace docs, not the
+  one-shot setup prompt.
 
 ### Removed
 
