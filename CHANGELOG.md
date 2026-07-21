@@ -93,9 +93,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the command-line argv) are unchanged. Also dropped the step-4 `/agnes-private`
   private-session tip — that guidance belongs in the workspace docs, not the
   one-shot setup prompt.
-- **Chat Stop button actually interrupts the running turn.** The runner
-  called the SDK's async `interrupt()` without awaiting it, so cancel frames
-  never reached the agent and the turn ran to completion.
+- **Chat Stop button actually interrupts the running turn.** Two stacked
+  bugs: the runner called the SDK's async `interrupt()` without awaiting it,
+  and the single-consumer agent loop only read stdin frames between turns —
+  a cancel arriving mid-turn sat in the queue until the turn finished on its
+  own. Each turn now drains in a concurrent task while the loop keeps
+  watching stdin, so cancel interrupts the live turn; follow-up messages
+  arriving mid-turn are buffered and processed in order.
 
 ## [0.76.3] - 2026-07-21
 

@@ -635,3 +635,107 @@ def test_real_agent_loop_falls_back_to_block_tokens_without_stream_event(monkeyp
     tokens = [f["text"] for f in emitted if f["type"] == "token"]
     assert tokens == ["Hello"]
     assert not hasattr(client.options, "include_partial_messages")
+
+
+def test_real_agent_loop_interrupts_a_live_turn(monkeypatch):
+    """Devin Review on #975: a cancel arriving WHILE a turn is streaming must
+    interrupt it. The old single-consumer loop only read the queue between
+    turns, so the cancel sat unprocessed until the turn ended on its own.
+    Here the fake turn blocks until interrupt() is called — the test only
+    completes (within the timeout) if the cancel is handled mid-turn."""
+    from app.chat import runner
+
+    mod = _make_fake_sdk(monkeypatch, with_stream_event=True)
+
+    interrupted = asyncio.Event()
+
+    emitted: list = []
+    monkeypatch.setattr(runner, "_emit", emitted.append)
+
+    orig_init = mod.ClaudeSDKClient.__init__
+
+    def _init(self, options):
+        orig_init(self, options)
+
+        async def _interrupt():
+            self.calls.append(("interrupt", None))
+            interrupted.set()
+
+        self.interrupt = _interrupt
+
+        def _receive():
+            async def _gen():
+                yield mod.StreamEvent(
+                    uuid="u1",
+                    session_id="s1",
+                    event={
+                        "type": "content_block_delta",
+                        "delta": {"type": "text_delta", "text": "thinking…"},
+                    },
+                )
+                # Simulates a long-running turn: only ends once interrupted.
+                await interrupted.wait()
+
+            return _gen()
+
+        self.receive_response = _receive
+
+    monkeypatch.setattr(mod.ClaudeSDKClient, "__init__", _init)
+
+    async def _run():
+        queue: asyncio.Queue = asyncio.Queue()
+        queue.put_nowait({"type": "user_msg", "text": "hi"})
+        queue.put_nowait({"type": "cancel"})
+        queue.put_nowait({"type": "_eof"})
+        await asyncio.wait_for(runner._real_agent_loop(queue, Path("/tmp")), timeout=5)
+
+    asyncio.run(_run())
+
+    client = mod.ClaudeSDKClient.instances[-1]
+    assert ("interrupt", None) in client.calls
+    # The turn still closed out cleanly for the UI.
+    assert {"type": "done"} in emitted
+
+
+def test_real_agent_loop_buffers_user_msg_arriving_mid_turn(monkeypatch):
+    """A follow-up user_msg landing while a turn is in flight must not be
+    dropped (nor treated as a cancel) — it runs as the next turn, in order."""
+    from app.chat import runner
+
+    mod = _make_fake_sdk(monkeypatch, with_stream_event=True)
+
+    emitted: list = []
+    monkeypatch.setattr(runner, "_emit", emitted.append)
+
+    def _script(reply):
+        return [
+            mod.AssistantMessage(content=[mod.TextBlock(text=reply)]),
+            mod.ResultMessage(),
+        ]
+
+    orig_init = mod.ClaudeSDKClient.__init__
+
+    def _init(self, options):
+        orig_init(self, options)
+        self.scripts = [_script("first"), _script("second")]
+
+    monkeypatch.setattr(mod.ClaudeSDKClient, "__init__", _init)
+
+    async def _run():
+        queue: asyncio.Queue = asyncio.Queue()
+        # Both messages are already queued when the first turn starts — the
+        # second is consumed mid-turn by the queue watcher and must be
+        # buffered for after the turn.
+        queue.put_nowait({"type": "user_msg", "text": "one"})
+        queue.put_nowait({"type": "user_msg", "text": "two"})
+        queue.put_nowait({"type": "_eof"})
+        await asyncio.wait_for(runner._real_agent_loop(queue, Path("/tmp")), timeout=5)
+
+    asyncio.run(_run())
+
+    client = mod.ClaudeSDKClient.instances[-1]
+    queries = [c for c in client.calls if c[0] == "query"]
+    assert queries == [("query", "one"), ("query", "two")]
+    finals = [f["content"] for f in emitted if f["type"] == "assistant_message"]
+    assert finals == ["first", "second"]
+    assert [f for f in emitted if f == {"type": "done"}] == [{"type": "done"}] * 2
