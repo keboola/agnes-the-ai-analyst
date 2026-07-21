@@ -173,7 +173,12 @@ hash_config_files() {
   # Sort to keep hash stable across operator add/remove, missing files
   # contribute the empty string (sha256 of "" is well-defined). Run
   # from /opt/agnes to keep relative paths terse in the hash input.
-  ( cd /opt/agnes && for f in "${CONFIG_FILES[@]}"; do
+  # docker-compose.gcp-logging.yml is hashed here too (even though it is NOT
+  # in CONFIG_FILES, which are fetched unconditionally) so an overlay-only
+  # refresh triggers a recreate and actually lands on running containers.
+  # Absent on non-GCE hosts it contributes a stable "missing" line, so it
+  # never causes spurious drift there.
+  ( cd /opt/agnes && for f in "${CONFIG_FILES[@]}" docker-compose.gcp-logging.yml; do
       sha256sum "$f" 2>/dev/null || printf 'missing %s\n' "$f"
     done ) | sort | sha256sum | awk '{print $1}'
 }
@@ -185,6 +190,25 @@ for f in "${CONFIG_FILES[@]}"; do
     logger -t agnes-auto-upgrade "WARN: failed to fetch $f from $RAW_BASE — keeping existing /opt/agnes/$f"
   fi
 done
+
+# docker-compose.gcp-logging.yml is placement-driven: deliberately NOT in
+# CONFIG_FILES (those are fetched unconditionally). It must exist ONLY where
+# the deploy layer placed it -- the overlay-append further down gates on its
+# presence, and its gcplogs driver needs the GCE metadata server, so a
+# non-GCE host must never acquire it. But once present it still has to track
+# @main: if a service is dropped from the base compose (e.g. ws-gateway) while
+# a stale gcp-logging.yml keeps referencing it, the merged project becomes
+# invalid and every `docker compose` below fails (pull, config, up) -- which
+# silently strands the VM on its cached image. So refresh it in place, but
+# only when it already exists.
+if [ -f /opt/agnes/docker-compose.gcp-logging.yml ]; then
+  if curl -fsSL "$RAW_BASE/docker-compose.gcp-logging.yml" -o /opt/agnes/docker-compose.gcp-logging.yml.new 2>/dev/null; then
+    mv -f /opt/agnes/docker-compose.gcp-logging.yml.new /opt/agnes/docker-compose.gcp-logging.yml
+  else
+    rm -f /opt/agnes/docker-compose.gcp-logging.yml.new
+    logger -t agnes-auto-upgrade "WARN: failed to refresh docker-compose.gcp-logging.yml from $RAW_BASE -- keeping existing"
+  fi
+fi
 CONFIG_AFTER=$(hash_config_files)
 
 # `-s` (size > 0) instead of `-f` — guards against the corner case where
