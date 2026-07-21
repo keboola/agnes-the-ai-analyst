@@ -829,6 +829,42 @@ async def login_email_page(request: Request):
     return templates.TemplateResponse(request, "login_email.html", ctx)
 
 
+def _compute_data_stats() -> dict:
+    """Headline data-estate stats shared by /dashboard and /stack.
+
+    `tables` counts REGISTERED non-internal business tables (not synced
+    ones — a registry of 30 with 0 synced would otherwise read as "0").
+    Columns / rows / size come from sync_state, the canonical record of
+    what is actually on disk locally. Extracted so the two surfaces that
+    render this strip can never drift apart.
+    """
+    all_states = sync_state_repo().get_all_states()
+    total_tables = table_registry_repo().count_non_internal()
+    total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
+    total_columns = sum(s.get("columns", 0) or 0 for s in all_states)
+    total_size_bytes = sum(s.get("file_size_bytes", 0) or 0 for s in all_states)
+    last_updated = max(
+        (s.get("last_sync") for s in all_states if s.get("last_sync")),
+        default=None,
+    )
+    # Trim microseconds for display — "2026-07-21 09:11:30" reads cleaner than
+    # the raw "...:30.466650". Defensive against str or datetime inputs.
+    last_updated_display = str(last_updated).split(".")[0] if last_updated else None
+    return {
+        "tables": total_tables,
+        "total_tables": total_tables,
+        "columns": total_columns,
+        "rows_display": f"{total_rows:,}" if total_rows else "0",
+        "size_display": _humanbytes(total_size_bytes, precision=1) if total_size_bytes else "0 MB",
+        "total_rows": total_rows,
+        "size_bytes": total_size_bytes,
+        "last_updated": last_updated,
+        "last_updated_display": last_updated_display,
+        "remote_tables": 0,
+        "local_tables": total_tables,
+    }
+
+
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(
     request: Request,
@@ -842,16 +878,12 @@ async def dashboard(
     enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
     datasets = get_datasets()
 
-    # Stats. `total_tables` counts REGISTERED business tables, not synced
-    # ones (a registry of 30 with 0 ever synced would otherwise render as
-    # "0"). Internal source_type tables (agnes_*) live in their own card on
-    # /catalog and are excluded from the headline counter. Columns + size
-    # come from sync_state, which is the canonical source for "what's
-    # actually on disk locally".
-    total_tables = table_registry_repo().count_non_internal()
-    total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
-    total_columns = sum(s.get("columns", 0) or 0 for s in all_states)
-    total_size_bytes = sum(s.get("file_size_bytes", 0) or 0 for s in all_states)
+    # Headline stats — shared with /stack via _compute_data_stats() so the
+    # two surfaces can't drift. Internal source_type tables (agnes_*) live
+    # in their own card on /catalog and are excluded from the counter.
+    data_stats = _compute_data_stats()
+    total_tables = data_stats["total_tables"]
+    total_rows = data_stats["total_rows"]
 
     # Build user_info object expected by dashboard template
     is_admin = is_user_admin(user["id"], conn)
@@ -883,20 +915,7 @@ async def dashboard(
         account_status="active",
         account_details=None,
         telegram_status={"linked": False},
-        data_stats={
-            "tables": total_tables,
-            "total_tables": total_tables,
-            "columns": total_columns,
-            "rows_display": f"{total_rows:,}" if total_rows else "0",
-            "size_display": _humanbytes(total_size_bytes, precision=1) if total_size_bytes else "0 MB",
-            "total_rows": total_rows,
-            "last_updated": max(
-                (s.get("last_sync") for s in all_states if s.get("last_sync")),
-                default=None,
-            ),
-            "remote_tables": 0,
-            "local_tables": total_tables,
-        },
+        data_stats=data_stats,
         categories=[],
         metrics_data=[],
         desktop_status={"linked": False},
@@ -1607,6 +1626,9 @@ async def my_stack_page(
         memory_cards=memory_card_models,
         upload_entries=upload_entries,
         upload_cards=upload_card_models,
+        # Ambient data-estate stats rendered as a borderless strip above the
+        # kind tabs (shared with /dashboard via _compute_data_stats()).
+        data_stats=_compute_data_stats(),
     )
     return templates.TemplateResponse(request, "stack_unified.html", ctx)
 

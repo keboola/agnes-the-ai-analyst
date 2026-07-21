@@ -50,6 +50,10 @@
     --ds-bg: #f6f7fa;
     --ds-surface: #ffffff;
     --ds-surface-dim: #f0f2f6;
+    /* Sunken — inset panels that must read a shade DARKER than the page
+       canvas (grouping trays), unlike --ds-surface-dim which is a near-bg
+       wash. */
+    --ds-surface-sunken: #eaeef2;
     --ds-border: #e4e7ee;
     --ds-border-light: #f0f2f6;
 
@@ -269,6 +273,7 @@
     --ds-bg: #f3f6fa;
     --ds-surface: #ffffff;
     --ds-surface-dim: #f5f7fb;
+    --ds-surface-sunken: #eaeef2;
     --ds-border: #e2e8f0;
     --ds-border-light: #edf2f8;
 
@@ -444,6 +449,9 @@
     --ds-bg: #0c1224;
     --ds-surface: #141a30;
     --ds-surface-dim: #1c2440;
+    /* Sunken reads a touch lighter than the dark canvas so grouping trays
+       stay visible (the light-theme "darker than bg" inverts on dark). */
+    --ds-surface-sunken: #1a2038;
     --ds-border: #283255;
     --ds-border-light: #1f2845;
 

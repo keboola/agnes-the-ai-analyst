@@ -1,6 +1,7 @@
 {% extends "base_index.html" %}
 {% from "macros/_connect_banner.html" import connect_banner %}
 {% from "macros/_catalog_card.html" import catalog_card %}
+{% import "macros/_icon.html" as ico %}
 {# Unified My Stack — the #896 prototype IA: ONE personal-collection
    surface across kinds (Data · Plugins · Memory · Upload) instead of
    per-page stack tabs. Served at /stack; the rail chrome's "My Stack"
@@ -18,10 +19,39 @@
 <link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
 <style>
   /* Page chrome only — the card lives in catalog_card.css. */
-  .uc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 6px; }
-  .uc-head h1 { font-size: 24px; margin: 0 0 4px; }
+  .uc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 12px; }
+  .uc-head h1 { font-size: 24px; margin: 0 0 8px; }
   .uc-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 64ch; }
-  .uc-kindtabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--ds-border); margin: 16px 0 18px; }
+  /* Data-estate stat strip — one flat grey tray between the head and the
+     kind tabs, spanning the full content width. The fill is the sunken
+     surface token — a shade darker than the page canvas in light themes (a
+     touch lighter in dark) — since `--ds-surface-dim` is too close to the
+     page bg to read; no border, no shadow. Metrics are
+     distributed edge-to-edge; the "Updated" note + a real refresh button sit
+     at the far right. Each metric is a transparent item (accent icon in a
+     mint-tinted circular badge + hairline divider + value/label). Stacks on
+     mobile. */
+  .stk-stats { display: flex; align-items: center; gap: 20px 32px; flex-wrap: wrap; margin: 22px 0 8px; padding: 16px 26px; background: var(--ds-surface-sunken); border-radius: 16px; }
+  .stk-stats__metrics { flex: 1 1 auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px 40px; }
+  .stk-stat { display: flex; align-items: center; gap: 16px; }
+  .stk-stat__icon { flex-shrink: 0; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--ds-primary-light); color: var(--ds-primary); }
+  .stk-stat__icon .ui-ico { display: block; }
+  .stk-stat__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding-left: 16px; border-left: 1px solid var(--ds-border); }
+  .stk-stat__value { font-size: 22px; font-weight: 700; line-height: 1.15; letter-spacing: -0.02em; color: var(--ds-text-primary); font-variant-numeric: tabular-nums; }
+  .stk-stat__label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ds-text-muted); }
+  .stk-stats__meta { flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; }
+  .stk-stats__updated { font-size: 12px; color: var(--ds-text-muted); }
+  .stk-stats__refresh { flex-shrink: 0; width: 30px; height: 30px; border: none; border-radius: 50%; background: transparent; color: var(--ds-text-muted); display: grid; place-items: center; cursor: pointer; transition: background .15s ease, color .15s ease; }
+  .stk-stats__refresh:hover { background: var(--ds-primary-light); color: var(--ds-primary); }
+  .stk-stats__refresh .ui-ico { display: block; }
+  .stk-stats__refresh.is-spinning .ui-ico { animation: stk-spin .7s linear infinite; }
+  @keyframes stk-spin { to { transform: rotate(360deg); } }
+  @media (max-width: 640px) {
+    .stk-stats { gap: 16px 24px; padding: 16px 18px; }
+    .stk-stats__metrics { justify-content: flex-start; gap: 16px 28px; }
+    .stk-stats__meta { flex-basis: 100%; justify-content: flex-start; }
+  }
+  .uc-kindtabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--ds-border); margin: 24px 0 18px; }
   .uc-kindtab { display: flex; align-items: center; gap: 7px; border: none; background: none; cursor: pointer; padding: 9px 14px; font-size: 14px; font-weight: 500; font-family: inherit; color: var(--ds-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -1px; }
   .uc-kindtab:hover { color: var(--ds-text-primary); }
   .uc-kindtab.on { color: var(--ds-text-primary); font-weight: 600; border-bottom-color: var(--ds-primary); }
@@ -64,6 +94,39 @@
   </div>
   <button type="button" class="cc-btn" data-new-upload style="flex-shrink:0">+ New upload</button>
 </div>
+
+{# ── Ambient data-estate stats (borderless strip). These describe the whole
+     connected data estate Agnes can draw on, not the personal stack — so they
+     read as light context, not hero cards. The whole strip hides when nothing
+     is synced yet (tables == 0), and any individual zero-valued metric is
+     skipped so a stray "0 columns" never renders as broken. #}
+{% if data_stats and data_stats.tables %}
+{% set stk_metrics = [
+     {'label': 'Tables', 'value': data_stats.tables, 'show': data_stats.tables, 'icon': 'table'},
+     {'label': 'Columns', 'value': data_stats.columns, 'show': data_stats.columns, 'icon': 'data'},
+     {'label': 'Rows', 'value': data_stats.rows_display, 'show': data_stats.total_rows, 'icon': 'rows'},
+     {'label': 'Data size', 'value': data_stats.size_display, 'show': data_stats.size_bytes, 'icon': 'pie'},
+] %}
+<div class="stk-stats" aria-label="Connected data estate">
+  <div class="stk-stats__metrics">
+    {% for m in stk_metrics if m.show %}
+    <div class="stk-stat">
+      <span class="stk-stat__icon">{{ ico.icon(m.icon, 20) }}</span>
+      <span class="stk-stat__body">
+        <span class="stk-stat__value">{{ m.value }}</span>
+        <span class="stk-stat__label">{{ m.label }}</span>
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+  {% if data_stats.last_updated_display %}
+  <div class="stk-stats__meta">
+    <span class="stk-stats__updated">Updated {{ data_stats.last_updated_display }}</span>
+    <button type="button" class="stk-stats__refresh" data-refresh-stats title="Refresh" aria-label="Refresh data stats">{{ ico.icon('refresh', 15) }}</button>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
 
 <div class="uc-kindtabs" role="tablist" aria-label="Stack kinds">
   <button class="uc-kindtab on" data-kind="data" role="tab" aria-selected="true"><span class="uc-dot uc-dot-data"></span>Data<span class="uc-count">{{ data_cards|length }}</span></button>
@@ -149,6 +212,16 @@
   // data-remove-hides on the grids makes an unsubscribe drop the card.
   let pluginsLoaded = false;
   const renderCatalogCard = window.renderCatalogCard;
+
+  // ── Refresh the data-estate stats. They're server-rendered from
+  //    sync_state, so a reload re-reads the current footprint. Spin the
+  //    glyph for feedback, then reload on the next frame.
+  const refreshBtn = document.querySelector('[data-refresh-stats]');
+  if (refreshBtn) refreshBtn.addEventListener('click', () => {
+    refreshBtn.classList.add('is-spinning');
+    refreshBtn.disabled = true;
+    requestAnimationFrame(() => window.location.reload());
+  });
 
   const tabs = document.querySelectorAll('.uc-kindtab');
   const views = document.querySelectorAll('[data-kind-view]');
