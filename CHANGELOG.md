@@ -12,6 +12,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- The authoring Studio (`/admin/studio*`) can now be disabled per-instance.
+  Default stays on; set `AGNES_STUDIO_ENABLED=0` (the infra/Terraform `.env`
+  override, exposed as the `studio_enabled` module variable) or
+  `studio.enabled: false` in `instance.yaml`. When off, the Studio nav entry
+  and command-palette items are hidden, `/admin/studio*` (incl. the admin
+  moderation queue) redirects to home, and the whole suggestion API — public
+  (`POST /api/studio/suggestions`, `GET /api/studio/suggestions/mine`) and
+  admin (`/api/admin/authoring-suggestions*`) — returns 403 `studio_disabled`.
+  Pending suggestions persist and reappear when Studio is re-enabled. The
+  store submission surface (`/api/store/entities/from-markdown`, also used by
+  the CLI and MCP) is a separate feature and is not gated.
+
 ### Changed
 
 ### Fixed
