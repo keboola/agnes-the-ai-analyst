@@ -39,8 +39,12 @@ async index; private uploads surface as catalog "Upload" cards linking `/library
 | 8 | Q | Shared-collection creation on `/library` is admin-gated; private upload via My Stack works for all. Confirm intended MVP permissions. | `library.html:185` |
 
 ### Fixed in this branch
-- **#6:** the modal now parses the 422, surfaces the rejection reason, and rolls
-  back the empty collection instead of silently reloading.
+- **#6:** the "+ New upload" modal now navigates to the new collection's detail
+  page (`/library/<slug>`) on success **and** on 422 — matching the existing
+  library upload flow (`library_detail.html`). Rejected files show their status +
+  reason + a re-ingest action there, instead of a silent reload onto `/stack`
+  that hid what happened. (The collection is kept, consistent with the
+  established pattern — not deleted.)
 
 ## Not yet addressed (need MVP spec / decision)
 - **#4** — tabular data upload (the likely crux). Decide: documents-only (RAG) or
