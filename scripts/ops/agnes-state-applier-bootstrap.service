@@ -23,7 +23,16 @@ ExecStart=/bin/bash -c 'id -u agnes-applier >/dev/null 2>&1 || useradd --system 
 ExecStart=/usr/sbin/usermod -aG docker agnes-applier
 ExecStart=/bin/mkdir -p /data/state /data/postgres
 ExecStart=/bin/chown -R agnes-applier:agnes-applier /data/state
-ExecStart=/bin/bash -c 'chown 70:70 /data/postgres && chmod 700 /data/postgres'
+# -R matters here, not just on /data/state above: this unit reruns on every
+# boot (RemainAfterExit doesn't skip a fresh systemd start after a VM
+# recreate), and /data/postgres is on the persistent data disk — it survives
+# a boot-disk-only VM recreate with its *existing* PGDATA contents already
+# on disk. A non-recursive chown fixed only the top-level directory, leaving
+# nested files (verified live: global/pg_filenode.map) owned by whatever the
+# previous instance's postgres container mapped uid 70 to, so a fresh
+# container on the recreated VM hit "Permission denied" reading its own data
+# directory. Observed live on agnes-dev 2026-07-21 after a VM delete+insert.
+ExecStart=/bin/bash -c 'chown -R 70:70 /data/postgres && chmod 700 /data/postgres'
 # Make /opt/agnes/.env readable by the applier. The applier reads only
 # AGNES_TAG from it (via its _env_get helper — it does NOT shell-source
 # the file); docker compose's --env-file path also reads it directly.
