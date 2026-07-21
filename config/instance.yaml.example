@@ -663,6 +663,18 @@ chat:
   # llm:
   #   auth: api_key
 
+# --- Hosted Data Apps (optional) ---
+# Hosted data apps (user web applications run next to the data)
+data_apps:
+  enabled: false
+  runtime_image: "keboolapublic.azurecr.io/data-app-python-js:1.6.2_python-3.13_node-24"
+  subdomain_base: ""            # e.g. "apps.example.com"; "" = path-prefix only
+  default_idle_timeout_s: 1800
+  default_sleep_mode: recreate  # recreate | pause
+  default_mem_limit: 1g
+  default_cpus: 1.0
+  max_apps_per_user: 3
+
 
 # --- Initial Workspace Template (optional) ---
 #

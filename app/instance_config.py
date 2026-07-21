@@ -806,6 +806,11 @@ def get_corporate_memory_config() -> dict:
     return get_value("corporate_memory", default={})
 
 
+def get_data_apps_config() -> dict:
+    """``data_apps:`` block — hosted user web apps feature (v96)."""
+    return get_value("data_apps", default={})
+
+
 def get_guardrails_config() -> dict:
     """Flea-market upload-guardrail config (see docs/STORE_GUARDRAILS.md).
 
