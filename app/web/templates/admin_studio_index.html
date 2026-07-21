@@ -1,0 +1,35 @@
+{% extends "base_page.html" %}
+
+{% block title %}Studio — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% set page_hero_eyebrow = "Agnes Studio" %}
+{% set page_hero_title = "Studio" %}
+{% set page_hero_subtitle = "Chat-assisted builders for data packages, connections, and content — describe what you need and the assistant grounds it in your live instance." %}
+
+{% block head_extra %}
+<style>
+  .studio-index-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: var(--space-4);
+  }
+  .studio-index-card { display: flex; flex-direction: column; gap: var(--space-1); }
+  .studio-index-card .ttl { font-size: var(--text-md); font-weight: var(--font-bold); color: var(--ds-text-primary); }
+  .studio-index-card .desc { font-size: var(--text-sm); color: var(--ds-text-secondary); line-height: var(--leading-relaxed); }
+  .studio-index-admin-row { margin-top: var(--space-5); font-size: var(--text-sm); color: var(--ds-text-secondary); }
+</style>
+{% endblock %}
+
+{% block page %}
+<div class="studio-index-grid">
+  {% for d in domains %}
+  {% call ds.panel(href='/admin/studio/' ~ d.slug, klass='studio-index-card') %}
+    <div class="ttl">{{ d.title }}</div>
+    <div class="desc">{{ d.subtitle }}</div>
+  {% endcall %}
+  {% endfor %}
+</div>
+{% if is_admin %}
+<p class="studio-index-admin-row">Admin: review pending suggestions in the <a href="/admin/studio/suggestions">moderation queue</a>.</p>
+{% endif %}
+{% endblock %}

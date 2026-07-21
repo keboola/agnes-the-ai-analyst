@@ -83,8 +83,40 @@ def test_skill_domain_registered_as_direct_submit():
     assert spec.endpoint == "/api/store/entities/from-markdown"
     assert spec.profile == "skill-author"
     assert [f.key for f in spec.fields] == ["name", "description", "category", "skill_md"]
-    # every other domain still routes through the suggestions queue
-    assert all(not d.submit_directly for s, d in STUDIO_DOMAINS.items() if s != "skill")
+    # every other domain except "agent" (the store's other direct-submit
+    # type) still routes through the suggestions queue
+    assert all(not d.submit_directly for s, d in STUDIO_DOMAINS.items() if s not in ("skill", "agent"))
+
+
+def test_agent_domain_registered_as_direct_submit():
+    from app.web.studio import get_domain
+
+    spec = get_domain("agent")
+    assert spec is not None
+    assert spec.submit_directly is True
+    assert spec.endpoint == "/api/store/entities/from-markdown"
+    assert spec.profile == "agent-author"
+    assert [f.key for f in spec.fields] == ["name", "description", "category", "skill_md"]
+
+
+def test_agent_studio_renders_publish_for_non_admin(seeded_app):
+    c = seeded_app["client"]
+    resp = c.get("/admin/studio/agent", headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    body = resp.text
+    assert "isAdmin: false" in body
+    assert "submitDirect: true" in body
+    assert ">Publish<" in body
+    assert "Submit for approval" not in body
+
+
+def test_agent_studio_renders_for_admin(seeded_app):
+    c = seeded_app["client"]
+    resp = c.get("/admin/studio/agent", headers=_auth(seeded_app["admin_token"]))
+    assert resp.status_code == 200
+    assert "submitDirect: true" in resp.text
+    assert 'id="studio-f-skill_md"' in resp.text  # the agent content textarea rendered
+    assert 'domain: "agent"' in resp.text
 
 
 def test_skill_studio_renders_publish_for_non_admin(seeded_app):
@@ -112,3 +144,30 @@ def test_existing_domains_keep_suggestion_flow(seeded_app):
     resp = c.get("/admin/studio/data-package", headers=_auth(seeded_app["analyst_token"]))
     assert "submitDirect: false" in resp.text
     assert "Submit for approval" in resp.text
+
+
+def test_studio_index_lists_every_domain(seeded_app):
+    from app.web.studio import STUDIO_DOMAINS
+
+    c = seeded_app["client"]
+    resp = c.get("/admin/studio", headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    body = resp.text
+    for slug, domain in STUDIO_DOMAINS.items():
+        assert f"/admin/studio/{slug}" in body
+        assert domain.title in body
+
+
+def test_studio_index_requires_login(seeded_app):
+    c = seeded_app["client"]
+    resp = c.get("/admin/studio", follow_redirects=False)
+    assert resp.status_code in (302, 307, 401, 403)
+    if resp.status_code in (302, 307):
+        assert "/login" in resp.headers.get("location", "")
+
+
+def test_primary_nav_links_to_studio(seeded_app):
+    c = seeded_app["client"]
+    resp = c.get("/admin/studio", headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    assert 'href="/admin/studio"' in resp.text

@@ -511,28 +511,31 @@ def register_foundation_tools(
     async def store_publish_markdown(
         name: str,
         skill_md: str,
+        type: str = "skill",
         description: str | None = None,
         category: str | None = None,
     ) -> dict:
-        """Publish a skill to the store from Markdown content — no ZIP needed.
+        """Publish a skill or agent to the store from Markdown content — no ZIP needed.
 
-        The server synthesizes the SKILL.md folder and routes it through the same
+        The server synthesizes the single-file bundle (``<name>/SKILL.md`` for a
+        skill, ``<name>.md`` for an agent) and routes it through the same
         guardrail + review pipeline as a ZIP upload. The result may be held for
         automated review (``visibility_status: pending``) before it appears.
         Mirrors ``POST /api/store/entities/from-markdown`` and
         ``agnes store publish-md``.
 
         Args:
-            name:        Skill name — lowercase letters, digits, dashes.
-            skill_md:    The SKILL.md content (frontmatter optional; synthesized
+            name:        Name — lowercase letters, digits, dashes.
+            skill_md:    The Markdown content (frontmatter optional; synthesized
                          from ``name``/``description`` when absent).
+            type:        ``"skill"`` (default) or ``"agent"``.
             description: One-line *use when …* trigger (goes into frontmatter).
             category:    Optional store category (case-insensitive).
 
         Returns the created entity — ``{"id", "name", "invocation_name",
         "version", "visibility_status", …}``.
         """
-        payload: dict = {"type": "skill", "name": name, "skill_md": skill_md}
+        payload: dict = {"type": type, "name": name, "skill_md": skill_md}
         if description:
             payload["description"] = description
         if category:
