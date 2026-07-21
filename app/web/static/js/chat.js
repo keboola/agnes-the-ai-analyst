@@ -2021,6 +2021,563 @@ function renderCoPresence(host, participants) {
   host.appendChild(btn);
 }
 
+// ---------------------------------------------------------------------------
+// §6 "+" upload menu and file-upload dialogs
+// ---------------------------------------------------------------------------
+// Three upload paths:
+//   data   → POST /api/chat/uploads  kind=data   (+ optional register_as_table)
+//   store  → POST /api/store/entities             (mirrors store_upload.html)
+//   media  → POST /api/chat/uploads  kind=image|document
+//
+// Menu is a popover anchored inside the composer form (position: relative).
+// Dialogs are full-screen overlays (position: fixed, z-index: 50).
+
+(function () {
+  // ── helpers ──────────────────────────────────────────────────────────────
+
+  function escHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+    );
+  }
+
+  function fmtSize(n) {
+    if (n < 1024) return n + " B";
+    if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+    return (n / 1048576).toFixed(1) + " MB";
+  }
+
+  // ── "+" button + menu ─────────────────────────────────────────────────────
+
+  const plusBtn  = $("chat-plus-btn");
+  const plusMenu = $("chat-plus-menu");
+
+  function closePlusMenu() {
+    if (!plusMenu || !plusBtn) return;
+    plusMenu.hidden = true;
+    plusBtn.classList.remove("is-open");
+    plusBtn.setAttribute("aria-expanded", "false");
+  }
+
+  function openPlusMenu() {
+    if (!plusMenu || !plusBtn) return;
+    plusMenu.hidden = false;
+    plusBtn.classList.add("is-open");
+    plusBtn.setAttribute("aria-expanded", "true");
+    // Focus first item for keyboard users.
+    const first = plusMenu.querySelector("[role=menuitem]");
+    if (first) first.focus();
+  }
+
+  if (plusBtn) {
+    plusBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (plusMenu && !plusMenu.hidden) { closePlusMenu(); return; }
+      openPlusMenu();
+    });
+  }
+
+  // Close on Esc or outside click.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && plusMenu && !plusMenu.hidden) {
+      closePlusMenu();
+      if (plusBtn) plusBtn.focus();
+    }
+  });
+  document.addEventListener("click", (e) => {
+    if (!plusMenu || plusMenu.hidden) return;
+    if (plusMenu.contains(e.target) || e.target === plusBtn) return;
+    closePlusMenu();
+  });
+
+  // Keyboard nav inside the menu (arrow keys).
+  if (plusMenu) {
+    plusMenu.addEventListener("keydown", (e) => {
+      const items = Array.from(plusMenu.querySelectorAll("[role=menuitem]"));
+      const idx   = items.indexOf(document.activeElement);
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (idx < items.length - 1) items[idx + 1].focus();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        if (idx > 0) items[idx - 1].focus();
+      } else if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        if (items[idx]) items[idx].click();
+      } else if (e.key === "Escape") {
+        closePlusMenu();
+        if (plusBtn) plusBtn.focus();
+      }
+    });
+  }
+
+  // ── generic dialog helpers ────────────────────────────────────────────────
+
+  // Open an upload overlay.  Returns a cleanup fn.
+  function openOverlay(overlayId) {
+    const overlay = $(overlayId);
+    if (!overlay) return;
+    closePlusMenu();
+    overlay.hidden = false;
+    // Focus the first focusable element in the panel.
+    const first = overlay.querySelector(
+      'button, [href], input, [tabindex]:not([tabindex="-1"])'
+    );
+    if (first) first.focus();
+
+    // Esc closes.
+    function onKey(e) {
+      if (e.key === "Escape") { closeOverlay(overlayId); cleanup(); }
+    }
+    document.addEventListener("keydown", onKey);
+
+    function cleanup() {
+      document.removeEventListener("keydown", onKey);
+    }
+    return cleanup;
+  }
+
+  function closeOverlay(overlayId) {
+    const overlay = $(overlayId);
+    if (overlay) overlay.hidden = true;
+  }
+
+  // Wire all [data-close-upload] buttons inside a given overlay.
+  function wireCloseButtons(overlayId) {
+    const overlay = $(overlayId);
+    if (!overlay) return;
+    overlay.querySelectorAll("[data-close-upload]").forEach((btn) => {
+      btn.addEventListener("click", () => closeOverlay(overlayId));
+    });
+    // Click on backdrop (the overlay itself, not the panel) also closes.
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) closeOverlay(overlayId);
+    });
+  }
+
+  // Generic drop-zone wiring.
+  function wireDropZone(dropEl, fileInput, onFile) {
+    if (!dropEl || !fileInput) return;
+
+    // Click anywhere on the zone → open picker.
+    dropEl.addEventListener("click", (e) => {
+      if (e.target.tagName !== "BUTTON") fileInput.click();
+    });
+    dropEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); }
+    });
+
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files && fileInput.files[0]) onFile(fileInput.files[0]);
+    });
+
+    dropEl.addEventListener("dragenter", (e) => { e.preventDefault(); dropEl.classList.add("is-dragover"); });
+    dropEl.addEventListener("dragover",  (e) => { e.preventDefault(); e.stopPropagation(); dropEl.classList.add("is-dragover"); });
+    dropEl.addEventListener("dragleave", (e) => {
+      if (dropEl.contains(e.relatedTarget)) return;
+      dropEl.classList.remove("is-dragover");
+    });
+    dropEl.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropEl.classList.remove("is-dragover");
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) onFile(f);
+    });
+  }
+
+  function showDropFile(dropEl, filenameEl, file) {
+    dropEl.classList.add("has-file");
+    if (filenameEl) {
+      filenameEl.textContent = escHtml(file.name) + " (" + fmtSize(file.size) + ")";
+      filenameEl.hidden = false;
+    }
+  }
+
+  function clearDropFile(dropEl, filenameEl) {
+    dropEl.classList.remove("has-file");
+    if (filenameEl) { filenameEl.textContent = ""; filenameEl.hidden = true; }
+  }
+
+  function showDialogError(errorEl, msg) {
+    if (!errorEl) return;
+    errorEl.textContent = msg;
+    errorEl.hidden = false;
+  }
+
+  function clearDialogError(errorEl) {
+    if (!errorEl) return;
+    errorEl.textContent = "";
+    errorEl.hidden = true;
+  }
+
+  function setSubmitBusy(btn, busy, label) {
+    if (!btn) return;
+    btn.disabled = busy;
+    if (busy) {
+      btn.innerHTML = '<span class="cloud-chat-upload-spinner" aria-hidden="true"></span>' + escHtml(label || "Uploading…");
+    } else {
+      btn.textContent = label || "Upload";
+    }
+  }
+
+  // ── Dialog 1: Data file ───────────────────────────────────────────────────
+
+  const DATA_OVERLAY = "chat-upload-data-overlay";
+  wireCloseButtons(DATA_OVERLAY);
+
+  const dataDropEl      = $("chat-data-drop");
+  const dataFileInput   = $("chat-data-file");
+  const dataFilenameEl  = $("chat-data-drop-filename");
+  const dataRegisterCb  = $("chat-data-register");
+  const dataTableNameRow = $("chat-data-table-name-row");
+  const dataTableNameIn = $("chat-data-table-name");
+  const dataErrorEl     = $("chat-data-error");
+  const dataSubmitBtn   = $("chat-data-submit");
+
+  let _dataFile = null;
+
+  // Show/hide table-name field when checkbox changes.
+  if (dataRegisterCb) {
+    dataRegisterCb.addEventListener("change", () => {
+      if (dataTableNameRow) dataTableNameRow.hidden = !dataRegisterCb.checked;
+    });
+  }
+
+  function resetDataDialog() {
+    _dataFile = null;
+    if (dataDropEl) clearDropFile(dataDropEl, dataFilenameEl);
+    if (dataFileInput) dataFileInput.value = "";
+    if (dataRegisterCb) dataRegisterCb.checked = false;
+    if (dataTableNameRow) dataTableNameRow.hidden = true;
+    if (dataTableNameIn) dataTableNameIn.value = "";
+    if (dataErrorEl) clearDialogError(dataErrorEl);
+    if (dataSubmitBtn) { dataSubmitBtn.disabled = true; dataSubmitBtn.textContent = "Upload"; }
+  }
+
+  wireDropZone(dataDropEl, dataFileInput, (file) => {
+    const MAX = 20 * 1024 * 1024;
+    if (file.size > MAX) {
+      showDialogError(dataErrorEl, "File is too large — max 20 MB per upload.");
+      return;
+    }
+    clearDialogError(dataErrorEl);
+    _dataFile = file;
+    showDropFile(dataDropEl, dataFilenameEl, file);
+    if (dataSubmitBtn) dataSubmitBtn.disabled = false;
+    // Auto-fill table name from filename stem.
+    if (dataTableNameIn) {
+      const stem = file.name.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9_]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "") || "upload";
+      dataTableNameIn.value = stem;
+    }
+  });
+
+  if (dataSubmitBtn) {
+    dataSubmitBtn.addEventListener("click", async () => {
+      if (!_dataFile) return;
+      clearDialogError(dataErrorEl);
+      setSubmitBusy(dataSubmitBtn, true, "Uploading…");
+
+      try {
+        const fd = new FormData();
+        fd.append("file", _dataFile);
+        fd.append("kind", "data");
+        if (dataRegisterCb && dataRegisterCb.checked) {
+          fd.append("register_as_table", "true");
+          const tname = (dataTableNameIn && dataTableNameIn.value.trim()) || "";
+          if (tname) fd.append("table_name", tname);
+        }
+
+        const res = await fetch("/api/chat/uploads", {
+          method: "POST", body: fd, credentials: "same-origin",
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          closeOverlay(DATA_OVERLAY);
+          resetDataDialog();
+          showToast(data.hint || "File uploaded to your workspace.", "ok", { durationMs: 5000 });
+        } else {
+          let msg = "Upload failed.";
+          if (res.status === 413) {
+            msg = "File too large — max 20 MB per chat upload.";
+          } else if (res.status === 415) {
+            msg = "File type not allowed for data uploads. Use CSV, Parquet, or Excel.";
+          } else {
+            try {
+              const j = await res.json();
+              msg = (j && j.detail) ? String(j.detail) : msg;
+            } catch (_) {}
+          }
+          showDialogError(dataErrorEl, msg);
+        }
+      } catch (err) {
+        showDialogError(dataErrorEl, "Upload failed: " + String(err));
+      } finally {
+        setSubmitBusy(dataSubmitBtn, false, "Upload");
+      }
+    });
+  }
+
+  // ── Dialog 2: Store submission ────────────────────────────────────────────
+
+  const STORE_OVERLAY = "chat-upload-store-overlay";
+  wireCloseButtons(STORE_OVERLAY);
+
+  const storeDropEl     = $("chat-store-drop");
+  const storeFileInput  = $("chat-store-file");
+  const storeFilenameEl = $("chat-store-drop-filename");
+  const storeErrorEl    = $("chat-store-error");
+  const storeSubmitBtn  = $("chat-store-submit");
+  const storeTiles      = $("chat-store-type-tiles");
+
+  let _storeFile = null;
+
+  // Store type-tile interaction (radio + visual active class).
+  if (storeTiles) {
+    storeTiles.querySelectorAll("label").forEach((lbl) => {
+      lbl.addEventListener("click", () => {
+        storeTiles.querySelectorAll("label").forEach((l) => l.classList.remove("is-active"));
+        lbl.classList.add("is-active");
+      });
+    });
+  }
+
+  function resetStoreDialog() {
+    _storeFile = null;
+    if (storeDropEl) clearDropFile(storeDropEl, storeFilenameEl);
+    if (storeFileInput) storeFileInput.value = "";
+    if (storeErrorEl) clearDialogError(storeErrorEl);
+    if (storeSubmitBtn) { storeSubmitBtn.disabled = true; storeSubmitBtn.textContent = "Submit to Store"; }
+    // Reset type to skill.
+    if (storeTiles) {
+      storeTiles.querySelectorAll("label").forEach((l) => l.classList.remove("is-active"));
+      const first = storeTiles.querySelector("label");
+      if (first) first.classList.add("is-active");
+      const radio = storeTiles.querySelector('input[value="skill"]');
+      if (radio) radio.checked = true;
+    }
+  }
+
+  wireDropZone(storeDropEl, storeFileInput, (file) => {
+    const MAX = 50 * 1024 * 1024;
+    if (file.size > MAX) {
+      showDialogError(storeErrorEl, "File too large — max 50 MB for store submissions.");
+      return;
+    }
+    if (!/\.(zip|skill)$/i.test(file.name)) {
+      showDialogError(storeErrorEl, "Only .zip or .skill files are accepted for store submissions.");
+      return;
+    }
+    clearDialogError(storeErrorEl);
+    _storeFile = file;
+    showDropFile(storeDropEl, storeFilenameEl, file);
+    if (storeSubmitBtn) storeSubmitBtn.disabled = false;
+  });
+
+  if (storeSubmitBtn) {
+    storeSubmitBtn.addEventListener("click", async () => {
+      if (!_storeFile) return;
+      clearDialogError(storeErrorEl);
+      setSubmitBusy(storeSubmitBtn, true, "Submitting…");
+
+      try {
+        // Step 1: run /preview to extract frontmatter (name, description).
+        const type = storeTiles
+          ? (storeTiles.querySelector('input[name="chat-store-type"]:checked') || {}).value || "skill"
+          : "skill";
+
+        const previewFd = new FormData();
+        previewFd.append("file", _storeFile);
+        previewFd.append("type", type);
+        const previewRes = await fetch("/api/store/entities/preview", {
+          method: "POST", body: previewFd, credentials: "same-origin",
+        });
+
+        let name = "", description = "", title = "";
+        if (previewRes.ok) {
+          const preview = await previewRes.json();
+          name        = preview.name        || "";
+          description = preview.description || "";
+          title       = preview.title       || name;
+        } else {
+          // Validation failed (e.g. wrong type or malformed zip) — surface error.
+          let msg = "Bundle validation failed.";
+          try {
+            const j = await previewRes.json();
+            if (j && j.detail) {
+              msg = typeof j.detail === "object"
+                ? (j.detail.code || "validation_failed")
+                : String(j.detail);
+            }
+          } catch (_) {}
+          showDialogError(storeErrorEl, msg + " Check the bundle layout and try again.");
+          return;
+        }
+
+        // Step 2: submit to /api/store/entities.  Mirror the shape from store_upload.html.
+        const fd = new FormData();
+        fd.append("file", _storeFile);
+        fd.append("type", type);
+        fd.append("name", name);
+        fd.append("description", description);
+        fd.append("title", title || name);
+        // No photo, docs, category, video_url in the quick-submit path — the user
+        // can edit those on the full store entity page after submission.
+
+        const res = await fetch("/api/store/entities", {
+          method: "POST", body: fd, credentials: "same-origin",
+        });
+
+        if (res.ok) {
+          const entity = await res.json();
+          closeOverlay(STORE_OVERLAY);
+          resetStoreDialog();
+          showToast("Submitted to the Store! Opening…", "ok", { durationMs: 3000 });
+          setTimeout(() => {
+            window.open("/marketplace/flea/" + encodeURIComponent(entity.id), "_blank", "noopener");
+          }, 600);
+        } else {
+          let msg = "Submission failed.";
+          if (res.status === 409) {
+            msg = "A Store entity with this name already exists under your account.";
+          } else {
+            try {
+              const j = await res.json();
+              const d = j && j.detail;
+              if (d && typeof d === "object") {
+                msg = d.code === "validation_failed"
+                  ? "Bundle did not pass review. Fix the issues and try the full upload page."
+                  : d.code === "security_blocked"
+                  ? "Upload blocked: security review found risky patterns."
+                  : d.code || "Submission failed.";
+              } else if (d) {
+                msg = String(d);
+              }
+            } catch (_) {}
+          }
+          showDialogError(storeErrorEl, msg);
+        }
+      } catch (err) {
+        showDialogError(storeErrorEl, "Submission failed: " + String(err));
+      } finally {
+        setSubmitBusy(storeSubmitBtn, false, "Submit to Store");
+      }
+    });
+  }
+
+  // ── Dialog 3: Image / Document ────────────────────────────────────────────
+
+  const MEDIA_OVERLAY = "chat-upload-media-overlay";
+  wireCloseButtons(MEDIA_OVERLAY);
+
+  const mediaDropEl     = $("chat-media-drop");
+  const mediaFileInput  = $("chat-media-file");
+  const mediaFilenameEl = $("chat-media-drop-filename");
+  const mediaErrorEl    = $("chat-media-error");
+  const mediaSubmitBtn  = $("chat-media-submit");
+
+  let _mediaFile = null;
+
+  // Derive kind from mime / extension.
+  function _mediaKind(file) {
+    const ct = (file.type || "").toLowerCase();
+    if (ct.startsWith("image/")) return "image";
+    if (ct === "application/pdf") return "document";
+    const ext = (file.name || "").toLowerCase().match(/\.[^.]+$/);
+    if (ext && [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].includes(ext[0])) return "image";
+    return "document";  // txt, md, pdf → document
+  }
+
+  function resetMediaDialog() {
+    _mediaFile = null;
+    if (mediaDropEl) clearDropFile(mediaDropEl, mediaFilenameEl);
+    if (mediaFileInput) mediaFileInput.value = "";
+    if (mediaErrorEl) clearDialogError(mediaErrorEl);
+    if (mediaSubmitBtn) { mediaSubmitBtn.disabled = true; mediaSubmitBtn.textContent = "Upload"; }
+  }
+
+  wireDropZone(mediaDropEl, mediaFileInput, (file) => {
+    const MAX = 20 * 1024 * 1024;
+    if (file.size > MAX) {
+      showDialogError(mediaErrorEl, "File too large — max 20 MB per chat upload.");
+      return;
+    }
+    clearDialogError(mediaErrorEl);
+    _mediaFile = file;
+    showDropFile(mediaDropEl, mediaFilenameEl, file);
+    if (mediaSubmitBtn) mediaSubmitBtn.disabled = false;
+  });
+
+  if (mediaSubmitBtn) {
+    mediaSubmitBtn.addEventListener("click", async () => {
+      if (!_mediaFile) return;
+      clearDialogError(mediaErrorEl);
+      setSubmitBusy(mediaSubmitBtn, true, "Uploading…");
+
+      try {
+        const kind = _mediaKind(_mediaFile);
+        const fd = new FormData();
+        fd.append("file", _mediaFile);
+        fd.append("kind", kind);
+
+        const res = await fetch("/api/chat/uploads", {
+          method: "POST", body: fd, credentials: "same-origin",
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          closeOverlay(MEDIA_OVERLAY);
+          resetMediaDialog();
+          showToast(data.hint || "File uploaded to your workspace.", "ok", { durationMs: 5000 });
+        } else {
+          let msg = "Upload failed.";
+          if (res.status === 413) {
+            msg = "File too large — max 20 MB per chat upload.";
+          } else if (res.status === 415) {
+            msg = "File type not allowed. Accepted: images (PNG, JPEG, WebP, SVG, GIF), PDF, plain text, Markdown.";
+          } else {
+            try {
+              const j = await res.json();
+              msg = (j && j.detail) ? String(j.detail) : msg;
+            } catch (_) {}
+          }
+          showDialogError(mediaErrorEl, msg);
+        }
+      } catch (err) {
+        showDialogError(mediaErrorEl, "Upload failed: " + String(err));
+      } finally {
+        setSubmitBusy(mediaSubmitBtn, false, "Upload");
+      }
+    });
+  }
+
+  // ── Wire menu items → dialogs ─────────────────────────────────────────────
+
+  if (plusMenu) {
+    plusMenu.querySelectorAll("[data-upload-action]").forEach((item) => {
+      const action = item.dataset.uploadAction;
+      const handler = () => {
+        closePlusMenu();
+        if (action === "data") {
+          resetDataDialog();
+          openOverlay(DATA_OVERLAY);
+        } else if (action === "store") {
+          resetStoreDialog();
+          openOverlay(STORE_OVERLAY);
+        } else if (action === "media") {
+          resetMediaDialog();
+          openOverlay(MEDIA_OVERLAY);
+        }
+      };
+      item.addEventListener("click", handler);
+      item.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handler(); }
+      });
+    });
+  }
+
+})();
+
 (async () => {
   renderCapabilities();
   wireSuggestionButtons();

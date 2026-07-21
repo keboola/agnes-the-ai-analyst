@@ -1814,3 +1814,389 @@ html[data-ui-layout="rail"] .cloud-chat-shell.history-open .cloud-chat-main {
     border-radius 0.22s var(--ds-ease-standard),
     box-shadow 0.22s;
 }
+
+/* ============================================================ "+" upload menu
+   A small circular button that sits to the left of the textarea and opens a
+   popover menu with three upload actions (Data file, Skill/Agent/Plugin,
+   Image/Document).  Positioned inside the form's grid/flex row.
+
+   Both layout variants (topnav grid, rail flex) share the base rules; rail
+   gets a scoped override for the larger send-button context.
+
+   Menu positioning: absolute, bottom-up from the form's position:relative
+   anchor, same z-index as the slash menu (20).  Each menu item row has a left
+   icon glyph (text emoji, no external asset), label, and a brief hint line.
+*/
+
+.cloud-chat-plus-btn {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-pill, 999px);
+  background: var(--ds-surface);
+  color: var(--ds-text-secondary);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  transition:
+    background var(--ds-motion-fast, 120ms) var(--ds-ease-standard, ease),
+    color var(--ds-motion-fast, 120ms) var(--ds-ease-standard, ease),
+    border-color var(--ds-motion-fast, 120ms);
+  user-select: none;
+}
+.cloud-chat-plus-btn:hover {
+  background: var(--ds-surface-dim);
+  border-color: var(--ds-primary);
+  color: var(--ds-primary);
+}
+.cloud-chat-plus-btn.is-open {
+  background: var(--ds-accent-info-bg);
+  border-color: var(--ds-accent-info-line);
+  color: var(--ds-accent-info-ink);
+}
+.cloud-chat-plus-btn:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* Rail variant: match the send button's 44×44 size for visual balance. */
+html[data-ui-layout="rail"] .cloud-chat-plus-btn {
+  width: 38px;
+  height: 38px;
+  border-color: transparent;
+  background: transparent;
+}
+html[data-ui-layout="rail"] .cloud-chat-plus-btn:hover {
+  background: var(--ds-surface-dim);
+  border-color: var(--ds-border);
+}
+
+/* The popover menu — pops up from the bottom-left of the composer. */
+.cloud-chat-plus-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + var(--space-2));
+  z-index: 20;
+  min-width: 240px;
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-lg, 12px);
+  box-shadow: var(--shadow-elevated, 0 8px 24px rgba(0,0,0,.10));
+  padding: var(--space-2);
+  list-style: none;
+  margin: 0;
+  animation: cloudchat-menu-in 100ms var(--ds-ease-enter, ease) both;
+}
+.cloud-chat-plus-menu[hidden] { display: none; }
+@keyframes cloudchat-menu-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cloud-chat-plus-menu { animation: none; }
+}
+
+.cloud-chat-plus-menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: 10px var(--space-3);
+  border-radius: var(--ds-radius-md, 8px);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition:
+    background var(--ds-motion-fast, 120ms),
+    border-color var(--ds-motion-fast, 120ms);
+}
+.cloud-chat-plus-menu-item:hover,
+.cloud-chat-plus-menu-item:focus-visible {
+  background: var(--ds-accent-info-bg);
+  border-color: var(--ds-accent-info-line);
+  outline: none;
+}
+.cloud-chat-plus-menu-item-icon {
+  font-size: 20px;
+  line-height: 1.2;
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+.cloud-chat-plus-menu-item-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.cloud-chat-plus-menu-item-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--ds-text-primary);
+  line-height: 1.3;
+}
+.cloud-chat-plus-menu-item-hint {
+  font-size: var(--text-xs);
+  color: var(--ds-text-muted);
+  margin-top: 2px;
+  line-height: 1.3;
+}
+
+/* ============================================================ upload dialog
+   A lightweight modal overlay for each upload action.  Uses a backdrop
+   <div> + a centered panel inside a fixed-position host.  Shares the same
+   z-index layer as the command palette (50). */
+
+.cloud-chat-upload-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.40);
+  padding: var(--space-4);
+  animation: cloudchat-overlay-in 140ms var(--ds-ease-enter, ease) both;
+}
+.cloud-chat-upload-overlay[hidden] { display: none; }
+@keyframes cloudchat-overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cloud-chat-upload-overlay { animation: none; }
+}
+
+.cloud-chat-upload-panel {
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-lg, 12px);
+  box-shadow: var(--shadow-elevated);
+  width: 100%;
+  max-width: 480px;
+  max-height: 90dvh;
+  overflow-y: auto;
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.cloud-chat-upload-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.cloud-chat-upload-panel-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--ds-text-primary);
+}
+.cloud-chat-upload-close {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: var(--ds-text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: var(--ds-radius-sm, 4px);
+  transition: background var(--ds-motion-fast, 120ms), color var(--ds-motion-fast, 120ms);
+}
+.cloud-chat-upload-close:hover {
+  background: var(--ds-surface-dim);
+  color: var(--ds-text-primary);
+}
+.cloud-chat-upload-close:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+
+.cloud-chat-upload-desc {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ds-text-secondary);
+  line-height: 1.5;
+}
+
+/* Drop zone — shared across data / image+doc / store dialogs. */
+.cloud-chat-drop-zone {
+  border: 1.5px dashed var(--ds-border);
+  border-radius: var(--ds-radius-md, 8px);
+  padding: var(--space-5) var(--space-4);
+  background: var(--ds-surface-dim);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  text-align: center;
+  cursor: pointer;
+  transition:
+    border-color var(--ds-motion-fast, 120ms),
+    background var(--ds-motion-fast, 120ms);
+}
+.cloud-chat-drop-zone:hover,
+.cloud-chat-drop-zone.is-dragover {
+  border-color: var(--ds-primary);
+  background: var(--ds-surface);
+}
+.cloud-chat-drop-zone.has-file {
+  border-style: solid;
+  border-color: var(--ds-accent-success-line);
+  background: var(--ds-accent-success-bg);
+}
+.cloud-chat-drop-zone-icon {
+  font-size: 32px;
+  line-height: 1;
+}
+.cloud-chat-drop-zone-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--ds-text-primary);
+}
+.cloud-chat-drop-zone-hint {
+  font-size: var(--text-xs);
+  color: var(--ds-text-muted);
+}
+.cloud-chat-drop-zone-filename {
+  font-size: var(--text-sm);
+  color: var(--ds-accent-success-ink);
+  font-weight: var(--font-semibold);
+  word-break: break-all;
+}
+
+/* Optional "Save as table" toggle row — data dialog only. */
+.cloud-chat-upload-table-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-md, 8px);
+  background: var(--ds-surface-dim);
+  cursor: pointer;
+}
+.cloud-chat-upload-table-row input[type="checkbox"] {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  cursor: pointer;
+}
+.cloud-chat-upload-table-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.cloud-chat-upload-table-row-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--ds-text-primary);
+}
+.cloud-chat-upload-table-row-hint {
+  font-size: var(--text-xs);
+  color: var(--ds-text-muted);
+  margin-top: 2px;
+}
+.cloud-chat-upload-table-name {
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-sm, 4px);
+  padding: 6px 10px;
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+  background: var(--ds-surface);
+  color: var(--ds-text-primary);
+  width: 100%;
+  box-sizing: border-box;
+  transition: border-color var(--ds-motion-fast, 120ms);
+}
+.cloud-chat-upload-table-name:focus {
+  outline: none;
+  border-color: var(--ds-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ds-primary) 12%, transparent);
+}
+.cloud-chat-upload-table-name-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.cloud-chat-upload-table-name-label {
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--ds-text-secondary);
+}
+
+/* Error + success inline banners in dialogs. */
+.cloud-chat-upload-error {
+  padding: var(--space-3);
+  border-radius: var(--ds-radius-sm, 4px);
+  background: var(--ds-accent-danger-bg);
+  border: 1px solid var(--ds-accent-danger-line);
+  color: var(--ds-accent-danger-ink);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+.cloud-chat-upload-error[hidden] { display: none; }
+
+/* Dialog action row */
+.cloud-chat-upload-actions {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* Store dialog: type tiles (mirrors store_upload.html .type-tiles) */
+.cloud-chat-store-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-2);
+}
+.cloud-chat-store-tile {
+  cursor: pointer;
+  padding: var(--space-3) var(--space-2);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-md, 8px);
+  text-align: center;
+  transition:
+    border-color var(--ds-motion-fast, 120ms),
+    background var(--ds-motion-fast, 120ms);
+  background: var(--ds-surface);
+}
+.cloud-chat-store-tile:hover {
+  border-color: var(--ds-primary);
+  background: color-mix(in srgb, var(--ds-primary) 4%, transparent);
+}
+.cloud-chat-store-tile.is-active {
+  border-color: var(--ds-primary);
+  background: color-mix(in srgb, var(--ds-primary) 8%, transparent);
+}
+.cloud-chat-store-tile input[type="radio"] { display: none; }
+.cloud-chat-store-tile-name {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--ds-text-primary);
+}
+.cloud-chat-store-tile-hint {
+  font-size: 11px;
+  color: var(--ds-text-muted);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+
+/* Upload progress spinner within the dialog submit button. */
+.cloud-chat-upload-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: cloudchat-spin 0.65s linear infinite;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+@keyframes cloudchat-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .cloud-chat-upload-spinner { animation: none; }
+}
