@@ -18,7 +18,7 @@ import duckdb
 import jinja2
 
 from app.auth.access import is_user_admin, require_admin
-from app.web.studio import get_domain as get_studio_domain
+from app.web.studio import STUDIO_DOMAINS, get_domain as get_studio_domain
 from app.auth.dependencies import get_current_user, get_optional_user, _get_db
 from app.instance_config import (
     get_instance_name,
@@ -2068,6 +2068,31 @@ async def store_lint_admin_page(
             "groups": groups,
             "last_run": repo.last_run(),
             "include_dismissed": include_dismissed,
+        },
+    )
+
+
+@router.get("/admin/studio", response_class=HTMLResponse)
+async def studio_index(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Studio landing page — a card grid linking to every authoring domain.
+
+    Available to all signed-in users (same gate as ``/admin/studio/{domain}``,
+    not admin-only — most domains route non-admins through the suggestions
+    queue instead of blocking them outright). Registered as a static path
+    alongside (and before) ``/admin/studio/{domain}`` so it does not fall
+    through to the dynamic domain matcher.
+    """
+    return templates.TemplateResponse(
+        request,
+        "admin_studio_index.html",
+        {
+            **_chrome_ctx(request, user),
+            "domains": list(STUDIO_DOMAINS.values()),
+            "is_admin": is_user_admin(user["id"], conn),
         },
     )
 

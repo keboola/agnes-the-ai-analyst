@@ -936,6 +936,31 @@ class TestStoreSmoke:
         assert r.status_code == 201, r.text
         assert r.json()["id"]
 
+    def test_entities_create_from_markdown_agent(self, seeded_app_both):
+        """POST /entities/from-markdown with type=agent — Studio Agent Builder's
+        JSON publish path; bakes a bare <name>.md instead of <name>/SKILL.md."""
+        r = seeded_app_both["client"].post(
+            "/api/store/entities/from-markdown",
+            json={
+                "type": "agent",
+                "name": "smoke-from-markdown-agent",
+                "description": (
+                    "Use when smoke-testing the from-markdown agent publish endpoint across both backends."
+                ),
+                "category": "Other",
+                "skill_md": (
+                    "Step one: describe the scenario under test in plain language. "
+                    "Step two: call the endpoint with a valid payload and capture the response. "
+                    "Step three: assert the entity was created with status 201 and a non-empty id field."
+                ),
+            },
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["id"]
+        assert body["type"] == "agent"
+
 
 # ---------------------------------------------------------------------------
 # Flea Upload — state machine, visibility rules
@@ -1532,6 +1557,7 @@ KNOWN_UNTESTED = {
     # Authoring studio + suggestion queue + memory-mining consent — covered by
     # dedicated suites (tests/test_authoring_suggestions_api.py, tests/test_web_studio.py);
     # web-form / admin-moderation flows, not part of the parameter-free smoke sweep.
+    "GET /admin/studio",
     "GET /admin/studio/suggestions",
     "GET /admin/studio/{domain}",
     "GET /api/admin/authoring-suggestions",

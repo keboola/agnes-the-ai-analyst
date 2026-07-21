@@ -94,6 +94,10 @@ async function createEntity() {
     result.textContent = "Fill in the required fields.";
     return;
   }
+  // Direct-submit domains (skill, agent) share one endpoint
+  // (POST /api/store/entities/from-markdown) — tell the backend which
+  // entity type this domain is publishing.
+  if (CFG.submitDirect) payload.type = CFG.domain;
   // Admins create directly; direct-submit domains (the store has its own
   // review pipeline) publish directly for everyone; otherwise non-admins
   // go to the moderation queue.

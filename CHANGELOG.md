@@ -12,6 +12,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- Agent authoring domain in Studio (`/admin/studio/agent`): a chat-assisted
+  builder for reusable Claude Code subagents, mirroring the existing Skill
+  Builder — publishes directly to the store via `POST
+  /api/store/entities/from-markdown` (now accepting `type: "agent"`, which
+  bakes a bare `<name>.md` instead of `<name>/SKILL.md`). Plus a new Studio
+  landing page (`/admin/studio`) listing every authoring domain, and a
+  top-level "Studio" primary-nav link.
+
 ### Changed
 
 ### Fixed

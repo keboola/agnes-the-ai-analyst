@@ -1815,9 +1815,10 @@ async def dryrun_entity(
 
 
 class CreateFromMarkdownBody(BaseModel):
-    """JSON contract for markdown-first publishing (studio Skill Builder)."""
+    """JSON contract for markdown-first publishing (studio Skill Builder /
+    Agent Builder)."""
 
-    type: Literal["skill"] = "skill"
+    type: Literal["skill", "agent"] = "skill"
     name: str
     description: Optional[str] = None
     category: Optional[str] = None
@@ -1839,9 +1840,13 @@ async def create_entity_from_markdown(
     user: dict = Depends(get_current_user),  # no resource gate: store is open-to-authed, enforced downstream
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """JSON sibling of ``POST /entities`` — synthesizes ``<name>/SKILL.md``
-    into an in-memory ZIP and delegates to ``create_entity``, so quota,
-    guardrails, LLM review, naming and versioning apply identically.
+    """JSON sibling of ``POST /entities`` — synthesizes a bare markdown
+    document into an in-memory ZIP and delegates to ``create_entity``, so
+    quota, guardrails, LLM review, naming and versioning apply identically.
+
+    ``type == "skill"`` synthesizes ``<name>/SKILL.md``; ``type == "agent"``
+    synthesizes a bare ``<name>.md`` at the ZIP root (agents have no
+    sub-directory in the baked plugin tree — see ``_bake_plugin_tree``).
     """
     name = body.name.strip()
     if not _NAME_RE.match(name):
@@ -1865,32 +1870,39 @@ async def create_entity_from_markdown(
     if body.dry_run:
         # Same throwaway-tree pipeline as `dryrun_entity`, minus the ZIP
         # intake step: bake into a scratch dir with the exact bytes that
-        # would be published, run inline checks + the linter, and return
-        # WITHOUT ever calling create_entity — no store_entities row, no
-        # store_submissions row, no audit_log row, no bundle on disk once
-        # the finally block below wipes both temp dirs.
+        # would be published, run inline checks (+ the linter for skills),
+        # and return WITHOUT ever calling create_entity — no store_entities
+        # row, no store_submissions row, no audit_log row, no bundle on disk
+        # once the finally block below wipes both temp dirs.
         scratch = Path(tempfile.mkdtemp(prefix="agnes_store_dryrun_md_"))
         plugin_root = Path(tempfile.mkdtemp(prefix="agnes_store_dryrun_md_baked_"))
         plugin_dir = plugin_root / "plugin"
         try:
-            (scratch / name).mkdir(parents=True, exist_ok=True)
-            (scratch / name / "SKILL.md").write_text(text, encoding="utf-8")
+            if body.type == "agent":
+                (scratch / f"{name}.md").write_text(text, encoding="utf-8")
+            else:
+                (scratch / name).mkdir(parents=True, exist_ok=True)
+                (scratch / name / "SKILL.md").write_text(text, encoding="utf-8")
             _bake_plugin_tree(
-                type_="skill",
+                type_=body.type,
                 extracted_root=scratch,
                 plugin_dir=plugin_dir,
                 final_name=name,
                 suffixed=name,
                 description=body.description,
             )
-            inline = run_inline_checks(plugin_dir, type_="skill", description=body.description)
-            lint_entity = {"name": name, "description": body.description, "type": "skill"}
-            lint_report = await run_in_threadpool(
-                _lint_skill_standalone,
-                lint_entity,
-                text,
-                plugin_dir=plugin_dir,
-            )
+            inline = run_inline_checks(plugin_dir, type_=body.type, description=body.description)
+            # v89 skill linter: skill-specific only — agents never get a
+            # lint key (see the module doc comment on DryRunResponse.lint).
+            lint_report: Optional[dict] = None
+            if body.type == "skill":
+                lint_entity = {"name": name, "description": body.description, "type": "skill"}
+                lint_report = await run_in_threadpool(
+                    _lint_skill_standalone,
+                    lint_entity,
+                    text,
+                    plugin_dir=plugin_dir,
+                )
             return Response(
                 content=json.dumps(
                     {
@@ -1908,7 +1920,10 @@ async def create_entity_from_markdown(
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(f"{name}/SKILL.md", text)
+        if body.type == "agent":
+            zf.writestr(f"{name}.md", text)
+        else:
+            zf.writestr(f"{name}/SKILL.md", text)
     buf.seek(0)
     upload = UploadFile(file=buf, filename=f"{name}.zip")
     return await create_entity(
