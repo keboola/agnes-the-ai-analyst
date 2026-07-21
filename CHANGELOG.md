@@ -16,13 +16,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
-- **Postgres container could fail with "Permission denied" on `global/pg_filenode.map` after a VM delete+recreate.** The `agnes-state-applier-bootstrap.service` unit runs on every boot and chowns `/data/postgres` to uid:gid `70:70` (the Postgres Alpine image's user) — but the chown wasn't recursive. `/data/postgres` lives on the persistent data disk, so a boot-disk-only VM recreate (auto-upgrade rollout, instance-template change) leaves its existing PGDATA contents in place with whatever uid the *previous* instance's postgres container mapped to 70; the non-recursive chown fixed only the top-level directory, leaving nested files like `global/pg_filenode.map` owned by the stale uid and unreadable to the freshly-started container. Observed live on a customer VM after a delete+insert. `scripts/ops/agnes-state-applier-bootstrap.service` now chowns `-R`.
-
 ### Removed
 
 ### Internal
 
 ### Security
+
+## [0.76.2] - 2026-07-21
+
+### Fixed
+
+- **Postgres container could fail with "Permission denied" on `global/pg_filenode.map` after a VM delete+recreate.** The `agnes-state-applier-bootstrap.service` unit runs on every boot and chowns `/data/postgres` to uid:gid `70:70` (the Postgres Alpine image's user) — but the chown wasn't recursive. `/data/postgres` lives on the persistent data disk, so a boot-disk-only VM recreate (auto-upgrade rollout, instance-template change) leaves its existing PGDATA contents in place with whatever uid the *previous* instance's postgres container mapped to 70; the non-recursive chown fixed only the top-level directory, leaving nested files like `global/pg_filenode.map` owned by the stale uid and unreadable to the freshly-started container. Observed live on a customer VM after a delete+insert. `scripts/ops/agnes-state-applier-bootstrap.service` now chowns `-R`.
 
 ## [0.76.1] - 2026-07-21
 
