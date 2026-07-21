@@ -171,3 +171,45 @@ def test_primary_nav_links_to_studio(seeded_app):
     resp = c.get("/admin/studio", headers=_auth(seeded_app["analyst_token"]))
     assert resp.status_code == 200
     assert 'href="/admin/studio"' in resp.text
+
+
+# --- Instance-level enable/disable toggle (studio.enabled / AGNES_STUDIO_ENABLED) ---
+
+
+def test_studio_routes_redirect_when_disabled(seeded_app, monkeypatch):
+    # get_studio_enabled is imported into the router namespace and consulted by
+    # every studio handler + both chrome builders — patch it there.
+    monkeypatch.setattr("app.web.router.get_studio_enabled", lambda: False)
+    c = seeded_app["client"]
+    for path in ("/admin/studio", "/admin/studio/data-package", "/admin/studio/suggestions"):
+        resp = c.get(path, headers=_auth(seeded_app["admin_token"]), follow_redirects=False)
+        assert resp.status_code in (302, 307), path
+        assert resp.headers.get("location", "") == "/", path
+
+
+def test_studio_nav_hidden_when_disabled(seeded_app, monkeypatch):
+    c = seeded_app["client"]
+    # Sanity: the link is present by default (studio on) on a normal page that
+    # renders the shared nav via _chrome_ctx.
+    resp = c.get("/me/memory-mining", headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    assert 'data-tour="nav-studio"' in resp.text
+    # Disable → the nav entry disappears (route stays reachable only by URL,
+    # which the redirect test covers).
+    monkeypatch.setattr("app.web.router.get_studio_enabled", lambda: False)
+    resp = c.get("/me/memory-mining", headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    assert 'data-tour="nav-studio"' not in resp.text
+
+
+def test_studio_enabled_env_override(monkeypatch):
+    import app.instance_config as ic
+
+    ic.reset_cache()
+    monkeypatch.setenv("AGNES_STUDIO_ENABLED", "0")
+    assert ic.get_studio_enabled() is False
+    monkeypatch.setenv("AGNES_STUDIO_ENABLED", "true")
+    assert ic.get_studio_enabled() is True
+    monkeypatch.delenv("AGNES_STUDIO_ENABLED", raising=False)
+    # No env, no yaml studio block → defaults on.
+    assert ic.get_studio_enabled() is True

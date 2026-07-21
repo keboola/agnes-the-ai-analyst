@@ -12,6 +12,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- The authoring Studio (`/admin/studio*`) can now be disabled per-instance.
+  Default stays on; set `AGNES_STUDIO_ENABLED=0` (the infra/Terraform `.env`
+  override, exposed as the `studio_enabled` module variable) or
+  `studio.enabled: false` in `instance.yaml`. When off, the Studio nav entry
+  and command-palette items are hidden and `/admin/studio*` redirects to home.
+
 ### Changed
 
 ### Fixed

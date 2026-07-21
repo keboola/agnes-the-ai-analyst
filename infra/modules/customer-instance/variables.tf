@@ -247,6 +247,12 @@ variable "home_route" {
   }
 }
 
+variable "studio_enabled" {
+  description = "Expose the authoring Studio (/admin/studio). Set false to hide it and close its routes for this instance (plumbed to the app as AGNES_STUDIO_ENABLED)."
+  type        = bool
+  default     = true
+}
+
 variable "enable_watchdog" {
   description = "Install the host-side watchdog + daily DB backup on every VM. The watchdog (5-min systemd timer) greps container logs for known incident signatures — DuckDB fatal crash loops, the invalidated-database \"zombie\" state (app answers /api/health 200 while every write 500s), WAL salvage data-loss events, index-desync errors — plus container restart bursts, cgroup OOM kills, scheduler failure streaks and /data disk pressure. The backup (daily systemd timer) copies system.duckdb+WAL to /data/backups/system-duckdb/ with 7-day retention and proves each copy restorable via a canary open+replay. Complements enable_monitoring: uptime checks see the VM from outside; the watchdog sees failure states the health endpoint cannot express, and PD snapshots preserve a corrupted file faithfully while the canary verify catches the corruption."
   type        = bool
