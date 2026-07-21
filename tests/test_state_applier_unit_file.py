@@ -127,8 +127,11 @@ def test_startup_script_creates_data_postgres_owned_70_70():
     from pathlib import Path
 
     tpl = Path("infra/modules/customer-instance/startup-script.sh.tpl").read_text()
-    # Accepts either chown 70:70 or install -o 70 -g 70 -d.
+    # Accepts chown 70:70 (plain or -R — recursive since the 2026-07-21 fix
+    # that repairs dirs damaged by the old blanket `chown -R 999 /data`) or
+    # install -o 70 -g 70 -d.
     assert ("chown 70:70 /data/postgres" in tpl
+            or "chown -R 70:70 /data/postgres" in tpl
             or "install -d -o 70 -g 70" in tpl and "/data/postgres" in tpl), (
         "startup-script.sh.tpl must create /data/postgres owned 70:70"
     )
