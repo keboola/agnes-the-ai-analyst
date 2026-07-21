@@ -22,6 +22,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.3] - 2026-07-21
+
+### Fixed
+
+- **`customer-instance` VMs now write `SERVER_URL` into `/opt/agnes/.env`**,
+  derived from the configured domain (`https://<domain>`) or the VM's
+  external IP (`http://<ip>:8000`) when no domain is set; an operator-edited
+  value in the existing `.env` wins (same precedence as `AGNES_TAG`).
+  Without it, `agnes_server_url()` fell back to loopback and every
+  cloud-chat sandbox was told to reach Agnes at `http://127.0.0.1:8000` —
+  unreachable from inside the sandbox, so the in-sandbox CLI failed its
+  first model call with `ECONNRESET` and chat was dead on arrival on any
+  module-provisioned VM (previously masked by hand-edited `.env` files that
+  VM recreates wipe).
+
 ## [0.76.2] - 2026-07-21
 
 ### Fixed

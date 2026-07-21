@@ -372,6 +372,31 @@ if [ -n "$EXISTING_AGNES_TEMP_DIR" ]; then
     AGNES_TEMP_DIR_LINE="AGNES_TEMP_DIR=\"$EXISTING_AGNES_TEMP_DIR\""
 fi
 
+# SERVER_URL — the deployment's public URL. app.chat.manager::agnes_server_url
+# resolves SERVER_URL (then AGNES_INTERNAL_URL, then loopback) and feeds it to
+# every cloud-chat sandbox as AGNES_SERVER; without it the sandbox is told to
+# reach Agnes at http://127.0.0.1:8000, which inside the sandbox is nothing —
+# the in-sandbox CLI dies with ECONNRESET on its first call and chat is dead
+# on arrival on any module-provisioned VM (previously masked by hand-edited
+# .env files that VM recreates wipe). Precedence: operator-edited value in the
+# existing .env wins (same pattern as AGNES_TAG above), else https on the
+# configured domain, else plain HTTP on the VM's external IP (the same :8000
+# the firewall exposes for tls_mode=none deployments).
+EXISTING_SERVER_URL=""
+if [ -f "$APP_DIR/.env" ]; then
+    EXISTING_SERVER_URL=$(grep -E '^SERVER_URL=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
+fi
+if [ -n "$EXISTING_SERVER_URL" ]; then
+    SERVER_URL="$EXISTING_SERVER_URL"
+elif [ -n "$DOMAIN" ]; then
+    SERVER_URL="https://$DOMAIN"
+else
+    EXTERNAL_IP=$(curl -sf -H "Metadata-Flavor: Google" \
+        "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip" \
+        || echo "127.0.0.1")
+    SERVER_URL="http://$EXTERNAL_IP:8000"
+fi
+
 # Select the docker-compose overlay set from the persisted backend state.
 # instance.yaml is written above only when absent, so a VM an operator migrated
 # to side_car / cloud keeps that backend across reboots. The on-VM Postgres
@@ -498,6 +523,7 @@ COMPOSE_FILE_VALUE="$COMPOSE_FILE_VALUE:docker-compose.dispatcher.yml"
 %{ endif ~}
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
+SERVER_URL=$SERVER_URL
 SESSION_SECRET=$SESSION_KEY
 DATA_DIR=$DATA_MNT
 DATA_SOURCE=$DATA_SOURCE
