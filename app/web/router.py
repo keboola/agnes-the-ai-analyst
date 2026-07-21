@@ -46,8 +46,10 @@ from src.repositories import (
     data_packages_repo,
     file_corpora_repo,
     knowledge_repo,
+    marketplace_plugins_repo,
     memory_domains_repo,
     news_template_repo,
+    notifications_telegram_repo,
     profile_repo,
     recipes_repo,
     store_entities_repo,
@@ -865,12 +867,116 @@ def _compute_data_stats() -> dict:
     }
 
 
+def _compute_capability_stats(user: dict) -> dict:
+    """Reach + activity for the "what your agents can draw on" strip on /stack.
+
+    Four outcome-oriented metrics — deliberately NOT consumption/cost
+    telemetry (tokens / time-spent / tool-calls live on the admin adoption
+    view, where they answer an ops question, not a "what can this do for me"
+    one):
+
+    - ``questions_week`` — the caller's own prompts over the trailing 7 days.
+      Per-user (it's *My* Stack), and the proof the estate is actually used.
+    - ``sources`` — distinct source systems (Keboola/BigQuery/Jira…) the
+      registered tables come from.
+    - ``skills`` — curated marketplace plugins + community Store entities.
+    - ``memory_facts`` — approved, non-personal corporate-memory facts.
+
+    Estate-scoped except ``questions_week`` (per-caller). Every lookup is
+    defensive: a repo hiccup degrades that one metric to 0 (the template
+    skips zero-valued cards) rather than 500-ing the whole page.
+    """
+    from datetime import timedelta, timezone
+
+    # Questions this week — the caller's own prompts (user_messages) over the
+    # trailing 7 days. Username follows the email-prefix convention the usage
+    # processor and /dashboard use.
+    try:
+        since = datetime.now(timezone.utc) - timedelta(days=7)
+        kpis = usage_repo().adoption_user_kpis(since, user.get("id") or "", user.get("email", "").split("@")[0])
+        questions_week = int(kpis.get("prompts", 0) or 0)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("/stack: could not count questions this week: %s", e)
+        questions_week = 0
+    # Data sources — the distinct source systems (Keboola/BigQuery/Jira…) the
+    # registered tables come from. Derived from the registry, not the
+    # credential table (`source_connections` is only populated when real
+    # connection creds are configured — a self-contained/bundled-data instance
+    # has none), so this reflects what the agents can actually query wherever
+    # the data originates. Computed in Python off list_all() to avoid adding a
+    # repo method (and its DuckDB↔PG parity obligation) for one count.
+    try:
+        sources = len(
+            {
+                (r.get("source_type") or "").strip()
+                for r in table_registry_repo().list_all()
+                if (r.get("source_type") or "").strip() not in ("", "internal")
+            }
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("/stack: could not count data sources: %s", e)
+        sources = 0
+    # Memory facts — approved, non-personal corporate memory.
+    try:
+        memory_facts = knowledge_repo().count_items(statuses=["approved"], exclude_personal=True)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("/stack: could not count memory facts: %s", e)
+        memory_facts = 0
+    # Skills = curated marketplace plugins + community Store entities, the two
+    # sources the /marketplace browse page draws from.
+    try:
+        curated = len(marketplace_plugins_repo().list_distinct_names())
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("/stack: could not count curated skills: %s", e)
+        curated = 0
+    try:
+        _, store_total = store_entities_repo().list(limit=1)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("/stack: could not count store skills: %s", e)
+        store_total = 0
+    skills = curated + store_total
+    return {
+        "questions_week": questions_week,
+        "questions_week_display": f"{questions_week:,}" if questions_week else "0",
+        "sources": sources,
+        "sources_display": f"{sources:,}" if sources else "0",
+        "skills": skills,
+        "skills_display": f"{skills:,}" if skills else "0",
+        "memory_facts": memory_facts,
+        "memory_facts_display": f"{memory_facts:,}" if memory_facts else "0",
+    }
+
+
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(
     request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    # Rail IA convergence (#896): the legacy table-inventory dashboard is not a
+    # landing surface under the rail chrome. Send rail users to the working
+    # chat when they can reach it, else to My Stack (the data-estate home the
+    # dashboard stats already migrated to). Topnav instances fall straight
+    # through to the historical render below — byte-for-byte unchanged.
+    #
+    # `can_chat` mirrors the rail nav's own predicate exactly (see
+    # _build_context: chat enabled AND has_explicit_grant) so the LANDING and
+    # the NAV agree — we never drop a user onto /chat when the rail shows them
+    # no way back. has_explicit_grant is stricter than /chat's own can_access
+    # guard (an explicit grant satisfies can_access), so this is loop-safe too:
+    # redirecting to /chat only when granted guarantees /chat renders instead
+    # of bouncing to "/". 302 (not 308) so a later layout/grant flip isn't
+    # cached permanently by the browser.
+    if get_ui_layout() == "rail":
+        from app.auth.access import has_explicit_grant
+        from app.resource_types import ResourceType
+
+        chat_cfg = getattr(request.app.state, "chat_config", None)
+        can_chat = bool(
+            chat_cfg and chat_cfg.enabled and has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat")
+        )
+        return RedirectResponse(url="/chat" if can_chat else "/stack", status_code=302)
+
     sync_repo = sync_state_repo()
     settings_repo = sync_settings_repo()
 
@@ -1626,9 +1732,12 @@ async def my_stack_page(
         memory_cards=memory_card_models,
         upload_entries=upload_entries,
         upload_cards=upload_card_models,
-        # Ambient data-estate stats rendered as a borderless strip above the
-        # kind tabs (shared with /dashboard via _compute_data_stats()).
+        # Ambient "what your agents can draw on" strip above the kind tabs.
+        # data_stats still drives the strip's visibility gate + freshness
+        # caption; capability_stats supplies the four rendered metrics
+        # (questions this week · data sources · skills · memory facts).
         data_stats=_compute_data_stats(),
+        capability_stats=_compute_capability_stats(user),
     )
     return templates.TemplateResponse(request, "stack_unified.html", ctx)
 
@@ -3978,6 +4087,17 @@ async def profile_page(
     user_record_safe = {k: v for k, v in user.items() if k not in _SENSITIVE_USER_COLUMNS}
     raw_token = _read_session_token(request)
 
+    # Notification channels (moved off the retired /dashboard landing, #896).
+    # Telegram link state is read for real via the backend-aware repo factory
+    # (the dashboard rendered a hardcoded not-linked stub); desktop stays a
+    # static private-beta row until it grows a self-serve link flow.
+    try:
+        _tg_link = notifications_telegram_repo().get_link(user["id"])
+    except Exception:
+        _tg_link = None
+    telegram_status = {"linked": bool(_tg_link)}
+    desktop_status = {"linked": False}
+
     ctx = _build_context(
         request,
         user=user,
@@ -3987,6 +4107,8 @@ async def profile_page(
         claims=_decoded_claims(raw_token),
         token_fingerprint=_token_fingerprint(raw_token),
         sync_summary=_last_sync_summary(user["id"]),
+        telegram_status=telegram_status,
+        desktop_status=desktop_status,
         # Display-only — keep original case (no .lower()), unlike the
         # refetch-groups handler below which lowercases for set comparison.
         google_group_prefix=os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip(),
@@ -4305,36 +4427,18 @@ def _ask_knowledge_source_count(user: dict, conn: duckdb.DuckDBPyConnection) -> 
     return total
 
 
-@router.get("/ask", response_class=HTMLResponse)
-async def ask_landing(
-    request: Request,
-    user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Knowledge-search chat landing (issue #896 prototype, "Ask anything /
-    Reuse everything"). Visual port of the prototype hero only — no new
-    chat backend: the composer points at the existing /chat route, and the
-    "Operated by Kai · using N knowledge sources · M capabilities" pill is
-    computed server-side, RBAC-filtered for the caller (the counts come
-    from ``_ask_knowledge_source_count`` + ``resolve_allowed_plugins``; the
-    template does the wording + pluralization). Goes through
-    ``_build_context`` so the page inherits the standard Agnes chrome,
-    paper theme, and rail layout (same pattern as /chat,
-    ``app/web/router.py:3946``).
+@router.get("/ask", include_in_schema=False)
+async def ask_landing(user: dict = Depends(get_current_user)):
+    """Retired surface (#896). ``/ask`` was a visual-only landing hero whose
+    composer just forwarded to ``/chat`` — a cosmetic doorstep in front of the
+    real chat, and a dead-end for users without a chat grant. The rail IA now
+    lands users on the working chat (``/chat``) or ``/stack``, so ``/ask`` has
+    no job. Kept as a 302 to ``/`` (not deleted) so any bookmarked/linked
+    ``/ask`` resolves through the canonical home route instead of 404ing.
+    The RBAC-filtered pill helpers it introduced (``_ask_knowledge_source_count``,
+    ``_ASK_SUGGESTED_QUESTIONS``) live on — ``/chat``'s empty state uses them.
     """
-    from src.marketplace_filter import resolve_allowed_plugins
-
-    knowledge_source_count = _ask_knowledge_source_count(user, conn)
-    capability_count = len(resolve_allowed_plugins(conn, user))
-    ctx = _build_context(
-        request,
-        user=user,
-        conn=conn,
-        knowledge_source_count=knowledge_source_count,
-        capability_count=capability_count,
-        suggested_questions=_ASK_SUGGESTED_QUESTIONS[:3],
-    )
-    return templates.TemplateResponse(request, "ask_landing.html", ctx)
+    return RedirectResponse(url="/", status_code=302)
 
 
 @router.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)

@@ -100,8 +100,11 @@ class TestDefaultChromeUnchanged:
 
 class TestRailOptIn:
     def test_rail_layout_swaps_chrome(self, web_client, admin_cookie, monkeypatch):
+        # Probe a real rail landing surface (/stack). /dashboard is no longer a
+        # rail render target — it 302s to /chat or /stack (see
+        # TestDashboardLandingRedirect).
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'class="rail"' in resp.text
         assert 'class="app-header"' not in resp.text
@@ -115,15 +118,12 @@ class TestRailOptIn:
         as kind tabs on the unified /catalog page, not as rail
         subcategories."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        resp = web_client.get("/stack", cookies=admin_cookie)
         text = resp.text
         for anchor in (
             'id="global-search"',
             'id="userMenu"',
             'id="themeToggle"',
-            # prototype IA: Chat (knowledge-search landing) is the primary
-            # destination when the sandbox cloud-chat surface is off
-            'href="/ask"',
             # prototype IA: My Stack page + Catalog parent
             'href="/stack"',
             'data-tour="nav-stack"',
@@ -135,6 +135,9 @@ class TestRailOptIn:
             assert anchor in text, f"rail chrome is missing {anchor}"
         # Catalog is a single flat destination — no nested subcategory tree.
         assert 'class="rail-sub"' not in text
+        # The retired /ask hero (#896) is gone: no rail nav item points at it,
+        # and the Chat slot renders only when cloud-chat is actually reachable.
+        assert 'href="/ask"' not in text
 
     def test_rail_catalog_renders_unified_page(self, web_client, admin_cookie, monkeypatch):
         """Under the rail layout /catalog is the unified browse surface
@@ -176,6 +179,202 @@ class TestRailOptIn:
         resp = web_client.get("/dashboard", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'data-theme="paper"' in resp.text
+
+
+class TestDashboardLandingRedirect:
+    """Rail IA convergence (#896): the legacy table-inventory /dashboard is not
+    a landing surface under the rail. It 302s to the working chat (when
+    reachable) or My Stack. Topnav instances must be byte-for-byte unchanged —
+    /dashboard still renders there."""
+
+    def test_topnav_dashboard_still_renders(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        resp = web_client.get("/dashboard", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 200
+        assert 'data-ui-layout="topnav"' in resp.text
+
+    def test_rail_dashboard_redirects_to_landing(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/dashboard", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 302
+        # Chat when the caller can reach it, else My Stack — never back to the
+        # legacy dashboard (that would loop through the home route).
+        assert resp.headers["location"] in ("/chat", "/stack")
+        assert resp.headers["location"] != "/dashboard"
+
+    def test_ask_is_retired(self, web_client, admin_cookie, monkeypatch):
+        """The /ask hero is retired — it 302s to / rather than rendering."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/ask", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/"
+
+
+class TestProfileNotifications:
+    """The Notifications channels moved off the retired /dashboard onto the
+    account page (/me/profile), where they belong. Rendered on both layouts."""
+
+    def test_profile_renders_notifications_section(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert "Notifications" in resp.text
+        assert 'class="pf-notif-list"' in resp.text
+        # Telegram link affordance is present (unlinked state → Link button).
+        assert "showTelegramVerify()" in resp.text
+
+
+class TestStackCapabilityStrip:
+    """The My Stack strip reads as "what your agents can draw on" — the
+    caller's activity (Questions this week) plus the estate's reach (Data
+    sources / Skills / Memory facts), not the old raw data-shape metrics
+    (Tables/Rows/Columns/Data size) and not consumption telemetry."""
+
+    def test_capability_stats_counts_knowledge_and_skills(self, web_client, admin_cookie):
+        """`_compute_capability_stats(user)` counts approved, non-personal
+        corporate memory as facts and curated+store entities as skills, with
+        formatted display strings. `admin_cookie` bootstraps the DB. With no
+        seeded usage/source rows, questions_week and sources degrade to 0."""
+        from app.web.router import _compute_capability_stats
+        from src.db import get_system_db
+        from src.repositories.knowledge import KnowledgeRepository
+        from src.repositories.store_entities import StoreEntitiesRepository
+
+        conn = get_system_db()
+        krepo = KnowledgeRepository(conn)
+        # Approved + shareable → counts. Pending and personal must NOT.
+        krepo.create(
+            id="k-ok",
+            title="Fact",
+            content="Revenue is booked at invoice.",
+            category="finance",
+            status="approved",
+            is_personal=False,
+        )
+        krepo.create(
+            id="k-pending", title="Draft", content="unreviewed", category="finance", status="pending", is_personal=False
+        )
+        krepo.create(
+            id="k-personal", title="Mine", content="personal note", category="misc", status="approved", is_personal=True
+        )
+        StoreEntitiesRepository(conn).create(
+            id="s-1",
+            owner_user_id="admin1",
+            owner_username="admin",
+            type="skill",
+            name="churn-analysis",
+            description="d",
+            category="analytics",
+            version="1.0.0",
+        )
+        conn.close()
+
+        stats = _compute_capability_stats({"id": "admin1", "email": "admin@example.com"})
+        assert stats["memory_facts"] == 1, "only approved, non-personal facts count"
+        assert stats["memory_facts_display"] == "1"
+        assert stats["skills"] >= 1, "store entity counts as a skill"
+        assert stats["skills_display"] == f"{stats['skills']:,}"
+        # Activity + sources are present as keys and non-negative (no rows → 0).
+        # `sources` is distinct source_type of registered tables (NOT the
+        # source_connections credential table, which is empty on bundled-data
+        # instances), so it populates whenever there is data.
+        assert stats["questions_week"] >= 0
+        assert stats["sources"] >= 0
+
+    def test_stack_strip_hidden_when_all_metrics_zero(self, web_client, admin_cookie, monkeypatch):
+        """A sparse instance (every metric 0) renders NO strip — not an empty
+        band with a lone freshness caption."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        import app.web.router as router
+
+        monkeypatch.setattr(
+            router,
+            "_compute_data_stats",
+            lambda: {
+                "tables": 3,
+                "total_tables": 3,
+                "columns": 0,
+                "rows_display": "0",
+                "size_display": "0 MB",
+                "total_rows": 0,
+                "size_bytes": 0,
+                "last_updated": "2026-07-21 11:25:07",
+                "last_updated_display": "2026-07-21 11:25:07",
+                "remote_tables": 0,
+                "local_tables": 3,
+            },
+        )
+        monkeypatch.setattr(
+            router,
+            "_compute_capability_stats",
+            lambda user: {
+                "questions_week": 0,
+                "questions_week_display": "0",
+                "sources": 0,
+                "sources_display": "0",
+                "skills": 0,
+                "skills_display": "0",
+                "memory_facts": 0,
+                "memory_facts_display": "0",
+            },
+        )
+        resp = web_client.get("/stack", cookies=admin_cookie)
+        assert resp.status_code == 200
+        # The strip container must be absent (the class also appears in the
+        # page's <style> block as `.stk-stats {…}`, so match the rendered
+        # markup — the opening tag — not the bare class name).
+        assert '<div class="stk-stats"' not in resp.text
+        # …and with it the freshness caption text (present only inside the strip).
+        assert "Updated 2026-07-21 11:25:07" not in resp.text
+
+    def test_stack_strip_shows_capability_labels(self, web_client, admin_cookie, monkeypatch):
+        """When the estate is non-empty, the /stack strip renders the new
+        Questions/Data sources/Skills/Memory facts cards and drops the retired
+        Tables/Rows/Columns/Data-size metrics."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        import app.web.router as router
+
+        # Force a populated footprint so the strip renders (it gates on
+        # tables>0) without seeding the whole data pipeline.
+        monkeypatch.setattr(
+            router,
+            "_compute_data_stats",
+            lambda: {
+                "tables": 7,
+                "total_tables": 7,
+                "columns": 40,
+                "rows_display": "5,500",
+                "size_display": "43.2 KB",
+                "total_rows": 5500,
+                "size_bytes": 44237,
+                "last_updated": None,
+                "last_updated_display": None,
+                "remote_tables": 0,
+                "local_tables": 7,
+            },
+        )
+        monkeypatch.setattr(
+            router,
+            "_compute_capability_stats",
+            lambda user: {
+                "questions_week": 142,
+                "questions_week_display": "142",
+                "sources": 3,
+                "sources_display": "3",
+                "skills": 420,
+                "skills_display": "420",
+                "memory_facts": 12,
+                "memory_facts_display": "12",
+            },
+        )
+        resp = web_client.get("/stack", cookies=admin_cookie)
+        assert resp.status_code == 200
+        for label in ("Questions this week", "Data sources", "Skills", "Memory facts"):
+            assert f">{label}<" in resp.text, f"strip missing {label!r}"
+        # Retired metrics must be gone as stat labels.
+        assert ">Data size<" not in resp.text
+        assert ">Columns<" not in resp.text
+        assert ">Rows<" not in resp.text
 
 
 class TestPaperThemeAssets:

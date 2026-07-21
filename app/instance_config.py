@@ -204,10 +204,18 @@ def get_home_route() -> str:
 
     Validated to start with ``/`` and not ``//`` so a misconfigured
     value can't pivot the root redirect to an external host.
+
+    Retired routes are coerced to the default: ``/ask`` (#896) now 302s to
+    ``/``, so an instance that had pinned ``home_route: /ask`` would send
+    ``/`` -> ``/ask`` -> ``/`` in an infinite loop. Falling back to
+    ``/dashboard`` keeps such configs working — on the rail layout the
+    dashboard itself forwards to the working chat or My Stack.
     """
     raw = os.environ.get("AGNES_HOME_ROUTE") or get_value("instance", "home_route", default="/dashboard")
     route = (raw or "").strip()
     if not route.startswith("/") or route.startswith("//"):
+        return "/dashboard"
+    if route == "/ask":
         return "/dashboard"
     return route
 

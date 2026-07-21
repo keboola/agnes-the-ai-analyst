@@ -31,25 +31,38 @@
      at the far right. Each metric is a transparent item (accent icon in a
      mint-tinted circular badge + hairline divider + value/label). Stacks on
      mobile. */
-  .stk-stats { display: flex; align-items: center; gap: 20px 32px; flex-wrap: wrap; margin: 22px 0 8px; padding: 16px 26px; background: var(--ds-surface-sunken); border-radius: 16px; }
-  .stk-stats__metrics { flex: 1 1 auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px 40px; }
-  .stk-stat { display: flex; align-items: center; gap: 16px; }
+  .stk-stats { position: relative; display: flex; align-items: center; gap: 24px; flex-wrap: nowrap; margin: 22px 0 8px; padding: 16px 26px; background: var(--ds-surface-sunken); border-radius: 16px; }
+  /* The four metrics are equal-width columns that fill the ENTIRE row (each
+     flex:1) — the whole card width is theirs. The freshness meta doesn't take a
+     column or a row: it's floated into the top-right corner (absolute, below),
+     overlapping the top padding so it never grows the card's height. */
+  .stk-stats__metrics { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: nowrap; align-items: center; gap: 24px; }
+  .stk-stat { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 16px; }
   .stk-stat__icon { flex-shrink: 0; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--ds-primary-light); color: var(--ds-primary); }
   .stk-stat__icon .ui-ico { display: block; }
   .stk-stat__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding-left: 16px; border-left: 1px solid var(--ds-border); }
   .stk-stat__value { font-size: 22px; font-weight: 700; line-height: 1.15; letter-spacing: -0.02em; color: var(--ds-text-primary); font-variant-numeric: tabular-nums; }
   .stk-stat__label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ds-text-muted); }
-  .stk-stats__meta { flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; }
-  .stk-stats__updated { font-size: 12px; color: var(--ds-text-muted); }
-  .stk-stats__refresh { flex-shrink: 0; width: 30px; height: 30px; border: none; border-radius: 50%; background: transparent; color: var(--ds-text-muted); display: grid; place-items: center; cursor: pointer; transition: background .15s ease, color .15s ease; }
+  .stk-stats__meta { position: absolute; top: 10px; right: 14px; display: inline-flex; align-items: center; }
+  .stk-stats__refresh { flex-shrink: 0; width: 22px; height: 22px; border: none; border-radius: 50%; background: transparent; color: var(--ds-text-muted); display: grid; place-items: center; cursor: pointer; transition: background .15s ease, color .15s ease; }
   .stk-stats__refresh:hover { background: var(--ds-primary-light); color: var(--ds-primary); }
   .stk-stats__refresh .ui-ico { display: block; }
   .stk-stats__refresh.is-spinning .ui-ico { animation: stk-spin .7s linear infinite; }
   @keyframes stk-spin { to { transform: rotate(360deg); } }
+  /* Below ~900px (narrow window, or the rail sidebar eating width) four metrics
+     + the timestamp no longer fit on one line — allow wrapping and drop the
+     meta onto its own full-width row so nothing overflows or collides. */
+  @media (max-width: 900px) {
+    .stk-stats { flex-wrap: wrap; gap: 18px 28px; }
+    /* Narrow: metrics take natural width and wrap; the meta drops back into
+       flow as its own full-width row (a corner pin would overlap wrapped rows). */
+    .stk-stats__metrics { flex-wrap: wrap; justify-content: flex-start; gap: 18px 28px; padding-right: 0; }
+    .stk-stat { flex: 0 1 auto; }
+    .stk-stats__meta { position: static; transform: none; flex-basis: 100%; justify-content: flex-start; }
+  }
   @media (max-width: 640px) {
     .stk-stats { gap: 16px 24px; padding: 16px 18px; }
-    .stk-stats__metrics { justify-content: flex-start; gap: 16px 28px; }
-    .stk-stats__meta { flex-basis: 100%; justify-content: flex-start; }
+    .stk-stats__metrics { gap: 16px 22px; }
   }
   .uc-kindtabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--ds-border); margin: 24px 0 18px; }
   .uc-kindtab { display: flex; align-items: center; gap: 7px; border: none; background: none; cursor: pointer; padding: 9px 14px; font-size: 14px; font-weight: 500; font-family: inherit; color: var(--ds-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -1px; }
@@ -95,21 +108,25 @@
   <button type="button" class="cc-btn" data-new-upload style="flex-shrink:0">+ New upload</button>
 </div>
 
-{# ── Ambient data-estate stats (borderless strip). These describe the whole
-     connected data estate Agnes can draw on, not the personal stack — so they
-     read as light context, not hero cards. The whole strip hides when nothing
-     is synced yet (tables == 0), and any individual zero-valued metric is
-     skipped so a stray "0 columns" never renders as broken. #}
-{% if data_stats and data_stats.tables %}
+{# ── "What your agents can draw on" strip (borderless). Four outcome-oriented
+     metrics — Questions this week (the caller's own prompts, proof it's used)
+     plus the estate's reach: Data sources · Skills · Memory facts. NOT
+     consumption/cost telemetry (tokens/time live on the admin adoption view).
+     It reads as light ambient context, not hero cards. Every zero-valued
+     metric is skipped, and the WHOLE strip (freshness caption included) hides
+     when no metric has a value — a sparse instance shows nothing here rather
+     than an empty band. #}
 {% set stk_metrics = [
-     {'label': 'Tables', 'value': data_stats.tables, 'show': data_stats.tables, 'icon': 'table'},
-     {'label': 'Columns', 'value': data_stats.columns, 'show': data_stats.columns, 'icon': 'data'},
-     {'label': 'Rows', 'value': data_stats.rows_display, 'show': data_stats.total_rows, 'icon': 'rows'},
-     {'label': 'Data size', 'value': data_stats.size_display, 'show': data_stats.size_bytes, 'icon': 'pie'},
+     {'label': 'Questions this week', 'value': capability_stats.questions_week_display, 'show': capability_stats.questions_week, 'icon': 'chat'},
+     {'label': 'Data sources', 'value': capability_stats.sources_display, 'show': capability_stats.sources, 'icon': 'database'},
+     {'label': 'Skills', 'value': capability_stats.skills_display, 'show': capability_stats.skills, 'icon': 'puzzle'},
+     {'label': 'Memory facts', 'value': capability_stats.memory_facts_display, 'show': capability_stats.memory_facts, 'icon': 'brain'},
 ] %}
-<div class="stk-stats" aria-label="Connected data estate">
+{% set stk_visible = stk_metrics | selectattr('show') | list %}
+{% if stk_visible %}
+<div class="stk-stats" aria-label="What your agents can draw on">
   <div class="stk-stats__metrics">
-    {% for m in stk_metrics if m.show %}
+    {% for m in stk_visible %}
     <div class="stk-stat">
       <span class="stk-stat__icon">{{ ico.icon(m.icon, 20) }}</span>
       <span class="stk-stat__body">
@@ -119,10 +136,11 @@
     </div>
     {% endfor %}
   </div>
-  {% if data_stats.last_updated_display %}
+  {% if data_stats and data_stats.last_updated_display %}
+  {# Only the refresh control sits in the corner now; the "Updated …" timestamp
+     moves to its tooltip so the corner stays a single quiet glyph. #}
   <div class="stk-stats__meta">
-    <span class="stk-stats__updated">Updated {{ data_stats.last_updated_display }}</span>
-    <button type="button" class="stk-stats__refresh" data-refresh-stats title="Refresh" aria-label="Refresh data stats">{{ ico.icon('refresh', 15) }}</button>
+    <button type="button" class="stk-stats__refresh" data-refresh-stats title="Updated {{ data_stats.last_updated_display[:16] }} · click to refresh" aria-label="Updated {{ data_stats.last_updated_display[:16] }}. Refresh data stats">{{ ico.icon('refresh', 15) }}</button>
   </div>
   {% endif %}
 </div>

@@ -68,6 +68,17 @@ def test_env_rejects_external_redirect(fresh_db, monkeypatch):
     assert get_home_route() == "/dashboard"
 
 
+def test_retired_ask_route_coerced_to_dashboard(fresh_db, monkeypatch):
+    """`/ask` is retired (#896) and 302s to `/`. An instance that had pinned
+    `home_route: /ask` would loop `/` -> `/ask` -> `/`; get_home_route must
+    coerce it to the default so such configs keep working (on rail the
+    dashboard itself forwards to chat / My Stack)."""
+    monkeypatch.setenv("AGNES_HOME_ROUTE", "/ask")
+    from app.instance_config import get_home_route
+
+    assert get_home_route() == "/dashboard"
+
+
 def test_root_redirect_authed_user_uses_home_route(fresh_db, monkeypatch):
     """``GET /`` for an authenticated user redirects to the configured
     home route, not the hard-coded ``/dashboard``."""

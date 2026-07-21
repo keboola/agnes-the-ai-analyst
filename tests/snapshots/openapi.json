@@ -8966,7 +8966,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.71.61"
+    "version": "0.74.103"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -38706,56 +38706,6 @@
         "summary": "Get Welcome",
         "tags": [
           "claude_md"
-        ]
-      }
-    },
-    "/ask": {
-      "get": {
-        "description": "Knowledge-search chat landing (issue #896 prototype, \"Ask anything /\nReuse everything\"). Visual port of the prototype hero only \u2014 no new\nchat backend: the composer points at the existing /chat route, and the\n\"Operated by Kai \u00b7 using N knowledge sources \u00b7 M capabilities\" pill is\ncomputed server-side, RBAC-filtered for the caller (the counts come\nfrom ``_ask_knowledge_source_count`` + ``resolve_allowed_plugins``; the\ntemplate does the wording + pluralization). Goes through\n``_build_context`` so the page inherits the standard Agnes chrome,\npaper theme, and rail layout (same pattern as /chat,\n``app/web/router.py:3946``).",
-        "operationId": "ask_landing_ask_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Ask Landing",
-        "tags": [
-          "web"
         ]
       }
     },

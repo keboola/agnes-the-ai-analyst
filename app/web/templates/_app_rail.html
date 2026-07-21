@@ -64,16 +64,13 @@
     {% endif %}
 
     <div class="rail-nav">
+        {# Chat is a surface only when it actually works: enabled + the caller
+           holds a chat grant (`can_chat`). The retired /ask hero used to fill
+           this slot for non-chat users (#896) — but it just forwarded to /chat
+           (a dead end without the grant), so the slot now simply renders
+           nothing when chat is unavailable. Those users land on /stack. #}
         {% if can_chat %}
         <a class="rail-i {% if _path == '/chat' or _path.startswith('/chat/') %}on{% endif %}" href="/chat" data-tour="nav-chat">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            Chat
-        </a>
-        {% else %}
-        {# Prototype IA (#896): the knowledge-search landing (/ask) is the
-           primary "Chat" destination when the sandbox cloud-chat surface
-           is off. Matches the prototype's Chat/My Stack/Catalog rail. #}
-        <a class="rail-i {% if _path == '/ask' %}on{% endif %}" href="/ask" data-tour="nav-chat">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
             Chat
         </a>

@@ -16,6 +16,44 @@
 .group-chip.is-everyone    { background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
 .group-chip.is-google_sync { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
 .group-chip.is-custom      { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+
+/* Notification channels (moved off the retired /dashboard, issue 896). Self-
+   contained + --ds-* tokens only, so it rides light/dark + paper themes and
+   passes the design-system contract guard (only --ds-* tokens, no raw hex colours). */
+.pf-notif-intro   { margin: 0 0 14px; color: var(--ds-text-secondary); font-size: 13px; }
+.pf-notif-list    { list-style: none; margin: 0; padding: 0; }
+.pf-notif-row     { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+.pf-notif-row + .pf-notif-row,
+.pf-notif-verify + .pf-notif-row { border-top: 1px solid var(--ds-border); }
+.pf-notif-icon    { width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+                    display: grid; place-items: center;
+                    background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
+.pf-notif-meta    { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.pf-notif-name    { font-weight: 600; font-size: 14px; color: var(--ds-text-primary); }
+.pf-notif-beta    { margin-left: 6px; font-size: 10px; font-weight: 700; letter-spacing: .04em;
+                    text-transform: uppercase; padding: 2px 6px; border-radius: 5px;
+                    background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+.pf-notif-state   { font-size: 12px; }
+.pf-notif-state.is-linked { color: var(--ds-accent-success-ink); font-weight: 600; }
+.pf-notif-state.is-off    { color: var(--ds-text-secondary); }
+.pf-notif-btn     { font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+                    padding: 7px 14px; border-radius: 8px; border: 1px solid var(--ds-primary);
+                    background: var(--ds-primary); color: var(--ds-text-inverse); }
+.pf-notif-btn:hover { background: var(--ds-primary-dark); border-color: var(--ds-primary-dark); }
+.pf-notif-btn.ghost { background: transparent; color: var(--ds-text-secondary);
+                    border-color: var(--ds-border); }
+.pf-notif-btn.ghost:hover { background: var(--ds-surface-dim); border-color: var(--ds-border); }
+.pf-notif-verify  { display: none; padding: 4px 0 12px; }
+.pf-notif-verify.visible { display: block; }
+.pf-notif-verify ol { margin: 0 0 10px; padding-left: 18px; color: var(--ds-text-secondary);
+                    font-size: 13px; line-height: 1.6; }
+.pf-notif-verify code { background: var(--ds-surface-dim); padding: 1px 5px; border-radius: 4px; }
+.pf-notif-verify-row { display: flex; gap: 8px; }
+.pf-notif-verify-row input { flex: 1; max-width: 160px; font: inherit; padding: 7px 10px;
+                    border: 1px solid var(--ds-border); border-radius: 8px;
+                    background: var(--ds-surface); color: var(--ds-text-primary); }
+.pf-notif-err     { display: none; margin-top: 8px; font-size: 13px;
+                    color: var(--ds-accent-warn-ink); }
 </style>
 {% endblock %}
 
@@ -83,6 +121,64 @@
 
   {% include "_profile_tokens.html" %}
 
+  {# Notification channels — moved here from the retired /dashboard landing
+     (issue 896). Telegram link/unlink hit the existing /api/telegram/* endpoints;
+     the desktop row is an informational private-beta placeholder (no self-
+     serve link flow yet). `telegram_status` / `desktop_status` come from the
+     /me/profile route. #}
+  {% call ds.panel(title='Notifications', tag='section',
+                   klass='section-card',
+                   attrs='aria-label="Notification channels"') %}
+    <p class="pf-notif-intro">Choose where Kai reaches you when a long-running analysis finishes or needs input.</p>
+    <ul class="pf-notif-list" role="list">
+      <li class="pf-notif-row">
+        <span class="pf-notif-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
+        </span>
+        <span class="pf-notif-meta">
+          <span class="pf-notif-name">Telegram</span>
+          {% if telegram_status.linked %}
+          <span class="pf-notif-state is-linked">Connected</span>
+          {% else %}
+          <span class="pf-notif-state is-off">Not linked</span>
+          {% endif %}
+        </span>
+        {% if telegram_status.linked %}
+        <button type="button" class="pf-notif-btn ghost" onclick="unlinkChannel('telegram')">Unlink</button>
+        {% else %}
+        <button type="button" class="pf-notif-btn" onclick="showTelegramVerify()">Link</button>
+        {% endif %}
+      </li>
+      <li id="telegramVerify" class="pf-notif-verify">
+        <ol>
+          <li>Message <code>/start</code> to <strong>@{{ config.TELEGRAM_BOT_USERNAME or 'your-bot' }}</strong> on Telegram</li>
+          <li>Enter the 6-digit verification code it replies with</li>
+        </ol>
+        <div class="pf-notif-verify-row">
+          <input type="text" id="verifyCode" placeholder="6-digit code" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+          <button type="button" class="pf-notif-btn" id="verifyBtn" onclick="verifyTelegram()">Verify</button>
+        </div>
+        <div id="telegramError" class="pf-notif-err" role="alert"></div>
+      </li>
+      <li class="pf-notif-row">
+        <span class="pf-notif-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </span>
+        <span class="pf-notif-meta">
+          <span class="pf-notif-name">macOS app<span class="pf-notif-beta">private beta</span></span>
+          {% if desktop_status.linked %}
+          <span class="pf-notif-state is-linked">Connected</span>
+          {% else %}
+          <span class="pf-notif-state is-off">Not linked</span>
+          {% endif %}
+        </span>
+        {% if desktop_status.linked %}
+        <button type="button" class="pf-notif-btn ghost" onclick="unlinkChannel('desktop')">Unlink</button>
+        {% endif %}
+      </li>
+    </ul>
+  {% endcall %}
+
   {# `<details>` can't go through `ds.panel` (the macro doesn't render
      <details>/<summary>); add `.ds-card` explicitly so the same surface
      treatment applies. `.section-card` rules override radius+padding. #}
@@ -133,5 +229,65 @@
     });
   function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 })();
+
+// ── Notification channels (ported from the retired /dashboard, issue 896). ──
+// Hit the same /api/telegram/* + /api/{channel}/unlink endpoints; reload on
+// success so the server-rendered link state re-derives.
+function showTelegramVerify() {
+  const el = document.getElementById("telegramVerify");
+  if (el) { el.classList.toggle("visible"); }
+}
+
+async function verifyTelegram() {
+  const code = (document.getElementById("verifyCode").value || "").trim();
+  const errorEl = document.getElementById("telegramError");
+  const btn = document.getElementById("verifyBtn");
+  errorEl.style.display = "none";
+  if (!code || code.length !== 6) {
+    errorEl.textContent = "Please enter a 6-digit code.";
+    errorEl.style.display = "block";
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "Verifying…";
+  try {
+    const resp = await fetch("/api/telegram/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: code }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      location.reload();
+      return;
+    }
+    errorEl.textContent = data.error || "Verification failed.";
+    errorEl.style.display = "block";
+  } catch (e) {
+    errorEl.textContent = "Network error. Please try again.";
+    errorEl.style.display = "block";
+  }
+  btn.disabled = false;
+  btn.textContent = "Verify";
+}
+
+async function unlinkChannel(channel) {
+  const label = channel === "telegram" ? "Telegram" : "macOS app";
+  if (!(await confirmModal(`Unlink ${label}? You will stop receiving notifications.`))) return;
+  try {
+    const resp = await fetch(`/api/${channel}/unlink`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (resp.ok) {
+      location.reload();
+    } else {
+      const data = await resp.json().catch(() => ({}));
+      await alertModal(data.error || "Failed to unlink.");
+    }
+  } catch (e) {
+    await alertModal("Failed to unlink. Please try again.");
+  }
+}
 </script>
 {% endblock %}
