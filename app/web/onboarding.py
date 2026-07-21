@@ -58,6 +58,12 @@ class OnboardingStep:
     anchor: str | None = None
     route: str | None = None
     audience: Audience = "all"
+    # Which chrome layout(s) this step applies to. The rail (ui_layout=rail)
+    # and the topnav header expose different nav anchors — e.g. rail folds
+    # Marketplace/Memory under Catalog and adds a top-level "My Stack" — so a
+    # step whose anchor only exists in one chrome must be scoped to it, or its
+    # spotlight lands on nothing in the other layout. Default: both.
+    layouts: tuple[str, ...] = ("topnav", "rail")
 
 
 # Order matters — this is the walk order. The intro consent modal (rendered
@@ -91,6 +97,22 @@ ONBOARDING_STEPS: tuple[OnboardingStep, ...] = (
         ),
     ),
     OnboardingStep(
+        key="stack",
+        icon="🗂️",
+        anchor="nav-stack",
+        title="Your stack & uploads",
+        body="My Stack is your personal workspace — the data packages and "
+        "plugins you've added, plus files you upload yourself.",
+        tips=(
+            "Add “+ New upload” to bring your own files in — they stay private to you.",
+            "Uploaded files are indexed so your agents can search across them.",
+            "Everything you add from the Catalog lands here for quick access.",
+        ),
+        # Rail-only: "My Stack" is a top-level rail destination; the topnav
+        # header has no equivalent nav item (its anchor is nav-library).
+        layouts=("rail",),
+    ),
+    OnboardingStep(
         key="marketplace",
         icon="🧩",
         anchor="nav-marketplace",
@@ -102,6 +124,9 @@ ONBOARDING_STEPS: tuple[OnboardingStep, ...] = (
             "Install into your Claude Code workspace in one click.",
             "New items appear here as admins publish them — check back now and then.",
         ),
+        # Topnav-only: the rail folds Marketplace under the Catalog destination,
+        # so there is no standalone nav-marketplace anchor to spotlight there.
+        layouts=("topnav",),
     ),
     OnboardingStep(
         key="catalog",
@@ -129,6 +154,9 @@ ONBOARDING_STEPS: tuple[OnboardingStep, ...] = (
             "Read the business rules your AI agent is expected to honor.",
             "One source of truth means consistent numbers across the org.",
         ),
+        # Topnav-only: the rail folds Memory under the Catalog destination,
+        # so there is no standalone nav-memory anchor to spotlight there.
+        layouts=("topnav",),
     ),
     OnboardingStep(
         key="search",
@@ -182,22 +210,29 @@ ONBOARDING_STEPS: tuple[OnboardingStep, ...] = (
 )
 
 
-def steps_for(is_admin: object) -> list[dict]:
+def steps_for(is_admin: object, layout: object = "topnav") -> list[dict]:
     """Return the steps a given viewer should see, as plain dicts ready for
     JSON serialization. ``is_admin`` is coerced to bool so a Jinja
     ``_SilentUndefined`` (anonymous / missing) safely reads as non-admin.
 
+    ``layout`` is the active chrome (``topnav`` / ``rail``); a Jinja
+    ``_SilentUndefined`` or any unknown value falls back to ``topnav``. Steps
+    whose anchor only exists in one chrome are scoped via ``OnboardingStep.layouts``
+    so the spotlight never lands on a nav item the current layout doesn't render.
+
     Audience rules: ``all`` always; ``admin`` only for admins; ``non_admin``
     only for non-admins. Feature-gated steps whose DOM anchor is absent for
-    the viewer (e.g. Chat without a grant) are dropped client-side, so they
-    can stay in this list unconditionally.
+    the viewer (e.g. Chat without a grant) are still dropped client-side.
     """
     admin = bool(is_admin)
+    lyt = str(layout) if str(layout) in ("topnav", "rail") else "topnav"
     out: list[dict] = []
     for step in ONBOARDING_STEPS:
         if step.audience == "admin" and not admin:
             continue
         if step.audience == "non_admin" and admin:
+            continue
+        if lyt not in step.layouts:
             continue
         out.append(asdict(step))
     return out

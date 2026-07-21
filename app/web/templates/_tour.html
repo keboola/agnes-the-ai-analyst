@@ -56,7 +56,7 @@
     </div>
 
     {# Single source of truth: server-filtered steps for this viewer. #}
-    <script type="application/json" id="agnesOnboardingSteps">{{ onboarding_steps(session.user.is_admin) | tojson }}</script>
+    <script type="application/json" id="agnesOnboardingSteps">{{ onboarding_steps(session.user.is_admin, ui_layout | default('topnav')) | tojson }}</script>
 </div>
 <script src="{{ static_url('js/tour.js') }}" defer></script>
 {% endif %}

@@ -215,7 +215,12 @@
         body: fd,
       });
       if (!fResp.ok && fResp.status !== 422) throw new Error('upload failed (' + fResp.status + ')');
-      window.location.reload();
+      // Land on the new collection's detail page — same as the existing library
+      // upload flow (library_detail.html). On 422 the file was rejected (e.g.
+      // unsupported type) but the collection exists; the detail page shows each
+      // file's status (rejected with reason + a re-ingest action), so the user
+      // always sees what happened instead of a silent reload onto /stack.
+      window.location.href = '/library/' + encodeURIComponent(col.slug || col.id);
     } catch (err) {
       uploadSubmit.disabled = false;
       uploadSubmit.textContent = 'Upload';
