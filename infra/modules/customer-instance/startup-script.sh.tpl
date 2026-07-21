@@ -221,7 +221,12 @@ chmod 700 "$DATA_MNT/postgres"
 # both fresh-created (999, 0644, above) and applier-rewritten
 # (agnes-applier, 0600, scripts/ops/agnes-state-applier.sh) shapes exist in
 # the field.
-if [ -f "$INSTANCE_YAML" ] && grep -q '^[[:space:]]*backend:[[:space:]]*"\?side_car' "$INSTANCE_YAML"; then
+# Matches side_car AND the transient side_car_in_progress deliberately (both
+# anchored-exact, not a prefix accident): in both states database.url targets
+# the local side-car, so a reboot mid-migration needs the same credential
+# re-align. The overlay selection below stays exact-match on side_car — an
+# in-progress migration must not engage the side-car overlay set early.
+if [ -f "$INSTANCE_YAML" ] && grep -qE '^[[:space:]]*backend:[[:space:]]*"?side_car(_in_progress)?"?[[:space:]]*$' "$INSTANCE_YAML"; then
     IY_OWNER=$(stat -c '%u:%g' "$INSTANCE_YAML")
     IY_MODE=$(stat -c '%a' "$INSTANCE_YAML")
     sed -i "s|postgresql+psycopg://agnes:[^@]*@postgres:5432/agnes|postgresql+psycopg://agnes:$POSTGRES_PASSWORD@postgres:5432/agnes|" "$INSTANCE_YAML"
