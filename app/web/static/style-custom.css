@@ -274,7 +274,7 @@ body {
     width: 100%;
     max-width: var(--width-wide);
     margin: 0 auto;
-    padding: 16px 32px 0;
+    padding: 32px 32px 0;
 }
 /* The tab strip is the last row of the header; drop its bottom margin
    so the white band sits flush beneath it. */
@@ -293,10 +293,20 @@ body {
 /* The global `footer` rule adds a 48px top margin for breathing room on
    content pages; inside the index shell that margin opened a grey gap
    between the white band and the footer (the band's flex-grow stops at
-   the margin). Zero it so the white band runs flush to the footer. */
+   the margin). Zero it so the white band runs flush to the footer. The
+   hairline `border-top` divider is dropped too — the white band already
+   provides the visual break above the credit. */
 .idx > footer {
     margin-top: 0;
+    border-top: none;
     background: var(--ds-surface);
+}
+
+/* Catalog detail pages (package / table / recipe) drop the footer's
+   hairline divider so the credit sits flush below the page body. Rail-
+   scoped so the default topnav chrome renders byte-identically. */
+html[data-ui-layout="rail"] body.detail-page footer {
+    border-top: none;
 }
 
 /* ── Connect-anywhere banner component (macros/_connect_banner.html) ─────
