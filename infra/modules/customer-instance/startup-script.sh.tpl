@@ -382,10 +382,25 @@ fi
 # existing .env wins (same pattern as AGNES_TAG above), else https on the
 # configured domain, else plain HTTP on the VM's external IP (the same :8000
 # the firewall exposes for tls_mode=none deployments).
+#
+# On domain-less VMs the pinned http://<ip>:8000 also becomes the
+# public_base_url origin (OAuth redirects, magic links — previously
+# request-derived) and, being plain-HTTP non-localhost, deliberately trips
+# app/main.py's RFC 8414 issuer check so the streamable MCP connector
+# degrades gracefully. Both are the intended origins for a direct-access
+# plain-HTTP deployment; a fronted deployment should set a domain (or
+# hand-set SERVER_URL, which this block preserves).
 EXISTING_SERVER_URL=""
 if [ -f "$APP_DIR/.env" ]; then
     EXISTING_SERVER_URL=$(grep -E '^SERVER_URL=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
 fi
+# A loopback value is never a meaningful operator override — it can only be
+# a previously-persisted failed derivation, and preserving it would lock the
+# failure in forever (the exact bug this block fixes). Re-derive instead.
+case "$EXISTING_SERVER_URL" in
+    *127.0.0.1*|*localhost*) EXISTING_SERVER_URL="" ;;
+esac
+SERVER_URL=""
 if [ -n "$EXISTING_SERVER_URL" ]; then
     SERVER_URL="$EXISTING_SERVER_URL"
 elif [ -n "$DOMAIN" ]; then
@@ -393,8 +408,17 @@ elif [ -n "$DOMAIN" ]; then
 else
     EXTERNAL_IP=$(curl -sf -H "Metadata-Flavor: Google" \
         "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip" \
-        || echo "127.0.0.1")
-    SERVER_URL="http://$EXTERNAL_IP:8000"
+        || true)
+    if [ -n "$EXTERNAL_IP" ]; then
+        SERVER_URL="http://$EXTERNAL_IP:8000"
+    fi
+    # Metadata read failed: write NO SERVER_URL line rather than persisting a
+    # wrong value — the app keeps its request-derived/loopback behavior
+    # (status quo ante) and the next boot re-derives.
+fi
+SERVER_URL_LINE=""
+if [ -n "$SERVER_URL" ]; then
+    SERVER_URL_LINE="SERVER_URL=$SERVER_URL"
 fi
 
 # Select the docker-compose overlay set from the persisted backend state.
@@ -523,7 +547,7 @@ COMPOSE_FILE_VALUE="$COMPOSE_FILE_VALUE:docker-compose.dispatcher.yml"
 %{ endif ~}
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
-SERVER_URL=$SERVER_URL
+$SERVER_URL_LINE
 SESSION_SECRET=$SESSION_KEY
 DATA_DIR=$DATA_MNT
 DATA_SOURCE=$DATA_SOURCE
