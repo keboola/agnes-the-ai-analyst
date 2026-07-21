@@ -61,10 +61,35 @@ _SANDBOX_WHEEL_DIR = "/tmp/agnes-cli"
 # Module-level so tests can zero the wait.
 _WHEEL_WAIT_SECONDS = 60
 
+# Bounded wait for the manager's workspace-upload sentinel (path arrives via
+# AGNES_WORKSPACE_SYNC_SENTINEL; empty/unset → no wait, e.g. providers that
+# mount the workspace themselves). The wheel sentinel above only guarantees
+# the CLI wheel — the workspace tree lands separately (and slower), and the
+# agent CLI reads CLAUDE.md/.claude from /work at startup, so the CLI spawn
+# must gate on this one. Generous bound: a workspace near the 100 MB cap can
+# take a while; on timeout we proceed best-effort (agent on a possibly
+# incomplete workspace beats no agent). Module-level so tests can zero it.
+_WORKSPACE_WAIT_SECONDS = 180
+
 
 def _emit(frame: dict) -> None:
     sys.stdout.write(json.dumps(frame) + "\n")
     sys.stdout.flush()
+
+
+def _stream_event_delta_text(event: dict) -> str:
+    """Extract the user-visible text delta from a raw Anthropic stream event.
+
+    Returns ``""`` for everything that isn't assistant prose — block starts,
+    tool-input ``input_json_delta``s, ``thinking_delta``s, message stops —
+    so the caller can emit token frames off ``text_delta``s alone.
+    """
+    if not isinstance(event, dict) or event.get("type") != "content_block_delta":
+        return ""
+    delta = event.get("delta") or {}
+    if delta.get("type") != "text_delta":
+        return ""
+    return delta.get("text", "") or ""
 
 
 def _install_agnes_cli() -> None:
@@ -132,6 +157,36 @@ def _install_agnes_cli() -> None:
         )
     except Exception as exc:  # noqa: BLE001 — non-fatal; agent still runs
         print(f"agnes CLI install failed: {exc}", file=sys.stderr, flush=True)
+
+
+async def _wait_workspace_ready() -> bool:
+    """Wait for the manager's workspace-upload sentinel before the agent CLI
+    spawns.
+
+    The runner process starts while ``upload_workspace`` is still pushing the
+    tree into ``/work`` — spawning ``claude`` earlier would boot it against an
+    empty project (no CLAUDE.md data rails, no ``.claude`` settings/plugins).
+    Sentinel path comes from ``AGNES_WORKSPACE_SYNC_SENTINEL``; empty/unset
+    means the provider mounts the workspace itself and there is nothing to
+    wait for. Bounded and best-effort: on timeout we log to stderr and let the
+    agent start anyway.
+    """
+    sentinel = os.environ.get("AGNES_WORKSPACE_SYNC_SENTINEL", "").strip()
+    if not sentinel:
+        return True
+    path = Path(sentinel)
+    deadline = time.monotonic() + _WORKSPACE_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        await asyncio.sleep(0.25)
+    print(
+        f"workspace-ready sentinel {sentinel} never appeared after "
+        f"{_WORKSPACE_WAIT_SECONDS}s; starting agent on a possibly-incomplete workspace",
+        file=sys.stderr,
+        flush=True,
+    )
+    return False
 
 
 def _agnes_mcp_servers() -> dict:
@@ -375,13 +430,21 @@ async def _real_agent_loop(
     exposes a per-tool hook or run_tool() coroutine.
 
     Uses ClaudeSDKClient for persistent-session bidirectional communication:
-    - connect() once with the first user_msg
-    - query() for each subsequent user_msg
+    - the ``async with`` block connects EAGERLY (``__aenter__`` → ``connect()``
+      with an empty stream), so the ``claude`` CLI subprocess boots while the
+      user is still typing their first message
+    - query() for every user_msg (the previous connect(text)-on-first-message
+      pattern spawned a SECOND CLI on top of the one ``__aenter__`` already
+      started — a full CLI boot added to first-message latency)
     - receive_response() (async-iter) to consume each turn's messages
     - interrupt() for cancel frames
 
     Message type mapping (SDK → outbound JSON frames):
-    - AssistantMessage with TextBlock content → token frames + assistant_message at turn end
+    - StreamEvent text deltas → token frames as the model produces them
+      (include_partial_messages; falls back to whole-TextBlock token frames
+      when the SDK predates StreamEvent or no deltas arrive)
+    - AssistantMessage with TextBlock content → collected for the turn-end
+      assistant_message (token frame only when no deltas streamed this turn)
     - AssistantMessage with ToolUseBlock content → tool_call frame
     - AssistantMessage with ToolResultBlock content → tool_result frame
     - ResultMessage → assistant_message frame (turn end, carries usage/model)
@@ -396,6 +459,11 @@ async def _real_agent_loop(
         ToolUseBlock,
         UserMessage,
     )
+
+    try:  # StreamEvent ships in newer claude-agent-sdk releases only
+        from claude_agent_sdk import StreamEvent  # type: ignore[attr-defined]
+    except ImportError:
+        StreamEvent = None
 
     def _emit_tool_result(block) -> None:
         result = block.content
@@ -433,16 +501,26 @@ async def _real_agent_loop(
     # a local Claude Code / Cowork install gets. Empty dict when unconfigured
     # (fake-agent tests) so the agent still runs with built-in tools.
     mcp_servers = _agnes_mcp_servers()
-    async with ClaudeSDKClient(
-        options=ClaudeAgentOptions(
-            permission_mode="bypassPermissions",
-            cwd=str(workdir),
-            setting_sources=["user", "project", "local"],
-            mcp_servers=mcp_servers,
-        )
-    ) as client:
-        # Flag to track whether we've called connect() yet
-        connected = False
+    options_kwargs: dict = dict(
+        permission_mode="bypassPermissions",
+        cwd=str(workdir),
+        setting_sources=["user", "project", "local"],
+        mcp_servers=mcp_servers,
+    )
+    # Token-level streaming (include_partial_messages) when the installed SDK
+    # supports it: the UI then renders text as the model produces it instead
+    # of one token frame per completed content block (which for a long answer
+    # means seconds of dead air followed by the whole paragraph at once).
+    partial_streaming = StreamEvent is not None and "include_partial_messages" in getattr(
+        ClaudeAgentOptions, "__dataclass_fields__", {}
+    )
+    if partial_streaming:
+        options_kwargs["include_partial_messages"] = True
+
+    async with ClaudeSDKClient(options=ClaudeAgentOptions(**options_kwargs)) as client:
+        # ``__aenter__`` above already connected (empty-stream streaming mode)
+        # — the CLI subprocess is booting from this point on, typically
+        # finishing before the first user_msg arrives.
 
         while True:
             frame = await queue.get()
@@ -452,7 +530,14 @@ async def _real_agent_loop(
                 return
 
             if t == "cancel":
-                client.interrupt()
+                # interrupt() is a coroutine — an un-awaited call never
+                # reaches the CLI and the turn keeps running (the historical
+                # cancel-does-nothing bug). Best-effort: a cancel racing the
+                # turn's natural end must not kill the runner.
+                try:
+                    await client.interrupt()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"interrupt failed: {exc}", file=sys.stderr, flush=True)
                 continue
 
             if t != "user_msg":
@@ -460,12 +545,7 @@ async def _real_agent_loop(
 
             text = frame.get("text", "")
 
-            # First message: connect; subsequent messages: query
-            if not connected:
-                await client.connect(text)
-                connected = True
-            else:
-                await client.query(text)
+            await client.query(text)
 
             # Consume the response for this turn
             collected_text: list[str] = []
@@ -478,14 +558,30 @@ async def _real_agent_loop(
             # confirmation). Safety net against runaway tool chains.
             tool_calls_this_turn = 0
             budget_hit = False
+            # True once any StreamEvent text delta was emitted this turn —
+            # the completed TextBlock then repeats text the user has already
+            # seen, so its whole-block token frame is suppressed (it still
+            # feeds collected_text for the turn-end assistant_message).
+            deltas_this_turn = False
 
             async for msg in client.receive_response():
                 if budget_hit:
                     break
+                if StreamEvent is not None and isinstance(msg, StreamEvent):
+                    # Token-level delta straight off the model stream. Only
+                    # top-level assistant text — subagent/tool-side streams
+                    # carry parent_tool_use_id and stay internal.
+                    if getattr(msg, "parent_tool_use_id", None) is None:
+                        piece = _stream_event_delta_text(msg.event)
+                        if piece:
+                            _emit({"type": "token", "text": piece})
+                            deltas_this_turn = True
+                    continue
                 if isinstance(msg, AssistantMessage):
                     for block in msg.content:
                         if isinstance(block, TextBlock):
-                            _emit({"type": "token", "text": block.text})
+                            if not deltas_this_turn:
+                                _emit({"type": "token", "text": block.text})
                             collected_text.append(block.text)
                         elif isinstance(block, ToolUseBlock):
                             if tool_calls_this_turn >= tool_calls_per_turn:
@@ -612,6 +708,13 @@ async def amain() -> None:
         # loop's `claude` spawn and `_agnes_mcp_servers()`'s `agnes mcp` spawn
         # must see the rewritten AGNES_SERVER / ANTHROPIC_* env.
         await _start_relay()
+        # Barrier: the workspace tree must be fully in /work before anything
+        # reads or writes it — the marketplace bootstrap writes project-level
+        # plugin state a late-finishing workspace extraction would clobber,
+        # and the agent CLI (spawned eagerly by _real_agent_loop's `async
+        # with`) loads CLAUDE.md/.claude from /work at boot. The wheel install
+        # above deliberately does NOT gate on this — it overlaps the upload.
+        await _wait_workspace_ready()
         # Opt-in (AGNES_BOOTSTRAP_MARKETPLACE=1): install the user's marketplace
         # plugins into this project so setting_sources surfaces them. After the
         # CLI install (needs the `agnes` binary); before the reader attaches for

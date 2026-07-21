@@ -359,3 +359,279 @@ def test_runner_has_no_module_level_app_import():
             if (node.module or "").split(".")[0] == "app":
                 offenders.append(node.module)
     assert not offenders, f"runner.py has module-level app.* imports (must be lazy): {offenders}"
+
+
+# ---------------------------------------------------------------------------
+# Spawn-latency rework: workspace-ready barrier, eager connect + query(),
+# awaited interrupt, token-level streaming deltas.
+# ---------------------------------------------------------------------------
+
+
+def test_stream_event_delta_text_extracts_text_deltas():
+    from app.chat import runner
+
+    ev = {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hi"}}
+    assert runner._stream_event_delta_text(ev) == "Hi"
+    # Everything that isn't assistant prose maps to "".
+    assert runner._stream_event_delta_text({"type": "content_block_start"}) == ""
+    assert (
+        runner._stream_event_delta_text(
+            {"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": "{"}}
+        )
+        == ""
+    )
+    assert (
+        runner._stream_event_delta_text(
+            {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "hmm"}}
+        )
+        == ""
+    )
+    assert runner._stream_event_delta_text({}) == ""
+    assert runner._stream_event_delta_text(None) == ""
+
+
+def test_wait_workspace_ready_skips_when_env_unset(monkeypatch):
+    from app.chat import runner
+
+    monkeypatch.delenv("AGNES_WORKSPACE_SYNC_SENTINEL", raising=False)
+    assert asyncio.run(runner._wait_workspace_ready()) is True
+
+
+def test_wait_workspace_ready_returns_when_sentinel_exists(tmp_path: Path, monkeypatch):
+    from app.chat import runner
+
+    sentinel = tmp_path / "ws.ready"
+    sentinel.write_bytes(b"")
+    monkeypatch.setenv("AGNES_WORKSPACE_SYNC_SENTINEL", str(sentinel))
+    assert asyncio.run(runner._wait_workspace_ready()) is True
+
+
+def test_wait_workspace_ready_times_out_best_effort(tmp_path: Path, monkeypatch, capsys):
+    from app.chat import runner
+
+    monkeypatch.setenv("AGNES_WORKSPACE_SYNC_SENTINEL", str(tmp_path / "never-written"))
+    monkeypatch.setattr(runner, "_WORKSPACE_WAIT_SECONDS", 0)
+    assert asyncio.run(runner._wait_workspace_ready()) is False
+    assert "possibly-incomplete workspace" in capsys.readouterr().err
+
+
+def _make_fake_sdk(monkeypatch, *, with_stream_event: bool):
+    """Inject a fake ``claude_agent_sdk`` module into sys.modules and return
+    it. ``_real_agent_loop`` imports the SDK lazily inside the function, so
+    the injection takes effect without reloading the runner module."""
+    import dataclasses
+    import types
+
+    mod = types.ModuleType("claude_agent_sdk")
+
+    @dataclasses.dataclass
+    class TextBlock:
+        text: str
+
+    @dataclasses.dataclass
+    class ToolUseBlock:
+        id: str
+        name: str
+        input: dict
+
+    @dataclasses.dataclass
+    class ToolResultBlock:
+        tool_use_id: str
+        content: object
+
+    @dataclasses.dataclass
+    class AssistantMessage:
+        content: list
+        model: str = "fake-model"
+        usage: dict | None = None
+
+    @dataclasses.dataclass
+    class UserMessage:
+        content: object
+
+    @dataclasses.dataclass
+    class ResultMessage:
+        usage: dict | None = None
+
+    option_fields = [
+        ("permission_mode", str, dataclasses.field(default="")),
+        ("cwd", str, dataclasses.field(default="")),
+        ("setting_sources", object, dataclasses.field(default=None)),
+        ("mcp_servers", object, dataclasses.field(default=None)),
+    ]
+    if with_stream_event:
+        option_fields.append(("include_partial_messages", bool, dataclasses.field(default=False)))
+    ClaudeAgentOptions = dataclasses.make_dataclass("ClaudeAgentOptions", option_fields)
+
+    class ClaudeSDKClient:
+        instances: list = []
+
+        def __init__(self, options):
+            self.options = options
+            self.calls: list = []
+            self.scripts: list = []  # one list of messages per turn
+            ClaudeSDKClient.instances.append(self)
+
+        async def __aenter__(self):
+            # Mirrors the real SDK: entering the context connects eagerly.
+            self.calls.append(("connect", None))
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def connect(self, prompt=None):
+            self.calls.append(("connect", prompt))
+
+        async def query(self, text):
+            self.calls.append(("query", text))
+
+        async def interrupt(self):
+            self.calls.append(("interrupt", None))
+
+        def receive_response(self):
+            script = self.scripts.pop(0) if self.scripts else []
+
+            async def _gen():
+                for m in script:
+                    yield m
+
+            return _gen()
+
+    mod.TextBlock = TextBlock
+    mod.ToolUseBlock = ToolUseBlock
+    mod.ToolResultBlock = ToolResultBlock
+    mod.AssistantMessage = AssistantMessage
+    mod.UserMessage = UserMessage
+    mod.ResultMessage = ResultMessage
+    mod.ClaudeAgentOptions = ClaudeAgentOptions
+    mod.ClaudeSDKClient = ClaudeSDKClient
+
+    if with_stream_event:
+
+        @dataclasses.dataclass
+        class StreamEvent:
+            uuid: str
+            session_id: str
+            event: dict
+            parent_tool_use_id: str | None = None
+
+        mod.StreamEvent = StreamEvent
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", mod)
+    return mod
+
+
+def _run_real_agent_turn(monkeypatch, mod, script, frames_in):
+    """Drive one _real_agent_loop pass against the fake SDK; returns
+    (emitted frames, client)."""
+    from app.chat import runner
+
+    emitted: list = []
+    monkeypatch.setattr(runner, "_emit", emitted.append)
+
+    async def _run():
+        queue: asyncio.Queue = asyncio.Queue()
+        for f in frames_in:
+            queue.put_nowait(f)
+        queue.put_nowait({"type": "_eof"})
+        await runner._real_agent_loop(queue, Path("/tmp"))
+
+    mod.ClaudeSDKClient.instances.clear()
+
+    # Pre-seed the turn script on construction via a subclass hook: the loop
+    # constructs the client itself, so stash the script on the class.
+    orig_init = mod.ClaudeSDKClient.__init__
+
+    def _init(self, options):
+        orig_init(self, options)
+        self.scripts = [list(script)]
+
+    monkeypatch.setattr(mod.ClaudeSDKClient, "__init__", _init)
+    asyncio.run(_run())
+    return emitted, mod.ClaudeSDKClient.instances[0]
+
+
+def test_real_agent_loop_streams_deltas_without_duplicating_block_text(monkeypatch):
+    """Token frames come from StreamEvent text deltas as they arrive; the
+    completed TextBlock is NOT re-emitted as a token (the UI already has the
+    text), but still feeds the turn-end assistant_message. Subagent deltas
+    (parent_tool_use_id set) stay internal."""
+    mod = _make_fake_sdk(monkeypatch, with_stream_event=True)
+
+    def _delta(text):
+        return mod.StreamEvent(
+            uuid="u1",
+            session_id="s1",
+            event={"type": "content_block_delta", "delta": {"type": "text_delta", "text": text}},
+        )
+
+    script = [
+        _delta("Hel"),
+        _delta("lo"),
+        mod.StreamEvent(
+            uuid="u2",
+            session_id="s1",
+            event={"type": "content_block_delta", "delta": {"type": "text_delta", "text": "SUBAGENT"}},
+            parent_tool_use_id="tu_1",
+        ),
+        mod.AssistantMessage(content=[mod.TextBlock(text="Hello")]),
+        mod.ResultMessage(usage={"input_tokens": 3, "output_tokens": 5}),
+    ]
+    emitted, client = _run_real_agent_turn(
+        monkeypatch, mod, script, [{"type": "user_msg", "text": "hi"}]
+    )
+
+    tokens = [f["text"] for f in emitted if f["type"] == "token"]
+    assert tokens == ["Hel", "lo"]  # deltas only — no duplicate "Hello" block token
+    final = next(f for f in emitted if f["type"] == "assistant_message")
+    assert final["content"] == "Hello"
+    assert emitted[-1] == {"type": "done"}
+    # Streaming was requested from the SDK.
+    assert client.options.include_partial_messages is True
+
+
+def test_real_agent_loop_uses_query_not_connect_for_messages(monkeypatch):
+    """__aenter__ already connected (eager CLI boot); every user_msg must go
+    through query() — a connect(text) here would spawn a second CLI."""
+    mod = _make_fake_sdk(monkeypatch, with_stream_event=True)
+    script = [
+        mod.AssistantMessage(content=[mod.TextBlock(text="ack")]),
+        mod.ResultMessage(),
+    ]
+    emitted, client = _run_real_agent_turn(
+        monkeypatch, mod, script, [{"type": "user_msg", "text": "hi"}]
+    )
+
+    assert ("query", "hi") in client.calls
+    assert ("connect", "hi") not in client.calls
+    # Exactly one connect — the eager one from __aenter__, with no prompt.
+    assert client.calls.count(("connect", None)) == 1
+
+
+def test_real_agent_loop_awaits_interrupt_on_cancel(monkeypatch):
+    """cancel frames must actually reach the SDK — interrupt() is a
+    coroutine, and the historical un-awaited call never ran its body."""
+    mod = _make_fake_sdk(monkeypatch, with_stream_event=True)
+    emitted, client = _run_real_agent_turn(
+        monkeypatch, mod, [], [{"type": "cancel"}]
+    )
+    assert ("interrupt", None) in client.calls
+
+
+def test_real_agent_loop_falls_back_to_block_tokens_without_stream_event(monkeypatch):
+    """On an SDK predating StreamEvent the loop must not request partial
+    messages (the options dataclass lacks the field) and must keep emitting
+    whole-block token frames so the user still sees text."""
+    mod = _make_fake_sdk(monkeypatch, with_stream_event=False)
+    script = [
+        mod.AssistantMessage(content=[mod.TextBlock(text="Hello")]),
+        mod.ResultMessage(),
+    ]
+    emitted, client = _run_real_agent_turn(
+        monkeypatch, mod, script, [{"type": "user_msg", "text": "hi"}]
+    )
+
+    tokens = [f["text"] for f in emitted if f["type"] == "token"]
+    assert tokens == ["Hello"]
+    assert not hasattr(client.options, "include_partial_messages")

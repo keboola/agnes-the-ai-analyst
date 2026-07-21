@@ -5,6 +5,14 @@ sandbox at spawn time (rsync-style — every file, every spawn). Cap at
 100 MB; refuse upload past the cap rather than half-pushing. Diff-only
 mode (option B) is a future optimization.
 
+Transport: the tree is packed into ONE gzipped tarball, written with a
+single ``files.write``, and extracted in-sandbox with ``tar`` — one E2B
+API round-trip instead of one per file. A workspace with hundreds of
+small files (marketplace plugins, ``.claude`` skills) previously paid
+one sequential HTTP round-trip *per file*, which dominated chat spawn
+latency. The per-file loop is kept as a fallback for sandboxes where the
+tar step fails.
+
 Symlink handling: the per-user workspace lives at
 ``$DATA_DIR/users/<email>/workspace`` and ``WorkdirManager.prepare_session_dir``
 mounts a per-session directory whose ``.claude``, ``CLAUDE.md`` etc. are
@@ -19,6 +27,7 @@ E2B SDK 1.x surface used here:
 - ``sandbox.files.read(path, format="bytes") -> bytes`` —
   format-defaulted on download
 """
+
 from __future__ import annotations
 
 import logging
@@ -33,10 +42,20 @@ logger = logging.getLogger(__name__)
 
 # Directories we never sync into the sandbox. Build/runtime cruft only —
 # everything operator-supplied (.claude/*) goes through unchanged.
-_EXCLUDE_DIRS = frozenset({
-    "__pycache__", ".git", ".venv", ".pytest_cache", "node_modules",
-    ".mypy_cache", ".ruff_cache", "build", "dist", ".eggs",
-})
+_EXCLUDE_DIRS = frozenset(
+    {
+        "__pycache__",
+        ".git",
+        ".venv",
+        ".pytest_cache",
+        "node_modules",
+        ".mypy_cache",
+        ".ruff_cache",
+        "build",
+        "dist",
+        ".eggs",
+    }
+)
 
 _EXCLUDE_FILE_SUFFIXES = (".pyc", ".pyo")
 
@@ -78,6 +97,45 @@ def _sandbox_path_for(local_path: Path, local_root: Path) -> str:
     return f"{SANDBOX_WORKDIR}/{rel_posix}"
 
 
+# Sandbox-side staging path for the workspace tarball. Outside /work so a
+# failed extraction never leaves the archive in the tree that syncs back to
+# the host at session end.
+SANDBOX_WORKSPACE_TARBALL = "/tmp/agnes-workspace.tar.gz"
+
+# Sentinel written after the workspace tree is fully in place under /work.
+# The runner process starts BEFORE the workspace upload finishes (provider
+# .spawn launches it), so it waits on this sentinel before spawning the agent
+# CLI — the CLI reads CLAUDE.md / .claude settings from /work at startup, and
+# the agent's first tool call reads workspace files. Written even for an
+# empty workspace so the runner's bounded wait terminates promptly. Distinct
+# from SANDBOX_WHEEL_READY (below), which only gates the CLI wheel install —
+# splitting the two lets the in-sandbox pip install run concurrently with
+# this (much slower) workspace push.
+SANDBOX_WORKSPACE_READY = "/tmp/agnes-workspace.ready"
+
+
+def _build_workspace_tarball(payloads: list[tuple[str, bytes, int, int]]) -> bytes:
+    """Pack ``(rel_posix_path, data, mode, mtime)`` tuples into a gzipped tar.
+
+    ``compresslevel=1``: the bulk of a big workspace is parquet snapshots,
+    which are already compressed — cheap gzip keeps CPU out of the spawn
+    path while still collapsing the many-small-text-files case.
+    """
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=1) as tar:
+        for rel_posix, data, mode, mtime in payloads:
+            info = tarfile.TarInfo(name=rel_posix)
+            info.size = len(data)
+            # Preserve the permission bits (hooks/scripts need +x) and mtime.
+            info.mode = mode & 0o777
+            info.mtime = mtime
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
 async def upload_workspace(
     sandbox,
     local_root: Path,
@@ -86,19 +144,24 @@ async def upload_workspace(
 ) -> int:
     """Push ``local_root``'s tree into the sandbox under ``/work/``.
 
+    Preferred transport is a single tarball (one ``files.write`` + one
+    in-sandbox ``tar -x``); per-file writes remain as a fallback. Always
+    finishes by writing the ``SANDBOX_WORKSPACE_READY`` sentinel so the
+    runner's bounded wait unblocks — except on ``WorkspaceTooLarge``,
+    where the caller tears the sandbox down anyway.
+
     Returns the total bytes uploaded. Raises ``WorkspaceTooLarge`` if the
     summed file sizes exceed ``max_bytes`` (counted *before* any upload
     happens, so no partial sync is left in the sandbox).
     """
     files = list(_iter_files(local_root))
-    if not files:
-        return 0
 
     total = 0
-    payloads: list[tuple[str, bytes]] = []
+    payloads: list[tuple[str, bytes, int, int]] = []
     for f in files:
         try:
             data = f.read_bytes()
+            st = f.stat()
         except OSError as e:
             logger.warning("upload_workspace: skip unreadable %s (%s)", f, e)
             continue
@@ -109,11 +172,37 @@ async def upload_workspace(
                 f"running total {total} bytes; "
                 f"raise chat.e2b_workspace_max_bytes or trim files",
             )
-        payloads.append((_sandbox_path_for(f, local_root), data))
+        rel_posix = f.relative_to(local_root).as_posix()
+        payloads.append((rel_posix, data, st.st_mode, int(st.st_mtime)))
 
-    for sandbox_path, data in payloads:
-        await sandbox.files.write(sandbox_path, data)
+    if payloads:
+        try:
+            await _upload_via_tarball(sandbox, payloads)
+        except Exception:
+            logger.exception(
+                "upload_workspace: tarball transport failed; falling back to per-file writes",
+            )
+            for rel_posix, data, _mode, _mtime in payloads:
+                await sandbox.files.write(f"{SANDBOX_WORKDIR}/{rel_posix}", data)
+
+    await sandbox.files.write(SANDBOX_WORKSPACE_READY, b"")
     return total
+
+
+async def _upload_via_tarball(sandbox, payloads: list[tuple[str, bytes, int, int]]) -> None:
+    """One-round-trip transport: write the packed tree, extract, remove."""
+    blob = _build_workspace_tarball(payloads)
+    await sandbox.files.write(SANDBOX_WORKSPACE_TARBALL, blob)
+    # Run as the same in-sandbox account the runner uses (see
+    # E2BProvider.spawn's ``user="user"``) so extracted files keep an
+    # ownership the agent's tools can write through. Foreground run —
+    # the SDK raises on a non-zero exit, which the caller turns into the
+    # per-file fallback.
+    await sandbox.commands.run(
+        f"tar -xzf {SANDBOX_WORKSPACE_TARBALL} -C {SANDBOX_WORKDIR} && rm -f {SANDBOX_WORKSPACE_TARBALL}",
+        user="user",
+        timeout=120,
+    )
 
 
 # Directory the runner pip-installs the agnes CLI wheel from at boot
@@ -127,9 +216,10 @@ SANDBOX_WHEEL_DIR = "/tmp/agnes-cli"
 # Sentinel the runner waits on before installing. The runner process starts
 # (inside provider.spawn) BEFORE this upload runs, so without a barrier the
 # runner would glob an empty staging dir and skip the install (the race that
-# left `agnes` absent). We write the sentinel LAST — after the wheel and after
-# the caller's workspace upload — so its presence guarantees both the wheel and
-# the workspace tree are in place before the agent's first tool call.
+# left `agnes` absent). Written right after the wheel — it guarantees the
+# wheel ONLY. The manager uploads the wheel FIRST so the in-sandbox pip
+# install overlaps with the (slower) workspace push; workspace completeness
+# is signalled separately via SANDBOX_WORKSPACE_READY above.
 SANDBOX_WHEEL_READY = f"{SANDBOX_WHEEL_DIR}/.ready"
 
 
