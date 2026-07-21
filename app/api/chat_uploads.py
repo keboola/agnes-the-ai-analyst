@@ -28,7 +28,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-import duckdb
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
@@ -220,6 +219,7 @@ def _register_workspace_table(
 
     This intentionally does NOT mutate the server-side admin table_registry.
     """
+    import duckdb
     import time
 
     extract_db_path = uploads_dir / "extract.duckdb"
