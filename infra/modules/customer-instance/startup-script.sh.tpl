@@ -397,13 +397,24 @@ fi
 # A loopback value is never a meaningful operator override — it can only be
 # a previously-persisted failed derivation, and preserving it would lock the
 # failure in forever (the exact bug this block fixes). Re-derive instead.
-case "$EXISTING_SERVER_URL" in
-    *127.0.0.1*|*localhost*) EXISTING_SERVER_URL="" ;;
+# Compare the exact HOST (text between :// and the first : or /), not a
+# substring — a legitimate override like https://localhost.internal.example.com
+# must survive.
+EXISTING_SERVER_HOST="$${EXISTING_SERVER_URL#*://}"
+EXISTING_SERVER_HOST="$${EXISTING_SERVER_HOST%%[:/]*}"
+case "$EXISTING_SERVER_HOST" in
+    127.0.0.1|localhost|::1|"[::1]") EXISTING_SERVER_URL="" ;;
 esac
 SERVER_URL=""
 if [ -n "$EXISTING_SERVER_URL" ]; then
     SERVER_URL="$EXISTING_SERVER_URL"
 elif [ -n "$DOMAIN" ]; then
+    # A configured domain implies TLS termination on this VM — ACME
+    # (tls_mode=caddy) or corp-PKI cert-file mode (tls_mode=none + certs on
+    # disk; agnes-auto-upgrade engages the tls overlay when it sees them) —
+    # so https is the right scheme for both supported shapes. The unsupported
+    # plain-HTTP-on-a-domain shape needs a hand-set SERVER_URL, which the
+    # override above preserves.
     SERVER_URL="https://$DOMAIN"
 else
     EXTERNAL_IP=$(curl -sf -H "Metadata-Flavor: Google" \
