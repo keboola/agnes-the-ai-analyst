@@ -394,16 +394,34 @@ EXISTING_SERVER_URL=""
 if [ -f "$APP_DIR/.env" ]; then
     EXISTING_SERVER_URL=$(grep -E '^SERVER_URL=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
 fi
-# A loopback value is never a meaningful operator override — it can only be
-# a previously-persisted failed derivation, and preserving it would lock the
-# failure in forever (the exact bug this block fixes). Re-derive instead.
-# Compare the exact HOST (text between :// and the first : or /), not a
-# substring — a legitimate override like https://localhost.internal.example.com
-# must survive.
+# Two classes of persisted value are NOT meaningful operator overrides and
+# must be re-derived instead of preserved:
+#   1. Loopback — can only be a previously-persisted failed derivation;
+#      preserving it locks the failure in forever (the exact bug this block
+#      fixes).
+#   2. http://<IPv4>:8000 — the shape this block itself derives. Preserving
+#      it would freeze a stale IP on deployments without a reserved address
+#      (this module reserves static IPs, but forks may not); re-deriving is
+#      idempotent on a static IP and self-healing on an ephemeral one. An
+#      operator who genuinely wants a raw-IP override should use a hostname
+#      or a different port, which stays sticky.
+# Host extraction handles bracketed IPv6 ([::1]:8000) and port/path suffixes;
+# exact-match only — https://localhost.internal.example.com must survive.
 EXISTING_SERVER_HOST="$${EXISTING_SERVER_URL#*://}"
-EXISTING_SERVER_HOST="$${EXISTING_SERVER_HOST%%[:/]*}"
 case "$EXISTING_SERVER_HOST" in
-    127.0.0.1|localhost|::1|"[::1]") EXISTING_SERVER_URL="" ;;
+    \[*)
+        EXISTING_SERVER_HOST="$${EXISTING_SERVER_HOST#\[}"
+        EXISTING_SERVER_HOST="$${EXISTING_SERVER_HOST%%\]*}"
+        ;;
+    *)
+        EXISTING_SERVER_HOST="$${EXISTING_SERVER_HOST%%[:/]*}"
+        ;;
+esac
+case "$EXISTING_SERVER_HOST" in
+    127.0.0.1|localhost|::1) EXISTING_SERVER_URL="" ;;
+esac
+case "$EXISTING_SERVER_URL" in
+    http://[0-9]*.[0-9]*.[0-9]*.[0-9]*:8000) EXISTING_SERVER_URL="" ;;
 esac
 SERVER_URL=""
 if [ -n "$EXISTING_SERVER_URL" ]; then
