@@ -27,18 +27,16 @@ def test_applier_unit_runs_as_non_root_with_docker_as_supplementary():
     from pathlib import Path
 
     unit = Path("scripts/ops/agnes-state-applier.service").read_text()
-    assert "User=agnes-applier" in unit, \
-        "unit must specify User=agnes-applier (Phase 8.1)"
-    assert "SupplementaryGroups=docker" in unit, \
-        "unit must use SupplementaryGroups=docker (not Group=docker) " \
+    assert "User=agnes-applier" in unit, "unit must specify User=agnes-applier (Phase 8.1)"
+    assert "SupplementaryGroups=docker" in unit, (
+        "unit must use SupplementaryGroups=docker (not Group=docker) "
         "to preserve agnes-applier as primary group (Phase 8.1 follow-up #3)"
+    )
     # Hard guard against regression: no ``Group=docker`` directive
     # (matching the directive form, not the doc-string mention).
-    directives = [line for line in unit.splitlines()
-                  if line.strip() and not line.strip().startswith("#")]
+    directives = [line for line in unit.splitlines() if line.strip() and not line.strip().startswith("#")]
     group_directives = [line for line in directives if line.startswith("Group=")]
-    assert not group_directives, \
-        f"unit must NOT specify Group= as a directive; got {group_directives}"
+    assert not group_directives, f"unit must NOT specify Group= as a directive; got {group_directives}"
 
 
 def test_applier_unit_ordered_after_bootstrap():
@@ -55,10 +53,12 @@ def test_applier_unit_ordered_after_bootstrap():
     from pathlib import Path
 
     unit = Path("scripts/ops/agnes-state-applier.service").read_text()
-    assert "After=" in unit and "agnes-state-applier-bootstrap.service" in unit, \
+    assert "After=" in unit and "agnes-state-applier-bootstrap.service" in unit, (
         "main unit must order After=agnes-state-applier-bootstrap.service"
-    assert "Requires=agnes-state-applier-bootstrap.service" in unit, \
+    )
+    assert "Requires=agnes-state-applier-bootstrap.service" in unit, (
         "main unit must Requires= the bootstrap unit (hard dep)"
+    )
 
 
 def test_bootstrap_unit_creates_user_and_state_dir():
@@ -74,25 +74,27 @@ def test_bootstrap_unit_creates_user_and_state_dir():
     # Bootstrap unit must NOT specify User= as a directive (it has to
     # be root to create the agnes-applier user). The grep ignores
     # commented-out "User=" mentions in the docstring.
-    directives = [line for line in unit.splitlines()
-                  if line.strip() and not line.strip().startswith("#")]
+    directives = [line for line in unit.splitlines() if line.strip() and not line.strip().startswith("#")]
     user_directives = [line for line in directives if line.startswith("User=")]
-    assert not user_directives or user_directives == ["User=root"], \
+    assert not user_directives or user_directives == ["User=root"], (
         f"bootstrap unit must run as root (no User= directive); got {user_directives}"
+    )
     assert "Type=oneshot" in unit, "bootstrap unit must be oneshot"
-    assert "RemainAfterExit=yes" in unit, \
-        "bootstrap unit must RemainAfterExit so Requires= satisfies on re-trigger"
-    assert "useradd --system" in unit and "agnes-applier" in unit, \
+    assert "RemainAfterExit=yes" in unit, "bootstrap unit must RemainAfterExit so Requires= satisfies on re-trigger"
+    assert "useradd --system" in unit and "agnes-applier" in unit, (
         "bootstrap unit must contain useradd for agnes-applier"
-    assert "usermod -aG docker agnes-applier" in unit, \
-        "bootstrap unit must add agnes-applier to docker group"
-    assert "chown -R agnes-applier:agnes-applier /data/state" in unit, \
+    )
+    assert "usermod -aG docker agnes-applier" in unit, "bootstrap unit must add agnes-applier to docker group"
+    assert "chown -R agnes-applier:agnes-applier /data/state" in unit, (
         "bootstrap unit must chown /data/state to agnes-applier"
-    assert "chown agnes-applier:agnes-applier /opt/agnes/.env" in unit, \
-        "bootstrap unit must chown /opt/agnes/.env to agnes-applier so " \
+    )
+    assert "chown agnes-applier:agnes-applier /opt/agnes/.env" in unit, (
+        "bootstrap unit must chown /opt/agnes/.env to agnes-applier so "
         "docker compose's Go file loader can open it (Phase 8.1 follow-up #3)"
-    assert "Before=" in unit and "agnes-state-applier.service" in unit, \
+    )
+    assert "Before=" in unit and "agnes-state-applier.service" in unit, (
         "bootstrap unit must order Before=agnes-state-applier.service"
+    )
 
 
 def test_startup_script_provisions_agnes_applier_user():
@@ -109,15 +111,23 @@ def test_startup_script_provisions_agnes_applier_user():
 def test_bootstrap_unit_chowns_data_postgres_to_70_70():
     """B4-NEW tightening — chown 70:70 /data/postgres belongs in the
     root-running bootstrap unit, not in the agnes-applier's ExecStart
-    (where it failed under set -e on every fresh VM)."""
+    (where it failed under set -e on every fresh VM).
+
+    Must be recursive (``-R``): this unit reruns on every boot, and
+    /data/postgres is on the persistent data disk — it survives a
+    boot-disk-only VM recreate with its existing PGDATA contents
+    already on disk. A non-recursive chown only fixed the top-level
+    directory, leaving nested files (verified live: global/pg_filenode.map)
+    owned by whatever uid the *previous* instance's postgres container
+    mapped to 70, so a fresh container on the recreated VM hit
+    "Permission denied" reading its own data directory. Observed live
+    on a customer VM after a delete+insert."""
     from pathlib import Path
 
     unit = Path("scripts/ops/agnes-state-applier-bootstrap.service").read_text()
-    assert "chown 70:70 /data/postgres" in unit or \
-           "chown -R 70:70 /data/postgres" in unit, (
-        "bootstrap unit must chown 70:70 /data/postgres (the Postgres "
-        "Alpine image uid). Pre-B4-NEW tightening the chown was in "
-        "the applier's main unit and failed as agnes-applier."
+    assert "chown -R 70:70 /data/postgres" in unit, (
+        "bootstrap unit must chown -R 70:70 /data/postgres (recursive — "
+        "see docstring for the VM-recreate permission-denied incident)."
     )
 
 
@@ -130,11 +140,12 @@ def test_startup_script_creates_data_postgres_owned_70_70():
     # Accepts chown 70:70 (plain or -R — recursive since the 2026-07-21 fix
     # that repairs dirs damaged by the old blanket `chown -R 999 /data`) or
     # install -o 70 -g 70 -d.
-    assert ("chown 70:70 /data/postgres" in tpl
-            or "chown -R 70:70 /data/postgres" in tpl
-            or "install -d -o 70 -g 70" in tpl and "/data/postgres" in tpl), (
-        "startup-script.sh.tpl must create /data/postgres owned 70:70"
-    )
+    assert (
+        "chown 70:70 /data/postgres" in tpl
+        or "chown -R 70:70 /data/postgres" in tpl
+        or "install -d -o 70 -g 70" in tpl
+        and "/data/postgres" in tpl
+    ), "startup-script.sh.tpl must create /data/postgres owned 70:70"
 
 
 def test_applier_does_not_chown_data_postgres_in_exec():
@@ -147,18 +158,11 @@ def test_applier_does_not_chown_data_postgres_in_exec():
     script = Path("scripts/ops/agnes-state-applier.sh").read_text()
     # The script may still STAT the dir, but it must not call chown.
     # Allow a comment mentioning chown for context.
-    code_lines = [
-        line for line in script.splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
-    chown_lines = [
-        line for line in code_lines
-        if "chown" in line and "/data/postgres" in line
-    ]
+    code_lines = [line for line in script.splitlines() if line.strip() and not line.strip().startswith("#")]
+    chown_lines = [line for line in code_lines if "chown" in line and "/data/postgres" in line]
     assert not chown_lines, (
-        f"applier script must not invoke `chown` on /data/postgres "
-        f"(bootstrap unit does it as root); found:\n  "
-        + "\n  ".join(chown_lines)
+        "applier script must not invoke `chown` on /data/postgres "
+        "(bootstrap unit does it as root); found:\n  " + "\n  ".join(chown_lines)
     )
 
 
@@ -178,9 +182,11 @@ def test_startup_script_chowns_env_to_agnes_applier():
     # Look for the post-write chown. Accepts either form:
     #   chown agnes-applier:agnes-applier /opt/agnes/.env
     #   install -o agnes-applier -g agnes-applier ... /opt/agnes/.env
-    assert ("chown agnes-applier:agnes-applier /opt/agnes/.env" in tpl
-            or "install -o agnes-applier" in tpl
-                and "/opt/agnes/.env" in tpl), (
+    assert (
+        "chown agnes-applier:agnes-applier /opt/agnes/.env" in tpl
+        or "install -o agnes-applier" in tpl
+        and "/opt/agnes/.env" in tpl
+    ), (
         "startup-script.sh.tpl must chown /opt/agnes/.env to "
         "agnes-applier IMMEDIATELY after writing it (B3-NEW + "
         "reviewer's recommendation — don't rely on the bootstrap "
@@ -204,13 +210,15 @@ def test_dockerfile_ships_every_startup_installed_ops_unit():
 
     tpl = Path("infra/modules/customer-instance/startup-script.sh.tpl").read_text()
     dockerfile = Path("Dockerfile").read_text()
-    installed = set(re.findall(
-        r'install[^\n]*"\$APP_DIR/(agnes-state-applier[^"]+)"', tpl,
-    ))
+    installed = set(
+        re.findall(
+            r'install[^\n]*"\$APP_DIR/(agnes-state-applier[^"]+)"',
+            tpl,
+        )
+    )
     # Sanity for the test itself — the bootstrap unit is the known case.
     assert "agnes-state-applier-bootstrap.service" in installed, (
-        "expected the startup-script to install the bootstrap unit from "
-        "$APP_DIR; did the install path change?"
+        "expected the startup-script to install the bootstrap unit from $APP_DIR; did the install path change?"
     )
     for unit in sorted(installed):
         assert f"scripts/ops/{unit}" in dockerfile, (
@@ -236,17 +244,12 @@ def test_startup_script_selects_compose_overlay_by_backend():
 
     tpl = Path("infra/modules/customer-instance/startup-script.sh.tpl").read_text()
     assert "COMPOSE_FILE=$COMPOSE_FILE_VALUE" in tpl, (
-        "startup-script must write COMPOSE_FILE from the computed per-backend "
-        "value, not a hardcoded overlay list"
+        "startup-script must write COMPOSE_FILE from the computed per-backend value, not a hardcoded overlay list"
     )
     assert "PERSISTED_BACKEND" in tpl and '= "side_car"' in tpl, (
-        "startup-script must read the persisted backend and gate the side-car "
-        "overlay on backend=side_car"
+        "startup-script must read the persisted backend and gate the side-car overlay on backend=side_car"
     )
-    assert (
-        "COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml"
-        not in tpl
-    ), (
+    assert "COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml" not in tpl, (
         "the Postgres side-car overlay must not be baked into the COMPOSE_FILE "
         ".env line unconditionally — it belongs only in the side_car branch"
     )
