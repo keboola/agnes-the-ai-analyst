@@ -98,8 +98,8 @@ real problem.
 3) Bootstrap your BRAND workspace in this directory.
    Write the PAT to a file FIRST, then run `agnes init` with
    `--token-file`. Passing the JWT inline via `--token "eyJ..."`
-   Piping the token through a file keeps it out of
-   the command-line argv entirely.
+   puts the token in the command-line argv; piping it through a file
+   keeps it out of the command-line argv entirely.
 
    mkdir -p ~/.agnes && umask 077 && cat > ~/.agnes/token <<'AGNES_PAT'
 {token}
