@@ -214,8 +214,19 @@ chmod 700 "$DATA_MNT/postgres"
 # rewrite is a no-op when the url already carries the current password, and
 # never touches non-side_car backends (cloud urls point at managed instances
 # with their own credentials).
+#
+# sed -i replaces the file via temp-file + rename. GNU sed running as root
+# preserves ownership and mode, but restore them explicitly so the re-align
+# can never change who may read the state file regardless of sed flavor —
+# both fresh-created (999, 0644, above) and applier-rewritten
+# (agnes-applier, 0600, scripts/ops/agnes-state-applier.sh) shapes exist in
+# the field.
 if [ -f "$INSTANCE_YAML" ] && grep -q '^[[:space:]]*backend:[[:space:]]*"\?side_car' "$INSTANCE_YAML"; then
+    IY_OWNER=$(stat -c '%u:%g' "$INSTANCE_YAML")
+    IY_MODE=$(stat -c '%a' "$INSTANCE_YAML")
     sed -i "s|postgresql+psycopg://agnes:[^@]*@postgres:5432/agnes|postgresql+psycopg://agnes:$POSTGRES_PASSWORD@postgres:5432/agnes|" "$INSTANCE_YAML"
+    chown "$IY_OWNER" "$INSTANCE_YAML"
+    chmod "$IY_MODE" "$INSTANCE_YAML"
 fi
 
 # SCHEDULER_API_TOKEN — shared secret between the app and scheduler containers.
