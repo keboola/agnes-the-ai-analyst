@@ -236,49 +236,50 @@
            role="listbox" aria-label="Skills and commands">
         <ul id="chat-slash-menu-results" class="cloud-chat-slash-menu-results"></ul>
       </div>
-      {# "+" upload menu — popover anchored inside the form's
-         position:relative. chat.js opens/closes it and wires the three
-         items to their upload flows. #}
-      <ul id="chat-plus-menu" class="cloud-chat-plus-menu" hidden
-          role="menu" aria-label="Upload options">
-        <li class="cloud-chat-plus-menu-item" role="menuitem" tabindex="0"
-            data-upload-action="data">
-          <span class="cloud-chat-plus-menu-item-icon" aria-hidden="true">&#x1F4C8;</span>
-          <span class="cloud-chat-plus-menu-item-text">
-            <span class="cloud-chat-plus-menu-item-label">Data file</span>
-            <span class="cloud-chat-plus-menu-item-hint">CSV, Parquet, Excel &mdash; land in your chat workspace</span>
-          </span>
-        </li>
-        <li class="cloud-chat-plus-menu-item" role="menuitem" tabindex="0"
-            data-upload-action="store">
-          <span class="cloud-chat-plus-menu-item-icon" aria-hidden="true">&#x1F9E9;</span>
-          <span class="cloud-chat-plus-menu-item-text">
-            <span class="cloud-chat-plus-menu-item-label">Skill / Agent / Plugin</span>
-            <span class="cloud-chat-plus-menu-item-hint">Submit to the shared Store for everyone</span>
-          </span>
-        </li>
-        <li class="cloud-chat-plus-menu-item" role="menuitem" tabindex="0"
-            data-upload-action="media">
-          <span class="cloud-chat-plus-menu-item-icon" aria-hidden="true">&#x1F5BC;&#xFE0F;</span>
-          <span class="cloud-chat-plus-menu-item-text">
-            <span class="cloud-chat-plus-menu-item-label">Image / Document</span>
-            <span class="cloud-chat-plus-menu-item-hint">PDF, image, text &mdash; attach to your workspace</span>
-          </span>
-        </li>
-      </ul>
       <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes… (try / for skills)" rows="2"></textarea>
       <div class="cloud-chat-form-actions">
         <button type="button" id="cancel-btn"
                 class="btn btn-danger cloud-chat-stop-btn" hidden>Stop</button>
-        {# "+" button — opens the upload menu popover.  Sits to the left of
-           the send/stop buttons.  aria-haspopup="menu" + aria-expanded are
-           toggled by chat.js to reflect the open state for screen readers. #}
-        <button type="button" id="chat-plus-btn"
-                class="cloud-chat-plus-btn"
-                aria-label="Upload a file"
-                aria-haspopup="menu"
-                aria-expanded="false"
-                aria-controls="chat-plus-menu">+</button>
+        {# "+" button + its upload menu, wrapped together in a
+           position:relative anchor so the popover attaches to the BUTTON
+           (not the whole form).  Sits to the left of the send/stop buttons.
+           aria-haspopup="menu" + aria-expanded are toggled by chat.js to
+           reflect the open state for screen readers. #}
+        <span class="cloud-chat-plus-wrap">
+          <button type="button" id="chat-plus-btn"
+                  class="cloud-chat-plus-btn"
+                  aria-label="Upload a file"
+                  aria-haspopup="menu"
+                  aria-expanded="false"
+                  aria-controls="chat-plus-menu">+</button>
+          <ul id="chat-plus-menu" class="cloud-chat-plus-menu" hidden
+              role="menu" aria-label="Upload options">
+            <li class="cloud-chat-plus-menu-item" role="menuitem" tabindex="0"
+                data-upload-action="data">
+              <span class="cloud-chat-plus-menu-item-icon" aria-hidden="true">&#x1F4C8;</span>
+              <span class="cloud-chat-plus-menu-item-text">
+                <span class="cloud-chat-plus-menu-item-label">Data file</span>
+                <span class="cloud-chat-plus-menu-item-hint">CSV, Parquet, Excel &mdash; land in your chat workspace</span>
+              </span>
+            </li>
+            <li class="cloud-chat-plus-menu-item" role="menuitem" tabindex="0"
+                data-upload-action="store">
+              <span class="cloud-chat-plus-menu-item-icon" aria-hidden="true">&#x1F9E9;</span>
+              <span class="cloud-chat-plus-menu-item-text">
+                <span class="cloud-chat-plus-menu-item-label">Skill / Agent / Plugin</span>
+                <span class="cloud-chat-plus-menu-item-hint">Submit to the shared Store for everyone</span>
+              </span>
+            </li>
+            <li class="cloud-chat-plus-menu-item" role="menuitem" tabindex="0"
+                data-upload-action="media">
+              <span class="cloud-chat-plus-menu-item-icon" aria-hidden="true">&#x1F5BC;&#xFE0F;</span>
+              <span class="cloud-chat-plus-menu-item-text">
+                <span class="cloud-chat-plus-menu-item-label">Image / Document</span>
+                <span class="cloud-chat-plus-menu-item-hint">PDF, image, text &mdash; attach to your workspace</span>
+              </span>
+            </li>
+          </ul>
+        </span>
         {# Rail (issue #896): circular send button matching the /ask
            composer (paper pill + up-arrow glyph); aria-label carries the
            "Send" name the visible text used to provide. Topnav keeps the

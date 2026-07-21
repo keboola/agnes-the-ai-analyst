@@ -1828,6 +1828,13 @@ html[data-ui-layout="rail"] .cloud-chat-shell.history-open .cloud-chat-main {
    icon glyph (text emoji, no external asset), label, and a brief hint line.
 */
 
+/* Wrapper around the "+" button + its menu — the popover's positioning
+   context, so the menu anchors to the BUTTON rather than the whole form. */
+.cloud-chat-plus-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
 .cloud-chat-plus-btn {
   flex: 0 0 auto;
   width: 36px;
@@ -1874,13 +1881,16 @@ html[data-ui-layout="rail"] .cloud-chat-plus-btn:hover {
   border-color: var(--ds-border);
 }
 
-/* The popover menu — pops up from the bottom-left of the composer. */
+/* The popover menu — opens upward, anchored to the right edge of the "+"
+   button (its wrapper is the positioning context) and grows leftward so it
+   stays inside the composer instead of overflowing past the send button. */
 .cloud-chat-plus-menu {
   position: absolute;
-  left: 0;
+  right: 0;
   bottom: calc(100% + var(--space-2));
   z-index: 20;
   min-width: 240px;
+  max-width: min(320px, 90vw);
   background: var(--ds-surface);
   border: 1px solid var(--ds-border);
   border-radius: var(--ds-radius-lg, 12px);
