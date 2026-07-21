@@ -28,6 +28,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.4] - 2026-07-21
+
+### Fixed
+
 - Install prompt (`/setup` clipboard payload) no longer instructs the agent to
   suppress its own security judgment around the freshly-minted PAT. Removed the
   step-3 NOTE that told the agent not to warn / not to mark the session private
@@ -39,12 +49,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the command-line argv) are unchanged. Also dropped the step-4 `/agnes-private`
   private-session tip — that guidance belongs in the workspace docs, not the
   one-shot setup prompt.
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.76.3] - 2026-07-21
 
