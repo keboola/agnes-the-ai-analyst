@@ -38,6 +38,7 @@ from app.instance_config import (
     get_instance_custom_preamble,
     get_instance_theme,
     get_custom_scripts,
+    get_studio_enabled,
 )
 from src.repositories import (
     audit_repo,
