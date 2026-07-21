@@ -200,6 +200,30 @@ def test_registered_table_is_queryable_after_rebuild(client: TestClient, data_di
     assert rows == [("Prague", 1300000), ("Brno", 380000)]
 
 
+def test_register_as_table_replaces_preexisting_view(client: TestClient, data_dir: Path) -> None:
+    """A pre-fix extract.duckdb may hold this name as a VIEW. Registering must
+    replace it with a TABLE, not 500 with `CatalogException: ... is of type
+    View, trying to replace with type Table`."""
+    from app.chat.workdir import _safe_email_dir
+    from src.duckdb_conn import _open_duckdb
+
+    ws = data_dir / "users" / _safe_email_dir(TEST_USER["email"]) / "workspace"
+    uploads = ws / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+    # Seed a stale VIEW named "cities" (what the old view-based code wrote).
+    seed = _open_duckdb(str(uploads / "extract.duckdb"))
+    seed.execute("CREATE VIEW cities AS SELECT 1 AS x")
+    seed.close()
+
+    resp = client.post(
+        "/api/chat/uploads",
+        data={"kind": "data", "register_as_table": "true", "table_name": "cities"},
+        files={"file": ("cities.csv", io.BytesIO(b"city,pop\nPrague,1300000\n"), "text/csv")},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["table_name"] == "cities"
+
+
 def test_register_as_table_requires_data_kind(client: TestClient) -> None:
     """register_as_table=true on a non-data kind is rejected with 400."""
     resp = client.post(

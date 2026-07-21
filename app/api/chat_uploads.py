@@ -263,7 +263,12 @@ def _register_workspace_table(
         else:
             read_expr = f"read_csv_auto('{file_path}')"
 
-        conn.execute(f'CREATE OR REPLACE TABLE "{table_name}" AS SELECT * FROM {read_expr}')
+        # Drop any prior object of the same name first. CREATE OR REPLACE TABLE
+        # refuses to replace an object of a different type — e.g. a pre-fix
+        # extract.duckdb where this name was a VIEW — so clear both types.
+        conn.execute(f'DROP VIEW IF EXISTS "{table_name}"')
+        conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+        conn.execute(f'CREATE TABLE "{table_name}" AS SELECT * FROM {read_expr}')
 
         # Count rows for _meta (best-effort; zero on error).
         try:
