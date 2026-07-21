@@ -16,6 +16,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- `system.duckdb` ART-index self-heal: the rebuild now swaps the corrupt
+  file for the rebuilt one with an atomic `os.replace` (copy-to-`.broken`
+  first) instead of move-aside-then-move-in, closing a window where
+  `db_path` was momentarily absent and a concurrent opener could create a
+  fresh empty DB that the swap then orphaned. The corruption canary also
+  schema-qualifies table identifiers so it probes robustly across
+  FTS-created schemas instead of relying on `search_path`.
+
 ### Removed
 
 ### Internal

@@ -1,7 +1,7 @@
 """ART-index corruption self-heal for ``system.duckdb``.
 
-Production failure class (5 occurrences across deployments, incl. Keboola
-agnes-prod 2026-07-20): DuckDB backs PRIMARY KEY / UNIQUE constraints with
+Production failure class (multiple occurrences across deployments): DuckDB
+backs PRIMARY KEY / UNIQUE constraints with
 an on-disk ART (Adaptive Radix Tree) index. An abrupt process/VM
 termination that bypasses the graceful ``CHECKPOINT``-and-close path
 (OOM SIGKILL, VM ``-replace`` destroy, host crash) can leave the index's
@@ -144,6 +144,21 @@ def test_rebuild_preserves_data_and_quarantines_original(db_path):
     with pytest.raises(duckdb.ConstraintException):
         conn.execute("INSERT INTO jobs VALUES ('a', 'dup')")
     conn.close()
+
+
+def test_rebuild_broken_copy_is_a_readable_snapshot(db_path):
+    """The quarantined .broken.<ts> is a COPY (atomic-swap design): db_path
+    is never momentarily absent, so a concurrent opener can't slip a fresh
+    empty DB into the gap. Both the snapshot and the live rebuilt file are
+    intact afterwards."""
+    broken = db_mod._rebuild_system_db(db_path)
+    assert broken.exists()
+    snap = duckdb.connect(str(broken), read_only=True)
+    assert snap.execute("SELECT count(*) FROM jobs").fetchone()[0] == 2
+    snap.close()
+    live = duckdb.connect(db_path, read_only=True)
+    assert live.execute("SELECT count(*) FROM jobs").fetchone()[0] == 2
+    live.close()
 
 
 def test_rebuild_leaves_a_usable_db_even_if_original_had_no_wal(db_path):
