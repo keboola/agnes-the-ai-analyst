@@ -34,7 +34,24 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user
+from app.instance_config import get_studio_enabled
 from app.web.studio import get_domain
+
+
+def _require_studio_enabled() -> None:
+    """403 when the instance-level Studio toggle is off.
+
+    Applied to the PUBLIC (submit/read-own) endpoints only: the admin
+    moderation endpoints stay open so admins can drain a pending queue after
+    an operator disables Studio. The store submission endpoints
+    (``/api/store/entities/from-markdown``) are deliberately NOT gated here —
+    that is the Flea store's own surface (also used by the CLI and the MCP
+    foundation tool) with its own guardrail/review pipeline.
+    """
+    if not get_studio_enabled():
+        raise HTTPException(status_code=403, detail={"kind": "studio_disabled"})
+
+
 from src.repositories import (
     audit_repo,
     authoring_suggestions_repo,
@@ -148,6 +165,7 @@ async def submit_suggestion(
     body: CreateSuggestionBody,
     user: dict = Depends(get_current_user),
 ):
+    _require_studio_enabled()
     spec = get_domain(body.domain)
     if spec is None:
         raise HTTPException(status_code=400, detail={"kind": "unknown_domain", "hint": body.domain})
@@ -172,6 +190,7 @@ async def submit_suggestion(
 async def my_suggestions(
     user: dict = Depends(get_current_user),
 ):
+    _require_studio_enabled()
     return authoring_suggestions_repo().list(created_by=user["email"])
 
 

@@ -144,3 +144,19 @@ def test_submit_rejects_direct_domain(seeded_app):
     )
     assert r.status_code == 400
     assert r.json()["detail"]["kind"] == "domain_submits_directly"
+
+
+def test_public_endpoints_403_when_studio_disabled(seeded_app, monkeypatch):
+    """The instance-level Studio toggle closes the public suggestion API too
+    (submit + read-own), not just the web routes. Admin moderation endpoints
+    stay open so a pending queue can be drained after disable."""
+    monkeypatch.setattr("app.api.authoring_suggestions.get_studio_enabled", lambda: False)
+    c = seeded_app["client"]
+    r = _submit(c, seeded_app["analyst_token"])
+    assert r.status_code == 403
+    assert r.json()["detail"]["kind"] == "studio_disabled"
+    r = c.get("/api/studio/suggestions/mine", headers=_auth(seeded_app["analyst_token"]))
+    assert r.status_code == 403
+    # admin queue remains reachable (drain-after-disable contract)
+    q = c.get("/api/admin/authoring-suggestions", headers=_auth(seeded_app["admin_token"]))
+    assert q.status_code == 200

@@ -16,7 +16,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   Default stays on; set `AGNES_STUDIO_ENABLED=0` (the infra/Terraform `.env`
   override, exposed as the `studio_enabled` module variable) or
   `studio.enabled: false` in `instance.yaml`. When off, the Studio nav entry
-  and command-palette items are hidden and `/admin/studio*` redirects to home.
+  and command-palette items are hidden, `/admin/studio*` redirects to home, and
+  the public suggestion API (`POST /api/studio/suggestions`, `GET
+  /api/studio/suggestions/mine`) returns 403 `studio_disabled`. Admin
+  moderation endpoints stay open (a pending queue can be drained after
+  disable); the store submission surface (`/api/store/entities/from-markdown`,
+  also used by the CLI and MCP) is a separate feature and is not gated.
 
 ### Changed
 
