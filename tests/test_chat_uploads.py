@@ -20,8 +20,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.auth.dependencies import get_current_user
-
 TEST_USER = {"id": "user_upload_tester", "email": "upload@test.com", "is_admin": False}
 
 
@@ -30,11 +28,16 @@ def _make_app(*, data_dir: Path) -> FastAPI:
     os.environ["DATA_DIR"] = str(data_dir)
 
     # Import AFTER setting DATA_DIR so path helpers pick it up.
+    from app.api.chat_uploads import require_chat_access
     from app.api.chat_uploads import router as chat_uploads_router
 
     app = FastAPI()
     app.include_router(chat_uploads_router)
-    app.dependency_overrides[get_current_user] = lambda: TEST_USER
+    # The endpoint is gated by ``require_chat_access`` (ResourceType.CHAT), the
+    # same gate as the rest of the chat API. Override it to a fixed test user so
+    # these tests exercise the upload logic rather than the RBAC grant check
+    # (which has its own coverage).
+    app.dependency_overrides[require_chat_access] = lambda: TEST_USER
     return app
 
 

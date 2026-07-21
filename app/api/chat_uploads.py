@@ -1,7 +1,8 @@
 """Chat workspace file upload endpoint.
 
 POST /api/chat/uploads
-  Auth: any authenticated user (get_current_user).
+  Auth: any user with chat access (require_chat_access — the same
+  ResourceType.CHAT gate the rest of the chat API uses; Admin short-circuits).
   Accepts a multipart file upload plus metadata fields:
     - kind: "data" | "image" | "document"
     - register_as_table: optional "true"/"false" (data files only)
@@ -31,13 +32,19 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
-from app.auth.dependencies import get_current_user
+from app.auth.access import require_resource_access
 from app.chat.workdir import _safe_email_dir
+from app.resource_types import ResourceType
 from app.utils import get_data_dir
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+# Same resource gate as the rest of the chat API (app/api/chat.py): the caller
+# must have the "Cloud chat" feature grant (or be an Admin).  A user denied
+# chat access must not be able to write into a chat workspace via uploads.
+require_chat_access = require_resource_access(ResourceType.CHAT, "chat")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -282,7 +289,7 @@ async def chat_upload(
     kind: UploadKind = Form(...),
     register_as_table: bool = Form(False),
     table_name: Optional[str] = Form(None),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_chat_access),
 ) -> ChatUploadResponse:
     """Upload a file into your chat workspace.
 

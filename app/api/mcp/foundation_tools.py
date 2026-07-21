@@ -871,50 +871,35 @@ def register_foundation_tools(
         register_as_table: bool = False,
         table_name: str = "",
     ) -> dict:
-        """Upload a file into your chat workspace via the server (POST /api/chat/uploads).
+        """Upload a local file into your chat workspace (client-side only).
 
-        The file at ``file_path`` (absolute path on the SERVER filesystem, or a
-        path the server can resolve) is read and sent to the upload endpoint.
-        Use this from an in-session MCP context where the file is already on
-        the server side.
+        Uploading a file by naming a path is inherently a CLIENT-SIDE action:
+        the path is resolved on the machine that runs the MCP server.  This
+        HTTP/server-hosted MCP surface therefore does NOT read files by path —
+        doing so would let a caller name any path the Agnes server can read
+        (``/etc/passwd``, the state DB, …) and exfiltrate it into their
+        workspace.  It is disabled here on purpose.
 
-        For analyst-laptop uploads use ``agnes chat upload <file>`` instead —
-        that CLI command reads the file from the local filesystem and POSTs it
-        to this same endpoint.
+        To upload a file into your chat workspace, use one of:
+          * ``agnes chat upload <file>`` — the CLI reads the file from your
+            laptop and POSTs it to ``POST /api/chat/uploads``.
+          * the local (stdio) ``chat_upload_file`` MCP tool, which runs on your
+            machine and reads your local filesystem.
 
         Args:
-            file_path: Absolute path to the file to upload (server-accessible).
-            kind: One of ``data``, ``image``, ``document``. Default ``data``.
-            register_as_table: When True (data files only), register the file
-                as a workspace-local queryable table.
-            table_name: Optional table name for registration. Derived from the
-                filename stem when omitted.
+            file_path: (unused on this surface) path to the local file.
+            kind: One of ``data``, ``image``, ``document``.
+            register_as_table: Register a data file as a workspace-local table.
+            table_name: Optional table name for registration.
 
-        Returns the upload response with ``workspace_path``, ``filename``,
-        ``size_bytes``, ``kind``, ``table_name`` (if registered), and ``hint``.
-
-        Mirrors ``POST /api/chat/uploads`` and ``agnes chat upload``.
+        Mirrors ``POST /api/chat/uploads`` and ``agnes chat upload``; the actual
+        byte upload happens through those client-side surfaces.
         """
-        import mimetypes
-
-        path = Path(file_path)
-        content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
-        data: dict[str, str] = {"kind": kind}
-        if register_as_table:
-            data["register_as_table"] = "true"
-        if table_name:
-            data["table_name"] = table_name
-
-        async with httpx.AsyncClient() as c:
-            with open(path, "rb") as fh:
-                r = await c.post(
-                    f"{base_url}/api/chat/uploads",
-                    headers=headers_fn(),
-                    data=data,
-                    files={"file": (path.name, fh, content_type)},
-                    timeout=60,
-                )
-            r.raise_for_status()
-            return r.json()
+        raise ValueError(
+            "chat_upload_file by path is not available on the server-hosted MCP "
+            "surface (it would allow reading arbitrary server files). Upload the "
+            "file with `agnes chat upload <file>` from your machine, or use the "
+            "local stdio MCP tool which reads your local filesystem."
+        )
 
     return list(FOUNDATION_TOOL_NAMES)
