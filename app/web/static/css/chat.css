@@ -2210,3 +2210,172 @@ html[data-ui-layout="rail"] .cloud-chat-plus-btn:hover {
 @media (prefers-reduced-motion: reduce) {
   .cloud-chat-upload-spinner { animation: none; }
 }
+
+/* ---- Active-conversation chrome (rail) --------------------------------
+   Refines the in-thread layout so the floating history toggle, a twin
+   +New-chat button, the conversation title, and the connection state all
+   sit in one clean top band instead of stacking full-width strips. Scoped
+   to rail so topnav instances (guarded by tests/test_ui_layout_theme.py)
+   are unchanged. */
+
+/* +New-chat — mirrors the floating history toggle, one slot to its right.
+   Only present inside a live thread (``.has-thread``); hidden once the
+   Conversations column is open since that column carries its own button. */
+html[data-ui-layout="rail"] .cloud-chat-newtoggle {
+  position: absolute; top: 14px; left: 62px; z-index: 6;
+  width: 40px; height: 40px; display: none; place-items: center;
+  border: 1px solid var(--ds-border); border-radius: 11px;
+  background: var(--ds-surface); color: var(--ds-text-secondary);
+  cursor: pointer; transition: background .15s, color .15s, border-color .15s;
+}
+html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-newtoggle { display: grid; }
+html[data-ui-layout="rail"] .cloud-chat-shell.has-thread.history-open .cloud-chat-newtoggle { display: none; }
+html[data-ui-layout="rail"] .cloud-chat-newtoggle:hover {
+  background: var(--ds-surface-dim); color: var(--ds-text-primary); border-color: var(--ds-agnes);
+}
+html[data-ui-layout="rail"] .cloud-chat-newtoggle:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+html[data-ui-layout="rail"] .cloud-chat-newtoggle svg { width: 18px; height: 18px; }
+
+/* Thread title — airier, borderless band. Left padding clears the two
+   floating buttons (toggle + new); right padding clears the status badge.
+   align-items:center + min-height vertically centers the title on the
+   40px buttons. When history is open the +New button is gone, so the
+   left inset shrinks to clear the lone toggle. */
+html[data-ui-layout="rail"] .cloud-chat-thread-header {
+  min-height: 68px;
+  padding: 8px 160px 8px 108px;
+  border-bottom: none;
+  background: transparent;
+  align-items: center;
+}
+html[data-ui-layout="rail"] .cloud-chat-shell.history-open .cloud-chat-thread-header {
+  padding-left: 62px;
+}
+html[data-ui-layout="rail"] .cloud-chat-thread-title {
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  letter-spacing: -0.01em;
+}
+
+/* Connection state → compact pill in the top-right corner of the chat
+   surface, replacing the full-width status strip. Tone classes (is-ok /
+   is-warn / is-error) still tint it via the base rules; a leading dot
+   in currentColor reads the state at a glance. Long text ellipsizes. */
+html[data-ui-layout="rail"] .cloud-chat-status {
+  position: absolute; top: 16px; right: 16px; z-index: 6;
+  display: inline-flex; align-items: center; gap: 6px;
+  width: auto; max-width: 150px; min-height: 0;
+  padding: 5px 12px 5px 10px;
+  border: 1px solid var(--ds-border); border-radius: var(--ds-radius-pill, 999px);
+  background: var(--ds-surface);
+  font-size: var(--text-xs); font-weight: var(--font-semibold);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  box-shadow: var(--ds-shadow-sm);
+}
+html[data-ui-layout="rail"] .cloud-chat-status::before {
+  content: ""; flex: 0 0 auto;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: currentColor;
+}
+html[data-ui-layout="rail"] .cloud-chat-status.is-ok { border-color: var(--ds-accent-success-line); }
+html[data-ui-layout="rail"] .cloud-chat-status.is-warn { border-color: var(--ds-accent-warn-line); }
+html[data-ui-layout="rail"] .cloud-chat-status.is-error { border-color: var(--ds-accent-danger-line); }
+
+/* ---- Message containers (rail) ----------------------------------------
+   Drop the avatars for a cleaner, airier thread. Assistant turns read as
+   soft borderless grey cards at full reading width; user turns are solid
+   agnes-green bubbles pinned right — matching the paper-theme reference. */
+html[data-ui-layout="rail"] .msg-avatar { display: none; }
+html[data-ui-layout="rail"] .cloud-chat-messages { gap: var(--space-5); }
+
+html[data-ui-layout="rail"] .msg-assistant .msg-bubble {
+  max-width: 100%;
+  padding: 14px 18px;
+  border: none;
+  border-radius: 16px;
+  background: var(--ds-surface-dim);
+  color: var(--ds-text-primary);
+}
+html[data-ui-layout="rail"] .msg-user .msg-bubble {
+  max-width: 82%;
+  padding: 12px 16px;
+  border: none;
+  border-radius: 16px;
+  background: var(--ds-agnes);
+  color: var(--ds-text-inverse);
+}
+/* Keep inline code / links legible on the solid green user bubble. */
+html[data-ui-layout="rail"] .msg-user .msg-bubble a { color: var(--ds-text-inverse); text-decoration: underline; }
+html[data-ui-layout="rail"] .msg-user .msg-bubble code {
+  background: color-mix(in srgb, var(--ds-text-inverse) 22%, transparent);
+  color: var(--ds-text-inverse);
+}
+
+/* ---- Frosted scroll edges (rail, active conversation) -----------------
+   In a live thread the messages fill the whole surface and scroll UNDER a
+   frosted gradient at the top (behind the title) and bottom (behind the
+   composer), so content dissolves softly at both edges instead of hard-
+   cutting. Scoped to ``.has-thread`` so the empty-state hero (centered
+   composer + suggestions) is untouched. Header / messages / composer are
+   lifted out of the flex flow and stacked: messages (z1) sit behind the two
+   frosted bands (z2, ::before/::after on the main) which sit behind the
+   header + composer (z3). ``backdrop-filter`` on the bands blurs the
+   messages showing through; a ``mask-image`` fades each band's blur out
+   toward the thread so the transition has no hard seam. The band gradient
+   resolves to --ds-surface — the chat surface color in both the plain and
+   the history-open (card) states. */
+html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-thread-header {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 3;
+  background: transparent;
+}
+html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-messages {
+  position: absolute; inset: 0; z-index: 1;
+  /* Top / bottom padding clears the floating header + composer so the first
+     and last turns aren't hidden under them; horizontal padding unchanged. */
+  padding: 88px var(--space-6) 116px;
+}
+html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main > #chat-form {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+  margin: 0 auto var(--space-4);
+}
+html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::before,
+html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after {
+  content: ""; position: absolute; left: 0; right: 0; z-index: 2;
+  pointer-events: none;
+}
+html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::before {
+  /* Compact, but capped to a slice of the viewport so it never dominates a
+     short desktop. The smoothness comes from the % mask ramp below (which
+     scales with whatever height wins), not the absolute height. */
+  top: 0; height: min(104px, 15vh);
+  /* Solid surface directly behind the title, then a fade to clear — so the
+     band never shows a color seam. */
+  background: linear-gradient(
+    to bottom,
+    var(--ds-surface) 0%,
+    var(--ds-surface) 42%,
+    color-mix(in srgb, var(--ds-surface) 55%, transparent) 68%,
+    transparent 100%
+  );
+  /* Multi-stop mask fades the blur out gradually so there is no hard edge
+     where the blur stops. */
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  -webkit-mask-image: linear-gradient(to bottom, black 0%, black 34%, rgba(0,0,0,0.5) 64%, transparent 100%);
+          mask-image: linear-gradient(to bottom, black 0%, black 34%, rgba(0,0,0,0.5) 64%, transparent 100%);
+}
+html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after {
+  bottom: 0; height: min(120px, 17vh);
+  background: linear-gradient(
+    to top,
+    var(--ds-surface) 0%,
+    var(--ds-surface) 36%,
+    color-mix(in srgb, var(--ds-surface) 55%, transparent) 64%,
+    transparent 100%
+  );
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  -webkit-mask-image: linear-gradient(to top, black 0%, black 32%, rgba(0,0,0,0.5) 62%, transparent 100%);
+          mask-image: linear-gradient(to top, black 0%, black 32%, rgba(0,0,0,0.5) 62%, transparent 100%);
+}

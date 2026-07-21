@@ -120,6 +120,11 @@ function setThreadTitle(title) {
   } else {
     header.hidden = true;
   }
+  // Mirror the active-conversation state onto the shell so the rail
+  // layout can reveal the floating +New-chat button only inside a
+  // thread (hidden in the empty state) — see chat.css.
+  const shell = document.querySelector(".cloud-chat-shell");
+  if (shell) shell.classList.toggle("has-thread", !!title);
 }
 
 function readCapabilitySnapshot() {
@@ -1464,6 +1469,13 @@ $("new-chat").onclick = async () => {
   hideCapabilities();
   await newChat();
 };
+
+// Rail-only twin of #new-chat living in the main area (right of the
+// history toggle). Same behavior; present only when ui_layout == 'rail'.
+$("chat-new-main")?.addEventListener("click", async () => {
+  hideCapabilities();
+  await newChat();
+});
 
 $("chat-form").onsubmit = async (e) => {
   e.preventDefault();
