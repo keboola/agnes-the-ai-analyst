@@ -949,6 +949,7 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/chat/sessions/{chat_id}/messages
 - /api/chat/sessions/{chat_id}/ticket
 - /api/chat/skills
+- /api/chat/uploads
 - /api/chat/{session_id}/fork
 - /api/chat/{session_id}/invite
 - /api/chat/{session_id}/join-ticket

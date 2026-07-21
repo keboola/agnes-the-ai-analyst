@@ -200,6 +200,12 @@ class TestToolRegistration:
             # Web chat composer slash-menu catalog (issue #780). Triple-surface
             # with GET /api/chat/skills + `agnes chat skills`.
             "chat_skills",
+            # Chat composer "+" upload (#966) — upload a file into the chat
+            # workspace without leaving the conversation. Triple-surface with
+            # POST /api/chat/uploads + `agnes chat upload`. The server-hosted
+            # variant refuses by-path reads (client-side stdio does the actual
+            # file read); see app/api/mcp/foundation_tools.py.
+            "chat_upload_file",
             # Markdown-first skill publish (studio Skill Builder, issue #688).
             # Triple-surface with POST /api/store/entities/from-markdown +
             # `agnes store publish-md`.

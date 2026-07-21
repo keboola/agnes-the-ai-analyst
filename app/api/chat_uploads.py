@@ -230,11 +230,14 @@ def _register_workspace_table(
 
     This intentionally does NOT mutate the server-side admin table_registry.
     """
-    import duckdb
     import time
 
+    from src.duckdb_conn import _open_duckdb
+
     extract_db_path = uploads_dir / "extract.duckdb"
-    conn = duckdb.connect(str(extract_db_path))
+    # Route through _open_duckdb so the session timezone is pinned to UTC
+    # (enforced by tests/test_duckdb_session_tz.py — no bare duckdb.connect).
+    conn = _open_duckdb(str(extract_db_path))
     try:
         # Ensure _meta table exists (connector _meta contract).
         conn.execute(

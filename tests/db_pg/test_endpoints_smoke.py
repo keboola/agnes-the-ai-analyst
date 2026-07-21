@@ -1422,6 +1422,11 @@ KNOWN_UNTESTED = {
     "GET /api/collections/{collection_id}/files",
     "DELETE /api/collections/{collection_id}/files/{file_id}",
     "POST /api/collections/{collection_id}/files/{file_id}/reingest",
+    # Chat composer "+" upload (#966) — multipart file upload, chat-access
+    # gated. Behaviour covered in tests/test_chat_uploads.py (happy path,
+    # register-as-table + end-to-end query, oversize/415/path-traversal/unauth
+    # rejections); not a parameter-free route for this smoke sweep.
+    "POST /api/chat/uploads",
     "GET /library",
     "GET /library/{slug}",
     # Authoring studio + suggestion queue + memory-mining consent — covered by
