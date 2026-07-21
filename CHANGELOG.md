@@ -35,6 +35,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `distribution.signed_urls: auto` and explicit `on`. Direct
   `S3ObjectStore(...)` construction still raises the actionable
   install-the-extra error.
+
 ### Removed
 
 ### Internal
