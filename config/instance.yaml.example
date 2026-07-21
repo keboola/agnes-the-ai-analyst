@@ -664,6 +664,14 @@ chat:
   #   auth: api_key
 
 
+# Authoring Studio (chat-assisted builders at /admin/studio for skills,
+# agents, data packages, connections, and corporate memory). On by default.
+# Set to false — or export AGNES_STUDIO_ENABLED=0 (the infra/Terraform .env
+# override) — to hide the Studio nav entry and redirect /admin/studio* to home.
+studio:
+  enabled: true
+
+
 # --- Initial Workspace Template (optional) ---
 #
 # When configured, Agnes serves the contents of <repo>/workspace/ to analysts
