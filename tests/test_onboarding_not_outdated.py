@@ -37,18 +37,35 @@ def test_every_step_audience_is_valid() -> None:
     assert not bad, f"invalid audience values: {bad}"
 
 
-def test_every_step_anchor_exists_in_templates() -> None:
-    """A step's spotlight anchor must be a `data-tour="<anchor>"` that some
-    template actually renders — otherwise the spotlight lands on nothing."""
-    blob = _all_template_text()
-    missing = [
-        s.key
-        for s in ONBOARDING_STEPS
-        if s.anchor and f'data-tour="{s.anchor}"' not in blob
-    ]
+# Each chrome layout renders its own nav partial; a step scoped to a layout
+# must have its anchor in THAT partial. Checking a merged blob of all templates
+# (the previous behavior) masked rail gaps because the anchor still existed in
+# the topnav header — see the paper-theme rail-layout audit.
+_LAYOUT_NAV_TEMPLATE = {
+    "topnav": TEMPLATES / "_app_header.html",
+    "rail": TEMPLATES / "_app_rail.html",
+}
+
+
+def test_every_step_anchor_exists_in_its_layout_nav() -> None:
+    """A step's spotlight anchor must be a `data-tour="<anchor>"` present in the
+    nav partial of EVERY layout the step targets — otherwise the spotlight lands
+    on nothing in that chrome."""
+    nav_text = {
+        layout: path.read_text(encoding="utf-8")
+        for layout, path in _LAYOUT_NAV_TEMPLATE.items()
+    }
+    missing: list[str] = []
+    for s in ONBOARDING_STEPS:
+        if not s.anchor:
+            continue
+        for layout in s.layouts:
+            blob = nav_text.get(layout, "")
+            if f'data-tour="{s.anchor}"' not in blob:
+                missing.append(f"{s.key} (anchor={s.anchor!r}) missing in {layout} nav")
     assert not missing, (
-        "onboarding steps reference data-tour anchors absent from all templates "
-        f"(nav changed without updating app/web/onboarding.py): {missing}"
+        "onboarding steps reference data-tour anchors absent from their layout's "
+        f"nav partial (nav changed without updating app/web/onboarding.py): {missing}"
     )
 
 
@@ -81,8 +98,13 @@ def test_audience_filtering_splits_admin_and_non_admin() -> None:
     # Admin-only steps are hidden from non-admins and shown to admins.
     assert not (admin_keys & non_admin), "admin-only steps leaked to non-admins"
     assert admin_keys <= admin, "admin-only steps missing for admins"
-    # `all` steps appear for everyone.
-    all_keys = {s.key for s in ONBOARDING_STEPS if s.audience == "all"}
+    # `all` steps appear for everyone — scoped to the default (topnav) layout,
+    # since layout-only steps (e.g. the rail `stack` step) are filtered by
+    # steps_for's default layout.
+    all_keys = {
+        s.key for s in ONBOARDING_STEPS
+        if s.audience == "all" and "topnav" in s.layouts
+    }
     assert all_keys <= non_admin and all_keys <= admin
 
 

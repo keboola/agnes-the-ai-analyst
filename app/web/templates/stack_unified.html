@@ -215,6 +215,21 @@
         body: fd,
       });
       if (!fResp.ok && fResp.status !== 422) throw new Error('upload failed (' + fResp.status + ')');
+      // 422 = the file was rejected (e.g. unsupported type). The collection was
+      // still created, so surface the reason instead of silently reloading onto
+      // a broken empty upload — and roll that empty collection back.
+      if (fResp.status === 422) {
+        let reason = 'unsupported file type';
+        try {
+          const res = await fResp.json();
+          const rej = (Array.isArray(res) ? res : []).find(r => r && r.processing_status === 'rejected');
+          if (rej && rej.processing_detail) reason = rej.processing_detail.reason || reason;
+        } catch (_e) { /* keep default reason */ }
+        try {
+          await fetch('/api/collections/' + encodeURIComponent(col.id), { method: 'DELETE', credentials: 'same-origin' });
+        } catch (_e) { /* best-effort cleanup */ }
+        throw new Error('file not accepted (' + reason + '). Try a supported type like txt, pdf, or docx.');
+      }
       window.location.reload();
     } catch (err) {
       uploadSubmit.disabled = false;
