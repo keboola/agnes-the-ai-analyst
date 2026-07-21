@@ -75,8 +75,8 @@ if [ -b "$DATA_DEV" ]; then
     #
     # NEVER recurse into the postgres data dirs: they must stay uid 70 (the
     # postgres image's user), and this script runs on EVERY boot — a blanket
-    # `chown -R 999 /data` bricked the live side-car DB on agnes-dev
-    # (2026-07-21: "could not open file global/pg_filenode.map: Permission
+    # `chown -R 999 /data` bricked a live side-car DB during a customer
+    # VM recreation (2026-07-21: "could not open file global/pg_filenode.map: Permission
     # denied" once host-mounted /data/postgres existed). Recursively chowning
     # everything EXCEPT those dirs, then re-asserting uid 70 on them below,
     # keeps both app and DB ownership correct across reboots and also
@@ -209,8 +209,8 @@ chmod 700 "$DATA_MNT/postgres"
 # password. The password survives recreates (Secret Manager), but a VM
 # recreate replaces the side-car's container while /data/state/instance.yaml
 # persists — an instance.yaml written against an older side-car (e.g. one
-# initialized on a named volume with different credentials, as on agnes-dev
-# pre-2026-07-21) leaves the app crash-looping on FATAL password auth. The
+# initialized on a named volume with different credentials, as observed
+# during a customer VM recreation pre-2026-07-21) leaves the app crash-looping on FATAL password auth. The
 # rewrite is a no-op when the url already carries the current password, and
 # never touches non-side_car backends (cloud urls point at managed instances
 # with their own credentials).
@@ -561,7 +561,8 @@ docker compose $COMPOSE_PROFILES_ARG pull
 # (fresh image, DuckDB->PG data migration, keboola table attach), which makes
 # `up -d` exit non-zero on the dependency gate — and under `set -e` that used
 # to kill this script BEFORE the caddy/cron/watchdog sections, leaving a VM
-# with a healthy app but no TLS and no auto-upgrade (agnes-dev, 2026-07-21).
+# with a healthy app but no TLS and no auto-upgrade (hit on a customer dev
+# VM, 2026-07-21).
 # Three attempts with a pause give slow first boots time to converge; if the
 # app is genuinely broken the third failure still fails the boot loudly.
 COMPOSE_UP_OK=0
@@ -570,8 +571,10 @@ for attempt in 1 2 3; do
         COMPOSE_UP_OK=1
         break
     fi
-    echo "WARN: docker compose up attempt $attempt failed; retrying in 60s"
-    sleep 60
+    if [ "$attempt" != 3 ]; then
+        echo "WARN: docker compose up attempt $attempt failed; retrying in 60s"
+        sleep 60
+    fi
 done
 if [ "$COMPOSE_UP_OK" != "1" ]; then
     echo "ERROR: docker compose up failed after 3 attempts"

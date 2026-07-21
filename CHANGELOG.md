@@ -27,7 +27,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 - **`customer-instance` VM recreation no longer breaks side-car Postgres or
-  half-boots the stack** (all three hit agnes-dev on 2026-07-21). The
+  half-boots the stack** (all three hit a customer VM recreation on
+  2026-07-21). The
   startup script's every-boot `chown -R 999 /data` now excludes the postgres
   data dirs (`/data/postgres`, `/data/dispatcher-postgres` — they must stay
   uid 70; the blanket chown bricked a live DB with `pg_filenode.map:
