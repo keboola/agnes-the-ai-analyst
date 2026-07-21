@@ -134,6 +134,49 @@ STUDIO_DOMAINS: dict[str, StudioDomain] = {
             ),
         ),
     ),
+    "agent": StudioDomain(
+        slug="agent",
+        profile="agent-author",
+        title="Agent Builder",
+        subtitle="Author a reusable Claude Code subagent and publish it to the store.",
+        endpoint="/api/store/entities/from-markdown",
+        submit_directly=True,
+        fields=(
+            StudioField(
+                "name",
+                "Name",
+                required=True,
+                placeholder="quarterly-report-reviewer",
+            ),
+            StudioField(
+                "description",
+                "Description",
+                type="textarea",
+                required=True,
+                placeholder="Use when … (the trigger that tells Claude Code to delegate to this subagent).",
+            ),
+            StudioField(
+                "category",
+                "Category",
+                type="select",
+                options=tuple(["", *STORE_CATEGORIES]),
+            ),
+            # Field key is `skill_md` — matching the studio Skill Builder — because
+            # POST /api/store/entities/from-markdown carries the Markdown body
+            # under that JSON key for both `type=skill` and `type=agent` (see
+            # CreateFromMarkdownBody in app/api/store.py). Other conventional
+            # subagent frontmatter fields (`tools`, `model`) are left for the
+            # user/assistant to add directly in the Markdown body rather than
+            # exposed as separate builder fields.
+            StudioField(
+                "skill_md",
+                "Agent content (Markdown)",
+                type="textarea",
+                required=True,
+                placeholder="The subagent's system prompt — role, responsibilities, and how it should approach the task…",
+            ),
+        ),
+    ),
 }
 
 

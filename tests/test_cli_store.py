@@ -118,6 +118,30 @@ def test_publish_md_posts_json(monkeypatch, tmp_path):
     assert "Held for automated review" in _clean(r.output)
 
 
+def test_publish_md_accepts_agent_type(monkeypatch, tmp_path):
+    """`agnes store publish-md --type agent` posts type=agent (#865)."""
+    md = tmp_path / "my-agent.md"
+    md.write_text("# My agent\n\nLong enough body for the CLI test.")
+    captured: dict = {}
+
+    def _post_json(path, payload):
+        captured["path"] = path
+        captured["payload"] = payload
+        return {"id": "e2", "name": "my-agent", "version": 1, "visibility_status": "pending"}
+
+    import cli.commands.store as store_mod
+
+    monkeypatch.setattr(store_mod, "api_post_json", _post_json)
+
+    r = runner.invoke(
+        store_app,
+        ["publish-md", "my-agent", str(md), "--type", "agent"],
+    )
+    assert r.exit_code == 0, r.output
+    assert captured["payload"]["type"] == "agent"
+    assert captured["payload"]["name"] == "my-agent"
+
+
 def test_store_rate_posts_vote_and_prints_tally(monkeypatch):
     """`agnes store rate <id> <vote>` POSTs to the rate endpoint (#398)."""
     captured: dict = {}

@@ -22,6 +22,86 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.3] - 2026-07-21
+
+### Fixed
+
+- **`customer-instance` VMs now write `SERVER_URL` into `/opt/agnes/.env`**,
+  derived from the configured domain (`https://<domain>`) or the VM's
+  external IP (`http://<ip>:8000`) when no domain is set; an operator-edited
+  value in the existing `.env` wins (same precedence as `AGNES_TAG`).
+  Without it, `agnes_server_url()` fell back to loopback and every
+  cloud-chat sandbox was told to reach Agnes at `http://127.0.0.1:8000` —
+  unreachable from inside the sandbox, so the in-sandbox CLI failed its
+  first model call with `ECONNRESET` and chat was dead on arrival on any
+  module-provisioned VM (previously masked by hand-edited `.env` files that
+  VM recreates wipe).
+
+## [0.76.2] - 2026-07-21
+
+### Fixed
+
+- **Postgres container could fail with "Permission denied" on `global/pg_filenode.map` after a VM delete+recreate.** The `agnes-state-applier-bootstrap.service` unit runs on every boot and chowns `/data/postgres` to uid:gid `70:70` (the Postgres Alpine image's user) — but the chown wasn't recursive. `/data/postgres` lives on the persistent data disk, so a boot-disk-only VM recreate (auto-upgrade rollout, instance-template change) leaves its existing PGDATA contents in place with whatever uid the *previous* instance's postgres container mapped to 70; the non-recursive chown fixed only the top-level directory, leaving nested files like `global/pg_filenode.map` owned by the stale uid and unreadable to the freshly-started container. Observed live on a customer VM after a delete+insert. `scripts/ops/agnes-state-applier-bootstrap.service` now chowns `-R`.
+
+## [0.76.1] - 2026-07-21
+
+### Fixed
+
+- **`customer-instance` VM recreation no longer breaks side-car Postgres or
+  half-boots the stack** (all three hit a customer VM recreation on
+  2026-07-21). The
+  startup script's every-boot `chown -R 999 /data` now excludes the postgres
+  data dirs (`/data/postgres`, `/data/dispatcher-postgres` — they must stay
+  uid 70; the blanket chown bricked a live DB with `pg_filenode.map:
+  Permission denied`), and the uid-70 ownership is re-asserted recursively
+  to self-heal already-damaged dirs. A persisted `instance.yaml` side-car
+  `database.url` is re-aligned with the current Secret Manager postgres
+  password at boot (a recreate previously left the app crash-looping on
+  `FATAL: password authentication failed` when the URL carried stale
+  credentials). `docker compose up` is retried (3×, 60s apart) so a slow
+  first app start no longer kills the script before the Caddy/auto-upgrade/
+  watchdog sections install.
+
+## [0.76.0] - 2026-07-21
+
+### Added
+
+- Agent authoring domain in Studio (`/admin/studio/agent`): a chat-assisted
+  builder for reusable Claude Code subagents, mirroring the existing Skill
+  Builder — publishes directly to the store via `POST
+  /api/store/entities/from-markdown` (now accepting `type: "agent"`, which
+  bakes a bare `<name>.md` instead of `<name>/SKILL.md`). Plus a new Studio
+  landing page (`/admin/studio`) listing every authoring domain, and a
+  top-level "Studio" primary-nav link.
+## [0.75.16] - 2026-07-21
+
+### Fixed
+
+- DuckDB→Postgres migrator (`scripts.migrate_duckdb_to_pg`) no longer aborts a
+  cutover on a dangling RBAC grant: `resource_grants` rows whose typed-FK
+  target (table / data-package / memory-domain / memory-item / recipe) was
+  deleted from the source are now dropped-with-warning instead of raising a
+  `ForeignKeyViolation` that fails the whole copy.
+- The migrator's post-copy validation now treats the DuckDB source being a
+  **subset** of the Postgres target as success, instead of requiring exact
+  equality. After cutover the app writes new rows to Postgres and the compose
+  `data-migrate` one-shot re-runs on every deploy; the old equality check
+  failed once Postgres had grown and — because `app` gates on `data-migrate`
+  exiting 0 — took the instance down. A genuine copy failure (a source row
+  missing from the target) still fails via the new `missing_count`.
+
+## [0.75.15] - 2026-07-21
+
+### Fixed
+
+- `system.duckdb` ART-index self-heal: the rebuild now swaps the corrupt
+  file for the rebuilt one with an atomic `os.replace` (copy-to-`.broken`
+  first) instead of move-aside-then-move-in, closing a window where
+  `db_path` was momentarily absent and a concurrent opener could create a
+  fresh empty DB that the swap then orphaned. The corruption canary also
+  schema-qualifies table identifiers so it probes robustly across
+  FTS-created schemas instead of relying on `search_path`.
+
 ## [0.75.14] - 2026-07-20
 
 ### Fixed

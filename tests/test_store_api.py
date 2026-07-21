@@ -2179,10 +2179,10 @@ class TestCreateFromMarkdown:
         r = self._publish(web_client, cookies, skill_md="too short")
         assert r.status_code == 422, r.text
 
-    def test_rejects_non_skill_type(self, web_client):
+    def test_rejects_non_skill_or_agent_type(self, web_client):
         _, cookies = _create_user(web_client, "erin@x.com")
         r = self._publish(web_client, cookies, type="plugin")
-        assert r.status_code == 422  # pydantic Literal["skill"]
+        assert r.status_code == 422  # pydantic Literal["skill", "agent"]
 
     def test_requires_auth(self, web_client):
         r = web_client.post(
@@ -2190,3 +2190,32 @@ class TestCreateFromMarkdown:
             json={"name": "x", "skill_md": "y"},
         )
         assert r.status_code in (401, 403)
+
+    def test_publishes_agent_without_frontmatter(self, web_client, tmp_path):
+        """type=agent rides the same JSON path as skill — bakes into
+        agents/<suffixed>.md instead of skills/<suffixed>/SKILL.md."""
+        _, cookies = _create_user(web_client, "gina@x.com")
+        r = self._publish(web_client, cookies, type="agent", name="md-first-agent")
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["type"] == "agent"
+        assert body["name"] == "md-first-agent"
+        assert body["invocation_name"] == "md-first-agent-by-gina"
+        agent_md = tmp_path / "store" / body["id"] / "plugin" / "agents" / "md-first-agent-by-gina.md"
+        assert agent_md.is_file()
+        text = agent_md.read_text()
+        assert "name: md-first-agent-by-gina" in text  # synthesized + suffixed
+        assert _OK_DESC.split()[0] in text
+
+    def test_agent_keeps_existing_frontmatter(self, web_client):
+        _, cookies = _create_user(web_client, "harold@x.com")
+        full = f"---\nname: md-first-agent\ndescription: {_OK_DESC}\n---\n\n{_OK_BODY}\n"
+        r = self._publish(web_client, cookies, type="agent", name="md-first-agent", skill_md=full)
+        assert r.status_code == 201, r.text
+        assert r.json()["name"] == "md-first-agent"
+        assert r.json()["type"] == "agent"
+
+    def test_agent_guardrails_apply_same_as_zip(self, web_client):
+        _, cookies = _create_user(web_client, "ivan@x.com")
+        r = self._publish(web_client, cookies, type="agent", skill_md="too short")
+        assert r.status_code == 422, r.text
