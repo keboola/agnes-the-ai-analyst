@@ -59,6 +59,8 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "admin_knowledge_digest_create",
     "admin_knowledge_digest_update",
     "admin_knowledge_digest_delete",
+    # Chat workspace file upload — any authenticated user.
+    "chat_upload_file",
 )
 
 
@@ -861,5 +863,58 @@ def register_foundation_tools(
             )
             r.raise_for_status()
         return {"deleted": digest_id}
+
+    @mcp.tool()
+    async def chat_upload_file(
+        file_path: str,
+        kind: str = "data",
+        register_as_table: bool = False,
+        table_name: str = "",
+    ) -> dict:
+        """Upload a file into your chat workspace via the server (POST /api/chat/uploads).
+
+        The file at ``file_path`` (absolute path on the SERVER filesystem, or a
+        path the server can resolve) is read and sent to the upload endpoint.
+        Use this from an in-session MCP context where the file is already on
+        the server side.
+
+        For analyst-laptop uploads use ``agnes chat upload <file>`` instead —
+        that CLI command reads the file from the local filesystem and POSTs it
+        to this same endpoint.
+
+        Args:
+            file_path: Absolute path to the file to upload (server-accessible).
+            kind: One of ``data``, ``image``, ``document``. Default ``data``.
+            register_as_table: When True (data files only), register the file
+                as a workspace-local queryable table.
+            table_name: Optional table name for registration. Derived from the
+                filename stem when omitted.
+
+        Returns the upload response with ``workspace_path``, ``filename``,
+        ``size_bytes``, ``kind``, ``table_name`` (if registered), and ``hint``.
+
+        Mirrors ``POST /api/chat/uploads`` and ``agnes chat upload``.
+        """
+        import mimetypes
+
+        path = Path(file_path)
+        content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+        data: dict[str, str] = {"kind": kind}
+        if register_as_table:
+            data["register_as_table"] = "true"
+        if table_name:
+            data["table_name"] = table_name
+
+        async with httpx.AsyncClient() as c:
+            with open(path, "rb") as fh:
+                r = await c.post(
+                    f"{base_url}/api/chat/uploads",
+                    headers=headers_fn(),
+                    data=data,
+                    files={"file": (path.name, fh, content_type)},
+                    timeout=60,
+                )
+            r.raise_for_status()
+            return r.json()
 
     return list(FOUNDATION_TOOL_NAMES)
