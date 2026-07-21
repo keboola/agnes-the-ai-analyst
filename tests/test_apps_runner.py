@@ -24,12 +24,16 @@ class FakeDocker:
     def __init__(self):
         self.run_calls = []
         self.by_name = {}
+        self.networks_created = set()
+        self.raise_on_run = None
         self.containers = self
         self.networks = self
         self.volumes = self
 
     # containers API
     def run(self, image, **kw):
+        if self.raise_on_run is not None:
+            raise self.raise_on_run
         self.run_calls.append((image, kw))
         c = FakeContainer(kw["name"])
         self.by_name[kw["name"]] = c
@@ -42,11 +46,19 @@ class FakeDocker:
             raise docker.errors.NotFound(name)
         return self.by_name[name]
 
-    def list(self, all=True, filters=None):
+    def list(self, all=True, filters=None, names=None):
+        # containers.list(all=True) vs. networks.list(names=[...]) share
+        # this one method, same as the real client aliases both APIs to `self`.
+        if names is not None:
+            return [n for n in names if n in self.networks_created]
+        if filters and "name" in filters:
+            wanted = filters["name"]
+            return [c for c in self.by_name.values() if c.name in wanted]
         return list(self.by_name.values())
 
     # networks / volumes API (idempotent ensure)
     def create(self, name, **kw):
+        self.networks_created.add(name)
         return None
 
 
@@ -105,3 +117,91 @@ def test_stop_and_status(client):
     r = c.post("/apps/s/stop", headers={"X-Runner-Token": "tok"}, json={"mode": "recreate"})
     assert r.status_code == 200
     assert fake.by_name["agnes-dataapp-s"].removed
+
+
+def test_up_twice_removes_old_container_and_reruns(client):
+    c, fake, tmp = client
+    c.post("/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {}})
+    first = fake.by_name["agnes-dataapp-s"]
+    r = c.post("/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {}})
+    assert r.status_code == 200
+    assert first.removed
+    assert len(fake.run_calls) == 2
+    # the network is created once (idempotent), not once per `up`
+    assert fake.networks_created == {"agnes-apps"}
+
+
+def test_resume_unpauses_container(client):
+    c, fake, _ = client
+    fake.by_name["agnes-dataapp-s"] = FakeContainer("agnes-dataapp-s", status="paused")
+    r = c.post("/apps/s/resume", headers={"X-Runner-Token": "tok"})
+    assert r.status_code == 200
+    assert r.json() == {"status": "running"}
+    assert fake.by_name["agnes-dataapp-s"].unpaused
+
+
+def test_resume_absent_is_404(client):
+    c, _, _ = client
+    r = c.post("/apps/s/resume", headers={"X-Runner-Token": "tok"})
+    assert r.status_code == 404
+
+
+def test_logs_returns_decoded_string(client):
+    c, fake, _ = client
+    fake.by_name["agnes-dataapp-s"] = FakeContainer("agnes-dataapp-s")
+    r = c.get("/apps/s/logs", headers={"X-Runner-Token": "tok"})
+    assert r.status_code == 200
+    assert r.json() == {"logs": "hello\n"}
+
+
+def test_logs_absent_is_404(client):
+    c, _, _ = client
+    r = c.get("/apps/s/logs", headers={"X-Runner-Token": "tok"})
+    assert r.status_code == 404
+
+
+def test_list_apps_filters_dataapp_names(client):
+    c, fake, _ = client
+    fake.by_name["agnes-dataapp-a"] = FakeContainer("agnes-dataapp-a")
+    fake.by_name["agnes-dataapp-b"] = FakeContainer("agnes-dataapp-b", status="paused")
+    fake.by_name["some-other-container"] = FakeContainer("some-other-container")
+    r = c.get("/apps", headers={"X-Runner-Token": "tok"})
+    assert r.status_code == 200
+    names = {row["name"] for row in r.json()["apps"]}
+    assert names == {"agnes-dataapp-a", "agnes-dataapp-b"}
+
+
+def test_status_paused(client):
+    c, fake, _ = client
+    fake.by_name["agnes-dataapp-s"] = FakeContainer("agnes-dataapp-s", status="paused")
+    r = c.get("/apps/s/status", headers={"X-Runner-Token": "tok"})
+    assert r.status_code == 200
+    assert r.json() == {"container": "paused", "ready": False}
+
+
+def test_status_maps_exited_to_stopped(client):
+    c, fake, _ = client
+    fake.by_name["agnes-dataapp-s"] = FakeContainer("agnes-dataapp-s", status="exited")
+    r = c.get("/apps/s/status", headers={"X-Runner-Token": "tok"})
+    assert r.status_code == 200
+    assert r.json() == {"container": "stopped", "ready": False}
+
+
+def test_up_maps_image_not_found(client):
+    c, fake, tmp = client
+    import docker.errors
+
+    fake.raise_on_run = docker.errors.ImageNotFound("no such image")
+    r = c.post("/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {}})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "image_not_found"
+
+
+def test_up_maps_docker_api_error(client):
+    c, fake, tmp = client
+    import docker.errors
+
+    fake.raise_on_run = docker.errors.APIError("daemon unavailable")
+    r = c.post("/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {}})
+    assert r.status_code == 502
+    assert r.json()["detail"].startswith("docker_error:")
