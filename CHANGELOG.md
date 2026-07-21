@@ -22,6 +22,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.1] - 2026-07-21
+
+### Fixed
+
+- **`customer-instance` VM recreation no longer breaks side-car Postgres or
+  half-boots the stack** (all three hit agnes-dev on 2026-07-21). The
+  startup script's every-boot `chown -R 999 /data` now excludes the postgres
+  data dirs (`/data/postgres`, `/data/dispatcher-postgres` — they must stay
+  uid 70; the blanket chown bricked a live DB with `pg_filenode.map:
+  Permission denied`), and the uid-70 ownership is re-asserted recursively
+  to self-heal already-damaged dirs. A persisted `instance.yaml` side-car
+  `database.url` is re-aligned with the current Secret Manager postgres
+  password at boot (a recreate previously left the app crash-looping on
+  `FATAL: password authentication failed` when the URL carried stale
+  credentials). `docker compose up` is retried (3×, 60s apart) so a slow
+  first app start no longer kills the script before the Caddy/auto-upgrade/
+  watchdog sections install.
+
 ## [0.76.0] - 2026-07-21
 
 ### Added

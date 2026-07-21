@@ -72,7 +72,19 @@ if [ -b "$DATA_DEV" ]; then
     # root-owned, that mkdir 403s and the container crashloops — so
     # pre-create the dir here under the SAME chown -R that already
     # covers state/analytics/extracts. Cheap insurance.
-    chown -R 999:999 "$DATA_MNT"
+    #
+    # NEVER recurse into the postgres data dirs: they must stay uid 70 (the
+    # postgres image's user), and this script runs on EVERY boot — a blanket
+    # `chown -R 999 /data` bricked the live side-car DB on agnes-dev
+    # (2026-07-21: "could not open file global/pg_filenode.map: Permission
+    # denied" once host-mounted /data/postgres existed). Recursively chowning
+    # everything EXCEPT those dirs, then re-asserting uid 70 on them below,
+    # keeps both app and DB ownership correct across reboots and also
+    # self-heals disks damaged by the old blanket chown.
+    find "$DATA_MNT" -mindepth 1 -maxdepth 1 \
+        ! -name postgres ! -name dispatcher-postgres \
+        -exec chown -R 999:999 {} +
+    chown 999:999 "$DATA_MNT"
 fi
 
 # Initial instance.yaml::database = {backend: "duckdb"} so the app starts in
@@ -134,7 +146,9 @@ mkdir -p /data/state /data/postgres
 chown -R agnes-applier:agnes-applier /data/state
 # /data/postgres must stay 70:70 (postgres image uid) — applier just
 # runs docker exec against the container, doesn't touch the volume.
-chown 70:70 /data/postgres
+# Recursive: also repairs a data dir damaged by the pre-2026-07-21 blanket
+# `chown -R 999 /data` (idempotent and cheap on a healthy dir).
+chown -R 70:70 /data/postgres
 chmod 700 /data/postgres
 
 install -m 0755 "$APP_DIR/agnes-state-applier.sh" /usr/local/bin/agnes-state-applier.sh
@@ -188,8 +202,21 @@ POSTGRES_PASSWORD=$(gcloud secrets versions access latest --secret=agnes-$${CUST
 # Cheap to do unconditionally — the dir is unused when the side-car runs on
 # the default named volume.
 mkdir -p "$DATA_MNT/postgres"
-chown 70:70 "$DATA_MNT/postgres"
+chown -R 70:70 "$DATA_MNT/postgres"
 chmod 700 "$DATA_MNT/postgres"
+
+# Re-align a persisted side-car database.url with the CURRENT postgres
+# password. The password survives recreates (Secret Manager), but a VM
+# recreate replaces the side-car's container while /data/state/instance.yaml
+# persists — an instance.yaml written against an older side-car (e.g. one
+# initialized on a named volume with different credentials, as on agnes-dev
+# pre-2026-07-21) leaves the app crash-looping on FATAL password auth. The
+# rewrite is a no-op when the url already carries the current password, and
+# never touches non-side_car backends (cloud urls point at managed instances
+# with their own credentials).
+if [ -f "$INSTANCE_YAML" ] && grep -q '^[[:space:]]*backend:[[:space:]]*"\?side_car' "$INSTANCE_YAML"; then
+    sed -i "s|postgresql+psycopg://agnes:[^@]*@postgres:5432/agnes|postgresql+psycopg://agnes:$POSTGRES_PASSWORD@postgres:5432/agnes|" "$INSTANCE_YAML"
+fi
 
 # SCHEDULER_API_TOKEN — shared secret between the app and scheduler containers.
 # Both source the same /opt/agnes/.env via Docker Compose env_file:, so the
@@ -407,9 +434,16 @@ chmod 600 "$DISPATCHER_PG_PASSWORD_FILE"
 
 # Ledger data on the persistent disk, kept separate from the keyfile above.
 # postgres:16-alpine's entrypoint runs as root and chowns its data dir to
-# uid 70 on first init itself.
+# uid 70 on first init itself; the recursive re-assert repairs dirs damaged
+# by the pre-2026-07-21 blanket `chown -R 999 /data` (same fix as
+# /data/postgres in section 2 — this dir is excluded from that chown now).
 mkdir -p "$DATA_MNT/dispatcher-postgres"
 # --- dispatcher-pg-password end ---
+# Outside the extracted test block: chown needs root, which the block's
+# test harness doesn't have. Recursive to repair dirs damaged by the
+# pre-2026-07-21 blanket `chown -R 999 /data` (this dir is excluded from
+# that chown now — same fix as /data/postgres in section 2).
+chown -R 70:70 "$DATA_MNT/dispatcher-postgres"
 
 # Quoted heredoc: the $${...} below are resolved by docker compose from
 # /opt/agnes/.env at `compose up` time, not by this shell.
@@ -523,7 +557,26 @@ set -a; . "$APP_DIR/.env"; set +a
 export COMPOSE_FILE="$${COMPOSE_FILE:-$COMPOSE_FILE_DEFAULT}"
 
 docker compose $COMPOSE_PROFILES_ARG pull
-docker compose $COMPOSE_PROFILES_ARG up -d
+# Retry `up`: on a first boot the app can exceed its healthcheck start window
+# (fresh image, DuckDB->PG data migration, keboola table attach), which makes
+# `up -d` exit non-zero on the dependency gate — and under `set -e` that used
+# to kill this script BEFORE the caddy/cron/watchdog sections, leaving a VM
+# with a healthy app but no TLS and no auto-upgrade (agnes-dev, 2026-07-21).
+# Three attempts with a pause give slow first boots time to converge; if the
+# app is genuinely broken the third failure still fails the boot loudly.
+COMPOSE_UP_OK=0
+for attempt in 1 2 3; do
+    if docker compose $COMPOSE_PROFILES_ARG up -d; then
+        COMPOSE_UP_OK=1
+        break
+    fi
+    echo "WARN: docker compose up attempt $attempt failed; retrying in 60s"
+    sleep 60
+done
+if [ "$COMPOSE_UP_OK" != "1" ]; then
+    echo "ERROR: docker compose up failed after 3 attempts"
+    exit 1
+fi
 
 # --- 6. Auto-upgrade via cron (pulls new image digest every 5 min) ---
 if [ "$UPGRADE_MODE" = "auto" ]; then
