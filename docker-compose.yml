@@ -74,6 +74,10 @@ services:
     # image's DuckDB version differs from the old container's, since
     # WAL replay across versions trips on internal assertions.
     stop_grace_period: 60s
+    # Joins agnes-apps so the app can reach data-app runtime containers
+    # directly (e.g. readiness probes); apps-runner is the only process
+    # that talks to the Docker socket, but the app shares the network.
+    networks: [default, agnes-apps]
 
   # One-shot: run extractor then rebuild orchestrator views
   extract:
@@ -130,6 +134,25 @@ services:
     # Match app service — scheduler holds DuckDB connections too; same
     # WAL-corruption risk on SIGKILL during recreate.
     stop_grace_period: 60s
+
+  # The only process holding the Docker socket. Deliberately dumb: no
+  # registry access, no RBAC — the app decides *what* runs, this sidecar
+  # only translates to `docker run`/stop/status calls, token-gated over
+  # the internal compose network. See services/apps_runner/api.py.
+  apps-runner:
+    build: .
+    command: python -m services.apps_runner
+    profiles: ["apps"]
+    volumes:
+      - data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - APPS_RUNNER_TOKEN=${APPS_RUNNER_TOKEN:?set APPS_RUNNER_TOKEN in .env}
+      - APPS_RUNNER_IMAGE_PREFIX=${APPS_RUNNER_IMAGE_PREFIX:-keboolapublic.azurecr.io/data-app-python-js}
+    networks: [default, agnes-apps]
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
 
   telegram-bot:
     build: .
@@ -196,3 +219,8 @@ volumes:
   data:
   caddy_data:
   caddy_config:
+
+networks:
+  default: {}
+  agnes-apps:
+    name: agnes-apps
