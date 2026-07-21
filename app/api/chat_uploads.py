@@ -259,6 +259,20 @@ def _register_workspace_table(
         elif suffix == ".parquet":
             read_expr = f"read_parquet('{file_path}')"
         elif suffix in (".xlsx", ".xls"):
+            # read_xlsx needs the DuckDB excel extension, which is not always
+            # auto-loaded (e.g. offline/air-gapped deployments). Load it first
+            # with an actionable error — matching src/ingest/tabular.py.
+            try:
+                conn.execute("INSTALL excel; LOAD excel;")
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Reading Excel files requires the DuckDB 'excel' extension, "
+                        f"which is unavailable on this server ({exc}). "
+                        "Upload the data as CSV or Parquet instead."
+                    ),
+                ) from exc
             read_expr = f"read_xlsx('{file_path}')"
         else:
             read_expr = f"read_csv_auto('{file_path}')"
@@ -325,6 +339,20 @@ async def chat_upload(
         table_name: Name of the registered table (null when not registered).
         hint: Next-step hint pointing to ``agnes query`` or the chat sandbox.
     """
+    # --- reject co-session principals --------------------------------------
+    # require_chat_access can return a SessionPrincipal (co-drive runner token)
+    # rather than a user dict; those have no personal workspace and no
+    # ``["email"]`` key, so uploads (which write into a per-user workspace) are
+    # not meaningful for them. Fail closed with 403 instead of 500ing on the
+    # dict subscript below.
+    from app.auth.session_principal import SessionPrincipal
+
+    if isinstance(user, SessionPrincipal) or not isinstance(user, dict) or not user.get("email"):
+        raise HTTPException(
+            status_code=403,
+            detail="Chat uploads require a personal user workspace.",
+        )
+
     # --- validate filename --------------------------------------------------
     safe_name = _validate_filename(file.filename)
 

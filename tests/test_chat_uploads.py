@@ -224,6 +224,35 @@ def test_register_as_table_replaces_preexisting_view(client: TestClient, data_di
     assert resp.json()["table_name"] == "cities"
 
 
+def test_co_session_principal_rejected(data_dir: Path) -> None:
+    """A SessionPrincipal (co-drive runner) has no personal workspace and no
+    ['email'] — the endpoint must 403, not 500 on the dict subscript."""
+    import os
+
+    os.environ["DATA_DIR"] = str(data_dir)
+    from app.api.chat_uploads import require_chat_access
+    from app.api.chat_uploads import router as chat_uploads_router
+    from app.auth.session_principal import SessionPrincipal
+
+    app = FastAPI()
+    app.include_router(chat_uploads_router)
+    principal = SessionPrincipal(
+        session_id="s1",
+        participant_user_ids=["u1", "u2"],
+        participant_emails=["a@test.com", "b@test.com"],
+        intersection={},
+    )
+    app.dependency_overrides[require_chat_access] = lambda: principal
+    c = TestClient(app, raise_server_exceptions=False)
+
+    resp = c.post(
+        "/api/chat/uploads",
+        data={"kind": "data"},
+        files={"file": ("x.csv", io.BytesIO(b"a\n1\n"), "text/csv")},
+    )
+    assert resp.status_code == 403, resp.text
+
+
 def test_register_as_table_requires_data_kind(client: TestClient) -> None:
     """register_as_table=true on a non-data kind is rejected with 400."""
     resp = client.post(

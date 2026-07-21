@@ -2113,6 +2113,11 @@ function renderCoPresence(host, participants) {
 
   // ── generic dialog helpers ────────────────────────────────────────────────
 
+  // Per-overlay Esc-handler cleanup, so closing via Cancel / backdrop / a
+  // successful upload also detaches the document listener — not just Escape
+  // (otherwise handlers accumulate across repeated opens).
+  const _overlayCleanups = {};
+
   // Open an upload overlay.  Returns a cleanup fn.
   function openOverlay(overlayId) {
     const overlay = $(overlayId);
@@ -2125,21 +2130,24 @@ function renderCoPresence(host, participants) {
     );
     if (first) first.focus();
 
-    // Esc closes.
+    // Esc closes. Replace any stale handler for this overlay first.
+    if (_overlayCleanups[overlayId]) _overlayCleanups[overlayId]();
     function onKey(e) {
-      if (e.key === "Escape") { closeOverlay(overlayId); cleanup(); }
+      if (e.key === "Escape") closeOverlay(overlayId);
     }
     document.addEventListener("keydown", onKey);
-
-    function cleanup() {
+    _overlayCleanups[overlayId] = function cleanup() {
       document.removeEventListener("keydown", onKey);
-    }
-    return cleanup;
+      delete _overlayCleanups[overlayId];
+    };
+    return _overlayCleanups[overlayId];
   }
 
   function closeOverlay(overlayId) {
     const overlay = $(overlayId);
     if (overlay) overlay.hidden = true;
+    // Detach the Esc handler however the overlay was closed.
+    if (_overlayCleanups[overlayId]) _overlayCleanups[overlayId]();
   }
 
   // Wire all [data-close-upload] buttons inside a given overlay.
@@ -2188,7 +2196,9 @@ function renderCoPresence(host, participants) {
   function showDropFile(dropEl, filenameEl, file) {
     dropEl.classList.add("has-file");
     if (filenameEl) {
-      filenameEl.textContent = escHtml(file.name) + " (" + fmtSize(file.size) + ")";
+      // textContent is already XSS-safe; escHtml would double-escape and show
+      // literal entities (e.g. "a&amp;b.csv"). Assign the raw name.
+      filenameEl.textContent = file.name + " (" + fmtSize(file.size) + ")";
       filenameEl.hidden = false;
     }
   }
