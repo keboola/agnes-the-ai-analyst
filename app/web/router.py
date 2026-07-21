@@ -2101,9 +2101,11 @@ async def studio_index(
 ):
     """Studio landing page — a card grid linking to every authoring domain.
 
-    Available to all signed-in users (same gate as ``/admin/studio/{domain}``,
-    not admin-only — most domains route non-admins through the suggestions
-    queue instead of blocking them outright). Registered as a static path
+    When Studio is enabled, available to all signed-in users (same gate as
+    ``/admin/studio/{domain}``, not admin-only — most domains route non-admins
+    through the suggestions queue instead of blocking them outright); when the
+    instance-level toggle is off, every viewer is redirected home.
+    Registered as a static path
     alongside (and before) ``/admin/studio/{domain}`` so it does not fall
     through to the dynamic domain matcher.
     """
@@ -2141,7 +2143,8 @@ async def studio(
     request: Request,
     user: dict = Depends(get_current_user),
 ):
-    """Authoring-agent studio — available to all signed-in users.
+    """Authoring-agent studio — available to all signed-in users while the
+    instance-level Studio toggle is on (off → redirect home).
 
     A generic form-based builder with an embedded assistant panel. The domain
     config (``app/web/studio.py``) drives the fields, the chat profile, and the

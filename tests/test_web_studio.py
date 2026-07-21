@@ -189,27 +189,49 @@ def test_studio_routes_redirect_when_disabled(seeded_app, monkeypatch):
 
 def test_studio_nav_hidden_when_disabled(seeded_app, monkeypatch):
     c = seeded_app["client"]
-    # Sanity: the link is present by default (studio on) on a normal page that
-    # renders the shared nav via _chrome_ctx.
-    resp = c.get("/me/memory-mining", headers=_auth(seeded_app["analyst_token"]))
-    assert resp.status_code == 200
-    assert 'data-tour="nav-studio"' in resp.text
-    # Disable → the nav entry disappears (route stays reachable only by URL,
-    # which the redirect test covers).
+    # Sanity: link + palette entries present by default on BOTH chrome paths —
+    # /me/memory-mining renders via _chrome_ctx, /dashboard via _build_context.
+    for page in ("/me/memory-mining", "/dashboard"):
+        resp = c.get(page, headers=_auth(seeded_app["analyst_token"]))
+        assert resp.status_code == 200, page
+        assert 'data-tour="nav-studio"' in resp.text, page
+        assert "Studio · Data package" in resp.text, page  # command palette
+    # Disable → nav entry AND palette items disappear on both paths (the route
+    # stays reachable only by URL, which the redirect test covers).
     monkeypatch.setattr("app.web.router.get_studio_enabled", lambda: False)
-    resp = c.get("/me/memory-mining", headers=_auth(seeded_app["analyst_token"]))
-    assert resp.status_code == 200
-    assert 'data-tour="nav-studio"' not in resp.text
+    for page in ("/me/memory-mining", "/dashboard"):
+        resp = c.get(page, headers=_auth(seeded_app["analyst_token"]))
+        assert resp.status_code == 200, page
+        assert 'data-tour="nav-studio"' not in resp.text, page
+        assert "Studio · Data package" not in resp.text, page
 
 
 def test_studio_enabled_env_override(monkeypatch):
     import app.instance_config as ic
 
     ic.reset_cache()
-    monkeypatch.setenv("AGNES_STUDIO_ENABLED", "0")
-    assert ic.get_studio_enabled() is False
+    # Every documented false-like env spelling disables.
+    for falsy in ("0", "false", "no", "off", ""):
+        monkeypatch.setenv("AGNES_STUDIO_ENABLED", falsy)
+        assert ic.get_studio_enabled() is False, falsy
     monkeypatch.setenv("AGNES_STUDIO_ENABLED", "true")
     assert ic.get_studio_enabled() is True
     monkeypatch.delenv("AGNES_STUDIO_ENABLED", raising=False)
     # No env, no yaml studio block → defaults on.
     assert ic.get_studio_enabled() is True
+
+
+def test_studio_enabled_yaml_fallback_and_precedence(monkeypatch):
+    """studio.enabled: false in YAML disables; env still wins over YAML."""
+    import app.instance_config as ic
+
+    def fake_get_value(*keys, default=None):
+        if keys == ("studio", "enabled"):
+            return False
+        return default
+
+    monkeypatch.setattr(ic, "get_value", fake_get_value)
+    monkeypatch.delenv("AGNES_STUDIO_ENABLED", raising=False)
+    assert ic.get_studio_enabled() is False  # YAML fallback
+    monkeypatch.setenv("AGNES_STUDIO_ENABLED", "1")
+    assert ic.get_studio_enabled() is True  # env > YAML
