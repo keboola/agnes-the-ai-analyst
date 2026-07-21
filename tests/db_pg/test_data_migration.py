@@ -10,7 +10,11 @@ Contract:
     the copy. Idempotent (re-runs are safe; ON CONFLICT DO NOTHING on
     the PK).
   - ``validate_task(task, duckdb_conn, pg_engine)`` returns a dict with
-    ``duckdb_rows``, ``pg_rows``, and ``checksum_match: bool``.
+    ``duckdb_rows``, ``pg_rows``, ``missing_count``, and
+    ``checksum_match: bool``. ``checksum_match`` is subset containment
+    (source ⊆ target), not exact equality: a target superset (PG grown
+    post-cutover) validates clean; a source row missing from the target
+    fails via ``missing_count > 0``.
   - Dry-run mode logs intent but does not write to PG.
 """
 
@@ -752,6 +756,7 @@ def test_resource_grants_registered_with_fk_parents():
     task = EXPLICIT_TASKS.get("resource_grants")
     assert task is not None, "resource_grants must have an explicit task"
     assert task.fk_parents == {
+        "group_id": ("user_groups", "id"),
         "resource_id_table": ("table_registry", "id"),
         "resource_id_data_package": ("data_packages", "id"),
         "resource_id_memory_domain": ("memory_domains", "id"),
@@ -854,3 +859,10 @@ def test_validation_tolerates_target_superset(duckdb_with_audit_rows, pg_with_sc
     assert report["pg_rows"] > report["duckdb_rows"], "PG must be a superset here"
     assert report["missing_count"] == 0
     assert report["checksum_match"] is True, "target superset must validate clean"
+
+
+# NB: `group_id` is also declared in resource_grants' fk_parents (asserted in
+# test_resource_grants_registered_with_fk_parents) as a defensive net for legacy
+# sources, but a dedicated orphan test can't be constructed: DuckDB enforces the
+# group_id → user_groups FK at insert time, so a dangling group_id cannot be
+# seeded through a normal INSERT the way an untyped resource_id_table orphan can.

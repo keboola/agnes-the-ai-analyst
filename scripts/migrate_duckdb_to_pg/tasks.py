@@ -3,7 +3,7 @@
 The generic copy loop in ``__init__.py`` handles every table in
 ``Base.metadata.sorted_tables`` via :class:`GenericCopyTask`, which does:
 
-  SELECT * FROM <source>  →  INSERT … ON CONFLICT DO NOTHING  →  SHA-256 validate
+  SELECT * FROM <source>  →  INSERT … ON CONFLICT DO NOTHING  →  subset validate
 
 :data:`EXPLICIT_TASKS` overrides the generic path for tables that need
 per-row work (type coercion, NULL backfill, FTS rebuild, etc.).  Currently
@@ -24,7 +24,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Tuple
 
 import duckdb
 import sqlalchemy as sa
@@ -275,7 +275,7 @@ def _checksum(values: Sequence[Sequence[Any]]) -> str:
 
 @dataclass
 class GenericCopyTask:
-    """SELECT * → INSERT … ON CONFLICT DO NOTHING + SHA-256 validate.
+    """SELECT * → INSERT … ON CONFLICT DO NOTHING + subset validate.
 
     Default handler for any table that does not require per-row work.
     Reads every column from DuckDB, batch-inserts into PG with bare
@@ -302,7 +302,7 @@ class GenericCopyTask:
     table_name: str
     pk_columns: List[str] = field(default_factory=lambda: ["id"])
     batch_size: int = 500
-    fk_parents: Dict[str, tuple] = field(default_factory=dict)
+    fk_parents: Dict[str, Tuple[str, str]] = field(default_factory=dict)
 
     # Source == target for all current tables.
     @property
@@ -579,6 +579,7 @@ EXPLICIT_TASKS: Dict[str, GenericCopyTask] = {
         table_name="resource_grants",
         pk_columns=["id"],
         fk_parents={
+            "group_id": ("user_groups", "id"),
             "resource_id_table": ("table_registry", "id"),
             "resource_id_data_package": ("data_packages", "id"),
             "resource_id_memory_domain": ("memory_domains", "id"),
