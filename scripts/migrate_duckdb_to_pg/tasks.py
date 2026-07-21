@@ -18,12 +18,13 @@ Adding a new table that does NOT need per-row work: register the model in
 ``tests/db_pg/test_data_migration.py::test_every_pg_model_has_a_migration_task``
 ensures no model goes uncovered.
 """
+
 from __future__ import annotations
 
 import hashlib
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Sequence
 
 import duckdb
 import sqlalchemy as sa
@@ -35,6 +36,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # JSON/JSONB column registry
 # ---------------------------------------------------------------------------
+
 
 def _build_json_columns() -> frozenset[tuple[str, str]]:
     """Derive the set of ``(table, column)`` JSONB pairs from the PG
@@ -68,9 +70,8 @@ _JSON_COLUMNS: frozenset[tuple[str, str]] = _build_json_columns()
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _resolved_columns(
-    table_name: str, duck_conn: duckdb.DuckDBPyConnection
-) -> List[str]:
+
+def _resolved_columns(table_name: str, duck_conn: duckdb.DuckDBPyConnection) -> List[str]:
     """Return ordered column list for *table_name* from DuckDB information_schema.
 
     Returns ``[]`` when the table does not exist in DuckDB — this is a valid
@@ -127,11 +128,7 @@ def _build_insert(
             placeholders.append(f":{c}")
     col_list = ", ".join(columns)
     val_list = ", ".join(placeholders)
-    return (
-        f"INSERT INTO {target_table} ({col_list}) "
-        f"VALUES ({val_list}) "
-        f"ON CONFLICT DO NOTHING"
-    )
+    return f"INSERT INTO {target_table} ({col_list}) VALUES ({val_list}) ON CONFLICT DO NOTHING"
 
 
 def _not_null_columns_with_default(table_name: str) -> dict[str, Any]:
@@ -185,6 +182,7 @@ def _substitute_default(value: Any, default: Any, *, column_name: str = "") -> A
         return value
     from sqlalchemy.schema import DefaultClause
     from datetime import datetime, timezone, date
+
     if isinstance(default, DefaultClause):
         sql = str(default.arg).upper()
     else:
@@ -224,6 +222,7 @@ def _array_columns_for(table_name: str) -> set[str]:
 def _normalize_for_pg(value: Any) -> Any:
     """Serialise DuckDB-native dict/list to JSON text for PG CAST."""
     import json as _json
+
     if isinstance(value, (dict, list)):
         return _json.dumps(value)
     return value
@@ -241,6 +240,7 @@ def _coerce_array_value(value: Any) -> Any:
     ``InvalidTextRepresentation: malformed array literal``.
     """
     import json as _json
+
     if value is None or isinstance(value, list):
         return value
     if isinstance(value, str):
@@ -272,6 +272,7 @@ def _checksum(values: Sequence[Sequence[Any]]) -> str:
 # GenericCopyTask
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class GenericCopyTask:
     """SELECT * → INSERT … ON CONFLICT DO NOTHING + SHA-256 validate.
@@ -287,10 +288,21 @@ class GenericCopyTask:
         pk_columns:  PK columns used by :func:`validate_task`.  When
                      empty, validation falls back to the ``id`` column.
         batch_size:  Rows per INSERT batch.
+        fk_parents:  Optional ``{child_column: (parent_table, parent_pk)}``
+                     map.  When set, :meth:`run` drops source rows whose
+                     non-null FK value has no matching parent row *in the
+                     DuckDB source* (a dangling grant / orphan) and logs a
+                     warning, instead of letting the PG INSERT abort the
+                     whole task with a ``ForeignKeyViolation``.  Orphans
+                     arise when a parent row was deleted without cascading
+                     to its children (e.g. a table unregistered while an
+                     RBAC ``resource_grants`` row still points at it).
     """
+
     table_name: str
     pk_columns: List[str] = field(default_factory=lambda: ["id"])
     batch_size: int = 500
+    fk_parents: Dict[str, tuple] = field(default_factory=dict)
 
     # Source == target for all current tables.
     @property
@@ -323,6 +335,7 @@ class GenericCopyTask:
         # source first.
         import src.models as _m  # noqa: F401 — ensure models registered
         from src.db_pg import Base as _Base
+
         _pg_table = _Base.metadata.tables.get(self.target_table)
         _pg_cols = {c.name for c in _pg_table.columns} if _pg_table is not None else set()
         _duck_only = [c for c in columns if c not in _pg_cols]
@@ -343,20 +356,25 @@ class GenericCopyTask:
                 )
             log.warning(
                 "DuckDB-only column %s.%s is empty; skipping from PG INSERT",
-                self.table_name, _col,
+                self.table_name,
+                _col,
             )
         # Restrict `columns` to the PG-side set so the INSERT is well-formed.
         columns = [c for c in columns if c in _pg_cols]
 
-        log.info(
-            "migrate %s (%d cols, dry_run=%s)", self.table_name, len(columns), dry_run
-        )
+        log.info("migrate %s (%d cols, dry_run=%s)", self.table_name, len(columns), dry_run)
 
         select_sql = f"SELECT {', '.join(columns)} FROM {self.source_table}"
         rows = duck_conn.execute(select_sql).fetchall()
         if not rows:
             log.info("  empty source; nothing to do")
             return 0
+
+        if self.fk_parents:
+            rows = self._drop_fk_orphans(rows, columns, duck_conn)
+            if not rows:
+                log.info("  all rows dropped as FK orphans; nothing to do")
+                return 0
 
         insert_sql = _build_insert(self.target_table, columns, self.pk_columns)
         array_cols = _array_columns_for(self.target_table)
@@ -385,43 +403,153 @@ class GenericCopyTask:
         log.info("  considered %d rows%s", considered, " (dry-run)" if dry_run else "")
         return considered
 
+    def _drop_fk_orphans(
+        self,
+        rows: List[tuple],
+        columns: List[str],
+        duck_conn: duckdb.DuckDBPyConnection,
+    ) -> List[tuple]:
+        """Drop rows whose non-null FK value has no parent in the DuckDB source.
+
+        A parent that is absent from the source will also be absent from PG
+        (the migration copies source → target), so such a child row would
+        abort the whole task with a ``ForeignKeyViolation``. These are
+        genuine orphans (a grant pointing at a deleted resource); dropping
+        them loses nothing and is logged loudly per-column.
+        """
+        col_index = {c: i for i, c in enumerate(columns)}
+        keep = list(rows)
+        for child_col, (parent_table, parent_pk) in self.fk_parents.items():
+            idx = col_index.get(child_col)
+            if idx is None:
+                # FK column not part of the copied column set — nothing to check.
+                continue
+            try:
+                parent_ids = {r[0] for r in duck_conn.execute(f'SELECT "{parent_pk}" FROM "{parent_table}"').fetchall()}
+            except Exception:
+                # Parent table absent in the DuckDB source — can't determine
+                # orphans here; leave the rows and let PG's FK be the backstop.
+                log.debug(
+                    "fk-orphan check for %s.%s skipped: parent %s absent in source",
+                    self.table_name,
+                    child_col,
+                    parent_table,
+                )
+                continue
+            survivors: List[tuple] = []
+            dropped = 0
+            for row in keep:
+                val = row[idx]
+                if val is None or val in parent_ids:
+                    survivors.append(row)
+                else:
+                    dropped += 1
+                    if dropped <= 20:
+                        log.warning(
+                            "DROP orphan %s row (id=%r): %s=%r has no parent in %s",
+                            self.table_name,
+                            row[col_index["id"]] if "id" in col_index else "?",
+                            child_col,
+                            val,
+                            parent_table,
+                        )
+            if dropped:
+                log.warning(
+                    "migrate %s: dropped %d orphaned row(s) on %s → %s",
+                    self.table_name,
+                    dropped,
+                    child_col,
+                    parent_table,
+                )
+            keep = survivors
+        return keep
+
     def validate(
         self,
         duck_conn: duckdb.DuckDBPyConnection,
         pg_engine: Engine,
     ) -> Dict[str, Any]:
-        """Compare PK-set checksums + row counts between DuckDB and PG.
+        """Verify every DuckDB source PK made it into PG (source ⊆ target).
 
-        When the table does not exist in DuckDB (PG-only table added by a
-        later alembic migration), ``duck_rows = 0`` is used so the
-        validation passes iff PG also has 0 rows — which it always will,
-        since :meth:`run` already skipped the copy for this table.
+        Containment, not exact equality: ``checksum_match`` is True when the
+        source PK-set is a subset of the target PK-set. A target *superset*
+        is legitimate and expected — after cutover the app writes new rows to
+        PG, and the compose ``data-migrate`` one-shot re-runs on every deploy;
+        requiring exact equality there would fail (PG has grown) and, because
+        ``app`` gates on ``data-migrate`` exiting 0, take the instance down.
+        Alembic-seeded rows (system groups, etc.) present in PG but not the
+        source are tolerated for the same reason. A genuine copy failure —
+        a source row missing from the target — still fails (it is in
+        ``missing_count``).
+
+        When the table is absent in DuckDB (PG-only table from a later
+        alembic migration), the source is empty → the subset is trivially
+        satisfied.  Orphaned source rows dropped by :meth:`_drop_fk_orphans`
+        are excluded from the source set so they are not counted as missing.
         """
         pk_select = ", ".join(self.pk_columns)
         try:
-            duck_rows = duck_conn.execute(
-                f"SELECT {pk_select} FROM {self.source_table}"
-            ).fetchall()
+            duck_rows = duck_conn.execute(f"SELECT {pk_select} FROM {self.source_table}").fetchall()
         except Exception:
             # Table absent in DuckDB — treat as empty source.
             duck_rows = []
         duck_count = len(duck_rows)
 
         with pg_engine.connect() as conn:
-            pg_rows = conn.execute(
-                sa.text(f"SELECT {pk_select} FROM {self.target_table}")
-            ).all()
+            pg_rows = conn.execute(sa.text(f"SELECT {pk_select} FROM {self.target_table}")).all()
         pg_count = len(pg_rows)
+
+        duck_set = {tuple(r) for r in duck_rows}
+        pg_set = {tuple(r) for r in pg_rows}
+        missing = duck_set - pg_set
+        # FK orphans intentionally dropped by run() are not real copy
+        # failures; exclude them from the "missing" set.
+        if self.fk_parents and missing:
+            missing = {pk for pk in missing if not self._is_dropped_orphan(pk, duck_conn)}
 
         return {
             "table": self.target_table,
             "duckdb_rows": duck_count,
             "pg_rows": pg_count,
-            "checksum_match": (
-                duck_count == pg_count
-                and _checksum(duck_rows) == _checksum(pg_rows)
-            ),
+            "missing_count": len(missing),
+            "checksum_match": len(missing) == 0,
         }
+
+    def _is_dropped_orphan(
+        self,
+        pk: tuple,
+        duck_conn: duckdb.DuckDBPyConnection,
+    ) -> bool:
+        """True when the source row with this PK was an FK orphan (so run()
+        legitimately dropped it and it is expected to be absent from PG)."""
+        if self.pk_columns != ["id"]:
+            # Orphan-exclusion is only wired for single ``id`` PK tables
+            # (the only ones that declare fk_parents today).
+            return False
+        (pk_val,) = pk
+        for child_col, (parent_table, parent_pk) in self.fk_parents.items():
+            try:
+                row = duck_conn.execute(
+                    f'SELECT "{child_col}" FROM "{self.source_table}" WHERE "id" = ?',
+                    [pk_val],
+                ).fetchone()
+            except Exception:
+                continue
+            if not row:
+                continue
+            val = row[0]
+            if val is None:
+                continue
+            try:
+                exists = duck_conn.execute(
+                    f'SELECT 1 FROM "{parent_table}" WHERE "{parent_pk}" = ?',
+                    [val],
+                ).fetchone()
+            except Exception:
+                continue
+            if not exists:
+                return True
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -440,5 +568,22 @@ class GenericCopyTask:
 #
 # If a future table genuinely requires a custom step, add a dataclass here
 # (implementing .run() and .validate()) and register it below.
+#
+#   - resource_grants: registered below only to declare its FK parents so
+#     dangling grants (a table/package/etc. deleted without cascading to its
+#     grants) are dropped-with-warning instead of aborting the copy with a
+#     ForeignKeyViolation. Still a plain GenericCopyTask otherwise.
 
-EXPLICIT_TASKS: Dict[str, GenericCopyTask] = {}
+EXPLICIT_TASKS: Dict[str, GenericCopyTask] = {
+    "resource_grants": GenericCopyTask(
+        table_name="resource_grants",
+        pk_columns=["id"],
+        fk_parents={
+            "resource_id_table": ("table_registry", "id"),
+            "resource_id_data_package": ("data_packages", "id"),
+            "resource_id_memory_domain": ("memory_domains", "id"),
+            "resource_id_memory_item": ("knowledge_items", "id"),
+            "resource_id_recipe": ("recipes", "id"),
+        },
+    ),
+}
