@@ -16,6 +16,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.11] - 2026-07-22
+
+### Fixed
+
 - **The tarball workspace transport actually engages** — the 0.76.9
   speedup silently never did: the E2B template bakes `/work` as root-owned,
   so the in-sandbox `tar` extraction (running as `user`) failed with
