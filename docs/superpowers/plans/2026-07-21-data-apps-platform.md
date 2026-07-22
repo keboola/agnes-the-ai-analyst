@@ -1511,7 +1511,9 @@ git add services/scheduler/__main__.py tests/
 git commit -m "feat(data-apps): scheduler idle-reaper job"
 ```
 
----### Task 10: CLI — `agnes app …`
+---
+
+### Task 10: CLI — `agnes app …`
 
 **Files:**
 - Create: `cli/commands/data_apps.py`
