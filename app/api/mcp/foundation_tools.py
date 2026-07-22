@@ -755,8 +755,10 @@ def register_foundation_tools(
     async def store_delete(entity_id: str) -> dict:
         """Delete an owned Flea Market entity (owner or admin).
 
-        Permanently removes the entity and its served plugin tree; users who
-        installed it lose it on their next plugin refresh. Mirrors
+        Soft-archives the entity by default (reversible): it is hidden from
+        browse and refuses new installs, but the bundle stays on disk so users
+        who already installed it keep it. Hard delete (drops the bundle and
+        removes existing installs) is admin-only via the web/CLI. Mirrors
         ``DELETE /api/store/entities/{id}`` and ``agnes store delete``.
 
         Args:
