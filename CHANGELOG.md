@@ -48,6 +48,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   watching stdin, so cancel interrupts the live turn (an interrupt surfaced
   by the SDK as an exception no longer tears down the runner); follow-up
   messages arriving mid-turn are buffered and processed in order.
+- A chat turn that crashes mid-stream (not from a user-initiated Stop) no
+  longer discards the partial answer already shown to the user. The `done`
+  frame — which the manager treats as clearing the in-flight turn buffer —
+  is now emitted by the caller only after the turn genuinely finished
+  without raising, instead of unconditionally from a `finally` block; a
+  crash now surfaces only an `error` frame, leaving the buffer intact for
+  the reconnect/teardown partial-save path.
 - `agnes marketplace add/detail/remove` — and the new MCP siblings — now accept
   item ids exactly as `agnes marketplace search` / `marketplace_search` print
   them (tab-prefixed `curated-<mid>/<plugin>`, `flea-<uuid>`). Previously a

@@ -578,9 +578,7 @@ def test_real_agent_loop_streams_deltas_without_duplicating_block_text(monkeypat
         mod.AssistantMessage(content=[mod.TextBlock(text="Hello")]),
         mod.ResultMessage(usage={"input_tokens": 3, "output_tokens": 5}),
     ]
-    emitted, client = _run_real_agent_turn(
-        monkeypatch, mod, script, [{"type": "user_msg", "text": "hi"}]
-    )
+    emitted, client = _run_real_agent_turn(monkeypatch, mod, script, [{"type": "user_msg", "text": "hi"}])
 
     tokens = [f["text"] for f in emitted if f["type"] == "token"]
     assert tokens == ["Hel", "lo"]  # deltas only — no duplicate "Hello" block token
@@ -599,9 +597,7 @@ def test_real_agent_loop_uses_query_not_connect_for_messages(monkeypatch):
         mod.AssistantMessage(content=[mod.TextBlock(text="ack")]),
         mod.ResultMessage(),
     ]
-    emitted, client = _run_real_agent_turn(
-        monkeypatch, mod, script, [{"type": "user_msg", "text": "hi"}]
-    )
+    emitted, client = _run_real_agent_turn(monkeypatch, mod, script, [{"type": "user_msg", "text": "hi"}])
 
     assert ("query", "hi") in client.calls
     assert ("connect", "hi") not in client.calls
@@ -613,9 +609,7 @@ def test_real_agent_loop_awaits_interrupt_on_cancel(monkeypatch):
     """cancel frames must actually reach the SDK — interrupt() is a
     coroutine, and the historical un-awaited call never ran its body."""
     mod = _make_fake_sdk(monkeypatch, with_stream_event=True)
-    emitted, client = _run_real_agent_turn(
-        monkeypatch, mod, [], [{"type": "cancel"}]
-    )
+    emitted, client = _run_real_agent_turn(monkeypatch, mod, [], [{"type": "cancel"}])
     assert ("interrupt", None) in client.calls
 
 
@@ -628,9 +622,7 @@ def test_real_agent_loop_falls_back_to_block_tokens_without_stream_event(monkeyp
         mod.AssistantMessage(content=[mod.TextBlock(text="Hello")]),
         mod.ResultMessage(),
     ]
-    emitted, client = _run_real_agent_turn(
-        monkeypatch, mod, script, [{"type": "user_msg", "text": "hi"}]
-    )
+    emitted, client = _run_real_agent_turn(monkeypatch, mod, script, [{"type": "user_msg", "text": "hi"}])
 
     tokens = [f["text"] for f in emitted if f["type"] == "token"]
     assert tokens == ["Hello"]
@@ -814,6 +806,55 @@ def test_real_agent_loop_survives_interrupt_induced_turn_exception(monkeypatch):
     assert len([f for f in emitted if f == {"type": "done"}]) == 2
 
 
+def test_real_agent_loop_does_not_emit_done_on_genuine_crash(monkeypatch):
+    """A turn that crashes WITHOUT a user interrupt must propagate the
+    exception (amain's outer handler turns it into an `error` frame and the
+    runner exits so the manager respawns) and must NOT emit `done` first —
+    `done` clears the manager-side turn buffer needed to save the partial
+    answer already streamed to the user (Devin Review on #975)."""
+    mod = _make_fake_sdk(monkeypatch, with_stream_event=True)
+
+    from app.chat import runner
+
+    emitted: list = []
+    monkeypatch.setattr(runner, "_emit", emitted.append)
+
+    orig_init = mod.ClaudeSDKClient.__init__
+
+    def _init(self, options):
+        orig_init(self, options)
+
+        def _receive():
+            async def _gen_crash():
+                yield mod.AssistantMessage(content=[mod.TextBlock(text="partial answer")])
+                raise RuntimeError("SDK connection dropped")
+
+            return _gen_crash()
+
+        self.receive_response = _receive
+
+    monkeypatch.setattr(mod.ClaudeSDKClient, "__init__", _init)
+
+    async def _run():
+        queue: asyncio.Queue = asyncio.Queue()
+        queue.put_nowait({"type": "user_msg", "text": "hi"})
+        queue.put_nowait({"type": "_eof"})
+        await runner._real_agent_loop(queue, Path("/tmp"))
+
+    raised = None
+    try:
+        asyncio.run(_run())
+    except RuntimeError as exc:
+        raised = exc
+
+    assert raised is not None and "SDK connection dropped" in str(raised)
+    # The partial token was streamed to the UI before the crash...
+    assert any(f.get("type") == "token" and f.get("text") == "partial answer" for f in emitted)
+    # ...but `done` must never fire, or the manager clears the buffer that
+    # would otherwise save this partial answer.
+    assert {"type": "done"} not in emitted
+
+
 def test_assistant_message_falls_back_to_streamed_deltas(monkeypatch):
     """If an SDK build streams the text via deltas but never delivers the
     final consolidated TextBlock, the persisted assistant_message must carry
@@ -833,9 +874,7 @@ def test_assistant_message_falls_back_to_streamed_deltas(monkeypatch):
         # No AssistantMessage with a TextBlock — straight to turn end.
         mod.ResultMessage(usage={"input_tokens": 1, "output_tokens": 2}),
     ]
-    emitted, _client = _run_real_agent_turn(
-        monkeypatch, mod, script, [{"type": "user_msg", "text": "hi"}]
-    )
+    emitted, _client = _run_real_agent_turn(monkeypatch, mod, script, [{"type": "user_msg", "text": "hi"}])
 
     final = next(f for f in emitted if f["type"] == "assistant_message")
     assert final["content"] == "Hello"

@@ -594,14 +594,23 @@ async def _real_agent_loop(
                 )
             else:
                 await turn_task  # propagate a crashed turn (outer handler emits error frame)
+            # `done` is emitted here, not inside `_consume_turn`, so it never
+            # fires ahead of a genuine crash: `await turn_task` above raises
+            # before reaching this line, and the manager's `error` frame
+            # handler (not `done`) is what runs — preserving the turn buffer
+            # so the partial answer already streamed to the user gets saved
+            # (Devin Review on #975).
+            _emit({"type": "done"})
 
 
 async def _consume_turn(client, *, tool_calls_per_turn: int = 50) -> None:
     """Drain one turn's ``receive_response()`` stream into outbound frames.
 
     Runs as its own task so ``_real_agent_loop`` can keep consuming stdin
-    frames (cancel!) while the turn is in flight. Always ends by emitting a
-    ``done`` frame.
+    frames (cancel!) while the turn is in flight. Does NOT emit the `done`
+    frame itself — the caller does that, and only when this coroutine
+    returns without raising, so a genuine crash mid-stream propagates as an
+    `error` frame instead, leaving the turn buffer intact for partial-save.
     """
     from claude_agent_sdk import (  # type: ignore[import-untyped]
         AssistantMessage,
@@ -649,95 +658,87 @@ async def _consume_turn(client, *, tool_calls_per_turn: int = 50) -> None:
     # persisted assistant_message would be empty.
     streamed_pieces: list[str] = []
 
-    try:
-        async for msg in client.receive_response():
-            if budget_hit:
-                break
-            if StreamEvent is not None and isinstance(msg, StreamEvent):
-                # Token-level delta straight off the model stream. Only
-                # top-level assistant text — subagent/tool-side streams
-                # carry parent_tool_use_id and stay internal.
-                if getattr(msg, "parent_tool_use_id", None) is None:
-                    piece = _stream_event_delta_text(msg.event)
-                    if piece:
-                        _emit({"type": "token", "text": piece})
-                        streamed_pieces.append(piece)
-                continue
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        if not streamed_pieces:
-                            _emit({"type": "token", "text": block.text})
-                        collected_text.append(block.text)
-                    elif isinstance(block, ToolUseBlock):
-                        if tool_calls_this_turn >= tool_calls_per_turn:
-                            _emit(
-                                {
-                                    "type": "confirmation_required",
-                                    "reason": "tool_call_budget",
-                                    "budget": tool_calls_per_turn,
-                                }
-                            )
-                            budget_hit = True
-                            break
-                        # ``id`` is the per-call ``tool_use_id`` —
-                        # echoed back verbatim by ``ToolResultBlock``
-                        # so the frontend can pair a tool_call with
-                        # its result even when several calls to the
-                        # same tool are in flight. ``tool`` carries
-                        # the human-readable name for the inline
-                        # block header.
+    async for msg in client.receive_response():
+        if budget_hit:
+            break
+        if StreamEvent is not None and isinstance(msg, StreamEvent):
+            # Token-level delta straight off the model stream. Only
+            # top-level assistant text — subagent/tool-side streams
+            # carry parent_tool_use_id and stay internal.
+            if getattr(msg, "parent_tool_use_id", None) is None:
+                piece = _stream_event_delta_text(msg.event)
+                if piece:
+                    _emit({"type": "token", "text": piece})
+                    streamed_pieces.append(piece)
+            continue
+        if isinstance(msg, AssistantMessage):
+            for block in msg.content:
+                if isinstance(block, TextBlock):
+                    if not streamed_pieces:
+                        _emit({"type": "token", "text": block.text})
+                    collected_text.append(block.text)
+                elif isinstance(block, ToolUseBlock):
+                    if tool_calls_this_turn >= tool_calls_per_turn:
                         _emit(
                             {
-                                "type": "tool_call",
-                                "id": block.id,
-                                "tool": block.name,
-                                "args": block.input,
+                                "type": "confirmation_required",
+                                "reason": "tool_call_budget",
+                                "budget": tool_calls_per_turn,
                             }
                         )
-                        tool_calls_this_turn += 1
-                    elif isinstance(block, ToolResultBlock):
+                        budget_hit = True
+                        break
+                    # ``id`` is the per-call ``tool_use_id`` —
+                    # echoed back verbatim by ``ToolResultBlock``
+                    # so the frontend can pair a tool_call with
+                    # its result even when several calls to the
+                    # same tool are in flight. ``tool`` carries
+                    # the human-readable name for the inline
+                    # block header.
+                    _emit(
+                        {
+                            "type": "tool_call",
+                            "id": block.id,
+                            "tool": block.name,
+                            "args": block.input,
+                        }
+                    )
+                    tool_calls_this_turn += 1
+                elif isinstance(block, ToolResultBlock):
+                    _emit_tool_result(block)
+            model = msg.model
+            if msg.usage:
+                tokens_in += msg.usage.get("input_tokens", 0)
+                tokens_out += msg.usage.get("output_tokens", 0)
+
+        elif isinstance(msg, UserMessage):
+            # The SDK feeds tool results back as a UserMessage carrying
+            # ToolResultBlock(s) — NOT inside the AssistantMessage. Without
+            # handling this branch the runner never emits a tool_result
+            # frame, so the inline tool block in the UI is stuck on
+            # "running…" forever even though the tool finished.
+            if isinstance(msg.content, list):
+                for block in msg.content:
+                    if isinstance(block, ToolResultBlock):
                         _emit_tool_result(block)
-                model = msg.model
-                if msg.usage:
-                    tokens_in += msg.usage.get("input_tokens", 0)
-                    tokens_out += msg.usage.get("output_tokens", 0)
 
-            elif isinstance(msg, UserMessage):
-                # The SDK feeds tool results back as a UserMessage carrying
-                # ToolResultBlock(s) — NOT inside the AssistantMessage. Without
-                # handling this branch the runner never emits a tool_result
-                # frame, so the inline tool block in the UI is stuck on
-                # "running…" forever even though the tool finished.
-                if isinstance(msg.content, list):
-                    for block in msg.content:
-                        if isinstance(block, ToolResultBlock):
-                            _emit_tool_result(block)
-
-            elif isinstance(msg, ResultMessage):
-                if msg.usage:
-                    tokens_in = msg.usage.get("input_tokens", tokens_in)
-                    tokens_out = msg.usage.get("output_tokens", tokens_out)
-                # ResultMessage signals turn end; receive_response() stops after it.
-                # Content prefers the consolidated TextBlocks (canonical);
-                # falls back to the streamed deltas should an SDK build omit
-                # the final block under partial streaming.
-                _emit(
-                    {
-                        "type": "assistant_message",
-                        "content": "".join(collected_text) or "".join(streamed_pieces),
-                        "tokens_in": tokens_in,
-                        "tokens_out": tokens_out,
-                        "model": model,
-                    }
-                )
-    finally:
-        # Turn finished (receive_response() drained, budget gate broke the
-        # loop, or the turn was interrupted). Emit a `done` frame so the UI
-        # hides the Stop button — without it the composer is wedged in the
-        # "running" state because the frontend only clears it on
-        # done/error/cancelled.
-        _emit({"type": "done"})
+        elif isinstance(msg, ResultMessage):
+            if msg.usage:
+                tokens_in = msg.usage.get("input_tokens", tokens_in)
+                tokens_out = msg.usage.get("output_tokens", tokens_out)
+            # ResultMessage signals turn end; receive_response() stops after it.
+            # Content prefers the consolidated TextBlocks (canonical);
+            # falls back to the streamed deltas should an SDK build omit
+            # the final block under partial streaming.
+            _emit(
+                {
+                    "type": "assistant_message",
+                    "content": "".join(collected_text) or "".join(streamed_pieces),
+                    "tokens_in": tokens_in,
+                    "tokens_out": tokens_out,
+                    "model": model,
+                }
+            )
 
 
 async def _start_relay() -> int:
