@@ -2,6 +2,7 @@
 import {
   initChatOnboarding,
   onUserMessage as onboardingOnUserMessage,
+  noteAnswered as onboardingNoteAnswered,
 } from "./chat_onboarding.js";
 
 const $ = (id) => document.getElementById(id);
@@ -1014,6 +1015,9 @@ function appendToken(text) {
 
 function finalizeAssistantMessage(frame) {
   clearThinkingPlaceholder();
+  // A completed assistant message is a successful answer — advance the
+  // journey counter (errors arrive on the separate "error" frame).
+  onboardingNoteAnswered();
   const content = (frame && frame.content) || currentAssistantText;
   if (currentAssistantArticle && currentAssistantBody) {
     currentAssistantArticle.classList.remove("is-streaming");

@@ -165,6 +165,9 @@ function renderJourneyPanel() {
 
   el.querySelectorAll("[data-journey-go]").forEach((btn) => {
     btn.addEventListener("click", () => {
+      // Locked steps are shown for context but must not be navigable —
+      // clicking one would jump ahead and mark it done out of order.
+      if (btn.classList.contains("locked")) return;
       const href = btn.getAttribute("data-journey-go");
       // Mark the step the destination represents so returning shows progress.
       if (href === "/stack") patchJourney({ explored_stack: true });
