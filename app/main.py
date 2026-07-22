@@ -353,6 +353,7 @@ from app.api.db_state import router as db_state_router
 from app.api.admin_analytics import router as admin_analytics_router
 from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import router as marketplace_git_router
+from app.api.data_apps_git import router as data_apps_git_router
 from app.web.router import router as web_router
 from app.api.chat import router as chat_router
 from app.api.chat_copresence import router as chat_copresence_router
@@ -2198,6 +2199,12 @@ def create_app() -> FastAPI:
     # binary (CGI protocol) — see app/marketplace_server/git_router.py for
     # why this replaced the dulwich/WSGI bridge.
     app.include_router(marketplace_git_router)
+
+    # Git smart-HTTP endpoint for internal-mode data apps:
+    # /data-apps.git/{slug}/* — same CGI-subprocess mechanism as
+    # marketplace_git_router, gated on per-app owner/Admin/grant RBAC
+    # instead of a per-caller filtered repo. See app/api/data_apps_git.py.
+    app.include_router(data_apps_git_router)
 
     # Authenticated Swagger / ReDoc / OpenAPI JSON — requires a valid session
     # so the full admin API surface is not visible to unauthenticated callers.

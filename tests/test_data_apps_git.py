@@ -1,0 +1,289 @@
+"""Tests for the internal per-app git hosting surface.
+
+Two layers:
+
+  - Bare-repo unit tests (`src/data_apps/git_repos.py`) — real `git`
+    subprocess against a scratch repo, no FastAPI involved.
+  - HTTP-layer authz tests for `/data-apps.git/{slug}/{path:path}` — mirrors
+    the auth-matrix style of `tests/test_marketplace_server_git.py`, using
+    FastAPI's `TestClient` (an `info/refs` GET is a plain HTTP request, so
+    no real git client is needed to assert authz).
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import subprocess
+import uuid
+from datetime import datetime, timezone
+
+import pytest
+
+from src.data_apps.git_repos import fast_forward_live, init_app_repo, resolve_ref
+
+
+def _basic(username: str, password: str) -> str:
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    return f"Basic {token}"
+
+
+class TestBareRepo:
+    def test_init_and_fast_forward(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        p = init_app_repo("sales")
+        assert (p / "HEAD").exists()
+        # push a commit into the bare repo from a scratch clone
+        work = tmp_path / "work"
+        subprocess.run(["git", "clone", str(p), str(work)], check=True, capture_output=True)
+        (work / "f.txt").write_text("hi")
+        subprocess.run(["git", "-C", str(work), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(work), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "c1"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "-C", str(work), "push", "origin", "HEAD:main"], check=True, capture_output=True)
+        sha = fast_forward_live("sales")
+        assert resolve_ref("sales", "agnes-live") == sha
+
+    def test_init_app_repo_idempotent(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        p1 = init_app_repo("idem")
+        p2 = init_app_repo("idem")
+        assert p1 == p2
+        assert (p2 / "HEAD").exists()
+
+    def test_resolve_ref_missing_repo_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        assert resolve_ref("does-not-exist", "HEAD") is None
+
+    def test_fast_forward_live_no_commits_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        init_app_repo("empty")
+        # `git rev-parse HEAD` on an unborn-HEAD bare repo echoes back the
+        # literal string "HEAD" with exit 0 (rev-parse is lenient outside
+        # `--verify`) rather than failing, so `resolve_ref` returns a
+        # (bogus) truthy value here and `fast_forward_live` proceeds to
+        # `update-ref ... HEAD`, which fails at the git-subprocess layer.
+        with pytest.raises(subprocess.CalledProcessError):
+            fast_forward_live("empty")
+
+    def test_fast_forward_live_explicit_sha(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        p = init_app_repo("pinned")
+        work = tmp_path / "work2"
+        subprocess.run(["git", "clone", str(p), str(work)], check=True, capture_output=True)
+        (work / "a.txt").write_text("a")
+        subprocess.run(["git", "-C", str(work), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(work), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "c1"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "-C", str(work), "push", "origin", "HEAD:main"], check=True, capture_output=True)
+        first_sha = resolve_ref("pinned", "main")
+
+        (work / "a.txt").write_text("b")
+        subprocess.run(["git", "-C", str(work), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(work), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "c2"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "-C", str(work), "push", "origin", "HEAD:main"], check=True, capture_output=True)
+
+        # Pin agnes-live to the *older* commit explicitly.
+        result = fast_forward_live("pinned", sha=first_sha)
+        assert result == first_sha
+        assert resolve_ref("pinned", "agnes-live") == first_sha
+
+
+@pytest.fixture
+def data_apps_git_env(e2e_env, monkeypatch):
+    """Same shape as `git_env` in tests/test_marketplace_server_git.py:
+    real user + PAT rows so `resolve_token_to_user` passes, plus a
+    `data_apps` row and its bare repo on disk, with the feature flag on."""
+    import yaml
+
+    from app.main import create_app
+    from app.auth.jwt import create_access_token
+    from src.data_apps.git_repos import init_app_repo
+    from src.db import get_system_db
+    from src.repositories.users import UserRepository
+    from src.repositories.access_tokens import AccessTokenRepository
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.data_apps import DataAppsRepository
+
+    data_dir = e2e_env["data_dir"]
+
+    # Enable data_apps in instance.yaml (state/ dir already created by e2e_env).
+    state = data_dir / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "instance.yaml").write_text(yaml.dump({"data_apps": {"enabled": True}}))
+    import app.instance_config as instance_config
+
+    instance_config._instance_config = None
+
+    conn = get_system_db()
+    try:
+        t = datetime.now(timezone.utc)
+        users = UserRepository(conn)
+        users.create(id="owner1", email="owner@test.local", name="Owner")
+        users.create(id="other1", email="other@test.local", name="Other")
+        users.create(id="admin1", email="admin@test.local", name="Admin")
+
+        ug = UserGroupsRepository(conn)
+        ug.ensure_system("Admin", "system")
+        ug.ensure_system("Everyone", "system")
+        admin_gid = conn.execute("SELECT id FROM user_groups WHERE name='Admin'").fetchone()[0]
+
+        ugm = UserGroupMembersRepository(conn)
+        ugm.add_member("admin1", admin_gid, source="system_seed")
+
+        apps = DataAppsRepository(conn)
+        apps.create(slug="sales", name="Sales App", owner_user_id="owner1")
+
+        token_repo = AccessTokenRepository(conn)
+        pats: dict[str, str] = {}
+        for uid, email in [
+            ("owner1", "owner@test.local"),
+            ("other1", "other@test.local"),
+            ("admin1", "admin@test.local"),
+        ]:
+            tid = str(uuid.uuid4())
+            jwt = create_access_token(uid, email, token_id=tid, typ="pat")
+            token_repo.create(
+                id=tid,
+                user_id=uid,
+                name=f"{uid}-pat",
+                token_hash=hashlib.sha256(jwt.encode()).hexdigest(),
+                prefix=tid.replace("-", "")[:8],
+                expires_at=None,
+            )
+            pats[uid] = jwt
+        _ = t
+    finally:
+        conn.close()
+
+    init_app_repo("sales")
+
+    app = create_app()
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app)
+    return {
+        "app": app,
+        "client": client,
+        "owner_pat": pats["owner1"],
+        "other_pat": pats["other1"],
+        "admin_pat": pats["admin1"],
+        "data_dir": data_dir,
+    }
+
+
+class TestDataAppsGitHttp:
+    def test_requires_auth(self, data_apps_git_env):
+        c = data_apps_git_env["client"]
+        r = c.get("/data-apps.git/sales/info/refs?service=git-upload-pack")
+        assert r.status_code == 401
+
+    def test_push_denied_for_non_owner(self, data_apps_git_env):
+        c = data_apps_git_env["client"]
+        r = c.get(
+            "/data-apps.git/sales/info/refs?service=git-receive-pack",
+            headers={"Authorization": _basic("x", data_apps_git_env["other_pat"])},
+        )
+        assert r.status_code == 403
+
+    def test_push_allowed_for_owner(self, data_apps_git_env):
+        c = data_apps_git_env["client"]
+        r = c.get(
+            "/data-apps.git/sales/info/refs?service=git-receive-pack",
+            headers={"Authorization": _basic("x", data_apps_git_env["owner_pat"])},
+        )
+        assert r.status_code == 200
+        assert "git-receive-pack" in r.headers["content-type"]
+
+    def test_push_allowed_for_admin(self, data_apps_git_env):
+        c = data_apps_git_env["client"]
+        r = c.get(
+            "/data-apps.git/sales/info/refs?service=git-receive-pack",
+            headers={"Authorization": _basic("x", data_apps_git_env["admin_pat"])},
+        )
+        assert r.status_code == 200
+
+    def test_read_allowed_for_owner(self, data_apps_git_env):
+        c = data_apps_git_env["client"]
+        r = c.get(
+            "/data-apps.git/sales/info/refs?service=git-upload-pack",
+            headers={"Authorization": _basic("x", data_apps_git_env["owner_pat"])},
+        )
+        assert r.status_code == 200
+        assert "git-upload-pack" in r.headers["content-type"]
+
+    def test_read_denied_for_non_owner_without_grant(self, data_apps_git_env):
+        c = data_apps_git_env["client"]
+        r = c.get(
+            "/data-apps.git/sales/info/refs?service=git-upload-pack",
+            headers={"Authorization": _basic("x", data_apps_git_env["other_pat"])},
+        )
+        assert r.status_code == 403
+
+    def test_read_allowed_via_resource_grant(self, data_apps_git_env):
+        from src.db import get_system_db
+        from src.repositories.user_groups import UserGroupsRepository
+        from src.repositories.user_group_members import UserGroupMembersRepository
+        from src.repositories.resource_grants import ResourceGrantsRepository
+
+        conn = get_system_db()
+        try:
+            ug = UserGroupsRepository(conn)
+            grp = ug.create(name="SalesViewers", description="read access to sales app")
+            gid = grp["id"]
+            UserGroupMembersRepository(conn).add_member("other1", gid, source="admin")
+            ResourceGrantsRepository(conn).create(group_id=gid, resource_type="data_app", resource_id="sales")
+        finally:
+            conn.close()
+
+        c = data_apps_git_env["client"]
+        r = c.get(
+            "/data-apps.git/sales/info/refs?service=git-upload-pack",
+            headers={"Authorization": _basic("x", data_apps_git_env["other_pat"])},
+        )
+        assert r.status_code == 200
+
+        # A grant is read-only — push must still be denied.
+        r2 = c.get(
+            "/data-apps.git/sales/info/refs?service=git-receive-pack",
+            headers={"Authorization": _basic("x", data_apps_git_env["other_pat"])},
+        )
+        assert r2.status_code == 403
+
+    def test_unknown_slug_404s(self, data_apps_git_env):
+        c = data_apps_git_env["client"]
+        r = c.get(
+            "/data-apps.git/does-not-exist/info/refs?service=git-upload-pack",
+            headers={"Authorization": _basic("x", data_apps_git_env["owner_pat"])},
+        )
+        assert r.status_code == 404
+
+    def test_disabled_flag_404s(self, data_apps_git_env):
+        import app.instance_config as instance_config
+        from app.instance_config import get_data_apps_config
+
+        # Flip the cached config off without touching disk.
+        original = instance_config._instance_config
+        instance_config._instance_config = {**(original or {}), "data_apps": {"enabled": False}}
+        try:
+            assert get_data_apps_config().get("enabled") is False
+            c = data_apps_git_env["client"]
+            r = c.get(
+                "/data-apps.git/sales/info/refs?service=git-upload-pack",
+                headers={"Authorization": _basic("x", data_apps_git_env["owner_pat"])},
+            )
+            assert r.status_code == 404
+            assert r.json()["detail"] == "data_apps_disabled"
+        finally:
+            instance_config._instance_config = original

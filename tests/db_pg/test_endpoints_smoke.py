@@ -1590,6 +1590,11 @@ KNOWN_UNTESTED = {
     # dulwich smart-HTTP git bridge — requires git repo on disk, explicit non-goal
     "GET /marketplace.git/{path}",
     "POST /marketplace.git/{path}",
+    # Per-app git-over-HTTP hosting (Task 6, data apps) — same "requires a
+    # git repo on disk" non-goal; auth-matrix behavior covered by
+    # tests/test_data_apps_git.py.
+    "GET /data-apps.git/{slug}/{path}",
+    "POST /data-apps.git/{slug}/{path}",
     # Google OAuth — requires live credentials
     "GET /auth/google/login",
     "GET /auth/google/callback",
