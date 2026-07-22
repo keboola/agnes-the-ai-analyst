@@ -1,0 +1,376 @@
+"""Task 7: spawn-time agent persona profile + scope snapshot.
+
+Covers `app/chat/agent_profile.py` (pure unit tests) and the
+`ChatManager._spawn_live` seam that consumes it (integration, real DuckDB +
+FakeHandle/FakeProvider — same fixture shape as
+`tests/test_chat_manager.py::test_spawn_live_happy_path_does_not_kill_sandbox`).
+
+The most important invariant: the seeded default agent (`system_prompt=''`)
+must leave web chat's spawn-time behavior bit-for-bit unchanged — no
+persona override, generic rails intact.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from app.chat import agent_profile
+from app.chat.profiles import ChatProfile
+
+# ---------------------------------------------------------------------------
+# build_profile
+# ---------------------------------------------------------------------------
+
+
+def _agent_row(**overrides) -> dict:
+    row = {
+        "id": "agent-1",
+        "slug": "sales-helper",
+        "name": "Sales Helper",
+        "description": "Helps qualify inbound leads.",
+        "system_prompt": "",
+        "plugins_mode": "all",
+        "connections_mode": "all",
+        "tables_mode": "all",
+        "memory_mode": "all",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_build_profile_none_on_empty_prompt():
+    assert agent_profile.build_profile(_agent_row(system_prompt="")) is None
+
+
+def test_build_profile_none_on_whitespace_prompt():
+    assert agent_profile.build_profile(_agent_row(system_prompt="   \n\t  ")) is None
+
+
+def test_build_profile_none_on_missing_prompt_key():
+    row = _agent_row()
+    del row["system_prompt"]
+    assert agent_profile.build_profile(row) is None
+
+
+def test_build_profile_returns_chat_profile_with_matching_claude_md():
+    row = _agent_row(system_prompt="You are a sales qualification assistant.\nAlways ask for budget.")
+    profile = agent_profile.build_profile(row)
+    assert isinstance(profile, ChatProfile)
+    assert profile.claude_md == row["system_prompt"]
+    assert profile.slug == "agent-sales-helper"
+    assert profile.skill_name == "agnes-agent-context"
+
+
+def test_build_profile_skill_body_is_valid_skill_md():
+    row = _agent_row(system_prompt="Be helpful.")
+    profile = agent_profile.build_profile(row)
+    assert profile.skill_body.startswith("---\n")
+    assert "name: agnes-agent-context\n" in profile.skill_body
+    assert "description:" in profile.skill_body
+    # identity content
+    assert row["name"] in profile.skill_body
+    assert "scoped by" in profile.skill_body.lower()
+
+
+# ---------------------------------------------------------------------------
+# compute_effective_scope
+# ---------------------------------------------------------------------------
+
+
+def test_compute_effective_scope_all_modes():
+    row = _agent_row(plugins_mode="all", connections_mode="all", tables_mode="all", memory_mode="all")
+    scope = agent_profile.compute_effective_scope(row, scope_items=[])
+    assert scope == {
+        "plugins": "all",
+        "connections": "all",
+        "tables": "all",
+        "memory_domains": "all",
+    }
+
+
+def test_compute_effective_scope_selected_modes_map_ids():
+    row = _agent_row(
+        plugins_mode="selected",
+        connections_mode="selected",
+        tables_mode="selected",
+        memory_mode="selected",
+    )
+    items = [
+        {"item_type": "plugin", "item_id": "p2"},
+        {"item_type": "plugin", "item_id": "p1"},
+        {"item_type": "connection", "item_id": "c1"},
+        {"item_type": "table", "item_id": "t1"},
+        {"item_type": "memory_domain", "item_id": "m1"},
+    ]
+    scope = agent_profile.compute_effective_scope(row, items)
+    assert scope == {
+        "plugins": ["p1", "p2"],  # sorted
+        "connections": ["c1"],
+        "tables": ["t1"],
+        "memory_domains": ["m1"],
+    }
+
+
+def test_compute_effective_scope_mixed_modes():
+    row = _agent_row(plugins_mode="selected", connections_mode="all", tables_mode="selected", memory_mode="all")
+    items = [
+        {"item_type": "plugin", "item_id": "p1"},
+        {"item_type": "table", "item_id": "t1"},
+    ]
+    scope = agent_profile.compute_effective_scope(row, items)
+    assert scope == {
+        "plugins": ["p1"],
+        "connections": "all",
+        "tables": ["t1"],
+        "memory_domains": "all",
+    }
+
+
+def test_compute_effective_scope_selected_with_no_items_is_empty_list():
+    row = _agent_row(plugins_mode="selected")
+    scope = agent_profile.compute_effective_scope(row, scope_items=[])
+    assert scope["plugins"] == []
+
+
+# ---------------------------------------------------------------------------
+# record_snapshot — real DuckDB (agents_repo() fixture style, per
+# tests/test_agents_management_api.py)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def agents_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from src.repositories import agents_repo
+
+    return agents_repo()
+
+
+def test_record_snapshot_writes_a_row(agents_env):
+    owner_id = "owner-1"
+    agent_id = str(uuid.uuid4())
+    agents_env.create(
+        id=agent_id,
+        owner_user_id=owner_id,
+        name="Selected Agent",
+        slug="selected-agent",
+        system_prompt="Be sharp.",
+        plugins_mode="selected",
+        connections_mode="all",
+        tables_mode="selected",
+        memory_mode="all",
+    )
+    agents_env.set_scope(agent_id, [("plugin", "p1"), ("table", "t1")])
+    row = agents_env.get_by_id(agent_id)
+
+    session_id = "chat_" + str(uuid.uuid4())
+    agent_profile.record_snapshot(session_id, row)
+
+    snaps = agents_env.list_scope_snapshots(session_id)
+    assert len(snaps) == 1
+    snap = snaps[0]
+    assert snap["agent_id"] == agent_id
+    assert snap["session_id"] == session_id
+    effective = json.loads(snap["effective_scope"])
+    assert effective == {
+        "plugins": ["p1"],
+        "connections": "all",
+        "tables": ["t1"],
+        "memory_domains": "all",
+    }
+
+
+def test_record_snapshot_swallows_repo_exceptions(agents_env, monkeypatch):
+    owner_id = "owner-2"
+    agent_id = str(uuid.uuid4())
+    agents_env.create(id=agent_id, owner_user_id=owner_id, name="A", slug="a-agent")
+    row = agents_env.get_by_id(agent_id)
+
+    class _BoomRepo:
+        def get_scope(self, agent_id):
+            return []
+
+        def record_scope_snapshot(self, **kwargs):
+            raise RuntimeError("db exploded")
+
+    monkeypatch.setattr("src.repositories.agents_repo", lambda: _BoomRepo())
+
+    # must not raise
+    agent_profile.record_snapshot("chat_boom", row)
+
+
+def test_record_snapshot_swallows_missing_agent_id_key():
+    # A malformed row (no "id") must not propagate an exception either.
+    agent_profile.record_snapshot("chat_x", {"system_prompt": "hi"})
+
+
+# ---------------------------------------------------------------------------
+# Integration seam — ChatManager._spawn_live (real DuckDB, FakeHandle;
+# mirrors tests/test_chat_manager.py's `manager`/FakeHandle fixture shape)
+# ---------------------------------------------------------------------------
+
+
+def _make_workdir_mgr(tmp_path: Path, repo):
+    from app.chat.workdir import WorkdirManager
+
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    (bundled / "CLAUDE.md").write_text("generic analyst rails")
+    return WorkdirManager(
+        data_dir=tmp_path / "data",
+        repo=repo,
+        bundled_template_dir=bundled,
+        server_url="https://example",
+        agnes_version="0.55.0",
+        get_marketplace_sha=lambda: "sha-1",
+        get_template_status=lambda: None,
+    )
+
+
+@pytest.fixture
+def spawn_env(tmp_path, monkeypatch):
+    """A ChatManager wired to a real DATA_DIR-backed system DuckDB (so
+    ``agents_repo()`` and ``ChatRepository`` share the same underlying
+    database, mirroring tests/test_chat_agent_binding.py's `_make_app`
+    pattern) plus a real WorkdirManager so `prepare_session_dir` actually
+    materializes files on disk."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    for sub in ("extracts", "analytics", "state", "notifications"):
+        (tmp_path / sub).mkdir(exist_ok=True)
+
+    from app.chat.config import ChatConfig
+    from app.chat.manager import ChatManager
+    from app.chat.persistence import ChatRepository
+    from src.db import get_system_db
+
+    conn = get_system_db()
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = MagicMock()
+    provider.spawn = AsyncMock()
+    mgr = ChatManager(
+        provider=provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=ChatConfig(enabled=True, concurrency_per_user=2),
+    )
+    return mgr, repo
+
+
+def _fake_handle():
+    from tests.chat_fakes import FakeHandle
+
+    return FakeHandle()
+
+
+def test_spawn_live_uses_dynamic_profile_when_agent_has_prompt(spawn_env):
+    import asyncio
+
+    from src.repositories import agents_repo
+
+    mgr, repo = spawn_env
+    agent_id = str(uuid.uuid4())
+    agents_repo().create(
+        id=agent_id,
+        owner_user_id="u1",
+        name="Persona Agent",
+        slug="persona-agent",
+        system_prompt="# Persona\nYou are a specialized persona.",
+    )
+
+    async def _run():
+        handle = _fake_handle()
+        mgr._provider.spawn = AsyncMock(return_value=handle)
+        s = repo.create_session(user_email="u1@x.com", surface=_surface_web(), agent_id=agent_id)
+        live = await mgr._spawn_live(s)
+        try:
+            claude_md = (live.session_dir / "CLAUDE.md").read_text(encoding="utf-8")
+            assert claude_md == "# Persona\nYou are a specialized persona."
+            skill_path = live.session_dir / ".claude" / "skills" / "agnes-agent-context" / "SKILL.md"
+            assert skill_path.exists()
+            assert "Persona Agent" in skill_path.read_text(encoding="utf-8")
+
+            snaps = agents_repo().list_scope_snapshots(s.id)
+            assert len(snaps) == 1
+            assert snaps[0]["agent_id"] == agent_id
+        finally:
+            await mgr.kill(s.id, reason="test_done")
+            handle.emit_eof()
+
+    asyncio.run(_run())
+
+
+def test_spawn_live_default_agent_empty_prompt_unchanged(spawn_env):
+    """The unchanged-web-chat invariant: an agent_id whose row has an empty
+    system_prompt (the seeded default agent's shape) must not touch the
+    persona — the workspace's generic CLAUDE.md (symlinked, not
+    materialized) stays in effect exactly as it does with no agent_id at
+    all."""
+    import asyncio
+
+    from src.repositories import agents_repo
+
+    mgr, repo = spawn_env
+    agent_id = str(uuid.uuid4())
+    agents_repo().create(
+        id=agent_id,
+        owner_user_id="u2",
+        name="Default",
+        slug="default",
+        system_prompt="",
+    )
+
+    async def _run():
+        handle = _fake_handle()
+        mgr._provider.spawn = AsyncMock(return_value=handle)
+        s = repo.create_session(user_email="u2@x.com", surface=_surface_web(), agent_id=agent_id)
+        live = await mgr._spawn_live(s)
+        try:
+            claude_md_path = live.session_dir / "CLAUDE.md"
+            # Not a profile-owned real file — the generic workspace CLAUDE.md
+            # is symlinked in exactly as it is for a no-agent_id session.
+            assert claude_md_path.is_symlink()
+            assert claude_md_path.read_text(encoding="utf-8") == "generic analyst rails"
+            assert not (live.session_dir / ".claude" / "skills" / "agnes-agent-context").exists()
+        finally:
+            await mgr.kill(s.id, reason="test_done")
+            handle.emit_eof()
+
+    asyncio.run(_run())
+
+
+def test_spawn_live_no_agent_id_unchanged_and_no_snapshot(spawn_env):
+    """No agent_id at all (pre-Task-6 shape, or a co-session fork) must
+    behave identically and must not attempt a scope snapshot."""
+    import asyncio
+
+    from src.repositories import agents_repo
+
+    mgr, repo = spawn_env
+
+    async def _run():
+        handle = _fake_handle()
+        mgr._provider.spawn = AsyncMock(return_value=handle)
+        s = repo.create_session(user_email="u3@x.com", surface=_surface_web())
+        assert s.agent_id is None
+        live = await mgr._spawn_live(s)
+        try:
+            claude_md_path = live.session_dir / "CLAUDE.md"
+            assert claude_md_path.is_symlink()
+            assert agents_repo().list_scope_snapshots(s.id) == []
+        finally:
+            await mgr.kill(s.id, reason="test_done")
+            handle.emit_eof()
+
+    asyncio.run(_run())
+
+
+def _surface_web():
+    from app.chat.types import Surface
+
+    return Surface.WEB

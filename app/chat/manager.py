@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from app.chat import inbound, routing
+from app.chat import agent_profile, inbound, routing
 from app.chat.audit import hash_args, write_audit
 from app.chat.config import ChatConfig
 from app.chat.frame_seq import stamp_frame
@@ -798,13 +798,39 @@ class ChatManager:
         # needs its own stamp (wave-2F task 2).
         await ws.send_json(stamp_frame(live.chat_id, {"type": "ready"}))
 
+    def _load_agent_row(self, agent_id: Optional[str]) -> Optional[dict]:
+        """Best-effort load of an `agents` row for spawn-time profile
+        resolution (Task 7). Returns ``None`` on a missing id, a missing
+        row, or any repo error — a lookup failure must never block a chat
+        spawn; it just means the session falls back to today's static
+        profile behavior and no scope snapshot is recorded."""
+        if not agent_id:
+            return None
+        try:
+            from src.repositories import agents_repo
+
+            return agents_repo().get_by_id(agent_id)
+        except Exception:
+            logger.exception("agent row lookup failed for agent_id=%s — spawn continues without it", agent_id)
+            return None
+
     async def _spawn_live(self, session: "ChatSession") -> "LiveSession":
         """Spawn a fresh sandbox, register refs, start pump/wait tasks.
 
         Returns the new LiveSession registered in self._live. Does NOT await
         the pump/wait tasks — they run independently (Task 8 contract).
+
+        Task 7: when ``session.agent_id`` resolves to an `agents` row with a
+        non-empty ``system_prompt``, that row's DB-sourced ``ChatProfile``
+        (``app.chat.agent_profile.build_profile``) takes precedence over the
+        static ``self._session_profiles`` slug lookup — otherwise (no
+        agent_id, agent missing, or empty system_prompt, as with the seeded
+        default agent) today's behavior is unchanged bit-for-bit. A scope
+        snapshot (audit-only, see ``app.chat.agent_profile``'s docstring) is
+        recorded once the spawn has actually succeeded.
         """
         chat_id = session.id
+        agent_row = self._load_agent_row(session.agent_id)
         if session.is_co_session:
             parts = self._repo.get_session_participants(chat_id)
             emails = [p.user_email for p in parts if p.left_at is None]
@@ -817,6 +843,8 @@ class ChatManager:
             self._workdir_mgr.ensure_user_workdir(session.user_email)
             prof_slug = self._session_profiles.get(session.id)
             prof = get_profile(prof_slug) if prof_slug else None
+            dynamic_prof = agent_profile.build_profile(agent_row) if agent_row else None
+            prof = dynamic_prof or prof
             session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id, profile=prof)
 
         handle = await self._spawn_runner(session, session_dir)
@@ -859,6 +887,8 @@ class ChatManager:
             # for the LiveSession object's whole lifetime — see LiveSession.
             # inbound_task's docstring for why this is NOT part of `tasks`.
             live.inbound_task = asyncio.create_task(self._inbound_consumer_loop(live))
+            if agent_row is not None:
+                agent_profile.record_snapshot(chat_id, agent_row)
             return live
         except Exception:
             self._live.pop(chat_id, None)
