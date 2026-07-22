@@ -10,6 +10,15 @@ import json
 import re
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$")
+
+# Slugs that must never be assignable to a data app: each one is a literal
+# path segment the web UI (`app/web/router.py`'s `apps_web_router`) or the
+# ingress proxy (`app/api/data_apps_proxy.py`) registers directly under
+# `/apps/`. A data app named "detail" would collide with the
+# `GET /apps/detail/{slug}` web route — its own sub-paths (e.g.
+# `/apps/detail/style.css`) would be swallowed by that route instead of
+# reaching the proxy. Add any future literal `/apps/<segment>` route here.
+RESERVED_SLUGS = frozenset({"detail"})
 LIVE_BRANCH = "agnes-live"
 NETWORK = "agnes-apps"
 AGNES_INTERNAL_URL = "http://app:8000"

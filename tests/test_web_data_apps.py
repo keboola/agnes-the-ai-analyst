@@ -265,3 +265,23 @@ def test_apps_detail_path_does_not_collide_with_proxy_catchall(web_env):
     # slug="detail", path="realslug"), it would 404 with this JSON detail
     # instead of rendering the HTML detail page.
     assert '"data_app_not_found"' not in resp.text
+
+
+def test_apps_detail_anything_hits_web_route_404_not_proxy(web_env):
+    """Documents the OTHER half of the reserved-slug invariant (the create-time
+    rejection lives in `src.data_apps.spec.RESERVED_SLUGS`, enforced by
+    `app/api/data_apps.py::create_data_app` — see
+    `tests/test_data_apps_api.py::test_reserved_slug_rejected`).
+
+    Because no data app can ever be named "detail", `GET /apps/detail/<any
+    unknown segment>` is SAFE to own outright as the web route
+    (`app/web/router.py`'s `apps_web_router`, registered ahead of the ingress
+    proxy) — it always resolves as "detail page for app slug=<segment>", 404s
+    with the web route's own `data_app_not_found` when no such app exists, and
+    never needs to fall through to the proxy's `/apps/{slug}/{path:path}`
+    catch-all for an app literally named "detail" (there can't be one).
+    """
+    c = web_env["client"]
+    resp = c.get("/apps/detail/anything", headers=_auth(web_env["owner_pat"]))
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "data_app_not_found"

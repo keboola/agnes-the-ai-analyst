@@ -55,7 +55,7 @@ from app.resource_types import ResourceType
 from app.secrets_vault import VaultKeyNotConfiguredError, decrypt_secret, encrypt_secret
 from src.data_apps.git_repos import fast_forward_live, init_app_repo
 from src.data_apps.runner_client import RunnerClient, RunnerError, RunnerUnavailable
-from src.data_apps.spec import AGNES_INTERNAL_URL, SLUG_RE, build_config_json, build_container_spec
+from src.data_apps.spec import AGNES_INTERNAL_URL, RESERVED_SLUGS, SLUG_RE, build_config_json, build_container_spec
 from src.repositories import access_token_repo, audit_repo, data_apps_repo, users_repo
 
 logger = logging.getLogger(__name__)
@@ -405,6 +405,8 @@ async def create_data_app(
     _feature_gate()
     if not SLUG_RE.match(payload.slug):
         raise HTTPException(status_code=400, detail="invalid_slug")
+    if payload.slug in RESERVED_SLUGS:
+        raise HTTPException(status_code=400, detail="reserved_slug")
     if payload.repo_mode not in ("internal", "external"):
         raise HTTPException(status_code=400, detail="invalid_repo_mode")
     idle_timeout_s = _clamp_idle_timeout(payload.idle_timeout_s)

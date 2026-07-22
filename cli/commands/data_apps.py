@@ -39,6 +39,7 @@ _ERROR_MESSAGES = {
     "app_quota_exceeded": "You've hit your data-app quota for this account. Stop or delete one before creating another.",
     "slug_exists": "That slug is already taken. Pick a different one.",
     "invalid_slug": "Invalid slug — use lowercase letters, numbers, and hyphens only.",
+    "reserved_slug": "That slug is reserved for a web-UI route and can't be used for a data app. Pick a different one.",
     "invalid_repo_mode": "Invalid --repo-url/--repo-branch combination.",
     "create_in_progress": "Another create request for your account is already in flight. Try again in a moment.",
     "deploy_empty_repo": "This app's repo has no commits yet — push something before deploying.",

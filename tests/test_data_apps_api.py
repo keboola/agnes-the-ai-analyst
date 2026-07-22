@@ -396,6 +396,18 @@ class TestCrud:
         r = client_as_user.post("/api/data-apps", json={"slug": "Bad_Slug", "name": "x"})
         assert r.status_code == 400
 
+    def test_reserved_slug_rejected(self, client_as_user):
+        """ "detail" is a literal path segment the web UI's
+        `GET /apps/detail/{slug}` route owns (app/web/router.py's
+        `apps_web_router`) — a data app named "detail" would have its own
+        sub-paths swallowed by that route instead of reaching the proxy.
+        Rejected at create time (`src.data_apps.spec.RESERVED_SLUGS`) so the
+        collision can never happen, rather than relying on route-registration
+        order alone."""
+        r = client_as_user.post("/api/data-apps", json={"slug": "detail", "name": "x"})
+        assert r.status_code == 400
+        assert r.json()["detail"] == "reserved_slug"
+
     def test_duplicate_slug_conflict(self, client_as_user):
         r1 = client_as_user.post("/api/data-apps", json={"slug": "dupe", "name": "One"})
         assert r1.status_code == 201
