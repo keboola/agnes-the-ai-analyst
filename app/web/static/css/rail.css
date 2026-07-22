@@ -207,6 +207,37 @@ html[data-ui-layout="rail"] .rail-foot {
     gap: 6px;
 }
 
+/* Replay-onboarding "?" affordance — mirrors .rail-i so it reads as a quiet
+   footer action above the user menu. */
+html[data-ui-layout="rail"] .rail-help {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 9px 11px;
+    border-radius: 9px;
+    cursor: pointer;
+    color: var(--ds-text-secondary);
+    font-weight: 500;
+    font-size: 14px;
+    text-decoration: none;
+}
+
+html[data-ui-layout="rail"] .rail-help svg {
+    width: 19px;
+    height: 19px;
+    flex-shrink: 0;
+}
+
+html[data-ui-layout="rail"] .rail-help:hover {
+    background: var(--ds-surface-dim);
+    color: var(--ds-text-primary);
+}
+
+html[data-ui-layout="rail"] .rail-help:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
 html[data-ui-layout="rail"] .rail-user-menu {
     position: relative;
 }

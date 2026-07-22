@@ -352,6 +352,29 @@ export async function initChatOnboarding(h) {
   await loadJourney();
   ready = true;
   renderJourneyPanel();
+  // Manual replay: the rail "?" links to /chat?onboarding=replay so a user can
+  // re-run the onboarding session on demand, not just on first visit.
+  if (new URLSearchParams(window.location.search).get("onboarding") === "replay") {
+    await replayOnboarding();
+  }
+}
+
+// Reset the journey and re-greet, so the onboarding session plays again for a
+// returning user. Triggered by the rail "?" affordance.
+export async function replayOnboarding() {
+  if (!ready) return;
+  await patchJourney({
+    first_asked: false,
+    stack_setup_done: false,
+    explored_stack: false,
+    catalog_discovered: false,
+    use_anywhere: false,
+    onboarded: false,
+    successful_answers: 0,
+  });
+  renderJourneyPanel();
+  greetOnce(undefined);
+  if (hooks.scrollToBottom) hooks.scrollToBottom();
 }
 
 // Called from submitUserMessage right after the user bubble is rendered and

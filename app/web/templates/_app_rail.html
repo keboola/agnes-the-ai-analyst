@@ -149,6 +149,14 @@
     {% endif %}
 
     <div class="rail-foot">
+        {% if can_chat %}
+        {# Replay onboarding — re-runs the chat-driven onboarding session on
+           demand (chat_onboarding.js picks up ?onboarding=replay on load). #}
+        <a class="rail-help" href="/chat?onboarding=replay" title="Replay onboarding" aria-label="Replay onboarding">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M9.5 9.2a2.5 2.5 0 0 1 4.8.9c0 1.7-2.3 2-2.3 3.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="17" r="1" fill="currentColor"/></svg>
+            <span class="rail-help-txt">Replay onboarding</span>
+        </a>
+        {% endif %}
         {# User row + pop-up menu — same ids/classes as the header's user
            menu so app.js wiring (trigger toggle, theme radio group)
            works unchanged; only the container styling differs. #}
