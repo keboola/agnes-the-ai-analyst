@@ -1002,6 +1002,35 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/connectors/manifest
 - /api/connectors/params
 
+### `/api/data-apps` — Hosted data apps control plane
+
+Control-plane REST for hosted user web apps (`data_apps` registry, v96) — a
+user-owned app (internal template or external git repo) deployed to a
+runtime container and put to sleep after an idle timeout. RBAC: owner,
+Admin, or a group holding a `resource_grants` row on `(data_app, <slug>)`
+may view; only owner or Admin may mutate. Gated behind
+`data_apps.enabled` in `instance.yaml` (404 `data_apps_disabled` when off).
+CLI (`agnes app …`) and MCP tools are separate follow-up work — not yet
+implemented.
+
+- /api/data-apps
+- /api/data-apps/reap-idle
+- /api/data-apps/{slug}
+- /api/data-apps/{slug}/deploy
+- /api/data-apps/{slug}/logs
+- /api/data-apps/{slug}/readiness
+- /api/data-apps/{slug}/secrets
+- /api/data-apps/{slug}/stop
+
+`POST /{slug}/deploy` fast-forwards the app's internal git repo's
+`agnes-live` branch, mints a fresh PAT scoped to `data-app:<slug>` (revoking
+the previous one), decrypts the app's stored secrets, builds the runtime
+`config.json` + container spec, and hands both to the `apps-runner` sidecar.
+A dead/erroring sidecar sets the app's state to `error` and returns 502
+`runner_unavailable`. `POST /reap-idle` is `require_admin`-gated (the
+scheduler's shared-secret token resolves to a synthetic Admin user) and
+stops any `running` app idle longer than its own `idle_timeout_s`.
+
 ### `/api/data-packages` — Public data packages
 
 - /api/data-packages/{slug}

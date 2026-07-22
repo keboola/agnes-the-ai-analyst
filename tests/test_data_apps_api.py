@@ -489,7 +489,8 @@ class TestDelete:
         assert token_id
 
         r = client_as_user.delete("/api/data-apps/sapp")
-        assert r.status_code == 200, r.text
+        assert r.status_code == 204, r.text
+        assert not r.content
         assert fake_runner.stop_calls
 
         conn = get_system_db()

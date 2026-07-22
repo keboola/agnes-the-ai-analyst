@@ -364,20 +364,27 @@ async def stop_data_app(
     return {"state": "stopped"}
 
 
-@router.delete("/{slug}")
+@router.delete("/{slug}", status_code=204)
 async def delete_data_app(
     slug: str,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    """Runner stop + service-token revoke + registry row delete.
+
+    204 No Content, no body (project convention — see
+    ``tests/test_api_design_rules.py::test_delete_returns_204``). The repo
+    directory under ``${DATA_DIR}/apps/git/<slug>.git`` is intentionally
+    left on disk — deletion is a registry-only operation; that fact is
+    recorded in the audit log params, not the response body.
+    """
     _feature_gate()
     row = _get_row_or_404(slug)
     _require_owner_or_admin(user, row)
 
     # Best-effort: a dead runner must not block deleting the registry row
     # (there'd otherwise be no way to remove an app whose container host is
-    # gone). The repo directory under `${DATA_DIR}/apps/git/<slug>.git` is
-    # intentionally left on disk — deletion is a registry-only operation.
+    # gone).
     try:
         _runner().stop(slug, mode="recreate")
     except (RunnerUnavailable, RunnerError):
@@ -385,8 +392,13 @@ async def delete_data_app(
 
     _revoke_service_token(row)
     data_apps_repo().delete(row["id"])
-    _audit(conn, user["id"], "data_app.delete", f"data_app:{slug}")
-    return {"deleted": True, "slug": slug, "note": "repo directory left on disk"}
+    _audit(
+        conn,
+        user["id"],
+        "data_app.delete",
+        f"data_app:{slug}",
+        {"repo_dir_left_on_disk": True},
+    )
 
 
 @router.put("/{slug}/secrets")
