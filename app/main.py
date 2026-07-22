@@ -1531,6 +1531,16 @@ async def lifespan(app):
         get_posthog().shutdown()
     except Exception:
         logger.exception("PostHog shutdown failed")
+    # Flush any buffered llm_usage rows (broker Task 8 — batched ledger
+    # writes) BEFORE the system DB closes, so a graceful shutdown doesn't
+    # drop the tail of usage the accumulator hadn't hit a size/age
+    # threshold for yet.
+    try:
+        from app.api.broker_agent_policy import usage_accumulator
+
+        usage_accumulator.flush()
+    except Exception:
+        logger.exception("llm_usage accumulator flush failed during shutdown (non-fatal)")
     from src.db import close_analytics_db, close_operational_db, close_system_db
 
     close_system_db()

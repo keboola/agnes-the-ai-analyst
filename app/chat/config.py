@@ -77,6 +77,19 @@ class ChatConfig:
     # SERVICE_ACCOUNT_ID / IDENTITY_TOKEN[_FILE]) must be configured for it. Any
     # value other than ``workload_identity`` falls back to ``api_key``.
     llm_auth: str = "api_key"
+    # Agent-as-API broker policy (Task 8, agent-profiles V1a): models a
+    # brokered chat-completion request may use besides the calling agent's
+    # own pinned model (or the instance default when unpinned) — e.g. a
+    # cheap utility model every agent is allowed to fall back to regardless
+    # of its persona's primary model. Empty by default (no extra models
+    # allowed). Enforced in ``app/api/broker_agent_policy.py::check_model``.
+    agent_api_utility_models: list[str] = field(default_factory=list)
+    # TTL (seconds) for the cached agent-monthly-token-total the broker
+    # checks on every brokered call before enforcing ``token_budget_monthly``
+    # (``app/api/broker_agent_policy.py::cached_month_total``). Trades
+    # budget-enforcement freshness for avoiding a ledger table read on every
+    # LLM call.
+    agent_api_budget_cache_ttl_s: int = 60
     slack: "SlackConfig" = field(default_factory=SlackConfig)
 
 
@@ -134,5 +147,7 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         e2b_kill_on_ws_disconnect=bool(raw.get("e2b_kill_on_ws_disconnect", True)),
         bootstrap_marketplace=bool(raw.get("bootstrap_marketplace", False)),
         llm_auth=str((raw.get("llm") or {}).get("auth", "api_key")).strip().lower() or "api_key",
+        agent_api_utility_models=list(raw.get("agent_api_utility_models") or []),
+        agent_api_budget_cache_ttl_s=int(raw.get("agent_api_budget_cache_ttl_s", 60)),
         slack=_parse_slack_config(raw),
     )

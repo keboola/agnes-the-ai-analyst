@@ -27,16 +27,25 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any, Dict
+import uuid
+from typing import Any, Dict, Optional
 from urllib.parse import unquote, urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.routing import APIRoute
 
+from app.api.broker_agent_policy import (
+    INSTANCE_DEFAULT_MODEL,
+    cached_month_total,
+    check_budget,
+    check_model,
+    parse_usage,
+    usage_accumulator,
+)
 from app.auth.access import mint_co_session_jwt, require_admin
 from app.auth.jwt import create_access_token
-from src.repositories import audit_repo, chat_session_repo, ticket_repo, users_repo
+from src.repositories import agents_repo, audit_repo, chat_session_repo, ticket_repo, users_repo
 
 logger = logging.getLogger(__name__)
 
@@ -292,12 +301,37 @@ async def _replay(request: Request, row: Dict[str, Any], body: Dict[str, Any]) -
         )
 
 
-def _to_response(resp: httpx.Response) -> Response:
-    return Response(
+def _to_response(resp: httpx.Response, extra_headers: Optional[Dict[str, str]] = None) -> Response:
+    response = Response(
         content=resp.content,
         status_code=resp.status_code,
         media_type=resp.headers.get("content-type"),
     )
+    for key, value in (extra_headers or {}).items():
+        response.headers[key] = value
+    return response
+
+
+def _agent_for_ticket(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve the ticket's chat session → ``agent_id`` → agent row, or
+    ``None`` when there is nothing to resolve (Slack/legacy sessions with no
+    ``agent_id``, or a session that no longer exists). Callers must treat
+    ``None`` as "behave exactly as before this feature existed" — no
+    policy/ledger/budget enforcement runs for those sessions.
+
+    Caches nothing beyond the single caller's request — each call is one
+    DB round-trip (session lookup + agent lookup), matching the per-request
+    caching note in the task brief (``anthropic_proxy`` calls this once and
+    reuses the result for both the pre-forward checks and the post-response
+    usage recording)."""
+    session_id = row.get("session_id")
+    if not session_id:
+        return None
+    session = chat_session_repo().get_session(session_id)
+    agent_id = getattr(session, "agent_id", None) if session is not None else None
+    if not agent_id:
+        return None
+    return agents_repo().get_by_id(agent_id)
 
 
 @router.post("/agnes-api")
@@ -344,6 +378,39 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
 
     upstream_path = request.url.path[len("/api/broker/anthropic") :] or "/"
 
+    # Agent-as-API policy: per-agent model allowlist + monthly token budget
+    # (Task 8, agent-profiles V1a). Sits BEFORE the credential fork below so
+    # it covers all three upstream modes (static key / WIF / dispatcher), and
+    # raises BEFORE any token is spent. Sessions with no bound agent (Slack,
+    # legacy, or a session predating this feature) resolve `agent_row` to
+    # `None` and skip all of it — behavior is unchanged for them.
+    agent_row: Optional[Dict[str, Any]] = None
+    budget_headers: Dict[str, str] = {}
+    chat_cfg = getattr(request.app.state, "chat_config", None)
+    if request.method == "POST" and upstream_path == "/v1/messages":
+        agent_row = _agent_for_ticket(row)
+    if agent_row is not None:
+        utility_models = getattr(chat_cfg, "agent_api_utility_models", []) or []
+        budget_ttl_s = getattr(chat_cfg, "agent_api_budget_cache_ttl_s", 60)
+        budget = agent_row.get("token_budget_monthly")
+        month_total: Optional[int] = None
+        if budget is not None:
+            month_total = cached_month_total(agent_row["id"], budget_ttl_s)
+            budget_headers = {
+                "x-agnes-budget-limit": str(budget),
+                "x-agnes-budget-used": str(month_total),
+            }
+        model_err = check_model(raw_body, agent_row, utility_models, INSTANCE_DEFAULT_MODEL)
+        if model_err:
+            raise HTTPException(status_code=403, detail={"code": model_err}, headers=budget_headers or None)
+        if month_total is not None:
+            budget_err = check_budget(agent_row, month_total)
+            if budget_err:
+                # NO Retry-After header — SDKs must not auto-retry a budget
+                # exhaustion (spec §3); `budget_headers` carries only the
+                # x-agnes-budget-* pair, never Retry-After.
+                raise HTTPException(status_code=429, detail={"code": budget_err}, headers=budget_headers or None)
+
     # Opt-in LLM dispatcher (token-arbitrage PoC). When LLM_DISPATCHER_URL is
     # set, chat completions (POST /v1/messages) forward to the dispatcher
     # authenticated with the dispatcher's own team key — the key doubles as
@@ -356,11 +423,7 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
     # dispatcher failure: silently bypassing the cost-routing PoC would
     # corrupt its measurements; the sandbox sees the ordinary upstream error.
     dispatcher_url = os.environ.get("LLM_DISPATCHER_URL", "").strip().rstrip("/")
-    use_dispatcher = (
-        bool(dispatcher_url)
-        and request.method == "POST"
-        and upstream_path == "/v1/messages"
-    )
+    use_dispatcher = bool(dispatcher_url) and request.method == "POST" and upstream_path == "/v1/messages"
 
     # Credential injection is the ONE thing that differs between auth modes; the
     # sandbox never carries either credential (it's added here, server-side).
@@ -442,7 +505,32 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
     # classify it (reusing readiness.classify_llm_failure) into a health signal
     # the admin readiness banner reads, and audit it (never the key itself).
     _record_llm_health(request.app.state, resp)
-    return _to_response(resp)
+
+    # Usage recording (Task 8): AFTER the forward completes, for every
+    # upstream mode. Buffered into `usage_accumulator` (bulk-flushed to the
+    # llm_usage ledger — never one synchronous write per LLM call) rather
+    # than written here. Must never break the response path: any parse/add
+    # failure is caught and logged, not raised.
+    if agent_row is not None and resp.status_code == 200:
+        try:
+            usage = parse_usage(resp.content, resp.headers.get("content-type", ""))
+            if usage:
+                usage_accumulator.add(
+                    {
+                        **usage,
+                        "id": str(uuid.uuid4()),
+                        "agent_id": agent_row["id"],
+                        "user_id": agent_row.get("owner_user_id"),
+                        "session_id": row.get("session_id"),
+                    },
+                    budget_ttl_s=getattr(chat_cfg, "agent_api_budget_cache_ttl_s", 60),
+                )
+        except Exception:
+            logger.exception(
+                "llm usage recording failed for agent %s (response already forwarded)", agent_row.get("id")
+            )
+
+    return _to_response(resp, budget_headers)
 
 
 # LLM-credential failure statuses worth an operator signal: auth (invalid /
