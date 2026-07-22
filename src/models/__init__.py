@@ -9,6 +9,7 @@ from ``src.db_pg`` and adds it to the ``__all__`` re-export below.
 
 from __future__ import annotations
 
+from src.models.agents import Agent, AgentScope, AgentScopeSnapshot, IdempotencyKey, LlmUsage
 from src.models.audit import AuditLog
 from src.models.chat import ChatMessage, ChatSession, UserWorkdir
 from src.models.chat_broker_tickets import ChatBrokerTicket
@@ -86,6 +87,9 @@ from src.models.vault import SystemSecret
 
 
 __all__ = [
+    "Agent",
+    "AgentScope",
+    "AgentScopeSnapshot",
     "AuditLog",
     "BqMetadataCache",
     "ChatBrokerTicket",
@@ -100,6 +104,7 @@ __all__ = [
     "GlossaryTerm",
     "DataPackageTable",
     "DataPackageTool",
+    "IdempotencyKey",
     "InstanceTemplate",
     "Job",
     "KnowledgeContradiction",
@@ -109,6 +114,7 @@ __all__ = [
     "KnowledgeItemRelation",
     "KnowledgeItemUserDismissed",
     "KnowledgeVote",
+    "LlmUsage",
     "MCPSecret",
     "MCPSource",
     "MCPUserSecret",

@@ -80,6 +80,10 @@ class ChatSession(Base):
     sandbox_id: Mapped[str | None] = mapped_column(String, nullable=True)
     runner_pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sandbox_paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # v96: agent-as-API — which agent profile (if any) drove this session.
+    # Deliberately unindexed — see the DuckDB _v94_to_v95 ART-index note;
+    # this table already carries idx_chat_sessions_user.
+    agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         Index("idx_chat_sessions_user", "user_email", "last_message_at"),

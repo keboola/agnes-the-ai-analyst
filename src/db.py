@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 95
+SCHEMA_VERSION = 96
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -466,7 +466,11 @@ CREATE TABLE IF NOT EXISTS personal_access_tokens (
     expires_at   TIMESTAMP,
     last_used_at TIMESTAMP,
     last_used_ip VARCHAR,
-    revoked_at   TIMESTAMP
+    revoked_at   TIMESTAMP,
+    -- v96: agent-as-API — non-NULL when this PAT was minted for/by an
+    -- agent (see docs/superpowers/specs/2026-07-21-agent-profiles-and-
+    -- agent-api-design.md). Deliberately unindexed.
+    agent_id     VARCHAR
 );
 
 -- v60: short-lived setup tokens for the Agnes Cowork one-click setup flow.
@@ -1242,7 +1246,12 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     -- Sandbox pause/resume refs (un-indexed — DuckDB 1.5.3 FK+index bug).
     sandbox_id        VARCHAR,
     runner_pid        INTEGER,
-    sandbox_paused_at TIMESTAMP
+    sandbox_paused_at TIMESTAMP,
+    -- v96: agent-as-API — which agent profile (if any) drove this session.
+    -- Deliberately unindexed: this table already carries idx_chat_sessions_user
+    -- and DuckDB's ART-index maintenance is the exact incident class
+    -- _v94_to_v95 exists to fix, so no new secondary index goes on this column.
+    agent_id          VARCHAR
 );
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_user
     ON chat_sessions(user_email, last_message_at);
@@ -1532,6 +1541,71 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, priority, run_after);
 CREATE INDEX IF NOT EXISTS idx_jobs_idem ON jobs(idempotency_key);
+
+-- v96: agent profiles + agent-as-API foundation (spec
+-- docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md).
+-- No secondary indexes anywhere here — see the _v94_to_v95 ART-index
+-- incident note; chat_sessions.agent_id especially must stay unindexed.
+CREATE TABLE IF NOT EXISTS agents (
+    id                   VARCHAR PRIMARY KEY,
+    owner_user_id        VARCHAR NOT NULL,
+    name                 VARCHAR NOT NULL,
+    slug                 VARCHAR NOT NULL,
+    description          TEXT,
+    system_prompt        TEXT,
+    model                VARCHAR,
+    token_budget_monthly BIGINT,
+    plugins_mode         VARCHAR NOT NULL DEFAULT 'all',
+    connections_mode     VARCHAR NOT NULL DEFAULT 'all',
+    tables_mode          VARCHAR NOT NULL DEFAULT 'all',
+    memory_mode          VARCHAR NOT NULL DEFAULT 'all',
+    memory_write_mode    VARCHAR NOT NULL DEFAULT 'propose',
+    is_default           BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at           TIMESTAMP DEFAULT current_timestamp,
+    updated_at           TIMESTAMP DEFAULT current_timestamp,
+    deleted_at           TIMESTAMP,
+    UNIQUE (owner_user_id, slug)
+);
+
+CREATE TABLE IF NOT EXISTS agent_scope (
+    agent_id  VARCHAR NOT NULL,
+    item_type VARCHAR NOT NULL,
+    item_id   VARCHAR NOT NULL,
+    PRIMARY KEY (agent_id, item_type, item_id)
+);
+
+CREATE TABLE IF NOT EXISTS llm_usage (
+    id                    VARCHAR PRIMARY KEY,
+    agent_id              VARCHAR,
+    user_id               VARCHAR,
+    session_id            VARCHAR,
+    model                 VARCHAR,
+    input_tokens          BIGINT DEFAULT 0,
+    output_tokens         BIGINT DEFAULT 0,
+    cache_read_tokens     BIGINT DEFAULT 0,
+    cache_creation_tokens BIGINT DEFAULT 0,
+    created_at            TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS agent_scope_snapshots (
+    id              VARCHAR PRIMARY KEY,
+    session_id      VARCHAR NOT NULL,
+    agent_id        VARCHAR NOT NULL,
+    effective_scope TEXT NOT NULL,
+    created_at      TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    key           VARCHAR NOT NULL,
+    owner_user_id VARCHAR NOT NULL,
+    agent_id      VARCHAR NOT NULL,
+    request_hash  VARCHAR NOT NULL,
+    response_body TEXT,
+    status_code   INTEGER,
+    created_at    TIMESTAMP DEFAULT current_timestamp,
+    expires_at    TIMESTAMP,
+    PRIMARY KEY (key, owner_user_id, agent_id)
+);
 """
 
 
@@ -6382,6 +6456,82 @@ def _v94_to_v95(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 95")
 
 
+def _v95_to_v96(conn: duckdb.DuckDBPyConnection) -> None:
+    """v95→v96: agent profiles + agent-as-API foundation (spec
+    docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md).
+    No secondary indexes anywhere here — see the _v94_to_v95 ART-index
+    incident note; chat_sessions.agent_id especially must stay unindexed."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agents (
+            id                   VARCHAR PRIMARY KEY,
+            owner_user_id        VARCHAR NOT NULL,
+            name                 VARCHAR NOT NULL,
+            slug                 VARCHAR NOT NULL,
+            description          TEXT,
+            system_prompt        TEXT,
+            model                VARCHAR,
+            token_budget_monthly BIGINT,
+            plugins_mode         VARCHAR NOT NULL DEFAULT 'all',
+            connections_mode     VARCHAR NOT NULL DEFAULT 'all',
+            tables_mode          VARCHAR NOT NULL DEFAULT 'all',
+            memory_mode          VARCHAR NOT NULL DEFAULT 'all',
+            memory_write_mode    VARCHAR NOT NULL DEFAULT 'propose',
+            is_default           BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at           TIMESTAMP DEFAULT current_timestamp,
+            updated_at           TIMESTAMP DEFAULT current_timestamp,
+            deleted_at           TIMESTAMP,
+            UNIQUE (owner_user_id, slug)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_scope (
+            agent_id  VARCHAR NOT NULL,
+            item_type VARCHAR NOT NULL,
+            item_id   VARCHAR NOT NULL,
+            PRIMARY KEY (agent_id, item_type, item_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS llm_usage (
+            id                    VARCHAR PRIMARY KEY,
+            agent_id              VARCHAR,
+            user_id               VARCHAR,
+            session_id            VARCHAR,
+            model                 VARCHAR,
+            input_tokens          BIGINT DEFAULT 0,
+            output_tokens         BIGINT DEFAULT 0,
+            cache_read_tokens     BIGINT DEFAULT 0,
+            cache_creation_tokens BIGINT DEFAULT 0,
+            created_at            TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_scope_snapshots (
+            id              VARCHAR PRIMARY KEY,
+            session_id      VARCHAR NOT NULL,
+            agent_id        VARCHAR NOT NULL,
+            effective_scope TEXT NOT NULL,
+            created_at      TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS idempotency_keys (
+            key           VARCHAR NOT NULL,
+            owner_user_id VARCHAR NOT NULL,
+            agent_id      VARCHAR NOT NULL,
+            request_hash  VARCHAR NOT NULL,
+            response_body TEXT,
+            status_code   INTEGER,
+            created_at    TIMESTAMP DEFAULT current_timestamp,
+            expires_at    TIMESTAMP,
+            PRIMARY KEY (key, owner_user_id, agent_id)
+        )
+    """)
+    conn.execute("ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS agent_id VARCHAR")
+    conn.execute("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS agent_id VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 96")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6770,6 +6920,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # (index-corruption hotfix). No-op here — _SYSTEM_SCHEMA never
             # creates them on fresh installs.
             _v94_to_v95(conn)
+            # v95→v96: agents / agent_scope / llm_usage / agent_scope_snapshots
+            # / idempotency_keys tables + agent_id columns on
+            # personal_access_tokens/chat_sessions (agent profiles +
+            # agent-as-API foundation). _SYSTEM_SCHEMA already creates/
+            # declares all of these on fresh installs (no-op here).
+            _v95_to_v96(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7013,6 +7169,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v93_to_v94(conn)
             if current < 95:
                 _v94_to_v95(conn)
+            if current < 96:
+                _v95_to_v96(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
