@@ -111,6 +111,18 @@ def _start_pgserver() -> Iterator[str]:
 
     tmpdir = tempfile.mkdtemp(prefix="agnes-pgserver-")
     server = pgserver.get_server(tmpdir, cleanup_mode=None)
+    # Record the owning session, AFTER get_server: initdb refuses a non-empty
+    # data dir, so this file cannot be written up front. pgserver starts a
+    # DETACHED postmaster (ppid == 1 from birth, and it outlives us), so
+    # neither the postmaster's liveness nor its parentage tells a later run
+    # whether this dir is still in use. Our PID is the only signal that does,
+    # and the reaper reads it. Dying in the window before this write leaves an
+    # owner-less dir, which the reaper conservatively keeps.
+    from pathlib import Path
+
+    from tests.db_pg.pgserver_reaper import OWNER_FILE
+
+    Path(tmpdir, OWNER_FILE).write_text(f"{os.getpid()}\n")
     try:
         # pgserver returns a unix-socket URI; rewrite to psycopg dialect.
         raw_uri = server.get_uri()

@@ -12,9 +12,37 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- **Pre-flight session guards** (`tests/session_guards.py`) run once at suite
+  start on the xdist controller. A disk check aborts immediately with an
+  actionable message when the temp root has less than 15 GB free, instead of
+  letting a full run die ~45 minutes in with an `INTERNALERROR` traceback and
+  no test results. Override the floor with `AGNES_MIN_FREE_GB`, or skip
+  entirely with `AGNES_SKIP_DISK_PREFLIGHT=1`. A second, advisory check warns
+  when another suite session is already running: `tmp_path_retention_count`
+  reclaims the previous tree only at session start, so concurrent sessions
+  each retain their own and peak disk roughly doubles.
+
 ### Changed
 
 ### Fixed
+
+- **The pgserver reaper now reclaims dirs held by orphaned postmasters.** A
+  run killed hard leaves its postmaster running, so its `postmaster.pid`
+  names a live PID forever and the liveness check skipped that dir on every
+  subsequent run. The ~400 MB leaked permanently and compounded with each
+  interrupted run. `_start_pgserver` now records its session PID in an
+  `agnes-owner.pid` file beside the data dir, and the reaper reclaims a dir
+  (stopping its postmaster with SIGINT, Postgres' fast shutdown, escalating
+  to SIGKILL) only when that owning session is gone. Note the postmaster's
+  own PID cannot decide this: pgserver **detaches** it, so it reads
+  `ppid == 1` while its session is alive as well as after it dies, and
+  reaping on liveness or parentage would destroy a concurrent session's
+  database. Dirs with no owner file, from before this convention, are never
+  killed, and `kill_orphans=False` restores the previous behaviour.
+- **The reaper's minimum-age guard no longer strands dead data dirs.** The
+  guard exists for dirs still running `initdb`, before `postmaster.pid`
+  exists. It was also applied to dirs whose pidfile named a dead process,
+  which is unambiguous regardless of age, so those now reap immediately.
 
 ### Removed
 

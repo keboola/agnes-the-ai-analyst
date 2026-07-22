@@ -55,6 +55,59 @@ _GUARDED_SHELL_CONFIGS = (
 _REAL_LOCAL_BIN = _REAL_HOME / ".local" / "bin"
 
 
+def pytest_sessionstart(session) -> None:
+    """Pre-flight guards: fail fast on conditions that otherwise kill the run
+    45 minutes in with an ``INTERNALERROR`` and no test results.
+
+    Controller-only: under xdist every worker also runs this hook, and the
+    checks are global.
+    """
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return
+
+    import tempfile as _tempfile_guard
+    from pathlib import Path as _PathGuard
+
+    from tests.session_guards import (
+        DEFAULT_MIN_FREE_GB,
+        concurrent_session_holder,
+        disk_preflight,
+        write_session_lock,
+    )
+
+    tmp_root = _PathGuard(_tempfile_guard.gettempdir())
+    lock_path = tmp_root / "agnes-pytest-session.lock"
+
+    # Advisory only. Parallel worktree sessions are a documented workflow
+    # (see CLAUDE.md), but they double peak basetemp usage because the
+    # `tmp_path_retention_count` sweep only reclaims at session start.
+    holder = concurrent_session_holder(lock_path)
+    if holder is not None:
+        session.config.issue_config_time_warning(
+            pytest.PytestConfigWarning(
+                f"Another suite session (pid {holder}) is already running. "
+                f"Concurrent sessions each retain their own basetemp tree, "
+                f"peak disk roughly doubles and neither sweeps the other. "
+                f"Prefer running them serially."
+            ),
+            stacklevel=1,
+        )
+
+    if not os.environ.get("AGNES_SKIP_DISK_PREFLIGHT"):
+        try:
+            floor = int(os.environ["AGNES_MIN_FREE_GB"])
+        except (KeyError, ValueError):
+            floor = DEFAULT_MIN_FREE_GB
+        problem = disk_preflight(tmp_root, min_free_gb=floor)
+        if problem:
+            pytest.exit(
+                f"{problem}\n(set AGNES_SKIP_DISK_PREFLIGHT=1 to run anyway)",
+                returncode=1,
+            )
+
+    write_session_lock(lock_path)
+
+
 def _shell_config_fingerprints() -> dict:
     fps = {}
     for path in _GUARDED_SHELL_CONFIGS:
