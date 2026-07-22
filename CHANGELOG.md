@@ -12,6 +12,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- `agnes app {list,show,create,deploy,logs,open,stop,delete}` — CLI for the hosted data-apps control plane (`/api/data-apps/...`). `create` takes `--repo-url`/`--repo-branch` for an external git repo (default: server-hosted internal repo); `open` prints the app URL only (no browser launch, for headless parity); `delete` prompts for confirmation unless `--yes` is passed.
+
 ### Changed
 
 ### Fixed

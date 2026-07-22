@@ -241,9 +241,20 @@ _BROKER_REASON = (
 )
 _DATA_APPS_REASON = (
     "control-plane REST for hosted data apps (data-apps platform plan, Task 7). "
-    "CLI (`agnes app …`, Task 10) and MCP tools (Task 11) are separate "
-    "not-yet-implemented follow-up tasks in the same plan — temporary "
-    "exemption, flip to _COHORT once those land."
+    "CLI landed in Task 10 (`agnes app list/show/create/deploy/stop/delete/logs`, "
+    "cli/commands/data_apps.py); MCP tools are still pending Task 11 in the same "
+    "plan — temporary exemption, flip to _COHORT once Task 11 lands."
+)
+_DATA_APPS_SECRETS_REASON = (
+    "secrets are set once via an operator/automation flow (`PUT .../secrets`), "
+    "not a routine interactive analyst action — no CLI command planned (mirrors "
+    "the write-only /api/admin/datasource-secrets exemption) and no MCP analogue."
+)
+_DATA_APPS_READINESS_REASON = (
+    "polling primitive consumed by the ingress-proxy waking page "
+    "(app/api/data_apps_proxy.py's holding-page poll loop), not an interactive "
+    "analyst action; `agnes app show`/`agnes app open` (Task 10) cover the "
+    "human-facing state check. No CLI/MCP analogue planned."
 )
 _EXEMPT: dict[str, str] = {
     "/api/admin/registry/rebuild": (
@@ -354,18 +365,19 @@ _EXEMPT: dict[str, str] = {
         "resolves a term by searching, not by a known id)"
     ),
     # Data apps control-plane REST (2026-07-21 data-apps platform plan, Task 7).
-    # CLI (`agnes app …`, Task 10) and MCP tools (`data_apps_list`/`data_app_get`/
-    # `data_app_deploy`/`data_app_logs`, Task 11) are separate follow-up tasks
-    # in the same plan — not yet implemented. Temporary exemption: flip these
-    # to `_COHORT` once those two tasks land instead of leaving the ratchet
-    # red across intermediate commits.
+    # CLI landed in Task 10 (`agnes app …`); MCP tools (`data_apps_list`/
+    # `data_app_get`/`data_app_deploy`/`data_app_logs`, Task 11) are still
+    # pending in the same plan. Temporary exemption: flip these to `_COHORT`
+    # once Task 11 lands instead of leaving the ratchet red across
+    # intermediate commits. `secrets`/`readiness` have their own reasons below
+    # — neither gets a CLI command in Task 10.
     "/api/data-apps": _DATA_APPS_REASON,
     "/api/data-apps/{slug}": _DATA_APPS_REASON,
     "/api/data-apps/{slug}/deploy": _DATA_APPS_REASON,
     "/api/data-apps/{slug}/stop": _DATA_APPS_REASON,
-    "/api/data-apps/{slug}/secrets": _DATA_APPS_REASON,
+    "/api/data-apps/{slug}/secrets": _DATA_APPS_SECRETS_REASON,
     "/api/data-apps/{slug}/logs": _DATA_APPS_REASON,
-    "/api/data-apps/{slug}/readiness": _DATA_APPS_REASON,
+    "/api/data-apps/{slug}/readiness": _DATA_APPS_READINESS_REASON,
     # reap-idle is a scheduler-triggered admin maintenance op (Task 9) —
     # mirrors the run-knowledge-digests/run-corporate-memory exemptions
     # regardless of the CLI/MCP question above; no analyst CLI/MCP analogue.
