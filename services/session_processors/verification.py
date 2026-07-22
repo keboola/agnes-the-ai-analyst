@@ -20,7 +20,10 @@ from services.corporate_memory import contradiction as contradiction_module
 from services.corporate_memory.confidence import compute_confidence
 from services.session_pipeline.contract import ProcessorResult
 from services.session_pipeline.lib import parse_jsonl
-from services.verification_detector.duplicates import _record_duplicate_candidates
+from services.verification_detector.duplicates import (
+    _record_duplicate_candidates,
+    find_duplicate_target,
+)
 from services.verification_detector.detector import (
     _generate_id,
     extract_verifications,
@@ -132,6 +135,52 @@ class VerificationProcessor:
                 )
                 repo.create_evidence(
                     item_id=item_id,
+                    source_user=username,
+                    source_ref=session_id,
+                    detection_type=v.get("detection_type"),
+                    user_quote=v.get("user_quote"),
+                )
+                continue
+
+            # No exact-hash match — but the LLM's title/content is a
+            # paraphrase, and _generate_id() hashes verbatim strings, so a
+            # restated fact still needs to be caught here. The fuzzy dedup
+            # gate looks for a same-domain item that is effectively the same
+            # fact (entity-tag overlap, or lexical similarity as a fallback)
+            # and, if found, merges into it instead of creating a
+            # near-duplicate PENDING row. Failures here must not block
+            # ingestion — fail open into the create path.
+            try:
+                duplicate_target = find_duplicate_target(
+                    repo,
+                    item_id=item_id,
+                    title=v["title"],
+                    content=v["content"],
+                    domain=v.get("domain"),
+                    entities=v.get("entities"),
+                )
+            except Exception as e:
+                logger.warning("Fuzzy-duplicate lookup failed for %s: %s", item_id, e)
+                duplicate_target = None
+
+            if duplicate_target is not None:
+                target_id = duplicate_target["id"]
+                already_recorded = any(
+                    ev.get("source_user") == username and ev.get("source_ref") == session_id
+                    for ev in repo.list_evidence(target_id)
+                )
+                if already_recorded:
+                    logger.info(
+                        "Fuzzy-duplicate evidence already recorded for %s on this session (retry) — skipping",
+                        target_id,
+                    )
+                    continue
+                logger.info(
+                    "Paraphrased duplicate of %s detected — recording evidence instead of creating a new item",
+                    target_id,
+                )
+                repo.create_evidence(
+                    item_id=target_id,
                     source_user=username,
                     source_ref=session_id,
                     detection_type=v.get("detection_type"),

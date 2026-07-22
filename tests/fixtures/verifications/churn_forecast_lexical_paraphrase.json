@@ -1,0 +1,13 @@
+{
+  "verifications": [
+    {
+      "detection_type": "confirmation",
+      "title": "Forecasted churn tracking method",
+      "content": "Forecasted churn is computed monthly by summing projected cancellations across active subscriptions, divided by the total active subscriptions at the start of the period.",
+      "user_quote": "That's right, forecasted churn is computed monthly by summing projected cancellations across active subscriptions, divided by the total active subscriptions at the start of the period.",
+      "domain": "finance",
+      "entities": ["subscriptions"],
+      "base_confidence": 0.90
+    }
+  ]
+}

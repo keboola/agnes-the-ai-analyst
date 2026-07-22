@@ -1,0 +1,3 @@
+{"role": "assistant", "content": "Just to confirm — is churn forecasting based on adding up expected subscription cancellations divided by the active subscription count at period start?"}
+{"role": "user", "content": "Yep, that's how we forecast churn: add up expected cancellations across subscriptions and divide by the active subscription count at the start of the period."}
+{"role": "assistant", "content": "Confirmed — that matches what I have."}

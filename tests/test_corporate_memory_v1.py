@@ -1196,6 +1196,136 @@ class TestDetectorPersistsEvidence:
         conn.close()
 
 
+class TestVerificationFuzzyDedupeGate:
+    """A paraphrased re-statement of an already-known fact must not create a
+    second near-duplicate PENDING item. The exact-hash check in
+    _generate_id() only catches verbatim restatements — the fuzzy dedup gate
+    (services/verification_detector/duplicates.py::find_duplicate_target)
+    catches paraphrases via entity-tag overlap or lexical similarity, and
+    merges into the existing item instead (records evidence there)."""
+
+    def test_entity_overlap_paraphrase_merges_into_existing_item(self, tmp_path, monkeypatch):
+        import shutil
+
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+
+        run = _run_verification_processor
+        repo = KnowledgeRepository(conn)
+
+        # Session 1 — establishes the canonical item.
+        alice_dir = tmp_path / "user_sessions" / "alice"
+        alice_dir.mkdir(parents=True)
+        shutil.copy(SESSIONS_DIR / "churn_forecast_v1.jsonl", alice_dir / "s.jsonl")
+        run(conn, _mock_extractor(_load_golden("churn_forecast_v1")), session_data_dir=tmp_path / "user_sessions")
+
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        item_id = items[0]["id"]
+
+        # Session 2 — bob restates the same fact in different words. The
+        # title/content hash differs, but entities overlap >= 2
+        # ("churn", "forecast"), so this must merge into the existing item
+        # rather than create a second PENDING row.
+        bob_dir = tmp_path / "user_sessions" / "bob"
+        bob_dir.mkdir(parents=True)
+        shutil.copy(SESSIONS_DIR / "churn_forecast_entity_paraphrase.jsonl", bob_dir / "s.jsonl")
+        stats2 = run(
+            conn,
+            _mock_extractor(_load_golden("churn_forecast_entity_paraphrase")),
+            session_data_dir=tmp_path / "user_sessions",
+        )
+
+        assert stats2["items_created"] == 0
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        assert items[0]["id"] == item_id
+
+        evidence = repo.list_evidence(item_id)
+        assert len(evidence) == 2
+        assert {e["source_user"] for e in evidence} == {"alice", "bob"}
+        conn.close()
+
+    def test_lexical_similarity_paraphrase_merges_into_existing_item(self, tmp_path, monkeypatch):
+        """Same scenario, but the paraphrase carries too few overlapping
+        entity tags for the Jaccard check to fire (only one shared/low-signal
+        tag) — the lexical-similarity fallback must still catch it because
+        the wording is a near-verbatim rewording."""
+        import shutil
+
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+
+        run = _run_verification_processor
+        repo = KnowledgeRepository(conn)
+
+        alice_dir = tmp_path / "user_sessions" / "alice"
+        alice_dir.mkdir(parents=True)
+        shutil.copy(SESSIONS_DIR / "churn_forecast_v1.jsonl", alice_dir / "s.jsonl")
+        run(conn, _mock_extractor(_load_golden("churn_forecast_v1")), session_data_dir=tmp_path / "user_sessions")
+
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        item_id = items[0]["id"]
+
+        bob_dir = tmp_path / "user_sessions" / "bob"
+        bob_dir.mkdir(parents=True)
+        shutil.copy(SESSIONS_DIR / "churn_forecast_lexical_paraphrase.jsonl", bob_dir / "s.jsonl")
+        stats2 = run(
+            conn,
+            _mock_extractor(_load_golden("churn_forecast_lexical_paraphrase")),
+            session_data_dir=tmp_path / "user_sessions",
+        )
+
+        assert stats2["items_created"] == 0
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        assert items[0]["id"] == item_id
+
+        evidence = repo.list_evidence(item_id)
+        assert len(evidence) == 2
+        assert {e["source_user"] for e in evidence} == {"alice", "bob"}
+        conn.close()
+
+    def test_genuinely_different_fact_same_domain_still_creates_new_row(self, tmp_path, monkeypatch):
+        """Negative case — a different fact in the same domain, with no
+        entity overlap and low lexical similarity, must NOT be merged."""
+        import shutil
+
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+
+        run = _run_verification_processor
+        repo = KnowledgeRepository(conn)
+
+        alice_dir = tmp_path / "user_sessions" / "alice"
+        alice_dir.mkdir(parents=True)
+        shutil.copy(SESSIONS_DIR / "churn_forecast_v1.jsonl", alice_dir / "s.jsonl")
+        run(conn, _mock_extractor(_load_golden("churn_forecast_v1")), session_data_dir=tmp_path / "user_sessions")
+
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        first_id = items[0]["id"]
+
+        # unprompted_definition.json is also domain="finance" but is an
+        # unrelated fact (CAC definition) — must land as its own item.
+        bob_dir = tmp_path / "user_sessions" / "bob"
+        bob_dir.mkdir(parents=True)
+        shutil.copy(SESSIONS_DIR / "unprompted_definition.jsonl", bob_dir / "s.jsonl")
+        stats2 = run(
+            conn,
+            _mock_extractor(_load_golden("unprompted_definition")),
+            session_data_dir=tmp_path / "user_sessions",
+        )
+
+        assert stats2["items_created"] == 1
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 2
+        ids = {item["id"] for item in items}
+        assert first_id in ids
+        conn.close()
+
+
 class TestDetectorWiresContradictionDetection:
     """Q2: detect_and_record() must run after repo.create() in the pipeline."""
 
