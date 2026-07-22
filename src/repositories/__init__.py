@@ -137,6 +137,8 @@ __all__ = [
     "ticket_repo",
     # Job queue (wave-2B worker runtime foundation)
     "jobs_repo",
+    # Agent profiles + agent-as-API (v96)
+    "agents_repo",
 ]
 
 
@@ -466,6 +468,11 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.jobs", "JobsRepository"),
         PG: ("src.repositories.jobs_pg", "JobsPgRepository"),
     },
+    # Agent profiles + agent-as-API (v96)
+    "agents": {
+        DUCKDB: ("src.repositories.agents", "AgentsRepository"),
+        PG: ("src.repositories.agents_pg", "AgentsPgRepository"),
+    },
 }
 
 
@@ -740,3 +747,8 @@ def ticket_repo() -> Any:
 # job queue (wave-2B worker runtime foundation)
 def jobs_repo() -> Any:
     return _build("jobs")
+
+
+# Agent profiles + agent-as-API (v96)
+def agents_repo() -> Any:
+    return _build("agents")
