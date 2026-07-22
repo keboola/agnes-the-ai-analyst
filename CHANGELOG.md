@@ -16,6 +16,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.10] - 2026-07-22
+
+### Fixed
+
+- Pages rendered through `_chrome_ctx` (`/admin/studio*`, `/me/memory-mining`, `/admin/store/lint`) no longer drop the Chat nav link or render an empty instance name in the page title ("Studio — ") — the helper now provides the same shared `can_chat` and `config` context as `_build_context` (#993).
 - **`bq_fqn` is now honored on the query and scan paths**: a registry row
   whose `bq_fqn` names a project other than `data_source.bigquery.project`
   was still resolved as `<configured-project>.<bucket>.<source_table>` by
@@ -31,12 +42,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   triplet with a warning on the query path, where one bad row must not
   fail unrelated queries.
 - Keboola semantic-layer sync (`sync_semantic_layer()`) now falls back to the default named Keboola `source_connections` entry (the connection `/admin/data-sources` manages) when the legacy `KEBOOLA_STACK_URL`/`KEBOOLA_STORAGE_TOKEN` env-or-vault slot is empty. Verified live: an instance that connects a Keboola project only through the admin wizard previously failed every semantic-layer sync with "credentials not configured", even though the same connection's regular table syncs and its own `/test` endpoint both resolve their token off it correctly.
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.76.9] - 2026-07-22
 
