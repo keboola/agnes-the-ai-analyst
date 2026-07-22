@@ -343,6 +343,66 @@ def build_metric_row(
     return row, None
 
 
+def _resolve_keboola_credentials(
+    explicit_url: Optional[str],
+    explicit_token: Optional[str],
+) -> tuple[str, str]:
+    """Resolve (stack_url, token) for the semantic-layer sync.
+
+    Precedence: explicit args > legacy ``KEBOOLA_STACK_URL``/
+    ``KEBOOLA_STORAGE_TOKEN`` (env or system-secrets vault) > the default
+    (or first, if none is marked default) named Keboola ``source_connections``
+    row — the same connection the "Add Keboola project" admin wizard
+    (``/admin/data-sources``) manages.
+
+    Verified live (2026-07-22, agnes-dev): before this fallback existed, an
+    instance that connected a Keboola project only through that wizard —
+    never setting the legacy env var — silently failed every semantic-layer
+    sync with "credentials not configured", even though the same
+    connection's regular table syncs and its own ``/test`` endpoint both
+    resolve their token off it fine. Mirrors
+    ``app/api/admin_source_connections.py::_resolve_token``'s own
+    vault-secret-then-token_env precedence for a single connection.
+
+    Returns ("", "") if nothing resolves — callers treat that as the
+    existing "not configured" error.
+    """
+    if explicit_url and explicit_token:
+        return explicit_url, explicit_token
+
+    from app.datasource_secrets import datasource_secret
+
+    url = explicit_url or os.environ.get("KEBOOLA_STACK_URL", "")
+    token = explicit_token or datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
+    if url and token:
+        return url, token
+
+    from src.repositories import connection_secrets_repo, source_connections_repo
+
+    conns_repo = source_connections_repo()
+    conn = conns_repo.get_default("keboola")
+    if conn is None:
+        candidates = conns_repo.list(source_type="keboola")
+        conn = candidates[0] if candidates else None
+    if conn is None:
+        return url, token
+
+    conn_url = (conn.get("config") or {}).get("stack_url", "")
+    conn_token = ""
+    try:
+        secrets = connection_secrets_repo()
+        if secrets.has(conn["id"]):
+            conn_token = secrets.get(conn["id"]) or ""
+    except Exception:
+        conn_token = ""
+    if not conn_token:
+        token_env = conn.get("token_env") or ""
+        if token_env:
+            conn_token = os.environ.get(token_env, "")
+
+    return (url or conn_url), (token or conn_token)
+
+
 def sync_semantic_layer(
     keboola_url: Optional[str] = None,
     keboola_token: Optional[str] = None,
@@ -351,9 +411,10 @@ def sync_semantic_layer(
     into Agnes's metric_definitions table, pruning stale
     'keboola_semantic_layer'-sourced rows that no longer exist upstream.
 
-    Credentials default to the standard Keboola env-var/vault resolution
-    (KEBOOLA_STACK_URL + KEBOOLA_STORAGE_TOKEN via datasource_secret) — same
-    hierarchy connectors/keboola/metadata.py uses.
+    Credentials resolve via ``_resolve_keboola_credentials`` — explicit args,
+    then the legacy KEBOOLA_STACK_URL/KEBOOLA_STORAGE_TOKEN env-or-vault slot
+    (same hierarchy connectors/keboola/metadata.py uses), then the default
+    named Keboola source connection managed by /admin/data-sources.
 
     Raises MasterTokenRequiredError if the configured token is not a master
     token (see require_master_token) — this is a configuration error the
@@ -362,13 +423,11 @@ def sync_semantic_layer(
 
     import requests
 
-    from app.datasource_secrets import datasource_secret
     from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
     from connectors.keboola.metastore_client import MetastoreApiError, MetastoreClient
     from src.repositories import table_registry_repo, metric_repo, column_metadata_repo, glossary_repo
 
-    url = keboola_url or os.environ.get("KEBOOLA_STACK_URL", "")
-    token = keboola_token or datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
+    url, token = _resolve_keboola_credentials(keboola_url, keboola_token)
     if not url or not token:
         return {"status": "error", "error": "Keboola credentials not configured"}
 
