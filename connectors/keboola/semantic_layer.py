@@ -400,7 +400,12 @@ def _resolve_keboola_credentials(
         if token_env:
             conn_token = os.environ.get(token_env, "")
 
-    return (url or conn_url), (token or conn_token)
+    # url/token here are at most a PARTIAL legacy pair (the full-pair case
+    # returned above) — mixing that partial half with the named connection's
+    # other half could pair one project's token with a different project's
+    # stack URL. Only a full legacy pair counts as "legacy resolved"; a
+    # partial one falls through to the named connection as a coherent pair.
+    return conn_url, conn_token
 
 
 def sync_semantic_layer(

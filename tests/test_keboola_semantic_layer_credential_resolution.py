@@ -106,6 +106,36 @@ class TestResolveKeboolaCredentials:
         assert url == "https://connection.named.keboola.com"
         assert token == "token-from-custom-env"
 
+    def test_partial_legacy_url_falls_through_to_named_connection_pair(self, e2e_env, monkeypatch):
+        """Only ``KEBOOLA_STACK_URL`` set (no token) — a partial legacy pair
+        must not mix with the named connection's token; the whole legacy
+        tier is discarded and the named connection resolves as a coherent
+        pair (Devin Review on #992)."""
+        from connectors.keboola.semantic_layer import _resolve_keboola_credentials
+
+        monkeypatch.setenv("KEBOOLA_STACK_URL", "https://connection.env.keboola.com")
+        monkeypatch.delenv("KEBOOLA_STORAGE_TOKEN", raising=False)
+        _make_keboola_connection(is_default=True, with_vault_secret=True)
+
+        url, token = _resolve_keboola_credentials(None, None)
+
+        assert url == "https://connection.named.keboola.com"
+        assert token == "named-conn-vault-token"
+
+    def test_partial_legacy_token_falls_through_to_named_connection_pair(self, e2e_env, monkeypatch):
+        """Only ``KEBOOLA_STORAGE_TOKEN`` set (no URL) — same as above,
+        mirrored on the token half."""
+        from connectors.keboola.semantic_layer import _resolve_keboola_credentials
+
+        monkeypatch.delenv("KEBOOLA_STACK_URL", raising=False)
+        monkeypatch.setenv("KEBOOLA_STORAGE_TOKEN", "env-token")
+        _make_keboola_connection(is_default=True, with_vault_secret=True)
+
+        url, token = _resolve_keboola_credentials(None, None)
+
+        assert url == "https://connection.named.keboola.com"
+        assert token == "named-conn-vault-token"
+
     def test_returns_empty_when_nothing_resolves(self, e2e_env, monkeypatch):
         from connectors.keboola.semantic_layer import _resolve_keboola_credentials
 
