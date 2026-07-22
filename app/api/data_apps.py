@@ -255,6 +255,14 @@ def _handle_runner_failure(repo, app_id: str, exc: Exception) -> None:
     repo.set_state(app_id, "error", str(detail))
 
 
+class OwnerNotFoundError(Exception):
+    """Raised by :func:`redeploy_current` when ``app_row['owner_user_id']``
+    no longer resolves to a live user row. Distinct from ``ValueError``
+    (spec-build failures) so callers can tell "deploy target row is
+    internally inconsistent" (500) apart from "spec inputs are invalid"
+    (400) without string-matching the exception message."""
+
+
 def _rollback_new_service_token(repo, app_id: str, new_token_id: str, previous_token_id: str) -> None:
     """Undo a tentatively-minted+stored service token after a deploy step
     following the mint fails (spec build or runner `up`).
@@ -273,6 +281,81 @@ def _rollback_new_service_token(repo, app_id: str, new_token_id: str, previous_t
     except Exception:
         logger.warning("failed to revoke rolled-back service token %s for data app %s", new_token_id, app_id)
     repo.update(app_id, service_token_id=previous_token_id)
+
+
+def redeploy_current(row: dict) -> None:
+    """Mint a fresh service token, build the runtime spec/config off
+    ``row`` as it stands (i.e. whatever ``agnes-live`` currently points at
+    — this function never touches the git ref itself), and hand it to the
+    runner sidecar's ``up``.
+
+    This is the shared mint -> config -> ``runner.up`` pipeline extracted
+    from ``deploy_data_app``'s body (Task 7) so both the operator-triggered
+    ``POST /{slug}/deploy`` (which fast-forwards ``agnes-live`` to a new sha
+    *before* calling this) and the wake-on-request path (``_trigger_wake``
+    in ``app/api/data_apps_proxy.py``, redeploying a sleeping
+    ``sleep_mode="recreate"`` app at its last-deployed sha) go through
+    exactly one implementation — no drift between the two call sites'
+    mint/rollback semantics.
+
+    Token mint/rollback semantics are preserved byte-for-byte from the
+    original inline body: the new token is stored on the row TENTATIVELY,
+    before it's known the runner call will succeed. On any failure below
+    (`ValueError` from spec building, or `RunnerUnavailable`/`RunnerError`
+    from the runner call) the tentative token is revoked and the row's
+    `service_token_id` is restored to whatever it was before this call —
+    never leaving a still-sleeping-but-deployed app without a working
+    credential. The previous token is only revoked (this function's own
+    side effect on success) once the runner has actually accepted the
+    deploy.
+
+    Raises `OwnerNotFoundError`, `ValueError`, `RunnerUnavailable`, or
+    `RunnerError` on failure; each already left the row in "error" state
+    (via `_handle_runner_failure`) for the runner-call case, or with an
+    untouched state for the owner/spec-build cases — callers decide how to
+    surface that (HTTP response for `deploy_data_app`, `set_state("error",
+    ...)` for `_trigger_wake`) without this function taking an opinion on
+    HTTP status codes or wake-vs-deploy framing.
+    """
+    slug = row["slug"]
+    repo = data_apps_repo()
+
+    owner = users_repo().get_by_id(row["owner_user_id"])
+    if not owner:
+        raise OwnerNotFoundError(row["owner_user_id"])
+
+    previous_token_id = row.get("service_token_id") or ""
+    new_token_id, jwt_token = _mint_service_token(slug, owner)
+    repo.update(row["id"], service_token_id=new_token_id)
+    row = repo.get(row["id"])  # refresh — carries the new (tentative) service_token_id
+
+    secrets = _decrypt_secrets(row)
+    clone_url = f"{AGNES_INTERNAL_URL}/data-apps.git/{slug}"
+
+    try:
+        config_json = build_config_json(row, secrets=secrets, clone_url=clone_url, clone_token=jwt_token)
+        spec = build_container_spec(row, defaults=_effective_config(), data_dir=os.environ.get("DATA_DIR", "/data"))
+    except ValueError:
+        _rollback_new_service_token(repo, row["id"], new_token_id, previous_token_id)
+        raise
+
+    try:
+        _runner().up(slug, spec, config_json)
+    except (RunnerUnavailable, RunnerError) as exc:
+        _rollback_new_service_token(repo, row["id"], new_token_id, previous_token_id)
+        _handle_runner_failure(repo, row["id"], exc)
+        raise
+
+    # The runner accepted the deploy — only now is it safe to revoke the
+    # previous token. Had we revoked it eagerly (before the runner call),
+    # any failure above would have left the app with NO working credential
+    # at all, even though the previously-deployed container is still
+    # running/sleeping and may need to wake using it.
+    if previous_token_id:
+        try:
+            access_token_repo().revoke(previous_token_id)
+        except Exception:
+            logger.warning("failed to revoke previous service token %s for data app %s", previous_token_id, slug)
 
 
 class CreateDataAppRequest(BaseModel):
@@ -393,47 +476,14 @@ async def deploy_data_app(
             raise HTTPException(status_code=409, detail="deploy_empty_repo")
         raise HTTPException(status_code=400, detail=str(exc))
 
-    owner = users_repo().get_by_id(row["owner_user_id"])
-    if not owner:
+    try:
+        redeploy_current(row)
+    except OwnerNotFoundError:
         raise HTTPException(status_code=500, detail="owner_not_found")
-
-    # Mint the new token and tentatively store it BEFORE we know the deploy
-    # will succeed. The previous token is deliberately left live and
-    # un-revoked at this point — see the "only revoke old after success"
-    # comment below. `previous_token_id` is captured now (from the row as
-    # loaded before any mutation) so a failed deploy can restore it exactly.
-    previous_token_id = row.get("service_token_id") or ""
-    new_token_id, jwt_token = _mint_service_token(slug, owner)
-    repo.update(row["id"], service_token_id=new_token_id)
-    row = repo.get(row["id"])  # refresh — carries the new (tentative) service_token_id
-
-    secrets = _decrypt_secrets(row)
-    clone_url = f"{AGNES_INTERNAL_URL}/data-apps.git/{slug}"
-
-    try:
-        config_json = build_config_json(row, secrets=secrets, clone_url=clone_url, clone_token=jwt_token)
-        spec = build_container_spec(row, defaults=_effective_config(), data_dir=os.environ.get("DATA_DIR", "/data"))
     except ValueError as exc:
-        _rollback_new_service_token(repo, row["id"], new_token_id, previous_token_id)
         raise HTTPException(status_code=400, detail=str(exc))
-
-    try:
-        _runner().up(slug, spec, config_json)
-    except (RunnerUnavailable, RunnerError) as exc:
-        _rollback_new_service_token(repo, row["id"], new_token_id, previous_token_id)
-        _handle_runner_failure(repo, row["id"], exc)
+    except (RunnerUnavailable, RunnerError):
         raise HTTPException(status_code=502, detail="runner_unavailable")
-
-    # The runner accepted the deploy — only now is it safe to revoke the
-    # previous token. Had we revoked it eagerly (before the runner call),
-    # any failure above would have left the app with NO working credential
-    # at all, even though the previously-deployed container is still
-    # running/sleeping and may need to wake using it.
-    if previous_token_id:
-        try:
-            access_token_repo().revoke(previous_token_id)
-        except Exception:
-            logger.warning("failed to revoke previous service token %s for data app %s", previous_token_id, slug)
 
     repo.record_deploy(row["id"], sha)
     repo.set_state(row["id"], "running")
@@ -540,19 +590,34 @@ async def get_data_app_logs(slug: str, tail: int = 200, user: dict = Depends(get
 
 @router.get("/{slug}/readiness")
 async def get_data_app_readiness(slug: str, user: dict = Depends(get_current_user)):
+    """Runner-backed readiness probe. Doubles as the wake-completion flip:
+    when a `deploying` app's runner reports `ready`, this call itself
+    transitions the row to `running` — the ingress proxy's holding page
+    (`app/api/data_apps_proxy.py``, ``data_app_waking.html``'s poll loop)
+    is the only caller that hits this endpoint on a cadence, so the flip
+    happening here (rather than a dedicated poller) is what actually
+    surfaces "the app is up" back to the browser tab that triggered the
+    wake. See that module's docstring for the other half of this contract.
+    """
     _feature_gate()
     row = _get_row_or_404(slug)
     if not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
 
+    state = row["state"]
     ready = False
-    if row["state"] in ("running", "deploying"):
+    if state in ("running", "deploying"):
         try:
             status = _runner().status(slug)
             ready = bool(status.get("ready"))
         except (RunnerUnavailable, RunnerError):
             ready = False
-    return {"state": row["state"], "ready": ready}
+
+    if state == "deploying" and ready:
+        data_apps_repo().set_state(row["id"], "running")
+        state = "running"
+
+    return {"state": state, "ready": ready}
 
 
 @router.post("/reap-idle")

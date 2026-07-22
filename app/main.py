@@ -355,6 +355,7 @@ from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import router as marketplace_git_router
 from app.api.data_apps import router as data_apps_router
 from app.api.data_apps_git import router as data_apps_git_router
+from app.api.data_apps_proxy import router as data_apps_proxy_router
 from app.web.router import router as web_router
 from app.api.chat import router as chat_router
 from app.api.chat_copresence import router as chat_copresence_router
@@ -1838,6 +1839,19 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Data-apps subdomain rewrite (Task 8): `<slug>.<subdomain_base>` host
+    # requests get `scope["path"]` rewritten to `/apps/<slug>/...` before
+    # routing. Pure passthrough (a no-op) unless `data_apps.subdomain_base`
+    # is configured. Position among the other middlewares doesn't matter —
+    # routing itself is innermost regardless of add_middleware order — but
+    # it must run for both "http" and "websocket" scopes (the data-app WS
+    # bridge lives at the same rewritten path), which rules out
+    # http-only middlewares like CORSMiddleware/SessionMiddleware as a
+    # model to imitate ordering from.
+    from app.data_apps_subdomain import DataAppSubdomainMiddleware
+
+    app.add_middleware(DataAppSubdomainMiddleware)
+
     # RequestIdMiddleware mounted LAST — Starlette inserts middleware at
     # index 0, so the last add_middleware call ends up OUTERMOST and runs
     # FIRST per request. The request_id ContextVar is set before any
@@ -2210,6 +2224,11 @@ def create_app() -> FastAPI:
     # Control-plane REST for hosted data apps: CRUD, deploy, stop, delete,
     # secrets, logs, readiness, admin reap-idle. See app/api/data_apps.py.
     app.include_router(data_apps_router)
+
+    # Ingress proxy for hosted data apps: /apps/{slug}/... (+ the matching
+    # websocket bridge) — auth-gated stream proxy, wake-on-request, and the
+    # holding page. See app/api/data_apps_proxy.py.
+    app.include_router(data_apps_proxy_router)
 
     # Authenticated Swagger / ReDoc / OpenAPI JSON — requires a valid session
     # so the full admin API surface is not visible to unauthenticated callers.

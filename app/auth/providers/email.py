@@ -194,6 +194,8 @@ async def verify_magic_link_get(
     from app.instance_config import get_home_route
 
     response = RedirectResponse(url=get_home_route(), status_code=302)
+    from app.instance_config import session_cookie_domain
+
     response.set_cookie(
         key="access_token",
         value=jwt_token,
@@ -201,6 +203,7 @@ async def verify_magic_link_get(
         max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
         samesite="lax",
         secure=use_secure,
+        domain=session_cookie_domain(),
     )
     return response
 

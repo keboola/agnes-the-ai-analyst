@@ -2152,6 +2152,14 @@ KNOWN_UNTESTED = {
     "POST /webhooks/jira",
     # My-stack curated toggle
     "PUT /api/my-stack/curated/{marketplace_id}/{plugin_name}",
+    # Data-apps ingress proxy (Task 8) — `GET /apps/{slug}` (redirect to the
+    # trailing-slash form) is the only piece of this surface that still
+    # appears in the OpenAPI schema: the catch-all proxy/wake/holding-page
+    # route (`/apps/{slug}/{path}`, all methods) is registered with
+    # `include_in_schema=False` (see app/api/data_apps_proxy.py's
+    # `proxy_app` docstring for why) and so never reaches `all_routes`
+    # here at all. Behaviour covered in tests/test_data_apps_proxy.py.
+    "GET /apps/{slug}",
 }
 
 
