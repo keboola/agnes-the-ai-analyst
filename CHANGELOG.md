@@ -16,6 +16,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **Chat nav tab no longer disappears on Studio pages**: clicking "Studio"
+  in the top nav (routes rendered via the reduced-context `_chrome_ctx`
+  builder, e.g. `/admin/studio`) dropped the "Chat" nav tab and flipped the
+  header brand to the generic "Data Analyst Portal" fallback, because that
+  builder omitted both `can_chat` and `config` while the full `_build_context`
+  builder set them. The two builders had drifted. `can_chat` is now computed
+  by a single shared helper (`_compute_can_chat`) called from both builders,
+  and the `config` branding object is produced by a shared `_config_proxy()`
+  factory used by both — so the nav and brand stay consistent across every
+  page regardless of which builder rendered it.
+
 - **`bq_fqn` is now honored on the query and scan paths**: a registry row
   whose `bq_fqn` names a project other than `data_source.bigquery.project`
   was still resolved as `<configured-project>.<bucket>.<source_table>` by
