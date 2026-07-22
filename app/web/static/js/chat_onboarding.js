@@ -202,8 +202,13 @@ function greetOnce(synced) {
 // re-renders the panel. Earned step progress is preserved.
 function restartOnboarding() {
   if (!ready) return;
+  // Collapse the empty-state hero first (same as the normal first-message
+  // flow) so the replayed welcome is visible even from a brand-new chat —
+  // otherwise the greeting renders behind the capability panel.
+  hooks.revealConversation?.();
   journey = { ...journey, onboarded: false };
   greetOnce();
+  hooks.scrollToBottom?.();
 }
 
 // ── Gap resolver ─────────────────────────────────────────────────────────────

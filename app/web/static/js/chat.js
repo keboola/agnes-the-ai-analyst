@@ -2648,5 +2648,6 @@ function renderCoPresence(host, participants) {
     },
     resubmit: (text) => submitUserMessage(text),
     scrollToBottom: () => maybeScrollToBottom(),
+    revealConversation: () => hideCapabilities(),
   }).catch(() => {});
 })();
