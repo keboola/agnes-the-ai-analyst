@@ -327,6 +327,14 @@ html[data-ui-layout="rail"] body.detail-page footer {
     border-radius: 16px;
     text-align: left;
 }
+/* Dark theme: --ds-agnes-soft stays a light green (it has no dark override),
+   so the light --ds-text-primary/-secondary the banner uses would be
+   unreadable on it. Derive a dark agnes-tinted surface from the themed
+   --ds-surface instead — scoped to .cbn so other --ds-agnes-soft users are
+   untouched. */
+:root[data-theme="dark"] .cbn {
+    background: color-mix(in srgb, var(--ds-agnes) 15%, var(--ds-surface));
+}
 .cbn-title { color: var(--ds-text-primary); font-weight: 750; letter-spacing: -0.02em; }
 .cbn-copy { color: var(--ds-text-secondary); }
 .cbn-cta {
