@@ -500,18 +500,45 @@ def _read_agnes_ca_pem() -> Optional[str]:
 _CONN_UNSET: Any = object()
 
 
-def _build_context(
-    request: Request,
-    user: Optional[dict] = None,
-    conn: Any = _CONN_UNSET,
-    **extra,
-) -> dict:
-    """Build template context with config, user, and theme.
+def _compute_can_chat(request: Request, user: Optional[dict]) -> bool:
+    """Cloud-chat nav visibility, shared by every page-context builder.
 
-    `conn` is optional: when supplied alongside a logged-in `user`, the
-    setup-prompt preview/clipboard payload is rendered with that user's
-    RBAC-allowed Claude Code marketplace plugins inlined as install
-    commands. Routes that don't render the env-setup-cta block can omit it.
+    The /chat link is shown only when chat is enabled AND one of the viewer's
+    groups holds an explicit chat grant. We deliberately use
+    `has_explicit_grant` (NOT `can_access`) so the link tracks actual rollout
+    state, not effective access: admins do NOT see it until chat is granted to
+    a group they're in, even though god-mode still lets them reach /chat by
+    URL (the route guard uses can_access). This is UX only — the hard gate is
+    on the route + API.
+
+    Computed on EVERY page — both `_build_context` and `_chrome_ctx` must set
+    it, otherwise the link flickers out on the pages using the other builder
+    (the studio pages regressed on exactly this). `has_explicit_grant` is
+    backend-aware (it routes through the repo factory), so no connection is
+    threaded here — it reads the active backend itself. Defaults False when
+    chat is disabled or there's no user.
+    """
+    try:
+        _cc = getattr(request.app.state, "chat_config", None)
+        if user and _cc is not None and _cc.enabled:
+            from app.auth.access import has_explicit_grant
+            from app.resource_types import ResourceType
+
+            return bool(has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat"))
+    except Exception:
+        return False
+    return False
+
+
+def _config_proxy() -> type:
+    """Template-facing ``config`` object, shared by every page-context builder.
+
+    Defined as a class built at call time so every attribute is re-read per
+    request (operators can flip env vars / instance.yaml without a restart).
+    Both `_build_context` and `_chrome_ctx` must expose it as ``config`` —
+    templates read e.g. ``config.INSTANCE_NAME`` in ``<title>`` blocks and
+    the shared header logo, which rendered empty on the pages whose builder
+    skipped it (the studio pages regressed on exactly this).
     """
 
     class ConfigProxy:
@@ -551,6 +578,24 @@ def _build_context(
             if isinstance(theme, dict):
                 return {k: v for k, v in theme.items() if v}
             return {}
+
+    return ConfigProxy
+
+
+def _build_context(
+    request: Request,
+    user: Optional[dict] = None,
+    conn: Any = _CONN_UNSET,
+    **extra,
+) -> dict:
+    """Build template context with config, user, and theme.
+
+    `conn` is optional: when supplied alongside a logged-in `user`, the
+    setup-prompt preview/clipboard payload is rendered with that user's
+    RBAC-allowed Claude Code marketplace plugins inlined as install
+    commands. Routes that don't render the env-setup-cta block can omit it.
+    """
+    ConfigProxy = _config_proxy()
 
     ctx_server_url = str(request.base_url).rstrip("/")
 
@@ -662,28 +707,7 @@ def _build_context(
         # the OSS vendor-neutral.
         "custom_scripts": get_custom_scripts(),
     }
-    # Cloud-chat nav visibility. The /chat link is shown only when chat is
-    # enabled AND one of the viewer's groups holds an explicit chat grant. We
-    # deliberately use `has_explicit_grant` (NOT `can_access`) so the link
-    # tracks actual rollout state, not effective access: admins do NOT see it
-    # until chat is granted to a group they're in, even though god-mode still
-    # lets them reach /chat by URL (the route guard uses can_access). This is
-    # UX only — the hard gate is on the route + API.
-    #
-    # Computed on EVERY page. `has_explicit_grant` is backend-aware (it routes
-    # through the repo factory), so no connection is threaded here — it reads
-    # the active backend itself. Defaults False when chat is disabled or
-    # there's no user.
-    ctx["can_chat"] = False
-    try:
-        _cc = getattr(request.app.state, "chat_config", None)
-        if user and _cc is not None and _cc.enabled:
-            from app.auth.access import has_explicit_grant
-            from app.resource_types import ResourceType
-
-            ctx["can_chat"] = bool(has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat"))
-    except Exception:
-        ctx["can_chat"] = False
+    ctx["can_chat"] = _compute_can_chat(request, user)
     # Studio nav visibility. Pure instance-level toggle (no per-user grant,
     # unlike can_chat) — the enclosing `{% if session.user %}` already scopes
     # the nav to signed-in users. The hard gate lives on the routes.
@@ -2037,6 +2061,14 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         # survives on pages that render via _chrome_ctx — including the studio
         # pages themselves and the command palette.
         "can_studio": get_studio_enabled(),
+        # Same `config` object as _build_context — templates read
+        # config.INSTANCE_NAME in <title> blocks and the header logo, which
+        # rendered empty on _chrome_ctx pages ("Studio — " title).
+        "config": _config_proxy(),
+        # Same visibility rule as _build_context — the shared header hides
+        # the Chat nav link when this key is missing/False, so skipping it
+        # here made the link vanish on every _chrome_ctx page (/admin/studio*).
+        "can_chat": _compute_can_chat(request, user),
     }
 
 
