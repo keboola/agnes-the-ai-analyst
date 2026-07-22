@@ -289,15 +289,6 @@ templates.env.globals["posthog_user_block"] = _posthog_user_block
 # Without this, base_ds.html emits <link href=""> and the page renders unstyled.
 templates.env.globals["static_url"] = _static_url
 
-# Onboarding / guided-tour steps. Exposed as a Jinja global so the global
-# `_tour.html` partial (included by both base layouts) can render the
-# audience-filtered step list as JSON without each route having to thread it
-# through its own context. The single source of truth lives in
-# app/web/onboarding.py — see tests/test_onboarding_not_outdated.py.
-from app.web.onboarding import steps_for as _onboarding_steps_for  # noqa: E402
-
-templates.env.globals["onboarding_steps"] = _onboarding_steps_for
-
 
 class _FlexDict(dict):
     """Dict that returns empty _FlexDict for missing keys and attributes.

@@ -75,9 +75,6 @@
        inert with zero visual change. #}
     <link rel="stylesheet" href="{{ static_url('css/rail.css') }}">
     <link rel="stylesheet" href="{{ static_url('css/paper-skin.css') }}">
-    {# Walking-guide / product-tour overlay styles (inert until tour.js
-       un-hides the overlay). Markup + engine in _tour.html. #}
-    <link rel="stylesheet" href="{{ static_url('css/tour.css') }}">
 
     {% block head_extra %}{% endblock %}
     {% include '_theme.html' ignore missing %}
@@ -154,8 +151,6 @@
        pages migrated from base.html → base_ds.html keep parity with
        zero behaviour drift. #}
     {% include "_app_scripts.html" %}
-    {# Walking-guide / product-tour overlay (authed-only; self-guarded). #}
-    {% include "_tour.html" %}
     {% block scripts %}{% endblock %}
     {# Operator-injected scripts (placement=body_end) — for vendors that
        explicitly want bottom placement. Admin-only, see

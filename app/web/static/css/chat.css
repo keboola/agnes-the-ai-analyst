@@ -2438,3 +2438,120 @@ html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after
   -webkit-mask-image: linear-gradient(to top, black 0%, black 32%, rgba(0,0,0,0.5) 62%, transparent 100%);
           mask-image: linear-gradient(to top, black 0%, black 32%, rgba(0,0,0,0.5) 62%, transparent 100%);
 }
+
+/* ── Chat-driven onboarding ──────────────────────────────────────────────────
+   The "Your Journey" panel lives in the sidebar; the gap-resolver card is an
+   assistant-styled bubble injected into the message thread. All colours via
+   --ds-* tokens (design-system contract). */
+
+.cloud-chat-journey {
+  margin-top: auto;
+  padding: 12px;
+  border-top: 1px solid var(--ds-border);
+  background: var(--ds-surface-dim);
+}
+.cloud-chat-journey-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cloud-chat-journey-head h3 {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--ds-text-primary);
+}
+.cloud-chat-journey-badge {
+  font-size: var(--text-xs);
+  color: var(--ds-accent-success-ink);
+  background: var(--ds-accent-success-bg);
+  border: 1px solid var(--ds-accent-success-line);
+  border-radius: var(--ds-radius-pill);
+  padding: 1px 8px;
+}
+.cloud-chat-journey-sub {
+  margin: 4px 0 10px;
+  font-size: var(--text-xs);
+  color: var(--ds-text-muted);
+}
+.cloud-chat-journey-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cloud-chat-journey-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--ds-radius-sm);
+  background: transparent;
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.cloud-chat-journey-step:hover { background: var(--ds-surface); }
+.cloud-chat-journey-step:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+.cloud-chat-journey-mark {
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+  font-weight: 600;
+}
+.cloud-chat-journey-step.done { color: var(--ds-text-muted); }
+.cloud-chat-journey-step.done .cloud-chat-journey-mark { color: var(--ds-accent-success-ink); }
+.cloud-chat-journey-step.done .cloud-chat-journey-label { text-decoration: line-through; }
+.cloud-chat-journey-step.active { color: var(--ds-text-primary); }
+.cloud-chat-journey-step.active .cloud-chat-journey-mark { color: var(--ds-primary); }
+.cloud-chat-journey-step.locked { color: var(--ds-text-disabled); cursor: default; }
+.cloud-chat-journey-step.locked:hover { background: transparent; }
+
+/* Gap-resolver card (assistant bubble in the thread) */
+.cloud-chat-gapcard {
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface);
+  padding: 14px;
+}
+.cloud-chat-gapcard-label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ds-text-muted);
+  margin-bottom: 8px;
+}
+.cloud-chat-gapcard-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cloud-chat-gapcard-opt {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: var(--text-sm);
+  color: var(--ds-text-primary);
+  cursor: pointer;
+}
+.cloud-chat-gapcard-opt input { margin-top: 3px; flex-shrink: 0; }
+.cloud-chat-gapcard-why { color: var(--ds-text-secondary); font-weight: 400; }
+.cloud-chat-gapcard-desc { color: var(--ds-text-muted); font-size: var(--text-xs); }
+.cloud-chat-gapcard-foot { margin-top: 12px; }
+.cloud-chat-gapcard-hint {
+  margin-top: 10px;
+  font-size: var(--text-xs);
+  color: var(--ds-text-muted);
+}
+.cloud-chat-gapcard-hint code {
+  background: var(--ds-surface-dim);
+  border-radius: var(--ds-radius-sm);
+  padding: 1px 5px;
+}
