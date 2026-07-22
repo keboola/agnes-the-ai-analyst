@@ -1610,6 +1610,12 @@ KNOWN_UNTESTED = {
     "GET /api/data-apps/{slug}/logs",
     "GET /api/data-apps/{slug}/readiness",
     "POST /api/data-apps/reap-idle",
+    # Data apps web UI (Task 12) — HTML pages, not part of the parameter-free
+    # API smoke sweep (same convention as the other `GET /admin/*` / `GET
+    # /library*` web routes above). RBAC/rendering/feature-flag/route-collision
+    # behaviour covered by tests/test_web_data_apps.py.
+    "GET /apps",
+    "GET /apps/detail/{slug}",
     # Google OAuth — requires live credentials
     "GET /auth/google/login",
     "GET /auth/google/callback",

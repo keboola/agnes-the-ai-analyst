@@ -14,6 +14,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - `agnes app {list,show,create,deploy,logs,open,stop,delete}` — CLI for the hosted data-apps control plane (`/api/data-apps/...`). `create` takes `--repo-url`/`--repo-branch` for an external git repo (default: server-hosted internal repo); `open` prints the app URL only (no browser launch, for headless parity); `delete` prompts for confirmation unless `--yes` is passed.
 - MCP foundation tools for hosted data apps: `data_apps_list`, `data_app_get` (any authenticated user with view access), `data_app_deploy`, `data_app_logs` (app owner or Admin) — completes the triple-surface contract (REST + `agnes app ...` CLI + MCP) for list/show/deploy/logs.
+- `GET /apps` and `GET /apps/detail/{slug}` — web UI for hosted data apps: a server-rendered list (name, slug, state badge, owner, open link, RBAC-filtered) and a detail page (metadata, Deploy/Stop buttons, and a logs viewer for the owner or Admin only). Renders an "enable data apps" empty-state instead of 404ing when the feature is off. A dedicated router is registered ahead of the ingress proxy's `/apps/{slug}/...` catch-all so `/apps/detail/{slug}` isn't shadowed by it. "Apps" appears in the primary nav when the feature is enabled.
 
 ### Changed
 

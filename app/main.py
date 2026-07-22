@@ -357,6 +357,7 @@ from app.api.data_apps import router as data_apps_router
 from app.api.data_apps_git import router as data_apps_git_router
 from app.api.data_apps_proxy import router as data_apps_proxy_router
 from app.web.router import router as web_router
+from app.web.router import apps_web_router as data_apps_web_router
 from app.api.chat import router as chat_router
 from app.api.chat_copresence import router as chat_copresence_router
 from app.api.slack import router as slack_router
@@ -2224,6 +2225,15 @@ def create_app() -> FastAPI:
     # Control-plane REST for hosted data apps: CRUD, deploy, stop, delete,
     # secrets, logs, readiness, admin reap-idle. See app/api/data_apps.py.
     app.include_router(data_apps_router)
+
+    # Web UI for hosted data apps: GET /apps (list) + GET /apps/detail/{slug}
+    # (detail) — see app/web/router.py's `apps_web_router`. MUST be
+    # registered BEFORE data_apps_proxy_router below: Starlette matches
+    # routes in registration-list order (not by specificity), and the
+    # proxy's catch-all `/apps/{slug}/{path:path}` would otherwise swallow
+    # `/apps/detail/<slug>` as slug="detail", path="<slug>" before these
+    # literal routes ever got a look.
+    app.include_router(data_apps_web_router)
 
     # Ingress proxy for hosted data apps: /apps/{slug}/... (+ the matching
     # websocket bridge) — auth-gated stream proxy, wake-on-request, and the
