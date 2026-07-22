@@ -39,17 +39,20 @@ def _replica_id_safe() -> str:
     """Best-effort replica id (``hostname:pid``) for cross-replica log
     correlation — spec §3.7 "replica id on every line".
 
-    Lazily imports :func:`app.observability.metrics.replica_id` so this
+    Lazily imports :data:`app.observability.metrics._REPLICA_ID` (computed
+    once at import, hostname/pid never change after process start) so this
     low-level module (imported very early by every entrypoint, before the
     FastAPI app or the observability package may be fully wired up) carries
     no import-time coupling to it, and falls back to ``"-"`` if the import
-    or call ever fails for any reason — a metrics/logging seam must never
-    break logging itself.
+    ever fails for any reason — a metrics/logging seam must never break
+    logging itself. Reuses the cached value rather than calling
+    ``replica_id()`` (a fresh ``socket.gethostname()`` + ``os.getpid()`` on
+    every invocation) — this runs on every log line.
     """
     try:
-        from app.observability.metrics import replica_id
+        from app.observability.metrics import _REPLICA_ID
 
-        return replica_id()
+        return _REPLICA_ID
     except Exception:
         return "-"
 

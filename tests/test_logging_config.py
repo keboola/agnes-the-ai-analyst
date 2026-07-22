@@ -109,13 +109,29 @@ def test_json_formatter_includes_replica_field():
 
 
 def test_replica_id_safe_falls_back_to_dash_on_failure(monkeypatch):
+    """``_replica_id_safe`` imports the cached ``_REPLICA_ID`` (computed
+    once at process start), not the ``replica_id()`` function — so the
+    failure mode to simulate is the import itself failing."""
+    import app.observability.metrics as metrics_mod
+
+    from app.logging_config import _replica_id_safe
+
+    monkeypatch.delattr(metrics_mod, "_REPLICA_ID")
+    assert _replica_id_safe() == "-"
+
+
+def test_replica_id_safe_reuses_cached_value_not_recomputed(monkeypatch):
+    """Regression guard: must not call ``replica_id()`` (fresh
+    ``socket.gethostname()`` + ``os.getpid()``) on every log line — reuse
+    the value already cached at import in ``_REPLICA_ID``."""
+    import app.observability.metrics as metrics_mod
     from app.logging_config import _replica_id_safe
 
     def boom():
-        raise RuntimeError("replica_id exploded")
+        raise AssertionError("replica_id() must not be called — reuse _REPLICA_ID")
 
-    monkeypatch.setattr("app.observability.metrics.replica_id", boom)
-    assert _replica_id_safe() == "-"
+    monkeypatch.setattr(metrics_mod, "replica_id", boom)
+    assert _replica_id_safe() == metrics_mod._REPLICA_ID
 
 
 def test_request_id_filter_sets_replica_attr():
