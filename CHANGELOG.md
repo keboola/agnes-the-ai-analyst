@@ -14,32 +14,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
-### Fixed
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.76.8] - 2026-07-22
-
-### Added
-
-- **Full agent/skill lifecycle over MCP** — six new foundation tools close the
-  REST × CLI × MCP parity gap for managing marketplace items and own store
-  entities from any MCP surface (web chat, remote connectors):
-  `marketplace_search`, `marketplace_detail`, `marketplace_add`,
-  `marketplace_remove` (mirroring `agnes marketplace …`) and `store_update`,
-  `store_delete` (mirroring `agnes store …`). Together with the existing
-  `store_publish_markdown` / `store_status` / `store_rate`, an agent can now
-  create, review, publish, discover, install, edit, and delete an agent or
-  skill end-to-end without the CLI. Binary paths (ZIP upload/replace, photo,
-  `store mine` bundle) remain CLI-only. The covered endpoints moved from the
-  triple-surface grandfather baseline into the enforced cohort.
-
-### Changed
-
 - **Cloud-chat spawn and first-response latency cut across the whole E2B
   path.** The per-session workspace now travels as one gzipped tarball
   extracted in-sandbox (one E2B round-trip instead of one per file; per-file
@@ -69,6 +43,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   without raising, instead of unconditionally from a `finally` block; a
   crash now surfaces only an `error` frame, leaving the buffer intact for
   the reconnect/teardown partial-save path.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.8] - 2026-07-22
+
+### Added
+
+- **Full agent/skill lifecycle over MCP** — six new foundation tools close the
+  REST × CLI × MCP parity gap for managing marketplace items and own store
+  entities from any MCP surface (web chat, remote connectors):
+  `marketplace_search`, `marketplace_detail`, `marketplace_add`,
+  `marketplace_remove` (mirroring `agnes marketplace …`) and `store_update`,
+  `store_delete` (mirroring `agnes store …`). Together with the existing
+  `store_publish_markdown` / `store_status` / `store_rate`, an agent can now
+  create, review, publish, discover, install, edit, and delete an agent or
+  skill end-to-end without the CLI. Binary paths (ZIP upload/replace, photo,
+  `store mine` bundle) remain CLI-only. The covered endpoints moved from the
+  triple-surface grandfather baseline into the enforced cohort.
+
+### Fixed
+
 - `agnes marketplace add/detail/remove` — and the new MCP siblings — now accept
   item ids exactly as `agnes marketplace search` / `marketplace_search` print
   them (tab-prefixed `curated-<mid>/<plugin>`, `flea-<uuid>`). Previously a
