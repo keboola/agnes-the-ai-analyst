@@ -843,7 +843,16 @@ class ChatManager:
             self._workdir_mgr.ensure_user_workdir(session.user_email)
             prof_slug = self._session_profiles.get(session.id)
             prof = get_profile(prof_slug) if prof_slug else None
-            dynamic_prof = agent_profile.build_profile(agent_row) if agent_row else None
+            dynamic_prof = None
+            if agent_row:
+                try:
+                    dynamic_prof = agent_profile.build_profile(agent_row)
+                except Exception:
+                    logger.exception(
+                        "agent profile build failed for agent_id=%s — falling back to static/default profile",
+                        session.agent_id,
+                    )
+                    dynamic_prof = None
             prof = dynamic_prof or prof
             session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id, profile=prof)
 

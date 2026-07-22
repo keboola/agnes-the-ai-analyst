@@ -137,6 +137,19 @@ def test_compute_effective_scope_selected_with_no_items_is_empty_list():
     assert scope["plugins"] == []
 
 
+def test_compute_effective_scope_unrecognized_mode_fails_open_and_warns(caplog):
+    """An unrecognized *_mode value must still resolve to 'all' (backward
+    safety) but must not be silent — a logger.warning naming the field and
+    the bad value is the only trace an admin has of config drift."""
+    row = _agent_row(plugins_mode="bogus-mode")
+    with caplog.at_level("WARNING", logger="app.chat.agent_profile"):
+        scope = agent_profile.compute_effective_scope(row, scope_items=[])
+    assert scope["plugins"] == "all"
+    assert any("plugins_mode" in record.message and "bogus-mode" in record.message for record in caplog.records), (
+        caplog.text
+    )
+
+
 # ---------------------------------------------------------------------------
 # record_snapshot — real DuckDB (agents_repo() fixture style, per
 # tests/test_agents_management_api.py)
@@ -183,6 +196,72 @@ def test_record_snapshot_writes_a_row(agents_env):
         "tables": ["t1"],
         "memory_domains": "all",
     }
+
+
+def test_record_snapshot_skips_write_for_default_agent_all_modes(agents_env):
+    """The default agent's baseline shape (is_default + every *_mode ==
+    'all') carries no audit information — its effective scope is fully
+    derivable from the row itself — so a snapshot row must not be written.
+    Without this guard, every web-chat spawn against the default agent
+    would accrue one redundant `agent_scope_snapshots` row, unbounded."""
+    agent_id = str(uuid.uuid4())
+    agents_env.create(
+        id=agent_id,
+        owner_user_id="owner-default",
+        name="Default",
+        slug="default",
+        is_default=True,
+    )
+    row = agents_env.get_by_id(agent_id)
+    assert row["is_default"]
+
+    session_id = "chat_" + str(uuid.uuid4())
+    agent_profile.record_snapshot(session_id, row)
+
+    assert agents_env.list_scope_snapshots(session_id) == []
+
+
+def test_record_snapshot_writes_for_default_agent_with_selected_mode(agents_env):
+    """Defensive case: even a default-flagged row with a non-'all' mode
+    (should not happen in practice, but the row is data, not a guarantee)
+    carries real information and must still be recorded."""
+    agent_id = str(uuid.uuid4())
+    agents_env.create(
+        id=agent_id,
+        owner_user_id="owner-default-2",
+        name="Default",
+        slug="default-2",
+        is_default=True,
+        plugins_mode="selected",
+    )
+    agents_env.set_scope(agent_id, [("plugin", "p1")])
+    row = agents_env.get_by_id(agent_id)
+    assert row["is_default"]
+
+    session_id = "chat_" + str(uuid.uuid4())
+    agent_profile.record_snapshot(session_id, row)
+
+    assert len(agents_env.list_scope_snapshots(session_id)) == 1
+
+
+def test_record_snapshot_writes_for_non_default_agent_all_modes(agents_env):
+    """A non-default agent with all-'all' modes still gets a row — the
+    growth-bound skip only applies to the default agent."""
+    agent_id = str(uuid.uuid4())
+    agents_env.create(
+        id=agent_id,
+        owner_user_id="owner-nondefault",
+        name="Not Default",
+        slug="not-default",
+        is_default=False,
+    )
+    row = agents_env.get_by_id(agent_id)
+    assert not row["is_default"]
+
+    session_id = "chat_" + str(uuid.uuid4())
+    agent_profile.record_snapshot(session_id, row)
+
+    assert len(agents_env.list_scope_snapshots(session_id)) == 1
 
 
 def test_record_snapshot_swallows_repo_exceptions(agents_env, monkeypatch):
@@ -363,6 +442,53 @@ def test_spawn_live_no_agent_id_unchanged_and_no_snapshot(spawn_env):
             claude_md_path = live.session_dir / "CLAUDE.md"
             assert claude_md_path.is_symlink()
             assert agents_repo().list_scope_snapshots(s.id) == []
+        finally:
+            await mgr.kill(s.id, reason="test_done")
+            handle.emit_eof()
+
+    asyncio.run(_run())
+
+
+def test_spawn_live_survives_malformed_agent_row_at_build_profile_seam(spawn_env):
+    """A malformed agent row (e.g. a non-string ``system_prompt`` — bad data
+    that slipped past whatever wrote the row) must not blow up the spawn.
+    ``ChatManager._spawn_live`` wraps the ``agent_profile.build_profile``
+    call in try/except and falls back to the static/default profile,
+    matching ``_load_agent_row``'s and ``record_snapshot``'s defensive
+    posture."""
+    import asyncio
+
+    mgr, repo = spawn_env
+    agent_id = str(uuid.uuid4())
+    # Bypass the real DB (a TEXT column would coerce an int to a string on
+    # insert) so build_profile actually sees a non-string system_prompt and
+    # raises — that's the failure mode this guard exists for.
+    malformed_row = {
+        "id": agent_id,
+        "slug": "malformed",
+        "name": "Malformed",
+        "system_prompt": 123,
+        "plugins_mode": "all",
+        "connections_mode": "all",
+        "tables_mode": "all",
+        "memory_mode": "all",
+    }
+    with pytest.raises(AttributeError):
+        agent_profile.build_profile(malformed_row)
+    mgr._load_agent_row = MagicMock(return_value=malformed_row)
+
+    async def _run():
+        handle = _fake_handle()
+        mgr._provider.spawn = AsyncMock(return_value=handle)
+        s = repo.create_session(user_email="u4@x.com", surface=_surface_web(), agent_id=agent_id)
+        live = await mgr._spawn_live(s)  # must not raise
+        try:
+            claude_md_path = live.session_dir / "CLAUDE.md"
+            # No dynamic persona materialized — fell back to the static/
+            # default profile (the generic symlinked workspace CLAUDE.md).
+            assert claude_md_path.is_symlink()
+            assert claude_md_path.read_text(encoding="utf-8") == "generic analyst rails"
+            assert not (live.session_dir / ".claude" / "skills" / "agnes-agent-context").exists()
         finally:
             await mgr.kill(s.id, reason="test_done")
             handle.emit_eof()

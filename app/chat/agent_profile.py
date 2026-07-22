@@ -32,6 +32,17 @@ write failure is an audit-trail gap, not a reason to fail the chat spawn
 the user is waiting on. All internals are wrapped in try/except with
 ``logger.exception`` so a repo error (or a malformed agent row) is logged
 and swallowed.
+
+**Snapshot growth note:** ``record_snapshot`` skips the write entirely for
+the default agent when all four scope modes are ``'all'`` — the seeded
+default agent's baseline shape. That row's effective scope is fully
+derivable from its ``*_mode`` columns alone (``{"plugins": "all", ...}``),
+so persisting one identical snapshot per web-chat spawn would otherwise
+accrue an unbounded, redundant `agent_scope_snapshots` row per session for
+every single user — O(spawns), not O(scope changes) — with zero audit
+value. Any deviation from that all-'all' shape (a non-default agent, or a
+defensively-possible 'selected' mode on a default row) still gets a row,
+since that *does* carry information worth auditing.
 """
 
 from __future__ import annotations
@@ -44,14 +55,6 @@ from uuid import uuid4
 from app.chat.profiles import ChatProfile
 
 logger = logging.getLogger(__name__)
-
-# agent_scope.item_type -> compute_effective_scope() output key.
-_ITEM_TYPE_TO_SCOPE_KEY = {
-    "plugin": "plugins",
-    "connection": "connections",
-    "table": "tables",
-    "memory_domain": "memory_domains",
-}
 
 # agents.<field>_mode -> (scope key, agent_scope.item_type)
 _MODE_FIELD_TO_SCOPE = {
@@ -133,19 +136,49 @@ def compute_effective_scope(agent_row: dict, scope_items: list[dict]) -> dict:
         mode = agent_row.get(mode_field) or "all"
         if mode == "selected":
             effective[scope_key] = sorted(by_type.get(item_type, []))
+        elif mode == "all":
+            effective[scope_key] = "all"
         else:
+            # Fail open (treat as "all") for backward safety, but the
+            # audit trail must not silently mask config drift — an
+            # unrecognized mode value means something upstream (a bad
+            # migration, a hand-edited row, a future mode this code
+            # doesn't know about yet) put the agent in a state this
+            # function doesn't understand.
+            logger.warning(
+                "agent %s has unrecognized %s=%r — treating as 'all'",
+                agent_row.get("id"),
+                mode_field,
+                mode,
+            )
             effective[scope_key] = "all"
     return effective
 
 
+def _is_default_all_scope(agent_row: dict) -> bool:
+    """True for the (only) default-agent shape that carries no audit
+    information: ``is_default`` truthy and every ``*_mode`` column is
+    ``'all'``. See the module docstring's snapshot-growth note."""
+    if not agent_row.get("is_default"):
+        return False
+    return all(agent_row.get(mode_field) == "all" for mode_field in _MODE_FIELD_TO_SCOPE)
+
+
 def record_snapshot(session_id: str, agent_row: dict) -> None:
     """Compute + persist an audit-only scope snapshot for this spawn.
+
+    Skips the write for the default agent when its scope is fully-'all'
+    (see the module docstring's snapshot-growth note) — that case is
+    intentionally not an audit gap, just nothing worth recording.
 
     Never raises — see the module docstring. A failure here (repo error,
     coordination hiccup, malformed row) is logged and swallowed so it can
     never take down the chat spawn that is waiting on this call.
     """
     try:
+        if _is_default_all_scope(agent_row):
+            return
+
         from src.repositories import agents_repo
 
         agent_id = agent_row["id"]
