@@ -26,6 +26,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Pages rendered through `_chrome_ctx` (`/admin/studio*`, `/me/memory-mining`, `/admin/store/lint`) no longer drop the Chat nav link or render an empty instance name in the page title ("Studio — ") — the helper now provides the same shared `can_chat` and `config` context as `_build_context` (#993).
 - **`bq_fqn` is now honored on the query and scan paths**: a registry row
   whose `bq_fqn` names a project other than `data_source.bigquery.project`
   was still resolved as `<configured-project>.<bucket>.<source_table>` by
