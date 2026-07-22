@@ -16,6 +16,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.7] - 2026-07-22
+
+### Fixed
+
 - Observability/hygiene follow-ups from the three-plane architecture audit
   (spec §3.7): every log line (JSON and dev/rich text formats) now carries
   this process's replica id (`hostname:pid`), matching the `replica` label
@@ -36,12 +46,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   delete + reingest derived-table purges ride a new `collections-purge` job
   (both HEAVY lane). Single-box `all` deployments are unchanged — the original
   synchronous/BackgroundTask paths still run and neither kind is enqueued.
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.76.6] - 2026-07-22
 
