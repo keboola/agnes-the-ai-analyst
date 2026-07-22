@@ -82,6 +82,14 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/jobs/{job_id}": ("admin jobs show", "admin_job_get"),
     # DuckLake analytics-backend migration (wave-2G Task 6).
     "/api/admin/analytics/migrate": ("admin analytics migrate", "admin_analytics_migrate"),
+    # Hosted data apps control-plane (data-apps platform plan, Task 7/10/11) —
+    # list/get are any-authenticated-user (RBAC-filtered by view access);
+    # deploy/logs are owner-or-Admin. CLI landed in Task 10 (`agnes app …`),
+    # MCP tools in Task 11 — all three surfaces now agree.
+    "/api/data-apps": ("app list", "data_apps_list"),
+    "/api/data-apps/{slug}": ("app show", "data_app_get"),
+    "/api/data-apps/{slug}/deploy": ("app deploy", "data_app_deploy"),
+    "/api/data-apps/{slug}/logs": ("app logs", "data_app_logs"),
 }
 
 
@@ -242,8 +250,12 @@ _BROKER_REASON = (
 _DATA_APPS_REASON = (
     "control-plane REST for hosted data apps (data-apps platform plan, Task 7). "
     "CLI landed in Task 10 (`agnes app list/show/create/deploy/stop/delete/logs`, "
-    "cli/commands/data_apps.py); MCP tools are still pending Task 11 in the same "
-    "plan — temporary exemption, flip to _COHORT once Task 11 lands."
+    "cli/commands/data_apps.py); list/show/deploy/logs got MCP tools in Task 11 "
+    "and moved to _COHORT. `create`/`delete`/`stop` have no MCP analogue planned "
+    "(create/delete piggy-back on the list/show cohort paths' REST+CLI-only "
+    "methods; `stop` is its own path with no MCP tool — mirrors the "
+    "list(GET)/create(POST) and show(GET)/delete(DELETE) shared-path pattern "
+    "already used for /api/jobs and /api/collections/{collection_id})."
 )
 _DATA_APPS_SECRETS_REASON = (
     "secrets are set once via an operator/automation flow (`PUT .../secrets`), "
@@ -364,19 +376,18 @@ _EXEMPT: dict[str, str] = {
         "MCP analogue (glossary_search is the agent-facing tool; an agent "
         "resolves a term by searching, not by a known id)"
     ),
-    # Data apps control-plane REST (2026-07-21 data-apps platform plan, Task 7).
-    # CLI landed in Task 10 (`agnes app …`); MCP tools (`data_apps_list`/
-    # `data_app_get`/`data_app_deploy`/`data_app_logs`, Task 11) are still
-    # pending in the same plan. Temporary exemption: flip these to `_COHORT`
-    # once Task 11 lands instead of leaving the ratchet red across
-    # intermediate commits. `secrets`/`readiness` have their own reasons below
-    # — neither gets a CLI command in Task 10.
-    "/api/data-apps": _DATA_APPS_REASON,
-    "/api/data-apps/{slug}": _DATA_APPS_REASON,
-    "/api/data-apps/{slug}/deploy": _DATA_APPS_REASON,
+    # Data apps control-plane REST (2026-07-21 data-apps platform plan,
+    # Task 7). `/api/data-apps` (list+create) and `/api/data-apps/{slug}`
+    # (show+delete) now carry the triple-surface contract in _COHORT via
+    # their GET methods (`data_apps_list`/`data_app_get`) — `create`/`delete`
+    # have no MCP analogue but piggy-back on the same path entries, the same
+    # shared-path pattern already used for /api/jobs (list+enqueue) and
+    # /api/collections/{collection_id} (show+delete-file). `deploy` and
+    # `logs` also moved to _COHORT (Task 11: `data_app_deploy`/
+    # `data_app_logs`). `stop` has its own path and no MCP tool planned.
+    # `secrets`/`readiness` have their own reasons below.
     "/api/data-apps/{slug}/stop": _DATA_APPS_REASON,
     "/api/data-apps/{slug}/secrets": _DATA_APPS_SECRETS_REASON,
-    "/api/data-apps/{slug}/logs": _DATA_APPS_REASON,
     "/api/data-apps/{slug}/readiness": _DATA_APPS_READINESS_REASON,
     # reap-idle is a scheduler-triggered admin maintenance op (Task 9) —
     # mirrors the run-knowledge-digests/run-corporate-memory exemptions

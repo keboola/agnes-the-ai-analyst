@@ -71,6 +71,12 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     # DuckLake analytics-backend migration (wave-2G Task 6), triple-surface
     # with /api/admin/analytics/migrate + `agnes admin analytics migrate`.
     "admin_analytics_migrate",
+    # Hosted data apps (data-apps platform plan, Task 11) — triple-surface
+    # with /api/data-apps* + `agnes app list/show/deploy/logs`.
+    "data_apps_list",
+    "data_app_get",
+    "data_app_deploy",
+    "data_app_logs",
 )
 
 
@@ -1045,6 +1051,87 @@ def register_foundation_tools(
                 f"{base_url}/api/admin/analytics/migrate",
                 json={"to": to},
                 headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_apps_list() -> dict:
+        """List hosted data apps you can see (RBAC-filtered).
+
+        Visible to any authenticated user: apps you own, apps a group you're
+        in has a ``resource_grants`` row for, or (Admin) all apps. Returns a
+        list of app summaries — ``slug``, ``name``, ``state``
+        (``stopped``/``deploying``/``running``/``sleeping``/``error``),
+        ``url``, and metadata; secrets are never included. Mirrors
+        ``GET /api/data-apps`` and ``agnes app list``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}/api/data-apps", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_get(slug: str) -> dict:
+        """Show one hosted data app's detail.
+
+        Any authenticated user with view access to the app (owner, Admin, or
+        a group granted access via ``resource_grants``) may call this.
+
+        Args:
+            slug: The app's slug (from ``data_apps_list``).
+
+        Mirrors ``GET /api/data-apps/{slug}`` and ``agnes app show``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}/api/data-apps/{slug}", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_deploy(slug: str, sha: str = "") -> dict:
+        """Deploy (or redeploy) a hosted data app — app owner or Admin only.
+
+        Fast-forwards the app's ``agnes-live`` ref (to ``sha`` if given,
+        otherwise the tracked branch's latest), mints a fresh service token,
+        and hands the build off to the runner sidecar.
+
+        Args:
+            slug: The app's slug.
+            sha:  Optional commit sha to deploy. Empty (default) fast-forwards
+                  to the tracked branch's latest commit.
+
+        Returns ``{"state": "running", "deployed_sha": "..."}``. Mirrors
+        ``POST /api/data-apps/{slug}/deploy`` and ``agnes app deploy``.
+        """
+        payload: dict = {"sha": sha} if sha else {}
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/data-apps/{slug}/deploy",
+                json=payload,
+                headers=headers_fn(),
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_logs(slug: str, tail: int = 200) -> dict:
+        """Show the last N lines of runner logs for a hosted data app — app owner or Admin only.
+
+        Args:
+            slug: The app's slug.
+            tail: Number of trailing log lines to return (default 200).
+
+        Returns ``{"logs": "..."}``. Mirrors ``GET /api/data-apps/{slug}/logs``
+        and ``agnes app logs``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/data-apps/{slug}/logs",
+                headers=headers_fn(),
+                params={"tail": tail},
                 timeout=30,
             )
             r.raise_for_status()

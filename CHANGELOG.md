@@ -13,6 +13,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 - `agnes app {list,show,create,deploy,logs,open,stop,delete}` — CLI for the hosted data-apps control plane (`/api/data-apps/...`). `create` takes `--repo-url`/`--repo-branch` for an external git repo (default: server-hosted internal repo); `open` prints the app URL only (no browser launch, for headless parity); `delete` prompts for confirmation unless `--yes` is passed.
+- MCP foundation tools for hosted data apps: `data_apps_list`, `data_app_get` (any authenticated user with view access), `data_app_deploy`, `data_app_logs` (app owner or Admin) — completes the triple-surface contract (REST + `agnes app ...` CLI + MCP) for list/show/deploy/logs.
 
 ### Changed
 
