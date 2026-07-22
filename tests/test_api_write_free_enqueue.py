@@ -83,6 +83,40 @@ def test_collections_purge_handler_dispatches(monkeypatch):
     assert calls == [("corpus", "c1"), ("file", "c1", "f1")]
 
 
+def test_collections_purge_handler_reingests_after_purge_in_order(monkeypatch):
+    """Regression guard: a reingest on a role-split deployment must purge THEN
+    ingest, in that order, within one job — never decoupled, or an
+    async purge could land after the re-ingest and delete the freshly
+    rebuilt table (same deterministic table_id)."""
+    from app.worker import kinds as kinds_mod
+
+    order = []
+    monkeypatch.setattr(
+        "app.api.collections._purge_derived_tabular_row_for_file",
+        lambda corpus_id, file_id: order.append(("purge", corpus_id, file_id)),
+    )
+    monkeypatch.setattr(
+        "src.ingest.runner.ingest_file",
+        lambda file_id: order.append(("ingest", file_id)) or "indexed",
+    )
+
+    kinds_mod._run_collections_purge({"corpus_id": "c1", "file_id": "f1", "reingest_after_purge": True})
+
+    assert order == [("purge", "c1", "f1"), ("ingest", "f1")]
+
+
+def test_collections_purge_handler_no_reingest_when_flag_absent(monkeypatch):
+    from app.worker import kinds as kinds_mod
+
+    ingest_called = []
+    monkeypatch.setattr("app.api.collections._purge_derived_tabular_row_for_file", lambda c, f: None)
+    monkeypatch.setattr("src.ingest.runner.ingest_file", lambda file_id: ingest_called.append(file_id))
+
+    kinds_mod._run_collections_purge({"corpus_id": "c1", "file_id": "f1"})
+
+    assert ingest_called == [], "ingest_file must not run unless reingest_after_purge is set"
+
+
 # ---- admin: BQ materialize routing -------------------------------------------
 
 
@@ -178,3 +212,48 @@ def test_collections_purge_enqueues_when_api_only(monkeypatch):
     assert [e["kind"] for e in spy.enqueued] == ["collections-purge", "collections-purge"]
     assert spy.enqueued[0]["payload"] == {"corpus_id": "c1", "file_id": None}
     assert spy.enqueued[1]["payload"] == {"corpus_id": "c1", "file_id": "f1"}
+
+
+def test_reingest_enqueues_ordered_job_when_api_only(seeded_app, tmp_path, monkeypatch):
+    """On a role-split deployment, reingest must NOT decouple an async purge
+    from an in-process ingest — that ordering is exactly what let a purge
+    delete a freshly re-ingested table (Devin finding on #981). It must
+    enqueue one ordered collections-purge(reingest_after_purge=True) job and
+    do nothing in-process."""
+    from app.roles import Role
+    from src.repositories import corpus_files_repo, file_corpora_repo
+
+    monkeypatch.setattr("app.roles.role_enabled", lambda r: r != Role.WORKER)
+    spy = _SpyJobs()
+    monkeypatch.setattr("src.repositories.jobs_repo", lambda: spy)
+    purge_calls = []
+    monkeypatch.setattr(
+        "app.api.collections._purge_derived_tabular_row_for_file",
+        lambda c, f: purge_calls.append((c, f)),
+    )
+
+    col_id = file_corpora_repo().create(name="ri2", slug="ri2", description=None, created_by="u1")
+    csv = tmp_path / "d.csv"
+    csv.write_text("a,b\n1,2\n", encoding="utf-8")
+    fid = corpus_files_repo().add(
+        corpus_id=col_id,
+        filename="d.csv",
+        sha256="s",
+        file_type="csv",
+        size_bytes=csv.stat().st_size,
+        storage_path=str(csv),
+    )
+
+    c = seeded_app["client"]
+    r = c.post(
+        f"/api/collections/{col_id}/files/{fid}/reingest",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+    )
+
+    assert r.status_code == 202, r.text
+    assert purge_calls == [], "api-only replica must not purge in-process"
+    assert [e["kind"] for e in spy.enqueued] == ["collections-purge"]
+    assert spy.enqueued[0]["payload"] == {"corpus_id": col_id, "file_id": fid, "reingest_after_purge": True}
+    # Status is still 'pending' — the real ingest hasn't run in-process (it
+    # only runs when the enqueued job reaches the worker plane).
+    assert corpus_files_repo().get(fid)["processing_status"] == "pending"

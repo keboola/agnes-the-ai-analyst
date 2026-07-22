@@ -190,12 +190,19 @@ def _run_analytics_rebuild(payload: dict) -> None:
 
 
 def _run_collections_purge(payload: dict) -> None:
-    """Derived-table purge for a deleted collection/file (extract.duckdb
-    surgery + ``rebuild_source``), enqueued by api-role collection deletes.
+    """Derived-table purge for a deleted/reingested collection/file
+    (extract.duckdb surgery + ``rebuild_source``), enqueued by api-role
+    collection deletes and reingests.
 
     ``payload``: ``corpus_id`` (required), ``file_id`` (optional — present for
-    a single-file delete, absent for a whole-collection delete). Same §3.1
-    rationale and single-box behavior as ``_run_analytics_rebuild``.
+    a single-file delete or reingest, absent for a whole-collection delete),
+    ``reingest_after_purge`` (optional, only set alongside ``file_id`` by
+    ``reingest_file``) — when true, ``ingest_file`` runs immediately after the
+    purge, in this same job, so the purge always completes before the
+    re-ingest starts. Decoupling them (enqueue purge, schedule ingest
+    separately) would let the purge land *after* the re-ingest and delete the
+    freshly rebuilt table — same §3.1 rationale and single-box behavior as
+    ``_run_analytics_rebuild``.
     """
     from app.api.collections import (
         _purge_derived_tabular_row_for_file,
@@ -208,6 +215,11 @@ def _run_collections_purge(payload: dict) -> None:
         _purge_derived_tabular_row_for_file(corpus_id, file_id)
     else:
         _purge_derived_tabular_rows(corpus_id)
+
+    if payload.get("reingest_after_purge") and file_id:
+        from src.ingest.runner import ingest_file
+
+        ingest_file(file_id)
 
 
 def _maybe_enqueue_distribution_mirror() -> None:

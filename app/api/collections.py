@@ -637,7 +637,21 @@ async def reingest_file(
     Purges the file's derived artifacts first — the derived table_registry
     row/parquet for tabular files (chunks are cleared by the ingest itself,
     which is idempotent) — then resets the row to ``pending`` and re-runs
-    ``ingest_file`` in the background. Returns 202 with the pending row.
+    ``ingest_file``. Returns 202 with the pending row.
+
+    Worker-role process (single-box ``all``) → purge runs inline, then
+    ``ingest_file`` is scheduled as a FastAPI BackgroundTask — unchanged from
+    before this endpoint existed on role-split deployments, since purge always
+    completes first.
+
+    Process WITHOUT the worker role (role-split ``api`` replica) → purge and
+    re-ingest must run as ONE ordered unit on the worker plane, not decoupled:
+    an enqueued purge job racing an in-process ``ingest_file`` BackgroundTask
+    could have the purge land *after* the re-ingest completes and delete the
+    freshly rebuilt table (same deterministic ``table_id``). So a single
+    ``collections-purge`` job is enqueued with ``reingest_after_purge=True``;
+    the worker handler purges, then calls ``ingest_file`` — always in that
+    order, in one job.
     """
     cf_repo = corpus_files_repo()
     row = cf_repo.get(file_id)
@@ -655,10 +669,23 @@ async def reingest_file(
     if row.get("processing_status") == "processing" and not _is_stale_processing(row):
         raise HTTPException(status_code=409, detail="reingest_in_progress")
 
-    _schedule_derived_purge(collection_id, file_id)
-    cf_repo.set_status(file_id, status="pending", detail={"reason": "reingest requested"})
+    from app.roles import Role, role_enabled
 
-    from src.ingest.runner import ingest_file
+    if role_enabled(Role.WORKER):
+        _purge_derived_tabular_row_for_file(collection_id, file_id)
+        cf_repo.set_status(file_id, status="pending", detail={"reason": "reingest requested"})
 
-    background_tasks.add_task(ingest_file, file_id)
+        from src.ingest.runner import ingest_file
+
+        background_tasks.add_task(ingest_file, file_id)
+    else:
+        from src.repositories import jobs_repo
+
+        jobs_repo().enqueue(
+            "collections-purge",
+            payload={"corpus_id": collection_id, "file_id": file_id, "reingest_after_purge": True},
+            idempotency_key=f"collections-purge:{collection_id}:{file_id}",
+        )
+        cf_repo.set_status(file_id, status="pending", detail={"reason": "reingest requested"})
+
     return {**_file_out(cf_repo.get(file_id))}
