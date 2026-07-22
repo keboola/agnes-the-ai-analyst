@@ -1246,6 +1246,50 @@ class TestVerificationFuzzyDedupeGate:
         assert {e["source_user"] for e in evidence} == {"alice", "bob"}
         conn.close()
 
+    def test_churn_crm_paraphrase_merges_into_existing_item(self, tmp_path, monkeypatch):
+        """Real-world-shaped regression case: two same-domain verifications
+        that both restate "track forecasted churn on orders, recording why a
+        client may leave, for internal reporting" with overlapping entities
+        and genuinely similar wording. This is the case the gate exists to
+        catch, so it must still merge under the strong-evidence rule
+        (entity overlap >= MIN_ENTITY_OVERLAP together with lexical
+        similarity clearing LEXICAL_MERGE_WITH_ENTITIES_THRESHOLD)."""
+        import shutil
+
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+
+        run = _run_verification_processor
+        repo = KnowledgeRepository(conn)
+
+        alice_dir = tmp_path / "user_sessions" / "alice"
+        alice_dir.mkdir(parents=True)
+        shutil.copy(SESSIONS_DIR / "churn_crm_tracking_v1.jsonl", alice_dir / "s.jsonl")
+        run(conn, _mock_extractor(_load_golden("churn_crm_tracking_v1")), session_data_dir=tmp_path / "user_sessions")
+
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        item_id = items[0]["id"]
+
+        bob_dir = tmp_path / "user_sessions" / "bob"
+        bob_dir.mkdir(parents=True)
+        shutil.copy(SESSIONS_DIR / "churn_crm_tracking_paraphrase.jsonl", bob_dir / "s.jsonl")
+        stats2 = run(
+            conn,
+            _mock_extractor(_load_golden("churn_crm_tracking_paraphrase")),
+            session_data_dir=tmp_path / "user_sessions",
+        )
+
+        assert stats2["items_created"] == 0
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        assert items[0]["id"] == item_id
+
+        evidence = repo.list_evidence(item_id)
+        assert len(evidence) == 2
+        assert {e["source_user"] for e in evidence} == {"alice", "bob"}
+        conn.close()
+
     def test_lexical_similarity_paraphrase_merges_into_existing_item(self, tmp_path, monkeypatch):
         """Same scenario, but the paraphrase carries too few overlapping
         entity tags for the Jaccard check to fire (only one shared/low-signal

@@ -18,12 +18,29 @@ though the detector path itself only writes non-personal items today, the
 ``find_*`` helper enforces the privacy boundary so future callers can't
 accidentally bypass it.
 
-``find_duplicate_target`` (below) promotes this same entity-overlap heuristic
-from an advisory-only hint into a real pre-insert dedup gate: the
+``find_duplicate_target`` (below) promotes a stronger-evidence variant of this
+heuristic from an advisory-only hint into a real pre-insert dedup gate: the
 verification detector's item id is an exact hash of (title, content), so any
 paraphrase of an already-known fact hashes differently and would otherwise
-land as a second PENDING item. It adds a lexical-similarity fallback for
-items with too few shared entity tags for the Jaccard check to fire.
+land as a second PENDING item.
+
+Entity-tag overlap alone is too weak to gate a merge on — shared tags
+routinely co-occur across genuinely distinct facts in the same domain (see
+issue #62 follow-up). ``find_duplicate_target`` therefore only merges on
+strong evidence:
+
+  1. Lexical title+content similarity >= ``LEXICAL_SIMILARITY_THRESHOLD`` —
+     the text alone is convincing, regardless of entity tags; or
+  2. Entity-tag overlap >= ``MIN_ENTITY_OVERLAP`` *and* lexical similarity
+     >= ``LEXICAL_MERGE_WITH_ENTITIES_THRESHOLD`` — a lower bar than (1)
+     because the entity overlap corroborates it, but still enough to rule
+     out two unrelated same-domain facts that merely share a couple of
+     tags.
+
+The plain entity-overlap heuristic (without any lexical corroboration)
+remains available as an *advisory* signal via
+``_record_duplicate_candidates()``, which still writes a ``likely_duplicate``
+relation row for review — it just no longer auto-merges on its own.
 """
 
 import logging
@@ -52,6 +69,22 @@ RELATION_TYPE = "likely_duplicate"
 # unrelated same-domain facts on the observed corpus — tunable, revisit if
 # false positives/negatives show up in review or production.
 LEXICAL_SIMILARITY_THRESHOLD = 0.82
+
+# Moderate lexical-similarity floor used ONLY when entity-tag overlap already
+# cleared MIN_ENTITY_OVERLAP. Entity overlap alone is not sufficient evidence
+# to merge (two distinct same-domain facts routinely share 2+ generic tags),
+# but paired with a moderate amount of shared wording it is: real paraphrases
+# of one fact reuse most of the same nouns/verbs even when reworded, while
+# genuinely distinct facts that happen to share tags do not. Calibrated
+# against the fixtures in tests/test_corporate_memory_v1.py and
+# tests/test_corporate_memory_relations.py: a same-domain, same-entity-count
+# pair covering *different* facts (different NPS window rationale) scores
+# ~0.58; real paraphrases of one fact (a churn-forecast restatement, a
+# churn-tracking-requirement restatement) score ~0.75-0.81. 0.65 sits with
+# margin below the paraphrase cluster and above the distinct-facts pair —
+# tunable, revisit if false positives/negatives show up in review or
+# production.
+LEXICAL_MERGE_WITH_ENTITIES_THRESHOLD = 0.65
 
 # How many same-domain pending/approved items to scan for the lexical
 # fallback. Matches find_duplicate_candidates_by_entities' own default so
@@ -105,12 +138,19 @@ def find_duplicate_target(
     fact as ``(title, content)``, for a prospective verification item whose
     exact-hash id (``item_id``) did not already exist.
 
-    Either of two independent signals is sufficient:
+    Merges only on strong evidence — either of two independent signals is
+    sufficient, but entity overlap alone is never enough:
 
-    1. Entity-tag Jaccard overlap >= ``MIN_ENTITY_OVERLAP``, via the existing
-       ``find_duplicate_candidates_by_entities`` heuristic.
-    2. Lexical title+content similarity >= ``LEXICAL_SIMILARITY_THRESHOLD``,
-       for items with too few entity tags for (1) to fire.
+    1. Lexical title+content similarity >= ``LEXICAL_SIMILARITY_THRESHOLD``.
+    2. Entity-tag Jaccard overlap >= ``MIN_ENTITY_OVERLAP`` (via the existing
+       ``find_duplicate_candidates_by_entities`` heuristic) *and* lexical
+       similarity >= ``LEXICAL_MERGE_WITH_ENTITIES_THRESHOLD`` — a lower bar
+       than (1), corroborated by the shared entity tags.
+
+    A same-domain item that shares entity tags but falls short of the
+    lexical floor in (2) is NOT merged here — it is left for
+    ``_record_duplicate_candidates()`` to flag as an advisory
+    ``likely_duplicate`` relation instead.
 
     Returns the canonical existing item to attach evidence to, or ``None``
     if no strong duplicate was found — the caller should create a new row.
@@ -119,6 +159,8 @@ def find_duplicate_target(
         return None
 
     candidates: Dict[str, Dict[str, Any]] = {}
+    normalized_new = _normalize_text(title, content)
+    new_text_long_enough = len(normalized_new) >= _MIN_TEXT_LENGTH_FOR_LEXICAL_MATCH
 
     if entities:
         for cand in repo.find_duplicate_candidates_by_entities(
@@ -128,28 +170,39 @@ def find_duplicate_target(
             min_overlap=MIN_ENTITY_OVERLAP,
         ):
             cand_id = cand.get("id")
-            if cand_id:
-                candidates[cand_id] = cand
+            if not cand_id:
+                continue
+            # Entity overlap alone doesn't clear the merge bar — also
+            # require the text itself to clear a moderate lexical-
+            # similarity floor before treating this as a merge target.
+            if not new_text_long_enough:
+                continue
+            normalized_cand = _normalize_text(cand.get("title"), cand.get("content"))
+            if len(normalized_cand) < _MIN_TEXT_LENGTH_FOR_LEXICAL_MATCH:
+                continue
+            ratio = SequenceMatcher(None, normalized_new, normalized_cand).ratio()
+            if ratio < LEXICAL_MERGE_WITH_ENTITIES_THRESHOLD:
+                continue
+            cand["lexical_ratio"] = ratio
+            candidates[cand_id] = cand
 
-    if not candidates:
-        # Entity-overlap signal found nothing (or there were too few/no
-        # entity tags to try) — fall back to lexical similarity over the
-        # same-domain candidate pool.
-        normalized_new = _normalize_text(title, content)
-        if len(normalized_new) >= _MIN_TEXT_LENGTH_FOR_LEXICAL_MATCH:
-            for cand in repo.list_by_domain(domain, statuses=["approved", "pending"], limit=_LEXICAL_CANDIDATE_LIMIT):
-                cand_id = cand.get("id")
-                if not cand_id or cand_id == item_id:
-                    continue
-                if cand.get("is_personal"):
-                    continue
-                normalized_cand = _normalize_text(cand.get("title"), cand.get("content"))
-                if len(normalized_cand) < _MIN_TEXT_LENGTH_FOR_LEXICAL_MATCH:
-                    continue
-                ratio = SequenceMatcher(None, normalized_new, normalized_cand).ratio()
-                if ratio >= LEXICAL_SIMILARITY_THRESHOLD:
-                    cand["lexical_ratio"] = ratio
-                    candidates[cand_id] = cand
+    if not candidates and new_text_long_enough:
+        # Entity-overlap signal found nothing strong enough (or there were
+        # too few/no entity tags to try) — fall back to lexical similarity
+        # alone over the same-domain candidate pool.
+        for cand in repo.list_by_domain(domain, statuses=["approved", "pending"], limit=_LEXICAL_CANDIDATE_LIMIT):
+            cand_id = cand.get("id")
+            if not cand_id or cand_id == item_id:
+                continue
+            if cand.get("is_personal"):
+                continue
+            normalized_cand = _normalize_text(cand.get("title"), cand.get("content"))
+            if len(normalized_cand) < _MIN_TEXT_LENGTH_FOR_LEXICAL_MATCH:
+                continue
+            ratio = SequenceMatcher(None, normalized_new, normalized_cand).ratio()
+            if ratio >= LEXICAL_SIMILARITY_THRESHOLD:
+                cand["lexical_ratio"] = ratio
+                candidates[cand_id] = cand
 
     if not candidates:
         return None

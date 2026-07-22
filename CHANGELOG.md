@@ -22,12 +22,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   of `(title, content)`, so a paraphrase of an already-known fact — restated
   by a different analyst, or re-extracted from a different session — hashed
   differently and landed as a second `pending` `knowledge_items` row. A
-  pre-insert fuzzy dedup gate now runs when the exact-hash check misses:
-  entity-tag overlap (promoting the existing advisory-only duplicate-hint
-  heuristic to a real merge decision) or, for items with too few entity
-  tags, a lexical title+content similarity fallback. A match merges into
-  the existing item (records verification evidence there) instead of
-  creating a new row.
+  pre-insert fuzzy dedup gate now runs when the exact-hash check misses,
+  merging into the existing item (recording verification evidence there)
+  instead of creating a new row — but only on strong evidence: lexical
+  title+content similarity above a high bar on its own, or entity-tag
+  overlap corroborated by a moderate amount of shared wording. Entity-tag
+  overlap alone no longer merges — two distinct same-domain facts routinely
+  share a couple of generic tags — it still flags an advisory
+  `likely_duplicate` relation for review instead.
 - **`bq_fqn` is now honored on the query and scan paths**: a registry row
   whose `bq_fqn` names a project other than `data_source.bigquery.project`
   was still resolved as `<configured-project>.<bucket>.<source_table>` by
