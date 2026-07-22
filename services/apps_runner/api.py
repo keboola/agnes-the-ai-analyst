@@ -39,6 +39,42 @@ def _container(name: str):
         return None
 
 
+# The upstream runtime image runs its entire entrypoint as a fixed non-root
+# `app` user (uid/gid 1000) — it never runs as, or elevates to, root.
+_CACHE_VOLUME_OWNER = "1000:1000"
+
+
+def _ensure_cache_volume(client, spec: dict) -> None:
+    """Create the per-app cache volume if missing, and chown it to the
+    runtime image's non-root ``app`` user.
+
+    A fresh Docker named volume is created empty and root-owned. Nothing is
+    baked into the image at ``/home/app/.cache`` for Docker to inherit
+    ownership from on first mount (there's no directory there at all), and
+    the upstream entrypoint never runs as root — so on a brand-new volume
+    `uv sync` (and any other cache-writing setup step) fails with
+    `Permission denied`. Fixed up once, at creation, via a throwaway
+    container using the *same* allowlisted runtime image (no new image
+    dependency, no change to the app container's own non-root ``user``).
+    """
+    import docker.errors
+
+    name = spec["cache_volume"]
+    try:
+        client.volumes.get(name)
+        return  # already exists — already fixed up on a prior `up()`
+    except docker.errors.NotFound:
+        pass
+    client.volumes.create(name)
+    client.containers.run(
+        spec["image"],
+        entrypoint=["chown", "-R", _CACHE_VOLUME_OWNER, "/cache"],
+        user="0:0",
+        volumes={name: {"bind": "/cache", "mode": "rw"}},
+        remove=True,
+    )
+
+
 def _docker_errors(fn):
     """Map Docker SDK / transport errors to structured HTTP responses.
 
@@ -69,6 +105,16 @@ def _docker_errors(fn):
 @app.post("/apps/{slug}/up")
 @_docker_errors
 def up(slug: str, payload: dict = Body(...), x_runner_token: str | None = Header(default=None)):
+    """Start (or replace) the container for ``slug``.
+
+    ``spec["ports"]`` is an optional Docker port-publish mapping (e.g.
+    ``{"8888/tcp": 18888}``, the same shape `docker-py`'s
+    ``containers.run(ports=...)`` accepts) — a test-only escape hatch so
+    ``tests/test_data_apps_e2e_docker.py`` can reach the runtime container's
+    nginx directly from the host without standing up the ingress proxy.
+    Production specs (`src/data_apps/spec.py::build_container_spec`) never
+    set this key; apps are reached exclusively through the ingress proxy.
+    """
     _check_token(x_runner_token)
     spec, config_json = payload["spec"], payload["config_json"]
     prefix = os.environ.get("APPS_RUNNER_IMAGE_PREFIX", "")
@@ -80,6 +126,7 @@ def up(slug: str, payload: dict = Body(...), x_runner_token: str | None = Header
     client = _docker()
     if not client.networks.list(names=[spec["network"]]):
         client.networks.create(spec["network"], driver="bridge")
+    _ensure_cache_volume(client, spec)
     old = _container(spec["name"])
     if old is not None:
         old.remove(force=True)
@@ -92,6 +139,7 @@ def up(slug: str, payload: dict = Body(...), x_runner_token: str | None = Header
         environment=spec["env"],
         mem_limit=spec["mem_limit"],
         nano_cpus=int(float(spec["cpus"]) * 1e9),
+        ports=spec.get("ports"),
         volumes={
             str(cfg_dir): {"bind": "/data", "mode": "rw"},
             spec["cache_volume"]: {"bind": "/home/app/.cache", "mode": "rw"},

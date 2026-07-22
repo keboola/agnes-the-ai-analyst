@@ -20,6 +20,33 @@ class FakeContainer:
         return b"hello\n"
 
 
+class FakeVolumes:
+    """Separate from `FakeDocker`'s container/network tracking — a real
+    Docker client keeps these namespaces independent, and conflating them
+    (as a single shared `by_name`/`create()` would) both misfiles the
+    cache-volume's fixup container under `by_name` and pollutes
+    `networks_created`."""
+
+    def __init__(self):
+        self.names: set[str] = set()
+
+    def get(self, name):
+        if name not in self.names:
+            import docker.errors
+
+            raise docker.errors.NotFound(name)
+        return _FakeVolume(name)
+
+    def create(self, name, **kw):
+        self.names.add(name)
+        return _FakeVolume(name)
+
+
+class _FakeVolume:
+    def __init__(self, name):
+        self.name = name
+
+
 class FakeDocker:
     def __init__(self):
         self.run_calls = []
@@ -28,15 +55,20 @@ class FakeDocker:
         self.raise_on_run = None
         self.containers = self
         self.networks = self
-        self.volumes = self
+        self.volumes = FakeVolumes()
 
     # containers API
     def run(self, image, **kw):
         if self.raise_on_run is not None:
             raise self.raise_on_run
         self.run_calls.append((image, kw))
-        c = FakeContainer(kw["name"])
-        self.by_name[kw["name"]] = c
+        name = kw.get("name")
+        if name is None:
+            # Anonymous, synchronous fixup container (e.g. the cache-volume
+            # chown in `_ensure_cache_volume`) — nothing to track by name.
+            return None
+        c = FakeContainer(name)
+        self.by_name[name] = c
         return c
 
     def get(self, name):
@@ -56,7 +88,7 @@ class FakeDocker:
             return [c for c in self.by_name.values() if c.name in wanted]
         return list(self.by_name.values())
 
-    # networks / volumes API (idempotent ensure)
+    # networks API (idempotent ensure)
     def create(self, name, **kw):
         self.networks_created.add(name)
         return None
@@ -98,9 +130,12 @@ def test_up_writes_config_and_runs(client):
     )
     assert r.status_code == 200
     assert (tmp / "apps" / "s" / "config.json").exists()
-    image, kw = fake.run_calls[0]
+    # run_calls[0] is the one-time cache-volume chown fixup (anonymous, no
+    # "name" key); the named app container is the last call.
+    image, kw = fake.run_calls[-1]
     assert kw["name"] == "agnes-dataapp-s"
     assert kw["detach"] is True
+    assert fake.volumes.names == {"agnes-dataapp-cache-s"}
 
 
 def test_up_rejects_foreign_image(client):
@@ -126,9 +161,14 @@ def test_up_twice_removes_old_container_and_reruns(client):
     r = c.post("/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {}})
     assert r.status_code == 200
     assert first.removed
-    assert len(fake.run_calls) == 2
-    # the network is created once (idempotent), not once per `up`
+    named_runs = [kw for _, kw in fake.run_calls if kw.get("name")]
+    assert len(named_runs) == 2
+    # the network — and the cache volume + its chown fixup — are created
+    # once (idempotent), not once per `up`: 2 named app-container runs + 1
+    # anonymous chown fixup = 3 total `run()` calls.
+    assert len(fake.run_calls) == 3
     assert fake.networks_created == {"agnes-apps"}
+    assert fake.volumes.names == {"agnes-dataapp-cache-s"}
 
 
 def test_resume_unpauses_container(client):
