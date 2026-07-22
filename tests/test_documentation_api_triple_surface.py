@@ -42,6 +42,20 @@ _COHORT: dict[str, tuple[str, str]] = {
     # Markdown-first skill publish (studio Skill Builder direct-publish flow,
     # issue #688). CLI: `store publish-md`. MCP: `store_publish_markdown`.
     "/api/store/entities/from-markdown": ("store publish-md", "store_publish_markdown"),
+    # Full agent/skill lifecycle parity — an agent can discover, inspect,
+    # install/remove marketplace items and edit/delete its own store entities
+    # over any of the three surfaces. Binary siblings (ZIP upload/replace,
+    # photo, `store mine` bundle) stay CLI-only — see the grandfathered
+    # /api/store/entities POST path and _EXEMPT reasoning patterns.
+    "/api/marketplace/items": ("marketplace search", "marketplace_search"),
+    "/api/marketplace/flea/{entity_id}/detail": ("marketplace detail", "marketplace_detail"),
+    "/api/marketplace/curated/{marketplace_id}/{plugin_name}": ("marketplace detail", "marketplace_detail"),
+    "/api/marketplace/curated/{marketplace_id}/{plugin_name}/install": ("marketplace add", "marketplace_add"),
+    "/api/store/entities/{entity_id}/install": ("marketplace add", "marketplace_add"),
+    # PUT (metadata edit) → store_update; DELETE → store_delete. One cohort
+    # row per path — the MCP column names the edit tool; store_delete is
+    # asserted in FOUNDATION_TOOL_NAMES / test_mcp_http's exact-set check.
+    "/api/store/entities/{entity_id}": ("store update", "store_update"),
     # Collections — bring-your-files (Slice 2). The read surfaces are
     # triple-surface; the multipart-upload + file-mutation paths are _EXEMPT
     # below (binary upload has no MCP analogue).

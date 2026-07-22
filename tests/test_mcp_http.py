@@ -167,6 +167,16 @@ class TestToolRegistration:
             # Owner-facing review-pipeline status — pairs with
             # `agnes store status` and GET /api/store/entities/{id}/status.
             "store_status",
+            # Full agent/skill lifecycle parity (REST × CLI × MCP) — discover,
+            # inspect, install/remove marketplace items, and edit/delete owned
+            # store entities from the chat. Pairs with `agnes marketplace
+            # search/detail/add/remove` and `agnes store update/delete`.
+            "marketplace_search",
+            "marketplace_detail",
+            "marketplace_add",
+            "marketplace_remove",
+            "store_update",
+            "store_delete",
             # Collections read surfaces (Slice 2) — list collections and read
             # one collection's files. Upload/delete are CLI-only (multipart /
             # mutation). See tests/test_documentation_api_triple_surface.py.
@@ -470,6 +480,134 @@ class TestStorePublishMarkdownTool:
         assert result == data
         posted = mock_post.call_args[1]["json"]
         assert posted == {"type": "agent", "name": "my-agent", "skill_md": "# My Agent\n\nBody text."}
+
+
+# ── marketplace lifecycle tools (agent-management triple-surface parity) ────────
+
+
+class TestMarketplaceLifecycleTools:
+    """MCP mirrors of `agnes marketplace search/detail/add/remove` and
+    `agnes store update/delete` — full agent/skill lifecycle without a CLI."""
+
+    def test_search_defaults_to_both_tabs_with_labels(self):
+        mod = _import_mod()
+        curated_item = {"id": "eng/reviewer", "source": "curated", "type": "agent"}
+        flea_item = {"id": "ent_9", "source": "flea", "type": "agent"}
+
+        def _side(url, **kw):
+            tab = kw["params"]["tab"]
+            return _mock_resp({"items": [curated_item if tab == "curated" else flea_item]})
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_get = AsyncMock(side_effect=_side)
+            MC.return_value.__aenter__.return_value.get = mock_get
+            result = _run(mod.marketplace_search(query="review", type="agent"))
+
+        assert result == {"items": [curated_item, flea_item], "total": 2}
+        assert mock_get.call_count == 2
+        tabs = [c[1]["params"]["tab"] for c in mock_get.call_args_list]
+        assert tabs == ["curated", "flea"]
+        for c in mock_get.call_args_list:
+            assert "/api/marketplace/items" in c[0][0]
+            assert c[1]["params"]["q"] == "review"
+            assert c[1]["params"]["type"] == "agent"
+
+    def test_search_single_source_hits_one_tab(self):
+        mod = _import_mod()
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_get = AsyncMock(return_value=_mock_resp({"items": []}))
+            MC.return_value.__aenter__.return_value.get = mock_get
+            result = _run(mod.marketplace_search(source="flea"))
+
+        assert result == {"items": [], "total": 0}
+        assert mock_get.call_count == 1
+        assert mock_get.call_args[1]["params"]["tab"] == "flea"
+
+    def test_detail_parses_curated_and_flea_ids(self):
+        mod = _import_mod()
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_get = AsyncMock(return_value=_mock_resp({"type": "agent"}))
+            MC.return_value.__aenter__.return_value.get = mock_get
+            _run(mod.marketplace_detail("eng/reviewer"))
+            _run(mod.marketplace_detail("ent_9"))
+
+        urls = [c[0][0] for c in mock_get.call_args_list]
+        assert "/api/marketplace/curated/eng/reviewer" in urls[0]
+        assert "/api/marketplace/flea/ent_9/detail" in urls[1]
+
+    def test_add_routes_by_id_shape_and_hints_refresh(self):
+        mod = _import_mod()
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_post = AsyncMock(return_value=_mock_resp({"installed": True}))
+            MC.return_value.__aenter__.return_value.post = mock_post
+            flea = _run(mod.marketplace_add("ent_9"))
+            curated = _run(mod.marketplace_add("eng/reviewer"))
+
+        assert flea["installed"] is True and "update-agnes-plugins" in flea["next_step"]
+        assert curated["installed"] is True
+        urls = [c[0][0] for c in mock_post.call_args_list]
+        assert "/api/store/entities/ent_9/install" in urls[0]
+        assert "/api/marketplace/curated/eng/reviewer/install" in urls[1]
+
+    def test_remove_routes_by_id_shape(self):
+        mod = _import_mod()
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_delete = AsyncMock(return_value=_mock_resp({}, status=204))
+            MC.return_value.__aenter__.return_value.delete = mock_delete
+            flea = _run(mod.marketplace_remove("ent_9"))
+            curated = _run(mod.marketplace_remove("eng/reviewer"))
+
+        assert flea["removed"] is True and curated["removed"] is True
+        urls = [c[0][0] for c in mock_delete.call_args_list]
+        assert "/api/store/entities/ent_9/install" in urls[0]
+        assert "/api/marketplace/curated/eng/reviewer/install" in urls[1]
+
+    def test_store_update_sends_only_provided_fields(self):
+        mod = _import_mod()
+        data = {"id": "ent_9", "version": 1}
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_put = AsyncMock(return_value=_mock_resp(data))
+            MC.return_value.__aenter__.return_value.put = mock_put
+            result = _run(mod.store_update("ent_9", description="Better trigger line"))
+
+        assert result == data
+        assert "/api/store/entities/ent_9" in mock_put.call_args[0][0]
+        assert mock_put.call_args[1]["data"] == {"description": "Better trigger line"}
+
+    def test_store_update_refuses_empty_edit_without_http_call(self):
+        mod = _import_mod()
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_put = AsyncMock()
+            MC.return_value.__aenter__.return_value.put = mock_put
+            result = _run(mod.store_update("ent_9"))
+
+        assert result["error"] == "nothing_to_update"
+        mock_put.assert_not_called()
+
+    def test_store_delete_calls_entity_endpoint(self):
+        mod = _import_mod()
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_delete = AsyncMock(return_value=_mock_resp({}, status=204))
+            MC.return_value.__aenter__.return_value.delete = mock_delete
+            result = _run(mod.store_delete("ent_9"))
+
+        assert result == {"deleted": True, "entity_id": "ent_9"}
+        assert "/api/store/entities/ent_9" in mock_delete.call_args[0][0]
 
 
 # ── server_info tool ────────────────────────────────────────────────────────────
