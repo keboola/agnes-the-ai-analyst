@@ -1056,8 +1056,17 @@
                             </label>
                             <input type="text" class="form-input" id="bqDataset" list="bqDatasetList" placeholder="e.g. analytics">
                             <datalist id="bqDatasetList"></datalist>
-                            <div class="form-hint">BigQuery dataset name (no project prefix — read from instance.yaml).
+                            <div class="form-hint">BigQuery dataset name (no project prefix, read from instance.yaml
+                                or from the Project field below when you set one).
                                 Click <strong>Discover</strong> to populate the autocomplete from the BQ project's dataset list.</div>
+                        </div>
+                        <div class="form-group bq-source-table">
+                            <label class="form-label" for="bqProject">Project <span class="optional">(optional)</span></label>
+                            <input type="text" class="form-input" id="bqProject" placeholder="defaults to the configured data project">
+                            <div class="form-hint">Leave blank unless the table lives in a <strong>different</strong> GCP project
+                                than the one configured in server config. Filling it in registers the row with an explicit
+                                <code>project.dataset.table</code> path, which is the only supported way to reach another
+                                project: analyst SQL cannot name one directly.</div>
                         </div>
                         <div class="form-group bq-source-table">
                             <label class="form-label" for="bqSourceTable">
@@ -4450,6 +4459,15 @@
 
         var dataset = document.getElementById('bqDataset').value.trim();
         var sourceTable = document.getElementById('bqSourceTable').value.trim();
+        // Optional cross-project override. Blank keeps the legacy path
+        // (configured project + bucket + source_table); filled in sends an
+        // explicit `bq_fqn`, which the extractor, the --remote rewriter and
+        // /api/v2/scan all resolve in preference to that triplet.
+        var projectEl = document.getElementById('bqProject');
+        var project = projectEl ? projectEl.value.trim() : '';
+        var bqFqn = (project && dataset && sourceTable)
+            ? project + '.' + dataset + '.' + sourceTable
+            : null;
 
         if (accessMode === 'synced' && syncMode === 'whole') {
             // Whole-table sync. We don't ship the project to the browser, so
@@ -4488,6 +4506,7 @@
             source_type: 'bigquery',
             bucket: dataset,
             source_table: sourceTable,
+            bq_fqn: bqFqn,
             query_mode: 'remote',
             profile_after_sync: false,
             description: description,
