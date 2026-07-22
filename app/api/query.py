@@ -910,6 +910,41 @@ def _build_materialized_hint(row: dict) -> str:
     )
 
 
+def _bq_row_target(row: dict) -> tuple[str, str, Optional[str]]:
+    """Resolve a BQ registry row to ``(dataset, table, project_override)``.
+
+    ``bq_fqn`` (v51, issue #343) pins a row's own ``project.dataset.table``
+    and overrides all three legs of the legacy configured-project +
+    ``bucket`` + ``source_table`` convention. ``bucket`` is a UX/RBAC label
+    that need not equal the physical dataset. ``project_override`` is
+    ``None`` for pre-v51 rows, meaning "use the configured data project".
+
+    Malformed values degrade to the legacy triplet rather than raising:
+    registration validates ``bq_fqn`` at the API boundary, so a bad value
+    here means the row was written out-of-band, and one such row must not
+    500 every query that merely mentions a sibling table.
+    """
+    from connectors.bigquery.extractor import parse_bq_fqn
+
+    legacy = (row.get("bucket") or "", row.get("source_table") or "", None)
+    raw = row.get("bq_fqn")
+    if not raw:
+        return legacy
+    try:
+        parsed = parse_bq_fqn(raw)
+    except ValueError:
+        logger.warning(
+            "Ignoring malformed bq_fqn on registry row %r, falling back to "
+            "the configured project. Re-register the row to fix.",
+            row.get("id") or row.get("name"),
+        )
+        return legacy
+    if parsed is None:
+        return legacy
+    project, dataset, table = parsed
+    return dataset, table, project
+
+
 def _bq_guardrail_inputs(
     sql: str,
     sql_lower: str,
@@ -926,12 +961,16 @@ def _bq_guardrail_inputs(
       the rewritten user SQL once and distributes the total here for quota
       bookkeeping.
 
-    - `name_lookups` is a list of `(registered_name, bucket, source_table)`
-      triples — only the bare-name matches from pass 1, NOT the direct
-      `bq."<ds>"."<tbl>"` matches. Issue #171 fix: the cap-guard rewrites
-      these name → ``\\`<project>.<bucket>.<source_table>\\``` when building
-      the BQ-native SQL for dry-run, so partition pruning + column projection
-      + predicate pushdown all engage.
+    - `name_lookups` is a list of
+      `(registered_name, dataset, table, project_or_None)` tuples, only the
+      bare-name matches from pass 1, NOT the direct `bq."<ds>"."<tbl>"`
+      matches. Issue #171 fix: the cap-guard rewrites these name →
+      ``\\`<project>.<dataset>.<table>\\``` when building the BQ-native SQL
+      for dry-run, so partition pruning + column projection + predicate
+      pushdown all engage. The dataset/table/project come from the row's
+      `bq_fqn` when set (v51, issue #343) and from the configured project +
+      `bucket` + `source_table` otherwise; a `None` project means "use the
+      configured data project".
 
     - `blocked_bq_path` is a structured-detail dict for the caller to raise
       HTTPException(403) with, when user SQL contains a direct
@@ -982,11 +1021,16 @@ def _bq_guardrail_inputs(
             if key not in seen_paths:
                 seen_paths.add(key)
                 dry_run.append((bucket, source_table, 0))  # bytes filled at dry-run
-            # Record the (name, bucket, source_table) mapping separately so the
-            # cap-guard's SQL rewriter can find every occurrence — even if the
-            # user references the same physical table under two registered
-            # names (rare but possible: aliased catalog rows).
-            name_lookups.append((str(name), bucket, source_table))
+            # Record the (name, dataset, table, project) mapping separately so
+            # the cap-guard's SQL rewriter can find every occurrence, even if
+            # the user references the same physical table under two registered
+            # names (rare but possible: aliased catalog rows). The physical
+            # target comes from ``bq_fqn`` when set, so a cross-project row is
+            # dry-run against the table it actually reads. ``dry_run`` above
+            # keeps the registry ``bucket``/``source_table``: those are
+            # identity keys for the metadata cache, not a BQ path.
+            ds, tbl, row_project = _bq_row_target(r)
+            name_lookups.append((str(name), ds, tbl, row_project))
 
     # 2. Direct bq.<ds>.<tbl> pass: every match must point at a registered
     # row. Run BEFORE adding to dry_run so unregistered paths fail-fast.
@@ -1170,9 +1214,19 @@ def _rewrite_bq_table_refs_to_native(
         # Map name (lower-cased) → backticked target. Names are
         # case-insensitive on the input side per the existing helper
         # contract (see test_rewrite_helper_is_case_insensitive_on_bare_names).
+        # Entries are ``(name, bucket, source_table)`` or, when the registry
+        # row carries a ``bq_fqn`` (v51, issue #343), the 4-tuple
+        # ``(name, dataset, table, project)`` whose project overrides the
+        # single configured one for that row only. A ``None`` override and
+        # the legacy 3-tuple both fall back to ``project``.
         name_to_target: dict[str, str] = {}
-        for name, bucket, source_table in name_lookups:
-            name_to_target[name.lower()] = f"`{project}.{bucket}.{source_table}`"
+        for entry in name_lookups:
+            name, bucket, source_table = entry[0], entry[1], entry[2]
+            row_project = entry[3] if len(entry) > 3 else None
+            target_project = row_project or project
+            name_to_target[name.lower()] = (
+                f"`{target_project}.{bucket}.{source_table}`"
+            )
 
         # Alternation pattern, longest-first. Longer match wins at any
         # given position because Python's re tries alternatives
@@ -1328,17 +1382,19 @@ def _bq_remote_execution_plan(
         # surface anything user-visible.
         return user_sql, False, None, None
 
-    # Multi-project guard (devil's-advocate R1 finding #5): the rewriter
-    # assumes every BQ-remote table resolves under the single
-    # `bq.projects.data` project. The current registry schema doesn't
-    # store `source_project` per row, so `bucket` is the only place a
-    # cross-project leak could hide. A bucket containing `.` (e.g.
-    # `other_prj.dataset`) suggests the operator encoded a project
-    # prefix into the bucket name — wrapping that under our single
-    # project would silently target the wrong project. Conservative
-    # skip: any BQ row whose bucket contains `.` aborts the rewrite,
-    # falling through to the legacy ATTACH-catalog path which uses
-    # whatever resolution the operator's _remote_attach configured.
+    # Multi-project guard (devil's-advocate R1 finding #5): rows resolve
+    # under the single `bq.projects.data` project UNLESS they carry a
+    # `bq_fqn` (v51, issue #343), which pins their own project explicitly
+    # and is honored per-row via `_bq_row_target` below.
+    #
+    # `bucket` remains the one place an *implicit* cross-project leak could
+    # hide: a bucket containing `.` (e.g. `other_prj.dataset`) suggests the
+    # operator encoded a project prefix into the bucket name, and wrapping
+    # that under our project would silently target the wrong one.
+    # Conservative skip: any BQ row whose bucket contains `.` aborts the
+    # rewrite, falling through to the legacy ATTACH-catalog path which uses
+    # whatever resolution the operator's _remote_attach configured. Rows
+    # that need a different project should set `bq_fqn` instead.
     for r in bq_rows:
         if (r.get("query_mode") or "") != "remote":
             continue
@@ -1357,7 +1413,8 @@ def _bq_remote_execution_plan(
             key = (bucket.lower(), source_table.lower())
             if key not in seen_paths:
                 seen_paths.add(key)
-            name_lookups.append((str(name), bucket, source_table))
+            ds, tbl, row_project = _bq_row_target(r)
+            name_lookups.append((str(name), ds, tbl, row_project))
 
     # Direct bq."ds"."tbl" references — pull the registered (bucket,
     # source_table) pair so the inner SQL receives a backticked BQ-native
@@ -1386,7 +1443,7 @@ def _bq_remote_execution_plan(
     # Skip 3: cross-source query (BQ + local-mode). If user SQL also
     # references a non-BQ master view, we can't push the whole thing to
     # BQ — DuckDB needs to do the join.
-    bq_names_lc = {n.lower() for n, _, _ in name_lookups}
+    bq_names_lc = {str(entry[0]).lower() for entry in name_lookups}
     for r in all_rows:
         st = (r.get("source_type") or "").lower()
         qm = (r.get("query_mode") or "").lower()

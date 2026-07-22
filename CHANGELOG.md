@@ -16,6 +16,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **`bq_fqn` is now honored on the query and scan paths**: a registry row
+  whose `bq_fqn` names a project other than `data_source.bigquery.project`
+  was still resolved as `<configured-project>.<bucket>.<source_table>` by
+  `agnes query --remote` (bare-name rewrite + dry-run) and by
+  `/api/v2/scan`, `/api/v2/scan/estimate` and `agnes snapshot create`. The
+  row pointed at a table that does not exist, so it was unqueryable for
+  every user with no analyst-side workaround, since the cross-project guard
+  rejects explicit full paths in user SQL. Both sites now resolve the
+  project, dataset and table from `bq_fqn` when present, matching the
+  precedence `connectors/bigquery/extractor.py` has applied since v51
+  (issue #343); rows without `bq_fqn` keep the legacy triplet unchanged.
+  A malformed `bq_fqn` raises on the scan path and degrades to the legacy
+  triplet with a warning on the query path, where one bad row must not
+  fail unrelated queries.
+
 ### Removed
 
 ### Internal
