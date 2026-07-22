@@ -353,6 +353,7 @@ from app.api.db_state import router as db_state_router
 from app.api.admin_analytics import router as admin_analytics_router
 from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import router as marketplace_git_router
+from app.api.data_apps import router as data_apps_router
 from app.api.data_apps_git import router as data_apps_git_router
 from app.web.router import router as web_router
 from app.api.chat import router as chat_router
@@ -2205,6 +2206,10 @@ def create_app() -> FastAPI:
     # marketplace_git_router, gated on per-app owner/Admin/grant RBAC
     # instead of a per-caller filtered repo. See app/api/data_apps_git.py.
     app.include_router(data_apps_git_router)
+
+    # Control-plane REST for hosted data apps: CRUD, deploy, stop, delete,
+    # secrets, logs, readiness, admin reap-idle. See app/api/data_apps.py.
+    app.include_router(data_apps_router)
 
     # Authenticated Swagger / ReDoc / OpenAPI JSON — requires a valid session
     # so the full admin API surface is not visible to unauthenticated callers.

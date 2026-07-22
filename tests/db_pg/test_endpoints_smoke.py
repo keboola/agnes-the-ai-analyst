@@ -1595,6 +1595,21 @@ KNOWN_UNTESTED = {
     # tests/test_data_apps_git.py.
     "GET /data-apps.git/{slug}/{path}",
     "POST /data-apps.git/{slug}/{path}",
+    # Control-plane REST for hosted data apps (Task 7) — every mutating route
+    # needs a real `data_apps` row (+ owner/Admin/grant RBAC, and deploy needs
+    # a seeded git repo + runner stub), so none of these are parameter-free.
+    # Full CRUD/RBAC/deploy/stop/delete/secrets/logs/readiness/reap-idle
+    # coverage lives in tests/test_data_apps_api.py.
+    "GET /api/data-apps",
+    "POST /api/data-apps",
+    "GET /api/data-apps/{slug}",
+    "POST /api/data-apps/{slug}/deploy",
+    "POST /api/data-apps/{slug}/stop",
+    "DELETE /api/data-apps/{slug}",
+    "PUT /api/data-apps/{slug}/secrets",
+    "GET /api/data-apps/{slug}/logs",
+    "GET /api/data-apps/{slug}/readiness",
+    "POST /api/data-apps/reap-idle",
     # Google OAuth — requires live credentials
     "GET /auth/google/login",
     "GET /auth/google/callback",

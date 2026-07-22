@@ -239,6 +239,12 @@ _BROKER_REASON = (
     "sandbox->server routes, ticket-gated (not user auth); the in-sandbox "
     "loopback relay is the only caller. No analyst CLI/MCP analogue."
 )
+_DATA_APPS_REASON = (
+    "control-plane REST for hosted data apps (data-apps platform plan, Task 7). "
+    "CLI (`agnes app …`, Task 10) and MCP tools (Task 11) are separate "
+    "not-yet-implemented follow-up tasks in the same plan — temporary "
+    "exemption, flip to _COHORT once those land."
+)
 _EXEMPT: dict[str, str] = {
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "
@@ -346,6 +352,27 @@ _EXEMPT: dict[str, str] = {
         "get-by-id glossary read, reachable via `agnes glossary show` — no "
         "MCP analogue (glossary_search is the agent-facing tool; an agent "
         "resolves a term by searching, not by a known id)"
+    ),
+    # Data apps control-plane REST (2026-07-21 data-apps platform plan, Task 7).
+    # CLI (`agnes app …`, Task 10) and MCP tools (`data_apps_list`/`data_app_get`/
+    # `data_app_deploy`/`data_app_logs`, Task 11) are separate follow-up tasks
+    # in the same plan — not yet implemented. Temporary exemption: flip these
+    # to `_COHORT` once those two tasks land instead of leaving the ratchet
+    # red across intermediate commits.
+    "/api/data-apps": _DATA_APPS_REASON,
+    "/api/data-apps/{slug}": _DATA_APPS_REASON,
+    "/api/data-apps/{slug}/deploy": _DATA_APPS_REASON,
+    "/api/data-apps/{slug}/stop": _DATA_APPS_REASON,
+    "/api/data-apps/{slug}/secrets": _DATA_APPS_REASON,
+    "/api/data-apps/{slug}/logs": _DATA_APPS_REASON,
+    "/api/data-apps/{slug}/readiness": _DATA_APPS_REASON,
+    # reap-idle is a scheduler-triggered admin maintenance op (Task 9) —
+    # mirrors the run-knowledge-digests/run-corporate-memory exemptions
+    # regardless of the CLI/MCP question above; no analyst CLI/MCP analogue.
+    "/api/data-apps/reap-idle": (
+        "scheduler-driven idle-app reaper trigger (data-apps platform Task 9) — "
+        "admin/scheduler maintenance op, mirrors the run-knowledge-digests / "
+        "run-corporate-memory exemptions; no analyst CLI/MCP analogue"
     ),
 }
 
