@@ -4,9 +4,9 @@ added in wave-2G Task 6; ``distribution-mirror`` added in wave-2H Task
 WF-3 — see
 ``docs/superpowers/plans/2026-07-20-three-plane-wave2h-distribution.md``).
 
-``register_all_kinds()`` registers the eight kinds the scheduler's
-current HTTP-driven jobs (plus the analytics migrate command and the
-distribution mirror) map onto:
+``register_all_kinds()`` registers the ten kinds the scheduler's
+current HTTP-driven jobs (plus the analytics migrate command, the
+distribution mirror, and the api-role write conversions) map onto:
 
 - ``data-refresh``       (HEAVY) — wraps ``app.api.sync._run_sync``, the
   body behind ``POST /api/sync/trigger``.
@@ -37,6 +37,15 @@ distribution mirror) map onto:
   ``_run_distribution_mirror`` below. Enqueued automatically after a
   successful ``data-refresh`` (see ``_maybe_enqueue_distribution_mirror``);
   no scheduler row — event-chained, not cron.
+- ``analytics-rebuild``  (HEAVY) — wraps ``app.api.admin._materialize_bigquery_extract``
+  (BQ extract rebuild + master views); enqueued by admin register-table /
+  registry-rebuild / BQ-row-update endpoints when the process lacks the
+  worker role (three-plane §3.1: api plane is analytics-write-free).
+- ``collections-purge``  (HEAVY) — wraps the derived-table purge helpers in
+  ``app.api.collections`` (extract.duckdb surgery + ``rebuild_source``);
+  enqueued by collection/file delete endpoints when the process lacks the
+  worker role. Single-box ``all`` deployments never enqueue either kind —
+  the original synchronous/BackgroundTask paths are unchanged there.
 
 Every handler below is a THIN ADAPTER — it imports and calls the existing
 function/method and does not reimplement any of its logic. Each import is
@@ -155,6 +164,50 @@ def _run_data_refresh(payload: dict) -> None:
         # sync may still be in flight elsewhere, and mirroring now could
         # read a half-written parquet.
         _maybe_enqueue_distribution_mirror()
+
+
+def _run_analytics_rebuild(payload: dict) -> None:
+    """BQ extract + master-view rebuild, enqueued by api-role admin endpoints.
+
+    Three-plane §3.1: the api plane must not write analytics in-process. On a
+    role-split deployment `POST /api/admin/register-table` / `/registry/rebuild`
+    (and BQ-row updates) enqueue this kind instead of running the rebuild in a
+    FastAPI BackgroundTask; single-box ``all`` deployments keep the original
+    synchronous/BackgroundTask path and never enqueue it. Payload is empty —
+    the rebuild is registry-wide by design (same body as the BackgroundTask
+    wrapper it replaces).
+
+    Lazy import from ``app.api.admin`` mirrors ``_run_data_refresh``'s import
+    of ``app.api.sync._run_sync`` — the handler bodies live next to their HTTP
+    siblings so the two invocation paths can't drift.
+    """
+    from app.api.admin import _materialize_bigquery_extract
+
+    result = _materialize_bigquery_extract() or {}
+    errors = result.get("errors") or []
+    if errors:
+        raise RuntimeError(f"analytics-rebuild surfaced {len(errors)} error(s); first: {errors[:3]}")
+
+
+def _run_collections_purge(payload: dict) -> None:
+    """Derived-table purge for a deleted collection/file (extract.duckdb
+    surgery + ``rebuild_source``), enqueued by api-role collection deletes.
+
+    ``payload``: ``corpus_id`` (required), ``file_id`` (optional — present for
+    a single-file delete, absent for a whole-collection delete). Same §3.1
+    rationale and single-box behavior as ``_run_analytics_rebuild``.
+    """
+    from app.api.collections import (
+        _purge_derived_tabular_row_for_file,
+        _purge_derived_tabular_rows,
+    )
+
+    corpus_id = payload["corpus_id"]
+    file_id = payload.get("file_id")
+    if file_id:
+        _purge_derived_tabular_row_for_file(corpus_id, file_id)
+    else:
+        _purge_derived_tabular_rows(corpus_id)
 
 
 def _maybe_enqueue_distribution_mirror() -> None:
@@ -474,7 +527,7 @@ def _run_distribution_mirror(payload: dict) -> None:
 
 
 def register_all_kinds() -> None:
-    """Register the eight real job kinds. Idempotent — safe to call more
+    """Register the ten real job kinds. Idempotent — safe to call more
     than once (e.g. across test re-imports); ``register_kind`` replaces
     any existing entry of the same name rather than erroring."""
     register_kind(
@@ -554,6 +607,28 @@ def register_all_kinds() -> None:
             # individual upload times, not multi-minute by design. No
             # dedicated env override — a mirror run is bounded work, unlike
             # the ducklake catalog operations that justified their own knob.
+            lease_seconds=_DEFAULT_LIGHT_LEASE_S,
+            retry_in_seconds=300,
+        )
+    )
+    register_kind(
+        JobKind(
+            name="analytics-rebuild",
+            handler=_run_analytics_rebuild,
+            lane=HEAVY_LANE,
+            # Same cost class as data-refresh (BQ extract rebuild + master
+            # views) — reuse its lease knob.
+            lease_seconds=_data_refresh_lease_seconds(),
+            retry_in_seconds=300,
+        )
+    )
+    register_kind(
+        JobKind(
+            name="collections-purge",
+            handler=_run_collections_purge,
+            lane=HEAVY_LANE,
+            # extract.duckdb surgery + rebuild_source — same serialization
+            # class as the other analytics writers, so HEAVY (concurrency 1).
             lease_seconds=_DEFAULT_LIGHT_LEASE_S,
             retry_in_seconds=300,
         )

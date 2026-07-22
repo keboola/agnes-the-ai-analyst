@@ -301,6 +301,41 @@ def _purge_derived_tabular_rows(corpus_id: str) -> None:
         logger.warning("rebuild_source(%s) after derived-table purge failed: %s", source_name, exc)
 
 
+def _schedule_derived_purge(corpus_id: str, file_id: str | None = None) -> None:
+    """Route a derived-table purge to the right executor.
+
+    Worker-role process (single-box ``all``) → run the purge inline, exactly
+    as before. Process WITHOUT the worker role (role-split ``api`` replica) →
+    enqueue the ``collections-purge`` job so the worker plane performs the
+    extract.duckdb surgery + ``rebuild_source`` — the api plane must stay
+    analytics-write-free (three-plane spec §3.1). The purge helpers are
+    already tolerant of rows/files that vanished between enqueue and run
+    (they no-op on missing state), so at-least-once delivery is safe.
+    """
+    from app.roles import Role, role_enabled
+
+    if role_enabled(Role.WORKER):
+        if file_id:
+            _purge_derived_tabular_row_for_file(corpus_id, file_id)
+        else:
+            _purge_derived_tabular_rows(corpus_id)
+        return
+    from src.repositories import jobs_repo
+
+    row = jobs_repo().enqueue(
+        "collections-purge",
+        payload={"corpus_id": corpus_id, "file_id": file_id},
+        idempotency_key=f"collections-purge:{corpus_id}:{file_id or ''}",
+    )
+    logger.info(
+        "api-role replica: derived purge for corpus=%s file=%s enqueued as job %s (deduped=%s)",
+        corpus_id,
+        file_id,
+        row.get("id"),
+        row.get("deduped"),
+    )
+
+
 def _purge_derived_tabular_row_for_file(corpus_id: str, file_id: str) -> None:
     """Variant of ``_purge_derived_tabular_rows`` for a single file deletion.
 
@@ -375,7 +410,7 @@ async def delete_collection(
     row = file_corpora_repo().get(collection_id)
     if not row:
         raise HTTPException(status_code=404, detail="collection_not_found")
-    _purge_derived_tabular_rows(collection_id)
+    _schedule_derived_purge(collection_id)
     file_corpora_repo().soft_delete(collection_id)
     logger.info("collection deleted id=%s by=%s", collection_id, user.get("email"))
 
@@ -555,7 +590,7 @@ async def delete_file(
     # Do this BEFORE the corpus_files row is deleted: if the purge raises, the
     # file row is still intact and the user can retry (mirrors delete_collection
     # ordering which purges derived data before the soft-delete).
-    _purge_derived_tabular_row_for_file(collection_id, file_id)
+    _schedule_derived_purge(collection_id, file_id)
     # Delete the file's chunks first — otherwise they linger and still surface
     # in search results (with a null filename once the file row is gone).
     corpus_chunks_repo().delete_for_file(file_id)
@@ -620,7 +655,7 @@ async def reingest_file(
     if row.get("processing_status") == "processing" and not _is_stale_processing(row):
         raise HTTPException(status_code=409, detail="reingest_in_progress")
 
-    _purge_derived_tabular_row_for_file(collection_id, file_id)
+    _schedule_derived_purge(collection_id, file_id)
     cf_repo.set_status(file_id, status="pending", detail={"reason": "reingest requested"})
 
     from src.ingest.runner import ingest_file
