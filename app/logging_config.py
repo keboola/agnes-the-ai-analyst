@@ -24,11 +24,34 @@ _CONFIGURED = False
 
 
 class _RequestIdFilter(logging.Filter):
-    """Inject the current request_id ContextVar into every LogRecord."""
+    """Inject the current request_id ContextVar and this process's replica
+    id into every LogRecord (the latter consumed by the dev/rich text
+    format string; the JSON formatter reads :func:`_replica_id_safe`
+    directly instead — see its own docstring)."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         record.request_id = request_id_var.get() or "-"
+        record.replica = _replica_id_safe()
         return True
+
+
+def _replica_id_safe() -> str:
+    """Best-effort replica id (``hostname:pid``) for cross-replica log
+    correlation — spec §3.7 "replica id on every line".
+
+    Lazily imports :func:`app.observability.metrics.replica_id` so this
+    low-level module (imported very early by every entrypoint, before the
+    FastAPI app or the observability package may be fully wired up) carries
+    no import-time coupling to it, and falls back to ``"-"`` if the import
+    or call ever fails for any reason — a metrics/logging seam must never
+    break logging itself.
+    """
+    try:
+        from app.observability.metrics import replica_id
+
+        return replica_id()
+    except Exception:
+        return "-"
 
 
 def setup_logging(service: str | None = None, level: str | None = None) -> None:
@@ -57,7 +80,7 @@ def setup_logging(service: str | None = None, level: str | None = None) -> None:
             show_path=True,
             markup=False,
         )
-        handler.setFormatter(logging.Formatter("[%(request_id)s] [%(name)s] %(message)s"))
+        handler.setFormatter(logging.Formatter("[%(replica)s] [%(request_id)s] [%(name)s] %(message)s"))
     else:
         handler = logging.StreamHandler()
         handler.setFormatter(_JSONFormatter(service=slug))
@@ -113,6 +136,7 @@ class _JSONFormatter(logging.Formatter):
             "lvl": record.levelname,
             "logger": record.name,
             "service": self.service,
+            "replica": _replica_id_safe(),
             "msg": record.getMessage(),
         }
         rid = request_id_var.get()

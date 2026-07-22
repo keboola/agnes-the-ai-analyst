@@ -33,4 +33,27 @@
 		fail_duration 10s
 		lb_policy round_robin
 	}
+
+	# Spec §3.7: "the proxy never removes the last healthy upstream ...
+	# falls through to a maintenance page instead of hard-503ing
+	# everything". When every upstream above is down/unhealthy,
+	# reverse_proxy returns a 502/503/504 — surface a small static page
+	# instead of Caddy's bare default error body, so a rolling upgrade or a
+	# transient outage reads as "come back shortly", not a raw HTTP error.
+	handle_errors 502 503 504 {
+		header Content-Type "text/html; charset=utf-8"
+		respond 503 {
+			body <<HTML
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Agnes — temporarily unavailable</title></head>
+<body style="font-family: sans-serif; text-align: center; padding: 4rem;">
+<h1>Agnes is temporarily unavailable</h1>
+<p>All upstreams are currently unreachable — this is usually a rolling
+upgrade or a transient outage. Please retry in a minute.</p>
+</body>
+</html>
+HTML
+		}
+	}
 }

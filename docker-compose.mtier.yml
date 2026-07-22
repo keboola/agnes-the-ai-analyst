@@ -5,9 +5,11 @@
 #     docker compose -f docker-compose.yml -f docker-compose.postgres.yml \
 #       -f docker-compose.mtier.yml --profile mtier up
 #
-# Redis is a placeholder for WS C — the startup guard (app/startup_guards.py)
-# only checks instance.yaml::coordination.backend == "redis" today;
-# coordination itself lands next wave.
+# Redis backs the real coordination layer (app/coordination/redis_backend.py)
+# — WS auth tickets, session-routing leases, rate-limit storage — for every
+# role service below; the startup guard (app/startup_guards.py) enforces
+# instance.yaml::coordination.backend == "redis" whenever more than one
+# process/replica is configured.
 #
 # The base docker-compose.yml `app` and `scheduler` services carry no
 # `profiles:` (they're "always on" per Compose semantics), so they'd start

@@ -28,6 +28,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Observability/hygiene follow-ups from the three-plane architecture audit
+  (spec §3.7): every log line (JSON and dev/rich text formats) now carries
+  this process's replica id (`hostname:pid`), matching the `replica` label
+  already used on Prometheus series; a new `agnes_ducklake_snapshot_age_seconds`
+  gauge is populated by the `ducklake-maintenance` job so DuckLake staleness
+  is observable (absent when `analytics.backend` is not `ducklake`); the
+  m-tier reference `deploy/caddy/Caddyfile.mtier` now serves a small static
+  maintenance page (HTTP 503) instead of a hard/bare error when every
+  upstream is unhealthy; and `config/instance.yaml.example` documents the
+  previously-undocumented `deployment.role`, `coordination.backend` /
+  `redis.url`, and `analytics.backend` / `ducklake.*` keys, with two stale
+  "lands next wave" comments in the m-tier compose/config files corrected to
+  reflect that the coordination backend already shipped.
+
 - Install prompt (`/setup` clipboard payload) no longer instructs the agent to
   suppress its own security judgment around the freshly-minted PAT. Removed the
   step-3 NOTE that told the agent not to warn / not to mark the session private
