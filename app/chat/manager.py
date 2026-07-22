@@ -1466,6 +1466,7 @@ class ChatManager:
 
     async def _spawn_runner(self, session: ChatSession, session_dir: Path):
         from app.auth.access import mint_session_jwt, mint_co_session_jwt
+        from app.chat.e2b_workspace_sync import SANDBOX_WORKSPACE_READY
 
         if session.is_co_session:
             # SR-5: NO seed fallback for co-sessions. A mint failure re-raises
@@ -1511,6 +1512,15 @@ class ChatManager:
             # per-spawn latency; only useful once the marketplace ships real
             # skill content). See ChatConfig.bootstrap_marketplace.
             "AGNES_BOOTSTRAP_MARKETPLACE": "1" if self._config.bootstrap_marketplace else "",
+            # Sandbox path of the workspace-upload sentinel the runner must
+            # wait on before spawning the agent CLI (the CLI reads CLAUDE.md
+            # and .claude settings from /work at startup, and upload_workspace
+            # finishes AFTER the runner process starts). Empty when the
+            # provider mounts the workspace itself (syncs_workspace=True) —
+            # then there is nothing to wait for and the runner skips the wait.
+            "AGNES_WORKSPACE_SYNC_SENTINEL": (
+                "" if getattr(self._provider, "syncs_workspace", False) else SANDBOX_WORKSPACE_READY
+            ),
             # No ANTHROPIC_API_KEY / AGNES_TOKEN here (chat sandbox secret
             # broker hardening, 2026-07-14): the real Anthropic key never
             # enters the sandbox env. The runner's own ``_start_relay``
@@ -1553,7 +1563,24 @@ class ChatManager:
             max_bytes = getattr(self._config, "e2b_workspace_max_bytes", 100 * 1024 * 1024)
             sandbox = getattr(handle, "_sandbox", None)
             if sandbox is not None:
+                # Ship the agnes CLI wheel FIRST — it's a single small write,
+                # and its ``.ready`` sentinel unblocks the runner's in-sandbox
+                # ``pip install`` so that install runs CONCURRENTLY with the
+                # (much slower) workspace push below instead of queueing
+                # behind it. Best-effort: a missing wheel leaves the CLI
+                # absent but never blocks the session, so unlike the
+                # workspace push it does not tear the sandbox down.
                 try:
+                    await upload_agnes_wheel(sandbox)
+                except Exception:
+                    logger.exception(
+                        "agnes wheel upload failed; `agnes` CLI will be absent in sandbox for session %s",
+                        session.id,
+                    )
+                try:
+                    # Finishes by writing SANDBOX_WORKSPACE_READY, which the
+                    # runner waits on before spawning the agent CLI (the CLI
+                    # reads CLAUDE.md/.claude from /work at startup).
                     await upload_workspace(sandbox, session_dir, max_bytes=max_bytes)
                 except WorkspaceTooLarge as e:
                     logger.error("workspace upload refused: %s", e)
@@ -1565,18 +1592,6 @@ class ChatManager:
                     except Exception:
                         logger.exception("kill after upload-refusal failed")
                     raise
-                # Ship the agnes CLI wheel so the runner can pip-install it at
-                # boot — this is what makes `agnes catalog/query/...` resolve
-                # inside the sandbox. Best-effort: a missing/oversized wheel
-                # leaves the CLI absent but never blocks the session, so unlike
-                # the workspace push it does not tear the sandbox down.
-                try:
-                    await upload_agnes_wheel(sandbox)
-                except Exception:
-                    logger.exception(
-                        "agnes wheel upload failed; `agnes` CLI will be absent in sandbox for session %s",
-                        session.id,
-                    )
         return handle
 
     async def _push_ticket_frame(self, live: "LiveSession") -> None:

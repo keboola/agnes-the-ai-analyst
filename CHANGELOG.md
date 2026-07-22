@@ -14,7 +14,35 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- **Cloud-chat spawn and first-response latency cut across the whole E2B
+  path.** The per-session workspace now travels as one gzipped tarball
+  extracted in-sandbox (one E2B round-trip instead of one per file; per-file
+  writes remain as a fallback); the agnes CLI wheel is staged before the
+  workspace push so the in-sandbox `pip install` overlaps the upload (the
+  runner gates the agent-CLI spawn on a new workspace-ready sentinel,
+  `AGNES_WORKSPACE_SYNC_SENTINEL`); the `claude` CLI boots eagerly at runner
+  start and every user message goes through `query()` — previously the first
+  message re-connected and paid a second full CLI boot; and assistant text
+  now streams token-by-token (`include_partial_messages` stream-event deltas,
+  falling back to whole-block frames on older SDKs).
+
 ### Fixed
+
+- **Chat Stop button actually interrupts the running turn.** Two stacked
+  bugs: the runner called the SDK's async `interrupt()` without awaiting it,
+  and the single-consumer agent loop only read stdin frames between turns —
+  a cancel arriving mid-turn sat in the queue until the turn finished on its
+  own. Each turn now drains in a concurrent task while the loop keeps
+  watching stdin, so cancel interrupts the live turn (an interrupt surfaced
+  by the SDK as an exception no longer tears down the runner); follow-up
+  messages arriving mid-turn are buffered and processed in order.
+- A chat turn that crashes mid-stream (not from a user-initiated Stop) no
+  longer discards the partial answer already shown to the user. The `done`
+  frame — which the manager treats as clearing the in-flight turn buffer —
+  is now emitted by the caller only after the turn genuinely finished
+  without raising, instead of unconditionally from a `finally` block; a
+  crash now surfaces only an `error` frame, leaving the buffer intact for
+  the reconnect/teardown partial-save path.
 
 ### Removed
 

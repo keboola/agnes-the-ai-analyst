@@ -61,10 +61,35 @@ _SANDBOX_WHEEL_DIR = "/tmp/agnes-cli"
 # Module-level so tests can zero the wait.
 _WHEEL_WAIT_SECONDS = 60
 
+# Bounded wait for the manager's workspace-upload sentinel (path arrives via
+# AGNES_WORKSPACE_SYNC_SENTINEL; empty/unset → no wait, e.g. providers that
+# mount the workspace themselves). The wheel sentinel above only guarantees
+# the CLI wheel — the workspace tree lands separately (and slower), and the
+# agent CLI reads CLAUDE.md/.claude from /work at startup, so the CLI spawn
+# must gate on this one. Generous bound: a workspace near the 100 MB cap can
+# take a while; on timeout we proceed best-effort (agent on a possibly
+# incomplete workspace beats no agent). Module-level so tests can zero it.
+_WORKSPACE_WAIT_SECONDS = 180
+
 
 def _emit(frame: dict) -> None:
     sys.stdout.write(json.dumps(frame) + "\n")
     sys.stdout.flush()
+
+
+def _stream_event_delta_text(event: dict) -> str:
+    """Extract the user-visible text delta from a raw Anthropic stream event.
+
+    Returns ``""`` for everything that isn't assistant prose — block starts,
+    tool-input ``input_json_delta``s, ``thinking_delta``s, message stops —
+    so the caller can emit token frames off ``text_delta``s alone.
+    """
+    if not isinstance(event, dict) or event.get("type") != "content_block_delta":
+        return ""
+    delta = event.get("delta") or {}
+    if delta.get("type") != "text_delta":
+        return ""
+    return delta.get("text", "") or ""
 
 
 def _install_agnes_cli() -> None:
@@ -132,6 +157,36 @@ def _install_agnes_cli() -> None:
         )
     except Exception as exc:  # noqa: BLE001 — non-fatal; agent still runs
         print(f"agnes CLI install failed: {exc}", file=sys.stderr, flush=True)
+
+
+async def _wait_workspace_ready() -> bool:
+    """Wait for the manager's workspace-upload sentinel before the agent CLI
+    spawns.
+
+    The runner process starts while ``upload_workspace`` is still pushing the
+    tree into ``/work`` — spawning ``claude`` earlier would boot it against an
+    empty project (no CLAUDE.md data rails, no ``.claude`` settings/plugins).
+    Sentinel path comes from ``AGNES_WORKSPACE_SYNC_SENTINEL``; empty/unset
+    means the provider mounts the workspace itself and there is nothing to
+    wait for. Bounded and best-effort: on timeout we log to stderr and let the
+    agent start anyway.
+    """
+    sentinel = os.environ.get("AGNES_WORKSPACE_SYNC_SENTINEL", "").strip()
+    if not sentinel:
+        return True
+    path = Path(sentinel)
+    deadline = time.monotonic() + _WORKSPACE_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        await asyncio.sleep(0.25)
+    print(
+        f"workspace-ready sentinel {sentinel} never appeared after "
+        f"{_WORKSPACE_WAIT_SECONDS}s; starting agent on a possibly-incomplete workspace",
+        file=sys.stderr,
+        flush=True,
+    )
+    return False
 
 
 def _agnes_mcp_servers() -> dict:
@@ -375,40 +430,39 @@ async def _real_agent_loop(
     exposes a per-tool hook or run_tool() coroutine.
 
     Uses ClaudeSDKClient for persistent-session bidirectional communication:
-    - connect() once with the first user_msg
-    - query() for each subsequent user_msg
-    - receive_response() (async-iter) to consume each turn's messages
-    - interrupt() for cancel frames
+    - the ``async with`` block connects EAGERLY (``__aenter__`` → ``connect()``
+      with an empty stream), so the ``claude`` CLI subprocess boots while the
+      user is still typing their first message
+    - query() for every user_msg (the previous connect(text)-on-first-message
+      pattern spawned a SECOND CLI on top of the one ``__aenter__`` already
+      started — a full CLI boot added to first-message latency)
+    - each turn's receive_response() drains in a CONCURRENT task
+      (_consume_turn) while this loop keeps watching the stdin queue — a
+      cancel frame arriving mid-turn interrupts the live turn (with the old
+      single-consumer design it sat in the queue until the turn finished on
+      its own, so Stop did nothing)
+    - interrupt() for cancel frames; user_msg/_eof frames arriving mid-turn
+      are buffered and processed after the turn, preserving order
 
     Message type mapping (SDK → outbound JSON frames):
-    - AssistantMessage with TextBlock content → token frames + assistant_message at turn end
+    - StreamEvent text deltas → token frames as the model produces them
+      (include_partial_messages; falls back to whole-TextBlock token frames
+      when the SDK predates StreamEvent or no deltas arrive)
+    - AssistantMessage with TextBlock content → collected for the turn-end
+      assistant_message (token frame only when no deltas streamed this turn)
     - AssistantMessage with ToolUseBlock content → tool_call frame
     - AssistantMessage with ToolResultBlock content → tool_result frame
     - ResultMessage → assistant_message frame (turn end, carries usage/model)
     """
     from claude_agent_sdk import (  # type: ignore[import-untyped]
-        AssistantMessage,
         ClaudeAgentOptions,
         ClaudeSDKClient,
-        ResultMessage,
-        TextBlock,
-        ToolResultBlock,
-        ToolUseBlock,
-        UserMessage,
     )
 
-    def _emit_tool_result(block) -> None:
-        result = block.content
-        if isinstance(result, list):
-            result = " ".join(item.get("text", "") if isinstance(item, dict) else str(item) for item in result)
-        _emit(
-            {
-                "type": "tool_result",
-                "id": block.tool_use_id,
-                "tool": block.tool_use_id,
-                "result": result,
-            }
-        )
+    try:  # StreamEvent ships in newer claude-agent-sdk releases only
+        from claude_agent_sdk import StreamEvent  # type: ignore[attr-defined]
+    except ImportError:
+        StreamEvent = None
 
     # ``bypassPermissions`` so the agent can run its tools (Bash → ``agnes
     # catalog``/``query``/…) autonomously. The SDK's default permission mode
@@ -433,26 +487,68 @@ async def _real_agent_loop(
     # a local Claude Code / Cowork install gets. Empty dict when unconfigured
     # (fake-agent tests) so the agent still runs with built-in tools.
     mcp_servers = _agnes_mcp_servers()
-    async with ClaudeSDKClient(
-        options=ClaudeAgentOptions(
-            permission_mode="bypassPermissions",
-            cwd=str(workdir),
-            setting_sources=["user", "project", "local"],
-            mcp_servers=mcp_servers,
-        )
-    ) as client:
-        # Flag to track whether we've called connect() yet
-        connected = False
+    options_kwargs: dict = dict(
+        permission_mode="bypassPermissions",
+        cwd=str(workdir),
+        setting_sources=["user", "project", "local"],
+        mcp_servers=mcp_servers,
+    )
+    # Token-level streaming (include_partial_messages) when the installed SDK
+    # supports it: the UI then renders text as the model produces it instead
+    # of one token frame per completed content block (which for a long answer
+    # means seconds of dead air followed by the whole paragraph at once).
+    partial_streaming = StreamEvent is not None and "include_partial_messages" in getattr(
+        ClaudeAgentOptions, "__dataclass_fields__", {}
+    )
+    if partial_streaming:
+        options_kwargs["include_partial_messages"] = True
+
+    async def _interrupt(client) -> None:
+        # interrupt() is a coroutine — an un-awaited call never reaches the
+        # CLI and the turn keeps running (the historical cancel-does-nothing
+        # bug). Best-effort: a cancel racing the turn's natural end must not
+        # kill the runner.
+        try:
+            await client.interrupt()
+        except Exception as exc:  # noqa: BLE001
+            print(f"interrupt failed: {exc}", file=sys.stderr, flush=True)
+
+    async with ClaudeSDKClient(options=ClaudeAgentOptions(**options_kwargs)) as client:
+        # ``__aenter__`` above already connected (empty-stream streaming mode)
+        # — the CLI subprocess is booting from this point on, typically
+        # finishing before the first user_msg arrives.
+
+        # Frames that arrived while a turn was in flight (queued follow-up
+        # user_msg, an _eof) — processed in order before the queue is read
+        # again, preserving the pre-concurrency single-consumer semantics.
+        pending_frames: list[dict] = []
+        # Persistent queue.get() task. NEVER cancelled — cancelling a
+        # Queue.get() that has already been handed an item loses the frame;
+        # instead the outstanding task is carried across turns and awaited by
+        # whichever loop (outer or mid-turn watcher) runs next.
+        next_frame_task: asyncio.Task | None = None
+
+        def _frame_task() -> asyncio.Task:
+            nonlocal next_frame_task
+            if next_frame_task is None:
+                next_frame_task = asyncio.create_task(queue.get())
+            return next_frame_task
 
         while True:
-            frame = await queue.get()
+            if pending_frames:
+                frame = pending_frames.pop(0)
+            else:
+                frame = await _frame_task()
+                next_frame_task = None
             t = frame.get("type")
 
             if t == "_eof":
                 return
 
             if t == "cancel":
-                client.interrupt()
+                # Between turns: nothing is running, but the interrupt may
+                # still race a just-finished turn — best-effort.
+                await _interrupt(client)
                 continue
 
             if t != "user_msg":
@@ -460,98 +556,189 @@ async def _real_agent_loop(
 
             text = frame.get("text", "")
 
-            # First message: connect; subsequent messages: query
-            if not connected:
-                await client.connect(text)
-                connected = True
+            await client.query(text)
+
+            # Consume the turn as a concurrent task while this loop keeps
+            # watching the stdin queue. A single-consumer design (await
+            # queue.get() only at the top of the loop) meant a `cancel`
+            # arriving MID-TURN sat in the queue until the turn finished
+            # naturally — by which point interrupt() was a no-op and the
+            # Stop button did nothing (Devin Review on #975).
+            turn_task = asyncio.create_task(_consume_turn(client, tool_calls_per_turn=tool_calls_per_turn))
+            interrupted_this_turn = False
+            while not turn_task.done():
+                ft = _frame_task()
+                await asyncio.wait({turn_task, ft}, return_when=asyncio.FIRST_COMPLETED)
+                if ft.done():
+                    next_frame_task = None
+                    mid = ft.result()
+                    if mid.get("type") == "cancel":
+                        # Interrupt the LIVE turn; receive_response() then
+                        # winds down and turn_task completes.
+                        interrupted_this_turn = True
+                        await _interrupt(client)
+                    else:
+                        # user_msg / _eof: keep for after the turn, in order.
+                        pending_frames.append(mid)
+            if interrupted_this_turn and turn_task.exception() is not None:
+                # Some SDK/CLI builds surface a user interrupt as an exception
+                # out of receive_response() instead of a graceful
+                # ResultMessage. That is the OUTCOME THE USER ASKED FOR — eat
+                # it so pressing Stop never tears down the whole runner (and
+                # with it the session). A turn crashing WITHOUT an interrupt
+                # still propagates below: runner exits, manager respawns.
+                print(
+                    f"turn ended with exception after interrupt (expected): {turn_task.exception()}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             else:
-                await client.query(text)
+                await turn_task  # propagate a crashed turn (outer handler emits error frame)
+            # `done` is emitted here, not inside `_consume_turn`, so it never
+            # fires ahead of a genuine crash: `await turn_task` above raises
+            # before reaching this line, and the manager's `error` frame
+            # handler (not `done`) is what runs — preserving the turn buffer
+            # so the partial answer already streamed to the user gets saved
+            # (Devin Review on #975).
+            _emit({"type": "done"})
 
-            # Consume the response for this turn
-            collected_text: list[str] = []
-            tokens_in = 0
-            tokens_out = 0
-            model = ""
-            # Per-turn tool-call budget: count tool_call emissions; on
-            # overflow emit a confirmation_required frame and break the loop
-            # so the agent pauses until the next user_msg (which counts as
-            # confirmation). Safety net against runaway tool chains.
-            tool_calls_this_turn = 0
-            budget_hit = False
 
-            async for msg in client.receive_response():
-                if budget_hit:
-                    break
-                if isinstance(msg, AssistantMessage):
-                    for block in msg.content:
-                        if isinstance(block, TextBlock):
-                            _emit({"type": "token", "text": block.text})
-                            collected_text.append(block.text)
-                        elif isinstance(block, ToolUseBlock):
-                            if tool_calls_this_turn >= tool_calls_per_turn:
-                                _emit(
-                                    {
-                                        "type": "confirmation_required",
-                                        "reason": "tool_call_budget",
-                                        "budget": tool_calls_per_turn,
-                                    }
-                                )
-                                budget_hit = True
-                                break
-                            # ``id`` is the per-call ``tool_use_id`` —
-                            # echoed back verbatim by ``ToolResultBlock``
-                            # so the frontend can pair a tool_call with
-                            # its result even when several calls to the
-                            # same tool are in flight. ``tool`` carries
-                            # the human-readable name for the inline
-                            # block header.
-                            _emit(
-                                {
-                                    "type": "tool_call",
-                                    "id": block.id,
-                                    "tool": block.name,
-                                    "args": block.input,
-                                }
-                            )
-                            tool_calls_this_turn += 1
-                        elif isinstance(block, ToolResultBlock):
-                            _emit_tool_result(block)
-                    model = msg.model
-                    if msg.usage:
-                        tokens_in += msg.usage.get("input_tokens", 0)
-                        tokens_out += msg.usage.get("output_tokens", 0)
+async def _consume_turn(client, *, tool_calls_per_turn: int = 50) -> None:
+    """Drain one turn's ``receive_response()`` stream into outbound frames.
 
-                elif isinstance(msg, UserMessage):
-                    # The SDK feeds tool results back as a UserMessage carrying
-                    # ToolResultBlock(s) — NOT inside the AssistantMessage. Without
-                    # handling this branch the runner never emits a tool_result
-                    # frame, so the inline tool block in the UI is stuck on
-                    # "running…" forever even though the tool finished.
-                    if isinstance(msg.content, list):
-                        for block in msg.content:
-                            if isinstance(block, ToolResultBlock):
-                                _emit_tool_result(block)
+    Runs as its own task so ``_real_agent_loop`` can keep consuming stdin
+    frames (cancel!) while the turn is in flight. Does NOT emit the `done`
+    frame itself — the caller does that, and only when this coroutine
+    returns without raising, so a genuine crash mid-stream propagates as an
+    `error` frame instead, leaving the turn buffer intact for partial-save.
+    """
+    from claude_agent_sdk import (  # type: ignore[import-untyped]
+        AssistantMessage,
+        ResultMessage,
+        TextBlock,
+        ToolResultBlock,
+        ToolUseBlock,
+        UserMessage,
+    )
 
-                elif isinstance(msg, ResultMessage):
-                    if msg.usage:
-                        tokens_in = msg.usage.get("input_tokens", tokens_in)
-                        tokens_out = msg.usage.get("output_tokens", tokens_out)
-                    # ResultMessage signals turn end; receive_response() stops after it
+    try:  # StreamEvent ships in newer claude-agent-sdk releases only
+        from claude_agent_sdk import StreamEvent  # type: ignore[attr-defined]
+    except ImportError:
+        StreamEvent = None
+
+    def _emit_tool_result(block) -> None:
+        result = block.content
+        if isinstance(result, list):
+            result = " ".join(item.get("text", "") if isinstance(item, dict) else str(item) for item in result)
+        _emit(
+            {
+                "type": "tool_result",
+                "id": block.tool_use_id,
+                "tool": block.tool_use_id,
+                "result": result,
+            }
+        )
+
+    collected_text: list[str] = []
+    tokens_in = 0
+    tokens_out = 0
+    model = ""
+    # Per-turn tool-call budget: count tool_call emissions; on
+    # overflow emit a confirmation_required frame and break the loop
+    # so the agent pauses until the next user_msg (which counts as
+    # confirmation). Safety net against runaway tool chains.
+    tool_calls_this_turn = 0
+    budget_hit = False
+    # Text streamed via StreamEvent deltas this turn. Non-empty ⇒ the
+    # completed TextBlock repeats text the user has already seen, so its
+    # whole-block token frame is suppressed (it still feeds collected_text
+    # for the turn-end assistant_message). Also the fallback content source
+    # should an SDK build stream deltas without a final consolidated
+    # TextBlock — otherwise the live UI would show the answer but the
+    # persisted assistant_message would be empty.
+    streamed_pieces: list[str] = []
+
+    async for msg in client.receive_response():
+        if budget_hit:
+            break
+        if StreamEvent is not None and isinstance(msg, StreamEvent):
+            # Token-level delta straight off the model stream. Only
+            # top-level assistant text — subagent/tool-side streams
+            # carry parent_tool_use_id and stay internal.
+            if getattr(msg, "parent_tool_use_id", None) is None:
+                piece = _stream_event_delta_text(msg.event)
+                if piece:
+                    _emit({"type": "token", "text": piece})
+                    streamed_pieces.append(piece)
+            continue
+        if isinstance(msg, AssistantMessage):
+            for block in msg.content:
+                if isinstance(block, TextBlock):
+                    if not streamed_pieces:
+                        _emit({"type": "token", "text": block.text})
+                    collected_text.append(block.text)
+                elif isinstance(block, ToolUseBlock):
+                    if tool_calls_this_turn >= tool_calls_per_turn:
+                        _emit(
+                            {
+                                "type": "confirmation_required",
+                                "reason": "tool_call_budget",
+                                "budget": tool_calls_per_turn,
+                            }
+                        )
+                        budget_hit = True
+                        break
+                    # ``id`` is the per-call ``tool_use_id`` —
+                    # echoed back verbatim by ``ToolResultBlock``
+                    # so the frontend can pair a tool_call with
+                    # its result even when several calls to the
+                    # same tool are in flight. ``tool`` carries
+                    # the human-readable name for the inline
+                    # block header.
                     _emit(
                         {
-                            "type": "assistant_message",
-                            "content": "".join(collected_text),
-                            "tokens_in": tokens_in,
-                            "tokens_out": tokens_out,
-                            "model": model,
+                            "type": "tool_call",
+                            "id": block.id,
+                            "tool": block.name,
+                            "args": block.input,
                         }
                     )
+                    tool_calls_this_turn += 1
+                elif isinstance(block, ToolResultBlock):
+                    _emit_tool_result(block)
+            model = msg.model
+            if msg.usage:
+                tokens_in += msg.usage.get("input_tokens", 0)
+                tokens_out += msg.usage.get("output_tokens", 0)
 
-            # Turn finished (receive_response() drained, or budget gate broke
-            # the loop). Emit a `done` frame so the UI hides the Stop button —
-            # without it the composer is wedged in the "running" state because
-            # the frontend only clears it on done/error/cancelled.
-            _emit({"type": "done"})
+        elif isinstance(msg, UserMessage):
+            # The SDK feeds tool results back as a UserMessage carrying
+            # ToolResultBlock(s) — NOT inside the AssistantMessage. Without
+            # handling this branch the runner never emits a tool_result
+            # frame, so the inline tool block in the UI is stuck on
+            # "running…" forever even though the tool finished.
+            if isinstance(msg.content, list):
+                for block in msg.content:
+                    if isinstance(block, ToolResultBlock):
+                        _emit_tool_result(block)
+
+        elif isinstance(msg, ResultMessage):
+            if msg.usage:
+                tokens_in = msg.usage.get("input_tokens", tokens_in)
+                tokens_out = msg.usage.get("output_tokens", tokens_out)
+            # ResultMessage signals turn end; receive_response() stops after it.
+            # Content prefers the consolidated TextBlocks (canonical);
+            # falls back to the streamed deltas should an SDK build omit
+            # the final block under partial streaming.
+            _emit(
+                {
+                    "type": "assistant_message",
+                    "content": "".join(collected_text) or "".join(streamed_pieces),
+                    "tokens_in": tokens_in,
+                    "tokens_out": tokens_out,
+                    "model": model,
+                }
+            )
 
 
 async def _start_relay() -> int:
@@ -612,6 +799,13 @@ async def amain() -> None:
         # loop's `claude` spawn and `_agnes_mcp_servers()`'s `agnes mcp` spawn
         # must see the rewritten AGNES_SERVER / ANTHROPIC_* env.
         await _start_relay()
+        # Barrier: the workspace tree must be fully in /work before anything
+        # reads or writes it — the marketplace bootstrap writes project-level
+        # plugin state a late-finishing workspace extraction would clobber,
+        # and the agent CLI (spawned eagerly by _real_agent_loop's `async
+        # with`) loads CLAUDE.md/.claude from /work at boot. The wheel install
+        # above deliberately does NOT gate on this — it overlaps the upload.
+        await _wait_workspace_ready()
         # Opt-in (AGNES_BOOTSTRAP_MARKETPLACE=1): install the user's marketplace
         # plugins into this project so setting_sources surfaces them. After the
         # CLI install (needs the `agnes` binary); before the reader attaches for
