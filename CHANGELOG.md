@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.6] - 2026-07-22
+
+### Added
+
 - **Full agent/skill lifecycle over MCP** — six new foundation tools close the
   REST × CLI × MCP parity gap for managing marketplace items and own store
   entities from any MCP surface (web chat, remote connectors):
@@ -23,8 +37,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   skill end-to-end without the CLI. Binary paths (ZIP upload/replace, photo,
   `store mine` bundle) remain CLI-only. The covered endpoints moved from the
   triple-surface grandfather baseline into the enforced cohort.
-
-### Changed
 
 ### Fixed
 
@@ -43,12 +55,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   unregistering the row), and a forever-red job masked real transient
   failures from monitoring. Transient failures keep the existing
   fail-and-retry semantics.
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.76.5] - 2026-07-21
 
