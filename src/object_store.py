@@ -27,9 +27,12 @@ mirroring the singleton-cache shape used by
 
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
 from typing import Optional, Protocol
+
+log = logging.getLogger(__name__)
 
 try:
     import boto3
@@ -201,6 +204,22 @@ def _build_object_store() -> Optional[ObjectStore]:
         return None
     config = distribution_object_store_config()
     if config is None:
+        return None
+    if boto3 is None:
+        # A bucket is configured but the [distribution] extra is not
+        # installed (the default image ships without it). Raising here
+        # would propagate through object_store() into every manifest
+        # build (GET /api/sync/manifest → 500) and the mirror job —
+        # manifest availability outranks strictness, so degrade to
+        # app-served downloads and tell the operator why, loudly, for
+        # both `auto` and explicit `on` modes.
+        log.error(
+            "object-store bucket %r is configured but boto3 is not "
+            "installed — signed-URL distribution disabled, parquets are "
+            "served via the app download endpoint instead. %s",
+            config.get("bucket"),
+            _BOTO3_MISSING_MSG,
+        )
         return None
     return S3ObjectStore(
         bucket=config["bucket"],

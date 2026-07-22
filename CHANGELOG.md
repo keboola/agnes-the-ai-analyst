@@ -12,6 +12,42 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.6] - 2026-07-22
+
+### Fixed
+
+- A configured object-store bucket on an image without the `[distribution]`
+  extra (boto3) no longer breaks manifest builds: `object_store()` now
+  degrades to `None` with a loud ERROR log — `GET /api/sync/manifest` serves
+  the app-download fallback instead of returning 500, for both
+  `distribution.signed_urls: auto` and explicit `on`. Direct
+  `S3ObjectStore(...)` construction still raises the actionable
+  install-the-extra error.
+- `data-refresh` jobs no longer stay permanently `failed` when a registered
+  table's upstream object was deleted (Keboola Storage HTTP 404,
+  `storage.tables.notFound` — e.g. a table dropped or moved to another bucket
+  after registration). Such per-table failures are now classified *permanent*:
+  they still surface in `sync_state` per-table errors, the admin registry UI,
+  and the operator webhook notifier, but they no longer flip the whole job to
+  `failed` — retrying cannot heal them (the fix is re-pointing or
+  unregistering the row), and a forever-red job masked real transient
+  failures from monitoring. Transient failures keep the existing
+  fail-and-retry semantics.
+
+## [0.76.5] - 2026-07-21
+
+### Added
+
 - The authoring Studio (`/admin/studio*`) can now be disabled per-instance.
   Default stays on; set `AGNES_STUDIO_ENABLED=0` (the infra/Terraform `.env`
   override, exposed as the `studio_enabled` module variable) or
@@ -41,6 +77,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `redis.url`, and `analytics.backend` / `ducklake.*` keys, with two stale
   "lands next wave" comments in the m-tier compose/config files corrected to
   reflect that the coordination backend already shipped.
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.4] - 2026-07-21
+
+### Fixed
 
 - Install prompt (`/setup` clipboard payload) no longer instructs the agent to
   suppress its own security judgment around the freshly-minted PAT. Removed the
@@ -53,12 +98,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the command-line argv) are unchanged. Also dropped the step-4 `/agnes-private`
   private-session tip — that guidance belongs in the workspace docs, not the
   one-shot setup prompt.
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.76.3] - 2026-07-21
 

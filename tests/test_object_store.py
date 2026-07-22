@@ -311,3 +311,34 @@ def test_factory_caches_until_reset(monkeypatch):
     assert object_store() is first
     reset_object_store_cache()
     assert object_store() is None
+
+
+def test_factory_degrades_to_none_when_bucket_set_but_boto3_missing(monkeypatch, caplog):
+    """A configured bucket on an image without the [distribution] extra must
+    degrade (loud ERROR, app-served downloads) — not propagate RuntimeError
+    into every manifest build (GET /api/sync/manifest would 500)."""
+    import logging
+
+    _no_yaml(monkeypatch)
+    monkeypatch.setattr(object_store_mod, "boto3", None)
+    monkeypatch.setenv("AGNES_DISTRIBUTION_SIGNED_URLS", "auto")
+    monkeypatch.setenv("AGNES_DISTRIBUTION_OBJECT_STORE_BUCKET", "b")
+    with caplog.at_level(logging.ERROR):
+        assert object_store() is None
+    assert any("boto3" in r.getMessage() and "distribution" in r.getMessage() for r in caplog.records), (
+        "degrade must be loudly logged so the operator learns why signed URLs are off"
+    )
+
+
+def test_factory_degrades_even_when_mode_on(monkeypatch, caplog):
+    """Explicit `signed_urls: on` with missing boto3 also degrades — manifest
+    availability outranks strictness; the ERROR log carries the misconfig."""
+    import logging
+
+    _no_yaml(monkeypatch)
+    monkeypatch.setattr(object_store_mod, "boto3", None)
+    monkeypatch.setenv("AGNES_DISTRIBUTION_SIGNED_URLS", "on")
+    monkeypatch.setenv("AGNES_DISTRIBUTION_OBJECT_STORE_BUCKET", "b")
+    with caplog.at_level(logging.ERROR):
+        assert object_store() is None
+    assert any("boto3" in r.getMessage() for r in caplog.records)
