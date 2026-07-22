@@ -16,6 +16,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Observability/hygiene follow-ups from the three-plane architecture audit
+  (spec §3.7): every log line (JSON and dev/rich text formats) now carries
+  this process's replica id (`hostname:pid`), matching the `replica` label
+  already used on Prometheus series; a new `agnes_ducklake_snapshot_age_seconds`
+  gauge is populated by the `ducklake-maintenance` job so DuckLake staleness
+  is observable (absent when `analytics.backend` is not `ducklake`); the
+  m-tier reference `deploy/caddy/Caddyfile.mtier` now serves a small static
+  maintenance page (HTTP 503) instead of a hard/bare error when every
+  upstream is unhealthy; and `config/instance.yaml.example` documents the
+  previously-undocumented `deployment.role`, `coordination.backend` /
+  `redis.url`, and `analytics.backend` / `ducklake.*` keys, with two stale
+  "lands next wave" comments in the m-tier compose/config files corrected to
+  reflect that the coordination backend already shipped.
+- On role-split deployments, the three remaining in-api analytics writers now
+  enqueue jobs instead of writing in-process (three-plane spec §3.1 — the api
+  plane is analytics-write-free): admin `register-table` / `registry/rebuild` /
+  BigQuery-row updates ride a new `analytics-rebuild` job, and collection/file
+  delete + reingest derived-table purges ride a new `collections-purge` job
+  (both HEAVY lane). Single-box `all` deployments are unchanged — the original
+  synchronous/BackgroundTask paths still run and neither kind is enqueued.
+
 ### Removed
 
 ### Internal
@@ -45,6 +66,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   them (tab-prefixed `curated-<mid>/<plugin>`, `flea-<uuid>`). Previously a
   copy-pasted search id 404ed because the detail/install endpoints take the
   bare forms.
+### Fixed
+
+- A configured object-store bucket on an image without the `[distribution]`
+  extra (boto3) no longer breaks manifest builds: `object_store()` now
+  degrades to `None` with a loud ERROR log — `GET /api/sync/manifest` serves
+  the app-download fallback instead of returning 500, for both
+  `distribution.signed_urls: auto` and explicit `on`. Direct
+  `S3ObjectStore(...)` construction still raises the actionable
+  install-the-extra error.
 - `data-refresh` jobs no longer stay permanently `failed` when a registered
   table's upstream object was deleted (Keboola Storage HTTP 404,
   `storage.tables.notFound` — e.g. a table dropped or moved to another bucket

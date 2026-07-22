@@ -56,7 +56,7 @@ def jobs_db(tmp_path, monkeypatch):
 
 
 class TestRegisterAllKinds:
-    def test_registers_eight_kinds(self):
+    def test_registers_ten_kinds(self):
         from app.worker.kinds import register_all_kinds
         from app.worker.registry import JOB_KINDS
 
@@ -71,6 +71,8 @@ class TestRegisterAllKinds:
             "ducklake-maintenance",
             "analytics-migrate",
             "distribution-mirror",
+            "analytics-rebuild",
+            "collections-purge",
         }
 
     def test_lanes_are_correct(self):
@@ -87,6 +89,8 @@ class TestRegisterAllKinds:
         assert JOB_KINDS["ducklake-maintenance"].lane == LIGHT_LANE
         assert JOB_KINDS["analytics-migrate"].lane == HEAVY_LANE
         assert JOB_KINDS["distribution-mirror"].lane == LIGHT_LANE
+        assert JOB_KINDS["analytics-rebuild"].lane == HEAVY_LANE
+        assert JOB_KINDS["collections-purge"].lane == HEAVY_LANE
 
     def test_idempotent_reregistration(self):
         """Calling register_all_kinds() twice (e.g. test re-imports, or a
@@ -97,7 +101,7 @@ class TestRegisterAllKinds:
         register_all_kinds()
         register_all_kinds()
 
-        assert len(JOB_KINDS) == 8
+        assert len(JOB_KINDS) == 10
 
 
 class TestDataRefreshHandler:
