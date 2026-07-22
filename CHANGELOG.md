@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.8] - 2026-07-22
+
+### Added
+
 - **Full agent/skill lifecycle over MCP** — six new foundation tools close the
   REST × CLI × MCP parity gap for managing marketplace items and own store
   entities from any MCP surface (web chat, remote connectors):
@@ -60,12 +74,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   them (tab-prefixed `curated-<mid>/<plugin>`, `flea-<uuid>`). Previously a
   copy-pasted search id 404ed because the detail/install endpoints take the
   bare forms.
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.76.7] - 2026-07-22
 
