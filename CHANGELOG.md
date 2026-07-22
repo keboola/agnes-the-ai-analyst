@@ -16,6 +16,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- A configured object-store bucket on an image without the `[distribution]`
+  extra (boto3) no longer breaks manifest builds: `object_store()` now
+  degrades to `None` with a loud ERROR log — `GET /api/sync/manifest` serves
+  the app-download fallback instead of returning 500, for both
+  `distribution.signed_urls: auto` and explicit `on`. Direct
+  `S3ObjectStore(...)` construction still raises the actionable
+  install-the-extra error.
 - `data-refresh` jobs no longer stay permanently `failed` when a registered
   table's upstream object was deleted (Keboola Storage HTTP 404,
   `storage.tables.notFound` — e.g. a table dropped or moved to another bucket
