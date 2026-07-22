@@ -126,6 +126,8 @@ class TestRegistration:
             "ducklake-maintenance",
             "analytics-migrate",
             "distribution-mirror",
+            "analytics-rebuild",
+            "collections-purge",
         }
 
 
