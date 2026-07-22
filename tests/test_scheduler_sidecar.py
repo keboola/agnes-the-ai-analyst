@@ -63,6 +63,14 @@ def test_build_jobs_honors_knowledge_digests_env_override(monkeypatch):
     assert timeout == 900
 
 
+def test_data_app_reaper_job_present(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_DATA_APP_REAP_INTERVAL", "300")
+    from services.scheduler.__main__ import build_jobs
+
+    names = [j[0] for j in build_jobs()]
+    assert "data-app-idle-reaper" in names
+
+
 def test_resolved_startup_grace_default(monkeypatch):
     monkeypatch.delenv("SCHEDULER_STARTUP_GRACE_SECONDS", raising=False)
     from services.scheduler.__main__ import resolved_startup_grace_seconds
@@ -604,6 +612,7 @@ class TestUnmigratedRowsUnchanged:
         "knowledge-packaging": ("/api/admin/run-knowledge-packaging", "POST"),
         "knowledge-digests": ("/api/admin/run-knowledge-digests", "POST"),
         "initial-workspace": ("/api/admin/initial-workspace/sync-if-configured", "POST"),
+        "data-app-idle-reaper": ("/api/data-apps/reap-idle", "POST"),
     }
 
     def test_unmigrated_rows_endpoint_and_method_unchanged(self):
