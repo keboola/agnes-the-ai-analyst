@@ -565,6 +565,7 @@ async def _real_agent_loop(
             # naturally — by which point interrupt() was a no-op and the
             # Stop button did nothing (Devin Review on #975).
             turn_task = asyncio.create_task(_consume_turn(client, tool_calls_per_turn=tool_calls_per_turn))
+            interrupted_this_turn = False
             while not turn_task.done():
                 ft = _frame_task()
                 await asyncio.wait({turn_task, ft}, return_when=asyncio.FIRST_COMPLETED)
@@ -574,11 +575,25 @@ async def _real_agent_loop(
                     if mid.get("type") == "cancel":
                         # Interrupt the LIVE turn; receive_response() then
                         # winds down and turn_task completes.
+                        interrupted_this_turn = True
                         await _interrupt(client)
                     else:
                         # user_msg / _eof: keep for after the turn, in order.
                         pending_frames.append(mid)
-            await turn_task  # propagate a crashed turn (outer handler emits error frame)
+            if interrupted_this_turn and turn_task.exception() is not None:
+                # Some SDK/CLI builds surface a user interrupt as an exception
+                # out of receive_response() instead of a graceful
+                # ResultMessage. That is the OUTCOME THE USER ASKED FOR — eat
+                # it so pressing Stop never tears down the whole runner (and
+                # with it the session). A turn crashing WITHOUT an interrupt
+                # still propagates below: runner exits, manager respawns.
+                print(
+                    f"turn ended with exception after interrupt (expected): {turn_task.exception()}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                await turn_task  # propagate a crashed turn (outer handler emits error frame)
 
 
 async def _consume_turn(client, *, tool_calls_per_turn: int = 50) -> None:
@@ -625,11 +640,14 @@ async def _consume_turn(client, *, tool_calls_per_turn: int = 50) -> None:
     # confirmation). Safety net against runaway tool chains.
     tool_calls_this_turn = 0
     budget_hit = False
-    # True once any StreamEvent text delta was emitted this turn —
-    # the completed TextBlock then repeats text the user has already
-    # seen, so its whole-block token frame is suppressed (it still
-    # feeds collected_text for the turn-end assistant_message).
-    deltas_this_turn = False
+    # Text streamed via StreamEvent deltas this turn. Non-empty ⇒ the
+    # completed TextBlock repeats text the user has already seen, so its
+    # whole-block token frame is suppressed (it still feeds collected_text
+    # for the turn-end assistant_message). Also the fallback content source
+    # should an SDK build stream deltas without a final consolidated
+    # TextBlock — otherwise the live UI would show the answer but the
+    # persisted assistant_message would be empty.
+    streamed_pieces: list[str] = []
 
     try:
         async for msg in client.receive_response():
@@ -643,12 +661,12 @@ async def _consume_turn(client, *, tool_calls_per_turn: int = 50) -> None:
                     piece = _stream_event_delta_text(msg.event)
                     if piece:
                         _emit({"type": "token", "text": piece})
-                        deltas_this_turn = True
+                        streamed_pieces.append(piece)
                 continue
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock):
-                        if not deltas_this_turn:
+                        if not streamed_pieces:
                             _emit({"type": "token", "text": block.text})
                         collected_text.append(block.text)
                     elif isinstance(block, ToolUseBlock):
@@ -700,11 +718,14 @@ async def _consume_turn(client, *, tool_calls_per_turn: int = 50) -> None:
                 if msg.usage:
                     tokens_in = msg.usage.get("input_tokens", tokens_in)
                     tokens_out = msg.usage.get("output_tokens", tokens_out)
-                # ResultMessage signals turn end; receive_response() stops after it
+                # ResultMessage signals turn end; receive_response() stops after it.
+                # Content prefers the consolidated TextBlocks (canonical);
+                # falls back to the streamed deltas should an SDK build omit
+                # the final block under partial streaming.
                 _emit(
                     {
                         "type": "assistant_message",
-                        "content": "".join(collected_text),
+                        "content": "".join(collected_text) or "".join(streamed_pieces),
                         "tokens_in": tokens_in,
                         "tokens_out": tokens_out,
                         "model": model,
