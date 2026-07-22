@@ -333,6 +333,65 @@ class TestRealMaintenanceSequence:
         JOB_KINDS["ducklake-maintenance"].handler({})  # must not raise
 
 
+def _gauge_value(metric_name: str):
+    from app.observability.metrics import REGISTRY
+
+    for metric in REGISTRY.collect():
+        for sample in metric.samples:
+            if sample.name == metric_name:
+                return sample.value
+    return None
+
+
+class TestSnapshotAgeMetric:
+    """Spec §3.7's DuckLake snapshot-age gauge, refreshed by the real
+    maintenance handler (not scrape-time) — see
+    app.observability.metrics.ducklake_snapshot_age_seconds."""
+
+    def test_handler_populates_snapshot_age_gauge(self, ducklake_env):
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+        from src.ducklake_session import get_ducklake_write
+
+        register_all_kinds()
+
+        w = get_ducklake_write()
+        w.execute("CREATE SCHEMA IF NOT EXISTS lake.src1")
+        w.execute("CREATE OR REPLACE TABLE lake.src1.t1 AS SELECT 1 AS x")
+        w.close()
+
+        JOB_KINDS["ducklake-maintenance"].handler({})
+
+        age = _gauge_value("agnes_ducklake_snapshot_age_seconds")
+        assert age is not None
+        # The lake was just touched — age must be small, not stale/bogus.
+        assert 0.0 <= age < 60.0
+
+    def test_handler_does_not_set_gauge_on_legacy_backend(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.delenv("AGNES_ANALYTICS_BACKEND", raising=False)
+
+        import src.analytics_backend as ab
+
+        ab.reset_analytics_backend_cache()
+        try:
+            from app.observability.metrics import record_ducklake_snapshot_age
+            from app.worker.kinds import register_all_kinds
+            from app.worker.registry import JOB_KINDS
+
+            register_all_kinds()
+
+            def _explode(age_seconds):
+                raise AssertionError("record_ducklake_snapshot_age must not be called on the legacy backend")
+
+            monkeypatch.setattr("app.worker.kinds._record_ducklake_snapshot_age", _explode)
+
+            JOB_KINDS["ducklake-maintenance"].handler({})  # must not raise, must be a pure no-op
+            assert record_ducklake_snapshot_age is not None  # import sanity
+        finally:
+            ab.reset_analytics_backend_cache()
+
+
 class TestCallOrderAndSql:
     """Spy-cursor check of the exact CALL sequence/shape, complementing the
     real end-to-end test above with a direct assertion of what gets sent to
@@ -360,6 +419,12 @@ class TestCallOrderAndSql:
                     executed.append(sql)
                     return self
 
+                def fetchone(self):
+                    # No real snapshot rows behind this spy — the
+                    # snapshot-age query (executed[3]) reads this as
+                    # "nothing to report" and skips setting the metric.
+                    return (None,)
+
                 def close(self):
                     pass
 
@@ -372,10 +437,11 @@ class TestCallOrderAndSql:
 
             JOB_KINDS["ducklake-maintenance"].handler({})
 
-            assert len(executed) == 3
+            assert len(executed) == 4
             assert executed[0] == "CALL lake.merge_adjacent_files()"
             assert executed[1] == ("CALL ducklake_expire_snapshots('lake', older_than => now() - INTERVAL '14 days')")
             assert executed[2] == "CALL ducklake_cleanup_old_files('lake', cleanup_all => true)"
+            assert executed[3] == "SELECT max(snapshot_time) FROM ducklake_snapshots('lake')"
             assert vacuum_calls == [1]  # VACUUM ran exactly once, after cleanup
         finally:
             ab.reset_analytics_backend_cache()

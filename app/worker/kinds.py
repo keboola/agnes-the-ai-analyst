@@ -332,6 +332,38 @@ def _ducklake_expire_older_than_sql(retention_days: int) -> str:
     return f"now() - INTERVAL '{retention_days} days'"
 
 
+def _record_ducklake_snapshot_age(conn) -> None:
+    """Populate ``agnes_ducklake_snapshot_age_seconds`` (spec §3.7) from
+    the newest ``snapshot_time`` in ``ducklake_snapshots('lake')``, using
+    the writer connection the maintenance CALLs just ran on.
+
+    Best-effort: any failure (extension quirk, empty lake, a fake/spy
+    connection in a test that doesn't implement ``fetchone``) is logged
+    and swallowed — a metrics read must never fail the maintenance job.
+    Naive timestamps (never observed against the real ``ducklake``
+    extension, but defensive) are treated as UTC, mirroring
+    ``_QueuedJobsCollector``'s same normalization in
+    ``app/observability/metrics.py``.
+    """
+    try:
+        from datetime import datetime, timezone
+
+        from app.observability.metrics import record_ducklake_snapshot_age
+
+        row = conn.execute("SELECT max(snapshot_time) FROM ducklake_snapshots('lake')").fetchone()
+        if row is None or row[0] is None:
+            return
+        snapshot_time = row[0]
+        if snapshot_time.tzinfo is None:
+            snapshot_time = snapshot_time.replace(tzinfo=timezone.utc)
+        else:
+            snapshot_time = snapshot_time.astimezone(timezone.utc)
+        age_seconds = max((datetime.now(timezone.utc) - snapshot_time).total_seconds(), 0.0)
+        record_ducklake_snapshot_age(age_seconds)
+    except Exception:
+        logger.exception("ducklake-maintenance: failed to record snapshot-age metric (non-fatal)")
+
+
 def _run_ducklake_maintenance(payload: dict) -> None:
     """Run the POC-verified DuckLake maintenance sequence on the writer
     session, in order:
@@ -351,6 +383,11 @@ def _run_ducklake_maintenance(payload: dict) -> None:
        — Postgres-catalog only; a no-op (logged, not an error) on a
        DuckDB-file catalog, which has no equivalent storage-compaction
        VACUUM.
+
+    After the CALL sequence (still on the same writer connection, before
+    it's closed) :func:`_record_ducklake_snapshot_age` populates
+    ``agnes_ducklake_snapshot_age_seconds`` — this job's own (daily)
+    cadence is the natural refresh point for that gauge (spec §3.7).
 
     Every CALL signature here was verified directly against the real
     ``ducklake`` extension (DuckDB 1.5.2) before being written — see the
@@ -402,6 +439,7 @@ def _run_ducklake_maintenance(payload: dict) -> None:
             conn.execute("CALL lake.merge_adjacent_files()")
             conn.execute(f"CALL ducklake_expire_snapshots('lake', older_than => {older_than_sql})")
             conn.execute("CALL ducklake_cleanup_old_files('lake', cleanup_all => true)")
+            _record_ducklake_snapshot_age(conn)
         finally:
             conn.close()
 
