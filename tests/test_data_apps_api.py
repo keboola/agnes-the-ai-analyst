@@ -317,6 +317,46 @@ def running_active_app(api_env):
     return "active2"
 
 
+@pytest.fixture
+def stale_deploying_app(api_env):
+    """A `deploying` app whose `updated_at` is far in the past — a wake or
+    operator-deploy that never finished. Should be recovered (-> `error`)
+    by the reap-idle sweep's stale-deploying scan."""
+    from src.db import get_system_db
+    from src.repositories.data_apps import DataAppsRepository
+
+    conn = get_system_db()
+    try:
+        repo = DataAppsRepository(conn)
+        app_id = repo.create(slug="stuck1", name="Stuck1", owner_user_id="owner1")
+        repo.set_state(app_id, "deploying", "waking")
+        conn.execute(
+            "UPDATE data_apps SET updated_at = now() - INTERVAL 20 MINUTE WHERE id = ?",
+            [app_id],
+        )
+    finally:
+        conn.close()
+    return "stuck1"
+
+
+@pytest.fixture
+def fresh_deploying_app(api_env):
+    """A `deploying` app whose `updated_at` is recent — mirrors
+    `stale_deploying_app` but must NOT be touched by the sweep (a wake that's
+    genuinely still in flight)."""
+    from src.db import get_system_db
+    from src.repositories.data_apps import DataAppsRepository
+
+    conn = get_system_db()
+    try:
+        repo = DataAppsRepository(conn)
+        app_id = repo.create(slug="fresh1", name="Fresh1", owner_user_id="owner1")
+        repo.set_state(app_id, "deploying", "waking")
+    finally:
+        conn.close()
+    return "fresh1"
+
+
 class TestCrud:
     def test_create_and_quota(self, client_as_user):
         for i in range(3):
@@ -759,3 +799,41 @@ class TestReap:
         finally:
             conn.close()
         assert row["state"] == "running"
+
+    def test_reap_idle_recovers_stale_deploying_app(self, admin_client, fake_runner, stale_deploying_app):
+        """A `deploying` row stuck past `_DEPLOY_STALE_TIMEOUT_S` (a wake or
+        operator-deploy that never finished) is flipped to `error`, not left
+        wedged forever, and reported separately from `reaped`."""
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["timed_out"] == ["stuck1"]
+        assert body["reaped"] == []
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("stuck1")
+        finally:
+            conn.close()
+        assert row["state"] == "error"
+        assert row["state_detail"] == "wake/deploy timed out"
+
+    def test_reap_idle_leaves_fresh_deploying_app_untouched(self, admin_client, fake_runner, fresh_deploying_app):
+        """A `deploying` row that's genuinely still in flight (recent
+        `updated_at`) must not be touched by the stale-deploying scan."""
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["timed_out"] == []
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("fresh1")
+        finally:
+            conn.close()
+        assert row["state"] == "deploying"

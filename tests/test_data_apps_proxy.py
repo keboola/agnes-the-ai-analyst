@@ -32,6 +32,26 @@ def _auth(pat: str) -> dict:
 
 
 @pytest.fixture(autouse=True)
+def _inline_spawn_wake(monkeypatch):
+    """`_spawn_wake` backgrounds the redeploy in production (fire-and-forget
+    `asyncio.create_task`) so a wake-triggering request never blocks on it.
+    That's untestable-by-default (nothing guarantees the background task
+    has run by the time a test asserts on it right after the response
+    returns) — so every test EXCEPT the one that specifically asserts the
+    non-blocking behavior (`test_sleeping_recreate_wake_does_not_block_response`,
+    which overrides this patch itself) gets `_spawn_wake` replaced with a
+    version that `await`s `_run_wake_fn` directly, making its effects
+    (`fake_runner.up_calls`, the row's new state) observable synchronously.
+    """
+    import app.api.data_apps_proxy as proxy_api
+
+    async def _inline(fn, row):
+        await proxy_api._run_wake_fn(fn, row)
+
+    monkeypatch.setattr(proxy_api, "_spawn_wake", _inline)
+
+
+@pytest.fixture(autouse=True)
 def _reset_coordination():
     """The `memory` coordination backend is a process-wide singleton
     (`app.coordination.factory._instance`) with no autouse reset in
@@ -313,6 +333,19 @@ def test_proxy_strips_hop_by_hop_headers(client_granted, fake_runner, respx_upst
     assert sent["x-custom"] == "kept"
 
 
+def test_proxy_strips_caller_credentials(client_granted, fake_runner, respx_upstream, running_app):
+    """Security: the caller's Agnes credentials (`Authorization` — already
+    injected on every `client_granted` call — and `Cookie`, set explicitly
+    here) must never reach the proxied data-app container. Distinct from
+    the hop-by-hop test above: these aren't protocol headers, they're the
+    caller's own auth material."""
+    r = client_granted.get("/apps/s/hello", headers={"cookie": "access_token=whatever; other=1"})
+    assert r.status_code == 200
+    sent = respx_upstream.calls[0].request.headers
+    assert "authorization" not in sent
+    assert "cookie" not in sent
+
+
 def test_sleeping_app_returns_holding_page_and_wakes(client_granted, fake_runner, sleeping_app):
     r = client_granted.get("/apps/s/", headers={"accept": "text/html"})
     assert r.status_code == 503
@@ -335,6 +368,35 @@ def test_sleeping_app_wake_fires_exactly_once_under_repeat_requests(client_grant
     r2 = client_granted.get("/apps/s/", headers={"accept": "application/json"})
     assert r2.status_code == 503
     assert len(fake_runner.up_calls) == 1
+
+
+def test_sleeping_recreate_wake_does_not_block_response(client_granted, fake_runner, sleeping_app, monkeypatch):
+    """Overrides the `_inline_spawn_wake` autouse fixture with a no-op
+    recorder that never actually runs `fn` — proving the PRODUCTION
+    `_spawn_wake` call site is genuinely fire-and-forget (the holding page
+    response arrives regardless of how long the real redeploy would take),
+    not just fast in this test suite because the fake runner is fast."""
+    import app.api.data_apps_proxy as proxy_api
+
+    calls = []
+
+    async def _recorder(fn, row):
+        calls.append((fn, row))
+        # Deliberately does NOT call `fn` — if the handler awaited this
+        # coroutine's *effect* rather than just scheduling it, a `fn` that
+        # never resolves would hang the request forever. It doesn't hang,
+        # which is exactly what this test is checking.
+
+    monkeypatch.setattr(proxy_api, "_spawn_wake", _recorder)
+
+    r = client_granted.get("/apps/s/", headers={"accept": "application/json"})
+    assert r.status_code == 503
+    assert r.json()["status"] == "waking"
+    assert len(calls) == 1
+    fn, row = calls[0]
+    assert fn is proxy_api.redeploy_current
+    assert row["slug"] == "s"
+    assert not fake_runner.up_calls  # the recorder never actually ran fn
 
 
 def test_sleeping_pause_mode_resumes_and_sets_running(client_granted, fake_runner):
@@ -523,3 +585,39 @@ def test_session_cookie_gets_parent_domain_when_subdomain_base_set(proxy_env):
     _set_login_cookie(resp, "owner1", "owner@test.local")
     set_cookie_header = resp.headers.get("set-cookie", "")
     assert "domain=.example.com" in set_cookie_header.lower()
+
+
+# ---------------------------------------------------------------------------
+# get_data_apps_config() hardening — a `None` from get_value (bad/absent
+# config, or a config-not-loaded-yet bootstrap state) must never crash the
+# subdomain middleware or session_cookie_domain(); the accessor itself
+# always returns a dict.
+# ---------------------------------------------------------------------------
+
+
+def test_get_data_apps_config_hardened_against_none(monkeypatch):
+    import app.instance_config as instance_config
+
+    monkeypatch.setattr(instance_config, "get_value", lambda *a, **k: None)
+    assert instance_config.get_data_apps_config() == {}
+    assert instance_config.session_cookie_domain() is None
+
+
+def test_subdomain_middleware_survives_none_config(monkeypatch):
+    import asyncio
+
+    import app.data_apps_subdomain as subdomain_mod
+    import app.instance_config as instance_config
+
+    monkeypatch.setattr(instance_config, "get_value", lambda *a, **k: None)
+
+    seen_paths = []
+
+    async def inner_app(scope, receive, send):
+        seen_paths.append(scope["path"])
+
+    middleware = subdomain_mod.DataAppSubdomainMiddleware(inner_app)
+    scope = {"type": "http", "path": "/metrics", "headers": [(b"host", b"example.com")]}
+
+    asyncio.run(middleware(scope, None, None))
+    assert seen_paths == ["/metrics"]  # no-op passthrough, no crash

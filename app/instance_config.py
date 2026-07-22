@@ -807,8 +807,18 @@ def get_corporate_memory_config() -> dict:
 
 
 def get_data_apps_config() -> dict:
-    """``data_apps:`` block — hosted user web apps feature (v96)."""
-    return get_value("data_apps", default={})
+    """``data_apps:`` block — hosted user web apps feature (v96).
+
+    ``get_value(..., default={})`` only substitutes the default when the
+    key is absent — an explicit null block in instance.yaml (or a
+    config-not-loaded-yet state some bootstrap/test paths hit) can still
+    make this come back ``None``. Hardened to always return a dict: this
+    accessor runs on every request via ``DataAppSubdomainMiddleware``
+    (``app/data_apps_subdomain.py``) and ``session_cookie_domain()`` below
+    (itself called from every login flow), so callers should never need
+    their own ``(get_data_apps_config() or {})`` guard.
+    """
+    return get_value("data_apps", default={}) or {}
 
 
 def session_cookie_domain() -> Optional[str]:

@@ -83,6 +83,19 @@ _HOP_BY_HOP = {
     "host",
 }
 
+# Caller credentials — REQUEST-direction only, never forwarded to the data
+# app's own container. `Authorization` carries the caller's Agnes session/PAT
+# (meant to authenticate to Agnes, not to the data app) and `Cookie` carries
+# the `access_token` session cookie (same reasoning, plus it may now carry
+# `Domain=.<parent>` in subdomain mode — see `session_cookie_domain()` — so
+# it would otherwise ride straight into a container we don't control).
+# Deliberately a separate set from `_HOP_BY_HOP` (different RFC, different
+# rationale: hop-by-hop is a *protocol* concept, this is *security*) even
+# though both end up filtered the same way on the request side. Response
+# headers are never checked against this set — a data app setting its OWN
+# `Set-Cookie` on the way back is legitimate and none of this proxy's business.
+_CREDENTIAL_HEADERS = {"authorization", "cookie"}
+
 _WAKE_LEASE_TTL_S = 120
 _TOUCH_DEBOUNCE_TTL_S = 30
 
@@ -133,25 +146,71 @@ def _touch(app_row: dict) -> None:
         data_apps_repo().touch_last_request(app_row["id"])
 
 
+async def _run_wake_fn(fn, row: dict) -> None:
+    """Run ``fn(row)`` (a blocking sync callable — ``redeploy_current`` in
+    production, a test double in ``tests/test_data_apps_proxy.py``) off
+    the event loop via ``run_in_threadpool``, mapping ANY failure —
+    including one raised from inside the backgrounded task itself, since
+    nothing else observes it — onto ``set_state(row_id, "error", detail)``
+    so a wake attempt never leaves the row wedged in ``deploying`` forever.
+
+    Shared by ``_spawn_wake``'s production background task and its test
+    replacement (``tests/test_data_apps_proxy.py``'s inline-await fixture)
+    so the error-handling contract can't drift between the two.
+    """
+    repo = data_apps_repo()
+    try:
+        await run_in_threadpool(fn, row)
+    except OwnerNotFoundError:
+        repo.set_state(row["id"], "error", "owner_not_found")
+    except (RunnerUnavailable, RunnerError) as exc:
+        detail = getattr(exc, "detail", None) or str(exc)
+        repo.set_state(row["id"], "error", detail)
+    except Exception as exc:  # noqa: BLE001 — must never leave the app wedged in "deploying"
+        logger.exception("wake redeploy failed for data app %s", row.get("slug"))
+        repo.set_state(row["id"], "error", str(exc))
+
+
+async def _spawn_wake(fn, row: dict) -> None:
+    """Production seam: schedule ``_run_wake_fn(fn, row)`` as a background
+    ``asyncio.Task`` and return immediately — awaiting this coroutine costs
+    ~nothing (it only awaits the trivial act of scheduling the task, never
+    the task itself), so the request handler's wake trigger doesn't block
+    on however long ``fn`` (e.g. ``redeploy_current``'s container
+    pull/start) actually takes; the holding page is what the caller waits
+    on instead, polling ``/readiness`` until the background task's
+    eventual ``set_state`` (success -> readiness flip, failure -> "error")
+    becomes visible.
+
+    Tests monkeypatch this module-level symbol to ``await
+    _run_wake_fn(fn, row)`` directly instead of backgrounding it, so the
+    effect (``fake_runner.up_calls``, the row's new state, ...) is
+    observable synchronously right after the request returns — see
+    ``tests/test_data_apps_proxy.py``.
+    """
+    asyncio.create_task(_run_wake_fn(fn, row))
+
+
 async def _trigger_wake(app_row: dict) -> None:
     """Wake a sleeping app — at most one in-flight attempt per app at a
     time, enforced by the ``dataapp:wake:{slug}`` lease. Callers that lose
     the race (another request/replica already holds the lease) just
     return — their caller renders the holding page regardless, and the
-    already-in-progress wake will flip the state for everyone.
+    already-in-progress wake will flip the state for everyone. The lease
+    is deliberately never explicitly released on success/failure here —
+    it's TTL-only, expiring naturally after ``_WAKE_LEASE_TTL_S`` seconds;
+    an explicit release the instant this coroutine returns (well before
+    the backgrounded redeploy actually finishes, for the recreate path)
+    would let a second concurrent request re-acquire it and fire a
+    duplicate wake while the first is still in flight.
 
     ``sleep_mode="pause"`` unpauses synchronously — cheap enough to await
     inline, so this coroutine sets ``running`` itself once it's done
     (rather than leaving that to the readiness-poll flip, which exists
     for the slower recreate path). ``sleep_mode="recreate"`` fires the
     full mint -> config -> ``runner.up`` pipeline
-    (:func:`app.api.data_apps.redeploy_current`) thread-pooled (via
-    ``starlette.concurrency.run_in_threadpool``, since ``redeploy_current``
-    and the sync ``RunnerClient`` it calls are blocking) and awaited here —
-    the runner's ``up`` call itself is what "returns immediately" refers
-    to (Docker's container-create/start call returns once the container
-    is launched, not once it's healthy); actual boot completion is what the
-    holding page's readiness poll waits out afterward, not this call.
+    (:func:`app.api.data_apps.redeploy_current`) via :func:`_spawn_wake` —
+    NOT awaited to completion here, see that function's docstring.
     """
     slug = app_row["slug"]
     holder = default_holder_id()
@@ -177,16 +236,7 @@ async def _trigger_wake(app_row: dict) -> None:
         return
 
     repo.set_state(app_row["id"], "deploying", "waking")
-    try:
-        await run_in_threadpool(redeploy_current, app_row)
-    except OwnerNotFoundError:
-        repo.set_state(app_row["id"], "error", "owner_not_found")
-    except (RunnerUnavailable, RunnerError) as exc:
-        detail = getattr(exc, "detail", None) or str(exc)
-        repo.set_state(app_row["id"], "error", detail)
-    except Exception as exc:  # noqa: BLE001 — must never leave the app wedged in "deploying"
-        logger.exception("wake redeploy failed for data app %s", slug)
-        repo.set_state(app_row["id"], "error", str(exc))
+    await _spawn_wake(redeploy_current, app_row)
 
 
 _STOPPED_HTML = """<!doctype html>
@@ -231,7 +281,11 @@ async def _proxy(request: Request, slug: str, path: str) -> Response:
     sent to the caller.
     """
     url = f"http://agnes-dataapp-{slug}:8888/{path}"
-    headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
+    headers = {
+        k: v
+        for k, v in request.headers.items()
+        if k.lower() not in _HOP_BY_HOP and k.lower() not in _CREDENTIAL_HEADERS
+    }
     headers["X-Forwarded-Prefix"] = f"/apps/{slug}"
 
     client = _upstream_client()
@@ -244,6 +298,13 @@ async def _proxy(request: Request, slug: str, path: str) -> Response:
             content=request.stream(),
         )
         resp = await client.send(upstream_request, stream=True)
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        # Connect-phase failures only — a mid-stream ReadTimeout on an
+        # otherwise-reachable container is a different failure mode
+        # (propagates as-is; the caller doesn't treat it as "container is
+        # gone", just as a request that timed out).
+        await client.aclose()
+        raise
     except Exception:
         await client.aclose()
         raise
@@ -297,7 +358,7 @@ async def proxy_app(slug: str, path: str, request: Request, user: dict = Depends
     if state == "running":
         try:
             return await _proxy(request, slug, path)
-        except httpx.ConnectError:
+        except (httpx.ConnectError, httpx.ConnectTimeout):
             data_apps_repo().set_state(row["id"], "error", "container unreachable")
             raise HTTPException(status_code=502, detail="container_unreachable")
 
@@ -377,6 +438,11 @@ async def proxy_ws(websocket: WebSocket, slug: str, path: str):
 
     import websockets
 
+    # No caller headers (incl. `Authorization`/`Cookie`) are forwarded to the
+    # upstream handshake at all — same credential-hygiene guarantee as the
+    # HTTP proxy's `_CREDENTIAL_HEADERS` strip, just trivially satisfied here
+    # since this bridge never builds a header dict from `websocket.headers`
+    # in the first place.
     try:
         async with websockets.connect(upstream_url) as upstream:
 
@@ -409,7 +475,15 @@ async def proxy_ws(websocket: WebSocket, slug: str, path: str):
                         pass
 
             await asyncio.gather(client_to_upstream(), upstream_to_client(), return_exceptions=True)
-    except OSError:
+    except Exception:
+        # Broad on purpose: covers plain connect failures (OSError — refused/
+        # unreachable/DNS) as well as the `websockets` library's own
+        # handshake-rejection exceptions (e.g. `InvalidStatus`/
+        # `InvalidHandshake` when the container answers but not with a
+        # valid WS upgrade). Any of these means the bridge never got a
+        # usable upstream connection — close gracefully rather than let an
+        # unhandled exception surface as a raw 500-equivalent.
+        logger.warning("WS bridge to data app %s failed", slug, exc_info=True)
         try:
             await websocket.close(code=1011, reason="upstream_unreachable")
         except Exception:

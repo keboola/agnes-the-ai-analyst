@@ -30,15 +30,12 @@ class DataAppSubdomainMiddleware:
         if scope["type"] in ("http", "websocket"):
             from app.instance_config import get_data_apps_config
 
-            # `get_data_apps_config()` returns the `data_apps:` instance.yaml
-            # block, defaulting to `{}` when the key is absent — but an
-            # instance.yaml that explicitly sets `data_apps:` to a null/empty
-            # value (or a config-not-loaded-yet state some test/bootstrap
-            # paths hit) can still surface `None` here. This middleware runs
-            # on EVERY request (including `/metrics`, `/healthz`, etc.), so a
-            # bad config must degrade to "middleware is a no-op", never crash
-            # the whole app.
-            base = ((get_data_apps_config() or {}).get("subdomain_base") or "").strip(".")
+            # `get_data_apps_config()` is hardened to always return a dict
+            # (never `None`, even for an explicit null `data_apps:` block or
+            # a config-not-loaded-yet state) — this middleware runs on
+            # EVERY request (including `/metrics`, `/healthz`, etc.), so
+            # callers here rely on that guarantee rather than re-guarding.
+            base = (get_data_apps_config().get("subdomain_base") or "").strip(".")
             if base:
                 host = dict(scope.get("headers") or {}).get(b"host", b"").decode().split(":")[0]
                 if host.endswith("." + base):

@@ -40,6 +40,7 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import duckdb
@@ -65,6 +66,16 @@ router = APIRouter(prefix="/api/data-apps", tags=["data-apps"])
 # value from either reaping an app instantly or never reaping it at all.
 _IDLE_TIMEOUT_MIN = 300
 _IDLE_TIMEOUT_MAX = 86400
+
+# A row stuck in `deploying` longer than this (updated_at) is recovered by
+# reap-idle rather than left wedged forever — see reap_idle_data_apps. Covers
+# both wake paths: the ingress proxy's fire-and-forget recreate-mode wake
+# (`app/api/data_apps_proxy.py::_spawn_wake`) whose background task died
+# without a caller left to notice, and an operator-triggered `POST .../deploy`
+# whose request process crashed mid-flight. 10 minutes is generous relative to
+# a normal container pull/start, short enough that an operator doesn't wait a
+# full idle_timeout_s cycle to find out a wake silently failed.
+_DEPLOY_STALE_TIMEOUT_S = 600
 
 # Fallback values for keys instance.yaml's `data_apps:` block may omit —
 # mirrors the documented defaults in config/instance.yaml.example so an
@@ -633,6 +644,14 @@ async def reap_idle_data_apps(
     A runner failure on one app is recorded (state -> "error",
     state_detail carries the runner's message) and does not abort the rest
     of the sweep — one dead container must not wedge every other reap.
+
+    Also recovers `deploying` rows stuck longer than
+    `_DEPLOY_STALE_TIMEOUT_S` (a wake or operator-deploy that never
+    finished — e.g. the ingress proxy's backgrounded `_spawn_wake` task
+    died without anything left to observe it, or a `POST .../deploy`
+    request process crashed mid-flight) by flipping them to `error` rather
+    than leaving them wedged in `deploying` forever. Reported separately
+    from `reaped` (`sleeping` transitions) as `timed_out`.
     """
     _feature_gate()
     repo = data_apps_repo()
@@ -651,5 +670,19 @@ async def reap_idle_data_apps(
         repo.set_state(row["id"], "sleeping")
         reaped.append(row["slug"])
 
-    _audit(conn, user["id"], "data_app.reap_idle", "data_app:*", {"reaped": reaped})
-    return {"reaped": reaped}
+    timed_out: list[str] = []
+    now = datetime.now(timezone.utc)
+    for row in repo.list(state="deploying"):
+        updated_at = row.get("updated_at")
+        if updated_at is None:
+            continue
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        if (now - updated_at).total_seconds() <= _DEPLOY_STALE_TIMEOUT_S:
+            continue
+        repo.set_state(row["id"], "error", "wake/deploy timed out")
+        logger.warning("reap-idle: %s stuck in deploying past %ds; marked error", row["slug"], _DEPLOY_STALE_TIMEOUT_S)
+        timed_out.append(row["slug"])
+
+    _audit(conn, user["id"], "data_app.reap_idle", "data_app:*", {"reaped": reaped, "timed_out": timed_out})
+    return {"reaped": reaped, "timed_out": timed_out}
