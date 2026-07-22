@@ -12,9 +12,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- **Full agent/skill lifecycle over MCP** — six new foundation tools close the
+  REST × CLI × MCP parity gap for managing marketplace items and own store
+  entities from any MCP surface (web chat, remote connectors):
+  `marketplace_search`, `marketplace_detail`, `marketplace_add`,
+  `marketplace_remove` (mirroring `agnes marketplace …`) and `store_update`,
+  `store_delete` (mirroring `agnes store …`). Together with the existing
+  `store_publish_markdown` / `store_status` / `store_rate`, an agent can now
+  create, review, publish, discover, install, edit, and delete an agent or
+  skill end-to-end without the CLI. Binary paths (ZIP upload/replace, photo,
+  `store mine` bundle) remain CLI-only. The covered endpoints moved from the
+  triple-surface grandfather baseline into the enforced cohort.
+
 ### Changed
 
 ### Fixed
+
+- `agnes marketplace add/detail/remove` — and the new MCP siblings — now accept
+  item ids exactly as `agnes marketplace search` / `marketplace_search` print
+  them (tab-prefixed `curated-<mid>/<plugin>`, `flea-<uuid>`). Previously a
+  copy-pasted search id 404ed because the detail/install endpoints take the
+  bare forms.
 
 ### Removed
 
@@ -48,6 +66,28 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   watching stdin, so cancel interrupts the live turn (an interrupt surfaced
   by the SDK as an exception no longer tears down the runner); follow-up
   messages arriving mid-turn are buffered and processed in order.
+### Fixed
+
+- Observability/hygiene follow-ups from the three-plane architecture audit
+  (spec §3.7): every log line (JSON and dev/rich text formats) now carries
+  this process's replica id (`hostname:pid`), matching the `replica` label
+  already used on Prometheus series; a new `agnes_ducklake_snapshot_age_seconds`
+  gauge is populated by the `ducklake-maintenance` job so DuckLake staleness
+  is observable (absent when `analytics.backend` is not `ducklake`); the
+  m-tier reference `deploy/caddy/Caddyfile.mtier` now serves a small static
+  maintenance page (HTTP 503) instead of a hard/bare error when every
+  upstream is unhealthy; and `config/instance.yaml.example` documents the
+  previously-undocumented `deployment.role`, `coordination.backend` /
+  `redis.url`, and `analytics.backend` / `ducklake.*` keys, with two stale
+  "lands next wave" comments in the m-tier compose/config files corrected to
+  reflect that the coordination backend already shipped.
+- On role-split deployments, the three remaining in-api analytics writers now
+  enqueue jobs instead of writing in-process (three-plane spec §3.1 — the api
+  plane is analytics-write-free): admin `register-table` / `registry/rebuild` /
+  BigQuery-row updates ride a new `analytics-rebuild` job, and collection/file
+  delete + reingest derived-table purges ride a new `collections-purge` job
+  (both HEAVY lane). Single-box `all` deployments are unchanged — the original
+  synchronous/BackgroundTask paths still run and neither kind is enqueued.
 
 ## [0.76.6] - 2026-07-22
 

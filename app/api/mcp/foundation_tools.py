@@ -24,6 +24,22 @@ from typing import Any, Callable
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+
+def _split_marketplace_id(item_id: str) -> tuple[str, str, str]:
+    """Split a marketplace item id into ``(source, part1, part2)``.
+
+    ``GET /api/marketplace/items`` prefixes row ids with their tab
+    (``curated-<marketplace_id>/<plugin_name>``, ``flea-<entity_uuid>``), while
+    the REST detail/install paths take the bare forms. Accept both, so an id
+    can be passed straight from ``marketplace_search`` output — same
+    normalization as the CLI's ``_parse_id`` in ``cli/commands/marketplace.py``.
+    """
+    if "/" in item_id:
+        head, plugin = item_id.split("/", 1)
+        return "curated", head.removeprefix("curated-"), plugin
+    return "flea", item_id.removeprefix("flea-"), ""
+
+
 FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "server_info",
     "catalog",
@@ -44,6 +60,16 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "store_rate",
     "store_status",
     "store_publish_markdown",
+    # Full agent/skill lifecycle parity (REST × CLI × MCP): discover, inspect,
+    # install/remove, edit, delete — an agent can manage its own store
+    # entities and stack without leaving the chat. Binary paths (ZIP upload,
+    # photo, bundle download) stay CLI-only.
+    "marketplace_search",
+    "marketplace_detail",
+    "marketplace_add",
+    "marketplace_remove",
+    "store_update",
+    "store_delete",
     "admin_store_lint_findings",
     "admin_store_lint_audit",
     "admin_store_lint_dismiss",
@@ -549,6 +575,203 @@ def register_foundation_tools(
             )
             r.raise_for_status()
             return r.json()
+
+    @mcp.tool()
+    async def marketplace_search(
+        query: str = "",
+        type: str = "",
+        source: str = "",
+        sort: str = "recent",
+        limit: int = 24,
+    ) -> dict:
+        """Search the marketplace — Curated and Flea Market — for installable items.
+
+        Default scope is EVERYWHERE: both the curated marketplaces and the Flea
+        Market are searched, and every result carries a ``source`` label
+        (``curated`` | ``flea``) plus an ``installed`` flag so you can tell what
+        is already in the caller's stack. Results are RBAC-filtered to what the
+        caller may access. Mirrors ``GET /api/marketplace/items`` and
+        ``agnes marketplace search``.
+
+        Args:
+            query:  Search text (empty = browse all).
+            type:   Filter: ``skill`` | ``agent`` | ``plugin`` (empty = all).
+            source: Restrict to one tab: ``curated`` | ``flea`` (empty = both).
+            sort:   ``recent`` (default) | ``most_used`` | ``trending``.
+            limit:  Max results per tab (1–100).
+
+        Returns ``{"items": [{"id", "type", "source", "name", "owner",
+        "installed", …}], "total"}``. Install an item with ``marketplace_add``;
+        inspect one with ``marketplace_detail``.
+        """
+        tabs = [source] if source else ["curated", "flea"]
+        items: list = []
+        async with httpx.AsyncClient() as c:
+            for tab in tabs:
+                params: dict = {"tab": tab, "sort": sort, "page_size": max(1, min(limit, 100))}
+                if query:
+                    params["q"] = query
+                if type:
+                    params["type"] = type
+                r = await c.get(
+                    f"{base_url}/api/marketplace/items",
+                    headers=headers_fn(),
+                    params=params,
+                    timeout=30,
+                )
+                r.raise_for_status()
+                items.extend(r.json().get("items", []))
+        return {"items": items, "total": len(items)}
+
+    @mcp.tool()
+    async def marketplace_detail(item_id: str) -> dict:
+        """Show full details for one marketplace item (curated or flea).
+
+        Accepts the same id shapes as ``agnes marketplace detail``: a curated id
+        is ``<marketplace_id>/<plugin_name>`` (contains a slash), a Flea Market
+        id is the bare entity UUID. Returns the enriched detail — description,
+        contents (skills / agents / commands / MCP servers), install state.
+        Mirrors ``GET /api/marketplace/curated/{mid}/{plugin}`` /
+        ``GET /api/marketplace/flea/{entity_id}/detail``.
+
+        Args:
+            item_id: ``<marketplace_id>/<plugin_name>`` or a flea entity UUID —
+                     the tab-prefixed forms printed by ``marketplace_search``
+                     (``curated-<mid>/<plugin>``, ``flea-<uuid>``) work as-is.
+        """
+        source, part1, part2 = _split_marketplace_id(item_id)
+        if source == "curated":
+            path = f"/api/marketplace/curated/{part1}/{part2}"
+        else:
+            path = f"/api/marketplace/flea/{part1}/detail"
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}{path}", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def marketplace_add(item_id: str) -> dict:
+        """Add a marketplace item (plugin, skill, or agent) to the caller's stack.
+
+        Persistent, like clicking "Add" in the web UI — applies to all future
+        sessions. Same id shapes as ``marketplace_detail``. Flea items must have
+        passed guardrail review (``approved``) — pending/blocked entities return
+        409. Mirrors ``POST /api/store/entities/{id}/install`` (flea) /
+        ``POST /api/marketplace/curated/{mid}/{plugin}/install`` (curated) and
+        ``agnes marketplace add``.
+
+        Args:
+            item_id: ``<marketplace_id>/<plugin_name>`` or a flea entity UUID
+                     (tab-prefixed ``marketplace_search`` ids work as-is).
+
+        Returns ``{"installed": true, "next_step": …}`` — the plugin activates
+        after the user's next plugin refresh.
+        """
+        source, part1, part2 = _split_marketplace_id(item_id)
+        if source == "curated":
+            path = f"/api/marketplace/curated/{part1}/{part2}/install"
+        else:
+            path = f"/api/store/entities/{part1}/install"
+        async with httpx.AsyncClient() as c:
+            r = await c.post(f"{base_url}{path}", json={}, headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+        return {
+            "installed": True,
+            "next_step": "Run /update-agnes-plugins in Claude Code (or `agnes update`) to activate it.",
+        }
+
+    @mcp.tool()
+    async def marketplace_remove(item_id: str) -> dict:
+        """Remove a marketplace item from the caller's stack.
+
+        Inverse of ``marketplace_add``; same id shapes. System plugins pinned by
+        an admin cannot be removed (409). Mirrors the DELETE install endpoints
+        and ``agnes marketplace remove``.
+
+        Args:
+            item_id: ``<marketplace_id>/<plugin_name>`` or a flea entity UUID
+                     (tab-prefixed ``marketplace_search`` ids work as-is).
+        """
+        source, part1, part2 = _split_marketplace_id(item_id)
+        if source == "curated":
+            path = f"/api/marketplace/curated/{part1}/{part2}/install"
+        else:
+            path = f"/api/store/entities/{part1}/install"
+        async with httpx.AsyncClient() as c:
+            r = await c.delete(f"{base_url}{path}", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+        return {
+            "removed": True,
+            "next_step": "Run /update-agnes-plugins in Claude Code (or `agnes update`) to apply it.",
+        }
+
+    @mcp.tool()
+    async def store_update(
+        entity_id: str,
+        description: str = "",
+        category: str = "",
+        video_url: str = "",
+    ) -> dict:
+        """Edit the metadata of an owned Flea Market entity (owner or admin).
+
+        Metadata-only: text fields update in place with no version bump or
+        re-review. Binary replacements (new ZIP bundle, photo) have no MCP
+        analogue — use ``agnes store update --zip/--photo``. Omitted (empty)
+        fields are left untouched. Mirrors ``PUT /api/store/entities/{id}`` and
+        ``agnes store update``.
+
+        Args:
+            entity_id:   The store entity id (from ``store_publish_markdown``
+                         output or ``marketplace_search``).
+            description: New description (empty = unchanged).
+            category:    New category, case-insensitive (empty = unchanged).
+            video_url:   New demo-video URL (empty = unchanged).
+
+        Returns the updated entity ``{"id", "version", …}``.
+        """
+        data: dict = {}
+        if description:
+            data["description"] = description
+        if category:
+            data["category"] = category
+        if video_url:
+            data["video_url"] = video_url
+        if not data:
+            return {
+                "error": "nothing_to_update",
+                "hint": "Pass at least one of description / category / video_url.",
+            }
+        async with httpx.AsyncClient() as c:
+            r = await c.put(
+                f"{base_url}/api/store/entities/{entity_id}",
+                data=data,
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def store_delete(entity_id: str) -> dict:
+        """Delete an owned Flea Market entity (owner or admin).
+
+        Soft-archives the entity by default (reversible): it is hidden from
+        browse and refuses new installs, but the bundle stays on disk so users
+        who already installed it keep it. Hard delete (drops the bundle and
+        removes existing installs) is admin-only via the web/CLI. Mirrors
+        ``DELETE /api/store/entities/{id}`` and ``agnes store delete``.
+
+        Args:
+            entity_id: The store entity id to delete.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.delete(
+                f"{base_url}/api/store/entities/{entity_id}",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+        return {"deleted": True, "entity_id": entity_id}
 
     @mcp.tool()
     async def admin_store_lint_findings(include_dismissed: bool = False) -> dict:
