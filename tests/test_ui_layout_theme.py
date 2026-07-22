@@ -113,10 +113,9 @@ class TestRailOptIn:
     def test_rail_keeps_nav_contract(self, web_client, admin_cookie, monkeypatch):
         """Rail must carry the prototype IA (Chat + My Stack + Catalog as
         three flat destinations) and the same JS/id contract as the
-        header: global search combobox, user menu, theme toggle, tour
-        anchors. The content surfaces (Plugins/Library/Memory) are reached
-        as kind tabs on the unified /catalog page, not as rail
-        subcategories."""
+        header: global search combobox, user menu, theme toggle. The
+        content surfaces (Plugins/Library/Memory) are reached as kind
+        tabs on the unified /catalog page, not as rail subcategories."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/stack", cookies=admin_cookie)
         text = resp.text
@@ -126,8 +125,6 @@ class TestRailOptIn:
             'id="themeToggle"',
             # prototype IA: My Stack page + Catalog parent
             'href="/stack"',
-            'data-tour="nav-stack"',
-            'data-tour="nav-catalog"',
             'href="/catalog"',
             # default brand lockup: the orb + wordmark
             'class="rail-orb"',

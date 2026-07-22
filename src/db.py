@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 91
+SCHEMA_VERSION = 92
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1458,6 +1458,22 @@ CREATE TABLE IF NOT EXISTS store_lint_entity_state (
     run_id       VARCHAR NOT NULL,
     linted_at    TIMESTAMP NOT NULL
 );
+
+-- v92: user_journey_state — per-user onboarding "journey" progress
+-- (backend foundation for chat-driven onboarding). One row per user;
+-- absent row means the caller should treat the user as fresh (defaults
+-- live in the repository, not the schema).
+CREATE TABLE IF NOT EXISTS user_journey_state (
+    user_id             VARCHAR PRIMARY KEY,
+    first_asked         BOOLEAN NOT NULL DEFAULT FALSE,
+    stack_setup_done    BOOLEAN NOT NULL DEFAULT FALSE,
+    explored_stack      BOOLEAN NOT NULL DEFAULT FALSE,
+    catalog_discovered  BOOLEAN NOT NULL DEFAULT FALSE,
+    use_anywhere        BOOLEAN NOT NULL DEFAULT FALSE,
+    onboarded           BOOLEAN NOT NULL DEFAULT FALSE,
+    successful_answers  INTEGER NOT NULL DEFAULT 0,
+    updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
 """
 
 
@@ -1919,9 +1935,7 @@ def get_operational_db() -> duckdb.DuckDBPyConnection:
                     pass
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
             _operational_db_conn = _open_duckdb(db_path)
-            _apply_memory_caps(
-                _operational_db_conn, _SYSTEM_DB_MEMORY_LIMIT, label="get_operational_db"
-            )
+            _apply_memory_caps(_operational_db_conn, _SYSTEM_DB_MEMORY_LIMIT, label="get_operational_db")
             _operational_db_conn.execute(_OPERATIONAL_SCHEMA_DDL)
             _operational_db_path = db_path
         return _maybe_instrument(_operational_db_conn.cursor(), "operational")
@@ -5872,6 +5886,29 @@ def _v90_to_v91(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 91")
 
 
+def _v91_to_v92(conn: duckdb.DuckDBPyConnection) -> None:
+    """v91→v92: ``user_journey_state`` — per-user onboarding "journey"
+    progress (backend foundation for chat-driven onboarding).
+
+    Idempotent CREATE TABLE IF NOT EXISTS; fresh installs already get the
+    table from ``_SYSTEM_SCHEMA`` (no-op here).
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_journey_state (
+            user_id             VARCHAR PRIMARY KEY,
+            first_asked         BOOLEAN NOT NULL DEFAULT FALSE,
+            stack_setup_done    BOOLEAN NOT NULL DEFAULT FALSE,
+            explored_stack      BOOLEAN NOT NULL DEFAULT FALSE,
+            catalog_discovered  BOOLEAN NOT NULL DEFAULT FALSE,
+            use_anywhere        BOOLEAN NOT NULL DEFAULT FALSE,
+            onboarded           BOOLEAN NOT NULL DEFAULT FALSE,
+            successful_answers  INTEGER NOT NULL DEFAULT 0,
+            updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 92")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6246,6 +6283,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # _SYSTEM_SCHEMA already creates them on fresh installs (no-op
             # CREATE IF NOT EXISTS here).
             _v90_to_v91(conn)
+            # v91→v92: user_journey_state table (chat-driven onboarding
+            # backend foundation). _SYSTEM_SCHEMA already creates it on
+            # fresh installs (no-op CREATE IF NOT EXISTS here).
+            _v91_to_v92(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -6481,6 +6522,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v89_to_v90(conn)
             if current < 91:
                 _v90_to_v91(conn)
+            if current < 92:
+                _v91_to_v92(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

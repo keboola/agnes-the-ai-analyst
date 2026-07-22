@@ -127,6 +127,7 @@ def test_no_bare_duckdb_connect_in_production_code():
         "tests/db_pg/test_schema_parity.py",
         "tests/db_pg/test_store_contract.py",
         "tests/db_pg/test_user_stack_subscriptions_contract.py",
+        "tests/db_pg/test_user_journey_contract.py",
         "tests/db_pg/test_users_contract.py",
         # v77 Collections contract tests — fixture isolation, intentional bare connect.
         "tests/db_pg/test_file_corpora_contract.py",

@@ -362,3 +362,66 @@ def test_chat_requires_rbac_grant():
     ]:
         r = client.request(method, path, json={"surface": "web"})
         assert r.status_code == 403, f"{method} {path} -> {r.status_code}"
+
+
+# ---------------------------------------------------------------------------
+# GET/PUT /api/chat/journey — per-user onboarding journey state
+# ---------------------------------------------------------------------------
+
+
+def test_get_journey_defaults(api_client: TestClient, logged_in_user):
+    from src.repositories import user_journey_repo
+
+    user_journey_repo().reset(TEST_USER["id"])
+    r = api_client.get("/api/chat/journey")
+    assert r.status_code == 200
+    assert r.json() == {
+        "first_asked": False,
+        "stack_setup_done": False,
+        "explored_stack": False,
+        "catalog_discovered": False,
+        "use_anywhere": False,
+        "onboarded": False,
+        "successful_answers": 0,
+    }
+
+
+def test_put_journey_partial_update(api_client: TestClient, logged_in_user):
+    from src.repositories import user_journey_repo
+
+    user_journey_repo().reset(TEST_USER["id"])
+    r = api_client.put("/api/chat/journey", json={"first_asked": True})
+    assert r.status_code == 200
+    assert r.json()["first_asked"] is True
+    assert r.json()["onboarded"] is False
+
+    r2 = api_client.put("/api/chat/journey", json={"onboarded": True, "successful_answers": 2})
+    assert r2.status_code == 200
+    assert r2.json()["first_asked"] is True  # previous update preserved
+    assert r2.json()["onboarded"] is True
+    assert r2.json()["successful_answers"] == 2
+
+    r3 = api_client.get("/api/chat/journey")
+    assert r3.json() == r2.json()
+
+
+def test_journey_requires_rbac_grant():
+    """Same default-deny gate as the rest of chat — no grant means 403."""
+    from app.api.chat import router as chat_router
+    from app.auth.dependencies import _get_db
+
+    app = FastAPI()
+    app.include_router(chat_router)
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    app.state.chat_repo = repo
+    app.state.chat_manager = _make_mock_manager(repo)
+
+    app.dependency_overrides[get_current_user] = lambda: TEST_USER
+    app.dependency_overrides[_get_db] = lambda: conn
+
+    client = TestClient(app)
+    r = client.get("/api/chat/journey")
+    assert r.status_code == 403

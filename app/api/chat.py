@@ -20,6 +20,7 @@ from app.chat.profiles import get_profile
 from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR, list_recognized_commands, merged_skills
 from app.chat.types import Surface
 from app.resource_types import ResourceType
+from src.repositories import user_journey_repo
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -154,6 +155,38 @@ async def list_skills(
     """
     skills = merged_skills(BUNDLED_TEMPLATE_DIR, conn, user)
     return {"skills": skills, "commands": list_recognized_commands()}
+
+
+class JourneyUpdateBody(BaseModel):
+    """Partial update — every field optional; only the ones present change."""
+
+    first_asked: Optional[bool] = None
+    stack_setup_done: Optional[bool] = None
+    explored_stack: Optional[bool] = None
+    catalog_discovered: Optional[bool] = None
+    use_anywhere: Optional[bool] = None
+    onboarded: Optional[bool] = None
+    successful_answers: Optional[int] = None
+
+
+@router.get("/journey")
+async def get_journey(
+    user: dict = Depends(require_chat_access),
+):
+    """Return the caller's own onboarding journey state (self-scoped —
+    the RBAC gate is the chat-access resource; there is no cross-user
+    read/write here since the repo call is always keyed off the caller's
+    own ``user["id"]``)."""
+    return user_journey_repo().get(user["id"])
+
+
+@router.put("/journey")
+async def update_journey(
+    body: JourneyUpdateBody,
+    user: dict = Depends(require_chat_access),
+):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    return user_journey_repo().update(user["id"], **fields)
 
 
 @router.post("/sessions/{chat_id}/ticket", status_code=201)

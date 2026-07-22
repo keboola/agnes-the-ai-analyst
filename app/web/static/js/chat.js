@@ -1,4 +1,9 @@
 // app/web/static/js/chat.js
+import {
+  initChatOnboarding,
+  onUserMessage as onboardingOnUserMessage,
+} from "./chat_onboarding.js";
+
 const $ = (id) => document.getElementById(id);
 
 let ws = null;
@@ -1423,6 +1428,21 @@ async function submitUserMessage(text) {
   //    and the agent is working on it.
   renderMessage({ role: "user", content: text });
   lastUserText = text;
+
+  // Chat-driven onboarding: greet once, advance the journey, and — on an empty
+  // Stack — resolve the knowledge gap right here before the model runs. When it
+  // takes over the turn (gap-resolver card shown, or an "add X" command
+  // handled) we skip the model send; the card's CTA calls submitUserMessage
+  // again once the Stack is ready.
+  try {
+    if (await onboardingOnUserMessage(text, {})) {
+      $("cancel-btn").hidden = true;
+      return;
+    }
+  } catch (_) {
+    /* onboarding is best-effort — never block the chat on it */
+  }
+
   showThinkingPlaceholder();
   $("cancel-btn").hidden = false;
 
@@ -2614,4 +2634,15 @@ function renderCoPresence(host, participants) {
   // Sidebar cache (_sessionsCache) is now populated so openSession can
   // resolve the title; fire the one-shot deep-link open.
   _maybeOpenInitialSession();
+  // Chat-driven onboarding — render the journey panel and prime the greeting/
+  // gap-resolver hooks. Best-effort: a failure here never blocks the chat.
+  initChatOnboarding({
+    renderAssistant: (md) => renderMessage({ role: "assistant", content: md }),
+    appendNode: (el) => {
+      const host = $("chat-messages");
+      if (host) host.appendChild(el);
+    },
+    resubmit: (text) => submitUserMessage(text),
+    scrollToBottom: () => maybeScrollToBottom(),
+  }).catch(() => {});
 })();

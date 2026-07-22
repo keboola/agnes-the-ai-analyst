@@ -109,6 +109,7 @@ __all__ = [
     "memory_domains_repo",
     "recipes_repo",
     "user_stack_subscriptions_repo",
+    "user_journey_repo",
     # MCP / Cowork
     "mcp_sources_repo",
     "per_user_secrets_repo",
@@ -374,6 +375,10 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
     "user_stack_subscriptions": {
         DUCKDB: ("src.repositories.user_stack_subscriptions", "UserStackSubscriptionsRepository"),
         PG: ("src.repositories.user_stack_subscriptions_pg", "UserStackSubscriptionsPgRepository"),
+    },
+    "user_journey": {
+        DUCKDB: ("src.repositories.user_journey", "UserJourneyRepository"),
+        PG: ("src.repositories.user_journey_pg", "UserJourneyPgRepository"),
     },
     # MCP / Cowork
     "mcp_sources": {
@@ -642,6 +647,10 @@ def recipes_repo() -> Any:
 
 def user_stack_subscriptions_repo() -> Any:
     return _build("user_stack_subscriptions")
+
+
+def user_journey_repo() -> Any:
+    return _build("user_journey")
 
 
 # MCP / Cowork

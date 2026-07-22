@@ -321,6 +321,11 @@ _EXEMPT: dict[str, str] = {
         "admin/scheduler maintenance op, mirrors the run-bq-metadata-refresh / "
         "run-knowledge-digests exemptions; no analyst CLI/MCP analogue"
     ),
+    "/api/chat/journey": (
+        "chat-driven onboarding backend foundation — internal state read/write "
+        "for the in-chat onboarding UI (a follow-up task), self-scoped to the "
+        "caller's own journey row; no analyst CLI/MCP analogue"
+    ),
 }
 
 

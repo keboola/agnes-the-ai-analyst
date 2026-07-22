@@ -127,6 +127,12 @@
     </header>
     <ul id="chat-list" class="cloud-chat-list" role="list"></ul>
     <p id="cloud-chat-empty-state" class="cloud-chat-sidebar-empty">No conversations yet.</p>
+
+    {# Chat-driven onboarding progress. chat_onboarding.js loads the per-user
+       journey state from /api/chat/journey and renders the five steps here;
+       stays hidden until that state resolves (and once every step is done the
+       user can still see it marked complete). #}
+    <div id="chat-journey" class="cloud-chat-journey" hidden></div>
   </aside>
 
   <section class="cloud-chat-main">

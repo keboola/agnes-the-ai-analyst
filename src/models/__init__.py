@@ -57,6 +57,7 @@ from src.models.store import (
     UserStackSubscription,
     UserStoreInstall,
 )
+from src.models.user_journey import UserJourneyState
 from src.models.telemetry import (
     SessionProcessorState,
     UsageEvent,
@@ -151,6 +152,7 @@ __all__ = [
     "UserPluginOptout",
     "UserStackSubscription",
     "UserStoreInstall",
+    "UserJourneyState",
     "UserSyncSettings",
     "UserWorkdir",
     "ViewOwnership",
