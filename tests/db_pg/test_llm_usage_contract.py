@@ -1,0 +1,109 @@
+"""Cross-engine contract tests for the llm_usage ledger repository."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _make_duckdb_repo(tmp_path):
+    from src.db import _ensure_schema
+    from src.duckdb_conn import _open_duckdb
+    from src.repositories.llm_usage import LlmUsageRepository
+
+    conn = _open_duckdb(str(tmp_path / "duck.duckdb"))
+    _ensure_schema(conn)
+    return LlmUsageRepository(conn), conn
+
+
+def _make_pg_repo(pg_engine, monkeypatch):
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    cfg.attributes["sqlalchemy.url"] = str(pg_engine.url)
+    command.upgrade(cfg, "head")
+
+    monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
+    import src.db_pg as db_pg
+
+    db_pg.dispose()
+    db_pg.get_engine()
+
+    from src.repositories.llm_usage_pg import LlmUsagePgRepository
+
+    return LlmUsagePgRepository(db_pg.get_engine()), None
+
+
+@pytest.fixture(params=["duckdb", "pg"])
+def repo(request, tmp_path, pg_engine, monkeypatch):
+    if request.param == "duckdb":
+        r, conn = _make_duckdb_repo(tmp_path)
+        yield r
+        conn.close()
+    else:
+        r, _ = _make_pg_repo(pg_engine, monkeypatch)
+        yield r
+
+
+def test_batch_and_month_total(repo):
+    repo.insert_batch(
+        [
+            {
+                "id": "r1",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "c1",
+                "model": "claude-sonnet-5",
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_read_tokens": 10,
+                "cache_creation_tokens": 5,
+            },
+            {
+                "id": "r2",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "c1",
+                "model": "claude-haiku-4-5-20251001",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            },
+        ]
+    )
+    ym = datetime.now(timezone.utc).strftime("%Y-%m")
+    assert repo.month_total_tokens("a1", ym) == 100 + 50 + 5 + 10 + 5
+    assert repo.month_total_tokens("a2", ym) == 0
+    assert len(repo.list_for_agent("a1")) == 2
+
+
+def test_empty_batch_noop(repo):
+    repo.insert_batch([])
+
+
+def test_list_for_agent_limit(repo):
+    repo.insert_batch(
+        [
+            {
+                "id": f"r{i}",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "c1",
+                "model": "claude-sonnet-5",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            }
+            for i in range(3)
+        ]
+    )
+    assert len(repo.list_for_agent("a1", limit=2)) == 2
+    assert repo.list_for_agent("a-none") == []
