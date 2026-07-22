@@ -540,6 +540,29 @@ class TestMarketplaceLifecycleTools:
         assert "/api/marketplace/curated/eng/reviewer" in urls[0]
         assert "/api/marketplace/flea/ent_9/detail" in urls[1]
 
+    def test_tools_accept_tab_prefixed_search_ids(self):
+        """Ids exactly as `/api/marketplace/items` prints them — `curated-<mid>/<plugin>`,
+        `flea-<uuid>` — must route to the bare-form REST paths (Devin Review on #982)."""
+        mod = _import_mod()
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_get = AsyncMock(return_value=_mock_resp({"type": "agent"}))
+            mock_post = AsyncMock(return_value=_mock_resp({"installed": True}))
+            MC.return_value.__aenter__.return_value.get = mock_get
+            MC.return_value.__aenter__.return_value.post = mock_post
+            _run(mod.marketplace_detail("curated-eng/reviewer"))
+            _run(mod.marketplace_detail("flea-ent_9"))
+            _run(mod.marketplace_add("curated-eng/reviewer"))
+            _run(mod.marketplace_add("flea-ent_9"))
+
+        get_urls = [c[0][0] for c in mock_get.call_args_list]
+        assert "/api/marketplace/curated/eng/reviewer" in get_urls[0]
+        assert "/api/marketplace/flea/ent_9/detail" in get_urls[1]
+        post_urls = [c[0][0] for c in mock_post.call_args_list]
+        assert "/api/marketplace/curated/eng/reviewer/install" in post_urls[0]
+        assert "/api/store/entities/ent_9/install" in post_urls[1]
+
     def test_add_routes_by_id_shape_and_hints_refresh(self):
         mod = _import_mod()
 

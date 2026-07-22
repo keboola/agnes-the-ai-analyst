@@ -24,6 +24,22 @@ from typing import Any, Callable
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+
+def _split_marketplace_id(item_id: str) -> tuple[str, str, str]:
+    """Split a marketplace item id into ``(source, part1, part2)``.
+
+    ``GET /api/marketplace/items`` prefixes row ids with their tab
+    (``curated-<marketplace_id>/<plugin_name>``, ``flea-<entity_uuid>``), while
+    the REST detail/install paths take the bare forms. Accept both, so an id
+    can be passed straight from ``marketplace_search`` output — same
+    normalization as the CLI's ``_parse_id`` in ``cli/commands/marketplace.py``.
+    """
+    if "/" in item_id:
+        head, plugin = item_id.split("/", 1)
+        return "curated", head.removeprefix("curated-"), plugin
+    return "flea", item_id.removeprefix("flea-"), ""
+
+
 FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "server_info",
     "catalog",
@@ -619,14 +635,15 @@ def register_foundation_tools(
         ``GET /api/marketplace/flea/{entity_id}/detail``.
 
         Args:
-            item_id: ``<marketplace_id>/<plugin_name>`` or a flea entity UUID
-                     (both come from ``marketplace_search`` results).
+            item_id: ``<marketplace_id>/<plugin_name>`` or a flea entity UUID —
+                     the tab-prefixed forms printed by ``marketplace_search``
+                     (``curated-<mid>/<plugin>``, ``flea-<uuid>``) work as-is.
         """
-        if "/" in item_id:
-            mid, plugin = item_id.split("/", 1)
-            path = f"/api/marketplace/curated/{mid}/{plugin}"
+        source, part1, part2 = _split_marketplace_id(item_id)
+        if source == "curated":
+            path = f"/api/marketplace/curated/{part1}/{part2}"
         else:
-            path = f"/api/marketplace/flea/{item_id}/detail"
+            path = f"/api/marketplace/flea/{part1}/detail"
         async with httpx.AsyncClient() as c:
             r = await c.get(f"{base_url}{path}", headers=headers_fn(), timeout=30)
             r.raise_for_status()
@@ -644,16 +661,17 @@ def register_foundation_tools(
         ``agnes marketplace add``.
 
         Args:
-            item_id: ``<marketplace_id>/<plugin_name>`` or a flea entity UUID.
+            item_id: ``<marketplace_id>/<plugin_name>`` or a flea entity UUID
+                     (tab-prefixed ``marketplace_search`` ids work as-is).
 
         Returns ``{"installed": true, "next_step": …}`` — the plugin activates
         after the user's next plugin refresh.
         """
-        if "/" in item_id:
-            mid, plugin = item_id.split("/", 1)
-            path = f"/api/marketplace/curated/{mid}/{plugin}/install"
+        source, part1, part2 = _split_marketplace_id(item_id)
+        if source == "curated":
+            path = f"/api/marketplace/curated/{part1}/{part2}/install"
         else:
-            path = f"/api/store/entities/{item_id}/install"
+            path = f"/api/store/entities/{part1}/install"
         async with httpx.AsyncClient() as c:
             r = await c.post(f"{base_url}{path}", json={}, headers=headers_fn(), timeout=30)
             r.raise_for_status()
@@ -671,13 +689,14 @@ def register_foundation_tools(
         and ``agnes marketplace remove``.
 
         Args:
-            item_id: ``<marketplace_id>/<plugin_name>`` or a flea entity UUID.
+            item_id: ``<marketplace_id>/<plugin_name>`` or a flea entity UUID
+                     (tab-prefixed ``marketplace_search`` ids work as-is).
         """
-        if "/" in item_id:
-            mid, plugin = item_id.split("/", 1)
-            path = f"/api/marketplace/curated/{mid}/{plugin}/install"
+        source, part1, part2 = _split_marketplace_id(item_id)
+        if source == "curated":
+            path = f"/api/marketplace/curated/{part1}/{part2}/install"
         else:
-            path = f"/api/store/entities/{item_id}/install"
+            path = f"/api/store/entities/{part1}/install"
         async with httpx.AsyncClient() as c:
             r = await c.delete(f"{base_url}{path}", headers=headers_fn(), timeout=30)
             r.raise_for_status()

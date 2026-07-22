@@ -28,6 +28,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- `agnes marketplace add/detail/remove` — and the new MCP siblings — now accept
+  item ids exactly as `agnes marketplace search` / `marketplace_search` print
+  them (tab-prefixed `curated-<mid>/<plugin>`, `flea-<uuid>`). Previously a
+  copy-pasted search id 404ed because the detail/install endpoints take the
+  bare forms.
 - `data-refresh` jobs no longer stay permanently `failed` when a registered
   table's upstream object was deleted (Keboola Storage HTTP 404,
   `storage.tables.notFound` — e.g. a table dropped or moved to another bucket
