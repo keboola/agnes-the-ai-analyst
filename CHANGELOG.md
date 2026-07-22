@@ -16,6 +16,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- On role-split deployments, the three remaining in-api analytics writers now
+  enqueue jobs instead of writing in-process (three-plane spec §3.1 — the api
+  plane is analytics-write-free): admin `register-table` / `registry/rebuild` /
+  BigQuery-row updates ride a new `analytics-rebuild` job, and collection/file
+  delete + reingest derived-table purges ride a new `collections-purge` job
+  (both HEAVY lane). Single-box `all` deployments are unchanged — the original
+  synchronous/BackgroundTask paths still run and neither kind is enqueued.
+
 ### Removed
 
 ### Internal
@@ -63,14 +71,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
-
-- On role-split deployments, the three remaining in-api analytics writers now
-  enqueue jobs instead of writing in-process (three-plane spec §3.1 — the api
-  plane is analytics-write-free): admin `register-table` / `registry/rebuild` /
-  BigQuery-row updates ride a new `analytics-rebuild` job, and collection/file
-  delete + reingest derived-table purges ride a new `collections-purge` job
-  (both HEAVY lane). Single-box `all` deployments are unchanged — the original
-  synchronous/BackgroundTask paths still run and neither kind is enqueued.
 
 ### Removed
 
