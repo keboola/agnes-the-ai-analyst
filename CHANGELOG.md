@@ -14,6 +14,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.9] - 2026-07-22
+
+### Changed
+
 - **Cloud-chat spawn and first-response latency cut across the whole E2B
   path.** The per-session workspace now travels as one gzipped tarball
   extracted in-sandbox (one E2B round-trip instead of one per file; per-file
@@ -43,12 +55,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   without raising, instead of unconditionally from a `finally` block; a
   crash now surfaces only an `error` frame, leaving the buffer intact for
   the reconnect/teardown partial-save path.
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.76.8] - 2026-07-22
 
