@@ -40,7 +40,20 @@ ResolutionReason = Literal[
     "pat_revoked",
     "pat_expired",
     "pat_mismatch",
+    "agent_pat_wrong_surface",
 ]
+
+# Path prefixes an agent PAT (typ="agent_pat") is allowed to authenticate
+# against. Everything else — legacy `/api/*`, `/git/`, `/marketplace.zip`,
+# and the `/api/v1/agents` *management* verbs (those use session auth) —
+# hard-rejects with "agent_pat_wrong_surface". Tuple (not a set) because it
+# is consumed via ``str.startswith(prefixes_tuple)``.
+_AGENT_PAT_ALLOWED_PREFIXES = ("/api/v1/agents/", "/api/v1/sessions/", "/api/v1/jobs/")
+
+# JWT `typ` values that live in `personal_access_tokens` and must run the
+# same DB-backed validity chain (revoked/expired/unknown/hash-mismatch +
+# last-used bookkeeping) below.
+_PAT_LIKE_TYPES = ("pat", "agent_pat")
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
@@ -77,6 +90,19 @@ def resolve_token_to_user(
     if not payload:
         return None, "invalid_token"
 
+    # Stash the verified payload so `agent_id_from_request` (and Task 9) can
+    # read claims off the request without re-verifying the JWT.
+    if request is not None:
+        try:
+            request.state.token_payload = payload
+        except Exception:
+            pass
+
+    if payload.get("typ") == "agent_pat":
+        path = request.url.path if request is not None else ""
+        if not path.startswith(_AGENT_PAT_ALLOWED_PREFIXES):
+            return None, "agent_pat_wrong_surface"
+
     typ = payload.get("typ")
     co_session_id = payload.get("chat_session_id")
 
@@ -91,9 +117,8 @@ def resolve_token_to_user(
         if typ == "co_session":
             from src.grant_intersection import compute_grant_intersection
             from app.auth.session_principal import SessionPrincipal
-            participants = chat_session_participants_repo().get_session_participants(
-                co_session_id
-            )
+
+            participants = chat_session_participants_repo().get_session_participants(co_session_id)
             if not participants:
                 return None, "invalid_token"  # no live participants -> deny
             emails = [p.user_email for p in participants]
@@ -113,16 +138,20 @@ def resolve_token_to_user(
             return None, "invalid_token"  # FAIL CLOSED
 
     from src.repositories import users_repo, access_token_repo
+
     user = users_repo().get_by_id(payload.get("sub", ""))
     if not user:
         return None, "user_not_found"
     if not bool(user.get("active", True)):
         return None, "deactivated"
 
-    if payload.get("typ") != "pat":
+    if payload.get("typ") not in _PAT_LIKE_TYPES:
         return user, None
 
-    # PAT: extra DB-backed validation (revoked/expired/unknown/hash).
+    # PAT / agent PAT: extra DB-backed validation (revoked/expired/unknown/hash).
+    # Agent PATs live in the same `personal_access_tokens` table with
+    # `agent_id` set, so this chain — including revocation and expiry — is
+    # identical for both token kinds.
     tokens_repo = access_token_repo()
     record = tokens_repo.get_by_id(payload.get("jti", ""))
     if not record:
@@ -156,6 +185,7 @@ def resolve_token_to_user(
     if already_used and current_ip and current_ip != previous_ip:
         try:
             from src.repositories import audit_repo
+
             audit_repo().log(
                 user_id=user["id"],
                 action="token.first_use_new_ip",
@@ -171,3 +201,14 @@ def resolve_token_to_user(
         pass
 
     return user, None
+
+
+def agent_id_from_request(request: Optional[Request]) -> Optional[str]:
+    """agent_id claim of the presented agent PAT, or None for other creds.
+
+    Reads the JWT payload stashed on ``request.state.token_payload`` by
+    ``resolve_token_to_user`` — no re-verification. For Task 8/9 callers that
+    need to know which agent is bound to the current request.
+    """
+    payload = getattr(request.state, "token_payload", None) if request is not None else None
+    return payload.get("agent_id") if payload and payload.get("typ") == "agent_pat" else None
