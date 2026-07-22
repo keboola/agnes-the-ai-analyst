@@ -3,10 +3,10 @@
 Fixture pattern: build a minimal FastAPI app with the web router attached,
 set app.state.chat_config manually, and override get_current_user.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -37,6 +37,7 @@ def _make_app(*, chat_enabled: bool = True) -> FastAPI:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def _grant_chat_access(monkeypatch, tmp_path):
@@ -80,6 +81,7 @@ def logged_in_user():
 # Tests (per Task 9.1 Step 1)
 # ---------------------------------------------------------------------------
 
+
 def test_chat_route_html(api_client: TestClient, logged_in_user):
     r = api_client.get("/chat")
     assert r.status_code == 200
@@ -122,14 +124,50 @@ def test_can_chat_computed_without_conn_threaded():
     # Minimal ASGI scope + an app whose state carries an enabled chat_config.
     app = _NS(state=_NS(chat_config=_NS(enabled=True)))
     scope = {
-        "type": "http", "app": app, "method": "GET", "path": "/",
-        "query_string": b"", "headers": [], "server": ("test", 80),
-        "scheme": "http", "client": ("1.2.3.4", 9),
+        "type": "http",
+        "app": app,
+        "method": "GET",
+        "path": "/",
+        "query_string": b"",
+        "headers": [],
+        "server": ("test", 80),
+        "scheme": "http",
+        "client": ("1.2.3.4", 9),
     }
     request = Request(scope)
 
     # Mirror the common route call: user supplied, but NO conn threaded.
     ctx = _build_context(request, user=TEST_USER)
+    assert ctx["can_chat"] is True
+
+
+def test_chrome_ctx_includes_can_chat():
+    """Regression: pages rendered through ``_chrome_ctx`` (the studio pages,
+    /me/memory-mining, /admin/store/lint) dropped the Chat nav link — the
+    helper never computed ``can_chat``, so the header's ``{% if can_chat %}``
+    gate saw Jinja-undefined and hid the link while every ``_build_context``
+    page showed it. Visibility must be identical across the two context
+    builders. ``has_explicit_grant`` is patched True by the autouse fixture."""
+    from types import SimpleNamespace as _NS
+
+    from starlette.requests import Request
+    from app.web.router import _chrome_ctx
+
+    app = _NS(state=_NS(chat_config=_NS(enabled=True)))
+    scope = {
+        "type": "http",
+        "app": app,
+        "method": "GET",
+        "path": "/admin/studio",
+        "query_string": b"",
+        "headers": [],
+        "server": ("test", 80),
+        "scheme": "http",
+        "client": ("1.2.3.4", 9),
+    }
+    request = Request(scope)
+
+    ctx = _chrome_ctx(request, TEST_USER)
     assert ctx["can_chat"] is True
 
 
@@ -151,9 +189,15 @@ def test_can_chat_hidden_for_admin_without_explicit_grant(monkeypatch):
 
     app = _NS(state=_NS(chat_config=_NS(enabled=True)))
     scope = {
-        "type": "http", "app": app, "method": "GET", "path": "/",
-        "query_string": b"", "headers": [], "server": ("test", 80),
-        "scheme": "http", "client": ("1.2.3.4", 9),
+        "type": "http",
+        "app": app,
+        "method": "GET",
+        "path": "/",
+        "query_string": b"",
+        "headers": [],
+        "server": ("test", 80),
+        "scheme": "http",
+        "client": ("1.2.3.4", 9),
     }
     request = Request(scope)
 
