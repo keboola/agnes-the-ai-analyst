@@ -17,6 +17,33 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 - Keboola semantic-layer sync (`sync_semantic_layer()`) now falls back to the default named Keboola `source_connections` entry (the connection `/admin/data-sources` manages) when the legacy `KEBOOLA_STACK_URL`/`KEBOOLA_STORAGE_TOKEN` env-or-vault slot is empty. Verified live: an instance that connects a Keboola project only through the admin wizard previously failed every semantic-layer sync with "credentials not configured", even though the same connection's regular table syncs and its own `/test` endpoint both resolve their token off it correctly.
+- **The tarball workspace transport actually engages** — the 0.76.9
+  speedup silently never did: the E2B template bakes `/work` as root-owned,
+  so the in-sandbox `tar` extraction (running as `user`) failed with
+  `Permission denied` on every member and EVERY spawn fell back to the
+  slow per-file upload path (found live in production logs). Extraction
+  now runs as root and `chown`s the tree (and `/work` itself) to the
+  sandbox `user` account, which also makes `/work` writable for
+  agent-created files.
+- **A wedged tool call no longer hangs the chat turn forever.** The
+  real-agent path has no per-tool timeout, so an in-sandbox tool that
+  never returned (e.g. a blocked `agnes pull`) left the user staring at
+  "running…" indefinitely. A turn-idle watchdog
+  (`AGNES_TURN_IDLE_SECONDS`, default 300 s of no agent activity) now
+  interrupts the turn and surfaces a `turn_idle_timeout` error frame; the
+  session keeps working.
+- **Chat tool blocks no longer stay stuck on "running…" forever.** The
+  frame envelope (`stamp_frame`) overwrites every frame's `id` with
+  `chat_id:seq`, so the web UI could never pair a `tool_call` with its
+  `tool_result` — every tool block kept its hourglass even after the
+  answer arrived. The runner now sends the pairing key on a dedicated
+  `tool_use_id` field (both frames) and the UI pairs on it; `tool_result`
+  frames also ride the mid-turn replay buffer so a page refresh during a
+  turn doesn't strand the replayed tool blocks without their results.
+- **Chat answers no longer squash prose segments together.** Text blocks
+  bracketing tool calls were joined with no separator in the persisted
+  assistant message ("…tables.35", "…znovu:Z MCP…"); they now join with a
+  blank line.
 
 ### Removed
 

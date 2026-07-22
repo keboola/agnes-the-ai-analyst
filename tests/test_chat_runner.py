@@ -878,3 +878,103 @@ def test_assistant_message_falls_back_to_streamed_deltas(monkeypatch):
 
     final = next(f for f in emitted if f["type"] == "assistant_message")
     assert final["content"] == "Hello"
+
+
+def test_tool_frames_carry_tool_use_id_and_text_blocks_join_with_blank_line(monkeypatch):
+    """The manager's frame envelope overwrites ``id`` with ``chat_id:seq``,
+    so tool pairing must ride the dedicated ``tool_use_id`` key on BOTH
+    tool_call and tool_result frames. And prose segments bracketing tool
+    calls must not be squashed together in the persisted assistant_message
+    ("…tables.35" / "…znovu:Z MCP…")."""
+    mod = _make_fake_sdk(monkeypatch, with_stream_event=False)
+
+    script = [
+        mod.AssistantMessage(
+            content=[
+                mod.TextBlock(text="Let me check."),
+                mod.ToolUseBlock(id="toolu_123", name="Bash", input={"command": "agnes catalog"}),
+            ]
+        ),
+        mod.UserMessage(content=[mod.ToolResultBlock(tool_use_id="toolu_123", content="35")]),
+        mod.AssistantMessage(content=[mod.TextBlock(text="There are 35 tables.")]),
+        mod.ResultMessage(),
+    ]
+    emitted, _client = _run_real_agent_turn(
+        monkeypatch, mod, script, [{"type": "user_msg", "text": "count tables"}]
+    )
+
+    call = next(f for f in emitted if f["type"] == "tool_call")
+    assert call["tool_use_id"] == "toolu_123"
+    assert call["tool"] == "Bash"
+    result = next(f for f in emitted if f["type"] == "tool_result")
+    assert result["tool_use_id"] == "toolu_123"
+
+    final = next(f for f in emitted if f["type"] == "assistant_message")
+    assert final["content"] == "Let me check.\n\nThere are 35 tables."
+
+
+def test_idle_watchdog_interrupts_a_wedged_turn(monkeypatch):
+    """A tool call that never returns must not wedge the turn forever: after
+    AGNES_TURN_IDLE_SECONDS with no agent activity the watchdog emits an
+    error frame, interrupts the turn, and the runner lives on to serve the
+    next message."""
+    from app.chat import runner
+
+    mod = _make_fake_sdk(monkeypatch, with_stream_event=True)
+    monkeypatch.setenv("AGNES_TURN_IDLE_SECONDS", "0.2")
+
+    emitted: list = []
+    monkeypatch.setattr(runner, "_emit", emitted.append)
+
+    orig_init = mod.ClaudeSDKClient.__init__
+
+    def _init(self, options):
+        orig_init(self, options)
+        self.turn = 0
+
+        def _receive():
+            self.turn += 1
+            if self.turn == 1:
+
+                async def _gen_wedged():
+                    yield mod.StreamEvent(
+                        uuid="u1",
+                        session_id="s1",
+                        event={
+                            "type": "content_block_delta",
+                            "delta": {"type": "text_delta", "text": "querying…"},
+                        },
+                    )
+                    await asyncio.sleep(3600)  # tool never returns
+
+                return _gen_wedged()
+
+            async def _gen_ok():
+                yield mod.AssistantMessage(content=[mod.TextBlock(text="recovered")])
+                yield mod.ResultMessage()
+
+            return _gen_ok()
+
+        self.receive_response = _receive
+
+    monkeypatch.setattr(mod.ClaudeSDKClient, "__init__", _init)
+
+    async def _run():
+        queue: asyncio.Queue = asyncio.Queue()
+        queue.put_nowait({"type": "user_msg", "text": "one"})
+        queue.put_nowait({"type": "user_msg", "text": "two"})
+        queue.put_nowait({"type": "_eof"})
+        await asyncio.wait_for(runner._real_agent_loop(queue, Path("/tmp")), timeout=10)
+
+    asyncio.run(_run())
+
+    errs = [f for f in emitted if f["type"] == "error"]
+    assert errs and errs[0]["kind"] == "turn_idle_timeout"
+    client = mod.ClaudeSDKClient.instances[-1]
+    assert ("interrupt", None) in client.calls
+    # The wedged turn's partial text is persisted (the outer loop's `done`
+    # clears the manager's turn buffer, so the watchdog must save it), and
+    # turn 2 ran to completion.
+    finals = [f["content"] for f in emitted if f["type"] == "assistant_message"]
+    assert finals == ["querying…", "recovered"]
+    assert len([f for f in emitted if f == {"type": "done"}]) == 2
