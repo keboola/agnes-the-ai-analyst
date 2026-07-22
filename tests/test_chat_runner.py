@@ -739,3 +739,103 @@ def test_real_agent_loop_buffers_user_msg_arriving_mid_turn(monkeypatch):
     finals = [f["content"] for f in emitted if f["type"] == "assistant_message"]
     assert finals == ["first", "second"]
     assert [f for f in emitted if f == {"type": "done"}] == [{"type": "done"}] * 2
+
+
+def test_real_agent_loop_survives_interrupt_induced_turn_exception(monkeypatch):
+    """Some SDK/CLI builds surface a user interrupt as an exception out of
+    receive_response(). That is the outcome the user asked for — it must not
+    tear down the runner (which would kill the whole session); the loop keeps
+    serving subsequent messages."""
+    from app.chat import runner
+
+    mod = _make_fake_sdk(monkeypatch, with_stream_event=True)
+
+    interrupted = asyncio.Event()
+
+    emitted: list = []
+    monkeypatch.setattr(runner, "_emit", emitted.append)
+
+    orig_init = mod.ClaudeSDKClient.__init__
+
+    def _init(self, options):
+        orig_init(self, options)
+        self.turn = 0
+
+        async def _interrupt():
+            self.calls.append(("interrupt", None))
+            interrupted.set()
+
+        self.interrupt = _interrupt
+
+        def _receive():
+            self.turn += 1
+            if self.turn == 1:
+
+                async def _gen_interrupted():
+                    yield mod.StreamEvent(
+                        uuid="u1",
+                        session_id="s1",
+                        event={
+                            "type": "content_block_delta",
+                            "delta": {"type": "text_delta", "text": "long answer…"},
+                        },
+                    )
+                    await interrupted.wait()
+                    raise RuntimeError("interrupted by user")  # SDK surfaces Stop as an exception
+
+                return _gen_interrupted()
+
+            async def _gen_ok():
+                yield mod.AssistantMessage(content=[mod.TextBlock(text="still alive")])
+                yield mod.ResultMessage()
+
+            return _gen_ok()
+
+        self.receive_response = _receive
+
+    monkeypatch.setattr(mod.ClaudeSDKClient, "__init__", _init)
+
+    async def _run():
+        queue: asyncio.Queue = asyncio.Queue()
+        queue.put_nowait({"type": "user_msg", "text": "one"})
+        queue.put_nowait({"type": "cancel"})
+        queue.put_nowait({"type": "user_msg", "text": "two"})
+        queue.put_nowait({"type": "_eof"})
+        # Must complete without raising — the interrupt-induced exception is
+        # eaten, the runner keeps going and serves turn two.
+        await asyncio.wait_for(runner._real_agent_loop(queue, Path("/tmp")), timeout=5)
+
+    asyncio.run(_run())
+
+    finals = [f["content"] for f in emitted if f["type"] == "assistant_message"]
+    assert finals == ["still alive"]
+    # Both turns closed out for the UI (done emitted from finally even on the
+    # interrupted turn).
+    assert len([f for f in emitted if f == {"type": "done"}]) == 2
+
+
+def test_assistant_message_falls_back_to_streamed_deltas(monkeypatch):
+    """If an SDK build streams the text via deltas but never delivers the
+    final consolidated TextBlock, the persisted assistant_message must carry
+    the delta text — not be empty while the live UI showed an answer."""
+    mod = _make_fake_sdk(monkeypatch, with_stream_event=True)
+
+    def _delta(text):
+        return mod.StreamEvent(
+            uuid="u1",
+            session_id="s1",
+            event={"type": "content_block_delta", "delta": {"type": "text_delta", "text": text}},
+        )
+
+    script = [
+        _delta("Hel"),
+        _delta("lo"),
+        # No AssistantMessage with a TextBlock — straight to turn end.
+        mod.ResultMessage(usage={"input_tokens": 1, "output_tokens": 2}),
+    ]
+    emitted, _client = _run_real_agent_turn(
+        monkeypatch, mod, script, [{"type": "user_msg", "text": "hi"}]
+    )
+
+    final = next(f for f in emitted if f["type"] == "assistant_message")
+    assert final["content"] == "Hello"
