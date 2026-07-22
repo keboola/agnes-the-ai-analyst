@@ -322,6 +322,87 @@ def test_access_token_repo_revoke_for_agent(client, seeded_user, seeded_agent):
     assert repo.get_by_id(other_id)["revoked_at"] is None
 
 
+def test_agent_pat_rejected_by_require_session_token(client, seeded_user, seeded_agent):
+    """`require_session_token` must reject agent PATs, same as plain PATs.
+
+    Mirrors `test_require_session_token_rejects_scheduler_secret`
+    (tests/test_auth_scheduler_token.py) — calls the dependency directly
+    (bypassing `Depends(get_current_user)`) rather than round-tripping
+    through a real endpoint. A round trip through e.g. `/auth/tokens` would
+    already 401 an agent PAT via the surface allowlist in
+    `resolve_token_to_user` before `require_session_token`'s own body ever
+    ran, which would mask whether *this* check independently catches
+    `typ="agent_pat"` too.
+    """
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from fastapi import HTTPException
+
+    from app.auth.dependencies import require_session_token
+
+    token = _mint_agent_pat(seeded_user, seeded_agent["id"])
+
+    request = MagicMock()
+    request.headers = {"authorization": f"Bearer {token}"}
+    request.cookies = {}
+
+    try:
+        asyncio.run(require_session_token(request=request, user=seeded_user))
+    except HTTPException as exc:
+        assert exc.status_code == 403
+        assert "interactive" in exc.detail.lower()
+    else:
+        raise AssertionError("require_session_token must reject an agent PAT")
+
+
+# ---------------------------------------------------------------------------
+# No-`request` callers (git smart-HTTP, MCP HTTP) must fail closed
+# ---------------------------------------------------------------------------
+
+
+def test_agent_pat_no_request_fails_closed(client, seeded_user, seeded_agent):
+    """Callers that omit `request` (git_router.py, mcp_http.py) must fail
+    closed for agent PATs — a missing request resolves to path="", which
+    never matches `_AGENT_PAT_ALLOWED_PREFIXES`."""
+    from app.auth.pat_resolver import resolve_token_to_user
+
+    token_id = "tok-no-request"
+    token = _mint_agent_pat(seeded_user, seeded_agent["id"], token_id=token_id)
+    _register_agent_pat_row(seeded_user, seeded_agent["id"], token, token_id)
+
+    user, reason = resolve_token_to_user(None, token, request=None)
+    assert user is None
+    assert reason == "agent_pat_wrong_surface"
+
+
+def test_agent_pat_marketplace_zip_path_fails_closed(client, seeded_user, seeded_agent):
+    """Same fail-closed outcome when a request IS present but its path is
+    `/marketplace.zip` — the git/marketplace channel's real surface."""
+    from app.auth.pat_resolver import resolve_token_to_user
+
+    token_id = "tok-marketplace-zip"
+    token = _mint_agent_pat(seeded_user, seeded_agent["id"], token_id=token_id)
+    _register_agent_pat_row(seeded_user, seeded_agent["id"], token, token_id)
+
+    req = _FakeRequest("/marketplace.zip")
+    user, reason = resolve_token_to_user(None, token, req)
+    assert user is None
+    assert reason == "agent_pat_wrong_surface"
+
+
+def test_user_pat_no_request_still_resolves(client, seeded_user_pat):
+    """Regression guard for the git channel: a plain user PAT with no
+    `request` (git_router.py's / mcp_http.py's call pattern) must keep
+    resolving normally — only agent PATs are surface-gated."""
+    from app.auth.pat_resolver import resolve_token_to_user
+
+    user, reason = resolve_token_to_user(None, seeded_user_pat, request=None)
+    assert reason is None
+    assert user is not None
+    assert user["id"] == "u1"
+
+
 def test_access_token_repo_list_for_agent(client, seeded_user, seeded_agent):
     from src.repositories import access_token_repo
 

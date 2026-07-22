@@ -99,6 +99,12 @@ def resolve_token_to_user(
             pass
 
     if payload.get("typ") == "agent_pat":
+        # Callers that omit `request` (git smart-HTTP in
+        # app/marketplace_server/git_router.py, MCP HTTP in
+        # app/api/mcp_http.py — neither has a natural `Request` object to
+        # pass through their auth path) fall through to path="" here, which
+        # never matches `_AGENT_PAT_ALLOWED_PREFIXES` — an agent PAT is
+        # fail-closed rejected on those surfaces by design, not by accident.
         path = request.url.path if request is not None else ""
         if not path.startswith(_AGENT_PAT_ALLOWED_PREFIXES):
             return None, "agent_pat_wrong_surface"
@@ -209,6 +215,13 @@ def agent_id_from_request(request: Optional[Request]) -> Optional[str]:
     Reads the JWT payload stashed on ``request.state.token_payload`` by
     ``resolve_token_to_user`` — no re-verification. For Task 8/9 callers that
     need to know which agent is bound to the current request.
+
+    Caller contract: only meaningful after ``get_current_user`` (or an
+    equivalent that runs ``resolve_token_to_user`` against this same
+    ``request``) has already succeeded for the current request. This helper
+    performs no verification of its own — it trusts whatever was stashed
+    earlier in the request lifecycle and returns ``None`` (never raises) if
+    nothing was stashed, e.g. because auth hasn't run yet or failed.
     """
     payload = getattr(request.state, "token_payload", None) if request is not None else None
     return payload.get("agent_id") if payload and payload.get("typ") == "agent_pat" else None
