@@ -38,6 +38,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 from typing import Any, Optional
 
@@ -78,9 +79,57 @@ _CONFIG_DEFAULTS = {
     "max_apps_per_user": 3,
 }
 
+# `POST /api/data-apps` quota-check-then-create serialization. Short TTL —
+# the lease is only held for the duration of one create request, never
+# renewed; ttl_s is a crash-safety backstop, not the expected hold time.
+_CREATE_LEASE_TTL_S = 10
+_CREATE_LEASE_RETRIES = 3
+_CREATE_LEASE_RETRY_DELAY_S = 0.1
+
 
 def _runner() -> RunnerClient:
     return RunnerClient()
+
+
+def _acquire_create_lease(user_id: str) -> tuple[bool, str, str]:
+    """Serialize concurrent `POST /api/data-apps` calls for the same user so
+    the count-then-create quota check can't race (two concurrent requests
+    both observe `count < max_apps_per_user` and both proceed, landing the
+    user over quota).
+
+    Returns `(held, lease_name, holder)`. `held=False` with no exception
+    means either the coordination backend is unavailable (single-process
+    dev fallback: proceed unserialized rather than hard-fail create
+    entirely) — logged, not raised. Once retries are exhausted against a
+    lease actually held by a concurrent request, raises 409
+    `create_in_progress` instead of returning.
+    """
+    from app.coordination.base import CoordinationUnavailable
+    from app.coordination.factory import coordination
+    from app.coordination.leases import default_holder_id
+
+    lease_name = f"dataapp:create:{user_id}"
+    holder = default_holder_id()
+    try:
+        for attempt in range(_CREATE_LEASE_RETRIES):
+            if coordination().lease_acquire(lease_name, holder, ttl_s=_CREATE_LEASE_TTL_S):
+                return True, lease_name, holder
+            if attempt < _CREATE_LEASE_RETRIES - 1:
+                time.sleep(_CREATE_LEASE_RETRY_DELAY_S)
+    except CoordinationUnavailable:
+        logger.warning("create-lease: coordination backend unavailable; proceeding unserialized")
+        return False, lease_name, holder
+    raise HTTPException(status_code=409, detail="create_in_progress")
+
+
+def _release_create_lease(lease_name: str, holder: str) -> None:
+    from app.coordination.base import CoordinationUnavailable
+    from app.coordination.factory import coordination
+
+    try:
+        coordination().lease_release(lease_name, holder)
+    except CoordinationUnavailable:
+        pass
 
 
 def _effective_config() -> dict:
@@ -206,6 +255,26 @@ def _handle_runner_failure(repo, app_id: str, exc: Exception) -> None:
     repo.set_state(app_id, "error", str(detail))
 
 
+def _rollback_new_service_token(repo, app_id: str, new_token_id: str, previous_token_id: str) -> None:
+    """Undo a tentatively-minted+stored service token after a deploy step
+    following the mint fails (spec build or runner `up`).
+
+    Revokes the just-minted token (it was never handed to a running
+    container — no container ever saw it in its config.json — so it's
+    pure dead weight if left live) and restores the row's
+    `service_token_id` to whatever it was before this deploy attempt
+    (`""` if the app had never deployed before). The previously-working
+    token itself is never touched here — a failed redeploy must leave a
+    still-sleeping-but-deployed app able to wake with its last-known-good
+    credential.
+    """
+    try:
+        access_token_repo().revoke(new_token_id)
+    except Exception:
+        logger.warning("failed to revoke rolled-back service token %s for data app %s", new_token_id, app_id)
+    repo.update(app_id, service_token_id=previous_token_id)
+
+
 class CreateDataAppRequest(BaseModel):
     slug: str
     name: str
@@ -247,40 +316,53 @@ async def create_data_app(
     idle_timeout_s = _clamp_idle_timeout(payload.idle_timeout_s)
 
     cfg = _effective_config()
-    if not is_user_admin(user["id"]):
-        max_apps = cfg["max_apps_per_user"]
-        existing = data_apps_repo().list(owner_user_id=user["id"])
-        if len(existing) >= max_apps:
-            raise HTTPException(status_code=403, detail="app_quota_exceeded")
-
-    repo = data_apps_repo()
-    kwargs: dict[str, Any] = dict(
-        slug=payload.slug,
-        name=payload.name,
-        owner_user_id=user["id"],
-        description=payload.description,
-        repo_mode=payload.repo_mode,
-        repo_url=payload.repo_url,
-        repo_branch=payload.repo_branch,
-    )
-    if idle_timeout_s is not None:
-        kwargs["idle_timeout_s"] = idle_timeout_s
-    if payload.sleep_mode is not None:
-        kwargs["sleep_mode"] = payload.sleep_mode
+    is_admin = is_user_admin(user["id"])
+    # Quota is admin-exempt, so the race this lease guards against (two
+    # concurrent requests both observing count < max_apps_per_user) only
+    # exists for non-admin callers — skip the lease entirely for Admin.
+    lease_held = False
+    lease_name = holder = ""
+    if not is_admin:
+        lease_held, lease_name, holder = _acquire_create_lease(user["id"])
 
     try:
-        app_id = repo.create(**kwargs)
-    except duckdb.ConstraintException:
-        raise HTTPException(status_code=409, detail="slug_exists")
+        if not is_admin:
+            max_apps = cfg["max_apps_per_user"]
+            existing = data_apps_repo().list(owner_user_id=user["id"])
+            if len(existing) >= max_apps:
+                raise HTTPException(status_code=403, detail="app_quota_exceeded")
 
-    if payload.repo_mode == "internal":
-        init_app_repo(payload.slug)
+        repo = data_apps_repo()
+        kwargs: dict[str, Any] = dict(
+            slug=payload.slug,
+            name=payload.name,
+            owner_user_id=user["id"],
+            description=payload.description,
+            repo_mode=payload.repo_mode,
+            repo_url=payload.repo_url,
+            repo_branch=payload.repo_branch,
+        )
+        if idle_timeout_s is not None:
+            kwargs["idle_timeout_s"] = idle_timeout_s
+        if payload.sleep_mode is not None:
+            kwargs["sleep_mode"] = payload.sleep_mode
 
-    _audit(conn, user["id"], "data_app.create", f"data_app:{payload.slug}", {"name": payload.name})
+        try:
+            app_id = repo.create(**kwargs)
+        except duckdb.ConstraintException:
+            raise HTTPException(status_code=409, detail="slug_exists")
 
-    public = get_public_url()
-    git_url = f"{public}/data-apps.git/{payload.slug}" if public else f"/data-apps.git/{payload.slug}"
-    return {"id": app_id, "slug": payload.slug, "git_url": git_url}
+        if payload.repo_mode == "internal":
+            init_app_repo(payload.slug)
+
+        _audit(conn, user["id"], "data_app.create", f"data_app:{payload.slug}", {"name": payload.name})
+
+        public = get_public_url()
+        git_url = f"{public}/data-apps.git/{payload.slug}" if public else f"/data-apps.git/{payload.slug}"
+        return {"id": app_id, "slug": payload.slug, "git_url": git_url}
+    finally:
+        if lease_held:
+            _release_create_lease(lease_name, holder)
 
 
 @router.get("/{slug}")
@@ -315,11 +397,16 @@ async def deploy_data_app(
     if not owner:
         raise HTTPException(status_code=500, detail="owner_not_found")
 
-    _revoke_service_token(row)
+    # Mint the new token and tentatively store it BEFORE we know the deploy
+    # will succeed. The previous token is deliberately left live and
+    # un-revoked at this point — see the "only revoke old after success"
+    # comment below. `previous_token_id` is captured now (from the row as
+    # loaded before any mutation) so a failed deploy can restore it exactly.
+    previous_token_id = row.get("service_token_id") or ""
     new_token_id, jwt_token = _mint_service_token(slug, owner)
     repo.update(row["id"], service_token_id=new_token_id)
+    row = repo.get(row["id"])  # refresh — carries the new (tentative) service_token_id
 
-    row = repo.get(row["id"])  # refresh — carries the new service_token_id
     secrets = _decrypt_secrets(row)
     clone_url = f"{AGNES_INTERNAL_URL}/data-apps.git/{slug}"
 
@@ -327,13 +414,26 @@ async def deploy_data_app(
         config_json = build_config_json(row, secrets=secrets, clone_url=clone_url, clone_token=jwt_token)
         spec = build_container_spec(row, defaults=_effective_config(), data_dir=os.environ.get("DATA_DIR", "/data"))
     except ValueError as exc:
+        _rollback_new_service_token(repo, row["id"], new_token_id, previous_token_id)
         raise HTTPException(status_code=400, detail=str(exc))
 
     try:
         _runner().up(slug, spec, config_json)
     except (RunnerUnavailable, RunnerError) as exc:
+        _rollback_new_service_token(repo, row["id"], new_token_id, previous_token_id)
         _handle_runner_failure(repo, row["id"], exc)
         raise HTTPException(status_code=502, detail="runner_unavailable")
+
+    # The runner accepted the deploy — only now is it safe to revoke the
+    # previous token. Had we revoked it eagerly (before the runner call),
+    # any failure above would have left the app with NO working credential
+    # at all, even though the previously-deployed container is still
+    # running/sleeping and may need to wake using it.
+    if previous_token_id:
+        try:
+            access_token_repo().revoke(previous_token_id)
+        except Exception:
+            logger.warning("failed to revoke previous service token %s for data app %s", previous_token_id, slug)
 
     repo.record_deploy(row["id"], sha)
     repo.set_state(row["id"], "running")

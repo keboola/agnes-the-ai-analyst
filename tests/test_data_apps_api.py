@@ -299,6 +299,24 @@ def running_idle_app(api_env):
     return "sapp"
 
 
+@pytest.fixture
+def running_active_app(api_env):
+    """A `running` app whose `last_request_at` is recent (now) — mirrors
+    `running_idle_app` but must NOT be picked up by the reap-idle sweep."""
+    from src.db import get_system_db
+    from src.repositories.data_apps import DataAppsRepository
+
+    conn = get_system_db()
+    try:
+        repo = DataAppsRepository(conn)
+        app_id = repo.create(slug="active2", name="Active2", owner_user_id="owner1", idle_timeout_s=300)
+        repo.set_state(app_id, "running")
+        conn.execute("UPDATE data_apps SET last_request_at = now() WHERE id = ?", [app_id])
+    finally:
+        conn.close()
+    return "active2"
+
+
 class TestCrud:
     def test_create_and_quota(self, client_as_user):
         for i in range(3):
@@ -307,6 +325,24 @@ class TestCrud:
         r = client_as_user.post("/api/data-apps", json={"slug": "a3", "name": "A3"})
         assert r.status_code == 403
         assert r.json()["detail"] == "app_quota_exceeded"
+
+    def test_create_quota_race_lease_conflict(self, client_as_user, monkeypatch):
+        """When the create-lease can't be acquired for a non-admin caller
+        (already held by a concurrent request for the same user), create
+        is rejected rather than racing the count-then-create quota check."""
+        import app.coordination.factory as coord_factory
+
+        class _AlwaysBusyBackend:
+            def lease_acquire(self, name, holder_id, *, ttl_s):
+                return False
+
+            def lease_release(self, name, holder_id):
+                pass
+
+        monkeypatch.setattr(coord_factory, "coordination", lambda: _AlwaysBusyBackend())
+        r = client_as_user.post("/api/data-apps", json={"slug": "racy1", "name": "R"})
+        assert r.status_code == 409
+        assert r.json()["detail"] == "create_in_progress"
 
     def test_create_returns_git_url(self, client_as_user):
         r = client_as_user.post("/api/data-apps", json={"slug": "gitcheck", "name": "G"})
@@ -456,6 +492,85 @@ class TestDeploy:
         r = client_as_user.post("/api/data-apps/sapp/deploy", json={})
         assert r.status_code == 502
         assert r.json()["detail"] == "runner_unavailable"
+
+    def test_deploy_runner_down_rolls_back_new_token(
+        self, client_as_user, fake_runner, seeded_repo_with_commit, monkeypatch
+    ):
+        """A failed redeploy must not leave a dangling, unused service PAT
+        live, and must not clobber the still-working previous token."""
+        r1 = client_as_user.post("/api/data-apps/sapp/deploy", json={})
+        assert r1.status_code == 200
+
+        from src.db import get_system_db
+        from src.repositories.access_tokens import AccessTokenRepository
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            old_token_id = DataAppsRepository(conn).get_by_slug("sapp")["service_token_id"]
+            tokens_before = {t["id"] for t in AccessTokenRepository(conn).list_for_user("owner1")}
+        finally:
+            conn.close()
+        assert old_token_id
+
+        import app.api.data_apps as data_apps_api
+
+        monkeypatch.setattr(data_apps_api, "_runner", lambda: _DeadRunner())
+        r2 = client_as_user.post("/api/data-apps/sapp/deploy", json={})
+        assert r2.status_code == 502
+        assert r2.json()["detail"] == "runner_unavailable"
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("sapp")
+            tokens_after = AccessTokenRepository(conn).list_for_user("owner1")
+            old_token_row = AccessTokenRepository(conn).get_by_id(old_token_id)
+        finally:
+            conn.close()
+
+        # Row's service_token_id is restored to the pre-attempt (old) value.
+        assert row["service_token_id"] == old_token_id
+        # The previously-working token must survive a failed redeploy —
+        # a sleeping-but-deployed app must still be able to wake with it.
+        assert old_token_row["revoked_at"] is None
+
+        # Exactly one new token was minted during the failed attempt, and
+        # it must be revoked — it was never handed to a container.
+        new_token_ids = {t["id"] for t in tokens_after} - tokens_before
+        assert len(new_token_ids) == 1
+        conn = get_system_db()
+        try:
+            new_token_row = AccessTokenRepository(conn).get_by_id(next(iter(new_token_ids)))
+        finally:
+            conn.close()
+        assert new_token_row["revoked_at"] is not None
+
+    def test_deploy_redeploy_revokes_old_stores_new(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        r1 = client_as_user.post("/api/data-apps/sapp/deploy", json={})
+        assert r1.status_code == 200
+
+        from src.db import get_system_db
+        from src.repositories.access_tokens import AccessTokenRepository
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            old_token_id = DataAppsRepository(conn).get_by_slug("sapp")["service_token_id"]
+        finally:
+            conn.close()
+
+        r2 = client_as_user.post("/api/data-apps/sapp/deploy", json={})
+        assert r2.status_code == 200
+
+        conn = get_system_db()
+        try:
+            new_token_id = DataAppsRepository(conn).get_by_slug("sapp")["service_token_id"]
+            old_token_row = AccessTokenRepository(conn).get_by_id(old_token_id)
+        finally:
+            conn.close()
+
+        assert new_token_id != old_token_id
+        assert old_token_row["revoked_at"] is not None
 
 
 class TestStop:
@@ -614,8 +729,33 @@ class TestReap:
         r = client_as_user.post("/api/data-apps/reap-idle")
         assert r.status_code == 403
 
-    def test_reap_idle_skips_recently_active(self, admin_client, fake_runner, client_as_user):
+    def test_reap_idle_skips_never_deployed_app(self, admin_client, fake_runner, client_as_user):
+        """A freshly-created app (state='created', never deployed) is not
+        even a reap candidate — `list(state='running')` filters it out
+        before the idle-threshold check ever runs. (Previously misnamed
+        `test_reap_idle_skips_recently_active` — it never actually
+        exercised a 'running' app; see `test_reap_idle_skips_recently_active_running_app`
+        below for that case.)"""
         client_as_user.post("/api/data-apps", json={"slug": "active1", "name": "A"})
         r = admin_client.post("/api/data-apps/reap-idle")
         assert r.status_code == 200
         assert r.json()["reaped"] == []
+
+    def test_reap_idle_skips_recently_active_running_app(self, admin_client, fake_runner, running_active_app):
+        """A `running` app whose `last_request_at` is recent must be left
+        alone — reap-idle's per-app `idle_timeout_s` check must not fire
+        just because the app happens to be in scanning scope."""
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reaped"] == []
+        assert fake_runner.stop_calls == []
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("active2")
+        finally:
+            conn.close()
+        assert row["state"] == "running"
