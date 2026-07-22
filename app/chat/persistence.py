@@ -35,7 +35,7 @@ def _row_to_session(row: tuple) -> ChatSession:
     # 7  last_message_at (derived via LEFT JOIN),
     # 8  message_count   (derived via LEFT JOIN),
     # 9  archived, 10 is_co_session, 11 ephemeral,
-    # 12 sandbox_id, 13 runner_pid, 14 sandbox_paused_at
+    # 12 sandbox_id, 13 runner_pid, 14 sandbox_paused_at, 15 agent_id
     return ChatSession(
         id=row[0],
         user_email=row[1],
@@ -52,6 +52,7 @@ def _row_to_session(row: tuple) -> ChatSession:
         sandbox_id=row[12],
         runner_pid=int(row[13]) if row[13] is not None else None,
         sandbox_paused_at=row[14],
+        agent_id=row[15],
     )
 
 
@@ -66,14 +67,16 @@ _SESSION_SELECT = (
     "COUNT(m.id) AS message_count, "
     "s.archived, s.is_co_session, s.ephemeral, "
     # Sandbox pause/resume refs — NOT indexed (DuckDB 1.5.3 FK+index bug).
-    "s.sandbox_id, s.runner_pid, s.sandbox_paused_at "
+    "s.sandbox_id, s.runner_pid, s.sandbox_paused_at, "
+    # Owning agent profile — NOT indexed (same DuckDB 1.5.3 FK+index bug).
+    "s.agent_id "
     "FROM chat_sessions s "
     "LEFT JOIN chat_messages m ON m.session_id = s.id"
 )
 _SESSION_GROUP = (
     " GROUP BY s.id, s.user_email, s.surface, s.slack_channel_id, s.slack_thread_ts, "
     "s.title, s.started_at, s.archived, s.is_co_session, s.ephemeral, "
-    "s.sandbox_id, s.runner_pid, s.sandbox_paused_at"
+    "s.sandbox_id, s.runner_pid, s.sandbox_paused_at, s.agent_id"
 )
 
 
@@ -133,6 +136,7 @@ class ChatRepository:
         slack_channel_id: Optional[str] = None,
         slack_thread_ts: Optional[str] = None,
         title: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> ChatSession:
         if self._sessions_pg is not None:
             return self._sessions_pg.create_session(
@@ -141,15 +145,16 @@ class ChatRepository:
                 slack_channel_id=slack_channel_id,
                 slack_thread_ts=slack_thread_ts,
                 title=title,
+                agent_id=agent_id,
             )
         chat_id = _gen_id("chat")
         now = datetime.now(timezone.utc)
         self._conn.execute(
             "INSERT INTO chat_sessions "
             "(id, user_email, surface, slack_channel_id, slack_thread_ts, title, "
-            "started_at, last_message_at, message_count, archived) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, FALSE)",
-            [chat_id, user_email, surface.value, slack_channel_id, slack_thread_ts, title, now],
+            "started_at, last_message_at, message_count, archived, agent_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, FALSE, ?)",
+            [chat_id, user_email, surface.value, slack_channel_id, slack_thread_ts, title, now, agent_id],
         )
         fetched = self.get_session(chat_id)
         assert fetched is not None

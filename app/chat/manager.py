@@ -482,6 +482,7 @@ class ChatManager:
         slack_thread_ts: Optional[str] = None,
         title: Optional[str] = None,
         profile: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> ChatSession:
         if not self._config.enabled:
             raise RuntimeError("chat.enabled is false")
@@ -506,6 +507,7 @@ class ChatManager:
             slack_channel_id=slack_channel_id,
             slack_thread_ts=slack_thread_ts,
             title=title,
+            agent_id=agent_id,
         )
         if profile is not None:
             self._session_profiles[created.id] = profile

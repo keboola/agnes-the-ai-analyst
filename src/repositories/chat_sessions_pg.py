@@ -44,6 +44,7 @@ def _row_to_session(row) -> ChatSession:
         sandbox_id=row["sandbox_id"],
         runner_pid=int(row["runner_pid"]) if row["runner_pid"] is not None else None,
         sandbox_paused_at=row["sandbox_paused_at"],
+        agent_id=row["agent_id"],
     )
 
 
@@ -59,6 +60,7 @@ class ChatSessionPgRepository:
         slack_channel_id: Optional[str] = None,
         slack_thread_ts: Optional[str] = None,
         title: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> ChatSession:
         chat_id = _gen_id("chat")
         now = datetime.now(timezone.utc)
@@ -67,9 +69,9 @@ class ChatSessionPgRepository:
                 sa.text(
                     "INSERT INTO chat_sessions "
                     "(id, user_email, surface, slack_channel_id, slack_thread_ts, "
-                    "title, started_at, last_message_at, message_count, archived) "
+                    "title, started_at, last_message_at, message_count, archived, agent_id) "
                     "VALUES (:id, :user_email, :surface, :slack_channel_id, "
-                    ":slack_thread_ts, :title, :started_at, NULL, 0, FALSE)"
+                    ":slack_thread_ts, :title, :started_at, NULL, 0, FALSE, :agent_id)"
                 ),
                 {
                     "id": chat_id,
@@ -79,6 +81,7 @@ class ChatSessionPgRepository:
                     "slack_thread_ts": slack_thread_ts,
                     "title": title,
                     "started_at": now,
+                    "agent_id": agent_id,
                 },
             )
         fetched = self.get_session(chat_id)

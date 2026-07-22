@@ -263,6 +263,28 @@ def test_session_flags_default_false(sessions):
     assert sessions.get_session(s.id).is_co_session is False
 
 
+def test_agent_id_round_trip(sessions):
+    """Task 6: agent_id persists on create and survives a re-fetch; a
+    session created without one hydrates to None."""
+    s = sessions.create_session(user_email="u@x.com", surface=Surface.WEB, agent_id="a1")
+    assert s.agent_id == "a1"
+    fetched = sessions.get_session(s.id)
+    assert fetched.agent_id == "a1"
+
+    s2 = sessions.create_session(user_email="u@x.com", surface=Surface.WEB)
+    assert s2.agent_id is None
+    assert sessions.get_session(s2.id).agent_id is None
+
+
+def test_surface_api_round_trip(sessions):
+    """Task 6: Surface.API sessions persist and hydrate correctly."""
+    s = sessions.create_session(user_email="u@x.com", surface=Surface.API, agent_id="a2")
+    assert s.surface == Surface.API
+    fetched = sessions.get_session(s.id)
+    assert fetched.surface == Surface.API
+    assert fetched.agent_id == "a2"
+
+
 def test_sender_email_round_trip(sessions, messages):
     s = sessions.create_session(user_email="o@x.com", surface=Surface.WEB)
     messages.append_message(session_id=s.id, role="user", content="hi", sender_email="b@x.com")
