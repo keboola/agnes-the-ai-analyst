@@ -16,6 +16,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.6] - 2026-07-22
+
+### Fixed
+
 - A configured object-store bucket on an image without the `[distribution]`
   extra (boto3) no longer breaks manifest builds: `object_store()` now
   degrades to `None` with a loud ERROR log — `GET /api/sync/manifest` serves
@@ -33,12 +43,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   unregistering the row), and a forever-red job masked real transient
   failures from monitoring. Transient failures keep the existing
   fail-and-retry semantics.
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.76.5] - 2026-07-21
 
