@@ -33,6 +33,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   them (tab-prefixed `curated-<mid>/<plugin>`, `flea-<uuid>`). Previously a
   copy-pasted search id 404ed because the detail/install endpoints take the
   bare forms.
+
 ### Removed
 
 ### Internal
