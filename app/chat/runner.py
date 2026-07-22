@@ -634,6 +634,13 @@ async def _consume_turn(client, *, tool_calls_per_turn: int = 50) -> None:
             {
                 "type": "tool_result",
                 "id": block.tool_use_id,
+                # Dedicated pairing key: the manager's frame envelope
+                # (frame_seq.stamp_frame) OVERWRITES ``id`` with
+                # ``chat_id:seq`` before fan-out, so the UI can never pair
+                # tool_call↔tool_result via ``id`` — every tool block was
+                # stuck on "running…" forever. ``tool_use_id`` survives the
+                # stamp untouched.
+                "tool_use_id": block.tool_use_id,
                 "tool": block.tool_use_id,
                 "result": result,
             }
@@ -658,7 +665,37 @@ async def _consume_turn(client, *, tool_calls_per_turn: int = 50) -> None:
     # persisted assistant_message would be empty.
     streamed_pieces: list[str] = []
 
-    async for msg in client.receive_response():
+    # Idle watchdog: a tool call that never returns (e.g. an in-sandbox
+    # `agnes pull` blocked on network) wedged the turn FOREVER — the SDK's
+    # per-tool cap was never implemented for the real-agent path (Phase
+    # 12.2 TODO), so the user stared at "running…" indefinitely. If the
+    # agent stream produces NO message for this long, interrupt the turn
+    # and surface an error frame instead. Generous default: silence is
+    # normal while a model generates a long block (no partial streaming on
+    # older-template SDKs), so this is a wedge-breaker, not a latency cap.
+    idle_seconds = float(os.environ.get("AGNES_TURN_IDLE_SECONDS", "300") or "300")
+    stream = client.receive_response().__aiter__()
+    while True:
+        try:
+            msg = await asyncio.wait_for(stream.__anext__(), timeout=idle_seconds)
+        except StopAsyncIteration:
+            break
+        except asyncio.TimeoutError:
+            _emit(
+                {
+                    "type": "error",
+                    "kind": "turn_idle_timeout",
+                    "message": (
+                        f"no agent activity for {int(idle_seconds)}s; "
+                        "interrupting the turn (a tool call is likely stuck)"
+                    ),
+                }
+            )
+            try:
+                await client.interrupt()
+            except Exception as exc:  # noqa: BLE001 — watchdog must not crash the runner
+                print(f"idle-watchdog interrupt failed: {exc}", file=sys.stderr, flush=True)
+            break
         if budget_hit:
             break
         if StreamEvent is not None and isinstance(msg, StreamEvent):
@@ -688,17 +725,20 @@ async def _consume_turn(client, *, tool_calls_per_turn: int = 50) -> None:
                         )
                         budget_hit = True
                         break
-                    # ``id`` is the per-call ``tool_use_id`` —
-                    # echoed back verbatim by ``ToolResultBlock``
-                    # so the frontend can pair a tool_call with
-                    # its result even when several calls to the
-                    # same tool are in flight. ``tool`` carries
-                    # the human-readable name for the inline
+                    # ``tool_use_id`` is the per-call pairing key —
+                    # echoed back verbatim by ``ToolResultBlock`` so
+                    # the frontend can pair a tool_call with its
+                    # result even when several calls to the same tool
+                    # are in flight. It rides its own key because the
+                    # manager's frame envelope overwrites ``id`` with
+                    # ``chat_id:seq`` (see _emit_tool_result). ``tool``
+                    # carries the human-readable name for the inline
                     # block header.
                     _emit(
                         {
                             "type": "tool_call",
                             "id": block.id,
+                            "tool_use_id": block.id,
                             "tool": block.name,
                             "args": block.input,
                         }
@@ -729,11 +769,16 @@ async def _consume_turn(client, *, tool_calls_per_turn: int = 50) -> None:
             # ResultMessage signals turn end; receive_response() stops after it.
             # Content prefers the consolidated TextBlocks (canonical);
             # falls back to the streamed deltas should an SDK build omit
-            # the final block under partial streaming.
+            # the final block under partial streaming. Blocks are joined
+            # with a blank line: each TextBlock is a prose segment
+            # bracketing tool calls, and a bare "".join squashed segment
+            # boundaries into mid-word runs ("…znovu:Z MCP pull…" in the
+            # persisted history). Deltas keep "" — they are sub-block
+            # fragments of one segment.
             _emit(
                 {
                     "type": "assistant_message",
-                    "content": "".join(collected_text) or "".join(streamed_pieces),
+                    "content": "\n\n".join(t for t in collected_text if t.strip()) or "".join(streamed_pieces),
                     "tokens_in": tokens_in,
                     "tokens_out": tokens_out,
                     "model": model,
