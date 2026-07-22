@@ -15,10 +15,14 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from src.data_apps.spec import SLUG_RE
+
 LIVE_REF = "refs/heads/agnes-live"
 
 
 def repo_path(slug: str) -> Path:
+    if not SLUG_RE.match(slug):
+        raise ValueError(f"invalid data app slug: {slug!r}")
     return Path(os.environ.get("DATA_DIR", "/data")) / "apps" / "git" / f"{slug}.git"
 
 
@@ -32,7 +36,16 @@ def init_app_repo(slug: str) -> Path:
 
 
 def resolve_ref(slug: str, ref: str = "HEAD") -> Optional[str]:
-    r = subprocess.run(["git", "-C", str(repo_path(slug)), "rev-parse", ref], capture_output=True, text=True)
+    # `--verify <ref>^{commit}` fails (non-zero exit) for an unborn/unresolvable
+    # ref instead of `rev-parse`'s lenient bare-name echo (e.g. a fresh bare
+    # repo's `HEAD` symbolic-refs to a branch with no commits yet — plain
+    # `git rev-parse HEAD` there prints the literal string "HEAD" with exit 0,
+    # which would otherwise look like a valid (but bogus) resolved sha).
+    r = subprocess.run(
+        ["git", "-C", str(repo_path(slug)), "rev-parse", "--verify", f"{ref}^{{commit}}"],
+        capture_output=True,
+        text=True,
+    )
     return r.stdout.strip() if r.returncode == 0 else None
 
 

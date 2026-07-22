@@ -44,6 +44,7 @@ from app.marketplace_server.git_router import (
 )
 from app.resource_types import ResourceType
 from src.data_apps.git_repos import repo_path
+from src.repositories import data_apps_repo
 
 logger = logging.getLogger(__name__)
 
@@ -118,8 +119,6 @@ async def _data_apps_git(slug: str, path: str, request: Request):
         if not user:
             return None, None, None
 
-        from src.repositories import data_apps_repo
-
         app_row = data_apps_repo().get_by_slug(slug)
         if not app_row:
             return user, None, None
@@ -142,7 +141,15 @@ async def _data_apps_git(slug: str, path: str, request: Request):
     if not allowed:
         return _forbidden()
 
-    repo_dir = repo_path(slug)
+    try:
+        repo_dir = repo_path(slug)
+    except ValueError:
+        # Defense-in-depth: get_by_slug already 404'd above for any slug
+        # that isn't a real registry row (the practical path for a
+        # syntactically-invalid slug like URL-encoded path traversal), but
+        # `repo_path`'s own SLUG_RE validation must never surface as a raw
+        # 500 if some other caller ever reaches here with a malformed slug.
+        return _not_found()
     if not (repo_dir / "HEAD").exists():
         # Registered app row but no repo materialized yet (create-endpoint
         # is Task 7's job — this router never calls init_app_repo itself).

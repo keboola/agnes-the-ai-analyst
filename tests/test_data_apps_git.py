@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src.data_apps.git_repos import fast_forward_live, init_app_repo, resolve_ref
+from src.data_apps.git_repos import fast_forward_live, init_app_repo, repo_path, resolve_ref
 
 
 def _basic(username: str, password: str) -> str:
@@ -58,15 +58,16 @@ class TestBareRepo:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         assert resolve_ref("does-not-exist", "HEAD") is None
 
-    def test_fast_forward_live_no_commits_raises(self, tmp_path, monkeypatch):
+    def test_fast_forward_live_empty_repo(self, tmp_path, monkeypatch):
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         init_app_repo("empty")
-        # `git rev-parse HEAD` on an unborn-HEAD bare repo echoes back the
-        # literal string "HEAD" with exit 0 (rev-parse is lenient outside
-        # `--verify`) rather than failing, so `resolve_ref` returns a
-        # (bogus) truthy value here and `fast_forward_live` proceeds to
-        # `update-ref ... HEAD`, which fails at the git-subprocess layer.
-        with pytest.raises(subprocess.CalledProcessError):
+        # `resolve_ref` uses `rev-parse --verify <ref>^{commit}`, which fails
+        # (non-zero exit) on an unborn HEAD — unlike plain `rev-parse HEAD`,
+        # which lenient-echoes back the literal string "HEAD" with exit 0 on
+        # a fresh bare repo. So `fast_forward_live` sees both `resolve_ref`
+        # calls come back None and raises its documented ValueError, rather
+        # than reaching `update-ref` with a bogus target.
+        with pytest.raises(ValueError, match="no commits to deploy"):
             fast_forward_live("empty")
 
     def test_fast_forward_live_explicit_sha(self, tmp_path, monkeypatch):
@@ -97,6 +98,33 @@ class TestBareRepo:
         result = fast_forward_live("pinned", sha=first_sha)
         assert result == first_sha
         assert resolve_ref("pinned", "agnes-live") == first_sha
+
+
+class TestSlugValidation:
+    """`repo_path` must reject any slug that doesn't match `SLUG_RE`
+    (`src.data_apps.spec`) before it ever touches the filesystem — a
+    path-traversal or multi-segment slug must never resolve to a path
+    outside `${DATA_DIR}/apps/git/`."""
+
+    def test_valid_slug_ok(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        p = repo_path("ok-slug")
+        assert p == tmp_path / "apps" / "git" / "ok-slug.git"
+
+    def test_path_traversal_slug_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        with pytest.raises(ValueError, match="invalid data app slug"):
+            repo_path("../evil")
+
+    def test_multi_segment_slug_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        with pytest.raises(ValueError, match="invalid data app slug"):
+            repo_path("a/b")
+
+    def test_uppercase_slug_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        with pytest.raises(ValueError, match="invalid data app slug"):
+            repo_path("UPPER")
 
 
 @pytest.fixture
@@ -265,6 +293,19 @@ class TestDataAppsGitHttp:
         c = data_apps_git_env["client"]
         r = c.get(
             "/data-apps.git/does-not-exist/info/refs?service=git-upload-pack",
+            headers={"Authorization": _basic("x", data_apps_git_env["owner_pat"])},
+        )
+        assert r.status_code == 404
+
+    def test_syntactically_invalid_slug_404s_not_500(self, data_apps_git_env):
+        """A URL-encoded path-traversal slug (`..%2Fevil`) must never reach
+        `repo_path`'s SLUG_RE check as a 500 — `data_apps_repo().get_by_slug`
+        looks it up first and finds no such registry row, so it 404s there
+        (the `try/except ValueError` around `repo_path` is defense-in-depth
+        for the theoretical case a malformed slug ever reaches that far)."""
+        c = data_apps_git_env["client"]
+        r = c.get(
+            "/data-apps.git/..%2Fevil/info/refs?service=git-upload-pack",
             headers={"Authorization": _basic("x", data_apps_git_env["owner_pat"])},
         )
         assert r.status_code == 404
