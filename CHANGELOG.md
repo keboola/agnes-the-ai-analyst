@@ -26,24 +26,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
-### Fixed
-
-- `agnes marketplace add/detail/remove` — and the new MCP siblings — now accept
-  item ids exactly as `agnes marketplace search` / `marketplace_search` print
-  them (tab-prefixed `curated-<mid>/<plugin>`, `flea-<uuid>`). Previously a
-  copy-pasted search id 404ed because the detail/install endpoints take the
-  bare forms.
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.76.7] - 2026-07-22
-
-### Changed
-
 - **Cloud-chat spawn and first-response latency cut across the whole E2B
   path.** The per-session workspace now travels as one gzipped tarball
   extracted in-sandbox (one E2B round-trip instead of one per file; per-file
@@ -66,6 +48,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   watching stdin, so cancel interrupts the live turn (an interrupt surfaced
   by the SDK as an exception no longer tears down the runner); follow-up
   messages arriving mid-turn are buffered and processed in order.
+- `agnes marketplace add/detail/remove` — and the new MCP siblings — now accept
+  item ids exactly as `agnes marketplace search` / `marketplace_search` print
+  them (tab-prefixed `curated-<mid>/<plugin>`, `flea-<uuid>`). Previously a
+  copy-pasted search id 404ed because the detail/install endpoints take the
+  bare forms.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.7] - 2026-07-22
+
 ### Fixed
 
 - Observability/hygiene follow-ups from the three-plane architecture audit
