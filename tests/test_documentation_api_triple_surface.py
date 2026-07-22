@@ -239,7 +239,18 @@ _BROKER_REASON = (
     "sandbox->server routes, ticket-gated (not user auth); the in-sandbox "
     "loopback relay is the only caller. No analyst CLI/MCP analogue."
 )
+_AGENTS_MGMT_REASON = (
+    "agent-profile management (agent-api V1a, Task 5) — temporary exemption: "
+    "`agnes agent …` CLI lands in Task 11 and MCP tools in Task 12 of "
+    "docs/superpowers/plans/2026-07-22-agent-api-v1a.md (same PR); those tasks "
+    "MOVE these entries into _COHORT with their CLI/MCP names"
+)
+
 _EXEMPT: dict[str, str] = {
+    "/api/v1/agents": _AGENTS_MGMT_REASON,
+    "/api/v1/agents/{agent_id}": _AGENTS_MGMT_REASON,
+    "/api/v1/agents/{agent_id}/scope": _AGENTS_MGMT_REASON,
+    "/api/v1/agents/{agent_id}/tokens": _AGENTS_MGMT_REASON,
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "
         "(companion to register-table's defer_rebuild for bulk onboarding); no "
