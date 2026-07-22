@@ -41,6 +41,7 @@ _AUTH_DETAIL_BY_REASON = {
     "invalid_token": "Invalid or expired token",
     "no_token": "Invalid or expired token",
     "agent_pat_wrong_surface": "Agent token not valid on this surface",
+    "agent_pat_agent_deleted": "Agent deleted",
 }
 
 

@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import exc as sa_exc
 
 from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, require_session_token
@@ -194,13 +195,13 @@ async def create_agent(
             tables_mode="selected",
             memory_mode="selected",
         )
-    except HTTPException:
-        raise
-    except Exception:
+    except (duckdb.ConstraintException, sa_exc.IntegrityError):
         # Covers the tombstoned-slug race the pre-check above can't see
         # (get_by_slug only matches deleted_at IS NULL rows) — UNIQUE
         # (owner_user_id, slug) is unconditional, so a tombstoned slug still
-        # raises here.
+        # raises here. DuckDB raises ConstraintException, Postgres (via
+        # SQLAlchemy) raises IntegrityError — anything else is a genuine
+        # 500, not a slug conflict, and must propagate.
         raise _err(409, "slug_taken", f"slug '{slug}' is already in use")
 
     row = repo.get_by_id(agent_id)
@@ -237,6 +238,12 @@ async def update_agent(
     if "slug" in updates:
         raise _err(400, "slug_immutable", "slug cannot be changed after creation")
 
+    # Belt-and-suspenders: today `set(updates)` (Pydantic's exclude_unset
+    # field set, minus slug) is always a subset of _UPDATABLE_FIELDS by
+    # construction — UpdateAgentRequest declares no other fields. Keeps this
+    # guard live so a future field added to the request model without a
+    # matching _UPDATABLE_FIELDS entry fails loudly instead of silently
+    # reaching `agents_repo().update()`.
     bad = set(updates) - _UPDATABLE_FIELDS
     if bad:
         raise _err(400, "invalid_field", f"cannot update field(s): {sorted(bad)}")
@@ -260,9 +267,15 @@ async def delete_agent(
 
     agents_repo().soft_delete(agent_id)
     # Revoke every PAT minted for this agent — a deleted agent must not
-    # leave live credentials behind (checked at resolve time via the DB row,
-    # not the JWT alone, so this is authoritative even for already-issued
-    # tokens the caller no longer holds a reference to).
+    # leave live credentials behind. Belt-and-suspenders, not the sole
+    # guard: `soft_delete` and `revoke_for_agent` are two separate
+    # connections/transactions, so if this call fails after the soft-delete
+    # above already committed, an orphaned agent PAT would otherwise keep
+    # authenticating. `app.auth.pat_resolver.resolve_token_to_user` closes
+    # that gap independently — on the `typ="agent_pat"` path it loads the
+    # agent row by the JWT's `agent_id` claim and rejects
+    # (`"agent_pat_agent_deleted"`) when it is missing or soft-deleted, so a
+    # deleted agent's PAT dies even if this revoke call never runs.
     access_token_repo().revoke_for_agent(agent_id)
     _audit(user["id"], "agent.delete", agent_id)
 
@@ -277,6 +290,7 @@ async def set_agent_scope(
     _load_agent(agent_id, user, conn, require_owner=True)
 
     items: List[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
     for item in payload.items:
         if item.item_type not in _ITEM_TYPES:
             raise _err(
@@ -284,7 +298,14 @@ async def set_agent_scope(
                 "invalid_item_type",
                 f"item_type must be one of {sorted(_ITEM_TYPES)}, got '{item.item_type}'",
             )
-        items.append((item.item_type, item.item_id))
+        key = (item.item_type, item.item_id)
+        # Dedupe (item_type, item_id) pairs, preserving first-seen order —
+        # the composite PK on `agent_scope` means a duplicate pair in one
+        # request would otherwise 500 on the second INSERT.
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(key)
 
     agents_repo().set_scope(agent_id, items)
     _audit(user["id"], "agent.scope.set", agent_id, {"count": len(items)})

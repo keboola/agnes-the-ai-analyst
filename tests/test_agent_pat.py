@@ -403,6 +403,41 @@ def test_user_pat_no_request_still_resolves(client, seeded_user_pat):
     assert user["id"] == "u1"
 
 
+def test_agent_pat_agent_deleted_defense_in_depth(client, seeded_user, seeded_agent):
+    """Delete-cascade-bypass: soft-delete the agent row directly (skipping
+    `access_token_repo().revoke_for_agent`, which is what a failed cascade
+    call would leave in place) and confirm the resolver's independent
+    agent-liveness check still kills the token."""
+    from src.repositories import agents_repo
+    from app.auth.pat_resolver import resolve_token_to_user
+
+    token_id = "tok-agent-deleted"
+    token = _mint_agent_pat(seeded_user, seeded_agent["id"], token_id=token_id)
+    _register_agent_pat_row(seeded_user, seeded_agent["id"], token, token_id)
+
+    req = _FakeRequest("/api/v1/agents/abc/chat")
+    user, reason = resolve_token_to_user(None, token, req)
+    assert reason is None  # sanity: valid before the agent is deleted
+
+    agents_repo().soft_delete(seeded_agent["id"])  # cascade "failed": no revoke_for_agent call
+
+    user, reason = resolve_token_to_user(None, token, req)
+    assert user is None
+    assert reason == "agent_pat_agent_deleted"
+
+
+def test_user_pat_unaffected_by_agent_liveness_check(client, seeded_user_pat):
+    """A plain user PAT (typ=pat, no agent_id) must never run the
+    agent-liveness check — it has no agent to look up."""
+    from app.auth.pat_resolver import resolve_token_to_user
+
+    req = _FakeRequest("/api/catalog/tables")
+    user, reason = resolve_token_to_user(None, seeded_user_pat, req)
+    assert reason is None
+    assert user is not None
+    assert user["id"] == "u1"
+
+
 def test_access_token_repo_list_for_agent(client, seeded_user, seeded_agent):
     from src.repositories import access_token_repo
 

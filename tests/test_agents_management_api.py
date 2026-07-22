@@ -163,6 +163,21 @@ def test_create_slug_conflict(mgmt_client):
     assert r2.status_code == 409
 
 
+def test_create_slug_conflict_on_tombstoned_slug_hits_db_constraint(mgmt_client):
+    """The `get_by_slug` pre-check only matches `deleted_at IS NULL` rows, so
+    a tombstoned (soft-deleted) slug reaches `repo.create()` and trips the
+    unconditional UNIQUE(owner_user_id, slug) constraint at insert time —
+    the exact path the narrowed `except (duckdb.ConstraintException,
+    sa_exc.IntegrityError)` in `create_agent` must still remap to 409."""
+    created = mgmt_client.post("/api/v1/agents", json={"name": "A", "slug": "tombstoned"}).json()
+    d = mgmt_client.delete(f"/api/v1/agents/{created['id']}")
+    assert d.status_code == 204
+
+    r = mgmt_client.post("/api/v1/agents", json={"name": "B", "slug": "tombstoned"})
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "slug_taken"
+
+
 # ---------------------------------------------------------------------------
 # List envelope
 # ---------------------------------------------------------------------------
@@ -273,6 +288,31 @@ def test_scope_put_success(mgmt_client):
     stored = agents_repo().get_scope(created["id"])
     assert {"item_type": "plugin", "item_id": "p1"} in stored
     assert {"item_type": "table", "item_id": "t1"} in stored
+
+
+def test_scope_put_dedupes_duplicate_items(mgmt_client):
+    """A duplicated (item_type, item_id) pair in one request must not 500 on
+    the composite PK — it collapses to a single row."""
+    from src.repositories import agents_repo
+
+    created = mgmt_client.post("/api/v1/agents", json={"name": "A", "slug": "scoped-dupe"}).json()
+    r = mgmt_client.put(
+        f"/api/v1/agents/{created['id']}/scope",
+        json={
+            "items": [
+                {"item_type": "plugin", "item_id": "p1"},
+                {"item_type": "plugin", "item_id": "p1"},
+                {"item_type": "table", "item_id": "t1"},
+            ]
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["items"] == [
+        {"item_type": "plugin", "item_id": "p1"},
+        {"item_type": "table", "item_id": "t1"},
+    ]
+    stored = agents_repo().get_scope(created["id"])
+    assert sorted((s["item_type"], s["item_id"]) for s in stored) == [("plugin", "p1"), ("table", "t1")]
 
 
 # ---------------------------------------------------------------------------

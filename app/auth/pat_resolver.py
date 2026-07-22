@@ -41,6 +41,7 @@ ResolutionReason = Literal[
     "pat_expired",
     "pat_mismatch",
     "agent_pat_wrong_surface",
+    "agent_pat_agent_deleted",
 ]
 
 # Path prefixes an agent PAT (typ="agent_pat") is allowed to authenticate
@@ -181,6 +182,23 @@ def resolve_token_to_user(
         actual = hashlib.sha256(token.encode()).hexdigest()
         if actual != stored_hash:
             return None, "pat_mismatch"
+
+    # Defense-in-depth (agent delete): `DELETE /api/v1/agents/{id}` soft-
+    # deletes the agent row and then revokes its PATs as two separate,
+    # non-atomic calls (see app/api/agents_admin.py::delete_agent). If the
+    # revoke call fails after the soft-delete already committed, the token
+    # row above would still look perfectly valid — so an agent PAT gets an
+    # independent liveness check straight against the `agents` table by the
+    # JWT's `agent_id` claim, not just the token row. Checked here (not
+    # earlier) so a wrong-surface agent PAT still gets
+    # "agent_pat_wrong_surface" first, matching the existing reason
+    # ordering.
+    if payload.get("typ") == "agent_pat":
+        from src.repositories import agents_repo
+
+        agent = agents_repo().get_by_id(payload.get("agent_id", ""))
+        if not agent or agent.get("deleted_at") is not None:
+            return None, "agent_pat_agent_deleted"
 
     # First-use-from-new-IP audit entry (#12 acceptance criterion).
     # Only emit when the IP changes on a *subsequent* use — the very
