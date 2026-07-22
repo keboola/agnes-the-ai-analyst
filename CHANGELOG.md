@@ -16,6 +16,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.10] - 2026-07-22
+
+### Fixed
+
 - **`bq_fqn` is now honored on the query and scan paths**: a registry row
   whose `bq_fqn` names a project other than `data_source.bigquery.project`
   was still resolved as `<configured-project>.<bucket>.<source_table>` by
@@ -30,12 +40,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   A malformed `bq_fqn` raises on the scan path and degrades to the legacy
   triplet with a warning on the query path, where one bad row must not
   fail unrelated queries.
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.76.9] - 2026-07-22
 
