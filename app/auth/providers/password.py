@@ -85,6 +85,8 @@ def _cookie_secure(request: Request | None = None) -> bool:
 
 
 def _set_login_cookie(response, user_id: str, email: str, request: Request | None = None) -> None:
+    from app.instance_config import session_cookie_domain
+
     token = create_access_token(user_id, email)
     response.set_cookie(
         key="access_token",
@@ -93,6 +95,7 @@ def _set_login_cookie(response, user_id: str, email: str, request: Request | Non
         max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
         samesite="lax",
         secure=_cookie_secure(request),
+        domain=session_cookie_domain(),
     )
 
 

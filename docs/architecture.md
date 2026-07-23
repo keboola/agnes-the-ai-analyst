@@ -337,7 +337,7 @@ other.
 
 ### system.duckdb — `{DATA_DIR}/state/system.duckdb`
 
-Current schema version: **94** (auto-migrated from any earlier version on startup — see `src/db.py`).
+Current schema version: **96** (auto-migrated from any earlier version on startup — see `src/db.py`).
 
 | Table | Purpose |
 |-------|---------|
@@ -538,6 +538,56 @@ Multi-replica chat HA*.
 - Contributors reach their own personal items via `/api/memory/my-contributions`.
 
 See [ADR Decision 1](ADR-corporate-memory-v1.md) for the full reasoning.
+
+---
+
+## Hosted Data Apps
+
+Off by default (`data_apps.enabled`). Lets analysts host their own web
+applications — Flask/Dash dashboards, static SPAs — next to the data, using
+the same upstream `data-app-python-js` runtime image and `keboola-config/`
+app-repo contract as Keboola's existing Data Apps product. Full design:
+[`docs/superpowers/specs/2026-07-21-data-apps-design.md`](superpowers/specs/2026-07-21-data-apps-design.md).
+
+```
+┌──────────────┐   deploy    ┌──────────────┐   docker    ┌──────────────┐
+│   registry   │ ──────────▶ │ apps-runner  │ ──────────▶ │  runtime     │
+│ (data_apps   │  spec +     │  (sidecar,   │  run/stop/  │  container   │
+│  table +     │  config.json│  holds the   │  status     │ agnes-       │
+│  git repo)   │             │  Docker sock)│             │ dataapp-<slug>│
+└──────────────┘             └──────────────┘             └──────┬───────┘
+       ▲                                                          │
+       │ RBAC-gated ingress + wake-on-request                     │ :8888
+       └──────────────────── ingress proxy ◀───────────────────────┘
+                          `/apps/<slug>/…` (or subdomain)
+```
+
+- **Registry** (`src/data_apps/`, `src/repositories/data_apps.py`): the
+  `data_apps` table is the source of truth (owner, repo mode/URL, resource
+  limits, sleep state). `src/data_apps/spec.py` builds the runtime's
+  `config.json` (git remote + secrets) and the Docker container spec from a
+  registry row; `src/data_apps/git_repos.py` hosts internal (`repo_mode:
+  internal`) app repos as bare git repos served over HTTP with
+  push-to-deploy (`POST /api/data-apps/{slug}/deploy` fast-forwards the
+  `agnes-live` branch and calls the runner).
+- **apps-runner** (`services/apps_runner/`): the only process holding the
+  Docker socket — deliberately dumb, no registry access or RBAC of its own,
+  just `up`/`stop`/`resume`/`status`/`logs` translated to Docker Engine API
+  calls over a token-gated internal HTTP API (`src/data_apps/runner_client.py`
+  is the app-side client). Image name is allowlisted, mounts are fixed
+  per-slug paths — no arbitrary image or volume ever reaches `docker run`.
+- **Ingress proxy** (`app/api/data_apps_proxy.py`): reverse-proxies
+  `/apps/<slug>/…` (and, when `data_apps.subdomain_base` is configured,
+  `<slug>.<subdomain_base>`) to the running container, RBAC-gated the same
+  way as every other resource type. A sleeping app gets woken on first
+  request (holding page while it starts) rather than 404ing; an idle-reaper
+  scheduler job puts unused apps back to sleep after
+  `data_apps.default_idle_timeout_s`.
+
+Apps reach Agnes data the same way the CLI/MCP surfaces do — as an API
+client, via an owner-scoped token injected as `AGNES_TOKEN` — never through a
+mounted parquet. See spec §8 for the full rationale and the owner-inherited
+access model this implies for sharing.
 
 ---
 

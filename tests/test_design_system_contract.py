@@ -451,7 +451,17 @@ _PAGE_SCAFFOLD_BASES = {
 # design-system base. Entries are tolerated ONLY so the guard locks in today's
 # state — drop an entry when its page is migrated, and never add a new one (a
 # fresh standalone is exactly the regression this guard exists to block).
-_STANDALONE_ALLOWLIST: set[str] = set()
+#
+# ONE deliberate, permanent exception: `data_app_waking.html` (Task 8, the
+# data-apps ingress proxy's holding page — app/api/data_apps_proxy.py). This
+# isn't "forgot to extend a base" migration debt — it's categorically not an
+# Agnes UI page at all. It renders while a user is waiting on someone ELSE's
+# hosted app to wake up, is served from inside `/apps/{slug}/...` (often
+# embedded in that app's own iframe/deep link), and must never carry Agnes's
+# own nav/theme/branding chrome into that context. Same rationale as why
+# `base_login.html` exists as its own scaffold rather than forcing every
+# pre-auth page onto base_ds.
+_STANDALONE_ALLOWLIST: set[str] = {"data_app_waking.html"}
 
 _EXTENDS_RE = re.compile(r"\{%-?\s*extends")
 _SCAFFOLD_RE = re.compile(r"<!DOCTYPE|<html[\s>]", re.IGNORECASE)
