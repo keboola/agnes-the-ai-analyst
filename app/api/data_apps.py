@@ -144,16 +144,19 @@ def _release_create_lease(lease_name: str, holder: str) -> None:
         pass
 
 
-# `POST /{slug}/deploy`, `POST /{slug}/stop`, and the ingress proxy's
-# wake-on-request path (`_trigger_wake` in `app/api/data_apps_proxy.py`)
-# all end up calling the runner sidecar's `up()`/`stop()` for the same
-# slug. `services/apps_runner/api.py::up()` does an unlocked
-# check-then-act (get old container -> remove -> run new) — two of these
-# calls racing for the same slug can both observe the same "old"
-# container and both call `containers.run(...)`, landing two containers
-# fighting over the same name/network. `dataapp:op:{slug}` is the single
-# lease shared by all three call sites so at most one runner-mutating
-# operation is ever in flight per app.
+# `POST /{slug}/deploy`, `POST /{slug}/stop`, `DELETE /{slug}`, the
+# scheduler's idle-reap sweep, and the ingress proxy's wake-on-request path
+# (`_trigger_wake` in `app/api/data_apps_proxy.py`) all end up calling the
+# runner sidecar's `up()`/`stop()` for the same slug.
+# `services/apps_runner/api.py::up()` does an unlocked check-then-act (get
+# old container -> remove -> run new) — two of these calls racing for the
+# same slug can both observe the same "old" container and both call
+# `containers.run(...)`, landing two containers fighting over the same
+# name/network. `dataapp:op:{slug}` is the single lease shared by all these
+# call sites so at most one runner-mutating operation is ever in flight per
+# app. The idle-reap sweep uses the non-blocking `try_acquire_op_lease`
+# directly (skip-and-retry-next-tick) rather than `require_op_lease`
+# (retry-then-409) since it has no HTTP caller to return an error to.
 #
 # It intentionally lives here rather than inside `redeploy_current`:
 # `_trigger_wake` and `deploy_data_app` both call `redeploy_current`, and
@@ -667,32 +670,36 @@ async def delete_data_app(
     row = _get_row_or_404(slug)
     _require_owner_or_admin(user, row)
 
-    # Best-effort: a dead runner must not block deleting the registry row
-    # (there'd otherwise be no way to remove an app whose container host is
-    # gone).
+    holder = require_op_lease(slug)
     try:
-        _runner().stop(slug, mode="recreate")
-    except (RunnerUnavailable, RunnerError):
-        logger.warning("delete_data_app: runner stop failed for %s (continuing)", slug)
+        # Best-effort: a dead runner must not block deleting the registry row
+        # (there'd otherwise be no way to remove an app whose container host is
+        # gone).
+        try:
+            _runner().stop(slug, mode="recreate")
+        except (RunnerUnavailable, RunnerError):
+            logger.warning("delete_data_app: runner stop failed for %s (continuing)", slug)
 
-    _revoke_service_token(row)
-    data_apps_repo().delete(row["id"])
+        _revoke_service_token(row)
+        data_apps_repo().delete(row["id"])
 
-    config_dir = os.path.join(os.environ.get("DATA_DIR", "/data"), "apps", slug)
-    try:
-        shutil.rmtree(config_dir, ignore_errors=False)
-    except FileNotFoundError:
-        pass
-    except OSError:
-        logger.warning("delete_data_app: failed to remove config dir %s (continuing)", config_dir)
+        config_dir = os.path.join(os.environ.get("DATA_DIR", "/data"), "apps", slug)
+        try:
+            shutil.rmtree(config_dir, ignore_errors=False)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("delete_data_app: failed to remove config dir %s (continuing)", config_dir)
 
-    _audit(
-        conn,
-        user["id"],
-        "data_app.delete",
-        f"data_app:{slug}",
-        {"repo_dir_left_on_disk": True},
-    )
+        _audit(
+            conn,
+            user["id"],
+            "data_app.delete",
+            f"data_app:{slug}",
+            {"repo_dir_left_on_disk": True},
+        )
+    finally:
+        release_op_lease(slug, holder)
 
 
 @router.put("/{slug}/secrets")
@@ -804,6 +811,14 @@ async def reap_idle_data_apps(
             last_request_at = last_request_at.replace(tzinfo=timezone.utc)
         if (now - last_request_at).total_seconds() <= row["idle_timeout_s"]:
             continue
+        # Non-blocking: a row with a deploy/stop/wake already in flight is
+        # left running and picked up on the next scheduler tick rather than
+        # having this sweep block or race the in-flight operation's own
+        # runner.stop()/up() call (see the op-lease invariant above).
+        acquired, holder = try_acquire_op_lease(row["slug"])
+        if not acquired:
+            logger.info("reap-idle: skipping %s — another operation is in flight", row["slug"])
+            continue
         try:
             _runner().stop(row["slug"], mode=row.get("sleep_mode") or "recreate")
         except (RunnerUnavailable, RunnerError) as exc:
@@ -811,6 +826,8 @@ async def reap_idle_data_apps(
             repo.set_state(row["id"], "error", f"reap-idle stop failed: {detail}")
             logger.warning("reap-idle: runner stop failed for %s: %s", row["slug"], detail)
             continue
+        finally:
+            release_op_lease(row["slug"], holder)
         repo.set_state(row["id"], "sleeping")
         reaped.append(row["slug"])
 

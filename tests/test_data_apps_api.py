@@ -809,6 +809,22 @@ class TestOpLeaseSerialization:
         finally:
             release_op_lease("sapp", holder)
 
+    def test_delete_409s_when_op_lease_held_elsewhere(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        """`DELETE /{slug}` also calls `runner.stop()` (best-effort) — it must
+        take the same op lease as deploy/stop so a delete can't race an
+        in-flight deploy/wake and hit the unlocked `runner.up()` window."""
+        from app.api.data_apps import release_op_lease, try_acquire_op_lease
+
+        acquired, holder = try_acquire_op_lease("sapp")
+        assert acquired
+        try:
+            r = client_as_user.delete("/api/data-apps/sapp")
+            assert r.status_code == 409
+            assert r.json()["detail"] == "operation_in_progress"
+            assert not fake_runner.stop_calls
+        finally:
+            release_op_lease("sapp", holder)
+
     def test_concurrent_deploy_calls_never_overlap_inside_runner_up(
         self, client_as_user, monkeypatch, seeded_repo_with_commit
     ):
@@ -1007,6 +1023,33 @@ class TestReadiness:
 
 
 class TestReap:
+    def test_reap_idle_skips_app_with_op_lease_held_elsewhere(self, admin_client, fake_runner, running_idle_app):
+        """The idle sweep must not race an in-flight deploy/stop/wake for the
+        same slug — it should skip a leased app (leaving it running for the
+        next tick) rather than blocking, erroring, or calling runner.stop()
+        anyway."""
+        from app.api.data_apps import release_op_lease, try_acquire_op_lease
+
+        acquired, holder = try_acquire_op_lease("sapp")
+        assert acquired
+        try:
+            r = admin_client.post("/api/data-apps/reap-idle")
+            assert r.status_code == 200
+            assert r.json()["reaped"] == []
+            assert not fake_runner.stop_calls
+        finally:
+            release_op_lease("sapp", holder)
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("sapp")
+        finally:
+            conn.close()
+        assert row["state"] == "running"
+
     def test_reap_idle(self, admin_client, fake_runner, running_idle_app):
         r = admin_client.post("/api/data-apps/reap-idle")
         assert r.status_code == 200
