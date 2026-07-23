@@ -29,6 +29,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.16] - 2026-07-23
+
+### Added
+
+- **Upsert-on-upload for collection files.** `POST /api/collections/{id}/files` accepts an optional per-file `paths` form field; re-uploading a file with the same `(corpus_id, path)` replaces it (old blob/chunks/derived tables purged) instead of inserting a duplicate. New `agnes collections upload --path <id>` (single-file) exposes it. Files without a path keep the current plain-insert behavior. Schema: `corpus_files.path` (nullable), DuckDB v97 + Alembic `0044`.
+- **`agnes collections rm-file <collection_id> <file_id> [--yes]`** — CLI command to delete a single file from a collection (previously only the whole-collection `rm` was exposed; per-file removal required a raw API call).
+
+## [0.76.15] - 2026-07-23
+
+### Fixed
+
+- **`docker compose up` no longer requires `APPS_RUNNER_TOKEN` for stacks that never touch Data Apps.** The `apps-runner` service's env var was declared hard-required (`${APPS_RUNNER_TOKEN:?...}`), which broke every `docker compose up` invocation without it set — compose validates interpolation for the whole file before profile filtering, so this fired even though `apps-runner` is gated behind `profiles: ["apps"]`. Caused the v0.76.14 release to fail its smoke test and auto-rollback (#1007). Now soft-defaults to empty; the service's own token check already fails closed (rejects every request) when unset, so this is not an auth-bypass regression.
+
 ## [0.76.14] - 2026-07-23
 
 ### Added
