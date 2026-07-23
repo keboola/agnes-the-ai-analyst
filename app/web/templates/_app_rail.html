@@ -27,51 +27,46 @@
         {% endif %}
     </a>
 
-    {# Global search — sits between the logo and the first nav item. Same
-       combobox contract as the header (js/global_search.js binds
-       #global-search / #globalSearchResults). #}
-    <div class="rail-search app-header-search" id="globalSearchWrap">
-        <input type="search"
-               id="global-search"
-               class="app-header-search-input"
-               role="combobox"
-               aria-expanded="false"
-               aria-haspopup="listbox"
-               aria-controls="globalSearchResults"
-               aria-autocomplete="list"
-               autocomplete="off"
-               spellcheck="false"
-               placeholder="Search…"
-              >
-        <div class="app-header-search-panel"
-             id="globalSearchResults"
-             role="listbox"
-             aria-label="Search results"
-             hidden></div>
-    </div>
-
     {% set _path = request.url.path %}
     {% set _home = home_route or '/dashboard' %}
     {% set _on_stack = _path == '/stack' %}
     {% set _in_catalog = _path.startswith('/catalog') or _path.startswith('/marketplace') or _path.startswith('/library') or _path == '/corporate-memory' %}
 
-    {% if can_chat %}
-    <a class="rail-newchat" href="/chat">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        New chat
-    </a>
-    {% endif %}
-
     <div class="rail-nav">
+        {# Dashboard — the rail landing surface, first in the nav. It IS
+           Chat's pre-conversation state (chat.html's rail empty state), so
+           /dashboard 302s to /chat and this item reads active exactly when
+           that dashboard is showing: on /chat with no session deep link
+           (server-side here; chat.js keeps it in sync across in-page
+           open-session / new-chat transitions via #rail-dashboard-item).
+           Gated on can_chat exactly like the route: without a chat grant
+           /dashboard 302s to /stack, so showing the item would be a link
+           that bounces. The rail logo above also lands here (its href is
+           home_route, which defaults to /dashboard). #}
+        {% if can_chat %}
+        <a class="rail-i {% if _path == '/chat' and not request.query_params.get('session') %}on{% endif %}"
+           id="rail-dashboard-item" href="/dashboard">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4 10.5 8-6.5 8 6.5V20a1 1 0 0 1-1 1h-4.5v-6h-5v6H5a1 1 0 0 1-1-1v-9.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            Dashboard
+        </a>
+        {% endif %}
         {# Chat is a surface only when it actually works: enabled + the caller
            holds a chat grant (`can_chat`). The retired /ask hero used to fill
            this slot for non-chat users (#896) — but it just forwarded to /chat
            (a dead end without the grant), so the slot now simply renders
-           nothing when chat is unavailable. Those users land on /stack. #}
+           nothing when chat is unavailable. Those users land on /stack.
+
+           "New chat" is the single chat entry point — the standalone +New chat
+           button above the nav was retired and folded into this item. It ALWAYS
+           starts a fresh conversation: on every page but /chat the href
+           navigates to a clean /chat empty state; on /chat itself chat.js
+           intercepts the click (id="new-chat") and resets in place. It carries
+           no persistent active (`on`) state — the conversation you're viewing is
+           highlighted in the Chats history list below instead. #}
         {% if can_chat %}
-        <a class="rail-i {% if _path == '/chat' or _path.startswith('/chat/') %}on{% endif %}" href="/chat">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            Chat
+        <a class="rail-i rail-newchat-item" id="new-chat" href="/chat">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+            New chat
         </a>
         {% endif %}
         <a class="rail-i {% if _on_stack %}on{% endif %}" href="/stack">
@@ -83,6 +78,48 @@
             Catalog
         </a>
     </div>
+
+    {% if can_chat %}
+    {# Chat history — a collapsible, scrollable list of the caller's
+       conversations, sitting directly under the primary destinations. This is
+       the ONLY conversation history in the rail layout (the chat page's own
+       Conversations column is retired there).
+
+         • The <ul id="chat-list"> + #cloud-chat-empty-state ids are the same
+           the chat page used, so on /chat chat.js owns this list unchanged —
+           live inserts, active-row highlight, delete, and the Cmd+K palette all
+           keep working, now rendering into the rail.
+         • On every OTHER rail page chat.js isn't loaded, so js/rail_history.js
+           fetches /api/chat/sessions and renders the same rows, wiring each to
+           /chat?session=<id>. It bails on /chat (chat.js is authoritative there).
+
+       Native <details> keeps the collapse keyboard-accessible with zero JS;
+       rail_history.js persists the open/closed state in localStorage. The body
+       is the rail's flex-grow region (rail.css) so it scrolls independently
+       while the nav above and the user menu below stay put.
+
+       NB: this is a button + region, NOT a native <details> — a <details> set
+       to display:flex does not distribute its height to flex children in
+       Chrome, so the scroll region never engages and older rows spill past the
+       footer. rail_history.js wires the collapse (aria-expanded + a class) on
+       every rail page, /chat included. #}
+    <section class="rail-history" id="rail-history">
+        <button type="button" class="rail-i rail-history-summary"
+                id="rail-history-toggle"
+                aria-expanded="true" aria-controls="rail-history-body">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M12 7.5V12l3 2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="rail-history-summary-txt">Chats</span>
+            <svg class="rail-history-caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="rail-history-body" id="rail-history-body">
+            <ul id="chat-list" class="cloud-chat-list" role="list"></ul>
+            {# Starts hidden; chat.js (/chat) and rail_history.js (elsewhere)
+               both unhide it only once a fetch resolves with zero sessions, so
+               "No conversations yet" never flashes before the list loads. #}
+            <p id="cloud-chat-empty-state" class="rail-history-empty" hidden>No conversations yet.</p>
+        </div>
+    </section>
+    {% endif %}
 
     {% if session.user.is_admin %}
     {% set _admin_active = _path.startswith('/admin/') or _path.startswith('/documentation') %}
@@ -149,6 +186,33 @@
     {% endif %}
 
     <div class="rail-foot">
+        {% if can_chat %}
+        {# "Get started" — the onboarding launcher. The "Your Journey" steps
+           (chat-driven onboarding) used to sit crammed at the bottom of the
+           Chats list, where they were easy to miss and hard to reach. They now
+           live in a popover opened from this pinned foot button, which also
+           shows live progress (N/5). #chat-journey is populated by
+           chat_onboarding.js — by chat.js on /chat, and by a standalone mount
+           (see the module below) on every other rail page. rail_history.js
+           wires the open/close on all rail pages. #}
+        <div class="rail-getstarted" id="railGetStarted">
+            <button type="button" class="rail-i rail-getstarted-btn"
+                    id="rail-getstarted-toggle"
+                    aria-haspopup="dialog" aria-expanded="false"
+                    aria-controls="rail-getstarted-panel">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3c3 1.5 5 4.6 5 8.5 0 2-.7 3.4-1.4 4.4l-.1.1H8.5l-.1-.1C7.7 14.9 7 13.5 7 11.5 7 7.6 9 4.5 12 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="12" cy="10.5" r="1.6" stroke="currentColor" stroke-width="1.6"/><path d="M9 19c.8.7 1.8 1 3 1s2.2-.3 3-1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                <span class="rail-getstarted-txt">Get started</span>
+                <span class="rail-getstarted-count" id="rail-getstarted-count" aria-hidden="true"></span>
+                <svg class="rail-getstarted-check" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <div class="rail-getstarted-panel" id="rail-getstarted-panel"
+                 role="dialog" aria-label="Your Journey" hidden>
+                {# Chat-driven onboarding progress — rendered by chat_onboarding.js. #}
+                <div id="chat-journey" class="cloud-chat-journey" hidden></div>
+            </div>
+        </div>
+        {% endif %}
+
         {# User row + pop-up menu — same ids/classes as the header's user
            menu so app.js wiring (trigger toggle, theme radio group)
            works unchanged; only the container styling differs. #}
@@ -194,4 +258,21 @@
    chromes. Defer keeps it non-blocking. #}
 <script src="{{ static_url('app.js') }}" defer></script>
 <script src="{{ static_url('js/global_search.js') }}" defer></script>
+{# Populates the rail's Chats history on every page EXCEPT /chat (where chat.js
+   owns #chat-list). Self-guards on body.chat-page-body, so loading it globally
+   is safe. Only needed when the caller can chat. #}
+{% if can_chat %}<script src="{{ static_url('js/rail_history.js') }}" defer></script>{% endif %}
+{# Mounts the "Your Journey" panel into the Get started popover on rail pages
+   OTHER than /chat (there chat.js's initChatOnboarding already renders it, with
+   the full chat hooks). Same module either way, so #chat-journey has one owner
+   per page. #}
+{% if can_chat %}
+<script type="module">
+  if (!document.body.classList.contains("chat-page-body")) {
+    import("{{ static_url('js/chat_onboarding.js') }}")
+      .then((m) => m.mountJourneyPanel())
+      .catch(() => { /* onboarding is soft state — never block the page */ });
+  }
+</script>
+{% endif %}
 {% endif %}

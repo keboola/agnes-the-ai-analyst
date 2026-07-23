@@ -1,0 +1,364 @@
+/* Rail pre-conversation Dashboard (chat.html's rail empty state) — the
+ * greeting, Stack-context line, and Suggested-next-actions list that
+ * surround the REAL chat composer before a conversation starts.
+ * Markup in chat.html's rail blocks; behavior in js/chat_dashboard.js.
+ *
+ * Loaded by chat.html ONLY under html[data-ui-layout="rail"], and the
+ * layout overrides below are rail-scoped anyway, so topnav instances
+ * never see any of this. Everything rides --ds-* tokens so the page
+ * works under any palette theme (paper, blue, navy, dark).
+ * Prefix: .rdb-*.
+ */
+
+/* Slot layout (ordering, scroll, the shared --rdb-col content column) is
+ * owned by chat.css's empty-state rules — this sheet styles the dashboard
+ * widgets. */
+
+/* Suggested-actions column below the hero — the shared --rdb-col definition
+ * (declared on the empty-state .cloud-chat-main in chat.css) keeps it on
+ * the exact same grid as the hero, composer, and context line. */
+html[data-ui-layout="rail"] .rdb {
+    width: var(--rdb-col-narrow, 60%);
+    min-width: 0;
+    margin-top: 12px;
+    font-family: var(--ds-font);
+}
+
+/* ── Greeting (compact, top-left of the hero) ────────────────────── */
+
+.rdb-greet {
+    margin: 0 0 14px;
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+    color: var(--ds-text-primary);
+    text-align: left;
+}
+
+/* ── Stack context line — flat on the surface, under the composer ── */
+
+html[data-ui-layout="rail"] .rdb-context {
+    align-self: center;
+    width: var(--rdb-col-narrow, 60%);
+    max-width: none;
+    min-width: 0;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 2px 14px;
+    font-size: 13px;
+    color: var(--ds-text-muted);
+    font-family: var(--ds-font);
+}
+
+.rdb-context-ico {
+    flex-shrink: 0;
+    width: 15px;
+    height: 15px;
+    color: var(--ds-text-secondary);
+}
+
+.rdb-context a {
+    color: var(--ds-primary-dark);
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.rdb-context a:hover {
+    text-decoration: underline;
+}
+
+/* ── Suggested next actions — one wide, calm list, flat on the
+ *    surface (no enclosing card; the header divider + row dividers
+ *    provide all the structure). ─────────────────────────────────── */
+
+.rdb-actions {
+    min-width: 0;
+    text-align: left;
+}
+
+/* <header> element — pin every box property the legacy global `header`
+ * rule (style-custom.css) would otherwise set, so the divider is ours. */
+.rdb-panel-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 0;
+    padding: 12px 0 10px;
+    border: none;
+    border-bottom: 1px solid var(--ds-border-light);
+}
+
+.rdb-panel-title {
+    margin: 0;
+    font-size: 14.5px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    color: var(--ds-text-primary);
+}
+
+.rdb-panel-note {
+    margin: 8px 0;
+    font-size: 13px;
+    color: var(--ds-text-muted);
+}
+
+.rdb-panel-note a {
+    color: var(--ds-primary-dark);
+}
+
+.rdb-actions-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.rdb-actions-list > li + li {
+    border-top: 1px solid var(--ds-border-light);
+}
+
+.rdb-action-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+/* The whole row is one real button; the dismiss control sits beside it
+ * (buttons cannot nest). */
+.rdb-action {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 8px;
+    margin: 0 -8px;
+    border: none;
+    border-radius: 10px;
+    background: none;
+    font: inherit;
+    text-align: left;
+    color: inherit;
+    cursor: pointer;
+    transition: background var(--ds-motion-fast) var(--ds-ease-standard);
+}
+
+.rdb-action:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--ds-primary) 5%, transparent);
+}
+
+.rdb-action:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+    background: color-mix(in srgb, var(--ds-primary) 5%, transparent);
+}
+
+.rdb-action:disabled {
+    cursor: not-allowed;
+    color: var(--ds-text-disabled);
+}
+
+.rdb-action-icon {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+}
+
+.rdb-action-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+.rdb-action-txt {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.rdb-action-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--ds-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rdb-action-reason {
+    font-size: 12px;
+    color: var(--ds-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rdb-action-cta {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--ds-primary-dark);
+}
+
+.rdb-action-cta svg {
+    width: 14px;
+    height: 14px;
+    display: block;
+}
+
+/* Dismiss — revealed on row hover / keyboard focus. */
+.rdb-action-dismiss {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    margin-left: 4px;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    color: var(--ds-text-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity var(--ds-motion-fast) var(--ds-ease-standard),
+                background var(--ds-motion-fast) var(--ds-ease-standard);
+}
+
+.rdb-action-row:hover .rdb-action-dismiss,
+.rdb-action-row:focus-within .rdb-action-dismiss {
+    opacity: 1;
+}
+
+.rdb-action-dismiss:hover {
+    background: var(--ds-surface-dim);
+    color: var(--ds-text-primary);
+}
+
+.rdb-action-dismiss:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+    opacity: 1;
+}
+
+.rdb-action-dismiss svg {
+    width: 13px;
+    height: 13px;
+}
+
+.rdb-actions-empty {
+    padding: 6px 0 10px;
+}
+
+.rdb-actions-empty-title {
+    margin: 6px 0 2px;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--ds-text-primary);
+}
+
+/* ── Task dialog (built by js/chat_dashboard.js on the shared
+ *    .modal-backdrop / .modal-card scaffold from style-custom.css —
+ *    only the form-field layout inside the card is page-specific). ── */
+
+.rdb-dialog-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin: 14px 0 4px;
+    text-align: left;
+}
+
+.rdb-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.rdb-field[hidden] {
+    display: none;
+}
+
+.rdb-field-label {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--ds-text-secondary);
+}
+
+.rdb-field-hint {
+    font-size: 12px;
+    color: var(--ds-text-muted);
+}
+
+.rdb-field input,
+.rdb-field select,
+.rdb-field textarea {
+    font: inherit;
+    font-size: 14px;
+    color: var(--ds-text-primary);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+
+.rdb-field textarea {
+    resize: vertical;
+    min-height: 60px;
+}
+
+.rdb-field input:focus-visible,
+.rdb-field select:focus-visible,
+.rdb-field textarea:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+.rdb-dialog-error {
+    margin: 8px 0 0;
+    font-size: 13px;
+    color: var(--ds-accent-danger-ink);
+}
+
+/* ── Responsive ──────────────────────────────────────────────────── */
+
+@media (max-width: 680px) {
+    /* Rows stack their metadata; the trailing CTA drops under the text. */
+    .rdb-action {
+        flex-wrap: wrap;
+    }
+
+    .rdb-action-txt {
+        flex-basis: calc(100% - 44px);
+    }
+
+    .rdb-action-title,
+    .rdb-action-reason {
+        white-space: normal;
+    }
+
+    .rdb-action-cta {
+        margin-left: 44px;
+    }
+
+    /* Touch devices have no hover — keep the dismiss control visible. */
+    .rdb-action-dismiss {
+        opacity: 1;
+    }
+}

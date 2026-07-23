@@ -14,6 +14,7 @@ Three guarantees:
 """
 
 import re
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -113,14 +114,13 @@ class TestRailOptIn:
     def test_rail_keeps_nav_contract(self, web_client, admin_cookie, monkeypatch):
         """Rail must carry the prototype IA (Chat + My Stack + Catalog as
         three flat destinations) and the same JS/id contract as the
-        header: global search combobox, user menu, theme toggle. The
-        content surfaces (Plugins/Library/Memory) are reached as kind
-        tabs on the unified /catalog page, not as rail subcategories."""
+        header: user menu, theme toggle. The content surfaces
+        (Plugins/Library/Memory) are reached as kind tabs on the unified
+        /catalog page, not as rail subcategories."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/stack", cookies=admin_cookie)
         text = resp.text
         for anchor in (
-            'id="global-search"',
             'id="userMenu"',
             'id="themeToggle"',
             # prototype IA: My Stack page + Catalog parent
@@ -135,6 +135,9 @@ class TestRailOptIn:
         # The retired /ask hero (#896) is gone: no rail nav item points at it,
         # and the Chat slot renders only when cloud-chat is actually reachable.
         assert 'href="/ask"' not in text
+        # The in-rail global search box was removed — search no longer lives in
+        # the sidebar chrome.
+        assert 'id="global-search"' not in text
 
     def test_rail_catalog_renders_unified_page(self, web_client, admin_cookie, monkeypatch):
         """Under the rail layout /catalog is the unified browse surface
@@ -161,6 +164,13 @@ class TestRailOptIn:
         assert 'data-kind="plugins"' in resp.text
         # The Uploads tab moved here from the Catalog.
         assert 'data-kind="upload"' in resp.text
+        # An "All" tab is the default view over the inventory table, so the
+        # page never lands empty.
+        assert 'data-kind="all"' in resp.text
+        assert 'class="uc-kindtab on" data-kind="all"' in resp.text
+        # The manage zone is ONE inventory table (not another card grid).
+        assert 'id="stk-table"' in resp.text
+        assert "Everything in your Stack" in resp.text
 
     def test_topnav_catalog_keeps_classic_page(self, web_client, admin_cookie, monkeypatch):
         """Default layout must keep the classic catalog.html — the
@@ -178,26 +188,113 @@ class TestRailOptIn:
         assert 'data-theme="paper"' in resp.text
 
 
+class TestRailChatHistory:
+    """Rail chat-history migration (#896): the conversation history lives in the
+    left rail — a collapsible, scrollable Chats section under the primary
+    destinations, present on every page (not just /chat). The standalone
+    "+ New chat" button is retired and the chat entry is renamed "New chat"
+    (id="new-chat", so chat.js resets in place on /chat). All gated on can_chat.
+    Topnav is unaffected — its in-page chat sidebar is unchanged."""
+
+    def _enable_chat(self, web_client, monkeypatch):
+        """Make can_chat true: chat enabled AND an explicit CHAT grant (admin
+        god-mode does NOT short-circuit has_explicit_grant, so patch it)."""
+        import app.auth.access as access
+
+        monkeypatch.setattr(access, "has_explicit_grant", lambda *a, **k: True)
+        web_client.app.state.chat_config = SimpleNamespace(enabled=True)
+
+    def test_rail_renders_history_section(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(web_client, monkeypatch)
+        # Probe a NON-chat rail page — the history must render everywhere.
+        resp = web_client.get("/stack", cookies=admin_cookie)
+        assert resp.status_code == 200
+        text = resp.text
+        # Collapsible history section + the reused chat list ids live in the rail.
+        assert 'class="rail-history"' in text
+        assert 'id="chat-list"' in text
+        assert 'id="cloud-chat-empty-state"' in text
+        # The chat entry is renamed and carries id="new-chat" (chat.js hook).
+        assert 'id="new-chat"' in text
+        assert "New chat" in text
+        # The standalone +New chat button above the nav (old markup) is retired.
+        assert 'class="rail-newchat"' not in text
+        # The loader that fills the list off /chat is wired in.
+        assert "js/rail_history.js" in text
+
+    def test_rail_getstarted_launcher_hosts_the_journey(self, web_client, admin_cookie, monkeypatch):
+        """The onboarding "Your Journey" panel moved out of the (cramped) Chats
+        list into a "Get started" popover pinned in the rail foot. #chat-journey
+        now lives in that popover, and a standalone module mounts it on non-chat
+        pages."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(web_client, monkeypatch)
+        resp = web_client.get("/stack", cookies=admin_cookie)
+        assert resp.status_code == 200
+        text = resp.text
+        # Launcher + popover in the foot.
+        assert 'id="rail-getstarted-toggle"' in text
+        assert 'id="rail-getstarted-panel"' in text
+        # The journey render target moved into the popover — and out of the list.
+        journey_pos = text.find('id="chat-journey"')
+        panel_pos = text.find('id="rail-getstarted-panel"')
+        assert journey_pos != -1 and panel_pos != -1
+        assert journey_pos > panel_pos, "#chat-journey must render inside the Get started popover"
+        assert text.find('id="chat-journey"', text.find('class="rail-history"'), panel_pos) == -1, (
+            "#chat-journey must no longer sit in the Chats history section"
+        )
+        # Off /chat, the standalone mount fills the popover.
+        assert "mountJourneyPanel" in text
+
+    def test_rail_history_absent_without_chat_grant(self, web_client, admin_cookie, monkeypatch):
+        """No chat reachability → no history section, no New chat item, no
+        Get started launcher, no loader (matches the "Chat slot only when
+        reachable" contract)."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        # Chat is disabled by default in tests, so can_chat is False.
+        resp = web_client.get("/stack", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'class="rail-history"' not in resp.text
+        assert 'id="new-chat"' not in resp.text
+        assert 'id="rail-getstarted-toggle"' not in resp.text
+        assert "js/rail_history.js" not in resp.text
+
+
 class TestDashboardLandingRedirect:
-    """Rail IA convergence (#896): the legacy table-inventory /dashboard is not
-    a landing surface under the rail. It 302s to the working chat (when
-    reachable) or My Stack. Topnav instances must be byte-for-byte unchanged —
-    /dashboard still renders there."""
+    """Layout-aware /dashboard split. Topnav instances must be byte-for-byte
+    unchanged — the legacy table-inventory dashboard.html still renders
+    there. Under the rail, the Dashboard IS Chat's pre-conversation state
+    (chat.html's rail empty state, see TestRailDashboard), so /dashboard
+    302s to /chat for chat-granted users; grant-less users keep the 302 to
+    My Stack (the page exists to start Kai conversations, so without a
+    grant it would be a dead shell)."""
 
     def test_topnav_dashboard_still_renders(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
         resp = web_client.get("/dashboard", cookies=admin_cookie, follow_redirects=False)
         assert resp.status_code == 200
         assert 'data-ui-layout="topnav"' in resp.text
+        # The rail dashboard's markup/assets must never leak into topnav.
+        assert 'class="rdb"' not in resp.text
+        assert "chat_dashboard" not in resp.text
 
-    def test_rail_dashboard_redirects_to_landing(self, web_client, admin_cookie, monkeypatch):
+    def test_rail_dashboard_redirects_to_chat_with_grant(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        import app.auth.access as access
+
+        monkeypatch.setattr(access, "has_explicit_grant", lambda *a, **k: True)
+        web_client.app.state.chat_config = SimpleNamespace(enabled=True)
         resp = web_client.get("/dashboard", cookies=admin_cookie, follow_redirects=False)
         assert resp.status_code == 302
-        # Chat when the caller can reach it, else My Stack — never back to the
-        # legacy dashboard (that would loop through the home route).
-        assert resp.headers["location"] in ("/chat", "/stack")
-        assert resp.headers["location"] != "/dashboard"
+        assert resp.headers["location"] == "/chat"
+
+    def test_rail_dashboard_redirects_to_stack_without_chat_grant(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        # Chat is disabled by default in tests, so can_chat is False.
+        resp = web_client.get("/dashboard", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/stack"
 
     def test_ask_is_retired(self, web_client, admin_cookie, monkeypatch):
         """The /ask hero is retired — it 302s to / rather than rendering."""
@@ -205,6 +302,114 @@ class TestDashboardLandingRedirect:
         resp = web_client.get("/ask", cookies=admin_cookie, follow_redirects=False)
         assert resp.status_code == 302
         assert resp.headers["location"] == "/"
+
+
+class TestRailDashboard:
+    """The rail Dashboard = Chat's pre-conversation state: /chat with no
+    active conversation renders the Kai-centric dashboard (greeting, the
+    REAL composer, activity panels, guided task starters) and hides it the
+    moment a conversation starts. One composer, one conversation flow —
+    there is no separate dashboard page or second chat input."""
+
+    def _enable_chat(self, web_client, monkeypatch):
+        """Make can_chat true — same recipe as TestRailChatHistory."""
+        import app.auth.access as access
+
+        monkeypatch.setattr(access, "has_explicit_grant", lambda *a, **k: True)
+        web_client.app.state.chat_config = SimpleNamespace(enabled=True)
+
+    def test_rail_chat_renders_dashboard_empty_state(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(web_client, monkeypatch)
+        resp = web_client.get("/chat", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 200
+        text = resp.text
+        assert 'data-ui-layout="rail"' in text
+        for anchor in (
+            'id="rdb-greeting-tod"',  # greeting
+            'class="klb klb--bare"',  # Knowledge Layer banner fused into the hero box
+            "One knowledge layer. Everywhere you work.",  # banner headline
+            "Ask Kai in Agnes",  # banner LEFT card
+            "Use your own AI tools",  # banner RIGHT card
+            "Agnes Knowledge Layer",  # banner CENTER hub
+            'class="klb-cta-primary" href="/me/ai-connector"',  # banner primary CTA → connect page
+            'class="klb-cta-secondary" href="/home"',  # banner secondary CTA → how-it-works walkthrough
+            "Suggested next actions",  # the one personalized section
+            'id="rdb-actions-list"',  # suggested-actions list
+            "css/chat_dashboard.css",  # dashboard styles
+            'id="chat-input"',  # the REAL composer serves the dashboard
+        ):
+            assert anchor in text, f"rail chat dashboard is missing {anchor}"
+        # The retired three-panel layout is gone (one actions list instead).
+        for retired in ('id="rdb-continue-list"', 'id="rdb-tasks"', "Recent updates"):
+            assert retired not in text, f"retired dashboard panel leaked back: {retired}"
+        # One composer only — the retired standalone dashboard's look-alike
+        # input and its prompt-handoff module must be gone.
+        assert 'id="rdb-composer"' not in text
+        assert "dashboard_rail" not in text
+        # The retired ask-hero brand block is gone too.
+        assert "Ask anything." not in text
+
+    def test_rail_dashboard_actions_section(self, web_client, admin_cookie, monkeypatch):
+        """One Suggested-next-actions section below the composer: list +
+        loading + empty-state elements are all server-rendered (js toggles
+        them), and there are no department/role tabs."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(web_client, monkeypatch)
+        resp = web_client.get("/chat", cookies=admin_cookie)
+        assert resp.status_code == 200
+        text = resp.text
+        assert 'id="rdb-actions-loading"' in text
+        assert 'id="rdb-actions-empty"' in text
+        assert "No suggested actions yet" in text
+        # js/chat_dashboard.js drives the list through chat.js's one flow.
+        assert "js/chat_dashboard.js" not in text  # loaded via chat.js import, not a script tag
+
+    def test_topnav_chat_keeps_classic_empty_state(self, web_client, admin_cookie, monkeypatch):
+        """The dashboard empty state is rail-only — topnav /chat keeps the
+        classic capability cards, byte-for-byte."""
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        self._enable_chat(web_client, monkeypatch)
+        resp = web_client.get("/chat", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert "What can I help you with?" in resp.text
+        assert 'id="rdb-tasks"' not in resp.text
+        assert "chat_dashboard" not in resp.text
+
+    def test_rail_nav_shows_dashboard_first(self, web_client, admin_cookie, monkeypatch):
+        """Dashboard sits ABOVE New chat in the rail nav, and the rail logo
+        lands on it (href = home_route, default /dashboard)."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(web_client, monkeypatch)
+        resp = web_client.get("/stack", cookies=admin_cookie)
+        assert resp.status_code == 200
+        text = resp.text
+        dash = text.find('href="/dashboard"')
+        newchat = text.find('id="new-chat"')
+        assert dash != -1, "rail nav is missing the Dashboard item"
+        assert newchat != -1
+        assert dash < newchat, "Dashboard must be the first nav item, above New chat"
+        assert 'class="rail-logo" href="/dashboard"' in text
+
+    def test_rail_nav_hides_dashboard_without_chat_grant(self, web_client, admin_cookie, monkeypatch):
+        """Without a chat grant /dashboard 302s to /stack, so the nav item
+        would be a link that bounces — it must not render."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/stack", cookies=admin_cookie)
+        assert resp.status_code == 200
+        # Exactly one /dashboard href remains: the logo (whose home_route
+        # target is fine — the route itself bounces grant-less users to
+        # /stack). The nav item would be a second occurrence.
+        assert resp.text.count('href="/dashboard"') == 1
+
+    def test_topnav_nav_untouched(self, web_client, admin_cookie, monkeypatch):
+        """The topnav chrome gains no Dashboard-first IA — its header link
+        row is unchanged."""
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'class="app-header"' in resp.text
+        assert 'class="rail"' not in resp.text
 
 
 class TestProfileNotifications:
@@ -221,157 +426,91 @@ class TestProfileNotifications:
         assert "showTelegramVerify()" in resp.text
 
 
-class TestStackCapabilityStrip:
-    """The My Stack strip reads as "what your agents can draw on" — the
-    caller's activity (Questions this week) plus the estate's reach (Data
-    sources / Skills / Memory facts), not the old raw data-shape metrics
-    (Tables/Rows/Columns/Data size) and not consumption telemetry."""
+class TestStackWorkspace:
+    """My Stack is the manage surface: "Everything in your Stack" — one
+    inventory table across kinds. The stat strip counts the stack itself
+    (items / plugins / memories / uploads), not estate telemetry. Growing
+    the stack happens on /catalog, which carries the "Recommended for
+    you" row (see TestCatalogRecommendations)."""
 
-    def test_capability_stats_counts_knowledge_and_skills(self, web_client, admin_cookie):
-        """`_compute_capability_stats(user)` counts approved, non-personal
-        corporate memory as facts and curated+store entities as skills, with
-        formatted display strings. `admin_cookie` bootstraps the DB. With no
-        seeded usage/source rows, questions_week and sources degrade to 0."""
-        from app.web.router import _compute_capability_stats
+    def test_stack_strip_shows_workspace_stats(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/stack", cookies=admin_cookie)
+        assert resp.status_code == 200
+        # The strip's stat labels are exactly the four workspace counters —
+        # the retired capability metrics (Questions this week / Data
+        # sources / Skills / Memory facts) are gone.
+        labels = re.findall(r'class="stk-stat__label">([^<]+)<', resp.text)
+        assert labels == ["Items in your stack", "Plugins", "Memories", "Uploads"]
+
+    def test_stack_inventory_is_a_table_with_toolbar(self, web_client, admin_cookie, monkeypatch):
+        """The page is one table (search above, sort control, kind tabs) —
+        no card grid anywhere."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/stack", cookies=admin_cookie)
+        assert resp.status_code == 200
+        text = resp.text
+        assert 'id="stk-table"' in text
+        assert 'id="stk-search"' in text
+        assert 'id="stk-sort"' in text
+        for col in ("Name", "Type", "Details", "Added", "Shared by", "Status"):
+            assert "<th" in text and col in text
+        # No card grid — recommendations moved to /catalog.
+        assert 'class="uc-grid"' not in text
+        assert "Recommended for you" not in text
+        assert "stk-recs" not in text
+
+
+class TestCatalogRecommendations:
+    """ "Recommended for you" lives on /catalog (moved from /stack): a
+    single side-scrollable card row above the kind tabs, listing catalog
+    assets NOT yet in the caller's stack, rendered with the same
+    catalog_card component as the grids below."""
+
+    def test_recommendations_exclude_stack_items(self, web_client, admin_cookie, monkeypatch):
+        """A package NOT in the stack shows under "Recommended for you";
+        once subscribed it leaves the recommendations (but stays in the
+        browse grid below)."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         from src.db import get_system_db
-        from src.repositories.knowledge import KnowledgeRepository
-        from src.repositories.store_entities import StoreEntitiesRepository
+        from src.repositories.data_packages import DataPackagesRepository
 
         conn = get_system_db()
-        krepo = KnowledgeRepository(conn)
-        # Approved + shareable → counts. Pending and personal must NOT.
-        krepo.create(
-            id="k-ok",
-            title="Fact",
-            content="Revenue is booked at invoice.",
-            category="finance",
-            status="approved",
-            is_personal=False,
-        )
-        krepo.create(
-            id="k-pending", title="Draft", content="unreviewed", category="finance", status="pending", is_personal=False
-        )
-        krepo.create(
-            id="k-personal", title="Mine", content="personal note", category="misc", status="approved", is_personal=True
-        )
-        StoreEntitiesRepository(conn).create(
-            id="s-1",
-            owner_user_id="admin1",
-            owner_username="admin",
-            type="skill",
-            name="churn-analysis",
+        pkg_id = DataPackagesRepository(conn).create(
+            name="Unstacked Package XYZ",
+            slug="unstacked-xyz",
             description="d",
-            category="analytics",
-            version="1.0.0",
+            icon=None,
+            color=None,
+            created_by="test",
         )
         conn.close()
 
-        stats = _compute_capability_stats({"id": "admin1", "email": "admin@example.com"})
-        assert stats["memory_facts"] == 1, "only approved, non-personal facts count"
-        assert stats["memory_facts_display"] == "1"
-        assert stats["skills"] >= 1, "store entity counts as a skill"
-        assert stats["skills_display"] == f"{stats['skills']:,}"
-        # Activity + sources are present as keys and non-negative (no rows → 0).
-        # `sources` is distinct source_type of registered tables (NOT the
-        # source_connections credential table, which is empty on bundled-data
-        # instances), so it populates whenever there is data.
-        assert stats["questions_week"] >= 0
-        assert stats["sources"] >= 0
+        def zones(text: str) -> tuple[str, str]:
+            """(recommendations row, everything below it) — the recs section
+            renders above the kind tabs."""
+            head, _, tail = text.partition('class="uc-kindtabs"')
+            return head, tail
 
-    def test_stack_strip_hidden_when_all_metrics_zero(self, web_client, admin_cookie, monkeypatch):
-        """A sparse instance (every metric 0) renders NO strip — not an empty
-        band with a lone freshness caption."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        import app.web.router as router
-
-        monkeypatch.setattr(
-            router,
-            "_compute_data_stats",
-            lambda: {
-                "tables": 3,
-                "total_tables": 3,
-                "columns": 0,
-                "rows_display": "0",
-                "size_display": "0 MB",
-                "total_rows": 0,
-                "size_bytes": 0,
-                "last_updated": "2026-07-21 11:25:07",
-                "last_updated_display": "2026-07-21 11:25:07",
-                "remote_tables": 0,
-                "local_tables": 3,
-            },
-        )
-        monkeypatch.setattr(
-            router,
-            "_compute_capability_stats",
-            lambda user: {
-                "questions_week": 0,
-                "questions_week_display": "0",
-                "sources": 0,
-                "sources_display": "0",
-                "skills": 0,
-                "skills_display": "0",
-                "memory_facts": 0,
-                "memory_facts_display": "0",
-            },
-        )
-        resp = web_client.get("/stack", cookies=admin_cookie)
+        resp = web_client.get("/catalog", cookies=admin_cookie)
         assert resp.status_code == 200
-        # The strip container must be absent (the class also appears in the
-        # page's <style> block as `.stk-stats {…}`, so match the rendered
-        # markup — the opening tag — not the bare class name).
-        assert '<div class="stk-stats"' not in resp.text
-        # …and with it the freshness caption text (present only inside the strip).
-        assert "Updated 2026-07-21 11:25:07" not in resp.text
+        head, tail = zones(resp.text)
+        assert "Recommended for you" in head
+        assert "Unstacked Package XYZ" in head, "unstacked package must be recommended"
+        # Recommendations reuse the SAME card component as the grids below.
+        assert 'class="uc-recs-grid"' in head and 'class="cc-card"' in head
+        assert "Unstacked Package XYZ" in tail, "package must still browse in its kind grid"
 
-    def test_stack_strip_shows_capability_labels(self, web_client, admin_cookie, monkeypatch):
-        """When the estate is non-empty, the /stack strip renders the new
-        Questions/Data sources/Skills/Memory facts cards and drops the retired
-        Tables/Rows/Columns/Data-size metrics."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        import app.web.router as router
+        from src.repositories.user_stack_subscriptions import UserStackSubscriptionsRepository
 
-        # Force a populated footprint so the strip renders (it gates on
-        # tables>0) without seeding the whole data pipeline.
-        monkeypatch.setattr(
-            router,
-            "_compute_data_stats",
-            lambda: {
-                "tables": 7,
-                "total_tables": 7,
-                "columns": 40,
-                "rows_display": "5,500",
-                "size_display": "43.2 KB",
-                "total_rows": 5500,
-                "size_bytes": 44237,
-                "last_updated": None,
-                "last_updated_display": None,
-                "remote_tables": 0,
-                "local_tables": 7,
-            },
-        )
-        monkeypatch.setattr(
-            router,
-            "_compute_capability_stats",
-            lambda user: {
-                "questions_week": 142,
-                "questions_week_display": "142",
-                "sources": 3,
-                "sources_display": "3",
-                "skills": 420,
-                "skills_display": "420",
-                "memory_facts": 12,
-                "memory_facts_display": "12",
-            },
-        )
-        resp = web_client.get("/stack", cookies=admin_cookie)
-        assert resp.status_code == 200
-        for label in ("Questions this week", "Data sources", "Skills", "Memory facts"):
-            assert f">{label}<" in resp.text, f"strip missing {label!r}"
-        # Retired metrics must be gone as stat labels.
-        assert ">Data size<" not in resp.text
-        assert ">Columns<" not in resp.text
-        assert ">Rows<" not in resp.text
+        conn = get_system_db()
+        UserStackSubscriptionsRepository(conn).subscribe("admin1", "data_package", pkg_id)
+        conn.close()
+
+        resp = web_client.get("/catalog", cookies=admin_cookie)
+        head, tail = zones(resp.text)
+        assert "Unstacked Package XYZ" not in head, "stacked item must leave recommendations"
+        assert "Unstacked Package XYZ" in tail, "stacked item must stay browsable in the grid"
 
 
 class TestPaperThemeAssets:

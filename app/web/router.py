@@ -46,7 +46,6 @@ from src.repositories import (
     data_packages_repo,
     file_corpora_repo,
     knowledge_repo,
-    marketplace_plugins_repo,
     memory_domains_repo,
     news_template_repo,
     notifications_telegram_repo,
@@ -858,106 +857,28 @@ def _compute_data_stats() -> dict:
     }
 
 
-def _compute_capability_stats(user: dict) -> dict:
-    """Reach + activity for the "what your agents can draw on" strip on /stack.
-
-    Four outcome-oriented metrics — deliberately NOT consumption/cost
-    telemetry (tokens / time-spent / tool-calls live on the admin adoption
-    view, where they answer an ops question, not a "what can this do for me"
-    one):
-
-    - ``questions_week`` — the caller's own prompts over the trailing 7 days.
-      Per-user (it's *My* Stack), and the proof the estate is actually used.
-    - ``sources`` — distinct source systems (Keboola/BigQuery/Jira…) the
-      registered tables come from.
-    - ``skills`` — curated marketplace plugins + community Store entities.
-    - ``memory_facts`` — approved, non-personal corporate-memory facts.
-
-    Estate-scoped except ``questions_week`` (per-caller). Every lookup is
-    defensive: a repo hiccup degrades that one metric to 0 (the template
-    skips zero-valued cards) rather than 500-ing the whole page.
-    """
-    from datetime import timedelta, timezone
-
-    # Questions this week — the caller's own prompts (user_messages) over the
-    # trailing 7 days. Username follows the email-prefix convention the usage
-    # processor and /dashboard use.
-    try:
-        since = datetime.now(timezone.utc) - timedelta(days=7)
-        kpis = usage_repo().adoption_user_kpis(since, user.get("id") or "", user.get("email", "").split("@")[0])
-        questions_week = int(kpis.get("prompts", 0) or 0)
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning("/stack: could not count questions this week: %s", e)
-        questions_week = 0
-    # Data sources — the distinct source systems (Keboola/BigQuery/Jira…) the
-    # registered tables come from. Derived from the registry, not the
-    # credential table (`source_connections` is only populated when real
-    # connection creds are configured — a self-contained/bundled-data instance
-    # has none), so this reflects what the agents can actually query wherever
-    # the data originates. Computed in Python off list_all() to avoid adding a
-    # repo method (and its DuckDB↔PG parity obligation) for one count.
-    try:
-        sources = len(
-            {
-                (r.get("source_type") or "").strip()
-                for r in table_registry_repo().list_all()
-                if (r.get("source_type") or "").strip() not in ("", "internal")
-            }
-        )
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning("/stack: could not count data sources: %s", e)
-        sources = 0
-    # Memory facts — approved, non-personal corporate memory.
-    try:
-        memory_facts = knowledge_repo().count_items(statuses=["approved"], exclude_personal=True)
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning("/stack: could not count memory facts: %s", e)
-        memory_facts = 0
-    # Skills = curated marketplace plugins + community Store entities, the two
-    # sources the /marketplace browse page draws from.
-    try:
-        curated = len(marketplace_plugins_repo().list_distinct_names())
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning("/stack: could not count curated skills: %s", e)
-        curated = 0
-    try:
-        _, store_total = store_entities_repo().list(limit=1)
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning("/stack: could not count store skills: %s", e)
-        store_total = 0
-    skills = curated + store_total
-    return {
-        "questions_week": questions_week,
-        "questions_week_display": f"{questions_week:,}" if questions_week else "0",
-        "sources": sources,
-        "sources_display": f"{sources:,}" if sources else "0",
-        "skills": skills,
-        "skills_display": f"{skills:,}" if skills else "0",
-        "memory_facts": memory_facts,
-        "memory_facts_display": f"{memory_facts:,}" if memory_facts else "0",
-    }
-
-
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(
     request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    # Rail IA convergence (#896): the legacy table-inventory dashboard is not a
-    # landing surface under the rail chrome. Send rail users to the working
-    # chat when they can reach it, else to My Stack (the data-estate home the
-    # dashboard stats already migrated to). Topnav instances fall straight
-    # through to the historical render below — byte-for-byte unchanged.
+    # Layout-aware dashboard split. Under the rail chrome the Dashboard IS
+    # Chat's pre-conversation state: /chat with no active conversation
+    # renders the Kai-centric dashboard (greeting, composer, activity
+    # panels, guided task starters — see chat.html's rail empty-state
+    # blocks), so /dashboard 302s there and the two surfaces can never
+    # drift apart. Topnav falls straight through to the historical
+    # table-inventory render below — byte-for-byte unchanged.
     #
     # `can_chat` mirrors the rail nav's own predicate exactly (see
     # _build_context: chat enabled AND has_explicit_grant) so the LANDING and
-    # the NAV agree — we never drop a user onto /chat when the rail shows them
-    # no way back. has_explicit_grant is stricter than /chat's own can_access
-    # guard (an explicit grant satisfies can_access), so this is loop-safe too:
-    # redirecting to /chat only when granted guarantees /chat renders instead
-    # of bouncing to "/". 302 (not 308) so a later layout/grant flip isn't
-    # cached permanently by the browser.
+    # the NAV agree. The dashboard exists to start Kai conversations, so
+    # without a chat grant it would be a dead shell — those users keep the
+    # existing 302 to My Stack (the data-estate home). has_explicit_grant is
+    # stricter than /chat's own can_access guard, so the /chat redirect is
+    # loop-safe. 302 (not 308) so a later layout/grant flip isn't cached
+    # permanently by the browser.
     if get_ui_layout() == "rail":
         from app.auth.access import has_explicit_grant
         from app.resource_types import ResourceType
@@ -1021,6 +942,19 @@ async def dashboard(
         user_knowledge_stats={"authored": 0, "votes_given": 0},
     )
     return templates.TemplateResponse(request, "dashboard.html", ctx)
+
+
+def _time_of_day_greeting(hour: int | None = None) -> str:
+    """Salutation for the rail chat-dashboard greeting ("Good morning" /
+    "Good afternoon" / "Good evening"). Server-clock based; chat_dashboard.js
+    re-derives it from the browser clock after load so users in a different
+    timezone than the server see the right salutation."""
+    h = datetime.now().hour if hour is None else hour
+    if 5 <= h < 12:
+        return "Good morning"
+    if 12 <= h < 18:
+        return "Good afternoon"
+    return "Good evening"
 
 
 @router.get("/home", response_class=HTMLResponse)
@@ -1525,6 +1459,27 @@ async def catalog(
         # `c` contract (Plugins + Recipes normalize client-side in the JS twin).
         data_cards = [_catalog_card_data(e) for e in entries]
         memory_card_models = [_catalog_card_memory(d) for d in memory_cards]
+        # ── "Recommended for you" — grow-the-stack row (moved here from
+        #    /stack): assets the caller can add but hasn't — available
+        #    (non-required) data packages not in the stack, then memory
+        #    domains not in the stack, capped at four. Reuses the card
+        #    models already built for the grids below. (Signal-based
+        #    ranking — teammates, department, uploads, recent activity —
+        #    is future work; today the order is the browse order.)
+        recommended_cards: list = []
+        for entry, card in zip(browse_entries, data_cards):
+            if entry.in_stack or entry.requirement == "required":
+                continue
+            recommended_cards.append(card)
+            if len(recommended_cards) >= 4:
+                break
+        if len(recommended_cards) < 4:
+            for dom, card in zip(memory_cards, memory_card_models):
+                if dom.get("in_stack"):
+                    continue
+                recommended_cards.append(card)
+                if len(recommended_cards) >= 4:
+                    break
         ctx = _build_context(
             request,
             user=user,
@@ -1535,6 +1490,7 @@ async def catalog(
             source_type_chips=source_type_chips,
             total_registered_tables=total_registered_tables,
             memory_cards=memory_card_models,
+            recommended_cards=recommended_cards,
         )
         return templates.TemplateResponse(request, "catalog_unified.html", ctx)
 
@@ -1631,6 +1587,7 @@ def _unified_upload_cards(user: dict) -> list:
                     "description": col.get("description") or "",
                     "slug": col.get("slug"),
                     "file_count": file_count,
+                    "created_at": col.get("created_at"),
                 }
             )
     except Exception as e:
@@ -1644,13 +1601,14 @@ async def my_stack_page(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Unified My Stack (rail layout / #896 prototype IA) — everything
-    the caller has opted into, across kinds: Data (data packages),
-    Plugins (curated subscriptions + flea installs, hydrated
-    client-side from /api/marketplace/items?tab=my), Memory (memory
-    domains). One personal-collection surface instead of per-page
-    stack tabs. Reachable under any layout; the rail's "My Stack"
-    entry points here."""
+    """Unified My Stack (rail layout / #896 prototype IA) — the caller's
+    personal workspace: "Everything in your Stack", one inventory table
+    over every kind — Data (data packages), Plugins (hydrated client-side
+    from /api/marketplace/items?tab=my), Memory (memory domains), Uploads
+    (private file collections). Growing the stack happens on /catalog,
+    which carries the "Recommended for you" row.
+
+    Reachable under any layout; the rail's "My Stack" entry points here."""
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
 
@@ -1660,6 +1618,12 @@ async def my_stack_page(
     # stack rendered empty even when /api/stack returned entries.
     resolver = StackResolver()
     pkg_repo = data_packages_repo()
+
+    def _pkg_table_count(pkg_id: str) -> int:
+        try:
+            return len(pkg_repo.list_tables(pkg_id))
+        except Exception:
+            return 0
 
     def _adapt_pkg(e):
         slug = None
@@ -1672,6 +1636,7 @@ async def my_stack_page(
         return _data_package_entry_dict(
             e,
             drilldown_url=f"/catalog/p/{slug}" if slug else f"/catalog#{e.id}",
+            table_count=_pkg_table_count(e.id),
         )
 
     data_entries = [_adapt_pkg(e) for e in resolver.stack(user["id"], ResourceType.DATA_PACKAGE)]
@@ -1708,11 +1673,43 @@ async def my_stack_page(
     # only the uploads they created (created_by), never group-shared ones.
     upload_entries = _unified_upload_cards(user)
 
-    # Normalize into the shared catalog_card `c` contract so My Stack cards
-    # render identically to the Catalog (same macro + CSS + JS component).
-    data_cards = [_catalog_card_data(e) for e in data_entries]
-    memory_card_models = [_catalog_card_memory(d) for d in memory_entries]
-    upload_card_models = [_catalog_card_upload(c) for c in upload_entries]
+    # "Added" timestamps for the inventory table: available-tier stack rows
+    # come from user_stack_subscriptions.subscribed_at; uploads from the
+    # collection's created_at; required grants have no subscription row →
+    # the table shows an em-dash.
+    added_map: dict = {}
+    try:
+        for r in user_stack_subscriptions_repo().list_for_user_with_dates(user["id"]):
+            added_map[(r["resource_type"], r["resource_id"])] = r["subscribed_at"]
+    except Exception as e:
+        logger.warning("/stack: could not read subscription dates: %s", e)
+
+    def _added_iso(rt: str, rid: str):
+        dt = added_map.get((rt, rid))
+        return dt.isoformat() if dt is not None else None
+
+    # Normalize into the shared catalog_card `c` contract so My Stack rows
+    # render off the same normalizers as the Catalog cards, enriched with
+    # the inventory-table columns (added_iso · shared_by).
+    data_cards = []
+    for entry in data_entries:
+        c = _catalog_card_data(entry)
+        c["added_iso"] = _added_iso("data_package", entry["id"])
+        c["shared_by"] = entry.get("owner_name")
+        data_cards.append(c)
+    memory_card_models = []
+    for d in memory_entries:
+        c = _catalog_card_memory(d)
+        c["added_iso"] = _added_iso("memory_domain", d["id"])
+        c["shared_by"] = None
+        memory_card_models.append(c)
+    upload_card_models = []
+    for col in upload_entries:
+        c = _catalog_card_upload(col)
+        created = col.get("created_at")
+        c["added_iso"] = created.isoformat() if created is not None else None
+        c["shared_by"] = "You"
+        upload_card_models.append(c)
 
     ctx = _build_context(
         request,
@@ -1723,12 +1720,6 @@ async def my_stack_page(
         memory_cards=memory_card_models,
         upload_entries=upload_entries,
         upload_cards=upload_card_models,
-        # Ambient "what your agents can draw on" strip above the kind tabs.
-        # data_stats still drives the strip's visibility gate + freshness
-        # caption; capability_stats supplies the four rendered metrics
-        # (questions this week · data sources · skills · memory facts).
-        data_stats=_compute_data_stats(),
-        capability_stats=_compute_capability_stats(user),
     )
     return templates.TemplateResponse(request, "stack_unified.html", ctx)
 
@@ -4261,21 +4252,34 @@ async def chat_page(
 
     if not can_access(user["id"], ResourceType.CHAT.value, "chat", conn):
         return RedirectResponse("/")
-    # The empty-state hero mirrors /ask (issue #896): same orb + "Ask
-    # anything / Reuse everything" headline, the RBAC-filtered "Operated
-    # by Kai · N knowledge sources · M capabilities" pill, and the shared
-    # suggested questions. Computed here the same way ask_landing does so
-    # the two surfaces stay visually 1:1.
+    # Rail pre-conversation state = the Dashboard (issue #896): greeting,
+    # the real composer, an RBAC-filtered "Kai is using N knowledge sources
+    # and M capabilities" context line, activity panels, and guided task
+    # starters — rendered by chat.html's rail empty-state blocks and hidden
+    # the moment a conversation starts. Counts are best-effort: a repo
+    # failure degrades them to 0 (the context line hides) instead of taking
+    # down the page.
     from src.marketplace_filter import resolve_allowed_plugins
+
+    try:
+        knowledge_source_count = _ask_knowledge_source_count(user, conn)
+    except Exception:
+        logger.exception("chat empty state: knowledge source count failed")
+        knowledge_source_count = 0
+    try:
+        capability_count = len(resolve_allowed_plugins(conn, user))
+    except Exception:
+        logger.exception("chat empty state: capability count failed")
+        capability_count = 0
 
     ctx = _build_context(
         request,
         user=user,
         conn=conn,
         current_user=user,
-        knowledge_source_count=_ask_knowledge_source_count(user, conn),
-        capability_count=len(resolve_allowed_plugins(conn, user)),
-        suggested_questions=_ASK_SUGGESTED_QUESTIONS[:3],
+        greeting=_time_of_day_greeting(),
+        knowledge_source_count=knowledge_source_count,
+        capability_count=capability_count,
     )
     ctx["chat_capabilities"] = _chat_capability_snapshot(conn, user)
     # Deep link: /chat?session=<id>. We DO NOT validate the id here (no
@@ -4344,17 +4348,6 @@ def _chat_capability_snapshot(conn: duckdb.DuckDBPyConnection, user: dict) -> di
         "plugins": plugin_summaries,
         "marketplace_count": marketplace_count,
     }
-
-
-# Curated static list for the /ask landing's "Suggested questions" — there is
-# no real data source for candidate questions (unlike the two RBAC-filtered
-# counts below), so this stays a module-level constant. Only the first 3
-# render; kept as a short list so a future pass can rotate/curate more.
-_ASK_SUGGESTED_QUESTIONS = [
-    "Summarize the pricing deck",
-    "Tell me about our customer segments",
-    "What tables do we have for orders and revenue?",
-]
 
 
 def _ask_knowledge_source_count(user: dict, conn: duckdb.DuckDBPyConnection) -> int:

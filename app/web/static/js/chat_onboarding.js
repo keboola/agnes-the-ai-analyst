@@ -62,6 +62,11 @@ const STEP_META = {
 let journey = { ...DEFAULT_JOURNEY };
 let hooks = {};
 let ready = false;
+// chatMode: on /chat the module has the full chat hooks (greeting, gap
+// resolver, in-thread replay). On other rail pages it's mounted standalone
+// (mountJourneyPanel) as a navigable tracker only — the chat-only affordances
+// (the "?" replay) are omitted there because they'd have nothing to talk to.
+let chatMode = false;
 
 async function apiJson(path, init) {
   const res = await fetch(path, {
@@ -141,6 +146,9 @@ function renderJourneyPanel() {
   const steps = STEP_KEYS.map((k) => ({ k, done: !!journey[k], ...STEP_META[k] }));
   const nextIdx = steps.findIndex((s) => !s.done);
   const complete = nextIdx === -1;
+  // Keep the rail's "Get started" launcher in sync with progress (no-op when
+  // that element isn't present, e.g. topnav where the journey stays inline).
+  updateGetStartedIndicator(steps.filter((s) => s.done).length, steps.length, complete);
 
   const rows = steps
     .map((s, i) => {
@@ -159,8 +167,12 @@ function renderJourneyPanel() {
     <div class="cloud-chat-journey-head">
       <h3>Your Journey</h3>
       ${complete ? '<span class="cloud-chat-journey-badge">Complete ✓</span>' : ""}
-      <button type="button" class="cloud-chat-journey-restart" data-journey-restart
-              title="Replay Agnes's welcome" aria-label="Restart onboarding">?</button>
+      ${
+        chatMode
+          ? `<button type="button" class="cloud-chat-journey-restart" data-journey-restart
+              title="Replay Agnes's welcome" aria-label="Restart onboarding">?</button>`
+          : ""
+      }
     </div>
     <p class="cloud-chat-journey-sub">Learn what Agnes is and make it yours.</p>
     <div class="cloud-chat-journey-list">${rows}</div>`;
@@ -181,6 +193,16 @@ function renderJourneyPanel() {
 
   const restartBtn = el.querySelector("[data-journey-restart]");
   if (restartBtn) restartBtn.addEventListener("click", restartOnboarding);
+}
+
+// Reflect journey progress on the rail's "Get started" launcher (the button in
+// the rail foot that opens the Journey popover). No-op when absent. When every
+// step is done we mark the wrap complete (CSS swaps the count for a ✓).
+function updateGetStartedIndicator(done, total, complete) {
+  const count = document.getElementById("rail-getstarted-count");
+  if (count) count.textContent = `${done}/${total}`;
+  const wrap = document.getElementById("railGetStarted");
+  if (wrap) wrap.classList.toggle("is-complete", !!complete);
 }
 
 // ── Greeting ────────────────────────────────────────────────────────────────
@@ -371,6 +393,27 @@ function escapeAttr(s) {
 // ── public API ───────────────────────────────────────────────────────────────
 export async function initChatOnboarding(h) {
   hooks = h;
+  chatMode = true;
+  await loadJourney();
+  ready = true;
+  renderJourneyPanel();
+}
+
+// Standalone panel for rail pages OTHER than /chat: renders the navigable step
+// tracker into #chat-journey (inside the rail's "Get started" popover) and
+// keeps the launcher's progress count in sync, without the chat hooks. The
+// href steps (Explore My Stack / Discover more / Use anywhere) navigate as
+// usual; the chat-only steps show their state but aren't actionable here, and
+// the "?" replay is omitted (chatMode stays false). Safe to call when there is
+// no #chat-journey (no-op via renderJourneyPanel's guard).
+export async function mountJourneyPanel() {
+  if (ready) {
+    // Already initialized (e.g. chat.js ran first) — just repaint.
+    renderJourneyPanel();
+    return;
+  }
+  hooks = {};
+  chatMode = false;
   await loadJourney();
   ready = true;
   renderJourneyPanel();

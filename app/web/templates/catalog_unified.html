@@ -30,6 +30,14 @@
   .uc-dot-memory { background: var(--ds-kind-memory); }
   .uc-dot-recipes { background: var(--ds-kind-recipe); }
   .uc-count { font-size: 11px; background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-pill); padding: 1px 7px; color: var(--ds-text-muted); }
+  /* ── "Recommended for you" — one horizontal, side-scrollable card row
+     between the page head and the kind tabs (moved here from /stack).
+     Never grows the page vertically past a single card row: overflow
+     scrolls with snap points and a slim scrollbar. */
+  .uc-recs { margin: 22px 0 4px; }
+  .uc-recs h2 { font-size: 17px; font-weight: 600; margin: 0 0 14px; color: var(--ds-text-primary); }
+  .uc-recs-grid { display: grid; grid-auto-flow: column; grid-auto-columns: 300px; gap: 14px; align-items: stretch; overflow-x: auto; padding-bottom: 10px; scroll-snap-type: x proximity; scrollbar-width: thin; }
+  .uc-recs-grid > .cc-card { scroll-snap-align: start; }
   .uc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; align-items: stretch; }
   .uc-empty { border: 1px dashed var(--ds-border); border-radius: 14px; padding: 40px 20px; text-align: center; color: var(--ds-text-secondary); grid-column: 1 / -1; }
   .uc-empty h3 { margin: 0 0 6px; color: var(--ds-text-primary); }
@@ -44,6 +52,24 @@
   </div>
   <a class="cc-btn" href="/store/new" style="flex-shrink:0">+ Submit a skill or plugin</a>
 </div>
+
+{# ── "Recommended for you" — catalog assets not yet in the caller's stack
+     (available data packages, then memory domains, capped at four; moved
+     here from /stack), rendered with the SAME catalog_card component as
+     the grids below. The same asset also appears in its kind grid — the
+     shared stack toggle (catalog_card.js) keeps both cards' state in sync
+     via data-rt/data-rid. Hidden entirely when there is nothing left to
+     recommend. #}
+{% if recommended_cards %}
+<section class="uc-recs" data-recs>
+  <h2>Recommended for you</h2>
+  <div class="uc-recs-grid">
+    {% for c in recommended_cards %}
+      {{ catalog_card(c) }}
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
 
 {# Search is served globally by the rail's #global-search combobox
    (js/global_search.js) — no page-local search box here. #}

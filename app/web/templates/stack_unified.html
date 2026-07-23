@@ -1,85 +1,86 @@
 {% extends "base_index.html" %}
 {% from "macros/_connect_banner.html" import connect_banner %}
-{% from "macros/_catalog_card.html" import catalog_card %}
+{% from "macros/_catalog_card.html" import kind_glyph %}
 {% import "macros/_icon.html" as ico %}
-{# Unified My Stack — the #896 prototype IA: ONE personal-collection
-   surface across kinds (Data · Plugins · Memory · Upload) instead of
-   per-page stack tabs. Served at /stack; the rail chrome's "My Stack"
-   entry points here. Data + Memory + Upload render server-side (stack
-   resolver); Plugins hydrate from /api/marketplace/items?tab=my.
+{# Unified My Stack — the personal workspace: "Everything in your Stack",
+   ONE inventory table across kinds (Data · Plugins · Memory · Uploads):
+   search + sort + kind tabs over rows, not a card grid. Data + Memory +
+   Uploads render server-side; Plugins hydrate from
+   /api/marketplace/items?tab=my. Growing the stack happens on /catalog,
+   which carries the "Recommended for you" row.
 
-   Cards are the SAME component as the Catalog — the catalog_card() macro
-   + static/css/catalog_card.css + static/js/catalog_card.js. The grids
-   carry data-remove-hides so an unsubscribe drops the card here (vs the
-   Catalog, where it flips back to "Add to stack"). #}
+   The workspace stat strip on top counts what's IN the stack (items /
+   plugins / memories / uploads), and the connect banner closes the page
+   with the "use it everywhere" value prop. #}
 {% block title %}My Stack — {{ config.INSTANCE_NAME }}{% endblock %}
 {% block container_modifier %}container--wide{% endblock %}
 
 {% block head_extra %}
 <link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
 <style>
-  /* Page chrome only — the card lives in catalog_card.css. */
+  /* Page chrome only — cards live in catalog_card.css, the table rides the
+     shared .data-table primitive (style-custom.css). */
   .uc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 12px; }
   .uc-head h1 { font-size: 24px; margin: 0 0 8px; }
   .uc-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 64ch; }
-  /* Data-estate stat strip — one flat grey tray between the head and the
-     kind tabs, spanning the full content width. The fill is the sunken
-     surface token — a shade darker than the page canvas in light themes (a
-     touch lighter in dark) — since `--ds-surface-dim` is too close to the
-     page bg to read; no border, no shadow. Metrics are
-     distributed edge-to-edge; the "Updated" note + a real refresh button sit
-     at the far right. Each metric is a transparent item (accent icon in a
-     mint-tinted circular badge + hairline divider + value/label). Stacks on
-     mobile. */
-  .stk-stats { position: relative; display: flex; align-items: center; gap: 24px; flex-wrap: nowrap; margin: 22px 0 8px; padding: 16px 26px; background: var(--ds-surface-sunken); border-radius: 16px; }
-  /* The four metrics are equal-width columns that fill the ENTIRE row (each
-     flex:1) — the whole card width is theirs. The freshness meta doesn't take a
-     column or a row: it's floated into the top-right corner (absolute, below),
-     overlapping the top padding so it never grows the card's height. */
-  .stk-stats__metrics { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: nowrap; align-items: center; gap: 24px; }
+  /* ── Workspace stat strip — one flat sunken tray between the head and the
+     page body. Four equal-width metrics counting the stack itself (items /
+     plugins / memories / uploads); values update client-side as plugins
+     hydrate and rows are removed. #stk-stat-plugins starts as an em-dash
+     until the marketplace call lands. */
+  .stk-stats { display: flex; align-items: center; gap: 24px; flex-wrap: nowrap; margin: 22px 0 20px; padding: 16px 26px; background: var(--ds-surface-sunken); border-radius: 16px; }
   .stk-stat { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 16px; }
   .stk-stat__icon { flex-shrink: 0; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--ds-primary-light); color: var(--ds-primary); }
   .stk-stat__icon .ui-ico { display: block; }
   .stk-stat__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding-left: 16px; border-left: 1px solid var(--ds-border); }
   .stk-stat__value { font-size: 22px; font-weight: 700; line-height: 1.15; letter-spacing: -0.02em; color: var(--ds-text-primary); font-variant-numeric: tabular-nums; }
   .stk-stat__label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ds-text-muted); }
-  .stk-stats__meta { position: absolute; top: 10px; right: 14px; display: inline-flex; align-items: center; }
-  .stk-stats__refresh { flex-shrink: 0; width: 22px; height: 22px; border: none; border-radius: 50%; background: transparent; color: var(--ds-text-muted); display: grid; place-items: center; cursor: pointer; transition: background .15s ease, color .15s ease; }
-  .stk-stats__refresh:hover { background: var(--ds-primary-light); color: var(--ds-primary); }
-  .stk-stats__refresh .ui-ico { display: block; }
-  .stk-stats__refresh.is-spinning .ui-ico { animation: stk-spin .7s linear infinite; }
-  @keyframes stk-spin { to { transform: rotate(360deg); } }
-  /* Below ~900px (narrow window, or the rail sidebar eating width) four metrics
-     + the timestamp no longer fit on one line — allow wrapping and drop the
-     meta onto its own full-width row so nothing overflows or collides. */
   @media (max-width: 900px) {
     .stk-stats { flex-wrap: wrap; gap: 18px 28px; }
-    /* Narrow: metrics take natural width and wrap; the meta drops back into
-       flow as its own full-width row (a corner pin would overlap wrapped rows). */
-    .stk-stats__metrics { flex-wrap: wrap; justify-content: flex-start; gap: 18px 28px; padding-right: 0; }
     .stk-stat { flex: 0 1 auto; }
-    .stk-stats__meta { position: static; transform: none; flex-basis: 100%; justify-content: flex-start; }
   }
   @media (max-width: 640px) {
     .stk-stats { gap: 16px 24px; padding: 16px 18px; }
-    .stk-stats__metrics { gap: 16px 22px; }
   }
-  .uc-kindtabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--ds-border); margin: 24px 0 18px; }
+  /* ── Section scaffolding for the inventory ── */
+  .stk-section { margin: 0 0 34px; }
+  .stk-section:last-of-type { margin-bottom: 0; }
+  .stk-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 14px; }
+  .stk-section-head h2 { font-size: 17px; font-weight: 600; margin: 0; color: var(--ds-text-primary); }
+  /* ── Inventory toolbar: search stretches, sort hugs the right ── */
+  .stk-toolbar { display: flex; align-items: center; gap: 10px; margin: 0 0 4px; flex-wrap: wrap; }
+  .stk-search { flex: 1 1 260px; min-width: 200px; padding: 9px 12px; border: 1px solid var(--ds-border); border-radius: 10px; font: inherit; font-size: 14px; background: var(--ds-surface); color: var(--ds-text-primary); }
+  .stk-search:focus { outline: 2px solid var(--ds-primary-light); border-color: var(--ds-primary); }
+  .stk-sort { flex: 0 0 auto; margin-left: auto; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ds-text-secondary); }
+  .stk-sort select { padding: 8px 10px; border: 1px solid var(--ds-border); border-radius: 10px; font: inherit; font-size: 13.5px; background: var(--ds-surface); color: var(--ds-text-primary); cursor: pointer; }
+  .uc-kindtabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--ds-border); margin: 10px 0 0; }
   .uc-kindtab { display: flex; align-items: center; gap: 7px; border: none; background: none; cursor: pointer; padding: 9px 14px; font-size: 14px; font-weight: 500; font-family: inherit; color: var(--ds-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -1px; }
   .uc-kindtab:hover { color: var(--ds-text-primary); }
   .uc-kindtab.on { color: var(--ds-text-primary); font-weight: 600; border-bottom-color: var(--ds-primary); }
-  .uc-dot { width: 9px; height: 9px; border-radius: 3px; display: inline-block; flex-shrink: 0; }
-  .uc-dot-data { background: var(--ds-kind-data); }
-  .uc-dot-plugins { background: var(--ds-kind-plugin); }
-  .uc-dot-memory { background: var(--ds-kind-memory); }
-  .uc-dot-library { background: var(--ds-kind-library); }
   .uc-count { font-size: 11px; background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-pill); padding: 1px 7px; color: var(--ds-text-muted); }
-  .uc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; align-items: stretch; }
-  .uc-empty { border: 1px dashed var(--ds-border); border-radius: 14px; padding: 40px 20px; text-align: center; color: var(--ds-text-secondary); grid-column: 1 / -1; }
-  .uc-empty h3 { margin: 0 0 6px; color: var(--ds-text-primary); }
+  /* ── The inventory table (shared .data-table primitive + row chrome) ── */
+  .stk-tablewrap { margin-top: 14px; overflow-x: auto; }
+  .stk-table { min-width: 720px; }
+  .stk-table td { vertical-align: middle; }
+  .stk-name { display: flex; align-items: center; gap: 12px; text-decoration: none; color: inherit; min-width: 220px; }
+  .stk-name .cc-icon { flex-shrink: 0; }
+  .stk-name-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .stk-name-title { font-weight: 600; color: var(--ds-text-primary); font-size: 14px; }
+  .stk-name:hover .stk-name-title { color: var(--ds-primary); }
+  .stk-name-desc { font-size: 12.5px; color: var(--ds-text-secondary); display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; max-width: 44ch; }
+  .stk-type { display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: var(--ds-radius-pill); white-space: nowrap; }
+  .stk-type--data    { background: var(--ds-kind-data-soft);    color: var(--ds-kind-data); }
+  .stk-type--plugins { background: var(--ds-kind-plugin-soft);  color: var(--ds-kind-plugin); }
+  .stk-type--memory  { background: var(--ds-kind-memory-soft);  color: var(--ds-kind-memory); }
+  .stk-type--library { background: var(--ds-kind-library-soft); color: var(--ds-kind-library); }
+  .stk-cell-muted { color: var(--ds-text-secondary); font-size: 13px; white-space: nowrap; }
+  .stk-cell-status { text-align: right; white-space: nowrap; }
+  .stk-cell-status .cc-btn, .stk-cell-status .cc-required { font-size: 12.5px; }
+  .stk-empty-row td { text-align: center; padding: 40px 20px; color: var(--ds-text-secondary); }
+  .stk-empty-row h3 { margin: 0 0 6px; color: var(--ds-text-primary); font-size: 15px; }
   /* The "same knowledge, everywhere" banner is the shared connect-banner
      component (macros/_connect_banner.html, `.cbn-*` in style-custom.css). */
-  .stk-connect { margin-top: 26px; }
+  .stk-connect { margin-top: 30px; }
   /* New-upload modal */
   .stk-modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
   .stk-modal[hidden] { display: none; }
@@ -103,89 +104,136 @@
 <div class="uc-head">
   <div>
     <h1>My Stack</h1>
-    <p class="lede">Personalize what {{ instance_brand_short or 'Agnes' }} knows and can use for you — the knowledge and tools your answers draw on. Add more from the <a href="/catalog">Catalog</a>.</p>
+    <p class="lede">Your personal knowledge space. Everything here is available to {{ instance_brand_short or 'Agnes' }} and your connected AI tools when they answer for you.</p>
   </div>
-  <button type="button" class="cc-btn" data-new-upload style="flex-shrink:0">+ New upload</button>
+  <button type="button" class="cc-btn cc-btn--primary" data-new-upload style="flex-shrink:0">+ New upload</button>
 </div>
 
-{# ── "What your agents can draw on" strip (borderless). Four outcome-oriented
-     metrics — Questions this week (the caller's own prompts, proof it's used)
-     plus the estate's reach: Data sources · Skills · Memory facts. NOT
-     consumption/cost telemetry (tokens/time live on the admin adoption view).
-     It reads as light ambient context, not hero cards. Every zero-valued
-     metric is skipped, and the WHOLE strip (freshness caption included) hides
-     when no metric has a value — a sparse instance shows nothing here rather
-     than an empty band. #}
-{% set stk_metrics = [
-     {'label': 'Questions this week', 'value': capability_stats.questions_week_display, 'show': capability_stats.questions_week, 'icon': 'chat'},
-     {'label': 'Data sources', 'value': capability_stats.sources_display, 'show': capability_stats.sources, 'icon': 'database'},
-     {'label': 'Skills', 'value': capability_stats.skills_display, 'show': capability_stats.skills, 'icon': 'puzzle'},
-     {'label': 'Memory facts', 'value': capability_stats.memory_facts_display, 'show': capability_stats.memory_facts, 'icon': 'brain'},
-] %}
-{% set stk_visible = stk_metrics | selectattr('show') | list %}
-{% if stk_visible %}
-<div class="stk-stats" aria-label="What your agents can draw on">
-  <div class="stk-stats__metrics">
-    {% for m in stk_visible %}
-    <div class="stk-stat">
-      <span class="stk-stat__icon">{{ ico.icon(m.icon, 20) }}</span>
-      <span class="stk-stat__body">
-        <span class="stk-stat__value">{{ m.value }}</span>
-        <span class="stk-stat__label">{{ m.label }}</span>
-      </span>
-    </div>
-    {% endfor %}
+{# ── Workspace stats — counts of what's in the stack, not estate telemetry.
+     Items + Plugins update client-side once the marketplace call resolves. #}
+{% set stk_base_count = (data_cards|length) + (memory_cards|length) + (upload_cards|length) %}
+<div class="stk-stats" aria-label="Your stack at a glance">
+  <div class="stk-stat">
+    <span class="stk-stat__icon">{{ ico.icon('package', 20) }}</span>
+    <span class="stk-stat__body">
+      <span class="stk-stat__value" id="stk-stat-items" data-base="{{ stk_base_count }}">{{ stk_base_count }}</span>
+      <span class="stk-stat__label">Items in your stack</span>
+    </span>
   </div>
-  {% if data_stats and data_stats.last_updated_display %}
-  {# Only the refresh control sits in the corner now; the "Updated …" timestamp
-     moves to its tooltip so the corner stays a single quiet glyph. #}
-  <div class="stk-stats__meta">
-    <button type="button" class="stk-stats__refresh" data-refresh-stats title="Updated {{ data_stats.last_updated_display[:16] }} · click to refresh" aria-label="Updated {{ data_stats.last_updated_display[:16] }}. Refresh data stats">{{ ico.icon('refresh', 15) }}</button>
+  <div class="stk-stat">
+    <span class="stk-stat__icon">{{ ico.icon('puzzle', 20) }}</span>
+    <span class="stk-stat__body">
+      <span class="stk-stat__value" id="stk-stat-plugins">—</span>
+      <span class="stk-stat__label">Plugins</span>
+    </span>
   </div>
-  {% endif %}
-</div>
-{% endif %}
-
-<div class="uc-kindtabs" role="tablist" aria-label="Stack kinds">
-  <button class="uc-kindtab on" data-kind="data" role="tab" aria-selected="true"><span class="uc-dot uc-dot-data"></span>Data<span class="uc-count">{{ data_cards|length }}</span></button>
-  <button class="uc-kindtab" data-kind="plugins" role="tab" aria-selected="false"><span class="uc-dot uc-dot-plugins"></span>Plugins<span class="uc-count" id="stk-count-plugins">—</span></button>
-  <button class="uc-kindtab" data-kind="memory" role="tab" aria-selected="false"><span class="uc-dot uc-dot-memory"></span>Memory<span class="uc-count">{{ memory_cards|length }}</span></button>
-  <button class="uc-kindtab" data-kind="upload" role="tab" aria-selected="false"><span class="uc-dot uc-dot-library"></span>Upload<span class="uc-count">{{ upload_cards|length }}</span></button>
+  <div class="stk-stat">
+    <span class="stk-stat__icon">{{ ico.icon('brain', 20) }}</span>
+    <span class="stk-stat__body">
+      <span class="stk-stat__value" id="stk-stat-memory">{{ memory_cards|length }}</span>
+      <span class="stk-stat__label">Memories</span>
+    </span>
+  </div>
+  <div class="stk-stat">
+    <span class="stk-stat__icon">{{ ico.icon('doc', 20) }}</span>
+    <span class="stk-stat__body">
+      <span class="stk-stat__value" id="stk-stat-uploads">{{ upload_cards|length }}</span>
+      <span class="stk-stat__label">Uploads</span>
+    </span>
+  </div>
 </div>
 {% endblock %}
 
 {% block page_surface %}
-<div class="uc-grid" data-kind-view="data" data-remove-hides>
-  {% for c in data_cards %}
-    {{ catalog_card(c) }}
-  {% else %}
-  <div class="uc-empty"><h3>Your stack is empty</h3><p>Browse the <a href="/catalog">Catalog</a> and click <b>+ Add to stack</b>. Required packages appear here automatically.</p></div>
-  {% endfor %}
-</div>
-
-<div class="uc-grid" data-kind-view="plugins" data-remove-hides hidden>
-  <div class="uc-empty" data-loading><h3>Loading your plugins…</h3></div>
-</div>
-
-<div class="uc-grid" data-kind-view="memory" data-remove-hides hidden>
-  {% for c in memory_cards %}
-    {{ catalog_card(c) }}
-  {% else %}
-  <div class="uc-empty"><h3>No memory domains in your stack</h3><p>Browse <a href="/catalog?kind=memory">Catalog → Memory</a> to see what's available.</p></div>
-  {% endfor %}
-</div>
-
-<div class="uc-grid" data-kind-view="upload" hidden>
-  {% for c in upload_cards %}
-    {{ catalog_card(c) }}
-  {% else %}
-  <div class="uc-empty">
-    <h3>No uploads yet</h3>
-    <p>Add a file with <b>+ New upload</b> — it stays private to you, and your agents can search across it.</p>
-    <button type="button" class="cc-btn cc-btn--primary" data-new-upload style="margin-top:12px">+ New upload</button>
+{# ── Everything in your Stack — the single inventory over all kinds.
+     Search + kind tabs + sort over table rows; Plugins hydrate into
+     rows client-side. #}
+<section class="stk-section">
+  <div class="stk-section-head">
+    <h2>Everything in your Stack</h2>
   </div>
-  {% endfor %}
-</div>
+  <div class="stk-toolbar">
+    <input type="search" class="stk-search" id="stk-search" placeholder="Search in your stack…" autocomplete="off" aria-label="Search in your stack">
+    <label class="stk-sort">Sort:
+      <select id="stk-sort" aria-label="Sort your stack">
+        <option value="added" selected>Recently added</option>
+        <option value="name">Name A–Z</option>
+        <option value="type">Type</option>
+      </select>
+    </label>
+  </div>
+  <div class="uc-kindtabs" role="tablist" aria-label="Stack kinds">
+    <button class="uc-kindtab on" data-kind="all" role="tab" aria-selected="true">All<span class="uc-count" id="stk-count-all">{{ stk_base_count }}</span></button>
+    <button class="uc-kindtab" data-kind="data" role="tab" aria-selected="false">Data<span class="uc-count" id="stk-count-data">{{ data_cards|length }}</span></button>
+    <button class="uc-kindtab" data-kind="plugins" role="tab" aria-selected="false">Plugins<span class="uc-count" id="stk-count-plugins">—</span></button>
+    <button class="uc-kindtab" data-kind="upload" role="tab" aria-selected="false">Uploads<span class="uc-count" id="stk-count-upload">{{ upload_cards|length }}</span></button>
+    <button class="uc-kindtab" data-kind="memory" role="tab" aria-selected="false">Memory<span class="uc-count" id="stk-count-memory">{{ memory_cards|length }}</span></button>
+  </div>
+
+  {% macro stack_row(c, row_kind) %}
+  <tr data-stack-row data-kind="{{ row_kind }}"
+      data-search="{{ (c.title ~ ' ' ~ (c.description or '')) | lower }}"
+      data-title="{{ c.title | lower }}"
+      data-added="{{ c.added_iso or '' }}">
+    <td>
+      <a class="stk-name" href="{{ c.href }}">
+        <span class="cc-icon cc-icon--{{ c.kind }}">{{ kind_glyph(c.kind) }}</span>
+        <span class="stk-name-text">
+          <span class="stk-name-title">{{ c.title }}</span>
+          <span class="stk-name-desc">{{ c.description }}</span>
+        </span>
+      </a>
+    </td>
+    <td><span class="stk-type stk-type--{{ c.kind }}">{{ c.kind_label }}</span></td>
+    <td class="stk-cell-muted">{{ c.meta_text or '—' }}</td>
+    <td class="stk-cell-muted">{% if c.added_iso %}<time datetime="{{ c.added_iso }}" data-relative>{{ c.added_iso[:10] }}</time>{% else %}—{% endif %}</td>
+    <td class="stk-cell-muted">{{ c.shared_by or '—' }}</td>
+    <td class="stk-cell-status">
+      {% set a = c.action or {} %}
+      {% if a.mode == 'required' %}
+        <span class="cc-required"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width:14px;height:14px"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.7"/></svg>Required</span>
+      {% elif a.mode == 'stack' %}
+        <button type="button" class="cc-btn cc-btn--instack" data-stack-toggle data-state="in"
+                data-add-url="{{ a.add_url }}" data-remove-url="{{ a.remove_url }}"
+                {% if a.rt %}data-rt="{{ a.rt }}" data-rid="{{ a.rid }}"{% endif %}>
+          <span class="cc-btn-instack"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> In stack</span>
+          <span class="cc-btn-remove"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> Remove</span>
+        </button>
+      {% else %}
+        <a class="cc-btn" href="{{ a.href or c.href }}">{{ a.label or 'Open' }}
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
+      {% endif %}
+    </td>
+  </tr>
+  {% endmacro %}
+
+  <div class="stk-tablewrap">
+    <table class="data-table stk-table" id="stk-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Details</th>
+          <th>Added</th>
+          <th>Shared by</th>
+          <th class="stk-cell-status">Status</th>
+        </tr>
+      </thead>
+      <tbody id="stk-tbody" data-remove-hides>
+        {% for c in data_cards %}{{ stack_row(c, 'data') }}{% endfor %}
+        {% for c in upload_cards %}{{ stack_row(c, 'upload') }}{% endfor %}
+        {% for c in memory_cards %}{{ stack_row(c, 'memory') }}{% endfor %}
+        <tr class="stk-empty-row" id="stk-empty" hidden>
+          <td colspan="6">
+            <h3>Nothing here yet</h3>
+            <p>Browse the <a href="/catalog">Catalog</a> and click <b>+ Add to stack</b>, or add a private file with <b>+ New upload</b>.</p>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
 
 <div class="stk-connect">
   {{ connect_banner('orbit', cta_href='/me/ai-connector') }}
@@ -218,6 +266,7 @@
     </form>
   </div>
 </div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -226,38 +275,193 @@
 (function () {
   'use strict';
 
-  // Add/Remove toggle is handled globally by catalog_card.js; the
-  // data-remove-hides on the grids makes an unsubscribe drop the card.
-  let pluginsLoaded = false;
-  const renderCatalogCard = window.renderCatalogCard;
-
-  // ── Refresh the data-estate stats. They're server-rendered from
-  //    sync_state, so a reload re-reads the current footprint. Spin the
-  //    glyph for feedback, then reload on the next frame.
-  const refreshBtn = document.querySelector('[data-refresh-stats]');
-  if (refreshBtn) refreshBtn.addEventListener('click', () => {
-    refreshBtn.classList.add('is-spinning');
-    refreshBtn.disabled = true;
-    requestAnimationFrame(() => window.location.reload());
-  });
-
-  const tabs = document.querySelectorAll('.uc-kindtab');
-  const views = document.querySelectorAll('[data-kind-view]');
-  function activate(kind, push) {
-    tabs.forEach(t => {
-      const on = t.dataset.kind === kind;
-      t.classList.toggle('on', on);
-      t.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-    views.forEach(v => { v.hidden = v.dataset.kindView !== kind; });
-    if (push) {
-      const url = new URL(window.location);
-      url.searchParams.set('kind', kind);
-      history.replaceState(null, '', url);
-    }
-    if (kind === 'plugins') loadPlugins();
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
   }
-  tabs.forEach(t => t.addEventListener('click', () => activate(t.dataset.kind, true)));
+
+  const tbody = document.getElementById('stk-tbody');
+  const emptyRow = document.getElementById('stk-empty');
+  const searchInput = document.getElementById('stk-search');
+  const sortSelect = document.getElementById('stk-sort');
+  const tabs = document.querySelectorAll('.uc-kindtab');
+  let currentKind = 'all';
+  let pluginsLoaded = false;
+  let pluginCount = null; // null until the marketplace call resolves
+
+  const rows = () => Array.from(tbody.querySelectorAll('[data-stack-row]'));
+
+  // ── Filtering: active tab × search query. The empty row shows when the
+  //    active view has nothing (including the true empty stack).
+  function applyFilter() {
+    const q = (searchInput.value || '').trim().toLowerCase();
+    let visible = 0;
+    rows().forEach(r => {
+      const show = (currentKind === 'all' || r.dataset.kind === currentKind) &&
+                   (!q || (r.dataset.search || '').includes(q));
+      r.hidden = !show;
+      if (show) visible++;
+    });
+    emptyRow.hidden = visible > 0;
+  }
+
+  // ── Sorting: reorder rows in the tbody (empty row stays last).
+  function applySort() {
+    const mode = sortSelect.value;
+    const sorted = rows().sort((a, b) => {
+      if (mode === 'name') return (a.dataset.title || '').localeCompare(b.dataset.title || '');
+      if (mode === 'type') return (a.dataset.kind || '').localeCompare(b.dataset.kind || '') ||
+                                  (a.dataset.title || '').localeCompare(b.dataset.title || '');
+      // 'added' — newest first; rows without a date sink to the bottom.
+      return (b.dataset.added || '').localeCompare(a.dataset.added || '');
+    });
+    sorted.forEach(r => tbody.insertBefore(r, emptyRow));
+  }
+
+  // ── Counts: tab badges + the workspace stats derive from the DOM, so
+  //    plugin hydration and row removal both flow through one place.
+  function recount() {
+    const byKind = { data: 0, plugins: 0, upload: 0, memory: 0 };
+    rows().forEach(r => { byKind[r.dataset.kind] = (byKind[r.dataset.kind] || 0) + 1; });
+    const nonPlugin = byKind.data + byKind.upload + byKind.memory;
+    const total = nonPlugin + (pluginCount === null ? 0 : byKind.plugins);
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = String(v); };
+    set('stk-count-all', total);
+    set('stk-count-data', byKind.data);
+    set('stk-count-upload', byKind.upload);
+    set('stk-count-memory', byKind.memory);
+    set('stk-stat-items', total);
+    set('stk-stat-memory', byKind.memory);
+    set('stk-stat-uploads', byKind.upload);
+    if (pluginCount !== null) {
+      set('stk-count-plugins', byKind.plugins);
+      set('stk-stat-plugins', byKind.plugins);
+    }
+  }
+
+  function refreshView() { applySort(); applyFilter(); recount(); }
+
+  // Row removal (the delegated stack-toggle in catalog_card.js drops the
+  // <tr> on unsubscribe) → recompute counts + empty state.
+  new MutationObserver(() => { applyFilter(); recount(); }).observe(tbody, { childList: true });
+
+  tabs.forEach(t => t.addEventListener('click', () => {
+    currentKind = t.dataset.kind;
+    tabs.forEach(x => {
+      const on = x === t;
+      x.classList.toggle('on', on);
+      x.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    const url = new URL(window.location);
+    url.searchParams.set('kind', currentKind);
+    history.replaceState(null, '', url);
+    applyFilter();
+  }));
+  searchInput.addEventListener('input', applyFilter);
+  sortSelect.addEventListener('change', refreshView);
+
+  // ── Row builder (client-hydrated kinds + recs promotion). MUST mirror
+  //    the server-side stack_row macro above.
+  const ROW_GLYPH = {
+    data: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3" stroke="currentColor" stroke-width="1.7"/><path d="M5 6v6c0 1.66 3.13 3 7 3s7-1.34 7-3V6" stroke="currentColor" stroke-width="1.7"/><path d="M5 12v6c0 1.66 3.13 3 7 3s7-1.34 7-3v-6" stroke="currentColor" stroke-width="1.7"/></svg>',
+    plugins: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 4a2 2 0 1 1 4 0v2h3a1 1 0 0 1 1 1v3h2a2 2 0 1 1 0 4h-2v3a1 1 0 0 1-1 1h-3v-2a2 2 0 1 0-4 0v2H7a1 1 0 0 1-1-1v-3H4a2 2 0 1 1 0-4h2V7a1 1 0 0 1 1-1h3V4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+    memory: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3c-1.7 0-3 1.3-3 3-1.6.2-3 1.5-3 3.2 0 .6.2 1.2.5 1.7-.6.6-1 1.4-1 2.4 0 1.5.9 2.7 2.2 3.2 0 1.7 1.4 3 3.1 3 .8 0 1.5-.3 2-.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 3c1.7 0 3 1.3 3 3 1.6.2 3 1.5 3 3.2 0 .6-.2 1.2-.5 1.7.6.6 1 1.4 1 2.4 0 1.5-.9 2.7-2.2 3.2 0 1.7-1.4 3-3.1 3-.8 0-1.5-.3-2-.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 3v18" stroke="currentColor" stroke-width="1.6"/></svg>',
+    library: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4h7l4 4v12H7z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M13 4v4h4" stroke="currentColor" stroke-width="1.6"/></svg>',
+  };
+
+  function rowStatusHtml(a) {
+    a = a || {};
+    if (a.mode === 'required') {
+      return '<span class="cc-required"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width:14px;height:14px"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.7"/></svg>Required</span>';
+    }
+    if (a.mode === 'stack') {
+      return '<button type="button" class="cc-btn cc-btn--instack" data-stack-toggle data-state="in"' +
+        ' data-add-url="' + esc(a.add_url) + '" data-remove-url="' + esc(a.remove_url) + '"' +
+        (a.rt ? ' data-rt="' + esc(a.rt) + '" data-rid="' + esc(a.rid) + '"' : '') + '>' +
+        '<span class="cc-btn-instack"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> In stack</span>' +
+        '<span class="cc-btn-remove"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> Remove</span></button>';
+    }
+    return '<a class="cc-btn" href="' + esc(a.href) + '">' + esc(a.label || 'Open') +
+      '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></a>';
+  }
+
+  function renderRow(c, rowKind) {
+    const tr = document.createElement('tr');
+    tr.setAttribute('data-stack-row', '');
+    tr.dataset.kind = rowKind;
+    tr.dataset.search = ((c.title || '') + ' ' + (c.description || '')).toLowerCase();
+    tr.dataset.title = (c.title || '').toLowerCase();
+    tr.dataset.added = c.added_iso || '';
+    const added = c.added_iso
+      ? '<time datetime="' + esc(c.added_iso) + '" data-relative>' + esc(c.added_iso.slice(0, 10)) + '</time>'
+      : '—';
+    tr.innerHTML =
+      '<td><a class="stk-name" href="' + esc(c.href) + '">' +
+        '<span class="cc-icon cc-icon--' + esc(c.kind) + '">' + (ROW_GLYPH[c.kind] || '') + '</span>' +
+        '<span class="stk-name-text"><span class="stk-name-title">' + esc(c.title) + '</span>' +
+        '<span class="stk-name-desc">' + esc(c.description || '') + '</span></span></a></td>' +
+      '<td><span class="stk-type stk-type--' + esc(c.kind) + '">' + esc(c.kind_label) + '</span></td>' +
+      '<td class="stk-cell-muted">' + esc(c.meta_text || '—') + '</td>' +
+      '<td class="stk-cell-muted">' + added + '</td>' +
+      '<td class="stk-cell-muted">' + esc(c.shared_by || '—') + '</td>' +
+      '<td class="stk-cell-status">' + rowStatusHtml(c.action) + '</td>';
+    return tr;
+  }
+
+  // ── Relative "Added" labels (AgnesTime loads deferred, so wait for it).
+  function relativizeTimes() {
+    if (!window.AgnesTime) return;
+    document.querySelectorAll('#stk-table time[data-relative]').forEach(el => {
+      const label = window.AgnesTime.formatRelative(el.getAttribute('datetime'));
+      if (label) { el.textContent = label; el.setAttribute('data-hydrated', '1'); }
+    });
+  }
+  document.addEventListener('DOMContentLoaded', relativizeTimes);
+
+  // ── Plugins (client-hydrated into table rows) ────────────────────────
+  function pluginAction(i) {
+    if (i.is_system || i.is_required) return { mode: 'required' };
+    let url;
+    if (i.source === 'curated') {
+      const m = /\/marketplace\/curated\/([^/]+)\/([^/?#]+)/.exec(i.detail_url || '');
+      if (!m) return { mode: 'link', href: i.detail_url || '/marketplace', label: 'Manage' };
+      url = '/api/marketplace/curated/' + m[1] + '/' + m[2] + '/install';
+    } else {
+      url = '/api/store/entities/' + encodeURIComponent(i.id) + '/install';
+    }
+    // Everything on My Stack is already installed → 'in' (Remove drops it).
+    return { mode: 'stack', state: 'in', add_url: url, remove_url: url };
+  }
+
+  async function loadPlugins() {
+    if (pluginsLoaded) return;
+    pluginsLoaded = true;
+    try {
+      const r = await fetch('/api/marketplace/items?tab=my&page_size=100', { credentials: 'same-origin' });
+      const body = r.ok ? await r.json() : { items: [] };
+      const items = body.items || [];
+      pluginCount = items.length;
+      items.forEach(i => {
+        tbody.insertBefore(renderRow({
+          kind: 'plugins',
+          kind_label: 'Plugin',
+          title: i.display_name || i.name || i.title || 'Plugin',
+          href: i.detail_url || '/marketplace',
+          description: i.tagline || i.description || '',
+          meta_text: i.type || 'plugin',
+          added_iso: null,
+          shared_by: i.source === 'curated' ? 'Curated' : 'Flea Market',
+          action: pluginAction(i),
+        }, 'plugins'), emptyRow);
+      });
+      refreshView();
+    } catch (e) {
+      console.error('my stack: plugins hydration failed', e);
+      pluginCount = 0;
+      recount();
+    }
+  }
 
   // ── New-upload modal: create a private upload, then upload the file ──
   const uploadModal = document.getElementById('uploadModal');
@@ -315,7 +519,7 @@
       //  • rail — there is no Library surface; uploads *are* the "Uploads" tab
       //    on My Stack. Reload back onto that tab so the user stays in their
       //    stack instead of being kicked to /library/{slug}. The ?kind=upload
-      //    param re-activates the Upload tab on load (see below).
+      //    param re-activates the Uploads tab on load (see below).
       {% if (ui_layout | default('topnav')) == 'rail' %}
       window.location.href = '/stack?kind=upload';
       {% else %}
@@ -328,55 +532,14 @@
     }
   });
 
-  // ── Plugins (client-hydrated, same card component) ──────────────────
-  function pluginAction(i) {
-    if (i.is_system || i.is_required) return { mode: 'required' };
-    let url;
-    if (i.source === 'curated') {
-      const m = /\/marketplace\/curated\/([^/]+)\/([^/?#]+)/.exec(i.detail_url || '');
-      if (!m) return { mode: 'link', href: i.detail_url || '/marketplace', label: 'Manage' };
-      url = '/api/marketplace/curated/' + m[1] + '/' + m[2] + '/install';
-    } else {
-      url = '/api/store/entities/' + encodeURIComponent(i.id) + '/install';
-    }
-    // Everything on My Stack is already installed → 'in' (Remove drops it).
-    return { mode: 'stack', state: 'in', add_url: url, remove_url: url };
-  }
-
-  async function loadPlugins() {
-    if (pluginsLoaded) return;
-    pluginsLoaded = true;
-    const grid = document.querySelector('[data-kind-view="plugins"]');
-    try {
-      const r = await fetch('/api/marketplace/items?tab=my&page_size=100', { credentials: 'same-origin' });
-      const body = r.ok ? await r.json() : { items: [] };
-      const items = body.items || [];
-      document.getElementById('stk-count-plugins').textContent = String(items.length);
-      if (!items.length) {
-        grid.innerHTML = '<div class="uc-empty"><h3>No plugins in your stack</h3><p>Browse <a href="/catalog?kind=plugins">Catalog → Plugins</a> to add some.</p></div>';
-        return;
-      }
-      grid.innerHTML = items.map(i => renderCatalogCard({
-        kind: 'plugins',
-        kind_label: 'Plugin',
-        title: i.display_name || i.name || i.title || 'Plugin',
-        href: i.detail_url || '/marketplace',
-        curator: i.source === 'curated' ? 'Curated' : 'Flea Market',
-        category: i.category || null,
-        description: i.tagline || i.description || '',
-        tags: (i.type ? [i.type] : []),
-        meta_icon: 'plugin',
-        meta_text: (i.type || 'plugin'),
-        action: pluginAction(i),
-      })).join('');
-    } catch (e) {
-      console.error('unified stack: plugins hydration failed', e);
-      grid.innerHTML = '<div class="uc-empty"><h3>Could not load plugins</h3></div>';
-    }
-  }
-
+  // ── Boot: honor ?kind=… deep links, then hydrate plugins.
   const urlKind = new URLSearchParams(window.location.search).get('kind');
-  if (urlKind && urlKind !== 'data') activate(urlKind, false);
+  const validKinds = ['all', 'data', 'plugins', 'memory', 'upload'];
+  if (validKinds.includes(urlKind) && urlKind !== 'all') {
+    const tab = document.querySelector('.uc-kindtab[data-kind="' + urlKind + '"]');
+    if (tab) tab.click();
+  }
+  refreshView();
   loadPlugins();
 })();
 </script>

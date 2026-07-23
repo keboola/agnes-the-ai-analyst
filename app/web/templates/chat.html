@@ -1,7 +1,6 @@
 {% extends 'base_ds.html' %}
-{% import "macros/_agnes_orb.html" as agnes_orb %}
 {% import "macros/_icon.html" as ico %}
-{% from "macros/_connect_banner.html" import connect_banner %}
+{% from "macros/_knowledge_layer.html" import knowledge_layer_banner %}
 
 {# Cloud chat page. Extends the canonical Agnes design-system base so
    the Agnes top nav, footer, and shared design tokens (colors, type,
@@ -21,6 +20,11 @@
 
 {% block head_extra %}
   <link rel="stylesheet" href="{{ static_url('css/chat.css') }}" />
+  {# Rail pre-conversation dashboard styles (.rdb-* — greeting, activity
+     panels, task starters). Rail-only markup, so topnav skips the sheet. #}
+  {% if ui_layout == 'rail' %}
+  <link rel="stylesheet" href="{{ static_url('css/chat_dashboard.css') }}" />
+  {% endif %}
   <link rel="stylesheet" href="/static/vendor/highlight.min.css" />
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/highlight.min.js"></script>
@@ -96,6 +100,12 @@
 </div>
 
 <div class="cloud-chat-shell">
+  {# Conversations column — TOPNAV ONLY. Under the rail layout the chat history
+     lives in the left rail itself (_app_rail.html → .rail-history), which owns
+     #chat-list / #cloud-chat-empty-state / #chat-journey there; rendering them
+     here too would duplicate those ids. Topnav keeps the classic in-page
+     sidebar (collapsible mini-rail, +New chat button, journey panel) unchanged. #}
+  {% if ui_layout != 'rail' %}
   <aside class="cloud-chat-sidebar" aria-label="Conversations">
     <header class="cloud-chat-sidebar-header">
       {# Collapse toggle — the sidebar can shrink to a ~56px rail that
@@ -134,28 +144,9 @@
        user can still see it marked complete). #}
     <div id="chat-journey" class="cloud-chat-journey" hidden></div>
   </aside>
+  {% endif %}
 
   <section class="cloud-chat-main">
-    {# Floating history toggle — rail layout only (issue #896). There the
-       Conversations column is hidden by default like /ask; this always-
-       visible button reveals it. Lives in the main area (not the sidebar
-       header) so it stays reachable while the column is collapsed to zero
-       width. Topnav instances keep the classic always-visible sidebar. #}
-    {% if ui_layout == 'rail' %}
-    <button type="button" id="chat-history-toggle" class="cloud-chat-histtoggle"
-            aria-label="Toggle chat history" aria-pressed="false" title="Chat history">
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-    </button>
-    {# New-chat shortcut — sits to the right of the history toggle, in the
-       main area, so it's reachable without opening the Conversations column.
-       Only shown while a conversation is active (``.has-thread`` on the shell,
-       set by setThreadTitle) and hidden once history is open (the column has
-       its own full "New chat" button). See chat.css. #}
-    <button type="button" id="chat-new-main" class="cloud-chat-newtoggle"
-            aria-label="Start a new chat" title="New chat">
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-    </button>
-    {% endif %}
     {# Active conversation header. JS toggles ``hidden`` based on
        whether we're in an empty-state shell (no current chat) or
        inside a thread. Title text is updated from openSession() and
@@ -172,28 +163,40 @@
        sidebar. Counts (tables, plugins, snapshots) are loaded
        asynchronously by chat.js so we don't block the page render on
        slow catalog reads. #}
-    {# Empty-state — rail layout gets the /ask hero (issue #896), topnav
-       keeps the classic capability cards so default instances are
-       unchanged (guarded by tests/test_ui_layout_theme.py). Both share
-       the ``#chat-capabilities`` id + the ``cloud-chat-cap-suggest`` /
-       ``data-prompt`` suggestion hooks so chat.js's showCapabilities /
-       wireSuggestionButtons work either way. The rail hero drops the
-       cap-data-summary cards; renderCapabilities()'s card accessors are
-       all null-guarded, so their absence is a no-op. #}
+    {# Empty-state — rail layout gets the pre-conversation Dashboard
+       (issue #896), topnav keeps the classic capability cards so default
+       instances are unchanged (guarded by tests/test_ui_layout_theme.py).
+       Both share the ``#chat-capabilities`` id, so chat.js's
+       showCapabilities/hideCapabilities work either way. The rail state
+       drops the cap-data-summary cards and suggestion buttons;
+       renderCapabilities()'s card accessors are all null-guarded and
+       wireSuggestionButtons matches zero nodes there, so their absence
+       is a no-op. #}
     {% if ui_layout == 'rail' %}
-    {# Empty-state is split around the composer so the composer sits in the
-       middle — under the description — exactly like /ask. Flex ``order``
-       on .cloud-chat-main lays them out brand → composer → extras (see
-       chat.css). ``#chat-empty-extras`` follows the composer in the DOM
-       and auto-hides with #chat-capabilities (sibling rule). #}
+    {# Rail pre-conversation state = the Dashboard (#896). The empty state
+       is split around the composer so the REAL composer sits under the
+       hero: greeting + Knowledge Layer banner above (this block — the
+       banner deliberately comes BEFORE the input: first understand what
+       Agnes is, then start using it), context line + activity panels below
+       (#chat-empty-extras). Flex ``order`` on .cloud-chat-main lays them
+       out hero → composer → extras (see chat.css); ``#chat-empty-extras``
+       follows the composer in the DOM and auto-hides with
+       #chat-capabilities (sibling rule) the moment a conversation starts —
+       so "New chat" simply returns here. #}
+    {# One cohesive hero: greeting → headline/diagram/CTAs (the bare
+       Knowledge Layer banner) → composer → Stack context line — all flat
+       on the page surface (no enclosing box), aligned to the shared
+       --rdb-col content column (see the "HERO" section of chat.css). #}
     <aside id="chat-capabilities" class="cloud-chat-capabilities">
-      <div class="ask-hero ask-hero--chat">
-        <div class="ask-brand">
-          {{ agnes_orb.orb(css_class='ask-orb', size=96) }}
-          <h1 class="ask-h1">Ask anything.<br>Reuse <span class="ask-accent">everything.</span></h1>
-          <p class="ask-sub">Your company's knowledge, plus the skills your colleagues built &mdash; in every AI you use.</p>
-        </div>
-      </div>
+      {% set _first_name = ((current_user.name or '').split(' ') | first) or '' %}
+      <h1 class="rdb-greet">
+        <span id="rdb-greeting-tod">{{ greeting }}</span>{% if _first_name %}, {{ _first_name }}{% endif %}
+        <span aria-hidden="true">&#x1F44B;</span>
+      </h1>
+      {# The product-model hero (macros/_knowledge_layer.html): company
+         knowledge lives in Agnes; use Kai here OR the same knowledge from
+         your own AI tools. bare=True — this hero container owns the box. #}
+      {{ knowledge_layer_banner(bare=True) }}
     </aside>
     {% else %}
     <aside id="chat-capabilities" class="cloud-chat-capabilities">
@@ -255,7 +258,17 @@
            role="listbox" aria-label="Skills and commands">
         <ul id="chat-slash-menu-results" class="cloud-chat-slash-menu-results"></ul>
       </div>
+      {# Rail: Kai-branded placeholder + an inner .cloud-chat-composer
+         wrapper so the green pill can live INSIDE the form while the form
+         itself acts as the hero box's middle row in the dashboard empty
+         state (chat_dashboard.css). Topnav keeps its classic markup —
+         the wrapper would break its grid composer. #}
+      {% if ui_layout == 'rail' %}
+      <div class="cloud-chat-composer">
+      <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Kai anything... (try: summarize revenue trends)" rows="2"></textarea>
+      {% else %}
       <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes… (try / for skills)" rows="2"></textarea>
+      {% endif %}
       <div class="cloud-chat-form-actions">
         <button type="button" id="cancel-btn"
                 class="btn btn-danger cloud-chat-stop-btn" hidden>Stop</button>
@@ -313,6 +326,8 @@
                 class="btn btn-primary cloud-chat-send-btn">Send</button>
         {% endif %}
       </div>
+      {# Closes the rail-only .cloud-chat-composer pill wrapper. #}
+      {% if ui_layout == 'rail' %}</div>{% endif %}
     </form>
 
     {# ── Upload dialogs ─────────────────────────────────────────────────────
@@ -447,28 +462,56 @@
     </div>
 
     {% if ui_layout == 'rail' %}
-    {# Empty-state extras that sit BELOW the composer (like /ask): the
-       "Operated by Kai" pill, suggested questions, and connect banner.
-       Placed after #chat-form in the DOM; flex order (chat.css) renders
-       it below the composer. Auto-hides once a conversation starts via
-       the ``#chat-capabilities[hidden] ~ #chat-empty-extras`` rule. #}
+    {# Empty-state extras that sit BELOW the composer — the rest of the
+       Dashboard: Stack context line, the three activity panels, the guided
+       task starters, and the connect banner. Placed after #chat-form in the
+       DOM; flex order (chat.css) renders it below the composer. Auto-hides
+       once a conversation starts via the
+       ``#chat-capabilities[hidden] ~ #chat-empty-extras`` rule. #}
     <div id="chat-empty-extras" class="cloud-chat-empty-extras">
-      <div class="ask-hero--chat">
-        <div class="ask-pill">Operated by <b>Kai</b> &middot; using {{ knowledge_source_count }} knowledge source{{ '' if knowledge_source_count == 1 else 's' }} &middot; {{ capability_count }} capabilit{{ 'y' if capability_count == 1 else 'ies' }} from your Stack</div>
+      {# Stack context line — flat under the composer (chat_dashboard.css).
+         Content renders (with a layers icon) whenever either count is
+         non-zero; at 0/0 the strip is just empty spacing. #}
+      <p class="rdb-context">
+        {% if knowledge_source_count or capability_count %}
+        <svg class="rdb-context-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 8.5 12 4l9 4.5-9 4.5-9-4.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        <span>
+          Kai is using
+          <a href="/stack">{{ knowledge_source_count }} knowledge source{{ '' if knowledge_source_count == 1 else 's' }}</a>
+          and
+          <a href="/stack">{{ capability_count }} capabilit{{ 'y' if capability_count == 1 else 'ies' }}</a>
+          from your Stack
+        </span>
+        {% endif %}
+      </p>
 
-        <div class="ask-suggest-label">Suggested questions</div>
-        <div class="ask-suggestions">
-          {% for q in suggested_questions %}
-          <button type="button" class="ask-suggestion cloud-chat-cap-suggest" data-prompt="{{ q }}">
-            <svg class="as-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l1.55 4.35L18 9l-4.45 1.65L12 15l-1.55-4.35L6 9l4.45-1.65L12 3Z" fill="currentColor"/></svg>
-            <span class="as-txt">{{ q }}</span>
-            <svg class="as-arrow" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h13M12 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </button>
-          {% endfor %}
-        </div>
-
-        {# Same "connect your other AI tools" CTA as /ask, for parity. #}
-        {{ connect_banner('inline', cta_href='/setup') }}
+      <div class="rdb">
+        {# ── Suggested next actions ────────────────────────────────────────
+           One personalized, action-oriented list — guided Kai conversation
+           starters, NOT separate tools. Rows render from the typed action
+           model in js/chat_dashboard.js (buildSuggestedActions — the
+           explicit personalization boundary: the resume row comes from the
+           caller's real recent conversations; the rest are the static
+           guided-task defaults until a backend recommendation source
+           exists). Selecting a row collects any missing input in the
+           existing dialog primitive and submits through chat.js's
+           submitUserMessage — the one conversation flow. State elements
+           below are toggled by the renderer so loading / empty / partial
+           failure all degrade section-locally. #}
+        <section class="rdb-actions" id="rdb-actions" aria-labelledby="rdb-actions-title">
+          <header class="rdb-panel-head">
+            <h2 id="rdb-actions-title" class="rdb-panel-title">Suggested next actions</h2>
+          </header>
+          <ul id="rdb-actions-list" class="rdb-actions-list" role="list"></ul>
+          <p id="rdb-actions-loading" class="rdb-panel-note">Loading suggestions&hellip;</p>
+          <div id="rdb-actions-empty" class="rdb-actions-empty" hidden>
+            <p class="rdb-actions-empty-title">No suggested actions yet</p>
+            <p class="rdb-panel-note">
+              Ask Kai anything above, or add more relevant sources and
+              capabilities to <a href="/stack">your Stack</a>.
+            </p>
+          </div>
+        </section>
       </div>
     </div>
 

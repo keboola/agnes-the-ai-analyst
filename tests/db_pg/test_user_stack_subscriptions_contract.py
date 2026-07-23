@@ -13,6 +13,7 @@ composite-PK association table that references ``resource_type`` /
 Closes Phase 1D of the PG follow-up plan — five contract suites covering
 five repository clusters with one shared parametrisation pattern.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -26,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # ---------------------------------------------------------------------------
 # repo construction helpers — one per backend
 # ---------------------------------------------------------------------------
+
 
 def _make_duckdb_repo(tmp_path):
     from src.db import _ensure_schema
@@ -50,12 +52,14 @@ def _make_pg_repo(pg_engine, monkeypatch):
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
     import src.db_pg as db_pg
+
     db_pg.dispose()
     db_pg.get_engine()
 
     from src.repositories.user_stack_subscriptions_pg import (
         UserStackSubscriptionsPgRepository,
     )
+
     return UserStackSubscriptionsPgRepository(db_pg.get_engine()), None
 
 
@@ -76,6 +80,7 @@ def repo(request, tmp_path, pg_engine, monkeypatch):
 # ---------------------------------------------------------------------------
 # contract tests — same calls, same answers from both engines
 # ---------------------------------------------------------------------------
+
 
 def test_subscribe_then_is_subscribed(repo):
     assert repo.subscribe("user_a", "data_package", "pkg_1") is True
@@ -117,6 +122,23 @@ def test_list_for_user_filtered_by_type(repo):
     assert repo.list_for_user("nobody", "data_package") == []
 
 
+def test_list_for_user_with_dates(repo):
+    repo.subscribe("u", "data_package", "pkg_1")
+    repo.subscribe("u", "memory_domain", "dom_1")
+    # Other-user noise that must not bleed through.
+    repo.subscribe("other", "data_package", "pkg_2")
+
+    rows = repo.list_for_user_with_dates("u")
+    assert {(r["resource_type"], r["resource_id"]) for r in rows} == {
+        ("data_package", "pkg_1"),
+        ("memory_domain", "dom_1"),
+    }
+    # Every row carries a real subscribed_at timestamp.
+    assert all(r["subscribed_at"] is not None for r in rows)
+
+    assert repo.list_for_user_with_dates("nobody") == []
+
+
 def test_list_users_subscribed_to(repo):
     repo.subscribe("alice", "data_package", "pkg_1")
     repo.subscribe("bob", "data_package", "pkg_1")
@@ -140,13 +162,10 @@ def _seed_group_with_members(repo, group_id, member_ids):
     """Seed a user_groups row (FK target) + its members on whichever backend
     the repo is bound to."""
     if hasattr(repo, "conn"):  # DuckDB
-        repo.conn.execute(
-            "INSERT INTO user_groups(id, name) VALUES (?, ?)", [group_id, group_id]
-        )
+        repo.conn.execute("INSERT INTO user_groups(id, name) VALUES (?, ?)", [group_id, group_id])
         for uid in member_ids:
             repo.conn.execute(
-                "INSERT INTO user_group_members(user_id, group_id, source) "
-                "VALUES (?, ?, 'manual')",
+                "INSERT INTO user_group_members(user_id, group_id, source) VALUES (?, ?, 'manual')",
                 [uid, group_id],
             )
     else:  # PG
@@ -159,10 +178,7 @@ def _seed_group_with_members(repo, group_id, member_ids):
             )
             for uid in member_ids:
                 conn.execute(
-                    sa.text(
-                        "INSERT INTO user_group_members(user_id, group_id, source) "
-                        "VALUES (:u, :g, 'manual')"
-                    ),
+                    sa.text("INSERT INTO user_group_members(user_id, group_id, source) VALUES (:u, :g, 'manual')"),
                     {"u": uid, "g": group_id},
                 )
 

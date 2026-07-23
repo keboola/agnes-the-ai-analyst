@@ -1522,22 +1522,60 @@ html[data-ui-layout="rail"] .cloud-chat-capabilities {
   align-items: center;
   padding: 34px 20px 6px;
 }
-/* Empty-state layout order: brand → composer → extras → footer, so the
-   composer sits in the middle (under the description) like /ask and the
-   Keboola footer is pinned to the bottom of the card. Fixed orders work
-   in both states: in an active conversation brand + extras + footer are
+/* Empty-state layout order: greeting → composer → extras → footer, so the
+   composer sits under the greeting with the rest of the dashboard (context
+   line, activity panels, task starters, banner) below it. Fixed orders work
+   in both states: in an active conversation greeting + extras + footer are
    hidden and messages(order 0) precedes the composer(order 2), pinning it
    to the bottom. */
 html[data-ui-layout="rail"] .cloud-chat-main > #chat-capabilities { order: 1; }
 html[data-ui-layout="rail"] .cloud-chat-main > #chat-form { order: 2; }
 html[data-ui-layout="rail"] .cloud-chat-main > #chat-empty-extras { order: 3; }
 html[data-ui-layout="rail"] .cloud-chat-main > .cloud-chat-empty-foot { order: 4; }
-/* Vertically centre the brand→composer→extras group in the space above
-   the footer (auto margins split the free space), like /ask's hero. */
-html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-capabilities { margin-top: auto; }
-html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-empty-extras { margin-bottom: auto; }
-/* Extras (pill + suggestions + banner) + footer follow the composer and
-   hide with the brand panel once a conversation starts. */
+/* The dashboard empty state is top-anchored (it's a full content page, not
+   a short hero) and scrolls as one column; the footer pins to the bottom of
+   the card when the content is short. Widget styles live in
+   chat_dashboard.css — only the slot layout is owned here.
+
+   HERO: the greeting/diagram/CTAs (#chat-capabilities), the composer
+   (#chat-form), and the Stack context line (extras' .rdb-context) sit
+   FLAT on the page surface — no enclosing box — as one content column.
+   Every section — and the Suggested-actions list below — sizes itself
+   with the ONE shared --rdb-col definition declared here, so the page
+   has a single content grid by construction. NB: the base
+   .cloud-chat-capabilities rule caps the panel at --chat-reading-width
+   (880px) for the classic empty state; the dashboard must lift that cap
+   or the hero renders narrower than the composer row. */
+html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) {
+  overflow-y: auto;
+  --rdb-col: min(100% - 64px, 1200px);
+  /* Narrow column for the composer, Stack context line, and the
+     Suggested-actions list — ~60% of the container, centered under the
+     full-width hero. Collapses to the full column on small screens. */
+  --rdb-col-narrow: min(60%, 1200px);
+}
+html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-capabilities {
+  align-self: center;
+  align-items: stretch;
+  width: var(--rdb-col);
+  max-width: none;
+  margin-top: 16px;
+  padding: 22px 0 6px;
+}
+html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-empty-extras {
+  padding: 0;
+}
+html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > .cloud-chat-empty-foot { margin-top: auto; }
+@media (max-width: 680px) {
+  html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) {
+    --rdb-col: min(100% - 36px, 1200px);
+    --rdb-col-narrow: var(--rdb-col);
+  }
+  html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-capabilities { padding: 18px 0 4px; }
+  html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) .cloud-chat-form { padding: 10px 0 8px; }
+}
+/* Extras (context line + panels + task starters + banner) + footer follow
+   the composer and hide with the greeting panel once a conversation starts. */
 html[data-ui-layout="rail"] #chat-capabilities[hidden] ~ #chat-empty-extras,
 html[data-ui-layout="rail"] #chat-capabilities[hidden] ~ .cloud-chat-empty-foot { display: none; }
 html[data-ui-layout="rail"] .cloud-chat-empty-extras {
@@ -1547,7 +1585,6 @@ html[data-ui-layout="rail"] .cloud-chat-empty-extras {
   align-items: center;
   padding: 0 20px 6px;
 }
-html[data-ui-layout="rail"] .cloud-chat-empty-extras .cbn--inline { margin-top: 20px; }
 
 /* Footer inside the empty-state card — spans the card width with a top
    border (like /ask's .ask-foot), so it narrows with the card when history
@@ -1564,100 +1601,49 @@ html[data-ui-layout="rail"] .cloud-chat-empty-foot {
 html[data-ui-layout="rail"] .cloud-chat-empty-foot .footer-copy { margin: 0; color: var(--ds-text-muted); }
 html[data-ui-layout="rail"] .cloud-chat-empty-foot b { color: var(--ds-text-secondary); }
 
-/* Composer narrower + centered in the empty state (like /ask), overriding
-   the base ``margin: auto`` so it isn't shoved to the bottom — the group
-   stays vertically centered as one block. */
+/* Composer row in the empty state: same column as the hero above and the
+   Stack context line below, flat on the surface — the pill itself is the
+   inner .cloud-chat-composer. Overrides the base ``margin: auto`` so it
+   isn't shoved to the bottom. */
 html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) .cloud-chat-form {
-  margin: 16px auto 0;
-  max-width: min(100%, 760px);
+  align-self: center;
+  margin: 0;
+  width: var(--rdb-col-narrow);
+  max-width: none;
+  padding: 14px 0 10px;
 }
-html[data-ui-layout="rail"] .ask-hero--chat {
-  width: min(100%, 760px);
-  margin: 0 auto;
-  text-align: center;
-}
-html[data-ui-layout="rail"] .ask-hero--chat .ask-brand { position: relative; padding-top: 6px; }
-/* Soft radial glow behind the orb. The colour of the mask stops is
-   irrelevant (a mask reads alpha, not hue) so a --ds token is used to
-   keep the file hex-free. */
-html[data-ui-layout="rail"] .ask-hero--chat .ask-brand::before {
-  content: ""; position: absolute; left: 50%; top: -18px; transform: translateX(-50%);
-  width: min(560px, 100%); height: 260px; pointer-events: none; z-index: 0;
-  background:
-    radial-gradient(circle at 40% 32%, color-mix(in srgb, var(--ds-agnes) 16%, transparent), transparent 40%),
-    radial-gradient(circle at 66% 44%, color-mix(in srgb, var(--ds-primary) 14%, transparent), transparent 42%);
-  -webkit-mask-image: radial-gradient(closest-side, var(--ds-text-primary) 55%, transparent);
-  mask-image: radial-gradient(closest-side, var(--ds-text-primary) 55%, transparent);
-}
-html[data-ui-layout="rail"] .ask-hero--chat .ask-orb {
-  position: relative; z-index: 1; display: inline-block;
-  width: 96px; height: 96px; margin-bottom: 6px;
-  filter: drop-shadow(0 12px 26px color-mix(in srgb, var(--ds-primary) 26%, transparent));
-  animation: ask-orb-float 8s var(--ds-ease-standard) infinite;
-}
-@keyframes ask-orb-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
-@media (prefers-reduced-motion: reduce) {
-  html[data-ui-layout="rail"] .ask-hero--chat .ask-orb { animation: none; }
-}
-html[data-ui-layout="rail"] .ask-hero--chat .ask-h1 {
-  position: relative; z-index: 1; margin: 0; font-size: 30px; line-height: 1.1;
-  letter-spacing: -.03em; color: var(--ds-text-primary); font-weight: 750;
-}
-html[data-ui-layout="rail"] .ask-hero--chat .ask-accent { color: var(--ds-agnes); }
-html[data-ui-layout="rail"] .ask-hero--chat .ask-sub {
-  position: relative; z-index: 1; margin: 12px auto 0; max-width: 560px;
-  color: var(--ds-text-secondary); font-size: 15px; line-height: 1.5;
-}
-html[data-ui-layout="rail"] .ask-hero--chat .ask-pill { font-size: 12.5px; color: var(--ds-text-muted); margin: 18px auto 0; }
-html[data-ui-layout="rail"] .ask-hero--chat .ask-pill b { color: var(--ds-agnes); font-weight: 650; }
-html[data-ui-layout="rail"] .ask-hero--chat .ask-suggest-label {
-  font-size: 12.5px; font-weight: 600; color: var(--ds-text-secondary);
-  text-align: left; margin: 22px 2px 9px;
-}
-html[data-ui-layout="rail"] .ask-hero--chat .ask-suggestions {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;
-}
-html[data-ui-layout="rail"] .ask-hero--chat .ask-suggestion {
-  display: flex; align-items: center; gap: 9px;
-  border: 1px solid var(--ds-agnes-line); background: var(--ds-surface);
-  padding: 9px 11px; border-radius: 10px; text-align: left;
-  color: var(--ds-text-secondary); font: inherit; font-size: 12.5px; line-height: 1.35;
-  cursor: pointer;
-  transition: background .15s, border-color .15s, box-shadow .15s, transform .1s;
-}
-html[data-ui-layout="rail"] .ask-hero--chat .ask-suggestion .as-ico { flex-shrink: 0; width: 15px; height: 15px; color: var(--ds-agnes); opacity: .9; }
-html[data-ui-layout="rail"] .ask-hero--chat .ask-suggestion .as-txt { flex: 1; min-width: 0; }
-html[data-ui-layout="rail"] .ask-hero--chat .ask-suggestion .as-arrow {
-  flex-shrink: 0; width: 15px; height: 15px; color: var(--ds-text-muted);
-  opacity: 0; transform: translateX(-3px); transition: opacity .15s, transform .15s, color .15s;
-}
-html[data-ui-layout="rail"] .ask-hero--chat .ask-suggestion:hover {
-  border-color: var(--ds-agnes); background: var(--ds-agnes-soft); color: var(--ds-text-primary);
-  box-shadow: 0 2px 10px color-mix(in srgb, var(--ds-agnes) 14%, transparent);
-  transform: translateY(-1px);
-}
-html[data-ui-layout="rail"] .ask-hero--chat .ask-suggestion:hover .as-arrow { opacity: 1; transform: none; color: var(--ds-agnes); }
 
-/* Composer → paper pill + circular send button (mirrors .ask-field /
-   .ask-send on /ask). The send button no longer composes .btn
+/* Composer → paper pill + circular send button. Under rail the pill
+   lives on the INNER .cloud-chat-composer wrapper (rail-only markup in
+   chat.html) so the outer <form> can act as a plain row container — the
+   dashboard empty state uses that to seat the composer inside the hero
+   box (chat_dashboard.css). The send button no longer composes .btn
    .btn-primary in rail, so it is fully styled here. */
 html[data-ui-layout="rail"] .cloud-chat-form {
+  display: block;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+html[data-ui-layout="rail"] .cloud-chat-composer {
   /* Flex (not the base rule's grid): a grid auto-row stretched the
      textarea to the column's full height, so autosizeComposer() read a
      ballooned scrollHeight and pinned the composer at its 220px max.
      Flex + align-items:center keeps the textarea at its content height. */
   display: flex;
   align-items: center;
+  background: var(--ds-surface);
   border: 1.5px solid var(--ds-agnes-line);
   border-radius: 26px;
-  box-shadow: none;
   padding: 6px 6px 6px 18px;
 }
-html[data-ui-layout="rail"] .cloud-chat-form .cloud-chat-input {
+html[data-ui-layout="rail"] .cloud-chat-composer .cloud-chat-input {
   flex: 1 1 auto;
   min-width: 0;
 }
-html[data-ui-layout="rail"] .cloud-chat-form:focus-within {
+html[data-ui-layout="rail"] .cloud-chat-composer:focus-within {
   border-color: var(--ds-agnes);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--ds-agnes) 14%, transparent);
 }
@@ -1672,153 +1658,22 @@ html[data-ui-layout="rail"] .cloud-chat-send-btn:hover { background: var(--ds-pr
 html[data-ui-layout="rail"] .cloud-chat-send-btn svg { width: 18px; height: 18px; }
 html[data-ui-layout="rail"] .cloud-chat-send-btn:disabled { opacity: .55; cursor: progress; }
 
-@media (max-width: 900px) {
-  html[data-ui-layout="rail"] .ask-hero--chat .ask-h1 { font-size: 27px; }
-}
-
-/* ---- Conversations column: hidden by default, floating toggle ---------
-   Rail only — mirrors /ask. The history column starts collapsed to zero
-   width and the floating #chat-history-toggle in the main area reveals
-   it (``.history-open`` on the shell). Overrides the base 280px / mini
-   56px track when the shell is not open. */
-html[data-ui-layout="rail"] .cloud-chat-shell:not(.history-open) { --chat-sidebar-width: 0px; }
-/* Closed: the shell must show NO grey gutter and the sidebar must truly
-   collapse. The sidebar's own 8px padding does NOT vanish just because its
-   grid track is 0px — it renders as a ~16px grey sliver between the app rail
-   and the chat surface. Zero the padding + background so the column is gone. */
-html[data-ui-layout="rail"] .cloud-chat-shell:not(.history-open) {
+/* ---- Single-column chat surface (rail) --------------------------------
+   The conversation history moved OUT of the chat page and into the left rail
+   (see rail.css → .rail-history). The chat page is therefore a single column:
+   just the chat surface, edge to edge. The base shell is a two-track grid
+   (sidebar + main); collapse it to one track here, and since the sidebar
+   <aside> isn't rendered at all under rail, .cloud-chat-main is the only
+   child and fills the width. */
+html[data-ui-layout="rail"] .cloud-chat-shell {
+  grid-template-columns: 1fr;
   padding: 0;
   gap: 0;
   background: var(--ds-surface);
 }
-html[data-ui-layout="rail"] .cloud-chat-shell:not(.history-open) .cloud-chat-sidebar {
-  border-right: none;
-  overflow: hidden;
-  width: 0;
-  padding: 0;
-  background: transparent;
-}
 html[data-ui-layout="rail"] .cloud-chat-main { position: relative; }
-html[data-ui-layout="rail"] .cloud-chat-histtoggle {
-  position: absolute; top: 14px; left: 14px; z-index: 6;
-  width: 40px; height: 40px; display: grid; place-items: center;
-  border: 1px solid var(--ds-border); border-radius: 11px;
-  background: var(--ds-surface); color: var(--ds-text-secondary);
-  cursor: pointer; transition: background .15s, color .15s, border-color .15s;
-}
-html[data-ui-layout="rail"] .cloud-chat-histtoggle:hover { background: var(--ds-surface-dim); color: var(--ds-text-primary); }
-html[data-ui-layout="rail"] .cloud-chat-histtoggle:focus-visible {
-  outline: var(--ds-focus-outline);
-  outline-offset: var(--ds-focus-outline-offset);
-}
-html[data-ui-layout="rail"] .cloud-chat-shell.history-open .cloud-chat-histtoggle {
-  background: var(--ds-agnes-soft); border-color: var(--ds-agnes-line); color: var(--ds-agnes);
-}
-html[data-ui-layout="rail"] .cloud-chat-histtoggle svg { width: 18px; height: 18px; }
 
-/* ---- Conversations column contents styled like /ask (.ash-*) ----------
-   Header stacks (label over a full-width outline "New chat" button), the
-   mini-collapse hamburger is hidden (the floating toggle owns open/close),
-   and the active row uses the agnes accent instead of the classic info
-   accent — matching the /ask history column. */
-/* Tighter side gutter than the base 16px — the column reads cramped with
-   both the sidebar padding and the list padding stacked. Keep a small
-   8px rail so the hover pills have a little breathing room from the edge. */
-html[data-ui-layout="rail"] .cloud-chat-sidebar { padding: var(--space-3) 4px var(--space-2); }
-html[data-ui-layout="rail"] .cloud-chat-sidebar-header {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  padding: 4px 4px 2px;
-  border-bottom: none;
-}
-html[data-ui-layout="rail"] .cloud-chat-sidebar-toggle { display: none; }
-html[data-ui-layout="rail"] .cloud-chat-sidebar-title { padding: 2px 4px; }
-/* New chat → full-width outline button (like /ask .ash-new). The
-   .cloud-chat-sidebar ancestor lifts specificity above .btn.btn-primary. */
-html[data-ui-layout="rail"] .cloud-chat-sidebar .cloud-chat-new-btn {
-  width: 100%;
-  justify-content: flex-start;
-  gap: 8px;
-  padding: 9px 10px;
-  border: 1px solid var(--ds-border);
-  border-radius: 12px;
-  background: var(--ds-surface);
-  color: var(--ds-text-primary);
-  font-weight: 600;
-  box-shadow: none;
-}
-html[data-ui-layout="rail"] .cloud-chat-sidebar .cloud-chat-new-btn:hover {
-  border-color: var(--ds-agnes);
-  background: var(--ds-surface-dim);
-  color: var(--ds-text-primary);
-}
-/* List rows + date-group headers matched to /ask (.ash-item / .ash-label):
-   9px/12px padding, 9px radius, surface-dim hover, agnes-accent active. */
-html[data-ui-layout="rail"] .cloud-chat-list { padding: 2px 4px; }
-html[data-ui-layout="rail"] .cloud-chat-list li {
-  padding: 7px 9px;
-  border-radius: 8px;
-  font-size: 13.5px;
-  line-height: 1.3;
-  color: var(--ds-text-secondary);
-}
-/* Even 2px rhythm between conversation rows — the old 1px read as
-   cramped/uneven next to the larger group gaps. Scoped to [data-id]+[data-id]
-   (two real rows) so it does NOT apply to a group header that follows a row —
-   otherwise this out-specifies the header's `margin-top: 16px` and the date
-   buckets lose their separation. */
-html[data-ui-layout="rail"] .cloud-chat-list li[data-id] + li[data-id] { margin-top: 2px; }
-/* Hover applies ONLY to real conversation rows (they carry data-id). The
-   date-group headers are <li> too, so a bare `li:hover` also lit them up —
-   scope to [data-id] to exclude headers. Hover pops to the surface color
-   (not surface-dim, which equals the sidebar background and read as no
-   change at all). */
-html[data-ui-layout="rail"] .cloud-chat-list li[data-id]:hover {
-  background: var(--ds-surface);
-  color: var(--ds-text-primary);
-}
-/* Date-group headers never react to the pointer (high specificity so it
-   wins over the base `.cloud-chat-list li:hover`). */
-html[data-ui-layout="rail"] .cloud-chat-list li.cloud-chat-list-group-header,
-html[data-ui-layout="rail"] .cloud-chat-list li.cloud-chat-list-group-header:hover {
-  background: transparent;
-  color: var(--ds-text-muted);
-  cursor: default;
-}
-/* Drop the "paused" pill in the rail history — it reports an infra state
-   (sandbox snapshotted) the user can't act on and that doesn't change what
-   clicking the row does, so it was just noise. "Slack" (origin) stays.
-   Rail-scoped: topnav keeps the pill. */
-html[data-ui-layout="rail"] .cloud-chat-paused-badge { display: none; }
-/* Delete button: hidden until its own row is hovered (or focused for
-   keyboard nav) — never persistently visible. */
-html[data-ui-layout="rail"] .cloud-chat-list-del { opacity: 0; }
-html[data-ui-layout="rail"] .cloud-chat-list li[data-id]:hover .cloud-chat-list-del,
-html[data-ui-layout="rail"] .cloud-chat-list-del:focus-visible { opacity: 1; }
-/* Group headers bind to the group BELOW them: generous space above (16px
-   separates one date bucket from the previous group's last row), tight
-   space below (4px) so the header reads as a label for its items. Text is
-   indented to line up with the row labels (list 4px + header 10px = row
-   label's 4px + 10px). */
-html[data-ui-layout="rail"] .cloud-chat-list-group-header {
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  color: var(--ds-text-muted);
-  padding: 0 10px 4px;
-  margin-top: 16px;
-}
-html[data-ui-layout="rail"] .cloud-chat-list-group-header:first-child { margin-top: 2px; }
-html[data-ui-layout="rail"] .cloud-chat-list li.is-active,
-html[data-ui-layout="rail"] .cloud-chat-list li.active {
-  background: var(--ds-agnes-soft);
-  border-color: transparent;
-  color: var(--ds-agnes);
-  font-weight: 600;
-}
-
-/* ---- Full-viewport shell + history-open card (rail) -------------------
+/* ---- Full-viewport shell (rail) ---------------------------------------
    The base shell height (calc(100dvh - 72px)) assumes the 72px top nav
    that the rail layout doesn't have, leaving a 72px grey strip below the
    chat. Make the chat container a full-height flex column so the shell
@@ -1837,36 +1692,6 @@ html[data-ui-layout="rail"] body.chat-page-body .container > main {
 html[data-ui-layout="rail"] .cloud-chat-shell {
   height: 100%;
   box-sizing: border-box;
-  transition:
-    padding 0.22s var(--ds-ease-standard),
-    gap 0.22s var(--ds-ease-standard),
-    background 0.2s;
-}
-
-/* History open → the chat surface insets into a rounded card on a tinted
-   gutter and the history column sits in the gutter (borderless), exactly
-   like /ask's .ask-wrap.history-open. */
-html[data-ui-layout="rail"] .cloud-chat-shell.history-open {
-  padding: 14px;
-  gap: 14px;
-  background: var(--ds-bg);
-  /* Narrower than the base 280px — the tighter internal padding leaves the
-     column feeling roomy at 244px, and gives the chat surface more width. */
-  --chat-sidebar-width: 244px;
-}
-html[data-ui-layout="rail"] .cloud-chat-shell.history-open .cloud-chat-sidebar {
-  border-right: none;
-  background: transparent;
-}
-html[data-ui-layout="rail"] .cloud-chat-shell.history-open .cloud-chat-main {
-  border: 1px solid var(--ds-border);
-  border-radius: 22px;
-  box-shadow: var(--ds-shadow-lg);
-  background: var(--ds-surface);
-  overflow: hidden;
-  transition:
-    border-radius 0.22s var(--ds-ease-standard),
-    box-shadow 0.22s;
 }
 
 /* ============================================================ "+" upload menu
@@ -2266,47 +2091,22 @@ html[data-ui-layout="rail"] .cloud-chat-plus-btn:hover {
 }
 
 /* ---- Active-conversation chrome (rail) --------------------------------
-   Refines the in-thread layout so the floating history toggle, a twin
-   +New-chat button, the conversation title, and the connection state all
-   sit in one clean top band instead of stacking full-width strips. Scoped
-   to rail so topnav instances (guarded by tests/test_ui_layout_theme.py)
-   are unchanged. */
+   Refines the in-thread layout so the conversation title and the connection
+   state sit in one clean top band instead of stacking full-width strips.
+   History + New chat now live in the left rail, so the chat surface no longer
+   carries any floating buttons. Scoped to rail so topnav instances (guarded by
+   tests/test_ui_layout_theme.py) are unchanged. */
 
-/* +New-chat — mirrors the floating history toggle, one slot to its right.
-   Only present inside a live thread (``.has-thread``); hidden once the
-   Conversations column is open since that column carries its own button. */
-html[data-ui-layout="rail"] .cloud-chat-newtoggle {
-  position: absolute; top: 14px; left: 62px; z-index: 6;
-  width: 40px; height: 40px; display: none; place-items: center;
-  border: 1px solid var(--ds-border); border-radius: 11px;
-  background: var(--ds-surface); color: var(--ds-text-secondary);
-  cursor: pointer; transition: background .15s, color .15s, border-color .15s;
-}
-html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-newtoggle { display: grid; }
-html[data-ui-layout="rail"] .cloud-chat-shell.has-thread.history-open .cloud-chat-newtoggle { display: none; }
-html[data-ui-layout="rail"] .cloud-chat-newtoggle:hover {
-  background: var(--ds-surface-dim); color: var(--ds-text-primary); border-color: var(--ds-agnes);
-}
-html[data-ui-layout="rail"] .cloud-chat-newtoggle:focus-visible {
-  outline: var(--ds-focus-outline);
-  outline-offset: var(--ds-focus-outline-offset);
-}
-html[data-ui-layout="rail"] .cloud-chat-newtoggle svg { width: 18px; height: 18px; }
-
-/* Thread title — airier, borderless band. Left padding clears the two
-   floating buttons (toggle + new); right padding clears the status badge.
-   align-items:center + min-height vertically centers the title on the
-   40px buttons. When history is open the +New button is gone, so the
-   left inset shrinks to clear the lone toggle. */
+/* Thread title — airier, borderless band. No floating buttons to clear on the
+   left now (history + New chat live in the rail), so the title sits at the
+   normal gutter; right padding still clears the status badge.
+   align-items:center + min-height vertically centers the title. */
 html[data-ui-layout="rail"] .cloud-chat-thread-header {
   min-height: 68px;
-  padding: 8px 160px 8px 108px;
+  padding: 8px 160px 8px var(--space-6);
   border-bottom: none;
   background: transparent;
   align-items: center;
-}
-html[data-ui-layout="rail"] .cloud-chat-shell.history-open .cloud-chat-thread-header {
-  padding-left: 62px;
 }
 html[data-ui-layout="rail"] .cloud-chat-thread-title {
   font-size: var(--text-lg);

@@ -46,6 +46,7 @@ html[data-ui-layout="rail"] .rail-logo {
     padding: 6px 8px 18px;
     color: var(--ds-text-primary);
     text-decoration: none;
+    flex-shrink: 0;
 }
 
 html[data-ui-layout="rail"] .rail-logo svg {
@@ -68,31 +69,25 @@ html[data-ui-layout="rail"] .rail-logo-txt {
     line-height: 1;
 }
 
-html[data-ui-layout="rail"] .rail-newchat {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    border: 1px solid var(--ds-border);
-    background: var(--ds-surface);
-    color: var(--ds-text-primary);
-    font-weight: 600;
-    font-size: 13.5px;
-    padding: 9px 12px;
-    border-radius: 9px;
-    margin-bottom: 8px;
-    text-decoration: none;
-}
-
-html[data-ui-layout="rail"] .rail-newchat:hover {
-    background: var(--ds-surface-dim);
-    border-color: var(--ds-text-muted);
-}
-
 html[data-ui-layout="rail"] .rail-nav {
     display: flex;
     flex-direction: column;
     gap: 3px;
+    flex-shrink: 0;
+}
+
+/* "New chat" — the primary chat action, folded into the nav as the first
+   item (the standalone +New chat button above the nav was retired). Given a
+   subtle primary-tinted treatment so it reads as the CTA of the group without
+   the weight of a filled button, and never carries the `.on` active state. */
+html[data-ui-layout="rail"] .rail-newchat-item {
+    color: var(--ds-primary-dark);
+    font-weight: 600;
+}
+
+html[data-ui-layout="rail"] .rail-newchat-item:hover {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
 }
 
 html[data-ui-layout="rail"] .rail-i {
@@ -134,14 +129,203 @@ html[data-ui-layout="rail"] .rail-i:focus-visible {
     outline-offset: var(--ds-focus-outline-offset);
 }
 
-/* Global search adapts the header combobox to the rail column. */
-html[data-ui-layout="rail"] .rail-search {
-    margin: 10px 0 4px;
-    position: relative;
+/* ── Chat history ──────────────────────────────────────────────────────
+   Collapsible section under the primary destinations. Expanded, it is the
+   rail's flex-grow region: its body scrolls independently while the nav above
+   and the user menu below stay put. Collapsed (.is-collapsed), it shrinks to
+   just the toggle row and the footer floats back to the bottom (rail-foot's
+   margin-top:auto). The <ul id="chat-list"> reuses the chat page's ids/classes
+   so chat.js renders straight into it on /chat; rail_history.js fills it on
+   every other page. (A button + region rather than a native <details>: a
+   display:flex <details> won't hand its height to flex children in Chrome, so
+   the internal scroll never engages — see rail_history.js.) */
+html[data-ui-layout="rail"] .rail-history {
+    margin-top: 8px;
+    border-top: 1px solid var(--ds-border);
+    padding-top: 8px;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    /* Take the remaining vertical space so the list — not the whole rail — is
+       what scrolls. min-height:0 lets it shrink below content height, and
+       overflow:hidden forces the flex child (.rail-history-body) to respect
+       that bound and scroll internally instead of spilling over the footer. */
+    flex: 1 1 auto;
+    overflow: hidden;
 }
 
-html[data-ui-layout="rail"] .rail-search .app-header-search-input {
-    width: 100%;
+html[data-ui-layout="rail"] .rail-history.is-collapsed {
+    flex: 0 0 auto;
+}
+
+html[data-ui-layout="rail"] .rail-history-summary {
+    color: var(--ds-text-secondary);
+    flex-shrink: 0;
+}
+
+html[data-ui-layout="rail"] .rail-history-summary-txt {
+    flex: 1 1 auto;
+}
+
+/* Caret points up when expanded, down when collapsed. */
+html[data-ui-layout="rail"] .rail-history-caret {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    color: var(--ds-text-muted);
+    transition: transform 0.18s var(--ds-ease-standard, ease);
+    transform: rotate(180deg);
+}
+
+html[data-ui-layout="rail"] .rail-history.is-collapsed .rail-history-caret {
+    transform: rotate(0deg);
+}
+
+/* Scroll region — hidden when collapsed.
+   `flex-basis: 0` (not auto) is load-bearing: with an `auto` basis the body
+   sizes to its content height and refuses to shrink, so older rows spill past
+   the clip (.rail-history overflow:hidden) and become unreachable. A 0 basis
+   makes it grow strictly into the space .rail-history leaves, so the overflow
+   engages and the list scrolls. */
+html[data-ui-layout="rail"] .rail-history-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1 1 0;
+    overflow-y: auto;
+    margin-top: 4px;
+    /* Room for the scrollbar so rows don't sit flush against the rail edge. */
+    padding-right: 2px;
+}
+
+html[data-ui-layout="rail"] .rail-history.is-collapsed .rail-history-body {
+    display: none;
+}
+
+/* The list itself doesn't scroll — its parent (.rail-history-body) does — so
+   neutralize the base chat.css `.cloud-chat-list { overflow-y:auto; flex:1 }`
+   that would otherwise create a nested scroll container on /chat. */
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    overflow: visible;
+    flex: 0 0 auto;
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li[data-id] {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 9px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13.5px;
+    line-height: 1.3;
+    color: var(--ds-text-secondary);
+    border: 1px solid transparent;
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li[data-id] + li[data-id] {
+    margin-top: 2px;
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li[data-id]:hover {
+    background: var(--ds-surface-dim);
+    color: var(--ds-text-primary);
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li.is-active,
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li.active {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    font-weight: 600;
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li[data-id]:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* Conversation label — grows to fill, truncates rather than wrapping. */
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Origin pill (Slack) — small, non-interactive. */
+html[data-ui-layout="rail"] .rail-history .cloud-chat-surface-badge {
+    flex-shrink: 0;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+    background: var(--ds-surface-dim);
+    border-radius: 5px;
+    padding: 1px 5px;
+}
+
+/* Paused badge reports an infra state the user can't act on — noise in the
+   narrow rail; drop it (matches the retired history column's behavior). */
+html[data-ui-layout="rail"] .rail-history .cloud-chat-paused-badge {
+    display: none;
+}
+
+/* Delete button — hidden until the row is hovered or the control focused. */
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list-del {
+    flex-shrink: 0;
+    opacity: 0;
+    border: none;
+    background: none;
+    color: var(--ds-text-muted);
+    cursor: pointer;
+    font-size: 15px;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 5px;
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li[data-id]:hover .cloud-chat-list-del,
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list-del:focus-visible {
+    opacity: 1;
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list-del:hover {
+    background: var(--ds-surface-dim);
+    color: var(--ds-text-primary);
+}
+
+/* Date-group headers (Today / Yesterday / …) — bind to the group below. */
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list-group-header {
+    display: block;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+    padding: 0 9px 4px;
+    margin-top: 14px;
+    cursor: default;
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list-group-header:first-child {
+    margin-top: 2px;
+}
+
+/* Empty state — hidden as soon as the list has any rows. */
+html[data-ui-layout="rail"] .rail-history-empty {
+    margin: 4px 0 0;
+    padding: 6px 9px;
+    font-size: 12.5px;
+    color: var(--ds-text-muted);
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list:not(:empty) + .rail-history-empty {
+    display: none;
 }
 
 /* Admin section — <details> with the same grouped links as the
@@ -150,6 +334,7 @@ html[data-ui-layout="rail"] .rail-admin {
     margin-top: 10px;
     border-top: 1px solid var(--ds-border);
     padding-top: 10px;
+    flex-shrink: 0;
 }
 
 html[data-ui-layout="rail"] .rail-admin-summary {
@@ -197,7 +382,9 @@ html[data-ui-layout="rail"] .rail-admin-groups .app-nav-menu-item.is-active {
     font-weight: 600;
 }
 
-/* Footer — tour launcher + user row pinned to the bottom. */
+/* Footer — user row pinned to the bottom. margin-top:auto pins it when the
+   history section is collapsed (no flex-grow sibling); when history is open
+   and grows, the footer simply sits beneath it. */
 html[data-ui-layout="rail"] .rail-foot {
     margin-top: auto;
     padding-top: 14px;
@@ -205,6 +392,7 @@ html[data-ui-layout="rail"] .rail-foot {
     display: flex;
     flex-direction: column;
     gap: 6px;
+    flex-shrink: 0;
 }
 
 html[data-ui-layout="rail"] .rail-user-menu {
@@ -261,6 +449,217 @@ html[data-ui-layout="rail"] .rail-user-menu .app-user-menu-panel {
     box-shadow: 0 12px 34px rgba(0, 0, 0, 0.14);
 }
 
+/* ── "Get started" launcher + Journey popover ─────────────────────────
+   A pinned foot button (above the user row) that opens the onboarding
+   "Your Journey" card as a popover. Relocated here from the bottom of the
+   Chats list, where it was cramped and easy to miss. */
+html[data-ui-layout="rail"] .rail-getstarted {
+    position: relative;
+    flex-shrink: 0;
+}
+
+/* The launcher reads as a light primary CTA (like New chat) so it stands out
+   as the "do this next" affordance, without a heavy filled button. */
+html[data-ui-layout="rail"] .rail-getstarted-btn {
+    gap: 9px;
+    color: var(--ds-primary-dark);
+    font-weight: 600;
+}
+
+html[data-ui-layout="rail"] .rail-getstarted-btn:hover {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+}
+
+html[data-ui-layout="rail"] .rail-getstarted .is-open,
+html[data-ui-layout="rail"] .rail-getstarted.is-open .rail-getstarted-btn {
+    background: var(--ds-primary-light);
+}
+
+html[data-ui-layout="rail"] .rail-getstarted-txt {
+    flex: 1 1 auto;
+}
+
+/* Progress pill (N/5) on the right of the launcher. */
+html[data-ui-layout="rail"] .rail-getstarted-count {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--ds-primary-dark);
+    background: var(--ds-primary-light);
+    border-radius: var(--ds-radius-pill, 999px);
+    padding: 1px 7px;
+    min-width: 30px;
+    text-align: center;
+}
+
+/* When complete, swap the count pill for a check. */
+html[data-ui-layout="rail"] .rail-getstarted-check {
+    display: none;
+    width: 17px;
+    height: 17px;
+    flex-shrink: 0;
+    color: var(--ds-accent-success-ink, var(--ds-primary-dark));
+}
+
+html[data-ui-layout="rail"] .rail-getstarted.is-complete .rail-getstarted-count {
+    display: none;
+}
+
+html[data-ui-layout="rail"] .rail-getstarted.is-complete .rail-getstarted-check {
+    display: block;
+}
+
+/* The popover — opens UP from the launcher, like the user menu. */
+html[data-ui-layout="rail"] .rail-getstarted-panel {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    right: 0;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 14px;
+    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.16);
+    padding: 6px;
+    z-index: 60;
+    /* Never taller than the viewport leaves room for — scroll if the steps
+       plus header overflow a short window. */
+    max-height: min(70vh, 460px);
+    overflow-y: auto;
+}
+
+/* The Journey card inside the popover.
+   The .cloud-chat-journey-* styles live in chat.css, which only loads on
+   /chat — so on every OTHER rail page (where the popover is mounted
+   standalone) the card would render as raw UA-styled buttons. rail.css loads
+   everywhere, so the full journey styling is (re)defined here, rail-scoped;
+   on /chat these out-specify the chat.css base and keep the look identical. */
+html[data-ui-layout="rail"] .rail-getstarted-panel .cloud-chat-journey {
+    margin-top: 0;
+    padding: 8px 6px;
+    border-top: none;
+    background: transparent;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-head h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 650;
+    color: var(--ds-text-primary);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-badge {
+    font-size: 11px;
+    color: var(--ds-accent-success-ink);
+    background: var(--ds-accent-success-bg);
+    border: 1px solid var(--ds-accent-success-line);
+    border-radius: var(--ds-radius-pill, 999px);
+    padding: 1px 8px;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-restart {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--ds-text-muted);
+    background: transparent;
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-pill, 999px);
+    cursor: pointer;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-restart:hover {
+    color: var(--ds-text-primary);
+    border-color: var(--ds-text-muted);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-sub {
+    margin: 4px 0 10px;
+    font-size: 12px;
+    color: var(--ds-text-muted);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    padding: 7px 8px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ds-text-secondary);
+    font-size: 13.5px;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step:hover {
+    background: var(--ds-surface-dim);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-mark {
+    flex-shrink: 0;
+    width: 18px;
+    text-align: center;
+    font-weight: 600;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step.done {
+    color: var(--ds-text-muted);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step.done .cloud-chat-journey-mark {
+    color: var(--ds-accent-success-ink);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step.done .cloud-chat-journey-label {
+    text-decoration: line-through;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step.active {
+    color: var(--ds-text-primary);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step.active .cloud-chat-journey-mark {
+    color: var(--ds-primary);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step.locked {
+    color: var(--ds-text-disabled);
+    cursor: default;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step.locked:hover {
+    background: transparent;
+}
+
 /* Small screens: the fixed column becomes a normal top block so
    content isn't squeezed — same breakpoint as the prototype. */
 @media (max-width: 760px) {
@@ -293,5 +692,14 @@ html[data-ui-layout="rail"] .rail-user-menu .app-user-menu-panel {
     html[data-ui-layout="rail"] .rail-user-menu .app-user-menu-panel {
         bottom: auto;
         top: calc(100% + 8px);
+    }
+
+    /* Popover opens downward too when the rail is a top bar; widen it since the
+       launcher itself is only as wide as its content in the foot row. */
+    html[data-ui-layout="rail"] .rail-getstarted-panel {
+        bottom: auto;
+        top: calc(100% + 8px);
+        right: auto;
+        width: 280px;
     }
 }

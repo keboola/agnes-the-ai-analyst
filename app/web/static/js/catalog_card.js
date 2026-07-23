@@ -103,15 +103,27 @@
         resp = await fetch(btn.dataset.removeUrl, { method: 'DELETE', credentials: 'same-origin' });
       }
       if (!(resp.ok || resp.status === 204)) throw new Error('HTTP ' + resp.status);
-      // On My Stack, removal drops the card; elsewhere it flips to "Add".
+      // On My Stack, removal drops the card (grid) or row (inventory
+      // table); elsewhere it flips to "Add".
       if (!adding && btn.closest('[data-remove-hides]')) {
-        const card = btn.closest('.cc-card');
+        const card = btn.closest('.cc-card, [data-stack-row]');
         if (card) { card.remove(); return; }
       }
       const next = adding ? 'in' : 'add';
-      btn.dataset.state = next;
-      btn.className = stackBtnClass(next);
-      btn.innerHTML = stackBtnInner(next);
+      // The same resource can render more than one card on a page (e.g.
+      // the Catalog's "Recommended for you" row + its kind grid) — flip
+      // every toggle for it, keyed by resource_type/resource_id.
+      let targets = [btn];
+      if (btn.dataset.rt && btn.dataset.rid && window.CSS && CSS.escape) {
+        targets = document.querySelectorAll(
+          '[data-stack-toggle][data-rt="' + CSS.escape(btn.dataset.rt) + '"][data-rid="' + CSS.escape(btn.dataset.rid) + '"]'
+        );
+      }
+      targets.forEach(b => {
+        b.dataset.state = next;
+        b.className = stackBtnClass(next);
+        b.innerHTML = stackBtnInner(next);
+      });
     } catch (e) {
       console.error('stack toggle failed', e);
     } finally {

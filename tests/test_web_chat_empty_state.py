@@ -1,19 +1,17 @@
-"""Web UI route — the ``/chat`` empty-state hero (issue #896).
+"""Web UI route — the ``/chat`` pre-conversation Dashboard (issue #896).
 
-The knowledge-search landing ("Ask anything / Reuse everything" + the
-RBAC-filtered "Operated by Kai · N knowledge sources · M capabilities"
-pill + suggested questions) used to live on a standalone ``/ask`` page.
-That page is retired — ``/ask`` now 302s to ``/`` (guarded in
-``tests/test_ui_layout_theme.py``) — and the hero + pill moved into
-``/chat``'s empty state under the rail layout (``chat.html``), computed by
-the same ``_ask_knowledge_source_count`` helper. These tests follow the
-live surface: they render ``/chat``'s rail empty state and assert the
-pill's RBAC counting + pluralization.
+The rail empty state is the Dashboard: greeting, the real composer, an
+RBAC-filtered "Kai is using N knowledge sources and M capabilities from
+your Stack" context line, activity panels, and guided task starters.
+(Its ancestors — the standalone ``/ask`` hero, then the ``/chat``
+"Ask anything." hero with the "Operated by Kai" pill — are retired; the
+counts still come from the same ``_ask_knowledge_source_count`` helper.)
+These tests follow the live surface: they render ``/chat``'s rail empty
+state and assert the context line's RBAC counting + pluralization.
 
-Rendering the hero needs three things the old ``/ask`` route didn't gate
-on: rail layout, an enabled chat backend, and CHAT *access* (admin clears
-it via god-mode; a normal user needs a ``chat`` grant to pass the route's
-default-deny guard).
+Rendering it needs three things: rail layout, an enabled chat backend,
+and CHAT *access* (admin clears it via god-mode; a normal user needs a
+``chat`` grant to pass the route's default-deny guard).
 """
 
 from __future__ import annotations
@@ -92,37 +90,45 @@ def _enable_rail_chat(seeded_app, monkeypatch) -> None:
 
 
 class TestChatEmptyStatePill:
-    def test_renders_hero_and_pill(self, seeded_app, monkeypatch):
-        """Rail ``/chat`` empty state renders the shared hero (headline +
-        suggested questions) and the "Operated by Kai" source pill — the
-        copy the retired ``/ask`` prototype introduced."""
+    def test_renders_dashboard_and_context_line(self, seeded_app, monkeypatch):
+        """Rail ``/chat`` empty state renders the Dashboard — greeting,
+        activity panels, guided task starters — and the Stack context
+        line (admin has seeded packages, so both counts are non-zero)."""
         _enable_rail_chat(seeded_app, monkeypatch)
         c = seeded_app["client"]
         resp = c.get("/chat", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 200, resp.text
         body = resp.text
-        assert "Ask anything." in body
-        assert "everything." in body
-        assert "Your company" in body and "colleagues built" in body
-        assert "Operated by" in body and "Kai" in body
-        assert "Suggested questions" in body
-        assert "Summarize the pricing deck" in body
+        assert 'id="rdb-greeting-tod"' in body
+        assert "Use Kai here, or connect your favorite AI tools" in body
+        # The Knowledge Layer banner — the product-model hero.
+        assert "One knowledge layer. Everywhere you work." in body
+        assert "Ask Kai in Agnes" in body
+        assert "Use your own AI tools" in body
+        assert "Suggested next actions" in body
+        assert "Kai is using" in body and "from your Stack" in body
+        # The retired hero copy must be gone.
+        assert "Ask anything." not in body
+        assert "Operated by" not in body
+        assert "Suggested questions" not in body
 
-    def test_source_pill_zero_by_default(self, seeded_app, monkeypatch):
-        """analyst1 has no data/plugin grants → the pill reads 0 sources /
-        0 capabilities. The CHAT grant only unlocks the route; it is not a
-        knowledge source, so it doesn't bump N."""
+    def test_context_line_hidden_at_zero(self, seeded_app, monkeypatch):
+        """analyst1 has no data/plugin grants → both counts are 0 and the
+        context line hides entirely ("Kai is using 0 knowledge sources"
+        would read as broken). The CHAT grant only unlocks the route; it is
+        not a knowledge source, so it doesn't bump N."""
         _enable_rail_chat(seeded_app, monkeypatch)
         _grant("Everyone", "chat", "chat", users=["analyst1"])
         c = seeded_app["client"]
         resp = c.get("/chat", headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 200, resp.text
-        assert "using 0 knowledge sources &middot;" in resp.text
-        assert "0 capabilities from your Stack" in resp.text
+        assert "Kai is using" not in resp.text
+        # The rest of the dashboard still renders.
+        assert "Suggested next actions" in resp.text
 
-    def test_source_pill_reflects_rbac_grant(self, seeded_app, monkeypatch):
+    def test_context_line_reflects_rbac_grant(self, seeded_app, monkeypatch):
         """A required data-package grant on the analyst's group bumps N —
-        and pluralizes down to the singular "source" at N=1."""
+        the line appears, pluralized down to the singular "source" at N=1."""
         _enable_rail_chat(seeded_app, monkeypatch)
         _grant("Everyone", "chat", "chat", users=["analyst1"])
         pkg_id = _make_pkg("ask-landing-pkg", "Ask landing pkg")
@@ -130,9 +136,10 @@ class TestChatEmptyStatePill:
         c = seeded_app["client"]
         resp = c.get("/chat", headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 200, resp.text
-        assert "using 1 knowledge source &middot;" in resp.text
-        # Singular, not plural — the plural pill fragment must be absent.
-        assert "knowledge sources &middot;" not in resp.text
+        assert "Kai is using" in resp.text
+        assert ">1 knowledge source</a>" in resp.text
+        # Singular, not plural — the plural fragment must be absent.
+        assert "1 knowledge sources</a>" not in resp.text
 
     def test_source_pill_admin_sees_all_packages(self, seeded_app, monkeypatch):
         """Admin god-mode counts every data package regardless of grants —
@@ -147,12 +154,12 @@ class TestChatEmptyStatePill:
         headers = _auth(seeded_app["admin_token"])
         before = c.get("/chat", headers=headers)
         assert before.status_code == 200, before.text
-        before_n = int(re.search(r"using (\d+) knowledge", before.text).group(1))
+        before_n = int(re.search(r">(\d+) knowledge source", before.text).group(1))
 
         _make_pkg("ask-landing-pkg-admin", "Ask landing pkg admin")
         after = c.get("/chat", headers=headers)
         assert after.status_code == 200, after.text
-        after_n = int(re.search(r"using (\d+) knowledge", after.text).group(1))
+        after_n = int(re.search(r">(\d+) knowledge source", after.text).group(1))
         assert after_n == before_n + 1
 
     def test_capabilities_count_pluralization(self, seeded_app, monkeypatch):
@@ -171,8 +178,8 @@ class TestChatEmptyStatePill:
         c = seeded_app["client"]
         resp = c.get("/chat", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 200, resp.text
-        assert "1 capability from your Stack" in resp.text
-        assert "1 capabilities from your Stack" not in resp.text
+        assert ">1 capability</a>" in resp.text
+        assert ">1 capabilities</a>" not in resp.text
 
     def test_requires_login(self, seeded_app):
         """Same auth gate as every other authenticated page — unauthenticated

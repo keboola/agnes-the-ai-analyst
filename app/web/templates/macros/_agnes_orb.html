@@ -1,13 +1,14 @@
 {# Shared Agnes "orb" brand mark — the raster brand orb at
    app/web/static/img/agnes-orb.png. Single source of truth: the rail nav
-   logo (`_app_rail.html` `.rail-orb`) and the `/ask` chat-landing hero
-   (`.ask-orb`) both render THIS macro, so the logo lives in exactly one
-   place — swap the PNG (or this markup) once and every surface follows.
+   logo (`_app_rail.html` `.rail-orb`) and the connect-banner orbit hub
+   (`_connect_banner.html` `.cbn-huborb`) both render THIS macro, so the
+   logo lives in exactly one place — swap the PNG (or this markup) once
+   and every surface follows.
 
    `css_class` — the sizing/animation hook the call site owns in CSS
-                 (`rail-orb` in rail.css, `ask-orb` on the /ask landing).
+                 (`rail-orb` in rail.css, `cbn-huborb` in style-custom.css).
    `size`      — rendered square size in px. The source PNG is 256×256, so it
-                 stays crisp from the 30px rail mark up to the 96px hero,
+                 stays crisp from the 30px rail mark up to the 64px banner hub,
                  retina included.
    `alt`       — accessible name. Empty (default) marks the mark decorative
                  (the wordmark/headline beside it carries the name). #}

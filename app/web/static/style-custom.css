@@ -392,6 +392,187 @@ html[data-ui-layout="rail"] body.detail-page footer {
     .cbn--orbit { padding: 18px 20px; }
 }
 
+/* ── Knowledge Layer banner (macros/_knowledge_layer.html) ───────────────
+   The product-model hero: headline + one supporting sentence top-left,
+   "Ask Kai in Agnes" card beneath them ← Agnes orb hub → "Use your own AI
+   tools" card, CTAs centered below. Shared component (same pattern as
+   .cbn-* above) — first consumer is the rail chat dashboard, which uses
+   the `--bare` variant so the page's hero container carries the box. Soft
+   mint gradient, hairline borders, compact premium spacing; --ds-* tokens
+   only so it follows every palette theme. */
+.klb {
+    background:
+        radial-gradient(120% 90% at 50% 0%, color-mix(in srgb, var(--ds-primary) 7%, transparent), transparent 70%),
+        linear-gradient(180deg, color-mix(in srgb, var(--ds-primary) 4%, var(--ds-surface)), var(--ds-surface));
+    border: 1px solid var(--ds-border-light);
+    border-radius: 22px;
+    padding: 30px 32px 26px;
+}
+/* Host container carries the box (bg/border/padding) — e.g. the rail chat
+   dashboard's hero, which fuses greeting + banner + composer + Stack line
+   into one surface. */
+.klb--bare {
+    background: none;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+}
+.klb-headline {
+    margin: 0;
+    /* Fluid: two clean lines from laptop widths up to wide desktops. */
+    font-size: clamp(21px, 1.9vw, 27px);
+    line-height: 1.16;
+    font-weight: 750;
+    letter-spacing: -0.025em;
+    color: var(--ds-text-primary);
+}
+.klb-sub {
+    margin: 10px 0 0;
+    max-width: 400px;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--ds-text-secondary);
+}
+
+/* Composition grid (matches the dashboard reference): the lead copy sits
+   top-left with the Agnes card beneath it; the hub spans both rows in the
+   middle; the tools card spans both rows on the right. */
+.klb-grid {
+    display: grid;
+    grid-template-areas:
+        "lead hub right"
+        "left hub right";
+    grid-template-columns: minmax(0, 1.1fr) minmax(180px, 220px) minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    column-gap: 14px;
+    row-gap: 18px;
+    align-items: center;
+    text-align: left;
+}
+.klb-lead { grid-area: lead; align-self: start; min-width: 0; overflow-wrap: break-word; }
+.klb-slot { min-width: 0; }
+.klb-card { min-width: 0; overflow-wrap: break-word; }
+.klb-slot--left { grid-area: left; align-self: start; }
+.klb-slot--hub { grid-area: hub; align-self: center; }
+.klb-slot--right { grid-area: right; align-self: center; }
+
+.klb-card {
+    position: relative;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border-light);
+    border-radius: 14px;
+    padding: 16px 18px 15px;
+    text-align: left;
+    box-shadow: 0 4px 14px color-mix(in srgb, var(--ds-text-primary) 4%, transparent);
+}
+.klb-card--agnes {
+    background: color-mix(in srgb, var(--ds-primary) 4%, var(--ds-surface));
+    border-color: color-mix(in srgb, var(--ds-primary) 22%, var(--ds-border-light));
+}
+.klb-card--tools {
+    border-color: color-mix(in srgb, var(--ds-brand-accent, var(--ds-accent-info-ink)) 26%, var(--ds-border-light));
+}
+.klb-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.klb-card-icon {
+    flex-shrink: 0; width: 30px; height: 30px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+}
+.klb-card-icon svg { width: 16px; height: 16px; }
+.klb-card-icon--agnes { background: var(--ds-primary); color: var(--ds-text-inverse); }
+.klb-card-icon--tools { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+.klb-card-title { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; color: var(--ds-text-primary); }
+.klb-card-copy { margin: 0 0 12px; font-size: 12.5px; line-height: 1.5; color: var(--ds-text-secondary); }
+.klb-points { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.klb-points li { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ds-text-primary); }
+.klb-check { flex-shrink: 0; width: 14px; height: 14px; color: var(--ds-primary-dark); }
+.klb-here-badge {
+    display: inline-block; margin-top: 14px; padding: 4px 12px;
+    border: 1px solid color-mix(in srgb, var(--ds-primary) 35%, transparent);
+    border-radius: var(--ds-radius-pill, 999px);
+    background: var(--ds-surface);
+    font-size: 11.5px; font-weight: 600; color: var(--ds-primary-dark);
+}
+.klb-tools { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.klb-tool { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--ds-text-primary); }
+.klb-tool img, .klb-tool svg { width: 20px; height: 20px; object-fit: contain; flex-shrink: 0; color: var(--ds-text-secondary); }
+
+/* Center hub: orb in a dashed halo, connecting lines out to both cards
+   (green toward the Agnes card, shifting toward blue on the tools side). */
+.klb-hub { position: relative; display: flex; flex-direction: column; align-items: center; padding: 2px 0; }
+.klb-hub-line {
+    position: absolute; top: 58px; width: 24%; height: 0;
+    border-top: 1.5px solid color-mix(in srgb, var(--ds-primary) 35%, transparent);
+}
+.klb-hub-line::before {
+    content: ""; position: absolute; top: -3.25px; width: 5px; height: 5px; border-radius: 50%;
+    background: var(--ds-primary);
+}
+.klb-hub-line--left { left: -10px; }
+.klb-hub-line--left::before { right: -2px; }
+.klb-hub-line--right {
+    right: -10px;
+    border-top-color: color-mix(in srgb, var(--ds-brand-accent, var(--ds-accent-info-ink)) 45%, transparent);
+}
+.klb-hub-line--right::before { left: -2px; background: var(--ds-brand-accent, var(--ds-accent-info-ink)); }
+.klb-hub-orb-ring {
+    width: 118px; height: 118px; border-radius: 50%;
+    border: 1.5px dashed color-mix(in srgb, var(--ds-primary) 30%, transparent);
+    display: grid; place-items: center;
+    background: radial-gradient(circle, color-mix(in srgb, var(--ds-primary) 8%, transparent), transparent 72%);
+}
+.klb-hub-orb {
+    display: block;
+    filter: drop-shadow(0 12px 26px color-mix(in srgb, var(--ds-primary) 28%, transparent));
+}
+.klb-hub-title { margin-top: 14px; font-size: 14.5px; font-weight: 650; letter-spacing: -0.01em; color: var(--ds-text-primary); }
+.klb-hub-caption {
+    margin-top: 5px; display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--ds-text-muted);
+}
+.klb-lock { width: 13px; height: 13px; flex-shrink: 0; }
+
+/* CTAs — primary pill dominates, secondary is a quiet outline. */
+.klb-ctas { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 20px; flex-wrap: wrap; }
+.klb-cta-primary {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--ds-primary); color: var(--ds-text-inverse);
+    padding: 11px 22px; border-radius: var(--ds-radius-pill, 999px);
+    font-size: 13.5px; font-weight: 650; text-decoration: none;
+    box-shadow: 0 6px 16px color-mix(in srgb, var(--ds-primary) 30%, transparent);
+    transition: background var(--ds-motion-fast, 120ms) var(--ds-ease-standard, ease);
+}
+.klb-cta-primary:hover { background: var(--ds-primary-dark); }
+.klb-cta-primary:active { transform: translateY(1px); }
+.klb-cta-primary svg { width: 15px; height: 15px; }
+.klb-cta-secondary {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 11px 20px; border-radius: var(--ds-radius-pill, 999px);
+    border: 1px solid var(--ds-border);
+    background: var(--ds-surface);
+    color: var(--ds-text-primary); font-size: 13.5px; font-weight: 600; text-decoration: none;
+    transition: border-color var(--ds-motion-fast, 120ms) var(--ds-ease-standard, ease);
+}
+.klb-cta-secondary:hover { border-color: var(--ds-primary); }
+.klb-cta-secondary svg { width: 15px; height: 15px; }
+
+@media (max-width: 980px) {
+    /* Stack: lead copy first, then the orb (the hub of the story), then
+       the two usage cards. Connectors are meaningless vertically. */
+    .klb-grid {
+        grid-template-areas: "lead" "hub" "left" "right";
+        grid-template-columns: minmax(0, 1fr);
+        row-gap: 14px;
+    }
+    .klb-sub { max-width: none; }
+    .klb-hub-line { display: none; }
+}
+@media (max-width: 680px) {
+    .klb { padding: 24px 18px 20px; border-radius: 18px; }
+    .klb-headline { font-size: 23px; }
+    .klb-ctas { flex-direction: column; align-items: stretch; }
+    .klb-cta-primary, .klb-cta-secondary { justify-content: center; }
+}
+
 /* Dashboard */
 .dashboard h2 {
     font-size: var(--text-xl);

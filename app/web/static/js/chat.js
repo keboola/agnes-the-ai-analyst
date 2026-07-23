@@ -4,6 +4,7 @@ import {
   onUserMessage as onboardingOnUserMessage,
   noteAnswered as onboardingNoteAnswered,
 } from "./chat_onboarding.js";
+import { initChatDashboard, updateDashboardSuggestions } from "./chat_dashboard.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -131,6 +132,12 @@ function setThreadTitle(title) {
   // thread (hidden in the empty state) — see chat.css.
   const shell = document.querySelector(".cloud-chat-shell");
   if (shell) shell.classList.toggle("has-thread", !!title);
+  // Rail nav: the Dashboard item is "where you are" exactly when the
+  // pre-conversation dashboard is showing (no thread). Server-rendered for
+  // the initial load (_app_rail.html); kept in sync here across in-page
+  // open-session / new-chat transitions. Absent on topnav — no-op.
+  const railDash = document.getElementById("rail-dashboard-item");
+  if (railDash) railDash.classList.toggle("on", !title);
 }
 
 function readCapabilitySnapshot() {
@@ -1489,16 +1496,30 @@ function autosizeComposer() {
   ta.style.height = Math.min(ta.scrollHeight, 220) + "px";
 }
 
-$("new-chat").onclick = async () => {
+// #new-chat is the sidebar's +New chat button (topnav) OR the rail's
+// "New chat" nav item, which is an <a href="/chat">. On /chat we start a
+// fresh conversation IN PLACE, so preventDefault() stops the anchor from
+// also navigating (a no-op for the topnav <button>). On every other page
+// chat.js isn't loaded, so that same rail anchor just navigates to /chat.
+$("new-chat")?.addEventListener("click", async (e) => {
+  e.preventDefault();
   hideCapabilities();
-  await newChat();
-};
-
-// Rail-only twin of #new-chat living in the main area (right of the
-// history toggle). Same behavior; present only when ui_layout == 'rail'.
-$("chat-new-main")?.addEventListener("click", async () => {
-  hideCapabilities();
-  await newChat();
+  try {
+    await newChat();
+  } catch (err) {
+    // Session creation failed (backend down / chat disabled): restore the
+    // pre-conversation state instead of leaving a blank panel, and say why.
+    // Fully reset the session pointers too — otherwise the next submit
+    // would silently continue the PREVIOUS conversation over its old WS
+    // while the user believes they're starting fresh.
+    if (ws) { ws.close(); ws = null; }
+    currentChatId = null;
+    markActiveSidebar(null);
+    $("chat-messages").innerHTML = "";
+    showCapabilities();
+    setThreadTitle(null);
+    setStatus(`Could not start chat: ${err.message}`, "error");
+  }
 });
 
 $("chat-form").onsubmit = async (e) => {
@@ -1810,30 +1831,6 @@ function setSidebarCollapsed(collapsed) {
   applySidebarCollapse(isSidebarCollapsed());
   btn.addEventListener("click", () => {
     setSidebarCollapsed(!isSidebarCollapsed());
-  });
-})();
-
-// The Conversations column is hidden by default (mirrors /ask). The
-// floating #chat-history-toggle in the main area adds/removes
-// ``.history-open`` on the shell to reveal it; state persists across
-// reloads. This is independent of the mini-collapse above, which only
-// applies once the column is open.
-(function wireHistoryToggle() {
-  const _HISTORY_KEY = "agnes.chat.historyOpen";
-  const shell = document.querySelector(".cloud-chat-shell");
-  const btn = $("chat-history-toggle");
-  if (!shell || !btn) return;
-  function apply(open) {
-    shell.classList.toggle("history-open", open);
-    btn.setAttribute("aria-pressed", open ? "true" : "false");
-  }
-  let open = false;
-  try { open = localStorage.getItem(_HISTORY_KEY) === "1"; } catch (_) { /* storage off */ }
-  apply(open);
-  btn.addEventListener("click", () => {
-    const next = !shell.classList.contains("history-open");
-    apply(next);
-    try { localStorage.setItem(_HISTORY_KEY, next ? "1" : "0"); } catch (_) { /* storage off */ }
   });
 })();
 
@@ -2634,7 +2631,37 @@ function renderCoPresence(host, participants) {
   renderCapabilities();
   wireSuggestionButtons();
   autosizeComposer();
-  await loadSidebar();
+  // Rail pre-conversation Dashboard (no-op on topnav): greeting fix-up +
+  // suggested-next-actions wiring, handed submitUserMessage/openSession so
+  // every suggestion starts (or resumes) a conversation through the exact
+  // same flow as a typed message.
+  initChatDashboard({ submitPrompt: submitUserMessage, openSession });
+  // Pre-seeded question (/chat?q=… — the detail pages' "Ask Kai" links):
+  // prefill the composer and focus, but never auto-send — a GET must stay
+  // side-effect free (a reload would otherwise re-create sessions).
+  const _seededQ = new URLSearchParams(window.location.search).get("q");
+  const _composer = $("chat-input");
+  if (_seededQ && _composer && !_composer.value) {
+    _composer.value = _seededQ;
+    autosizeComposer();
+    _composer.focus();
+  } else if (_composer && $("rdb-tasks")) {
+    // Dashboard empty state — the Kai input is the page's main affordance.
+    _composer.focus();
+  }
+  // Sidebar list — a failed fetch must not break the page: the history list
+  // shows its empty state, the dashboard renders its suggestions without
+  // the personalized resume row (partial data), and boot continues (deep
+  // links + onboarding still work).
+  let _sidebarOk = true;
+  try {
+    await loadSidebar();
+  } catch (_) {
+    _sidebarOk = false;
+    const empty = $("cloud-chat-empty-state");
+    if (empty) empty.hidden = false;
+  }
+  updateDashboardSuggestions(_sidebarOk ? _sessionsCache : null);
   // Sidebar cache (_sessionsCache) is now populated so openSession can
   // resolve the title; fire the one-shot deep-link open.
   _maybeOpenInitialSession();
