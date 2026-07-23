@@ -190,17 +190,27 @@ async def upload_workspace(
 
 
 async def _upload_via_tarball(sandbox, payloads: list[tuple[str, bytes, int, int]]) -> None:
-    """One-round-trip transport: write the packed tree, extract, remove."""
+    """One-round-trip transport: write the packed tree, extract, remove.
+
+    Extraction MUST run as root: the template bakes ``/work`` as root-owned
+    ``drwxr-xr-x``, so ``tar`` under the ``user`` account gets EACCES on
+    every member — verified on a live sandbox after production spawns
+    silently degraded to the per-file fallback on every session (the
+    exact slow path this transport exists to replace). ``files.write``
+    never hit this because envd runs privileged. The follow-up ``chown``
+    hands the extracted tree AND ``/work`` itself to the ``user`` account
+    the runner/agent run as — matching the user-owned files the fallback
+    produces, and finally making ``/work`` writable for agent-created
+    files. Foreground run — the SDK raises on a non-zero exit, which the
+    caller turns into the per-file fallback.
+    """
     blob = _build_workspace_tarball(payloads)
     await sandbox.files.write(SANDBOX_WORKSPACE_TARBALL, blob)
-    # Run as the same in-sandbox account the runner uses (see
-    # E2BProvider.spawn's ``user="user"``) so extracted files keep an
-    # ownership the agent's tools can write through. Foreground run —
-    # the SDK raises on a non-zero exit, which the caller turns into the
-    # per-file fallback.
     await sandbox.commands.run(
-        f"tar -xzf {SANDBOX_WORKSPACE_TARBALL} -C {SANDBOX_WORKDIR} && rm -f {SANDBOX_WORKSPACE_TARBALL}",
-        user="user",
+        f"tar -xzf {SANDBOX_WORKSPACE_TARBALL} -C {SANDBOX_WORKDIR}"
+        f" && chown -R user:user {SANDBOX_WORKDIR}"
+        f" && rm -f {SANDBOX_WORKSPACE_TARBALL}",
+        user="root",
         timeout=120,
     )
 
