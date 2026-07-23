@@ -82,6 +82,14 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/jobs/{job_id}": ("admin jobs show", "admin_job_get"),
     # DuckLake analytics-backend migration (wave-2G Task 6).
     "/api/admin/analytics/migrate": ("admin analytics migrate", "admin_analytics_migrate"),
+    # Agent profiles (agent-api V1a, Task 12) — management list surface.
+    # CLI `agnes agent list` + MCP `agent_list` both map to this GET.
+    "/api/v1/agents": ("agent list", "agent_list"),
+    # Agent-as-API one-shot runtime (agent-api V1a, Task 9/12). CLI
+    # `agnes agent ask` + MCP `agent_ask` both map to this POST — the MCP
+    # tool is sync-only (see its docstring); background mode + job polling
+    # has no MCP tool by design.
+    "/api/v1/agents/{slug}/responses": ("agent ask", "agent_ask"),
 }
 
 
@@ -239,22 +247,43 @@ _BROKER_REASON = (
     "sandbox->server routes, ticket-gated (not user auth); the in-sandbox "
     "loopback relay is the only caller. No analyst CLI/MCP analogue."
 )
-_AGENTS_MGMT_REASON = (
-    "agent-profile management (agent-api V1a, Task 5) — temporary exemption: "
-    "`agnes agent …` CLI landed in Task 11 (cli/commands/agent.py: list/create/"
-    "show/scope set/token/delete/ask); MCP tools still pending in Task 12 of "
-    "docs/superpowers/plans/2026-07-22-agent-api-v1a.md (same PR). Task 12 "
-    "MOVEs these entries into _COHORT with their CLI/MCP names once the MCP "
-    "side lands"
+_AGENT_DETAIL_REASON = (
+    "single-agent detail/update/delete (agent-api V1a) — DELETE is reachable "
+    "via `agnes agent delete`; GET/PUT have no dedicated CLI verb (`agnes "
+    "agent show` reads from the list response, `/api/v1/agents` in _COHORT, "
+    "rather than this id route, and there is no `agent update` subcommand "
+    "yet). No MCP analogue by design: `agent_list` already covers read, and "
+    "updating/deleting one's own agent profile is a deliberate, low-frequency "
+    "admin action better done interactively (CLI/web) than via an "
+    "agent-callable tool."
+)
+_AGENT_SCOPE_REASON = (
+    "agent resource-scope grant (agent-api V1a) — reachable via `agnes agent "
+    "scope set`. No MCP analogue by design: scope is a permission grant (what "
+    "data/plugins/connections/memory the agent may touch), and widening an "
+    "agent's own access must stay an interactive, human-witnessed action, "
+    "never something reachable through a tool call."
+)
+_AGENT_TOKENS_REASON = (
+    "agent PAT issuance (agent-api V1a) — reachable via `agnes agent token`. "
+    "No MCP analogue by design (per the agent-api V1a spec): minting a "
+    "long-lived credential must stay an interactive, human-witnessed action — "
+    "an agent must never be able to mint its own (or another agent's) PAT "
+    "through a tool call."
+)
+_AGENT_JOBS_REASON = (
+    "agent-runtime background-job poll (agent-api V1a) — reachable via "
+    "`agnes agent ask`'s own polling loop after a 202 degrade, not a "
+    "standalone CLI subcommand. No MCP analogue by design: `agent_ask` is "
+    "deliberately sync-only (see its docstring) and never polls jobs itself — "
+    "a tool call blocking on a poll loop is a poor fit for a chat turn."
 )
 
 _EXEMPT: dict[str, str] = {
-    "/api/v1/agents": _AGENTS_MGMT_REASON,
-    "/api/v1/agents/{agent_id}": _AGENTS_MGMT_REASON,
-    "/api/v1/agents/{agent_id}/scope": _AGENTS_MGMT_REASON,
-    "/api/v1/agents/{agent_id}/tokens": _AGENTS_MGMT_REASON,
-    "/api/v1/agents/{slug}/responses": _AGENTS_MGMT_REASON,
-    "/api/v1/jobs/{job_id}": _AGENTS_MGMT_REASON,
+    "/api/v1/agents/{agent_id}": _AGENT_DETAIL_REASON,
+    "/api/v1/agents/{agent_id}/scope": _AGENT_SCOPE_REASON,
+    "/api/v1/agents/{agent_id}/tokens": _AGENT_TOKENS_REASON,
+    "/api/v1/jobs/{job_id}": _AGENT_JOBS_REASON,
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "
         "(companion to register-table's defer_rebuild for bulk onboarding); no "

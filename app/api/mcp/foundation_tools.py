@@ -71,6 +71,12 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     # DuckLake analytics-backend migration (wave-2G Task 6), triple-surface
     # with /api/admin/analytics/migrate + `agnes admin analytics migrate`.
     "admin_analytics_migrate",
+    # Agent profiles (agent-api V1a, Task 12) — triple-surface with
+    # /api/v1/agents + `agnes agent list` (management, session-token only)
+    # and /api/v1/agents/{slug}/responses + `agnes agent ask` (runtime,
+    # sync-only here — background mode + job polling has no MCP tool).
+    "agent_list",
+    "agent_ask",
 )
 
 
@@ -1046,6 +1052,68 @@ def register_foundation_tools(
                 json={"to": to},
                 headers=headers_fn(),
                 timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def agent_list() -> dict:
+        """List your own agent profiles.
+
+        Every user has an implicit default agent (all-mode, unbounded scope)
+        plus any named agents they've created. Requires an interactive
+        session credential — the underlying endpoint
+        (``require_session_token``) rejects a PAT of any flavor (plain PAT
+        or agent PAT), so this tool only succeeds over the streamable-HTTP
+        OAuth transport, which forwards a real Agnes session JWT; over the
+        SSE transport (PAT-authenticated) it fails with a 403
+        ``"This endpoint requires an interactive session, not a PAT"``.
+
+        Returns ``{"data": [...], "has_more": false, "next_cursor": null}``.
+        Each entry has ``id``, ``slug``, ``name``, ``description``,
+        ``model`` (null = instance default), ``token_budget_monthly``
+        (null = unbounded), the four scope-mode fields
+        (``plugins_mode``/``connections_mode``/``tables_mode``/
+        ``memory_mode``, each ``"all"`` or ``"selected"``),
+        ``memory_write_mode``, ``is_default``, ``created_at``. Mirrors
+        ``GET /api/v1/agents`` and ``agnes agent list``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}/api/v1/agents", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def agent_ask(slug: str, prompt: str, timeout_s: int = 120) -> dict:
+        """One-shot synchronous request/response over one of your agents.
+
+        Sync-only: this tool never sets ``background: true`` and does not
+        poll ``GET /api/v1/jobs/{id}`` for you. If the run outlasts
+        ``timeout_s`` the server degrades to a background job and replies
+        with a ``job_id`` instead of an answer — the underlying run keeps
+        going server-side, only the wait was bounded. Waiting out a
+        background run (foreground polling to completion) has no MCP tool
+        by design — an MCP tool call blocking on a poll loop is a poor fit
+        for a chat turn; use ``agnes agent ask`` (CLI) or
+        ``POST /api/v1/agents/{slug}/responses`` directly for that.
+
+        Args:
+            slug:      Agent slug (from ``agent_list``).
+            prompt:    The input to send to the agent.
+            timeout_s: Max seconds to wait for a synchronous answer
+                       (default 120, clamped to [1, 600] server-side).
+
+        Returns the ``200`` body — ``{"answer", "session_id", "response_id",
+        "usage", "agent_config_hash", "request_id"}`` — or, on a ``202``
+        degrade, ``{"job_id": ...}`` with no ``answer`` yet. Mirrors
+        ``POST /api/v1/agents/{slug}/responses`` and ``agnes agent ask``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/v1/agents/{slug}/responses",
+                json={"input": prompt, "timeout_s": timeout_s},
+                headers=headers_fn(),
+                timeout=timeout_s + 10,
             )
             r.raise_for_status()
             return r.json()

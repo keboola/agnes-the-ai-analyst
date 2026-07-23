@@ -88,6 +88,15 @@ Extractors with `query_mode='remote'` tables include a `_remote_attach` table in
 
 Deeper architecture notes: [`docs/architecture.md`](docs/architecture.md).
 
+### Agent profiles & agent-as-API
+
+Named, scoped agents layered over a user's own stack — CRUD/scope/PAT issuance
+at `/api/v1/agents*` (`agnes agent …` CLI, `/agents` builder page) and a
+one-shot runtime call at `POST /api/v1/agents/{slug}/responses`. The secret
+broker enforces each agent's pinned model and `token_budget_monthly`
+(`429 budget_exhausted`) before forwarding to the LLM. Design:
+[`docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md`](docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md).
+
 ## Configuration
 
 Instance-specific config: `config/instance.yaml` (see example).

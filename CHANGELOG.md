@@ -12,6 +12,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- **Agent profiles.** Named, scoped agents layered over a user's own stack
+  (agent-api V1a). `POST/GET /api/v1/agents` (create/list), `GET/PUT/DELETE
+  /api/v1/agents/{id}` (detail/update/delete), and `PUT
+  /api/v1/agents/{id}/scope` (replace an agent's resource-grant set: plugins,
+  connections, tables, memory domains) — every route requires an interactive
+  session token, never a PAT. Every user gets an implicit `default` agent
+  (seeded lazily, `all`-mode scope on every dimension, undeletable); web chat
+  sessions are now attributed to it. A new agent defaults all four scope
+  modes (`plugins_mode`/`connections_mode`/`tables_mode`/`memory_mode`) to
+  `selected` — the owner grants specific resources via `scope set` rather
+  than inheriting the account's full stack. Optional per-agent `model`
+  (pins the brokered LLM to one model) and `token_budget_monthly`. Surfaced
+  at `/agents` (a minimal builder page: list, create, issue token, delete)
+  and via `agnes agent {list,create,show,delete,scope set,token,ask}`.
+- **Agent personal access tokens (`typ=agent_pat`).** `POST
+  /api/v1/agents/{id}/tokens` mints a token bound to one agent — accepted
+  only on the agent runtime API (`/api/v1/{agents,jobs}/...`), rejected
+  everywhere else, and only issuable once all four scope modes are
+  `selected` (`403 agent_not_selected_mode` otherwise — never for an
+  `all`-mode agent, including the default agent). Deleting an agent revokes
+  every PAT minted for it.
 - **`POST /api/v1/agents/{slug}/responses`** — one-shot request/response over
   an owner's agent (agent-api V1a, Task 9). Runs a headless (no-WebSocket)
   chat turn and returns `{answer, session_id, response_id, usage,
@@ -32,6 +53,29 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   losing concurrent call gets `409 idempotency_key_in_flight`; identical-body
   replay of a completed call returns the original response verbatim; a
   different body under the same key is `409 idempotency_key_reuse`.
+- **LLM broker: per-agent model policy, batched `llm_usage` ledger, monthly
+  token budgets.** The secret broker's `anthropic_proxy` chokepoint (applies
+  to every upstream credential mode — static key, workload identity, LLM
+  dispatcher) now enforces an agent's pinned `model` before spending a
+  token (`403 model_not_allowed` if the request's `model` is outside
+  `{agent.model} ∪ utility_models`; an agent with `model IS NULL` has no
+  policy at all) and its `token_budget_monthly` (`429 budget_exhausted`,
+  deliberately no `Retry-After` so SDKs don't auto-retry). Every brokered
+  call's token usage (input/output/cache-read/cache-creation, parsed from
+  both JSON and buffered SSE upstream responses) is buffered in-memory by a
+  new `UsageAccumulator` and flushed in bulk to the `llm_usage` ledger on a
+  size/age threshold (20 rows or 30s) rather than one synchronous write per
+  call. Every proxied response carries `x-agnes-budget-limit` /
+  `x-agnes-budget-used` headers; the month-to-date total backing the budget
+  check is cached in the coordination backend (60s TTL) so the hot path
+  doesn't hit the ledger table on every call.
+- **MCP tools `agent_list` / `agent_ask`** (agent-api V1a) — triple-surface
+  with `/api/v1/agents` (`GET`, list your agent profiles) and
+  `/api/v1/agents/{slug}/responses` (`POST`, one-shot ask). `agent_ask` is
+  sync-only: it never sets `background: true` and does not poll
+  `GET /api/v1/jobs/{id}` — waiting out a background degrade has no MCP
+  tool by design (a tool call blocking on a poll loop is a poor fit for a
+  chat turn); use `agnes agent ask` or the REST endpoint directly for that.
 
 ### Changed
 
