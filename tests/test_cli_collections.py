@@ -24,7 +24,7 @@ runner = CliRunner()
 def test_collections_help_lists_subcommands():
     r = runner.invoke(collections_app, ["--help"])
     assert r.exit_code == 0, r.output
-    for cmd in ("create", "list", "show", "upload", "rm"):
+    for cmd in ("create", "list", "show", "upload", "rm", "rm-file"):
         assert cmd in r.output, f"missing subcommand {cmd!r} in help"
 
 
@@ -268,6 +268,46 @@ def test_rm_server_error_exits_nonzero(monkeypatch):
         side_effect=V2ClientError(status_code=404, body={"detail": "collection_not_found"}),
     ):
         r = runner.invoke(collections_app, ["rm", "col_missing", "--yes"])
+    assert r.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# rm-file
+# ---------------------------------------------------------------------------
+
+
+def test_rm_file_with_yes_flag(monkeypatch):
+    called: list[str] = []
+
+    def _fake_delete(path):
+        called.append(path)
+        return {}
+
+    with patch("cli.commands.collections.api_delete", _fake_delete):
+        r = runner.invoke(collections_app, ["rm-file", "col_1", "cf_1", "--yes"])
+    assert r.exit_code == 0, r.output
+    assert called == ["/api/collections/col_1/files/cf_1"]
+    assert "deleted" in r.output.lower()
+
+
+def test_rm_file_prompts_without_yes(monkeypatch):
+    """Without --yes the command should ask for confirmation."""
+    called: list[str] = []
+
+    with patch("cli.commands.collections.api_delete", lambda p: called.append(p) or {}):
+        runner.invoke(collections_app, ["rm-file", "col_1", "cf_1"], input="n\n")
+    # User said no — nothing deleted
+    assert not called
+
+
+def test_rm_file_server_error_exits_nonzero(monkeypatch):
+    from cli.v2_client import V2ClientError
+
+    with patch(
+        "cli.commands.collections.api_delete",
+        side_effect=V2ClientError(status_code=404, body={"detail": "file_not_found"}),
+    ):
+        r = runner.invoke(collections_app, ["rm-file", "col_1", "cf_missing", "--yes"])
     assert r.exit_code != 0
 
 
