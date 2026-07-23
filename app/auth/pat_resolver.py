@@ -57,6 +57,29 @@ _AGENT_PAT_ALLOWED_PREFIXES = ("/api/v1/agents/", "/api/v1/sessions/", "/api/v1/
 _PAT_LIKE_TYPES = ("pat", "agent_pat")
 
 
+def _stash_payload(request: Optional[Request], payload: dict) -> None:
+    """Stash the verified JWT payload on ``request.state.token_payload`` so
+    `agent_id_from_request` can read claims off the request without
+    re-verifying the JWT.
+
+    Called ONLY on this function's successful-resolution return paths (never
+    right after `verify_token` succeeds) — a token that decodes fine but then
+    fails a later check (revoked/expired/mismatched/wrong-surface/deleted
+    agent) must leave no stashed payload behind. Before this was moved here,
+    the stash ran unconditionally right after JWT verification, so a
+    revoked/expired/wrong-surface token still left its claims readable by
+    `agent_id_from_request` for the rest of the request — including its
+    `agent_id`, letting a request whose auth outright failed still resolve
+    "which agent" a caller further down the dependency chain might
+    mistakenly treat as authenticated.
+    """
+    if request is not None:
+        try:
+            request.state.token_payload = payload
+        except Exception:
+            pass
+
+
 def _client_ip(request: Optional[Request]) -> Optional[str]:
     """See app/auth/dependencies._client_ip — same trust model (Caddy-fronted)."""
     if request is None:
@@ -90,14 +113,6 @@ def resolve_token_to_user(
     payload = verify_token(token)
     if not payload:
         return None, "invalid_token"
-
-    # Stash the verified payload so `agent_id_from_request` (and Task 9) can
-    # read claims off the request without re-verifying the JWT.
-    if request is not None:
-        try:
-            request.state.token_payload = payload
-        except Exception:
-            pass
 
     if payload.get("typ") == "agent_pat":
         # Callers that omit `request` (git smart-HTTP in
@@ -137,6 +152,7 @@ def resolve_token_to_user(
                 # factory (backend-correct) rather than a raw DuckDB conn.
                 intersection=compute_grant_intersection(emails),
             )
+            _stash_payload(request, payload)
             return principal, None
         # Defense-in-depth (SR-3): a plain single-user token that names a
         # co-session must never drive it, regardless of _spawn_runner.
@@ -153,6 +169,7 @@ def resolve_token_to_user(
         return None, "deactivated"
 
     if payload.get("typ") not in _PAT_LIKE_TYPES:
+        _stash_payload(request, payload)
         return user, None
 
     # PAT / agent PAT: extra DB-backed validation (revoked/expired/unknown/hash).
@@ -224,6 +241,7 @@ def resolve_token_to_user(
     except Exception:
         pass
 
+    _stash_payload(request, payload)
     return user, None
 
 

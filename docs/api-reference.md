@@ -1252,6 +1252,15 @@ interactive OAuth browser flow. The token is returned once and must be saved by 
 - /api/v1/agents/{agent_id}/scope
 - /api/v1/agents/{agent_id}/tokens
 
+### `/api/v1/agents/{slug}/responses` and `/api/v1/jobs/{job_id}` — Agent-as-API runtime (one-shot)
+
+`POST /api/v1/agents/{slug}/responses` — one-shot request/response over an owner's agent. `{input: str (required), background?: bool, timeout_s?: int = 120 (clamped 1..600), metadata?: dict}` → `200 {answer, session_id, response_id, usage, agent_config_hash, request_id}` when the turn completes within `timeout_s`, or `202 {job_id}` when `background: true` was requested OR the sync wait outran `timeout_s` (the run itself is never killed — only the wait is bounded; a timed-out sync call degrades to a background job that resumes waiting on the SAME session instead of re-sending the prompt). Callable with either an interactive session token or an agent PAT scoped to this exact agent (403 `agent_pat_wrong_agent` otherwise); requires the same `ResourceType.CHAT` grant the web chat UI does. Supports an `Idempotency-Key` header (scoped to the caller+agent): a replay with an identical request body returns the original response verbatim; a replay with a different body under the same key is `409 idempotency_key_reuse`.
+
+`GET /api/v1/jobs/{job_id}` — owner-scoped read of a background/degraded job (`404` unless the caller owns it). Maps internal job status to `queued|in_progress|completed|failed`; a `completed` job's `result` carries the same `{answer, session_id, usage}` shape the synchronous 200 response does.
+
+- /api/v1/agents/{slug}/responses
+- /api/v1/jobs/{job_id}
+
 ### `/api/v2` — v2 catalog and query APIs
 
 - /api/v2/catalog

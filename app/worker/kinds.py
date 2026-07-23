@@ -37,6 +37,41 @@ distribution mirror) map onto:
   ``_run_distribution_mirror`` below. Enqueued automatically after a
   successful ``data-refresh`` (see ``_maybe_enqueue_distribution_mirror``);
   no scheduler row — event-chained, not cron.
+- ``agent_response``     (LIGHT) — Task 9's background/sync-timeout-degrade
+  path for ``POST /api/v1/agents/{slug}/responses``. Enqueued by
+  ``app/api/agent_runtime.py``, never by the scheduler. Two
+  ``payload["mode"]`` shapes:
+
+  - ``"fresh"`` — ``background: true`` was requested up front. Runs
+    ``app.chat.headless.run_one_shot`` (fresh session, sends the prompt).
+  - ``"continue"`` — a SYNC call's wait hit ``timeout_s`` (the run itself
+    was never killed — only the wait was bounded). Runs
+    ``app.chat.headless.await_completion`` against the ALREADY-RUNNING
+    ``payload["chat_id"]`` — no prompt is resent.
+
+  Unlike every other kind here, the handler RETURNS a result dict
+  (``{"answer", "session_id", "usage", "timed_out"}``) instead of
+  ``None`` — ``app/worker/runtime.py``'s ``_run_one``/``_drain_in_flight``
+  pass a handler's return value straight through to
+  ``jobs_repo().complete(..., result=...)``, which merges it into
+  ``payload_json["result"]`` (see that method's docstring for why: the
+  ``jobs`` table has no dedicated result column, and adding one was judged
+  out of scope for this task versus reusing the existing JSON payload
+  field). ``GET /api/v1/jobs/{id}`` (``app/api/agent_runtime.py``) reads it
+  from there.
+
+  Runs on the SAME event loop the live ``ChatManager`` singleton
+  (``app.chat.manager.get_current_chat_manager``) is bound to — via
+  ``asyncio.run_coroutine_threadsafe`` against
+  ``app.chat.manager.get_current_chat_loop()`` — because the worker
+  runtime executes every handler synchronously in a thread
+  (``asyncio.to_thread``, see ``app/worker/runtime.py``), and
+  ``ChatManager``'s internal locks/tasks/sinks are asyncio primitives tied
+  to whichever loop created them; calling its async methods from a
+  DIFFERENT loop (e.g. one built fresh in the worker thread via
+  ``asyncio.run``) would break those primitives across loops. No-ops
+  (raises, so the job fails and retries) when chat is disabled on this
+  process — see ``_run_agent_response`` below.
 
 Every handler below is a THIN ADAPTER — it imports and calls the existing
 function/method and does not reimplement any of its logic. Each import is
@@ -473,8 +508,74 @@ def _run_distribution_mirror(payload: dict) -> None:
     )
 
 
+_DEFAULT_AGENT_RESPONSE_JOB_TIMEOUT_S = 1800
+
+
+def _agent_response_job_timeout_seconds() -> int:
+    raw = os.environ.get("AGNES_AGENT_RESPONSE_JOB_TIMEOUT_S")
+    if raw is None:
+        return _DEFAULT_AGENT_RESPONSE_JOB_TIMEOUT_S
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return _DEFAULT_AGENT_RESPONSE_JOB_TIMEOUT_S
+
+
+def _run_agent_response(payload: dict) -> dict:
+    """Task 9's ``agent_response`` handler — see the module docstring's
+    ``agent_response`` entry for the ``"fresh"``/``"continue"`` mode split
+    and the cross-loop dispatch rationale.
+
+    Returns a result dict (NOT ``None``, unlike every other kind here) —
+    ``app/worker/runtime.py`` passes it through to
+    ``jobs_repo().complete(..., result=...)``.
+    """
+    import asyncio
+
+    from app.chat.manager import get_current_chat_loop, get_current_chat_manager
+
+    manager = get_current_chat_manager()
+    loop = get_current_chat_loop()
+    if manager is None or loop is None:
+        raise RuntimeError("agent_response: chat is disabled on this worker process")
+
+    from app.chat.headless import await_completion, run_one_shot
+
+    timeout_s = _agent_response_job_timeout_seconds()
+    mode = payload.get("mode", "fresh")
+    if mode == "continue":
+        coro = await_completion(manager, chat_id=payload["chat_id"], timeout_s=timeout_s)
+    else:
+        coro = run_one_shot(
+            manager,
+            user_email=payload["owner_email"],
+            agent_id=payload.get("agent_id"),
+            prompt=payload["prompt"],
+            timeout_s=timeout_s,
+        )
+    # `run_coroutine_threadsafe` schedules onto the loop the live
+    # ChatManager actually runs on (this handler itself executes in a
+    # worker THREAD, via `asyncio.to_thread` — see `app/worker/runtime.py`);
+    # `.result(timeout=...)` blocks this thread until that coroutine
+    # resolves, with a grace margin over the coroutine's own internal
+    # wait so a same-duration race doesn't spuriously time out the OUTER
+    # call before the inner `asyncio.wait_for` has a chance to return.
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    run_result = future.result(timeout=timeout_s + 60)
+
+    from app.chat.agent_usage import usage_for_session
+
+    usage = usage_for_session(payload.get("agent_id"), run_result["chat_id"])
+    return {
+        "answer": run_result["answer"],
+        "session_id": run_result["chat_id"],
+        "usage": usage,
+        "timed_out": run_result["timed_out"],
+    }
+
+
 def register_all_kinds() -> None:
-    """Register the eight real job kinds. Idempotent — safe to call more
+    """Register the nine real job kinds. Idempotent — safe to call more
     than once (e.g. across test re-imports); ``register_kind`` replaces
     any existing entry of the same name rather than erroring."""
     register_kind(
@@ -556,5 +657,26 @@ def register_all_kinds() -> None:
             # the ducklake catalog operations that justified their own knob.
             lease_seconds=_DEFAULT_LIGHT_LEASE_S,
             retry_in_seconds=300,
+        )
+    )
+    register_kind(
+        JobKind(
+            name="agent_response",
+            handler=_run_agent_response,
+            lane=LIGHT_LANE,
+            # Lease covers the job's own internal wait (default 1800s,
+            # AGNES_AGENT_RESPONSE_JOB_TIMEOUT_S) plus this margin — the
+            # heartbeat renews well before either expires, so this is a
+            # ceiling on "how long before a crashed/stuck run is
+            # reclaimed", not a hard timeout on the underlying chat turn.
+            lease_seconds=_agent_response_job_timeout_seconds() + 120,
+            # No retry: a fresh retry would re-run `run_one_shot` and
+            # re-send the user's prompt a second time (or, for `"continue"`,
+            # re-attach to a `chat_id` that may have already produced and
+            # lost its only answer) — neither is a safe automatic retry
+            # target. A failed job stays `'failed'`; the caller sees that
+            # via `GET /api/v1/jobs/{id}` and can re-POST if they want a
+            # fresh attempt.
+            retry_in_seconds=None,
         )
     )

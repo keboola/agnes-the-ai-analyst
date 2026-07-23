@@ -378,6 +378,38 @@ def test_complete_is_noop_for_wrong_token(repo):
     assert row["finished_at"] is None
 
 
+def test_complete_with_result_merges_into_payload(repo):
+    """Task 9: `complete(..., result=...)` merges the handler's return value
+    into `payload_json["result"]` instead of requiring a schema column —
+    see `JobsRepository.complete`'s docstring for why."""
+    repo.enqueue("agent_response", {"prompt": "hi"})
+    claimed = repo.claim_next(kinds=["agent_response"], worker_id="w1")
+    repo.complete(claimed["id"], "w1", claimed["lease_token"], {"answer": "hello", "session_id": "s1"})
+    row = repo.get(claimed["id"])
+    assert row["status"] == "done"
+    assert row["payload_json"]["prompt"] == "hi"  # original payload preserved
+    assert row["payload_json"]["result"] == {"answer": "hello", "session_id": "s1"}
+
+
+def test_complete_without_result_does_not_touch_payload(repo):
+    """Every non-`agent_response` kind calls `complete()` with no `result`
+    (the default) — payload_json must stay byte-identical."""
+    repo.enqueue("done_kind3", {"x": 1})
+    claimed = repo.claim_next(kinds=["done_kind3"], worker_id="w1")
+    repo.complete(claimed["id"], "w1", claimed["lease_token"])
+    row = repo.get(claimed["id"])
+    assert row["payload_json"] == {"x": 1}
+
+
+def test_complete_with_result_is_noop_for_wrong_token(repo):
+    repo.enqueue("agent_response", {"prompt": "hi"})
+    claimed = repo.claim_next(kinds=["agent_response"], worker_id="w1")
+    repo.complete(claimed["id"], "w1", "wrong-token", {"answer": "should not land"})
+    row = repo.get(claimed["id"])
+    assert row["status"] == "running"
+    assert "result" not in row["payload_json"]
+
+
 def test_fail_with_retry_requeues(repo):
     repo.enqueue("retry_kind", {}, max_attempts=5)
     claimed = repo.claim_next(kinds=["retry_kind"], worker_id="w1")

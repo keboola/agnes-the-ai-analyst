@@ -2143,6 +2143,11 @@ KNOWN_UNTESTED = {
     "DELETE /api/v1/agents/{agent_id}",
     "PUT /api/v1/agents/{agent_id}/scope",
     "POST /api/v1/agents/{agent_id}/tokens",
+    # Agent-as-API runtime (Task 9) — auth chain, idempotency, sync/background/
+    # timeout-degrade paths covered by tests/test_agent_responses_api.py; not
+    # duplicated in this PG smoke sweep.
+    "POST /api/v1/agents/{slug}/responses",
+    "GET /api/v1/jobs/{job_id}",
 }
 
 

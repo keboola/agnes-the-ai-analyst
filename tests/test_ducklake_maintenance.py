@@ -126,6 +126,7 @@ class TestRegistration:
             "ducklake-maintenance",
             "analytics-migrate",
             "distribution-mirror",
+            "agent_response",
         }
 
 

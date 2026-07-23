@@ -140,6 +140,7 @@ __all__ = [
     # Agent profiles + agent-as-API (v96)
     "agents_repo",
     "llm_usage_repo",
+    "idempotency_repo",
 ]
 
 
@@ -478,6 +479,10 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.llm_usage", "LlmUsageRepository"),
         PG: ("src.repositories.llm_usage_pg", "LlmUsagePgRepository"),
     },
+    "idempotency": {
+        DUCKDB: ("src.repositories.idempotency", "IdempotencyRepository"),
+        PG: ("src.repositories.idempotency_pg", "IdempotencyPgRepository"),
+    },
 }
 
 
@@ -761,3 +766,7 @@ def agents_repo() -> Any:
 
 def llm_usage_repo() -> Any:
     return _build("llm_usage")
+
+
+def idempotency_repo() -> Any:
+    return _build("idempotency")

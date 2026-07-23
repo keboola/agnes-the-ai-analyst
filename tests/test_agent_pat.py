@@ -253,6 +253,32 @@ def test_agent_id_from_request_none_without_prior_resolve():
     assert agent_id_from_request(req) is None
 
 
+def test_agent_id_from_request_none_after_failed_resolution(client, seeded_user, seeded_agent):
+    """Task 4 review carry-over: a token that decodes fine but then fails a
+    later DB-backed check (revoked here) must leave NO stashed payload on
+    `request.state` — `agent_id_from_request` must return None, not the
+    revoked token's `agent_id` claim.
+
+    Before the fix, `resolve_token_to_user` stashed `request.state.token_payload`
+    immediately after `verify_token` succeeded, before any of the
+    revoked/expired/mismatched/wrong-surface/deleted-agent checks ran — so a
+    failed resolution still left a stale, readable payload behind.
+    """
+    from app.auth.pat_resolver import agent_id_from_request, resolve_token_to_user
+    from src.repositories import access_token_repo
+
+    token_id = "tok-stale-payload"
+    token = _mint_agent_pat(seeded_user, seeded_agent["id"], token_id=token_id)
+    _register_agent_pat_row(seeded_user, seeded_agent["id"], token, token_id)
+    access_token_repo().revoke(token_id)
+
+    req = _FakeRequest("/api/v1/agents/abc/chat")
+    user, reason = resolve_token_to_user(None, token, req)
+    assert user is None
+    assert reason == "pat_revoked"
+    assert agent_id_from_request(req) is None
+
+
 # ---------------------------------------------------------------------------
 # Repository-level tests
 # ---------------------------------------------------------------------------

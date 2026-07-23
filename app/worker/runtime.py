@@ -265,7 +265,7 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
         obs_metrics.begin_job_running(job["kind"], kind.lane)
         started_at = time.monotonic()
         try:
-            await asyncio.shield(handler_future)
+            handler_result = await asyncio.shield(handler_future)
         except asyncio.CancelledError:
             handed_off = True
             in_flight[job["id"]] = _InFlightJob(
@@ -297,7 +297,10 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
             obs_metrics.record_job_failure(job["kind"], type(exc).__name__)
         else:
             # Same ordering rationale as the failure branch above.
-            await asyncio.to_thread(_jobs_repo().complete, job["id"], worker_id, lease_token)
+            # `handler_result` is the handler's return value — `None` for
+            # every kind except `agent_response` (Task 9), which returns a
+            # result dict `complete()` merges into `payload_json["result"]`.
+            await asyncio.to_thread(_jobs_repo().complete, job["id"], worker_id, lease_token, handler_result)
             obs_metrics.record_job_duration(job["kind"], "done", time.monotonic() - started_at)
         finally:
             if not handed_off:
@@ -485,7 +488,10 @@ async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -
                     obs_metrics.record_job_duration(entry.kind_name, "failed", duration)
                     obs_metrics.record_job_failure(entry.kind_name, type(exc).__name__)
                 else:
-                    await asyncio.to_thread(_jobs_repo().complete, job_id, entry.worker_id, entry.lease_token)
+                    handler_result = fut.result()
+                    await asyncio.to_thread(
+                        _jobs_repo().complete, job_id, entry.worker_id, entry.lease_token, handler_result
+                    )
                     obs_metrics.record_job_duration(entry.kind_name, "done", duration)
             except asyncio.CancelledError:
                 raise

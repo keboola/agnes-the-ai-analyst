@@ -56,7 +56,7 @@ def jobs_db(tmp_path, monkeypatch):
 
 
 class TestRegisterAllKinds:
-    def test_registers_eight_kinds(self):
+    def test_registers_nine_kinds(self):
         from app.worker.kinds import register_all_kinds
         from app.worker.registry import JOB_KINDS
 
@@ -71,6 +71,7 @@ class TestRegisterAllKinds:
             "ducklake-maintenance",
             "analytics-migrate",
             "distribution-mirror",
+            "agent_response",
         }
 
     def test_lanes_are_correct(self):
@@ -97,7 +98,7 @@ class TestRegisterAllKinds:
         register_all_kinds()
         register_all_kinds()
 
-        assert len(JOB_KINDS) == 8
+        assert len(JOB_KINDS) == 9
 
 
 class TestDataRefreshHandler:

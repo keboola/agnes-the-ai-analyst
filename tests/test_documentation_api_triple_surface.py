@@ -251,6 +251,8 @@ _EXEMPT: dict[str, str] = {
     "/api/v1/agents/{agent_id}": _AGENTS_MGMT_REASON,
     "/api/v1/agents/{agent_id}/scope": _AGENTS_MGMT_REASON,
     "/api/v1/agents/{agent_id}/tokens": _AGENTS_MGMT_REASON,
+    "/api/v1/agents/{slug}/responses": _AGENTS_MGMT_REASON,
+    "/api/v1/jobs/{job_id}": _AGENTS_MGMT_REASON,
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "
         "(companion to register-table's defer_rebuild for bulk onboarding); no "

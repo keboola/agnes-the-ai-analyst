@@ -30,6 +30,51 @@ from src.repositories import ticket_repo, usage_repo, users_repo
 
 logger = logging.getLogger(__name__)
 
+# Process-wide handle to the live ChatManager (Task 9). ``app/main.py``'s
+# lifespan calls `set_current_chat_manager(app.state.chat_manager)` once
+# CHAT-INIT settles (whatever it settled to — a real manager, or None when
+# chat is disabled/degraded) — the SAME value it stores on
+# ``app.state.chat_manager``. Request handlers already read the manager off
+# ``request.app.state`` (see ``app/api/chat.py::_get_manager``); this
+# singleton exists ONLY for callers with no ``Request`` to hand them one —
+# namely the ``agent_response`` job-worker handler (``app/worker/kinds.py``),
+# which runs a plain ``Callable[[dict], None]`` with no app object in scope.
+#
+# ``_current_loop`` is captured alongside it (the running loop at the
+# moment ``set_current_chat_manager`` is called from ``app/main.py``'s
+# async lifespan — i.e. the SAME loop uvicorn serves requests on, and the
+# one every ``ChatManager`` lock/task/sink was created against). The job
+# worker runs handlers synchronously in a thread (``asyncio.to_thread`` —
+# see ``app/worker/runtime.py``), so calling back into ``ChatManager``'s
+# async methods from there needs ``asyncio.run_coroutine_threadsafe(coro,
+# get_current_chat_loop())``, never a fresh ``asyncio.run()`` in that
+# thread — a new loop would break the manager's existing locks/tasks/sinks,
+# which are asyncio primitives bound to the loop that created them.
+_current_manager: Optional["ChatManager"] = None
+_current_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def set_current_chat_manager(manager: Optional["ChatManager"]) -> None:
+    global _current_manager, _current_loop
+    _current_manager = manager
+    try:
+        _current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Called from outside a running loop (e.g. a test that never awaits
+        # anything first) — leave the loop unset rather than raise; a
+        # worker-thread caller that needs it will simply see None and fail
+        # closed (RuntimeError from the job handler, not a crash here).
+        _current_loop = None
+
+
+def get_current_chat_manager() -> Optional["ChatManager"]:
+    return _current_manager
+
+
+def get_current_chat_loop() -> Optional[asyncio.AbstractEventLoop]:
+    return _current_loop
+
+
 # Sonnet pricing constants (USD per million tokens)
 _PRICE_IN_PER_MTOK = 3.0
 _PRICE_OUT_PER_MTOK = 15.0

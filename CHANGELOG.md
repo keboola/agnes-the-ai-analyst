@@ -12,13 +12,43 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- **`POST /api/v1/agents/{slug}/responses`** — one-shot request/response over
+  an owner's agent (agent-api V1a, Task 9). Runs a headless (no-WebSocket)
+  chat turn and returns `{answer, session_id, response_id, usage,
+  agent_config_hash, request_id}` synchronously, bounded by a clamped
+  `timeout_s` (default 120s, 1..600). `background: true`, or a sync call
+  whose wait outruns `timeout_s`, degrades to a background job — the run
+  itself is never killed, only the wait — via the new `agent_response` job
+  kind; `GET /api/v1/jobs/{job_id}` (owner-scoped) reads the result back.
+  Callable with an interactive session token or an agent PAT scoped to the
+  exact agent. Supports an `Idempotency-Key` header (scoped to caller+agent,
+  24h default TTL): identical-body replay returns the original response
+  verbatim; a different body under the same key is `409
+  idempotency_key_reuse`.
+
 ### Changed
 
 ### Fixed
 
+- **`resolve_token_to_user` no longer stashes a JWT payload on
+  `request.state.token_payload` until the token has fully passed
+  validation.** Previously the stash ran right after JWT signature
+  verification, before the revoked/expired/mismatched/wrong-surface/
+  deleted-agent checks — a token that failed one of those later checks
+  still left its claims (including `agent_id`) readable via
+  `agent_id_from_request` for the rest of the request. Task 4 review
+  carry-over.
+
 ### Removed
 
 ### Internal
+
+- `JobsRepository.complete()` / `JobsPgRepository.complete()` gained an
+  optional `result: Optional[dict]` parameter, merged into
+  `payload_json["result"]` when given (the `jobs` table has no dedicated
+  result column) — backs the new `agent_response` job kind's
+  `GET /api/v1/jobs/{id}` result surface. Every other job kind's handler
+  still returns `None`, so this is a no-op for them.
 
 ### Security
 

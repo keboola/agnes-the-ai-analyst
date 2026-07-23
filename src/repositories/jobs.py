@@ -306,20 +306,52 @@ class JobsRepository:
             ).fetchall()
             return bool(claimed)
 
-    def complete(self, job_id: str, worker_id: str, lease_token: str) -> None:
+    def complete(
+        self,
+        job_id: str,
+        worker_id: str,
+        lease_token: str,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Mark a running job done. No-op (raise-free) if the job is not
         currently ``'running'`` under this exact ``lease_token`` — a
         stale slot finishing a job that was already reclaimed (even by
         another slot of the SAME ``worker_id``) must not clobber the new
-        owner's state. ``worker_id`` is accepted for audit/logging only."""
+        owner's state. ``worker_id`` is accepted for audit/logging only.
+
+        ``result`` (Task 9, ``agent_response`` job kind): when given, it is
+        merged into the job's ``payload_json`` under a ``"result"`` key
+        before the row is marked done, so ``GET /api/v1/jobs/{id}`` can
+        surface it. The ``jobs`` table has no dedicated result column — see
+        ``app/worker/kinds.py``'s module docstring for why reusing
+        ``payload_json`` (rather than a schema migration) was the chosen
+        adaptation. Every OTHER job kind's handler returns ``None``, so this
+        stays a no-op for them (back-compat, no payload mutation).
+        """
         with _JOBS_LOCK:
             now = datetime.now(timezone.utc)
-            self.conn.execute(
-                """UPDATE jobs
-                   SET status = 'done', finished_at = ?, lease_expires_at = NULL
-                   WHERE id = ? AND lease_token = ? AND status = 'running'""",
-                [now, job_id, lease_token],
-            )
+            if result is not None:
+                row = self.conn.execute("SELECT payload_json FROM jobs WHERE id = ?", [job_id]).fetchone()
+                payload = {}
+                if row and row[0]:
+                    try:
+                        payload = json.loads(row[0])
+                    except (TypeError, ValueError):
+                        payload = {}
+                payload["result"] = result
+                self.conn.execute(
+                    """UPDATE jobs
+                       SET status = 'done', finished_at = ?, lease_expires_at = NULL, payload_json = ?
+                       WHERE id = ? AND lease_token = ? AND status = 'running'""",
+                    [now, json.dumps(payload), job_id, lease_token],
+                )
+            else:
+                self.conn.execute(
+                    """UPDATE jobs
+                       SET status = 'done', finished_at = ?, lease_expires_at = NULL
+                       WHERE id = ? AND lease_token = ? AND status = 'running'""",
+                    [now, job_id, lease_token],
+                )
 
     def fail(
         self,

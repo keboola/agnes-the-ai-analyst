@@ -280,6 +280,7 @@ from app.api.cli_artifacts import router as cli_artifacts_router
 from app.api.cli_auth import router as cli_auth_router
 from app.api.tokens import router as tokens_router, admin_router as tokens_admin_router
 from app.api.agents_admin import router as agents_admin_router
+from app.api.agent_runtime import router as agent_runtime_router  # noqa: E402
 from app.api.v2_catalog import router as v2_catalog_router
 from app.api.v2_schema import router as v2_schema_router
 from app.api.v2_sample import router as v2_sample_router
@@ -1399,6 +1400,13 @@ async def lifespan(app):
     except Exception:
         logger.exception("CHAT-INIT failed (non-fatal); chat features will be unavailable")
         app.state.chat_manager = None
+    # Mirror whatever CHAT-INIT settled on (a real manager, or None) onto the
+    # process-wide singleton the `agent_response` job-worker handler reads —
+    # it has no `Request`/`app` in scope to read `app.state.chat_manager`
+    # from directly (see app.chat.manager.get_current_chat_manager).
+    from app.chat.manager import set_current_chat_manager
+
+    set_current_chat_manager(app.state.chat_manager)
     # --- end CHAT-INIT -------------------------------------------------------
 
     # --- SLACK-INIT: resolve bot user id once (mention loop-guard / strip) ---
@@ -2081,6 +2089,7 @@ def create_app() -> FastAPI:
     app.include_router(tokens_router)
     app.include_router(tokens_admin_router)
     app.include_router(agents_admin_router)
+    app.include_router(agent_runtime_router)
     app.include_router(v2_catalog_router)
     app.include_router(v2_schema_router)
     app.include_router(v2_sample_router)

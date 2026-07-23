@@ -324,22 +324,56 @@ class JobsPgRepository:
             )
         return row is not None
 
-    def complete(self, job_id: str, worker_id: str, lease_token: str) -> None:
+    def complete(
+        self,
+        job_id: str,
+        worker_id: str,
+        lease_token: str,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Mark a running job done. No-op (raise-free) if the job is not
         currently ``'running'`` under this exact ``lease_token`` — a
         stale slot finishing a job that was already reclaimed (even by
         another slot of the SAME ``worker_id``) must not clobber the new
-        owner's state. ``worker_id`` is accepted for audit/logging only."""
+        owner's state. ``worker_id`` is accepted for audit/logging only.
+
+        ``result``: see ``JobsRepository.complete``'s docstring — merged
+        into ``payload_json["result"]`` in the same transaction as the
+        ``'done'`` transition, both guarded by the SELECT/UPDATE running
+        under one ``self._engine.begin()`` block.
+        """
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
-            conn.execute(
-                sa.text(
-                    """UPDATE jobs
-                       SET status = 'done', finished_at = :now, lease_expires_at = NULL
-                       WHERE id = :id AND lease_token = :lease_token AND status = 'running'"""
-                ),
-                {"now": now, "id": job_id, "lease_token": lease_token},
-            )
+            if result is not None:
+                row = conn.execute(sa.text("SELECT payload_json FROM jobs WHERE id = :id"), {"id": job_id}).first()
+                payload: Dict[str, Any] = {}
+                if row and row[0]:
+                    raw = row[0]
+                    payload = raw if isinstance(raw, dict) else json.loads(raw)
+                payload["result"] = result
+                conn.execute(
+                    sa.text(
+                        """UPDATE jobs
+                           SET status = 'done', finished_at = :now, lease_expires_at = NULL,
+                               payload_json = :payload_json
+                           WHERE id = :id AND lease_token = :lease_token AND status = 'running'"""
+                    ),
+                    {
+                        "now": now,
+                        "id": job_id,
+                        "lease_token": lease_token,
+                        "payload_json": json.dumps(payload),
+                    },
+                )
+            else:
+                conn.execute(
+                    sa.text(
+                        """UPDATE jobs
+                           SET status = 'done', finished_at = :now, lease_expires_at = NULL
+                           WHERE id = :id AND lease_token = :lease_token AND status = 'running'"""
+                    ),
+                    {"now": now, "id": job_id, "lease_token": lease_token},
+                )
 
     def fail(
         self,
