@@ -742,6 +742,19 @@ class TestDelete:
         r = client_as_other_user.delete("/api/data-apps/sapp")
         assert r.status_code == 403
 
+    def test_delete_removes_config_dir(self, client_as_user, fake_runner, seeded_repo_with_commit, api_env):
+        """The leftover `config.json` under `${DATA_DIR}/apps/<slug>` holds a
+        now-revoked JWT — best-effort hygiene cleanup on delete, distinct
+        from the git repo directory (which is intentionally kept)."""
+        config_dir = api_env["data_dir"] / "apps" / "sapp"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "config.json").write_text("{}")
+
+        r = client_as_user.delete("/api/data-apps/sapp")
+        assert r.status_code == 204
+
+        assert not config_dir.exists()
+
 
 class TestSecrets:
     def test_put_secrets_owner(self, client_as_user):

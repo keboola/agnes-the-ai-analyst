@@ -22,6 +22,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `data_app_logs`), and a server-rendered `/apps` dashboard (list +
   detail/logs page). Off by default (`data_apps.enabled`) + compose profile
   `apps`.
+  - `agnes app create` accepts `--repo-url`/`--repo-branch` to track an
+    external git repo instead of the internal template (`repo_mode=external`).
+  - `agnes app open` prints the app's URL only — it never launches a
+    browser, for headless parity across environments.
+  - `agnes app delete` prompts for confirmation unless `--yes`/`-y` is
+    passed.
+  - The MCP tools split by permission tier: `data_apps_list`/`data_app_get`
+    are viewer-level (owner, Admin, or a group with a `resource_grants` row
+    may call them); `data_app_deploy`/`data_app_logs` are owner/Admin-only.
 
 ### Changed
 

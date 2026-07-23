@@ -38,6 +38,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import time
 import uuid
 from datetime import datetime, timezone
@@ -542,10 +543,15 @@ async def delete_data_app(
     """Runner stop + service-token revoke + registry row delete.
 
     204 No Content, no body (project convention — see
-    ``tests/test_api_design_rules.py::test_delete_returns_204``). The repo
-    directory under ``${DATA_DIR}/apps/git/<slug>.git`` is intentionally
-    left on disk — deletion is a registry-only operation; that fact is
-    recorded in the audit log params, not the response body.
+    ``tests/test_api_design_rules.py::test_delete_returns_204``). The git
+    repo directory under ``${DATA_DIR}/apps/git/<slug>.git`` is
+    intentionally left on disk — deletion is a registry-only operation;
+    that fact is recorded in the audit log params, not the response body.
+    The RUNTIME config dir (``${DATA_DIR}/apps/<slug>``, holding the
+    ``config.json`` apps-runner wrote — see ``_resolve_host_path`` in
+    ``services/apps_runner/api.py``) is different: it carries the
+    now-revoked service JWT in plaintext, so it's removed best-effort as
+    hygiene rather than kept like the git repo.
     """
     _feature_gate()
     row = _get_row_or_404(slug)
@@ -561,6 +567,15 @@ async def delete_data_app(
 
     _revoke_service_token(row)
     data_apps_repo().delete(row["id"])
+
+    config_dir = os.path.join(os.environ.get("DATA_DIR", "/data"), "apps", slug)
+    try:
+        shutil.rmtree(config_dir, ignore_errors=False)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("delete_data_app: failed to remove config dir %s (continuing)", config_dir)
+
     _audit(
         conn,
         user["id"],

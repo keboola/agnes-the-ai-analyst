@@ -51,6 +51,12 @@ def test_container_spec_defaults_and_overrides():
     assert spec["env"]["AGNES_URL"] == "http://app:8000"
     assert spec["env"]["FOO"] == "bar"
     assert "DATA_LOADER_API_URL" not in spec["env"]
+    # `ports` is a test-only escape hatch the apps-runner API accepts (see
+    # services/apps_runner/api.py::up) so tests/test_data_apps_e2e_docker.py
+    # can reach the runtime container directly without the ingress proxy.
+    # Production specs must never set it — apps are reached exclusively
+    # through the proxy.
+    assert "ports" not in spec
 
 
 def test_config_json_external_repo():

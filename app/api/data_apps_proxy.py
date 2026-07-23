@@ -99,6 +99,15 @@ _CREDENTIAL_HEADERS = {"authorization", "cookie"}
 _WAKE_LEASE_TTL_S = 120
 _TOUCH_DEBOUNCE_TTL_S = 30
 
+# Strong references to in-flight background wake tasks. asyncio only holds a
+# WEAK reference to a task created via `asyncio.create_task` and not stored
+# anywhere else — without this, the task object can be garbage-collected
+# mid-flight (a well-known asyncio footgun: https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
+# "Important: Save a reference to the result..."), silently killing the
+# redeploy before it ever calls `set_state`. Cleared via the task's own
+# done-callback once it finishes, so this never grows unbounded.
+_WAKE_TASKS: set[asyncio.Task] = set()
+
 
 def _runner() -> RunnerClient:
     """Module-level indirection — the seam ``fake_runner``/``dead_runner``
@@ -188,7 +197,9 @@ async def _spawn_wake(fn, row: dict) -> None:
     observable synchronously right after the request returns — see
     ``tests/test_data_apps_proxy.py``.
     """
-    asyncio.create_task(_run_wake_fn(fn, row))
+    task = asyncio.create_task(_run_wake_fn(fn, row))
+    _WAKE_TASKS.add(task)
+    task.add_done_callback(_WAKE_TASKS.discard)
 
 
 async def _trigger_wake(app_row: dict) -> None:
