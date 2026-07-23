@@ -1369,6 +1369,57 @@ class TestVerificationFuzzyDedupeGate:
         assert first_id in ids
         conn.close()
 
+    def test_contradicting_correction_is_not_fuzzy_merged(self, tmp_path, monkeypatch):
+        """A ``correction`` may *overturn* a stored fact, not merely restate
+        it. Even when it is a near-verbatim reword of an existing item (high
+        lexical similarity + entity overlap — signals that would otherwise
+        trip the fuzzy-merge gate), it must NOT be absorbed as confirming
+        evidence: that would both discard the corrected content and skip the
+        contradiction check that only runs on the create path. Corrections
+        are routed to create instead, so ``detect_and_record`` can fire."""
+        import shutil
+
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+
+        run = _run_verification_processor
+        repo = KnowledgeRepository(conn)
+
+        # Session 1 — establishes "churn is computed monthly".
+        alice_dir = tmp_path / "user_sessions" / "alice"
+        alice_dir.mkdir(parents=True)
+        shutil.copy(SESSIONS_DIR / "churn_forecast_v1.jsonl", alice_dir / "s.jsonl")
+        run(conn, _mock_extractor(_load_golden("churn_forecast_v1")), session_data_dir=tmp_path / "user_sessions")
+
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        first_id = items[0]["id"]
+
+        # Session 2 — bob corrects it to "weekly". Near-verbatim wording
+        # (lexical ratio ~0.93) and 2 shared entities would clear the
+        # fuzzy-merge gate, but because it is a correction it must land as
+        # its own item rather than merging into the "monthly" one.
+        # detect_and_record's LLM judge is stubbed — this test pins the
+        # routing decision, not the judge's output (covered separately).
+        import services.corporate_memory.contradiction as contradiction_module
+
+        monkeypatch.setattr(contradiction_module, "detect_and_record", lambda *a, **k: [])
+
+        bob_dir = tmp_path / "user_sessions" / "bob"
+        bob_dir.mkdir(parents=True)
+        shutil.copy(SESSIONS_DIR / "churn_forecast_contradicting_correction.jsonl", bob_dir / "s.jsonl")
+        stats2 = run(
+            conn,
+            _mock_extractor(_load_golden("churn_forecast_contradicting_correction")),
+            session_data_dir=tmp_path / "user_sessions",
+        )
+
+        assert stats2["items_created"] == 1
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 2
+        assert first_id in {item["id"] for item in items}
+        conn.close()
+
 
 class TestDetectorWiresContradictionDetection:
     """Q2: detect_and_record() must run after repo.create() in the pipeline."""

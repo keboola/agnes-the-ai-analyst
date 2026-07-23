@@ -150,18 +150,30 @@ class VerificationProcessor:
             # and, if found, merges into it instead of creating a
             # near-duplicate PENDING row. Failures here must not block
             # ingestion — fail open into the create path.
-            try:
-                duplicate_target = find_duplicate_target(
-                    repo,
-                    item_id=item_id,
-                    title=v["title"],
-                    content=v["content"],
-                    domain=v.get("domain"),
-                    entities=v.get("entities"),
-                )
-            except Exception as e:
-                logger.warning("Fuzzy-duplicate lookup failed for %s: %s", item_id, e)
-                duplicate_target = None
+            #
+            # A `correction` is excluded from the merge shortcut: it may be
+            # OVERTURNING a stored fact rather than restating it, and a
+            # correction is routinely a near-verbatim reword of the item it
+            # contradicts ("computed monthly" -> "computed weekly"), so it
+            # scores high on exactly the lexical/entity signals the gate
+            # merges on. Absorbing it as confirming evidence would discard
+            # the corrected content AND skip the contradiction check, which
+            # only runs on the create path below. Route corrections to
+            # create so detect_and_record() gets a chance to fire.
+            duplicate_target = None
+            if v.get("detection_type") != "correction":
+                try:
+                    duplicate_target = find_duplicate_target(
+                        repo,
+                        item_id=item_id,
+                        title=v["title"],
+                        content=v["content"],
+                        domain=v.get("domain"),
+                        entities=v.get("entities"),
+                    )
+                except Exception as e:
+                    logger.warning("Fuzzy-duplicate lookup failed for %s: %s", item_id, e)
+                    duplicate_target = None
 
             if duplicate_target is not None:
                 target_id = duplicate_target["id"]

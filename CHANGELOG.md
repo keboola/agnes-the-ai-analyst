@@ -29,7 +29,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   overlap corroborated by a moderate amount of shared wording. Entity-tag
   overlap alone no longer merges — two distinct same-domain facts routinely
   share a couple of generic tags — it still flags an advisory
-  `likely_duplicate` relation for review instead.
+  `likely_duplicate` relation for review instead. A `correction` is never
+  merged by the gate: it may be overturning a stored fact rather than
+  restating it (and tends to be a near-verbatim reword of the item it
+  contradicts), so it is routed to the create path where contradiction
+  detection runs, rather than being absorbed as confirming evidence.
 - Keboola semantic-layer sync (`sync_semantic_layer()`) now falls back to the default named Keboola `source_connections` entry (the connection `/admin/data-sources` manages) when the legacy `KEBOOLA_STACK_URL`/`KEBOOLA_STORAGE_TOKEN` env-or-vault slot is empty. Verified live: an instance that connects a Keboola project only through the admin wizard previously failed every semantic-layer sync with "credentials not configured", even though the same connection's regular table syncs and its own `/test` endpoint both resolve their token off it correctly.
 
 ### Removed
