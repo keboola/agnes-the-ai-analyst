@@ -825,6 +825,38 @@ def get_corporate_memory_config() -> dict:
     return get_value("corporate_memory", default={})
 
 
+def get_data_apps_config() -> dict:
+    """``data_apps:`` block — hosted user web apps feature (v96).
+
+    ``get_value(..., default={})`` only substitutes the default when the
+    key is absent — an explicit null block in instance.yaml (or a
+    config-not-loaded-yet state some bootstrap/test paths hit) can still
+    make this come back ``None``. Hardened to always return a dict: this
+    accessor runs on every request via ``DataAppSubdomainMiddleware``
+    (``app/data_apps_subdomain.py``) and ``session_cookie_domain()`` below
+    (itself called from every login flow), so callers should never need
+    their own ``(get_data_apps_config() or {})`` guard.
+    """
+    return get_value("data_apps", default={}) or {}
+
+
+def session_cookie_domain() -> Optional[str]:
+    """``Domain`` attribute for the session cookie (``access_token``), or
+    ``None`` for no ``Domain`` attribute at all — i.e. exactly today's
+    pre-data-apps behavior (cookie scoped to the exact host that set it).
+
+    Only set when ``data_apps.subdomain_base`` is configured (Task 8's
+    ingress proxy — ``app/data_apps_subdomain.py``): a subdomain like
+    ``<slug>.apps.example.com`` needs the cookie minted on the main host to
+    also be sent on the data-app subdomain, which requires scoping it to
+    the shared parent domain (``.example.com``) rather than the exact host.
+    """
+    base = (get_data_apps_config().get("subdomain_base") or "").strip()
+    if not base or "." not in base:
+        return None
+    return "." + base.split(".", 1)[1]
+
+
 def get_guardrails_config() -> dict:
     """Flea-market upload-guardrail config (see docs/STORE_GUARDRAILS.md).
 

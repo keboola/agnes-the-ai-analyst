@@ -143,6 +143,11 @@ _DEFAULTS = {
     # Same cadence class as corporate-memory, but a longer default since
     # digest regeneration is a heavier LLM call than the packaging rebuild.
     "SCHEDULER_KNOWLEDGE_DIGESTS_INTERVAL": 30 * 60,
+    # Data apps idle-reaper: terminates idle data-app VMs (Task 7+9).
+    # Default 5 min — lightweight (just marks stale VM rows for cleanup),
+    # so the cadence doesn't require tuning. The actual cleanup runs
+    # out-of-band via the jobs queue (not on the scheduler's tick).
+    "SCHEDULER_DATA_APP_REAP_INTERVAL": 5 * 60,
 }
 
 
@@ -411,6 +416,7 @@ def build_jobs() -> list[JobRow | EnqueueJobRow]:
     jiraconsis = _read_positive_int("SCHEDULER_JIRA_CONSISTENCY_INTERVAL")
     kpkg = _read_positive_int("SCHEDULER_KNOWLEDGE_PACKAGING_INTERVAL")
     kdig = _read_positive_int("SCHEDULER_KNOWLEDGE_DIGESTS_INTERVAL")
+    reap = _read_positive_int("SCHEDULER_DATA_APP_REAP_INTERVAL")
     tick = _read_positive_int("SCHEDULER_TICK_SECONDS")
     smallest = min(
         refresh,
@@ -427,6 +433,7 @@ def build_jobs() -> list[JobRow | EnqueueJobRow]:
         jiraconsis,
         kpkg,
         kdig,
+        reap,
     )
     if tick > smallest:
         raise ValueError(
@@ -578,6 +585,10 @@ def build_jobs() -> list[JobRow | EnqueueJobRow]:
         # changed. Longer 900s timeout — same job class as corporate-memory
         # (an LLM generation, not just a DuckDB rebuild).
         ("knowledge-digests", _seconds_to_schedule(kdig), "/api/admin/run-knowledge-digests", "POST", 900),
+        # Data-app idle-reaper (Task 7+9): marks stale VMs for cleanup.
+        # Lightweight operation that runs every 5m by default; the actual
+        # VM cleanup runs out-of-band via jobs.
+        ("data-app-idle-reaper", _seconds_to_schedule(reap), "/api/data-apps/reap-idle", "POST", 120),
     ]
 
     # Initial Workspace Template nightly auto-sync (#622 Slice 3 PR-B).

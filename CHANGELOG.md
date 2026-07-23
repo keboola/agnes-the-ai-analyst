@@ -23,6 +23,67 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.14] - 2026-07-23
+
+### Added
+
+- **Data Apps** (schema v96): host user web applications next to the data
+  using the upstream `data-app-python-js` runtime image — internal git repos
+  with push-to-deploy (or BYO external repo), RBAC-gated ingress at
+  `/apps/<slug>/` (optional per-app subdomains), auto-sleep with
+  wake-on-request, an `apps-runner` sidecar as the sole holder of the Docker
+  socket, `agnes app {list,show,create,deploy,logs,open,stop,delete}` CLI,
+  MCP tools (`data_apps_list`, `data_app_get`, `data_app_deploy`,
+  `data_app_logs`), and a server-rendered `/apps` dashboard (list +
+  detail/logs page). Off by default (`data_apps.enabled`) + compose profile
+  `apps`. New `data_apps` table (DuckDB `_v95_to_v96` + Alembic
+  `0043_data_apps_v96`, both backends).
+  - `agnes app create` accepts `--repo-url`/`--repo-branch` to track an
+    external git repo instead of the internal template (`repo_mode=external`).
+    Deploying an external-repo app always redeploys HEAD of `repo_branch`
+    (the internal fast-forward-to-a-pinned-sha ref only exists for
+    `repo_mode=internal`); passing an explicit `--sha` is rejected
+    (`external_repo_sha_unsupported`) since sha pinning isn't supported for
+    external repos yet.
+  - `agnes app open` prints the app's URL only — it never launches a
+    browser, for headless parity across environments.
+  - `agnes app delete` prompts for confirmation unless `--yes`/`-y` is
+    passed.
+  - The MCP tools split by permission tier: `data_apps_list`/`data_app_get`
+    are viewer-level (owner, Admin, or a group with a `resource_grants` row
+    may call them); `data_app_deploy`/`data_app_logs` are owner/Admin-only.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.13] - 2026-07-23
+
+### Added
+
+- **Register a BigQuery table from another project without leaving the UI.**
+  The "Live from BigQuery" form gained an optional **Project** field; filling
+  it in sends an explicit `bq_fqn` (`project.dataset.table`) instead of the
+  configured-project + dataset + table triplet. Blank keeps the previous
+  behaviour exactly. Only applies to Live access — synced (materialized)
+  tables always read from the configured project, so the field is hidden
+  for those. Previously the only way to register a cross-project table was
+  to call `POST /api/admin/register-table` or `PUT /api/admin/registry/{id}`
+  by hand.
+- **`data_source.bigquery.project` and `.location` are documented in server
+  config.** Both were missing from the known-fields registry, so the admin
+  form filed them under "Other (YAML-only) keys" with no label, type or hint
+  while their siblings were described. The `project` hint points at `bq_fqn`
+  as the supported way to reach a table in another project, and the
+  `location` hint names the `404 Not found: Table ... was not found in
+  location <location>` symptom of a mismatch.
+
 ## [0.76.12] - 2026-07-23
 
 ### Fixed

@@ -1,0 +1,15 @@
+<!doctype html>
+<title>Starting…</title>
+<style>body{font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0}</style>
+<div><h2>⏳ App is waking up…</h2><p>This page reloads automatically.</p></div>
+<script>
+  const poll = async () => {
+    try {
+      const r = await fetch("/api/data-apps/{{ slug }}/readiness");
+      const j = await r.json();
+      if (j.ready) { location.reload(); return; }
+    } catch (e) {}
+    setTimeout(poll, 2000);
+  };
+  poll();
+</script>

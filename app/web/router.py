@@ -38,6 +38,7 @@ from app.instance_config import (
     get_instance_custom_preamble,
     get_instance_theme,
     get_custom_scripts,
+    get_data_apps_config,
     get_studio_enabled,
 )
 from src.repositories import (
@@ -297,6 +298,24 @@ templates.env.globals["static_url"] = _static_url
 from app.web.onboarding import steps_for as _onboarding_steps_for  # noqa: E402
 
 templates.env.globals["onboarding_steps"] = _onboarding_steps_for
+
+
+def _data_apps_nav_enabled() -> bool:
+    """Whether the "Apps" primary-nav entry should render. Registered as a
+    Jinja global (like `static_url` above) rather than threaded through
+    per-route context, so `_app_header.html` — shared by both `base.html`
+    (built via `_build_context`) and `base_ds.html`/`base_page.html` (built
+    via `_chrome_ctx`) — gates consistently regardless of which context
+    builder the current page uses. Re-read on every call (not cached at
+    import time) so an admin flipping `data_apps.enabled` via
+    /admin/server-config takes effect without a process restart."""
+    try:
+        return bool(get_data_apps_config().get("enabled"))
+    except Exception:
+        return False
+
+
+templates.env.globals["data_apps_enabled"] = _data_apps_nav_enabled
 
 
 class _FlexDict(dict):
@@ -2070,6 +2089,128 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         # here made the link vanish on every _chrome_ctx page (/admin/studio*).
         "can_chat": _compute_can_chat(request, user),
     }
+
+
+# ---------------------------------------------------------------------------
+# Hosted data apps — /apps web UI (Task 12)
+# ---------------------------------------------------------------------------
+#
+# A DEDICATED router, not routes on the main ``router`` above. The ingress
+# proxy (``app/api/data_apps_proxy.py``) registers
+# ``GET /apps/{slug}`` (redirect to trailing slash) and
+# ``GET/POST/... /apps/{slug}/{path:path}`` (the actual proxy), and
+# ``app/main.py`` includes ``data_apps_proxy_router`` BEFORE the main
+# ``web_router``. Starlette matches routes in registration-list order, not
+# by specificity, so a literal ``/apps/detail/{slug}`` living on the main
+# ``router`` would never be reached: the proxy's ``{path:path}`` catch-all
+# matches ``/apps/detail/<slug>`` first (slug="detail", path="<slug>").
+# ``apps_web_router`` is included in ``app/main.py`` BEFORE
+# ``data_apps_proxy_router`` specifically so these two literal routes win
+# that match race; the bare ``GET /apps`` (list page) route doesn't
+# actually collide with anything (both proxy routes require at least one
+# path segment after ``apps``), but it lives here too for locality.
+apps_web_router = APIRouter(tags=["web-data-apps"])
+
+# State -> `.badge--*` accent modifier (design-system vocabulary, see
+# style-custom.css's "Badges — accent vocabulary" block). `created` and
+# `stopped` get the neutral base `.badge` (no modifier) — nothing to
+# highlight, they're just "not currently running".
+_STATE_BADGE_CLASS = {
+    "running": "badge--success",
+    "deploying": "badge--info",
+    "sleeping": "badge--warn",
+    "error": "badge--danger",
+}
+
+
+def _state_badge_class(state: str) -> str:
+    return _STATE_BADGE_CLASS.get(state, "")
+
+
+@apps_web_router.get("/apps", response_class=HTMLResponse)
+async def data_apps_list_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """List the hosted data apps the caller may view.
+
+    Reuses ``app.api.data_apps``'s own serializer/visibility helpers (no
+    parallel RBAC/shape logic) — server-rendered, matching the other
+    inventory-style pages (``studio_index``, ``admin_marketplaces``) rather
+    than a client-side ``fetch('/api/data-apps')``.
+
+    When the feature is disabled, renders an empty-state note instead of
+    404ing — the nav item is already hidden via ``data_apps_enabled()``, so
+    a direct hit here (bookmark, typed URL) should explain why nothing is
+    here rather than look like a broken link.
+    """
+    from app.api.data_apps import _can_view, _serialize
+    from src.repositories import data_apps_repo, users_repo
+
+    cfg = get_data_apps_config()
+    enabled = bool(cfg.get("enabled"))
+    apps: list[dict] = []
+    if enabled:
+        u_repo = users_repo()
+        rows = [r for r in data_apps_repo().list() if _can_view(user, r)]
+        for row in rows:
+            serialized = _serialize(row, cfg)
+            owner = u_repo.get_by_id(row["owner_user_id"])
+            serialized["owner_email"] = (owner or {}).get("email") or row["owner_user_id"]
+            serialized["badge_class"] = _state_badge_class(row["state"])
+            apps.append(serialized)
+
+    return templates.TemplateResponse(
+        request,
+        "data_apps.html",
+        {**_chrome_ctx(request, user), "apps": apps, "data_apps_feature_enabled": enabled},
+    )
+
+
+@apps_web_router.get("/apps/detail/{slug}", response_class=HTMLResponse)
+async def data_app_detail_page(
+    slug: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Detail page for a single hosted data app.
+
+    Metadata + state render server-side; the logs `<pre>` and the
+    Deploy/Stop buttons are client-side ``fetch`` calls against the existing
+    control-plane API (``app/api/data_apps.py``) — this route only decides
+    what to SHOW (``can_manage`` gates the mutating controls + the logs
+    section, since ``GET .../logs`` is owner/Admin-only server-side too;
+    hiding it for a viewer avoids a page-load fetch that would 403).
+    """
+    from app.api.data_apps import _can_view, _serialize
+    from src.repositories import data_apps_repo, users_repo
+
+    row = data_apps_repo().get_by_slug(slug)
+    if not row:
+        raise HTTPException(status_code=404, detail="data_app_not_found")
+    if not _can_view(user, row):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    is_admin = is_user_admin(user["id"])
+    is_owner = user["id"] == row["owner_user_id"]
+    can_manage = is_owner or is_admin
+
+    owner = users_repo().get_by_id(row["owner_user_id"])
+    serialized = _serialize(row)
+    serialized["owner_email"] = (owner or {}).get("email") or row["owner_user_id"]
+    serialized["badge_class"] = _state_badge_class(row["state"])
+
+    return templates.TemplateResponse(
+        request,
+        "data_app_detail.html",
+        {
+            **_chrome_ctx(request, user),
+            "app": serialized,
+            "is_owner": is_owner,
+            "is_admin": is_admin,
+            "can_manage": can_manage,
+        },
+    )
 
 
 @router.get("/me/memory-mining", response_class=HTMLResponse)
