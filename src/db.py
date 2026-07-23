@@ -48,9 +48,42 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 96
+SCHEMA_VERSION = 97
 
-_SYSTEM_SCHEMA = """
+# v96: data_apps registry (hosted user web apps). Extracted as a shared
+# module-level constant so the fresh-install DDL (appended to
+# _SYSTEM_SCHEMA below) and the _v95_to_v96 upgrade step execute the
+# identical CREATE TABLE — see _v95_to_v96 for the upgrade-path wiring.
+_DATA_APPS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS data_apps (
+    id              VARCHAR PRIMARY KEY,
+    slug            VARCHAR UNIQUE NOT NULL,
+    name            VARCHAR NOT NULL,
+    description     TEXT DEFAULT '',
+    owner_user_id   VARCHAR NOT NULL,
+    repo_mode       VARCHAR NOT NULL DEFAULT 'internal',
+    repo_url        VARCHAR DEFAULT '',
+    repo_branch     VARCHAR DEFAULT 'main',
+    deployed_sha    VARCHAR DEFAULT '',
+    runtime_tag     VARCHAR DEFAULT '',
+    state           VARCHAR NOT NULL DEFAULT 'created',
+    state_detail    TEXT DEFAULT '',
+    secrets_enc     TEXT DEFAULT '',
+    env             TEXT DEFAULT '{}',
+    cpu_limit       VARCHAR DEFAULT '',
+    mem_limit       VARCHAR DEFAULT '',
+    idle_timeout_s  INTEGER DEFAULT 1800,
+    sleep_mode      VARCHAR DEFAULT 'recreate',
+    service_token_id VARCHAR DEFAULT '',
+    last_request_at TIMESTAMP,
+    last_deploy_at  TIMESTAMP,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    updated_at      TIMESTAMP DEFAULT current_timestamp
+);
+"""
+
+_SYSTEM_SCHEMA = (
+    """
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL,
     applied_at TIMESTAMP DEFAULT current_timestamp
@@ -1541,6 +1574,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, priority, run_after);
 CREATE INDEX IF NOT EXISTS idx_jobs_idem ON jobs(idempotency_key);
 """
+    + _DATA_APPS_CREATE_SQL
+)
 
 
 import threading  # noqa: E402
@@ -6391,7 +6426,18 @@ def _v94_to_v95(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def _v95_to_v96(conn: duckdb.DuckDBPyConnection) -> None:
-    """v95→v96: ``corpus_files.path`` — logical path for upsert-on-upload.
+    """v95→v96: ``data_apps`` registry (hosted user web apps).
+
+    ``_SYSTEM_SCHEMA`` already creates the table on fresh installs (it is
+    appended via the shared ``_DATA_APPS_CREATE_SQL`` constant); this
+    migration covers the sequential-upgrade path from a pre-v96 instance.
+    """
+    conn.execute(_DATA_APPS_CREATE_SQL)
+    conn.execute("UPDATE schema_version SET version = 96")
+
+
+def _v96_to_v97(conn: duckdb.DuckDBPyConnection) -> None:
+    """v96→v97: ``corpus_files.path`` — logical path for upsert-on-upload.
 
     An optional caller-supplied identity (e.g. a repo-relative path) so
     re-uploading the same logical file REPLACES the existing row instead of
@@ -6405,11 +6451,8 @@ def _v95_to_v96(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute("ALTER TABLE corpus_files ADD COLUMN path VARCHAR")
     # Enforce at most one row per (corpus_id, path). Existing rows all have
     # path=NULL (just-added column), so the index build can't collide.
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_files_corpus_path "
-        "ON corpus_files(corpus_id, path)"
-    )
-    conn.execute("UPDATE schema_version SET version = 96")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_files_corpus_path ON corpus_files(corpus_id, path)")
+    conn.execute("UPDATE schema_version SET version = 97")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -6800,10 +6843,14 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # (index-corruption hotfix). No-op here — _SYSTEM_SCHEMA never
             # creates them on fresh installs.
             _v94_to_v95(conn)
-            # v95→v96: corpus_files.path (upsert-on-upload identity).
+            # v95→v96: data_apps table (hosted user web apps registry).
+            # _SYSTEM_SCHEMA already creates it on fresh installs (no-op
+            # CREATE IF NOT EXISTS here).
+            _v95_to_v96(conn)
+            # v96→v97: corpus_files.path (upsert-on-upload identity).
             # _SYSTEM_SCHEMA already declares it on fresh installs (no-op
             # ALTER here).
-            _v95_to_v96(conn)
+            _v96_to_v97(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7049,6 +7096,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v94_to_v95(conn)
             if current < 96:
                 _v95_to_v96(conn)
+            if current < 97:
+                _v96_to_v97(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

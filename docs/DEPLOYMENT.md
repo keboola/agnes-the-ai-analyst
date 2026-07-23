@@ -468,6 +468,56 @@ entry the caller could already download via the app-served route (the same
 accessible-tables gate), and the short TTL bounds how long a leaked URL
 would remain useful.
 
+### Data apps
+
+Hosted data apps (`data_apps.enabled`, off by default) let analysts run their
+own web applications next to the data — a Flask dashboard, a Dash app, a
+static SPA — using the upstream `data-app-python-js` runtime image, deployed
+via internal git push (or a BYO external repo), reachable at
+`/apps/<slug>/` and controlled through `agnes app`, MCP tools, or the
+`/apps` web UI. Full design: [`docs/superpowers/specs/2026-07-21-data-apps-design.md`](superpowers/specs/2026-07-21-data-apps-design.md); flow summary in [`architecture.md`](architecture.md#hosted-data-apps).
+
+**Enable it:**
+
+1. Set `data_apps.enabled: true` in `instance.yaml` (see
+   `config/instance.yaml.example` for the full block — runtime image tag,
+   default resource limits, per-user app quota, idle timeout).
+2. Generate the shared secret between the app and the `apps-runner` sidecar
+   and put it in `.env`:
+
+   ```bash
+   APPS_RUNNER_TOKEN=$(openssl rand -hex 32)
+   ```
+
+3. Bring up the sidecar alongside the rest of the stack with the `apps`
+   Compose profile:
+
+   ```bash
+   docker compose --profile apps up -d
+   ```
+
+**Subdomain routing (optional).** By default apps are reached at
+`/apps/<slug>/` on the main host. Setting `data_apps.subdomain_base` (e.g.
+`apps.example.com`) additionally serves each app at `<slug>.apps.example.com`
+— requires a wildcard DNS record and wildcard TLS. See
+[`deploy/caddy/Caddyfile.apps-subdomain`](../deploy/caddy/Caddyfile.apps-subdomain)
+for the Caddy snippet to append to your reverse proxy.
+
+**Security notes:**
+
+- The Docker socket is mounted **only** into the `apps-runner` container
+  (`services/apps_runner/api.py`) — no other process touches it. The
+  sidecar's API is unpublished (internal Compose network only),
+  token-gated (`X-Runner-Token`), and narrow: it only ever runs the
+  configured, allowlisted runtime image with fixed mounts, never an
+  arbitrary image or volume.
+- Data access is **owner-inherited**: an app's REST calls run under a token
+  scoped to the app owner's own grants (see spec §8). Granting someone
+  access to view/open an *app* is therefore an act of publication — they see
+  whatever data the app fetches under the owner's rights, even where their
+  own grants are narrower (spec §10). Deactivating the owner revokes the
+  app's token until an admin reassigns ownership.
+
 ### Metrics (Prometheus)
 
 Every role process exposes `GET /metrics` (`app/observability/metrics.py`)

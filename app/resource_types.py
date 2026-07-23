@@ -49,6 +49,7 @@ class ResourceType(StrEnum):
     SLACK_CHANNEL = "slack_channel"
     COLLECTION = "collection"
     KNOWLEDGE_DIGEST = "knowledge_digest"
+    DATA_APP = "data_app"
 
 
 # Shape returned by ``list_blocks`` delegates. Kept as plain ``dict`` to keep
@@ -239,6 +240,36 @@ def _data_package_blocks() -> List[Block]:
                     "icon": r.get("icon"),
                     "color": r.get("color"),
                     "slug": r.get("slug"),
+                }
+                for r in rows
+            ],
+        }
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Data app projection
+# ---------------------------------------------------------------------------
+
+
+def _data_app_blocks() -> List[Block]:
+    """Project ``data_apps`` into grant-picker blocks (resource_id = slug)."""
+    from src.repositories import data_apps_repo
+
+    rows = data_apps_repo().list(limit=_GRANT_PROJECTION_LIMIT)
+    if not rows:
+        return []
+    return [
+        {
+            "id": "data_apps",
+            "name": "Data apps",
+            "items": [
+                {
+                    "resource_id": r["slug"],
+                    "name": r["name"],
+                    "category": "data_app",
+                    "description": r.get("description"),
+                    "slug": r["slug"],
                 }
                 for r in rows
             ],
@@ -615,6 +646,13 @@ RESOURCE_TYPES: dict[ResourceType, ResourceTypeSpec] = {
         ),
         id_format="<digest_id>",
         list_blocks=_knowledge_digest_blocks,
+    ),
+    ResourceType.DATA_APP: ResourceTypeSpec(
+        key=ResourceType.DATA_APP,
+        display_name="Data apps",
+        description="A hosted user web application served behind instance auth.",
+        id_format="<slug>",
+        list_blocks=_data_app_blocks,
     ),
 }
 

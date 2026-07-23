@@ -179,6 +179,7 @@ class TestInstanceBrandShort:
         monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
         import importlib
         import app.instance_config as mod
+
         mod._instance_config = None
         importlib.reload(mod)
         return mod
@@ -212,9 +213,7 @@ class TestInstanceBrandShort:
     def test_env_overrides_yaml(self, tmp_path, monkeypatch):
         state_dir = tmp_path / "state"
         state_dir.mkdir(exist_ok=True)
-        (state_dir / "instance.yaml").write_text(
-            "instance:\n  name: Acme\n  brand_short: FromYaml\n"
-        )
+        (state_dir / "instance.yaml").write_text("instance:\n  name: Acme\n  brand_short: FromYaml\n")
         monkeypatch.setenv("AGNES_INSTANCE_BRAND_SHORT", "FromEnv")
         mod = self._reload(tmp_path, monkeypatch)
         assert mod.get_instance_brand_short() == "FromEnv"
@@ -235,9 +234,7 @@ class TestInstanceBrandShort:
         monkeypatch.delenv("AGNES_INSTANCE_BRAND", raising=False)
         state_dir = tmp_path / "state"
         state_dir.mkdir(exist_ok=True)
-        (state_dir / "instance.yaml").write_text(
-            "instance:\n  name: Acme\n  brand: Foundry AI\n  brand_short: '   '\n"
-        )
+        (state_dir / "instance.yaml").write_text("instance:\n  name: Acme\n  brand: Foundry AI\n  brand_short: '   '\n")
         mod = self._reload(tmp_path, monkeypatch)
         assert mod.get_instance_brand_short() == "Foundry AI"
         mod._instance_config = None
@@ -566,6 +563,44 @@ class TestCustomScripts:
         else:
             assert len(scripts) == 1, f"enabled={enabled_yaml!r} should keep the entry but it was dropped"
         mod._instance_config = None
+
+
+class TestDataAppsConfig:
+    """data_apps: — hosted user web apps feature toggle + defaults (v96).
+    Resolution: YAML > default (no env override, mirrors corporate_memory)."""
+
+    def _reset_cache(self):
+        import app.instance_config as ic
+
+        ic._instance_config = None
+
+    def test_data_apps_config_defaults(self, monkeypatch):
+        from app import instance_config
+
+        instance_config._instance_config = None  # reset cache — match how sibling tests do it
+        cfg = instance_config.get_data_apps_config()
+        assert cfg.get("enabled", False) is False
+
+    def test_data_apps_config_absent_returns_empty_dict(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        self._reset_cache()
+        from app.instance_config import get_data_apps_config
+
+        assert get_data_apps_config() == {}
+
+    def test_data_apps_config_reads_yaml_section(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        import yaml
+
+        (state / "instance.yaml").write_text(yaml.dump({"data_apps": {"enabled": True, "max_apps_per_user": 5}}))
+        self._reset_cache()
+        from app.instance_config import get_data_apps_config
+
+        cfg = get_data_apps_config()
+        assert cfg["enabled"] is True
+        assert cfg["max_apps_per_user"] == 5
 
 
 class TestLintKnobs:
