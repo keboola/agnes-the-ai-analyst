@@ -79,10 +79,12 @@ class ChatConfig:
     llm_auth: str = "api_key"
     # Agent-as-API broker policy (Task 8, agent-profiles V1a): models a
     # brokered chat-completion request may use besides the calling agent's
-    # own pinned model (or the instance default when unpinned) — e.g. a
-    # cheap utility model every agent is allowed to fall back to regardless
-    # of its persona's primary model. Empty by default (no extra models
-    # allowed). Enforced in ``app/api/broker_agent_policy.py::check_model``.
+    # own pinned model — e.g. a cheap utility model every agent is allowed
+    # to fall back to regardless of its persona's primary model. An agent
+    # with no pinned model has NO model policy at all (every model is
+    # allowed; utility_models is irrelevant for it). Empty by default (no
+    # extra models allowed). Enforced in
+    # ``app/api/broker_agent_policy.py::check_model``.
     agent_api_utility_models: list[str] = field(default_factory=list)
     # TTL (seconds) for the cached agent-monthly-token-total the broker
     # checks on every brokered call before enforcing ``token_budget_monthly``

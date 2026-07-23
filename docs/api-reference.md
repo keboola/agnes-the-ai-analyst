@@ -1245,6 +1245,13 @@ interactive OAuth browser flow. The token is returned once and must be saved by 
 - /api/users/{user_id}/reset-password
 - /api/users/{user_id}/set-password
 
+### `/api/v1/agents` — Agent management (owner-scoped CRUD, scope, agent PATs)
+
+- /api/v1/agents
+- /api/v1/agents/{agent_id}
+- /api/v1/agents/{agent_id}/scope
+- /api/v1/agents/{agent_id}/tokens
+
 ### `/api/v2` — v2 catalog and query APIs
 
 - /api/v2/catalog

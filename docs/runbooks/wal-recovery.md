@@ -62,7 +62,7 @@ Only reached when the DB file itself will not open after the WAL is discarded.
    (chmod `0o600`).
 2. `<STATE_DIR>/system.duckdb.pre-migrate` is inspected read-only via
    `_peek_schema_version` to confirm its `schema_version.version` matches the
-   running binary's `SCHEMA_VERSION` (currently `95`, in `src/db.py`).
+   running binary's `SCHEMA_VERSION` (currently `96`, in `src/db.py`).
 3. If the versions match, the snapshot is copied in as the new
    `system.duckdb` and the migration ladder re-runs (idempotent). App starts.
 4. If the versions do **not** match, auto-recovery is refused with:
@@ -212,7 +212,7 @@ cp "${STATE_DIR}/system.duckdb.pre-migrate" "${STATE_DIR}/system.duckdb"
 ```
 
 The app will re-run the migration ladder on the next start (idempotent) and
-land at `SCHEMA_VERSION=95`.
+land at `SCHEMA_VERSION=96`.
 
 #### Option C — restore from a VM or volume snapshot
 
@@ -315,7 +315,7 @@ curl -sf http://localhost:5000/api/health | python3 -m json.tool
 | `_move_to_broken` | `src/db.py` — moves broken DB + WAL to `.broken.<ts>` |
 | `_peek_schema_version` | `src/db.py` — read-only version probe for the snapshot |
 | `_ensure_schema` | `src/db.py` — takes pre-migrate snapshot; runs post-migration `CHECKPOINT` |
-| `SCHEMA_VERSION` | `src/db.py` line 50 — current target version |
+| `SCHEMA_VERSION` | `src/db.py` line 51 — current target version |
 | `schema_version` table | `src/db.py` `_SYSTEM_SCHEMA` — `version INTEGER`, `applied_at TIMESTAMP` |
 | WAL-recovery tests | `tests/test_db_wal_recovery.py` |
 | State directory layout | `docs/state-dir.md` — A (nested) vs B (flat) mount topologies |

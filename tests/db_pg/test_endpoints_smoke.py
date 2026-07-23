@@ -2132,6 +2132,17 @@ KNOWN_UNTESTED = {
     "POST /webhooks/jira",
     # My-stack curated toggle
     "PUT /api/my-stack/curated/{marketplace_id}/{plugin_name}",
+    # Agent management (v96 agent profiles + agent-as-API, Task 5) — owner-scoped
+    # CRUD + scope + agent PAT issuance. Behaviour (ownership 404/403 matrix,
+    # slug validation/conflict, scope dedupe, PAT-issuance mode gate) covered by
+    # tests/test_agents_management_api.py; not duplicated in this PG smoke sweep.
+    "POST /api/v1/agents",
+    "GET /api/v1/agents",
+    "GET /api/v1/agents/{agent_id}",
+    "PUT /api/v1/agents/{agent_id}",
+    "DELETE /api/v1/agents/{agent_id}",
+    "PUT /api/v1/agents/{agent_id}/scope",
+    "POST /api/v1/agents/{agent_id}/tokens",
 }
 
 
