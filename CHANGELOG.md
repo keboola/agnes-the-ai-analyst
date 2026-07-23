@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **`agnes collections rm-file <collection_id> <file_id> [--yes]`** — CLI command to delete a single file from a collection (previously only the whole-collection `rm` was exposed; per-file removal required a raw API call).
 
 ### Changed
 
