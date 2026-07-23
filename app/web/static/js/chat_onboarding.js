@@ -202,13 +202,26 @@ function greetOnce(synced) {
 // re-renders the panel. Earned step progress is preserved.
 function restartOnboarding() {
   if (!ready) return;
-  // Collapse the empty-state hero first (same as the normal first-message
-  // flow) so the replayed welcome is visible even from a brand-new chat —
-  // otherwise the greeting renders behind the capability panel.
-  hooks.revealConversation?.();
-  journey = { ...journey, onboarded: false };
-  greetOnce();
-  hooks.scrollToBottom?.();
+  // Defensive: the "?" click handler has no other guard, so a render hiccup
+  // here (e.g. a hook throwing) must never leave the button looking dead and
+  // swallow the cause. Wrap the whole replay and surface any failure.
+  try {
+    // Collapse the empty-state hero first (same as the normal first-message
+    // flow) so the replayed welcome is visible even from a brand-new chat —
+    // otherwise the greeting renders behind the capability panel.
+    hooks.revealConversation?.();
+    journey = { ...journey, onboarded: false };
+    greetOnce();
+    hooks.scrollToBottom?.();
+    // Fallback: if scrollToBottom is a no-op (user scrolled up, or the
+    // empty-state hero had the thread off-screen) force the freshly rendered
+    // welcome into view so the "?" always produces a visible result.
+    document.getElementById("chat-messages")?.lastElementChild?.scrollIntoView({
+      block: "end",
+    });
+  } catch (err) {
+    console.error("[onboarding] restart failed:", err);
+  }
 }
 
 // ── Gap resolver ─────────────────────────────────────────────────────────────
