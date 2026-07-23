@@ -483,12 +483,22 @@ async def deploy_data_app(
     _require_owner_or_admin(user, row)
 
     repo = data_apps_repo()
-    try:
-        sha = fast_forward_live(slug, payload.sha)
-    except ValueError as exc:
-        if "no commits to deploy" in str(exc):
-            raise HTTPException(status_code=409, detail="deploy_empty_repo")
-        raise HTTPException(status_code=400, detail=str(exc))
+    if row["repo_mode"] == "external":
+        # External repos have no internal bare repo (`init_app_repo` is
+        # internal-only at create) — nothing for `fast_forward_live` to
+        # fast-forward. The runtime clones HEAD of `repo_branch` at boot
+        # (spec §2: external repos are HEAD-at-wake; sha pinning is future
+        # work), so an explicit sha in the request can't be honored.
+        if payload.sha:
+            raise HTTPException(status_code=400, detail="external_repo_sha_unsupported")
+        sha = ""
+    else:
+        try:
+            sha = fast_forward_live(slug, payload.sha)
+        except ValueError as exc:
+            if "no commits to deploy" in str(exc):
+                raise HTTPException(status_code=409, detail="deploy_empty_repo")
+            raise HTTPException(status_code=400, detail=str(exc))
 
     try:
         redeploy_current(row)

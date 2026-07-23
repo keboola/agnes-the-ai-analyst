@@ -43,6 +43,10 @@ _ERROR_MESSAGES = {
     "invalid_repo_mode": "Invalid --repo-url/--repo-branch combination.",
     "create_in_progress": "Another create request for your account is already in flight. Try again in a moment.",
     "deploy_empty_repo": "This app's repo has no commits yet — push something before deploying.",
+    "external_repo_sha_unsupported": (
+        "External-repo apps always deploy HEAD of their configured branch — pinning a specific"
+        " sha isn't supported yet. Retry without --sha."
+    ),
     "runner_unavailable": "The data-app runner is unavailable right now. Try again shortly, or check `agnes status`.",
     "data_apps_disabled": "Data apps are not enabled on this server. Ask an admin to enable them in instance.yaml.",
     "forbidden": "You don't have access to this data app.",

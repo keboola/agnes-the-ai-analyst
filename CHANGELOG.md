@@ -24,6 +24,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `apps`.
   - `agnes app create` accepts `--repo-url`/`--repo-branch` to track an
     external git repo instead of the internal template (`repo_mode=external`).
+    Deploying an external-repo app always redeploys HEAD of `repo_branch`
+    (the internal fast-forward-to-a-pinned-sha ref only exists for
+    `repo_mode=internal`); passing an explicit `--sha` is rejected
+    (`external_repo_sha_unsupported`) since sha pinning isn't supported for
+    external repos yet.
   - `agnes app open` prints the app's URL only — it never launches a
     browser, for headless parity across environments.
   - `agnes app delete` prompts for confirmation unless `--yes`/`-y` is

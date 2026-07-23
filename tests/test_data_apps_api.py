@@ -273,6 +273,27 @@ def _seed_empty_app(slug="empty1", owner_id="owner1"):
     init_app_repo(slug)
 
 
+def _seed_external_app(slug="eapp", owner_id="owner1", repo_url="https://example.com/org/app.git", repo_branch="main"):
+    """Register a `repo_mode="external"` app row — no internal bare repo is
+    ever created for these (`init_app_repo` is internal-only at create), so
+    deploy must never touch `fast_forward_live`."""
+    from src.db import get_system_db
+    from src.repositories.data_apps import DataAppsRepository
+
+    conn = get_system_db()
+    try:
+        DataAppsRepository(conn).create(
+            slug=slug,
+            name=slug.upper(),
+            owner_user_id=owner_id,
+            repo_mode="external",
+            repo_url=repo_url,
+            repo_branch=repo_branch,
+        )
+    finally:
+        conn.close()
+
+
 @pytest.fixture
 def seeded_repo_with_commit(api_env):
     _seed_app_with_commit(api_env["data_dir"], slug="sapp", owner_id="owner1")
@@ -659,6 +680,43 @@ class TestDeploy:
 
         assert new_token_id != old_token_id
         assert old_token_row["revoked_at"] is not None
+
+    def test_deploy_external_repo_happy_path(self, client_as_user, fake_runner, api_env):
+        """External-repo apps never get an internal bare repo (`init_app_repo`
+        is internal-only at create), so deploy must not go through
+        `fast_forward_live` — the runtime clones HEAD of `repo_branch` at
+        boot instead of a pinned internal sha."""
+        _seed_external_app(
+            slug="eapp", owner_id="owner1", repo_url="https://example.com/org/app.git", repo_branch="main"
+        )
+        r = client_as_user.post("/api/data-apps/eapp/deploy", json={})
+        assert r.status_code == 200, r.text
+        assert r.json()["state"] == "running"
+        assert r.json()["deployed_sha"] == ""
+
+        assert fake_runner.up_calls
+        slug, spec, config_json = fake_runner.up_calls[0]
+        assert slug == "eapp"
+        git = config_json["dataApp"]["git"]
+        assert git["repository"] == "https://example.com/org/app.git"
+        assert git["branch"] == "main"
+        assert "username" not in git
+        assert "#password" not in git
+
+        # Service token is still minted for the platform API even though no
+        # internal git credential is handed to the container.
+        assert "AGNES_TOKEN" in config_json["dataApp"]["secrets"]
+
+        row = client_as_user.get("/api/data-apps/eapp").json()
+        assert row["state"] == "running"
+        assert row["deployed_sha"] == ""
+
+    def test_deploy_external_repo_with_sha_rejected(self, client_as_user, fake_runner, api_env):
+        _seed_external_app(slug="eapp2", owner_id="owner1")
+        r = client_as_user.post("/api/data-apps/eapp2/deploy", json={"sha": "abc"})
+        assert r.status_code == 400
+        assert r.json()["detail"] == "external_repo_sha_unsupported"
+        assert not fake_runner.up_calls
 
 
 class TestStop:
