@@ -3674,6 +3674,7 @@
         document.getElementById('bqDataset').value = table.bucket || '';
         document.getElementById('bqSourceTable').value = table.source_table || table.name || '';
         document.getElementById('bqViewName').value = table.name || '';
+        document.getElementById('bqProject').value = '';
         document.getElementById('bqDescription').value = '';
         document.getElementById('bqFolder').value = '';
         document.getElementById('bqSyncSchedule').value = '';
@@ -4491,6 +4492,7 @@
                 bucket: dataset,
                 source_table: sourceTable,
                 source_query: 'SELECT * FROM bq."' + dataset + '"."' + sourceTable + '"',
+                bq_fqn: bqFqn,
                 profile_after_sync: false,
                 server_only: serverOnly,
                 description: description,
