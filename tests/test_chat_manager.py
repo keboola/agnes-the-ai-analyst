@@ -3021,3 +3021,31 @@ def test_reap_once_paused_sweep_runs_even_if_kill_raises(tmp_path):
         assert mgr._repo.get_session(s.id).sandbox_id is None
 
     asyncio.run(_run())
+
+
+def test_turn_buffer_holds_tool_results_for_midturn_replay(manager: ChatManager):
+    """tool_result frames must ride the turn_buffer alongside token and
+    tool_call: a mid-turn reconnect replays the buffer, and replaying the
+    calls without their results left every tool block stuck on "running…"
+    after a refresh."""
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await _wait_until(lambda: _ws_seated(manager, s.id, ws))
+        handle.emit({"type": "tool_call", "tool_use_id": "toolu_1", "tool": "Bash", "args": {}})
+        handle.emit({"type": "tool_result", "tool_use_id": "toolu_1", "result": "ok"})
+        await _wait_until(
+            lambda: len(manager._live[s.id].turn_buffer) >= 2,
+        )
+        types = [f["type"] for f in manager._live[s.id].turn_buffer]
+        assert types == ["tool_call", "tool_result"]
+        # The runner's pairing key survives the envelope stamp untouched.
+        assert all(f.get("tool_use_id") == "toolu_1" for f in manager._live[s.id].turn_buffer)
+        attach_task.cancel()
+
+    asyncio.run(_run())

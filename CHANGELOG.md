@@ -11,6 +11,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Upsert-on-upload for collection files.** `POST /api/collections/{id}/files` accepts an optional per-file `paths` form field; re-uploading a file with the same `(corpus_id, path)` replaces it (old blob/chunks/derived tables purged) instead of inserting a duplicate. New `agnes collections upload --path <id>` (single-file) exposes it. Files without a path keep the current plain-insert behavior. Schema: `corpus_files.path` (nullable), DuckDB v97 + Alembic `0044`.
+- **`agnes collections rm-file <collection_id> <file_id> [--yes]`** — CLI command to delete a single file from a collection (previously only the whole-collection `rm` was exposed; per-file removal required a raw API call).
 
 ### Changed
 
@@ -34,13 +36,117 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   restating it (and tends to be a near-verbatim reword of the item it
   contradicts), so it is routed to the create path where contradiction
   detection runs, rather than being absorbed as confirming evidence.
-- Keboola semantic-layer sync (`sync_semantic_layer()`) now falls back to the default named Keboola `source_connections` entry (the connection `/admin/data-sources` manages) when the legacy `KEBOOLA_STACK_URL`/`KEBOOLA_STORAGE_TOKEN` env-or-vault slot is empty. Verified live: an instance that connects a Keboola project only through the admin wizard previously failed every semantic-layer sync with "credentials not configured", even though the same connection's regular table syncs and its own `/test` endpoint both resolve their token off it correctly.
 
 ### Removed
 
 ### Internal
 
 ### Security
+
+## [0.76.15] - 2026-07-23
+
+### Fixed
+
+- **`docker compose up` no longer requires `APPS_RUNNER_TOKEN` for stacks that never touch Data Apps.** The `apps-runner` service's env var was declared hard-required (`${APPS_RUNNER_TOKEN:?...}`), which broke every `docker compose up` invocation without it set — compose validates interpolation for the whole file before profile filtering, so this fired even though `apps-runner` is gated behind `profiles: ["apps"]`. Caused the v0.76.14 release to fail its smoke test and auto-rollback (#1007). Now soft-defaults to empty; the service's own token check already fails closed (rejects every request) when unset, so this is not an auth-bypass regression.
+
+## [0.76.14] - 2026-07-23
+
+### Added
+
+- **Data Apps** (schema v96): host user web applications next to the data
+  using the upstream `data-app-python-js` runtime image — internal git repos
+  with push-to-deploy (or BYO external repo), RBAC-gated ingress at
+  `/apps/<slug>/` (optional per-app subdomains), auto-sleep with
+  wake-on-request, an `apps-runner` sidecar as the sole holder of the Docker
+  socket, `agnes app {list,show,create,deploy,logs,open,stop,delete}` CLI,
+  MCP tools (`data_apps_list`, `data_app_get`, `data_app_deploy`,
+  `data_app_logs`), and a server-rendered `/apps` dashboard (list +
+  detail/logs page). Off by default (`data_apps.enabled`) + compose profile
+  `apps`. New `data_apps` table (DuckDB `_v95_to_v96` + Alembic
+  `0043_data_apps_v96`, both backends).
+  - `agnes app create` accepts `--repo-url`/`--repo-branch` to track an
+    external git repo instead of the internal template (`repo_mode=external`).
+    Deploying an external-repo app always redeploys HEAD of `repo_branch`
+    (the internal fast-forward-to-a-pinned-sha ref only exists for
+    `repo_mode=internal`); passing an explicit `--sha` is rejected
+    (`external_repo_sha_unsupported`) since sha pinning isn't supported for
+    external repos yet.
+  - `agnes app open` prints the app's URL only — it never launches a
+    browser, for headless parity across environments.
+  - `agnes app delete` prompts for confirmation unless `--yes`/`-y` is
+    passed.
+  - The MCP tools split by permission tier: `data_apps_list`/`data_app_get`
+    are viewer-level (owner, Admin, or a group with a `resource_grants` row
+    may call them); `data_app_deploy`/`data_app_logs` are owner/Admin-only.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.13] - 2026-07-23
+
+### Added
+
+- **Register a BigQuery table from another project without leaving the UI.**
+  The "Live from BigQuery" form gained an optional **Project** field; filling
+  it in sends an explicit `bq_fqn` (`project.dataset.table`) instead of the
+  configured-project + dataset + table triplet. Blank keeps the previous
+  behaviour exactly. Only applies to Live access — synced (materialized)
+  tables always read from the configured project, so the field is hidden
+  for those. Previously the only way to register a cross-project table was
+  to call `POST /api/admin/register-table` or `PUT /api/admin/registry/{id}`
+  by hand.
+- **`data_source.bigquery.project` and `.location` are documented in server
+  config.** Both were missing from the known-fields registry, so the admin
+  form filed them under "Other (YAML-only) keys" with no label, type or hint
+  while their siblings were described. The `project` hint points at `bq_fqn`
+  as the supported way to reach a table in another project, and the
+  `location` hint names the `404 Not found: Table ... was not found in
+  location <location>` symptom of a mismatch.
+
+## [0.76.12] - 2026-07-23
+
+### Fixed
+
+- **The tarball workspace transport actually engages** — the 0.76.9
+  speedup silently never did: the E2B template bakes `/work` as root-owned,
+  so the in-sandbox `tar` extraction (running as `user`) failed with
+  `Permission denied` on every member and EVERY spawn fell back to the
+  slow per-file upload path (found live in production logs). Extraction
+  now runs as root and `chown`s the tree (and `/work` itself) to the
+  sandbox `user` account, which also makes `/work` writable for
+  agent-created files.
+- **A wedged tool call no longer hangs the chat turn forever.** The
+  real-agent path has no per-tool timeout, so an in-sandbox tool that
+  never returned (e.g. a blocked `agnes pull`) left the user staring at
+  "running…" indefinitely. A turn-idle watchdog
+  (`AGNES_TURN_IDLE_SECONDS`, default 300 s of no agent activity) now
+  interrupts the turn and surfaces a `turn_idle_timeout` error frame; the
+  session keeps working.
+- **Chat tool blocks no longer stay stuck on "running…" forever.** The
+  frame envelope (`stamp_frame`) overwrites every frame's `id` with
+  `chat_id:seq`, so the web UI could never pair a `tool_call` with its
+  `tool_result` — every tool block kept its hourglass even after the
+  answer arrived. The runner now sends the pairing key on a dedicated
+  `tool_use_id` field (both frames) and the UI pairs on it; `tool_result`
+  frames also ride the mid-turn replay buffer so a page refresh during a
+  turn doesn't strand the replayed tool blocks without their results.
+- **Chat answers no longer squash prose segments together.** Text blocks
+  bracketing tool calls were joined with no separator in the persisted
+  assistant message ("…tables.35", "…znovu:Z MCP…"); they now join with a
+  blank line.
+
+## [0.76.11] - 2026-07-22
+
+### Fixed
+
+- Keboola semantic-layer sync (`sync_semantic_layer()`) now falls back to the default named Keboola `source_connections` entry (the connection `/admin/data-sources` manages) when the legacy `KEBOOLA_STACK_URL`/`KEBOOLA_STORAGE_TOKEN` env-or-vault slot is empty. Verified live: an instance that connects a Keboola project only through the admin wizard previously failed every semantic-layer sync with "credentials not configured", even though the same connection's regular table syncs and its own `/test` endpoint both resolve their token off it correctly.
 
 ## [0.76.10] - 2026-07-22
 
