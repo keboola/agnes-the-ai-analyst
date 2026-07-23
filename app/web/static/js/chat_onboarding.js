@@ -159,6 +159,8 @@ function renderJourneyPanel() {
     <div class="cloud-chat-journey-head">
       <h3>Your Journey</h3>
       ${complete ? '<span class="cloud-chat-journey-badge">Complete ✓</span>' : ""}
+      <button type="button" class="cloud-chat-journey-restart" data-journey-restart
+              title="Replay Agnes's welcome" aria-label="Restart onboarding">?</button>
     </div>
     <p class="cloud-chat-journey-sub">Learn what Agnes is and make it yours.</p>
     <div class="cloud-chat-journey-list">${rows}</div>`;
@@ -176,6 +178,9 @@ function renderJourneyPanel() {
       window.location.href = href;
     });
   });
+
+  const restartBtn = el.querySelector("[data-journey-restart]");
+  if (restartBtn) restartBtn.addEventListener("click", restartOnboarding);
 }
 
 // ── Greeting ────────────────────────────────────────────────────────────────
@@ -190,6 +195,20 @@ function greetOnce(synced) {
     );
   }
   patchJourney({ onboarded: true });
+}
+
+// Replay onboarding on demand — the "?" in the journey head clears the
+// one-time greeting guard so greetOnce() shows Agnes's welcome again and
+// re-renders the panel. Earned step progress is preserved.
+function restartOnboarding() {
+  if (!ready) return;
+  // Collapse the empty-state hero first (same as the normal first-message
+  // flow) so the replayed welcome is visible even from a brand-new chat —
+  // otherwise the greeting renders behind the capability panel.
+  hooks.revealConversation?.();
+  journey = { ...journey, onboarded: false };
+  greetOnce();
+  hooks.scrollToBottom?.();
 }
 
 // ── Gap resolver ─────────────────────────────────────────────────────────────
