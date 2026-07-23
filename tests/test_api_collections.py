@@ -1042,3 +1042,93 @@ class TestFileUpsert:
         # Same basename, different logical path → both kept (no collision).
         paths = {f["path"] for f in listing.json()["files"]}
         assert paths == {"apis/x.md", "concepts/x.md"}
+
+    def test_reupload_bundle_same_path_purges_old_children(self, seeded_app):
+        """Re-uploading a zip at the same path must not orphan the previous
+        archive's extracted member rows."""
+        import zipfile
+
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app, "Bundle Upsert")
+
+        def _zip(members: dict[str, str]) -> io.BytesIO:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                for name, body in members.items():
+                    zf.writestr(name, body)
+            buf.seek(0)
+            return buf
+
+        first = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files={"files": ("dump.zip", _zip({"a.md": "# A", "b.md": "# B"}), "application/zip")},
+            data={"paths": "bundles/dump.zip"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert first.status_code == 201, first.text
+        listing = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        ).json()["files"]
+        # archive + 2 members
+        assert len(listing) == 3
+
+        # Re-upload a different archive (one member) at the same logical path.
+        second = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files={"files": ("dump.zip", _zip({"c.md": "# C"}), "application/zip")},
+            data={"paths": "bundles/dump.zip"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert second.status_code == 201, second.text
+
+        files = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        ).json()["files"]
+        # Old archive + its 2 members purged; new archive + 1 member remain.
+        assert len(files) == 2, [f["filename"] for f in files]
+        by_name = {f["filename"]: f for f in files}
+        assert set(by_name) == {"dump.zip", "c.md"}
+        # No orphaned member points at a vanished archive.
+        ids = {f["file_id"] for f in files}
+        for f in files:
+            if f["parent_file_id"] is not None:
+                assert f["parent_file_id"] in ids
+
+    def test_replace_keeps_blob_shared_with_another_file(self, seeded_app):
+        """A content-addressed blob shared by two files (different paths, same
+        bytes) survives when one of them is replaced."""
+        import os
+
+        from src.repositories import corpus_files_repo
+
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app, "Shared Blob")
+        shared = b"identical shared bytes"
+
+        for p in ("a.md", "b.md"):
+            r = c.post(
+                f"/api/collections/{corpus_id}/files",
+                files={"files": (p, io.BytesIO(shared), "text/markdown")},
+                data={"paths": p},
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            assert r.status_code == 201, r.text
+
+        row_b = corpus_files_repo().get_by_path(corpus_id, "b.md")
+        blob_b = row_b["storage_path"]
+        assert blob_b and os.path.exists(blob_b)
+
+        # Replace a.md with different content — must not wipe the shared blob.
+        r = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files={"files": ("a.md", io.BytesIO(b"now different"), "text/markdown")},
+            data={"paths": "a.md"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert r.status_code == 201, r.text
+
+        # b.md still points at the (still-present) shared blob.
+        assert os.path.exists(blob_b)
+        assert corpus_files_repo().get_by_path(corpus_id, "b.md")["storage_path"] == blob_b

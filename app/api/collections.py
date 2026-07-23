@@ -422,25 +422,50 @@ async def delete_collection(
 
 
 def _purge_file_row(collection_id: str, row: dict, *, keep_blob_path: str | None = None) -> None:
-    """Remove a file's blob, derived tables, chunks, and ``corpus_files`` row.
+    """Remove a file (and any bundle children) plus their blobs, derived
+    tables, chunks, and ``corpus_files`` rows.
 
-    Shared by ``delete_file`` and upsert-on-upload. Ordering mirrors
-    ``delete_collection``: blob → derived purge → chunks → row, so a mid-way
-    failure leaves the row intact for retry, and chunks never outlive their
-    file (they would otherwise surface in search with a null filename).
+    Shared by ``delete_file`` and upsert-on-upload. A bundle archive owns child
+    rows (``parent_file_id`` → the archive) each with their own blob, chunks
+    and possibly derived tables; those are purged too — otherwise a re-uploaded
+    or deleted archive leaves orphaned members that keep surfacing in search.
+    Traversal is recursive to be safe, though nested archives aren't ingested.
 
-    ``keep_blob_path`` skips the blob unlink when the caller has just
-    (re)stored a blob at that content-addressed path. Blobs are keyed by
-    sha256 and NOT refcounted, so a replacement upload of identical bytes
-    lands on the same path — deleting it would wipe the live blob.
+    Ordering per row mirrors ``delete_collection``: derived purge → chunks →
+    row, then blobs last. Chunks never outlive their file (they would surface
+    in search with a null filename).
+
+    Blob deletion is refcount-aware: content-addressed blobs are keyed by
+    sha256 and NOT refcounted, so two rows with identical bytes share one blob.
+    A blob is unlinked only once no surviving row references it — and never
+    when it equals ``keep_blob_path`` (the caller just (re)stored a byte-
+    identical replacement there, whose row isn't inserted yet).
     """
-    old_id = row["id"]
-    storage_path = row.get("storage_path")
-    if storage_path and storage_path != keep_blob_path:
-        delete_corpus_file(storage_path)
-    _schedule_derived_purge(collection_id, old_id)
-    corpus_chunks_repo().delete_for_file(old_id)
-    corpus_files_repo().delete(old_id)
+    cf_repo = corpus_files_repo()
+    chunks_repo = corpus_chunks_repo()
+
+    # Collect the row and all descendants (archive → members → …).
+    to_delete: list[dict] = [row]
+    stack = [row["id"]]
+    while stack:
+        for child in cf_repo.list_children(stack.pop()):
+            to_delete.append(child)
+            stack.append(child["id"])
+
+    blob_paths = {r.get("storage_path") for r in to_delete if r.get("storage_path")}
+
+    for r in to_delete:
+        _schedule_derived_purge(collection_id, r["id"])
+        chunks_repo.delete_for_file(r["id"])
+        cf_repo.delete(r["id"])
+
+    # Rows are gone now, so count reflects only survivors. Skip the just-stored
+    # replacement blob and any blob another (unrelated) row still references.
+    for blob in blob_paths:
+        if blob == keep_blob_path:
+            continue
+        if cf_repo.count_by_storage_path(collection_id, blob) == 0:
+            delete_corpus_file(blob)
 
 
 def _replace_existing_by_path(collection_id: str, path: str | None, *, keep_blob_path: str | None) -> None:

@@ -119,6 +119,21 @@ class CorpusFilesRepository:
         ).fetchall()
         return [self._decode_row(dict(zip(self._COLS, r))) for r in rows]
 
+    def count_by_storage_path(self, corpus_id: str, storage_path: str) -> int:
+        """How many rows in this corpus reference ``storage_path``.
+
+        Content-addressed blobs are shared (not refcounted): callers use this
+        before unlinking a blob so they never wipe one another row still
+        points at. ``None``/empty path counts as 0.
+        """
+        if not storage_path:
+            return 0
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM corpus_files WHERE corpus_id = ? AND storage_path = ?",
+            [corpus_id, storage_path],
+        ).fetchone()
+        return int(row[0]) if row else 0
+
     def list_children(self, parent_file_id: str) -> List[Dict[str, Any]]:
         """All child rows extracted from the given archive file, by created_at."""
         rows = self.conn.execute(

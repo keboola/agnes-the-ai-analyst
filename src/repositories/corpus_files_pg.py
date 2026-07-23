@@ -144,6 +144,29 @@ class CorpusFilesPgRepository:
             )
         return [self._decode_row(dict(r)) for r in rows]
 
+    def count_by_storage_path(self, corpus_id: str, storage_path: str) -> int:
+        """How many rows in this corpus reference ``storage_path``.
+
+        Content-addressed blobs are shared (not refcounted): callers use this
+        before unlinking a blob so they never wipe one another row still
+        points at. ``None``/empty path counts as 0.
+        """
+        if not storage_path:
+            return 0
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    sa.text(
+                        "SELECT COUNT(*) AS n FROM corpus_files "
+                        "WHERE corpus_id = :corpus_id AND storage_path = :sp"
+                    ),
+                    {"corpus_id": corpus_id, "sp": storage_path},
+                )
+                .mappings()
+                .first()
+            )
+        return int(row["n"]) if row else 0
+
     def list_children(self, parent_file_id: str) -> List[Dict[str, Any]]:
         """All child rows extracted from the given archive file, by created_at."""
         with self._engine.connect() as conn:

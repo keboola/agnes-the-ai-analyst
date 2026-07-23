@@ -322,3 +322,27 @@ def test_get_by_path_finds_row(repo):
     assert repo.get_by_path("col_other", "concepts/overview.md") is None
     assert repo.get_by_path(CORPUS_ID, "nope.md") is None
     assert repo.get_by_path(CORPUS_ID, None) is None
+
+
+def test_count_by_storage_path(repo):
+    """Refcount helper: how many rows in a corpus share a storage_path."""
+    repo.add(
+        corpus_id=CORPUS_ID,
+        filename="one.md",
+        sha256="shared",
+        file_type="md",
+        size_bytes=4,
+        storage_path="/blobs/shared.md",
+    )
+    repo.add(
+        corpus_id=CORPUS_ID,
+        filename="two.md",
+        sha256="shared",
+        file_type="md",
+        size_bytes=4,
+        storage_path="/blobs/shared.md",
+    )
+    assert repo.count_by_storage_path(CORPUS_ID, "/blobs/shared.md") == 2
+    assert repo.count_by_storage_path(CORPUS_ID, "/blobs/absent.md") == 0
+    assert repo.count_by_storage_path("col_other", "/blobs/shared.md") == 0
+    assert repo.count_by_storage_path(CORPUS_ID, None) == 0
