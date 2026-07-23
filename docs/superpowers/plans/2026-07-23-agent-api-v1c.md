@@ -75,7 +75,7 @@ def _v97_to_v98(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 98")
 ```
 
-- [ ] **Step 4: Alembic + PG model** — `0045_agent_memories_v98.py` (`down_revision = "0044_agent_webhooks_artifacts_v97"`), `AgentMemory` model in `src/models/agents.py`, export.
+- [ ] **Step 4: Alembic + PG model** — `0045_agent_memories_v98.py` (`down_revision = "0044_webhooks_artifacts_v97"` — NOTE: V1b shortened the in-file revision id to ≤32 chars for the Postgres `alembic_version.version_num VARCHAR(32)` limit; the file is named `0044_agent_webhooks_artifacts_v97.py` but its `revision` string is `0044_webhooks_artifacts_v97` — chain against that), `AgentMemory` model in `src/models/agents.py`, export.
 
 - [ ] **Step 5: Run** — `.venv/bin/pytest tests/test_agent_memories_schema.py tests/test_db_schema_version.py tests/db_pg/test_alembic_roundtrip.py -q` → PASS.
 
