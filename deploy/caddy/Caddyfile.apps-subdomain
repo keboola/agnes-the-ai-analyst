@@ -1,0 +1,9 @@
+# Optional: subdomain routing for data apps. Append to your Caddyfile and
+# provide a wildcard DNS record + wildcard TLS for *.{$APPS_SUBDOMAIN_BASE}.
+*.{$APPS_SUBDOMAIN_BASE} {
+	{$CADDY_TLS:tls internal}
+	reverse_proxy app:8000 {
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Host {host}
+	}
+}

@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.76.13"
+version = "0.76.16"
 description = "Agnes — self-hosted AI harness for organizations: governed data access, skills marketplace, corporate memory, and agent workspaces"
 requires-python = ">=3.11,<3.14"
 license = {file = "LICENSE"}
@@ -36,6 +36,7 @@ dependencies = [
     # extra is for performance, not correctness.
     "httpx>=0.27.0",
     "h2>=4.1.0",
+    "docker>=7.1.0",           # apps-runner sidecar (Docker Engine API)
     # CA bundle (Mozilla roots). Transitively present via httpx, but
     # app/api/cowork_bundle.py imports it directly to ship cacert.pem inside the
     # Cowork ZIP so the pure-stdlib mcp_server.py/agnes.py verify TLS on Macs
@@ -328,6 +329,9 @@ target-version = "py313"
 # router.py registers Jinja globals and filters between import blocks;
 # the mid-file import json + onboarding import are intentional ordering.
 "app/web/router.py" = ["E402"]
+# Fixture-style spec builder from the apps-runner test brief — a lambda
+# reads better than a def for a one-line dict factory used only in this file.
+"tests/test_apps_runner.py" = ["E731"]
 
 [tool.uv]
 dev-dependencies = [
