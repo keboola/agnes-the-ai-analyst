@@ -60,7 +60,8 @@ class TestEditModalTemplateHasProjectField:
         composition, so a Dataset/Source Table edit doesn't leave a stale
         bq_fqn in place."""
         idx = template_source.index("function saveBqTabEdit")
-        body = template_source[idx : idx + 4000]
+        end = template_source.index("(async function () {", idx)
+        body = template_source[idx:end]
         live_branch = body[body.index("// Live") :]
         assert "editBqProject" in live_branch
         assert "payload.bq_fqn" in live_branch
@@ -77,6 +78,44 @@ class TestEditModalTemplateHasProjectField:
         synced_branches = body[: body.index("} else {", body.index("accessMode === 'synced'"))]
         assert "payload.bq_fqn" not in synced_branches
         assert live_start > 0
+
+    def test_dataset_from_bq_fqn_helper_extracts_middle_segment(self, template_source):
+        idx = template_source.index("function _datasetFromBqFqn")
+        body = template_source[idx : idx + 300]
+        assert "split('.')" in body
+        assert "parts[1]" in body
+
+    def test_open_edit_modal_snapshots_original_bq_fqn_and_dataset(self, template_source):
+        """saveBqTabEdit's decoupled-dataset guard (below) only works if
+        _openEditBqModal captured the row's pristine bq_fqn/dataset before
+        any admin edit."""
+        idx = template_source.index("function _openEditBqModal")
+        end = template_source.index("function closeEditBqModal", idx)
+        body = template_source[idx:end]
+        assert "_editBqOriginalBqFqn = table.bq_fqn" in body
+        assert "_editBqOriginalDataset = preDataset" in body
+
+    def test_save_preserves_decoupled_dataset_when_dataset_field_unchanged(self, template_source):
+        """Devin Review finding on #1008: bq_fqn intentionally decouples the
+        physical BigQuery dataset from the `bucket` label the Dataset field
+        shows (issue #343) — a row can have bucket != bq_fqn's own dataset
+        segment. Recomposing bq_fqn from the Dataset field's value
+        unconditionally would silently corrupt a decoupled row's real
+        dataset on ANY edit. The Live branch must fall back to the
+        pristine bq_fqn's own dataset segment when the Dataset field still
+        equals its original (unedited) value."""
+        idx = template_source.index("function saveBqTabEdit")
+        live_branch = template_source[idx : template_source.index("(async function () {", idx)]
+        live_branch = live_branch[live_branch.index("// Live") :]
+        guard_idx = live_branch.index("_editBqOriginalBqFqn && dataset === _editBqOriginalDataset")
+        fqn_idx = live_branch.index("_datasetFromBqFqn(_editBqOriginalBqFqn)")
+        compose_idx = live_branch.index("var bqFqn =")
+        # The guard and fallback lookup must both precede the bqFqn
+        # composition — otherwise the fallback value can't reach it.
+        assert guard_idx < fqn_idx < compose_idx
+        # And the composition must actually use the (possibly-overridden)
+        # variable, not the raw Dataset-field value directly.
+        assert "datasetForFqn" in live_branch[compose_idx : compose_idx + 120]
 
 
 class TestSaveBqTabEditPutContract:
@@ -170,6 +209,56 @@ class TestSaveBqTabEditPutContract:
         )
         assert resp.status_code == 200, resp.text
 
+    def test_edit_preserves_decoupled_dataset_on_unrelated_edit(
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
+    ):
+        """Devin Review finding on #1008: `bucket` (the RBAC/UX label) can
+        legitimately differ from bq_fqn's own dataset segment (issue #343
+        decoupling). This is the server-side half of the fix — the fixed
+        JS now resends the ORIGINAL bq_fqn dataset segment (not the
+        `bucket` label) when the admin didn't retype Dataset, so an
+        unrelated edit (here: just the description) must round-trip the
+        decoupled dataset unchanged rather than collapsing it to `bucket`."""
+        client = seeded_app["client"]
+        headers = _auth(seeded_app["admin_token"])
+
+        resp = client.post(
+            "/api/admin/register-table",
+            json={
+                "name": "decoupled_live",
+                "source_type": "bigquery",
+                "query_mode": "remote",
+                "bucket": "friendly-label",
+                "source_table": "orders",
+                "bq_fqn": "other-project.real_dataset.orders",
+            },
+            headers=headers,
+        )
+        assert resp.status_code in (200, 201, 202), resp.text
+
+        # Simulates the fixed JS: Dataset field still shows "friendly-label"
+        # (unedited), so it resends bq_fqn's own dataset segment
+        # ("real_dataset") rather than "friendly-label", alongside an
+        # unrelated description change.
+        resp = client.put(
+            "/api/admin/registry/decoupled_live",
+            json={
+                "bucket": "friendly-label",
+                "source_table": "orders",
+                "bq_fqn": "other-project.real_dataset.orders",
+                "query_mode": "remote",
+                "source_query": None,
+                "server_only": False,
+                "description": "updated description only",
+            },
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+
         reg = client.get("/api/admin/registry", headers=headers).json()
-        row = next(t for t in reg["tables"] if t["id"] == "drop_cross_project")
-        assert row["bq_fqn"] is None
+        row = next(t for t in reg["tables"] if t["id"] == "decoupled_live")
+        assert row["bucket"] == "friendly-label"
+        assert row["bq_fqn"] == "other-project.real_dataset.orders"

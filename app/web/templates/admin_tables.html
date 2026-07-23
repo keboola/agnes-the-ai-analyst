@@ -4819,6 +4819,19 @@
         return idx > -1 ? fqn.substring(0, idx) : '';
     }
 
+    // Recover the dataset segment (middle of 3) from a stored bq_fqn.
+    // `bq_fqn` intentionally decouples the physical BigQuery dataset from
+    // the RBAC/UX `bucket` label (issue #343) — a row can legitimately have
+    // bucket !== bq_fqn's own dataset segment. saveBqTabEdit needs this to
+    // avoid silently overwriting a decoupled row's real dataset with the
+    // bucket label on an unrelated edit (see the Dataset field's prefill,
+    // which shows `bucket`, not this).
+    function _datasetFromBqFqn(fqn) {
+        if (!fqn) return '';
+        var parts = fqn.split('.');
+        return parts.length === 3 ? parts[1] : '';
+    }
+
     // ── Edit-modal architecture (v55 review of #L61) ──────────────────
     // We dispatch by ``table.source_type`` to one of three per-source
     // modals because their inner forms genuinely differ:
@@ -4913,6 +4926,12 @@
         // one (exclude_unset on the PUT means an omitted key persists
         // unchanged).
         document.getElementById('editBqProject').value = _projectFromBqFqn(table.bq_fqn);
+        // Pristine snapshot for saveBqTabEdit's dataset-unchanged check —
+        // see that function for why bq_fqn's own dataset segment (not the
+        // Dataset field's bucket-label prefill) must be reused when the
+        // admin didn't actually retype Dataset.
+        _editBqOriginalBqFqn = table.bq_fqn || '';
+        _editBqOriginalDataset = preDataset;
         document.getElementById('editBqSourceQuery').value = sq;
         document.getElementById('editBqSyncSchedule').value = table.sync_schedule || '';
         document.getElementById('editBqServerOnly').checked = !!table.server_only;
@@ -4950,6 +4969,12 @@
     var _editGenericOriginalPackageIds = new Set();
     var _editBqOriginalPackageIds = new Set();
     var _editKbOriginalPackageIds = new Set();
+
+    // The row's pristine bq_fqn at modal-open time, so saveBqTabEdit can
+    // tell whether the admin actually retyped the Dataset field or is just
+    // re-saving an unrelated change — see saveBqTabEdit's Live branch.
+    var _editBqOriginalBqFqn = '';
+    var _editBqOriginalDataset = '';
 
     function _openEditGenericModal(table) {
         // Catch-all fallback for source_types that aren't bigquery or keboola
@@ -5239,8 +5264,21 @@
             // bq_fqn instead of the PUT's exclude_unset preserving it
             // unchanged after a Dataset/Source Table edit.
             var project = document.getElementById('editBqProject').value.trim();
-            var bqFqn = (project && dataset && sourceTable)
-                ? project + '.' + dataset + '.' + sourceTable
+            // bq_fqn intentionally decouples the physical BigQuery dataset
+            // from the RBAC/UX `bucket` label the Dataset field shows
+            // (issue #343) — a row can have bucket !== bq_fqn's own dataset
+            // segment. If the admin didn't actually retype Dataset (still
+            // equals its bucket-label prefill), reuse the pristine bq_fqn's
+            // own dataset segment instead of `dataset`, so an unrelated
+            // edit (description, Source Table, …) can't silently overwrite
+            // a decoupled row's real dataset with the bucket label.
+            var datasetForFqn = dataset;
+            if (_editBqOriginalBqFqn && dataset === _editBqOriginalDataset) {
+                var origFqnDataset = _datasetFromBqFqn(_editBqOriginalBqFqn);
+                if (origFqnDataset) datasetForFqn = origFqnDataset;
+            }
+            var bqFqn = (project && datasetForFqn && sourceTable)
+                ? project + '.' + datasetForFqn + '.' + sourceTable
                 : null;
             payload.query_mode = 'remote';
             payload.server_only = false;
