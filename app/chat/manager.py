@@ -1627,8 +1627,11 @@ class ChatManager:
             live.last_activity = datetime.now(timezone.utc)
             await self._broadcast(live, frame)
             ftype = frame.get("type")
-            # Accumulate in-flight turn frames for mid-turn replay and partial save.
-            if ftype in ("token", "tool_call"):
+            # Accumulate in-flight turn frames for mid-turn replay and partial
+            # save. tool_result MUST ride along: a reconnect mid-turn replays
+            # this buffer, and tool_calls replayed without their results left
+            # every tool block stuck on "running…" after a refresh.
+            if ftype in ("token", "tool_call", "tool_result"):
                 live.turn_buffer.append(frame)
             if ftype == "assistant_message":
                 self._repo.append_message(
