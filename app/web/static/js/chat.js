@@ -2648,6 +2648,11 @@ function renderCoPresence(host, participants) {
     },
     resubmit: (text) => submitUserMessage(text),
     scrollToBottom: () => maybeScrollToBottom(),
+    // Unconditionally bring the newest message into view — used as a fallback
+    // when maybeScrollToBottom() no-ops (user scrolled up, or the thread was
+    // hidden behind the empty-state hero). chat.js owns #chat-messages.
+    scrollLastIntoView: () =>
+      $("chat-messages")?.lastElementChild?.scrollIntoView({ block: "end" }),
     revealConversation: () => hideCapabilities(),
   }).catch(() => {});
 })();

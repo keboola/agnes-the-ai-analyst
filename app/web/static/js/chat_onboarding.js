@@ -14,6 +14,7 @@
 //   • appendNode(el)             — append a raw node to #chat-messages
 //   • resubmit(text)             — re-enter submitUserMessage with `text`
 //   • scrollToBottom()           — keep the newest node in view
+//   • scrollLastIntoView()       — force the newest node into view (fallback)
 
 const STEP_KEYS = [
   "first_asked",
@@ -216,9 +217,7 @@ function restartOnboarding() {
     // Fallback: if scrollToBottom is a no-op (user scrolled up, or the
     // empty-state hero had the thread off-screen) force the freshly rendered
     // welcome into view so the "?" always produces a visible result.
-    document.getElementById("chat-messages")?.lastElementChild?.scrollIntoView({
-      block: "end",
-    });
+    hooks.scrollLastIntoView?.();
   } catch (err) {
     console.error("[onboarding] restart failed:", err);
   }
