@@ -135,17 +135,57 @@ async def bootstrap(
     endpoint sets its password_hash (or clears it, if no password was supplied —
     useful for OAuth-only flows) and promotes it to admin.
 
-    Deactivates as soon as any user has a password_hash.
+    Locked once the instance has an admin (or any password-holding user), unless
+    the caller presents a valid ``X-Bootstrap-Token`` header matching the
+    operator-set ``AGNES_BOOTSTRAP_TOKEN`` — the escape hatch for
+    destroy-recreate runbooks.
     """
     repo = users_repo()
     existing = repo.list_all()
 
-    # Bootstrap is locked once anyone has a password set.
+    # Bootstrap is locked once the instance already has an admin — with the
+    # older "any user has a password_hash" rule kept as a belt-and-suspenders
+    # fallback.
+    #
+    # SECURITY (pre-launch hardening): this endpoint is UNAUTHENTICATED, so its
+    # only safe window is genuine first-install, before any admin exists. Keying
+    # the lock solely on password_hash left bootstrap PERMANENTLY OPEN on OAuth /
+    # magic-link-only deployments (where no user ever gets a password) and open
+    # across the pre-bootstrap window on every fresh boot — letting an
+    # unauthenticated caller mint themselves, or overwrite an existing account,
+    # into the Admin god-mode group. A seed admin (SEED_ADMIN_EMAIL) is added to
+    # the Admin group at startup, so seed-based deployments lock from first boot;
+    # provision the first admin that way (set SEED_ADMIN_PASSWORD for password
+    # login) rather than via this endpoint once users exist. The Admin-member
+    # check (not "any user exists") intentionally still permits first-install on
+    # a no-seed instance where only the synthetic scheduler user is present.
+    #
+    # Escape hatch: an operator who sets AGNES_BOOTSTRAP_TOKEN can re-bootstrap
+    # even after an admin exists (destroy-recreate runbook) by presenting it in
+    # the X-Bootstrap-Token header — knowledge of the server-side secret stands
+    # in for "no admin yet". Timing-safe compare; without the token an existing
+    # admin locks the endpoint.
+    import hmac
+    import os
+
+    admin_group = user_groups_repo().get_by_name(SYSTEM_ADMIN_GROUP)
+    admin_exists = bool(admin_group) and user_group_members_repo().count_members(admin_group["id"]) > 0
     users_with_password = [u for u in existing if u.get("password_hash")]
-    if users_with_password:
+
+    bootstrap_token = os.environ.get("AGNES_BOOTSTRAP_TOKEN") or ""
+    presented_token = request.headers.get("x-bootstrap-token", "")
+    token_ok = bool(bootstrap_token) and hmac.compare_digest(presented_token, bootstrap_token)
+
+    if (admin_exists or users_with_password) and not token_ok:
         raise HTTPException(
             status_code=403,
-            detail="Bootstrap disabled — a user with a password already exists. Use /auth/password/login.",
+            detail=(
+                "Bootstrap disabled — this instance is already initialised (an "
+                "admin or a password-holding user exists). Provision the first "
+                "admin via SEED_ADMIN_EMAIL / sign in and manage admins under "
+                "/admin/access, or present a valid X-Bootstrap-Token header when "
+                "AGNES_BOOTSTRAP_TOKEN is configured."
+            ),
         )
 
     password_hash = PasswordHasher().hash(body.password) if body.password else None

@@ -2,12 +2,13 @@
 
 import contextlib
 import logging
+import os
 import re
 import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 import duckdb
 
 from app.auth.access import is_user_admin
@@ -361,9 +362,31 @@ def _default_remote_query_cap_bytes() -> int:
         return 5_368_709_120
 
 
+def _max_query_rows() -> int:
+    """Hard ceiling on rows returned by POST /api/query. Operators who
+    legitimately need more can raise it via AGNES_MAX_QUERY_ROWS."""
+    try:
+        return max(1, int(os.environ.get("AGNES_MAX_QUERY_ROWS", "1000000")))
+    except (TypeError, ValueError):
+        return 1_000_000
+
+
 class QueryRequest(BaseModel):
     sql: str
     limit: int = 1000
+
+    @field_validator("limit")
+    @classmethod
+    def _clamp_limit(cls, v: int) -> int:
+        # DoS guard: `limit` was unbounded, so a single request could stream an
+        # entire local table into a Python list (twice) and OOM the worker
+        # (/api/query has no cost/row cap for local tables, unlike /api/v2/scan).
+        # Clamp to the ceiling; non-positive falls back to the default. Silent
+        # clamp (not a 422) keeps existing callers working — the response's
+        # `truncated` flag still signals that more rows existed.
+        if v <= 0:
+            return 1000
+        return min(v, _max_query_rows())
 
 
 class QueryResponse(BaseModel):
@@ -407,7 +430,8 @@ def _run_internal_query(
         is_admin = False
         user = {"id": "session.none", "email": "session.none@internal"}
     else:
-        is_admin = is_user_admin(user.get("id"), conn) if user.get("id") else False
+        uid = user.get("id")
+        is_admin = is_user_admin(uid, conn) if uid else False
     try:
         columns, rows, truncated = execute_internal_query(
             system_db_path=system_db_path,
@@ -1224,9 +1248,7 @@ def _rewrite_bq_table_refs_to_native(
             name, bucket, source_table = entry[0], entry[1], entry[2]
             row_project = entry[3] if len(entry) > 3 else None
             target_project = row_project or project
-            name_to_target[name.lower()] = (
-                f"`{target_project}.{bucket}.{source_table}`"
-            )
+            name_to_target[name.lower()] = f"`{target_project}.{bucket}.{source_table}`"
 
         # Alternation pattern, longest-first. Longer match wins at any
         # given position because Python's re tries alternatives
@@ -1286,9 +1308,7 @@ def _rewrite_user_sql_for_bigquery_query(
     ``_bq_remote_execution_plan`` directly to get the BQ-native inner SQL and
     billing project.
     """
-    rewritten, did_rewrite, _billing_project, _inner_sql = _bq_remote_execution_plan(
-        user_sql, conn
-    )
+    rewritten, did_rewrite, _billing_project, _inner_sql = _bq_remote_execution_plan(user_sql, conn)
     return rewritten, did_rewrite
 
 
@@ -1892,9 +1912,7 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
                         },
                     ) from exc
 
-            execution_sql, did_rewrite, billing_project, inner_sql = (
-                _bq_remote_execution_plan(sql, conn)
-            )
+            execution_sql, did_rewrite, billing_project, inner_sql = _bq_remote_execution_plan(sql, conn)
             try:
                 try:
                     if did_rewrite and inner_sql is not None:

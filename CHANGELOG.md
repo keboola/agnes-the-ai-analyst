@@ -14,6 +14,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- **`/auth/bootstrap` locks once an admin exists** (or any password-holding
+  user), not only once a user has a password. This closes an unauthenticated
+  admin-creation window on OAuth / magic-link-only deployments, where no user
+  ever gets a `password_hash`. Provision the first admin via `SEED_ADMIN_EMAIL`
+  / `SEED_ADMIN_PASSWORD`; to re-bootstrap after an admin exists (e.g. a
+  destroy-recreate runbook) set `AGNES_BOOTSTRAP_TOKEN` and pass it in the
+  `X-Bootstrap-Token` header.
+- **`POST /api/query` clamps `limit`** to `AGNES_MAX_QUERY_ROWS` (default
+  1,000,000) so a single request can't exhaust worker memory; raise the env var
+  if you need larger local result sets.
+
 ### Fixed
 
 ### Removed
@@ -21,6 +32,44 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 ### Security
+
+- **Internal-query isolation (DuckDB backend):** non-admin `/api/query`
+  internal queries now run against an ephemeral in-memory DuckDB holding only
+  the caller's RBAC-filtered `agnes_*` tables (matching the Postgres path), so
+  state tables (`personal_access_tokens`, `users`, `audit_log`, …) cannot be
+  referenced — closing a SQL string-lexer desync (dollar-quoted / `E''`
+  literals) that could otherwise read them.
+- **MCP OAuth consent page** HTML-escapes all interpolated values (client name,
+  scopes, email), fixing a stored-XSS sink fed by unauthenticated RFC 7591
+  dynamic client registration.
+- **Admin source-connection `/test` and `/tables`** gate `token_env` through
+  the remote-attach allowlist (an admin can no longer exfiltrate arbitrary
+  server env vars such as `JWT_SECRET_KEY` via the outbound token header) and
+  validate `stack_url` (https + non-private/reserved host) immediately before
+  the outbound request.
+- **CORS:** `allow_credentials` is force-disabled when `CORS_ORIGINS` contains
+  `*`, preventing an any-origin-with-credentials policy.
+- **App-level security headers** (`X-Content-Type-Options`, `X-Frame-Options:
+  DENY`, `Referrer-Policy`, HSTS on HTTPS, and a non-breaking CSP subset) are
+  now emitted by the application itself, independent of the reverse proxy.
+- **Auth session cookie `Secure`** now derives from the served scheme /
+  resolved public origin (proxy-aware), not only the `DOMAIN` env var — so the
+  cookie is marked `Secure` behind non-Caddy TLS terminators too.
+- **`/api/health/detailed`** returns operator-only detail (GCP project ids,
+  user counts, build fingerprints) to admins only; non-admins get reduced
+  status.
+- **Config-diff redaction** masks additional secret-key shapes (`private`,
+  `credential`, `dsn`, `passwd`).
+- **MCP SSE `?token=` auth** warns (once per process) that the token lands in
+  access logs (CWE-598); prefer the `Authorization` header and configure
+  proxy-side log redaction.
+- **Script runner** documented as admin-authored code execution with the
+  server's privileges (not a security sandbox); import denylist extended with
+  never-legit modules. Real isolation is a tracked follow-up.
+- **Memory-domain grants** documented in the access UI as additive-only — an
+  item's `audience` is the visibility restriction, not domain membership.
+- **Datasource-token persistence** warns when writing to the plaintext overlay
+  while a vault is configured (full vault routing is a tracked follow-up).
 
 ## [0.76.12] - 2026-07-23
 

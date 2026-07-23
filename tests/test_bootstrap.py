@@ -52,6 +52,33 @@ def password_user_client(tmp_path, monkeypatch):
     return TestClient(create_app())
 
 
+@pytest.fixture
+def admin_member_client(tmp_path, monkeypatch):
+    """Client with a password-less user who IS in the Admin group — the OAuth /
+    magic-link deployment shape (seed admin auto-promoted at startup, no
+    password ever set). Bootstrap must be locked here even though no user has a
+    password_hash (the pre-hardening hole)."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+    from app.main import create_app
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.users import UserRepository
+
+    conn = get_system_db()
+    UserRepository(conn).create(id="seed", email="seed@test.com", name="Seed")  # no password
+    admin_group = UserGroupsRepository(conn).get_by_name(SYSTEM_ADMIN_GROUP)
+    UserGroupMembersRepository(conn).add_member(
+        user_id="seed",
+        group_id=admin_group["id"],
+        source="system_seed",
+        added_by="test",
+    )
+    conn.close()
+    return TestClient(create_app())
+
+
 class TestBootstrap:
     def test_bootstrap_on_empty_db(self, fresh_client):
         """First call creates admin and returns token."""
@@ -115,7 +142,46 @@ class TestBootstrap:
             },
         )
         assert resp.status_code == 403
-        assert "password already exists" in resp.json()["detail"]
+        assert "Bootstrap disabled" in resp.json()["detail"]
+
+    def test_bootstrap_disabled_when_admin_exists_without_password(self, admin_member_client):
+        """SECURITY (CRIT-1 pre-launch hardening): an OAuth / magic-link-only
+        deployment, where the seed admin never gets a password_hash, must NOT
+        leave /auth/bootstrap open. The lock now keys on Admin-group membership,
+        not just password presence — so an unauthenticated caller cannot mint or
+        overwrite an admin here."""
+        resp = admin_member_client.post(
+            "/auth/bootstrap",
+            json={
+                "email": "hacker@evil.com",
+                "password": "should-not-work",
+            },
+        )
+        assert resp.status_code == 403
+        assert "Bootstrap disabled" in resp.json()["detail"]
+
+    def test_bootstrap_escape_hatch_with_token(self, admin_member_client, monkeypatch):
+        """AGNES_BOOTSTRAP_TOKEN escape hatch: with an admin already present,
+        bootstrap stays 403 for an unauthenticated caller but succeeds for one
+        presenting the matching X-Bootstrap-Token (the destroy-recreate runbook).
+        The token is read at request time, so setting it after app start is fine."""
+        monkeypatch.setenv("AGNES_BOOTSTRAP_TOKEN", "super-secret-bootstrap-token-xyz")
+
+        # Wrong/absent token → still locked.
+        locked = admin_member_client.post(
+            "/auth/bootstrap",
+            json={"email": "hacker@evil.com", "password": "should-not-work"},
+        )
+        assert locked.status_code == 403
+
+        # Correct token → allowed even though an admin exists.
+        ok = admin_member_client.post(
+            "/auth/bootstrap",
+            json={"email": "opsadmin@test.com", "password": "newpass123"},
+            headers={"X-Bootstrap-Token": "super-secret-bootstrap-token-xyz"},
+        )
+        assert ok.status_code == 200
+        assert ok.json()["role"] == "admin"
 
     def test_bootstrap_then_login(self, fresh_client):
         """After bootstrap with password, /auth/token login works; without password it requires OAuth."""

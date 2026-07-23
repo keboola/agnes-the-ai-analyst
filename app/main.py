@@ -1137,13 +1137,20 @@ async def lifespan(app):
             # pass None so the system DuckDB is never opened (forbidden).
             conn = None if use_pg() else get_system_db()
             try:
-                repo = users_repo()
-                all_users = repo.list_all()
-                has_password = any(u.get("password_hash") for u in all_users)
-                if not has_password:
+                from src.db import SYSTEM_ADMIN_GROUP
+
+                admin_group = user_groups_repo().get_by_name(SYSTEM_ADMIN_GROUP)
+                admin_exists = bool(admin_group) and user_group_members_repo().count_members(admin_group["id"]) > 0
+                has_password = any(u.get("password_hash") for u in users_repo().list_all())
+                # /auth/bootstrap is reachable UNAUTHENTICATED only until an admin
+                # exists (or a password-holding user does); after that it is locked
+                # unless AGNES_BOOTSTRAP_TOKEN is presented. Surface the open window.
+                if not admin_exists and not has_password:
                     logger.warning(
-                        "No user has a password set — /auth/bootstrap is reachable. "
-                        "Claim the seed admin (or set SEED_ADMIN_PASSWORD) to close this window."
+                        "No admin exists yet — /auth/bootstrap is reachable UNAUTHENTICATED. "
+                        "Provision the first admin (SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD, or a "
+                        "one-time bootstrap) before exposing the URL; set AGNES_BOOTSTRAP_TOKEN to "
+                        "gate later re-bootstraps."
                     )
             finally:
                 if conn is not None:
@@ -1827,14 +1834,43 @@ def create_app() -> FastAPI:
     app.add_middleware(SessionMiddleware, secret_key=session_secret)
 
     # CORS for CLI and external clients
-    cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000").split(",")
+    cors_origins = [
+        o.strip()
+        for o in os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000").split(",")
+        if o.strip()
+    ]
+    cors_allow_credentials = True
+    if "*" in cors_origins:
+        # SECURITY: Starlette's CORSMiddleware, when allow_origins contains "*"
+        # AND allow_credentials=True, reflects the caller's Origin into
+        # Access-Control-Allow-Origin and returns Allow-Credentials: true — an
+        # any-origin-with-credentials policy (cookies / Authorization usable
+        # from any website), not the browser-rejected literal "*". Refuse that
+        # combination: keep the wildcard but drop credentials, so a
+        # misconfigured CORS_ORIGINS can't expose authenticated endpoints
+        # cross-origin. Operators who need credentialed CORS must list explicit
+        # origins.
+        logger.error(
+            "CORS_ORIGINS contains '*': disabling allow_credentials to avoid an "
+            "any-origin-with-credentials CORS policy. Set an explicit origin allowlist."
+        )
+        cors_allow_credentials = False
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[o.strip() for o in cors_origins],
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Baseline security response headers (non-breaking CSP subset,
+    # X-Frame-Options, nosniff, Referrer-Policy, HSTS on https) — set at the app
+    # layer so protection is independent of which TLS terminator is deployed,
+    # not only the bundled Caddy. Pure ASGI (SSE-safe). See
+    # app/middleware/security_headers.py.
+    from app.middleware.security_headers import SecurityHeadersMiddleware
+
+    app.add_middleware(SecurityHeadersMiddleware)
 
     # RequestIdMiddleware mounted LAST — Starlette inserts middleware at
     # index 0, so the last add_middleware call ends up OUTERMOST and runs
