@@ -131,6 +131,46 @@ deployment:
   method: "manual"                # manual | github_actions
   repo_url: ""                    # e.g., "git@github.com:acme/ai-data-analyst.git"
   branch: "main"
+  # role: "all"                    # api | gateway | worker | all, comma-separable (e.g. "api,gateway").
+                                   # AGNES_ROLE env var overrides this. Default "all" keeps the
+                                   # single-process, zero-ops S-tier behavior. Splitting into
+                                   # api/gateway/worker replicas requires coordination.backend=redis
+                                   # and (for a shared analytics.backend=ducklake catalog) a Postgres
+                                   # ducklake.catalog_dsn — see app/roles.py + app/startup_guards.py.
+
+# --- Coordination backend (multi-process deployments only) ---
+# In-process memory (default) is zero-config and correct for a single "all"-role
+# process. Running api/gateway/worker as separate replicas needs a shared
+# backend for WS auth tickets, session-routing leases, rate limiting, etc.
+# coordination:
+#   backend: "memory"              # memory | redis. AGNES_COORDINATION_BACKEND env var overrides this.
+#
+# redis:
+#   url: "redis://localhost:6379/0"  # Only consulted when coordination.backend is "redis".
+                                      # AGNES_REDIS_URL env var overrides this.
+
+# --- Analytics backend (server-side query engine) ---
+# "legacy" (default) is today's rebuilt-and-swapped analytics.duckdb file — no
+# extra config needed. "ducklake" moves the query surface to a DuckLake catalog
+# (storage/compute separation, scales by adding stateless reader replicas) — see
+# docs/DEPLOYMENT.md's DuckLake section and
+# docs/superpowers/specs/2026-07-16-three-plane-scalable-architecture.md §3.4.
+# analytics:
+#   backend: "legacy"              # legacy | ducklake. AGNES_ANALYTICS_BACKEND env var overrides this.
+#
+# ducklake:
+#   # catalog_dsn: ""              # Postgres DSN (postgresql://...), REQUIRED for any multi-process
+                                    # topology (a DuckDB-file catalog only works single-process — see
+                                    # app.startup_guards.validate_deployment). Left unset, defaults to
+                                    # a DuckDB-file catalog at {DATA_DIR}/analytics/catalog.ducklake.
+                                    # AGNES_DUCKLAKE_CATALOG_DSN env var overrides this (recommended —
+                                    # keeps the DSN's credentials out of this file).
+#   # data_path: ""                # Directory where DuckLake stores its own data files. Defaults to
+                                    # {DATA_DIR}/analytics/lake/. AGNES_DUCKLAKE_DATA_PATH env var
+                                    # overrides this.
+#   # snapshot_retention_days: 7   # Days of DuckLake snapshot history the daily ducklake-maintenance
+                                    # job keeps before expiry/cleanup. AGNES_DUCKLAKE_SNAPSHOT_RETENTION_DAYS
+                                    # env var overrides this.
 
 # --- Authentication ---
 # At minimum, set allowed_domain and webapp_secret_key.
@@ -674,6 +714,14 @@ data_apps:
   default_mem_limit: 1g
   default_cpus: 1.0
   max_apps_per_user: 3
+
+
+# Authoring Studio (chat-assisted builders at /admin/studio for skills,
+# agents, data packages, connections, and corporate memory). On by default.
+# Set to false — or export AGNES_STUDIO_ENABLED=0 (the infra/Terraform .env
+# override) — to hide the Studio nav entry and redirect /admin/studio* to home.
+studio:
+  enabled: true
 
 
 # --- Initial Workspace Template (optional) ---

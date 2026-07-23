@@ -372,6 +372,92 @@ if [ -n "$EXISTING_AGNES_TEMP_DIR" ]; then
     AGNES_TEMP_DIR_LINE="AGNES_TEMP_DIR=\"$EXISTING_AGNES_TEMP_DIR\""
 fi
 
+# SERVER_URL — the deployment's public URL. app.chat.manager::agnes_server_url
+# resolves SERVER_URL (then AGNES_INTERNAL_URL, then loopback) and feeds it to
+# every cloud-chat sandbox as AGNES_SERVER; without it the sandbox is told to
+# reach Agnes at http://127.0.0.1:8000, which inside the sandbox is nothing —
+# the in-sandbox CLI dies with ECONNRESET on its first call and chat is dead
+# on arrival on any module-provisioned VM (previously masked by hand-edited
+# .env files that VM recreates wipe). Precedence: operator-edited value in the
+# existing .env wins (same pattern as AGNES_TAG above), else https on the
+# configured domain, else plain HTTP on the VM's external IP (the same :8000
+# the firewall exposes for tls_mode=none deployments).
+#
+# Setting SERVER_URL reaches beyond chat: it pins the public_base_url origin
+# (OAuth redirects, magic links, MCP issuer — previously request-derived).
+# On domain VMs that origin becomes https://<domain>, the canonical address
+# for both supported TLS shapes; a VM reached under several hostnames (or a
+# public origin that differs from the configured domain) should hand-set
+# SERVER_URL, which this block preserves. On domain-less VMs it becomes the
+# pinned http://<ip>:8000 and, being plain-HTTP non-localhost, deliberately
+# trips app/main.py's RFC 8414 issuer check so the streamable MCP connector
+# degrades gracefully — both intended for a direct-access plain-HTTP
+# deployment; a fronted deployment should set a domain or hand-set
+# SERVER_URL. AGNES_INTERNAL_URL is not a module-level knob: the .env
+# heredoc below rewrites the file wholesale each boot and has never carried
+# that variable, so no module-provisioned VM can rely on it and auto-setting
+# SERVER_URL shadows nothing here (split-horizon support would be a new
+# module variable, not an .env edit).
+EXISTING_SERVER_URL=""
+if [ -f "$APP_DIR/.env" ]; then
+    EXISTING_SERVER_URL=$(grep -E '^SERVER_URL=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
+fi
+# Two classes of persisted value are NOT meaningful operator overrides and
+# must be re-derived instead of preserved:
+#   1. Loopback — can only be a previously-persisted failed derivation;
+#      preserving it locks the failure in forever (the exact bug this block
+#      fixes).
+#   2. http://<IPv4>:8000 — the shape this block itself derives. Preserving
+#      it would freeze a stale IP on deployments without a reserved address
+#      (this module reserves static IPs, but forks may not); re-deriving is
+#      idempotent on a static IP and self-healing on an ephemeral one. An
+#      operator who genuinely wants a raw-IP override should use a hostname
+#      or a different port, which stays sticky.
+# Host extraction handles bracketed IPv6 ([::1]:8000) and port/path suffixes;
+# exact-match only — https://localhost.internal.example.com must survive.
+EXISTING_SERVER_HOST="$${EXISTING_SERVER_URL#*://}"
+case "$EXISTING_SERVER_HOST" in
+    \[*)
+        EXISTING_SERVER_HOST="$${EXISTING_SERVER_HOST#\[}"
+        EXISTING_SERVER_HOST="$${EXISTING_SERVER_HOST%%\]*}"
+        ;;
+    *)
+        EXISTING_SERVER_HOST="$${EXISTING_SERVER_HOST%%[:/]*}"
+        ;;
+esac
+case "$EXISTING_SERVER_HOST" in
+    127.0.0.1|localhost|::1) EXISTING_SERVER_URL="" ;;
+esac
+case "$EXISTING_SERVER_URL" in
+    http://[0-9]*.[0-9]*.[0-9]*.[0-9]*:8000) EXISTING_SERVER_URL="" ;;
+esac
+SERVER_URL=""
+if [ -n "$EXISTING_SERVER_URL" ]; then
+    SERVER_URL="$EXISTING_SERVER_URL"
+elif [ -n "$DOMAIN" ]; then
+    # A configured domain implies TLS termination on this VM — ACME
+    # (tls_mode=caddy) or corp-PKI cert-file mode (tls_mode=none + certs on
+    # disk; agnes-auto-upgrade engages the tls overlay when it sees them) —
+    # so https is the right scheme for both supported shapes. The unsupported
+    # plain-HTTP-on-a-domain shape needs a hand-set SERVER_URL, which the
+    # override above preserves.
+    SERVER_URL="https://$DOMAIN"
+else
+    EXTERNAL_IP=$(curl -sf -H "Metadata-Flavor: Google" \
+        "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip" \
+        || true)
+    if [ -n "$EXTERNAL_IP" ]; then
+        SERVER_URL="http://$EXTERNAL_IP:8000"
+    fi
+    # Metadata read failed: write NO SERVER_URL line rather than persisting a
+    # wrong value — the app keeps its request-derived/loopback behavior
+    # (status quo ante) and the next boot re-derives.
+fi
+SERVER_URL_LINE=""
+if [ -n "$SERVER_URL" ]; then
+    SERVER_URL_LINE="SERVER_URL=$SERVER_URL"
+fi
+
 # Select the docker-compose overlay set from the persisted backend state.
 # instance.yaml is written above only when absent, so a VM an operator migrated
 # to side_car / cloud keeps that backend across reboots. The on-VM Postgres
@@ -499,6 +585,7 @@ COMPOSE_FILE_VALUE="$COMPOSE_FILE_VALUE:docker-compose.dispatcher.yml"
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
 SESSION_SECRET=$SESSION_KEY
+$SERVER_URL_LINE
 DATA_DIR=$DATA_MNT
 DATA_SOURCE=$DATA_SOURCE
 KEBOOLA_STORAGE_TOKEN=$KEBOOLA_TOKEN
@@ -516,6 +603,9 @@ AGNES_APP_CPUS=${app_cpus}
 AGNES_SCHEDULER_CPUS=${scheduler_cpus}
 %{ if home_route != "" ~}
 AGNES_HOME_ROUTE=${home_route}
+%{ endif ~}
+%{ if !studio_enabled ~}
+AGNES_STUDIO_ENABLED=false
 %{ endif ~}
 ACME_EMAIL=$ACME_EMAIL
 GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID

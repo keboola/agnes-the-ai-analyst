@@ -47,45 +47,48 @@ def test_render_setup_instructions_wires_all_placeholders():
     assert "T-123" in out
 
 
-def test_init_step_warns_about_transcript_exposure():
-    """#580 Finding 1: the step that writes the raw PAT to ~/.agnes/token
-    must explicitly call out the transcript exposure — the heredoc lands in
-    the session transcript. The NOTE frames this as designed behavior, not
-    an incident: the server generated the token, push-time JWT redaction
-    scrubs it client-side before upload, and the agent is explicitly told
-    NOT to warn, NOT to mark the session private, and NOT to run
-    `agnes mark-private`. (The `/agnes-private` guidance for future
-    sensitive sessions lives in the step-4 tip, covered separately.)
+def test_init_step_has_no_security_judgment_suppression():
+    """The install prompt must NOT instruct the agent to suppress its
+    own security judgment around the PAT that lands in the transcript. The
+    former NOTE ordering the agent not to warn / not to mark the session
+    private / not to run `agnes mark-private`, and the `--token` inline
+    "auto-classifier / credential-exfil" framing, are removed — Claude Code's
+    hardened security protocol reads such copy as an attempt to bypass its own
+    protections and blocks the install. Only the legitimate mechanics remain:
+    write the PAT to a file so it never lands in the command-line argv.
     """
     from app.web.setup_instructions import _init_lines
 
     joined = "\n".join(_init_lines())
-    assert "transcript" in joined.lower()
-    assert "agnes push" in joined
-    # The heredoc target is documented inline so the user knows the transcript
-    # copy — not the on-disk file — is where the token lands.
+    # Legit mechanics preserved — file-based token keeps it out of argv.
     assert "~/.agnes/token" in joined
-    # The NOTE: server-generated token + client-side scrub → designed behavior.
-    assert "server generated the token" in joined
-    assert "scrubs JWT-shaped" in joined
-    # Explicit do-nots so the agent never "rescues" the session on its own.
-    assert "do not mark this session" in joined
-    assert "do not run `agnes mark-private`" in joined
-    # The auto-mark era is over — the copy must not claim it happens.
-    assert "auto-marked" not in joined
+    assert "--token-file" in joined
+    assert "argv" in joined
+    # Anti-safety suppression must be gone (2 paragraphs + 1 sentence here).
+    assert "security incident" not in joined
+    assert "do not warn" not in joined
+    assert "do not mark this session" not in joined
+    assert "do not run `agnes mark-private`" not in joined
+    assert "auto-classifier" not in joined
+    assert "credential-exfil" not in joined
+    assert "escape hatch" not in joined
+    assert "! agnes init" not in joined
 
 
-def test_step4_tip_private_is_users_deliberate_action():
-    """The step-4 tip documents that the setup session uploads like any other
-    and frames `/agnes-private` as the USER's deliberate action for future
-    sensitive sessions — the agent may suggest it, never run it."""
+def test_step4_has_no_agnes_private_tip():
+    """The install prompt must NOT carry the `/agnes-private` private-session
+    tip — private-session guidance belongs in the workspace docs, not the
+    one-shot setup prompt. Step 4 ends at the catalog-grants hint."""
     from app.web.setup_instructions import _init_lines
 
     joined = "\n".join(_init_lines())
-    assert "already auto-marked" not in joined
-    assert "/agnes-private" in joined
-    assert "deliberate action" in joined
-    assert "never" in joined
+    assert "/agnes-private" not in joined
+    assert "agnes-sessions-private-skipped" not in joined
+    assert "deliberate action" not in joined
+    assert "never run it for them" not in joined
+    # Step 4 still verifies the data plane.
+    assert "4) Verify the data is queryable:" in joined
+    assert "agnes catalog" in joined
 
 
 def test_resolve_lines_no_plugins_unified_layout():

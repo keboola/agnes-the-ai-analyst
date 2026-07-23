@@ -386,6 +386,25 @@ def get_home_status_frame_visibility() -> bool:
     return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
 
 
+def get_studio_enabled() -> bool:
+    """Whether the authoring Studio surface (/admin/studio*) is exposed.
+
+    On by default. Disable per-instance with ``AGNES_STUDIO_ENABLED=0`` (the
+    infra/Terraform ``.env`` override) or ``studio.enabled: false`` in
+    instance.yaml — hides the Studio nav entry and redirects ``/admin/studio*``
+    to home.
+
+    Resolution: env var > ``studio.enabled`` YAML > True. Mirrors
+    :func:`get_home_automode_visibility` so infra overrides land the same way.
+    """
+    raw = os.environ.get("AGNES_STUDIO_ENABLED")
+    if raw is None:
+        raw = get_value("studio", "enabled", default=True)
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
+
+
 def get_instance_name() -> str:
     return get_value("instance", "name", default="AI Harness")
 

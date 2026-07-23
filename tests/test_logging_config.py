@@ -90,6 +90,74 @@ def test_slug_explicit_app():
     assert _derive_slug("app") == "app"
 
 
+def test_json_formatter_includes_replica_field():
+    from app.observability.metrics import replica_id
+
+    rec = logging.LogRecord(
+        name="test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="hello world",
+        args=(),
+        exc_info=None,
+    )
+    fmt = _JSONFormatter(service="myservice")
+    line = fmt.format(rec)
+    parsed = json.loads(line)
+    assert parsed["replica"] == replica_id()
+
+
+def test_replica_id_safe_falls_back_to_dash_on_failure(monkeypatch):
+    """``_replica_id_safe`` imports the cached ``_REPLICA_ID`` (computed
+    once at process start), not the ``replica_id()`` function — so the
+    failure mode to simulate is the import itself failing."""
+    import app.observability.metrics as metrics_mod
+
+    from app.logging_config import _replica_id_safe
+
+    monkeypatch.delattr(metrics_mod, "_REPLICA_ID")
+    assert _replica_id_safe() == "-"
+
+
+def test_replica_id_safe_reuses_cached_value_not_recomputed(monkeypatch):
+    """Regression guard: must not call ``replica_id()`` (fresh
+    ``socket.gethostname()`` + ``os.getpid()``) on every log line — reuse
+    the value already cached at import in ``_REPLICA_ID``."""
+    import app.observability.metrics as metrics_mod
+    from app.logging_config import _replica_id_safe
+
+    def boom():
+        raise AssertionError("replica_id() must not be called — reuse _REPLICA_ID")
+
+    monkeypatch.setattr(metrics_mod, "replica_id", boom)
+    assert _replica_id_safe() == metrics_mod._REPLICA_ID
+
+
+def test_request_id_filter_sets_replica_attr():
+    from app.observability.metrics import replica_id
+    from app.logging_config import _RequestIdFilter
+
+    rec = logging.LogRecord(
+        name="test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="m",
+        args=(),
+        exc_info=None,
+    )
+    assert _RequestIdFilter().filter(rec) is True
+    assert rec.replica == replica_id()
+
+
+def test_dev_format_string_includes_replica(monkeypatch):
+    monkeypatch.setenv("DEBUG", "1")
+    setup_logging("app")
+    handler = logging.getLogger().handlers[0]
+    assert "%(replica)s" in handler.formatter._fmt
+
+
 def test_json_formatter_includes_service_field():
     rec = logging.LogRecord(
         name="test",

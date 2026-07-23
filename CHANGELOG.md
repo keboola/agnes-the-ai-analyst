@@ -42,6 +42,194 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.11] - 2026-07-22
+
+### Fixed
+
+- Keboola semantic-layer sync (`sync_semantic_layer()`) now falls back to the default named Keboola `source_connections` entry (the connection `/admin/data-sources` manages) when the legacy `KEBOOLA_STACK_URL`/`KEBOOLA_STORAGE_TOKEN` env-or-vault slot is empty. Verified live: an instance that connects a Keboola project only through the admin wizard previously failed every semantic-layer sync with "credentials not configured", even though the same connection's regular table syncs and its own `/test` endpoint both resolve their token off it correctly.
+
+## [0.76.10] - 2026-07-22
+
+### Fixed
+
+- Pages rendered through `_chrome_ctx` (`/admin/studio*`, `/me/memory-mining`, `/admin/store/lint`) no longer drop the Chat nav link or render an empty instance name in the page title ("Studio — ") — the helper now provides the same shared `can_chat` and `config` context as `_build_context` (#993).
+- **`bq_fqn` is now honored on the query and scan paths**: a registry row
+  whose `bq_fqn` names a project other than `data_source.bigquery.project`
+  was still resolved as `<configured-project>.<bucket>.<source_table>` by
+  `agnes query --remote` (bare-name rewrite + dry-run) and by
+  `/api/v2/scan`, `/api/v2/scan/estimate` and `agnes snapshot create`. The
+  row pointed at a table that does not exist, so it was unqueryable for
+  every user with no analyst-side workaround, since the cross-project guard
+  rejects explicit full paths in user SQL. Both sites now resolve the
+  project, dataset and table from `bq_fqn` when present, matching the
+  precedence `connectors/bigquery/extractor.py` has applied since v51
+  (issue #343); rows without `bq_fqn` keep the legacy triplet unchanged.
+  A malformed `bq_fqn` raises on the scan path and degrades to the legacy
+  triplet with a warning on the query path, where one bad row must not
+  fail unrelated queries.
+
+## [0.76.9] - 2026-07-22
+
+### Changed
+
+- **Cloud-chat spawn and first-response latency cut across the whole E2B
+  path.** The per-session workspace now travels as one gzipped tarball
+  extracted in-sandbox (one E2B round-trip instead of one per file; per-file
+  writes remain as a fallback); the agnes CLI wheel is staged before the
+  workspace push so the in-sandbox `pip install` overlaps the upload (the
+  runner gates the agent-CLI spawn on a new workspace-ready sentinel,
+  `AGNES_WORKSPACE_SYNC_SENTINEL`); the `claude` CLI boots eagerly at runner
+  start and every user message goes through `query()` — previously the first
+  message re-connected and paid a second full CLI boot; and assistant text
+  now streams token-by-token (`include_partial_messages` stream-event deltas,
+  falling back to whole-block frames on older SDKs).
+
+### Fixed
+
+- **Chat Stop button actually interrupts the running turn.** Two stacked
+  bugs: the runner called the SDK's async `interrupt()` without awaiting it,
+  and the single-consumer agent loop only read stdin frames between turns —
+  a cancel arriving mid-turn sat in the queue until the turn finished on its
+  own. Each turn now drains in a concurrent task while the loop keeps
+  watching stdin, so cancel interrupts the live turn (an interrupt surfaced
+  by the SDK as an exception no longer tears down the runner); follow-up
+  messages arriving mid-turn are buffered and processed in order.
+- A chat turn that crashes mid-stream (not from a user-initiated Stop) no
+  longer discards the partial answer already shown to the user. The `done`
+  frame — which the manager treats as clearing the in-flight turn buffer —
+  is now emitted by the caller only after the turn genuinely finished
+  without raising, instead of unconditionally from a `finally` block; a
+  crash now surfaces only an `error` frame, leaving the buffer intact for
+  the reconnect/teardown partial-save path.
+
+## [0.76.8] - 2026-07-22
+
+### Added
+
+- **Full agent/skill lifecycle over MCP** — six new foundation tools close the
+  REST × CLI × MCP parity gap for managing marketplace items and own store
+  entities from any MCP surface (web chat, remote connectors):
+  `marketplace_search`, `marketplace_detail`, `marketplace_add`,
+  `marketplace_remove` (mirroring `agnes marketplace …`) and `store_update`,
+  `store_delete` (mirroring `agnes store …`). Together with the existing
+  `store_publish_markdown` / `store_status` / `store_rate`, an agent can now
+  create, review, publish, discover, install, edit, and delete an agent or
+  skill end-to-end without the CLI. Binary paths (ZIP upload/replace, photo,
+  `store mine` bundle) remain CLI-only. The covered endpoints moved from the
+  triple-surface grandfather baseline into the enforced cohort.
+
+### Fixed
+
+- `agnes marketplace add/detail/remove` — and the new MCP siblings — now accept
+  item ids exactly as `agnes marketplace search` / `marketplace_search` print
+  them (tab-prefixed `curated-<mid>/<plugin>`, `flea-<uuid>`). Previously a
+  copy-pasted search id 404ed because the detail/install endpoints take the
+  bare forms.
+
+## [0.76.7] - 2026-07-22
+
+### Fixed
+
+- Observability/hygiene follow-ups from the three-plane architecture audit
+  (spec §3.7): every log line (JSON and dev/rich text formats) now carries
+  this process's replica id (`hostname:pid`), matching the `replica` label
+  already used on Prometheus series; a new `agnes_ducklake_snapshot_age_seconds`
+  gauge is populated by the `ducklake-maintenance` job so DuckLake staleness
+  is observable (absent when `analytics.backend` is not `ducklake`); the
+  m-tier reference `deploy/caddy/Caddyfile.mtier` now serves a small static
+  maintenance page (HTTP 503) instead of a hard/bare error when every
+  upstream is unhealthy; and `config/instance.yaml.example` documents the
+  previously-undocumented `deployment.role`, `coordination.backend` /
+  `redis.url`, and `analytics.backend` / `ducklake.*` keys, with two stale
+  "lands next wave" comments in the m-tier compose/config files corrected to
+  reflect that the coordination backend already shipped.
+- On role-split deployments, the three remaining in-api analytics writers now
+  enqueue jobs instead of writing in-process (three-plane spec §3.1 — the api
+  plane is analytics-write-free): admin `register-table` / `registry/rebuild` /
+  BigQuery-row updates ride a new `analytics-rebuild` job, and collection/file
+  delete + reingest derived-table purges ride a new `collections-purge` job
+  (both HEAVY lane). Single-box `all` deployments are unchanged — the original
+  synchronous/BackgroundTask paths still run and neither kind is enqueued.
+
+## [0.76.6] - 2026-07-22
+
+### Fixed
+
+- A configured object-store bucket on an image without the `[distribution]`
+  extra (boto3) no longer breaks manifest builds: `object_store()` now
+  degrades to `None` with a loud ERROR log — `GET /api/sync/manifest` serves
+  the app-download fallback instead of returning 500, for both
+  `distribution.signed_urls: auto` and explicit `on`. Direct
+  `S3ObjectStore(...)` construction still raises the actionable
+  install-the-extra error.
+- `data-refresh` jobs no longer stay permanently `failed` when a registered
+  table's upstream object was deleted (Keboola Storage HTTP 404,
+  `storage.tables.notFound` — e.g. a table dropped or moved to another bucket
+  after registration). Such per-table failures are now classified *permanent*:
+  they still surface in `sync_state` per-table errors, the admin registry UI,
+  and the operator webhook notifier, but they no longer flip the whole job to
+  `failed` — retrying cannot heal them (the fix is re-pointing or
+  unregistering the row), and a forever-red job masked real transient
+  failures from monitoring. Transient failures keep the existing
+  fail-and-retry semantics.
+
+## [0.76.5] - 2026-07-21
+
+### Added
+
+- The authoring Studio (`/admin/studio*`) can now be disabled per-instance.
+  Default stays on; set `AGNES_STUDIO_ENABLED=0` (the infra/Terraform `.env`
+  override, exposed as the `studio_enabled` module variable) or
+  `studio.enabled: false` in `instance.yaml`. When off, the Studio nav entry
+  and command-palette items are hidden, `/admin/studio*` (incl. the admin
+  moderation queue) redirects to home, and the whole suggestion API — public
+  (`POST /api/studio/suggestions`, `GET /api/studio/suggestions/mine`) and
+  admin (`/api/admin/authoring-suggestions*`) — returns 403 `studio_disabled`.
+  Pending suggestions persist and reappear when Studio is re-enabled. The
+  store submission surface (`/api/store/entities/from-markdown`, also used by
+  the CLI and MCP) is a separate feature and is not gated.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.4] - 2026-07-21
+
+### Fixed
+
+- Install prompt (`/setup` clipboard payload) no longer instructs the agent to
+  suppress its own security judgment around the freshly-minted PAT. Removed the
+  step-3 NOTE that told the agent not to warn / not to mark the session private
+  / not to run `agnes mark-private`, the `!`-prefix "bypass the auto-classifier"
+  paragraph, the `--token` "credential-exfil pattern" framing, and the step-4
+  "never run it for them" clause. Hardened Claude Code security protocols read
+  that copy as an attempt to bypass their protections and blocked the whole
+  install; the legitimate mechanics (write the PAT to a file so it stays out of
+  the command-line argv) are unchanged. Also dropped the step-4 `/agnes-private`
+  private-session tip — that guidance belongs in the workspace docs, not the
+  one-shot setup prompt.
+
+## [0.76.3] - 2026-07-21
+
+### Fixed
+
+- **`customer-instance` VMs now write `SERVER_URL` into `/opt/agnes/.env`**,
+  derived from the configured domain (`https://<domain>`) or the VM's
+  external IP (`http://<ip>:8000`) when no domain is set; an operator-edited
+  value in the existing `.env` wins (same precedence as `AGNES_TAG`).
+  Without it, `agnes_server_url()` fell back to loopback and every
+  cloud-chat sandbox was told to reach Agnes at `http://127.0.0.1:8000` —
+  unreachable from inside the sandbox, so the in-sandbox CLI failed its
+  first model call with `ECONNRESET` and chat was dead on arrival on any
+  module-provisioned VM (previously masked by hand-edited `.env` files that
+  VM recreates wipe).
+
 ## [0.76.2] - 2026-07-21
 
 ### Fixed

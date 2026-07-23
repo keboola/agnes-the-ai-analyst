@@ -410,6 +410,29 @@ def test_marketplace_add_flea(monkeypatch):
     assert "Added" in _clean(r.output)
 
 
+def test_marketplace_add_accepts_tab_prefixed_search_ids(monkeypatch):
+    """`agnes marketplace search` prints tab-prefixed ids (`curated-<mid>/<plugin>`,
+    `flea-<uuid>`); a copy-pasted id must route to the bare-form endpoints."""
+    paths: list = []
+
+    def _post(path, payload):
+        paths.append(path)
+        return {"installed": True}
+
+    import cli.commands.marketplace as mp_mod
+
+    monkeypatch.setattr(mp_mod, "api_post_json", _post)
+
+    r = runner.invoke(marketplace_app, ["add", "curated-foundry-ai/pdf-generator"])
+    assert r.exit_code == 0, r.output
+    r = runner.invoke(marketplace_app, ["add", "flea-abc123def456abc1"])
+    assert r.exit_code == 0, r.output
+    assert paths == [
+        "/api/marketplace/curated/foundry-ai/pdf-generator/install",
+        "/api/store/entities/abc123def456abc1/install",
+    ]
+
+
 def test_marketplace_add_system_plugin_409(monkeypatch):
     from cli.v2_client import V2ClientError
 

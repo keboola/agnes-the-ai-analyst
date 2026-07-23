@@ -19,9 +19,11 @@ server:
   host: "0.0.0.0"
   hostname: "localhost"
 
-# WS C lands the real coordination backend; the multi-process guard just
-# checks this key is "redis" today. The redis service in
-# docker-compose.mtier.yml is the placeholder target.
+# Multi-process coordination backend (app/coordination/factory.py) — the
+# `redis` service in docker-compose.mtier.yml is its real target (WS auth
+# tickets, session-routing leases, rate-limit storage); the multi-process
+# startup guard (app/startup_guards.py) requires this key to be "redis"
+# whenever more than one role/replica is configured.
 coordination:
   backend: redis
 
