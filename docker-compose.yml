@@ -147,7 +147,16 @@ services:
       - data:/data
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - APPS_RUNNER_TOKEN=${APPS_RUNNER_TOKEN:?set APPS_RUNNER_TOKEN in .env}
+      # A hard-required (`:?`) var here breaks EVERY `docker compose up`
+      # invocation that doesn't set it, even for stacks that never select
+      # the `apps` profile — compose validates interpolation for the whole
+      # file before profile filtering (broke smoke-test/e2e-bind-mount,
+      # rolled back #1007). Soft-default instead; `_check_token` in
+      # services/apps_runner/api.py already fails closed (rejects every
+      # request) when this is empty, so an operator who forgets to set it
+      # while actually running --profile apps gets a safe 401, not a
+      # silent auth bypass.
+      - APPS_RUNNER_TOKEN=${APPS_RUNNER_TOKEN:-}
       - APPS_RUNNER_IMAGE_PREFIX=${APPS_RUNNER_IMAGE_PREFIX:-keboolapublic.azurecr.io/data-app-python-js}
     networks: [default, agnes-apps]
     restart: unless-stopped

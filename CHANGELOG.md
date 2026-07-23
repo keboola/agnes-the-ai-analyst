@@ -23,6 +23,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.15] - 2026-07-23
+
+### Fixed
+
+- **`docker compose up` no longer requires `APPS_RUNNER_TOKEN` for stacks that never touch Data Apps.** The `apps-runner` service's env var was declared hard-required (`${APPS_RUNNER_TOKEN:?...}`), which broke every `docker compose up` invocation without it set — compose validates interpolation for the whole file before profile filtering, so this fired even though `apps-runner` is gated behind `profiles: ["apps"]`. Caused the v0.76.14 release to fail its smoke test and auto-rollback (#1007). Now soft-defaults to empty; the service's own token check already fails closed (rejects every request) when unset, so this is not an auth-bypass regression.
+
 ## [0.76.14] - 2026-07-23
 
 ### Added
