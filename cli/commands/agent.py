@@ -212,7 +212,7 @@ def delete_agent(
         if not confirm:
             raise typer.Abort()
     resp = api_delete(f"/api/v1/agents/{row['id']}")
-    if resp.status_code not in (200, 204):
+    if resp.status_code != 204:
         _fail(resp)
     typer.echo(f"Deleted agent {slug}")
 
@@ -264,6 +264,11 @@ def create_token(
         "--expires-days",
         help=f"Lifetime in days (default {_DEFAULT_TOKEN_EXPIRES_DAYS}); 0 = never expires",
     ),
+    raw: bool = typer.Option(
+        False,
+        "--raw",
+        help="Print only the raw secret to stdout (for CI/scripts) — mirrors `agnes auth token create --raw`",
+    ),
 ):
     """Mint an agent PAT.
 
@@ -278,6 +283,13 @@ def create_token(
     if resp.status_code != 200:
         _fail(resp)
     data = resp.json()
+    if raw:
+        typer.echo(
+            "Agent personal access token created — this is shown ONCE and cannot be retrieved again.",
+            err=True,
+        )
+        typer.echo(data["token"])
+        return
     typer.echo("Agent personal access token created — this is shown ONCE and cannot be retrieved again:")
     typer.echo("")
     typer.echo(f"    {data['token']}")
@@ -314,10 +326,14 @@ def _poll_job(job_id: str, timeout_s: float) -> dict:
     """Poll `GET /api/v1/jobs/{job_id}` until it reaches a terminal status or
     `timeout_s` elapses.
 
-    Bounded by attempt count (`timeout_s // _POLL_INTERVAL_S`, floor 1), not
-    an open-ended wall-clock loop — a mocked/no-op `time.sleep` in tests (or
-    a genuinely instant server) can't turn this into an unbounded hot loop.
+    Bounded two ways: primarily by a wall-clock deadline (`time.monotonic()
+    at entry + timeout_s`) so the budget the caller passed in is what
+    actually gets spent, and secondarily by attempt count (`timeout_s //
+    _POLL_INTERVAL_S`, floor 1) so a mocked/no-op `time.sleep` in tests (or a
+    genuinely instant server) can't turn this into an unbounded hot loop —
+    attempts still happen within the deadline, they just can't out-count it.
     """
+    deadline = time.monotonic() + timeout_s
     max_attempts = max(1, int(timeout_s // _POLL_INTERVAL_S) + 1)
     job: dict = {}
     for attempt in range(max_attempts):
@@ -327,6 +343,8 @@ def _poll_job(job_id: str, timeout_s: float) -> dict:
         job = resp.json()
         if job.get("status") in _TERMINAL_JOB_STATUSES:
             return job
+        if time.monotonic() >= deadline:
+            break
         if attempt < max_attempts - 1:
             time.sleep(_POLL_INTERVAL_S)
     typer.echo(
@@ -354,10 +372,14 @@ def ask(
 
     A `200` is the answer, ready now. A `202` means the sync wait outran
     the timeout (or the server degraded immediately) — this command polls
-    `GET /api/v1/jobs/{id}` for the rest of the `--timeout` budget. The
-    underlying run is never cancelled by a client-side timeout; only the
-    CLI's own wait is bounded.
+    `GET /api/v1/jobs/{id}` for the *remainder* of the `--timeout` budget
+    (the sync POST above may itself have consumed a chunk of it), so the
+    total wall-clock time this command can spend stays bounded by
+    `--timeout` instead of doubling to (sync wait) + (full poll budget).
+    The underlying run is never cancelled by a client-side timeout; only
+    the CLI's own wait is bounded.
     """
+    start = time.monotonic()
     total_timeout = _DEFAULT_ASK_TIMEOUT_S if timeout is None else max(1, timeout)
     server_timeout = min(total_timeout, _MAX_ASK_TIMEOUT_S)
     resp = api_post(
@@ -370,7 +392,8 @@ def ask(
         return
     if resp.status_code == 202:
         job_id = resp.json()["job_id"]
-        job = _poll_job(job_id, total_timeout)
+        remaining = max(1, total_timeout - int(time.monotonic() - start))
+        job = _poll_job(job_id, remaining)
         _render_job_result(job, as_json)
         return
     _fail(resp)

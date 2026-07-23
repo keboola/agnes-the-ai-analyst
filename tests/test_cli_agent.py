@@ -12,6 +12,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from cli.main import app
@@ -250,6 +251,36 @@ class TestToken:
         assert result.exit_code == 0
         assert m.call_args.kwargs["json"] == {"name": "ci", "expires_in_days": None}
 
+    def test_token_raw_prints_only_secret(self):
+        with (
+            patch(
+                "cli.commands.agent.api_get",
+                return_value=_resp(200, {"data": [_AGENT_ROW], "has_more": False, "next_cursor": None}),
+            ),
+            patch(
+                "cli.commands.agent.api_post",
+                return_value=_resp(
+                    200,
+                    {
+                        "id": "tok_1",
+                        "name": "ci",
+                        "prefix": "abcd1234",
+                        "agent_id": "ag_1",
+                        "token": "agent-pat-secret-value",
+                        "expires_at": "2026-10-01",
+                        "created_at": "2026-07-01",
+                    },
+                ),
+            ),
+        ):
+            result = runner.invoke(app, ["agent", "token", "research", "--name", "ci", "--raw"])
+        assert result.exit_code == 0
+        # stdout is the bare secret, nothing else
+        assert result.stdout.strip() == "agent-pat-secret-value"
+        # the one-time warning went to stderr, not stdout
+        assert "agent-pat-secret-value" not in result.stderr
+        assert "shown ONCE" in result.stderr
+
     def test_token_not_selected_mode_renders_detail_code(self):
         with (
             patch(
@@ -387,3 +418,85 @@ class TestAsk:
             result = runner.invoke(app, ["agent", "ask", "nope", "q"])
         assert result.exit_code == 1
         assert "agent_not_found" in result.output
+
+    def test_ask_poll_budget_shrinks_by_time_spent_on_sync_post(self):
+        """The sync POST can itself consume part of `--timeout` before
+        returning 202 — the poll that follows must get only what's left,
+        not the full budget again (that would let total wall-clock time
+        run to ~2x `--timeout`)."""
+        from cli.commands import agent as agent_mod
+
+        with (
+            patch.object(agent_mod, "api_post", return_value=_resp(202, {"job_id": "job_1"})),
+            # First call = `start` at top of ask(); second = elapsed check on
+            # the 202 path. Simulates the sync POST taking 45s of a 100s
+            # budget. Patching the module-level `time` name (not the global
+            # stdlib module) so this can't be perturbed by unrelated
+            # `time.monotonic()` calls elsewhere in the process.
+            patch.object(agent_mod, "time") as m_time,
+            patch.object(
+                agent_mod,
+                "_poll_job",
+                return_value={"status": "completed", "result": {"answer": "ok"}},
+            ) as m_poll,
+        ):
+            m_time.monotonic.side_effect = [0.0, 45.0]
+            result = runner.invoke(app, ["agent", "ask", "research", "q", "--timeout", "100"])
+        assert result.exit_code == 0
+        assert m_poll.call_args.args[0] == "job_1"
+        # 100 (total) - 45 (already spent) = 55, not the full 100 again.
+        assert m_poll.call_args.args[1] == 55
+
+    def test_ask_poll_budget_floors_at_one_when_sync_post_ate_the_whole_timeout(self):
+        from cli.commands import agent as agent_mod
+
+        with (
+            patch.object(agent_mod, "api_post", return_value=_resp(202, {"job_id": "job_1"})),
+            patch.object(agent_mod, "time") as m_time,
+            patch.object(
+                agent_mod,
+                "_poll_job",
+                return_value={"status": "completed", "result": {"answer": "ok"}},
+            ) as m_poll,
+        ):
+            m_time.monotonic.side_effect = [0.0, 500.0]
+            result = runner.invoke(app, ["agent", "ask", "research", "q", "--timeout", "10"])
+        assert result.exit_code == 0
+        assert m_poll.call_args.args[1] == 1  # max(1, ...) floor, never <= 0
+
+
+class TestPollJobDeadline:
+    def test_poll_job_stops_at_wall_clock_deadline_even_with_many_attempts_left(self):
+        """`_poll_job` must bound by the remaining wall-clock deadline, not
+        just by a naive attempt count carried over from the full timeout —
+        this is what lets `ask` hand it a shrunk `remaining` budget and have
+        it actually be honored."""
+        from cli.commands import agent as agent_mod
+
+        job_running = {"id": "job_1", "status": "in_progress", "result": None, "error": None}
+        # monotonic(): first call establishes the deadline inside _poll_job,
+        # every call thereafter reports the deadline already passed.
+        with (
+            patch.object(agent_mod, "api_get", return_value=_resp(200, job_running)) as m_get,
+            patch.object(agent_mod, "time") as m_time,
+        ):
+            m_time.monotonic.side_effect = [0.0] + [100.0] * 10
+            with pytest.raises(typer.Exit):
+                agent_mod._poll_job("job_1", 4.0)
+        # exactly one attempt: the deadline check after it fires immediately.
+        assert m_get.call_count == 1
+        m_time.sleep.assert_not_called()
+
+
+class TestTimeoutDriftGuard:
+    def test_cli_ask_timeout_constants_match_server_defaults(self):
+        """The CLI's `_DEFAULT_ASK_TIMEOUT_S`/`_MAX_ASK_TIMEOUT_S` are kept in
+        manual sync with `app.api.agent_runtime`'s `_DEFAULT_TIMEOUT_S`/
+        `_MAX_TIMEOUT_S` (per the module docstring in `cli/commands/agent.py`)
+        since the CLI has no import-time dependency on the FastAPI router.
+        This test is the tripwire for that manual sync drifting."""
+        from app.api import agent_runtime
+        from cli.commands import agent as agent_mod
+
+        assert agent_mod._DEFAULT_ASK_TIMEOUT_S == agent_runtime._DEFAULT_TIMEOUT_S
+        assert agent_mod._MAX_ASK_TIMEOUT_S == agent_runtime._MAX_TIMEOUT_S
