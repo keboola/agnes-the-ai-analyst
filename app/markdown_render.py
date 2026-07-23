@@ -21,6 +21,8 @@ trusting the stored value — no second-pass sanitization on render.
 
 from __future__ import annotations
 
+import html as html_lib
+import re
 from typing import Optional
 
 import nh3
@@ -83,4 +85,29 @@ def render_safe(markdown: Optional[str]) -> str:
     )
 
 
-__all__ = ["render_safe"]
+# Closing tags of block-level elements (plus <br>) mark word boundaries when
+# flattening rendered HTML to plain text; without this, "<p>a</p><p>b</p>"
+# collapses to "ab".
+_BLOCK_BOUNDARY_RE = re.compile(
+    r"</(?:p|li|h[1-6]|tr|t[dh]|blockquote|pre)>|<br ?/?>"
+)
+
+
+def render_plain(markdown: Optional[str]) -> str:
+    """Plain-text projection of ``render_safe`` output.
+
+    For one-line previews and client-side filter indexes where markup,
+    literal ``**`` / ``#`` as much as HTML tags, is noise. Pipeline:
+    render + sanitize (``render_safe``), turn block boundaries into spaces,
+    strip every remaining tag (nh3 with an empty allowlist), unescape
+    entities back to text, collapse whitespace. The result is data, not
+    HTML: inject with normal Jinja escaping, never ``| safe``.
+    """
+    if not markdown:
+        return ""
+    html = _BLOCK_BOUNDARY_RE.sub(" ", render_safe(markdown))
+    text = html_lib.unescape(nh3.clean(html, tags=set()))
+    return " ".join(text.split())
+
+
+__all__ = ["render_plain", "render_safe"]
