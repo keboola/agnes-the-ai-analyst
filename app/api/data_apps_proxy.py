@@ -286,7 +286,12 @@ async def _proxy(request: Request, slug: str, path: str) -> Response:
         for k, v in request.headers.items()
         if k.lower() not in _HOP_BY_HOP and k.lower() not in _CREDENTIAL_HEADERS
     }
-    headers["X-Forwarded-Prefix"] = f"/apps/{slug}"
+    # A subdomain-origin request (rewritten by
+    # app/data_apps_subdomain.py, which stamps this scope marker) serves
+    # the app at its own root — there IS no prefix from its point of view,
+    # unlike the `/apps/<slug>/...` path-prefix form of the same route.
+    if not request.scope.get("agnes_data_app_subdomain"):
+        headers["X-Forwarded-Prefix"] = f"/apps/{slug}"
 
     client = _upstream_client()
     try:

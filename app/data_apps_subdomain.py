@@ -4,7 +4,10 @@ to ``/apps/<slug>/...`` paths (Task 8 — ingress proxy + wake-on-request).
 Only active when ``data_apps.subdomain_base`` is configured in
 ``instance.yaml`` (e.g. ``apps.example.com``). A request whose ``Host``
 header is ``s.apps.example.com`` gets its ``scope["path"]`` rewritten to
-``/apps/s`` + the original path, then falls through to the normal
+``/apps/s`` + the original path (and ``scope["agnes_data_app_subdomain"]``
+set to ``"s"`` — the marker ``app/api/data_apps_proxy.py`` reads to omit
+``X-Forwarded-Prefix``, since a subdomain-origin request has no prefix
+from the app's own point of view), then falls through to the normal
 routing table — landing on ``app.api.data_apps_proxy``'s catch-all route
 exactly as if the caller had hit ``https://<main-host>/apps/s/...``
 directly. When ``subdomain_base`` is unset (the default), this middleware
@@ -42,5 +45,11 @@ class DataAppSubdomainMiddleware:
                     slug = host[: -(len(base) + 1)]
                     if "." not in slug:
                         scope = dict(scope)
+                        # Marker the proxy reads to decide whether to set
+                        # X-Forwarded-Prefix (see app/api/data_apps_proxy.py
+                        # `_proxy`) — a subdomain-origin request has no
+                        # prefix from the app's own point of view, unlike
+                        # the path-prefix form of the same route.
+                        scope["agnes_data_app_subdomain"] = slug
                         scope["path"] = f"/apps/{slug}" + scope["path"]
         await self.app(scope, receive, send)

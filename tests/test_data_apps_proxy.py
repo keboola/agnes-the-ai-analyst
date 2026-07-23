@@ -502,6 +502,23 @@ def test_subdomain_host_rewrite(client_granted, running_app, respx_upstream, pro
     assert r.status_code == 200  # reached the proxy handler for slug s
 
 
+def test_subdomain_request_omits_x_forwarded_prefix(client_granted, running_app, respx_upstream, proxy_env):
+    """Spec S6: an app served at its own subdomain root must not receive
+    X-Forwarded-Prefix (there IS no prefix from its point of view) — unlike
+    the same app reached via the path-prefix form, see
+    `test_running_app_is_proxied` for the contrast."""
+    _set_data_apps_config(proxy_env["data_dir"], subdomain_base="apps.example.com")
+    r = client_granted.get("/", headers={"host": "s.apps.example.com"})
+    assert r.status_code == 200
+    assert "x-forwarded-prefix" not in respx_upstream.calls[0].request.headers
+
+
+def test_path_prefix_request_still_gets_x_forwarded_prefix(client_granted, running_app, respx_upstream):
+    r = client_granted.get("/apps/s/hello")
+    assert r.status_code == 200
+    assert respx_upstream.calls[0].request.headers["x-forwarded-prefix"] == "/apps/s"
+
+
 # ---------------------------------------------------------------------------
 # readiness flip: deploying -> running once the runner reports ready
 # ---------------------------------------------------------------------------
