@@ -20,6 +20,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+- **DuckDB↔Postgres parity: hydrate sandbox lifecycle fields in the chat
+  participants repo.** `chat_session_participants_pg._row_to_session` now
+  populates `sandbox_id` / `runner_pid` / `sandbox_paused_at` like the main
+  `chat_sessions_pg` repo, instead of silently defaulting them to None. No
+  current caller of the participant path (`list_sessions_for_participant`,
+  `fork_session_as_co_session`) reads these fields, so behaviour is unchanged
+  today — this closes a latent gap that would have returned sandbox-less
+  sessions on the PG backend and could break pause/resume takeover for
+  co-driven sessions. Guarded by a new field-for-field hydration regression
+  test in `tests/db_pg/`.
+
 ### Security
 
 ## [0.76.13] - 2026-07-23
