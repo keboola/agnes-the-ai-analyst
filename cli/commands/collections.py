@@ -7,6 +7,7 @@ Commands:
   upload    <id> <path...>   (multipart POST per file)
   reingest  <id> <file_id>   (re-run ingestion for one file)
   rm        <id>       [--yes]
+  rm-file   <id> <file_id>   [--yes]
 """
 
 from __future__ import annotations
@@ -284,3 +285,27 @@ def remove_collection(
         typer.echo(str(exc), err=True)
         raise typer.Exit(1)
     typer.echo(f"Deleted: {collection_id}")
+
+
+# ---------------------------------------------------------------------------
+# rm-file
+# ---------------------------------------------------------------------------
+
+
+@collections_app.command("rm-file")
+def remove_file(
+    collection_id: str = typer.Argument(..., help="Collection id (col_...)"),
+    file_id: str = typer.Argument(..., help="File id (cf_...) from `collections show`"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Delete one file from a collection (requires access to the collection)."""
+    if not yes:
+        confirmed = typer.confirm(f"Delete file {file_id} from {collection_id}?")
+        if not confirmed:
+            raise typer.Abort()
+    try:
+        api_delete(f"/api/collections/{collection_id}/files/{file_id}")
+    except V2ClientError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Deleted file: {file_id}")
