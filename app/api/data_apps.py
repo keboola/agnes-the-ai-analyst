@@ -523,6 +523,12 @@ async def stop_data_app(
         raise HTTPException(status_code=502, detail="runner_unavailable")
 
     repo.set_state(row["id"], "stopped")
+    # Spec §8/§10: an explicit stop revokes the service token — unlike
+    # reap-idle's sleep transition (see reap_idle_data_apps), which leaves
+    # it live so the app can wake later. A stop is an operator decision that
+    # the app isn't coming back on its own; the credential goes with it.
+    _revoke_service_token(row)
+    repo.update(row["id"], service_token_id="")
     _audit(conn, user["id"], "data_app.stop", f"data_app:{slug}")
     return {"state": "stopped"}
 
@@ -639,28 +645,39 @@ async def reap_idle_data_apps(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Admin-only idle sweep (called by the scheduler, whose synthetic user
-    is Admin). `list_idle` takes a single global threshold, but
-    `idle_timeout_s` is per-app, so each `running` row is checked against
-    its *own* configured threshold rather than one shared value.
+    is Admin). `idle_timeout_s` is per-app, so each `running` row is
+    compared, in Python, against its *own* configured threshold rather than
+    one shared value — a single `repo.list(state="running", ...)` scan
+    (`list_idle` stays on the repo for callers that want SQL-side filtering
+    against one shared threshold — e.g. any future admin/ops tooling — and
+    remains contract-tested, but reap-idle itself no longer calls it per row).
 
     A runner failure on one app is recorded (state -> "error",
     state_detail carries the runner's message) and does not abort the rest
     of the sweep — one dead container must not wedge every other reap.
 
-    Also recovers `deploying` rows stuck longer than
-    `_DEPLOY_STALE_TIMEOUT_S` (a wake or operator-deploy that never
-    finished — e.g. the ingress proxy's backgrounded `_spawn_wake` task
-    died without anything left to observe it, or a `POST .../deploy`
-    request process crashed mid-flight) by flipping them to `error` rather
-    than leaving them wedged in `deploying` forever. Reported separately
-    from `reaped` (`sleeping` transitions) as `timed_out`.
+    Also checks `deploying` rows stuck longer than `_DEPLOY_STALE_TIMEOUT_S`
+    (a wake or operator-deploy that never finished — e.g. the ingress
+    proxy's backgrounded `_spawn_wake` task died without anything left to
+    observe it, or a `POST .../deploy` request process crashed mid-flight)
+    against the runner before declaring the app dead: if the runner reports
+    the container is actually up and ready, the row is recovered to
+    `running` (reported as `recovered`) rather than errored out from under
+    a deploy that in fact succeeded; only when the runner says otherwise
+    (or can't be reached) is the row flipped to `error` (reported as
+    `timed_out`).
     """
     _feature_gate()
     repo = data_apps_repo()
     reaped: list[str] = []
-    for row in repo.list(state="running"):
-        idle_rows = repo.list_idle(row["idle_timeout_s"])
-        if not any(r["id"] == row["id"] for r in idle_rows):
+    now = datetime.now(timezone.utc)
+    for row in repo.list(state="running", limit=100000):
+        last_request_at = row.get("last_request_at")
+        if last_request_at is None:
+            continue
+        if last_request_at.tzinfo is None:
+            last_request_at = last_request_at.replace(tzinfo=timezone.utc)
+        if (now - last_request_at).total_seconds() <= row["idle_timeout_s"]:
             continue
         try:
             _runner().stop(row["slug"], mode=row.get("sleep_mode") or "recreate")
@@ -672,8 +689,8 @@ async def reap_idle_data_apps(
         repo.set_state(row["id"], "sleeping")
         reaped.append(row["slug"])
 
+    recovered: list[str] = []
     timed_out: list[str] = []
-    now = datetime.now(timezone.utc)
     for row in repo.list(state="deploying"):
         updated_at = row.get("updated_at")
         if updated_at is None:
@@ -682,9 +699,26 @@ async def reap_idle_data_apps(
             updated_at = updated_at.replace(tzinfo=timezone.utc)
         if (now - updated_at).total_seconds() <= _DEPLOY_STALE_TIMEOUT_S:
             continue
+        ready = False
+        try:
+            status = _runner().status(row["slug"])
+            ready = bool(status.get("ready"))
+        except (RunnerUnavailable, RunnerError) as exc:
+            logger.warning("reap-idle: status check failed for %s: %s", row["slug"], exc)
+        if ready:
+            repo.set_state(row["id"], "running")
+            logger.info("reap-idle: %s was actually ready; recovered to running", row["slug"])
+            recovered.append(row["slug"])
+            continue
         repo.set_state(row["id"], "error", "wake/deploy timed out")
         logger.warning("reap-idle: %s stuck in deploying past %ds; marked error", row["slug"], _DEPLOY_STALE_TIMEOUT_S)
         timed_out.append(row["slug"])
 
-    _audit(conn, user["id"], "data_app.reap_idle", "data_app:*", {"reaped": reaped, "timed_out": timed_out})
-    return {"reaped": reaped, "timed_out": timed_out}
+    _audit(
+        conn,
+        user["id"],
+        "data_app.reap_idle",
+        "data_app:*",
+        {"reaped": reaped, "timed_out": timed_out, "recovered": recovered},
+    )
+    return {"reaped": reaped, "timed_out": timed_out, "recovered": recovered}

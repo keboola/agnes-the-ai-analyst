@@ -178,6 +178,7 @@ class _FakeRunner:
         self.up_calls = []
         self.stop_calls = []
         self.logs_calls = []
+        self._status = {"container": "running", "ready": True}
 
     def up(self, slug, spec, config_json):
         self.up_calls.append((slug, spec, config_json))
@@ -191,7 +192,7 @@ class _FakeRunner:
         return {"container": "running", "ready": True}
 
     def status(self, slug):
-        return {"container": "running", "ready": True}
+        return self._status
 
     def logs(self, slug, tail=200):
         self.logs_calls.append((slug, tail))
@@ -315,6 +316,41 @@ def running_active_app(api_env):
     finally:
         conn.close()
     return "active2"
+
+
+@pytest.fixture
+def running_idle_app_with_token(api_env):
+    """Like `running_idle_app`, but with a real service token attached —
+    proves reap-idle's SLEEP transition must NOT revoke it (unlike explicit
+    stop/delete): a sleeping app needs its token to wake later."""
+    from src.db import get_system_db
+    from src.repositories.access_tokens import AccessTokenRepository
+    from src.repositories.data_apps import DataAppsRepository
+    from app.auth.jwt import create_access_token
+
+    conn = get_system_db()
+    try:
+        repo = DataAppsRepository(conn)
+        app_id = repo.create(slug="idletok", name="IdleTok", owner_user_id="owner1", idle_timeout_s=300)
+        repo.set_state(app_id, "running")
+        conn.execute(
+            "UPDATE data_apps SET last_request_at = now() - INTERVAL 2 HOUR WHERE id = ?",
+            [app_id],
+        )
+        tid = str(uuid.uuid4())
+        jwt_token = create_access_token("owner1", "owner@test.local", token_id=tid, typ="pat")
+        AccessTokenRepository(conn).create(
+            id=tid,
+            user_id="owner1",
+            name="data-app:idletok",
+            token_hash=hashlib.sha256(jwt_token.encode()).hexdigest(),
+            prefix=tid.replace("-", "")[:8],
+            expires_at=None,
+        )
+        repo.update(app_id, service_token_id=tid)
+    finally:
+        conn.close()
+    return "idletok", tid
 
 
 @pytest.fixture
@@ -640,6 +676,36 @@ class TestStop:
         r = client_as_other_user.post("/api/data-apps/sapp/stop")
         assert r.status_code == 403
 
+    def test_stop_revokes_service_token(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        """Spec §8/§10: stop must revoke the app's service token (only sleep
+        via reap-idle keeps it live, for wake) — see TestReap's
+        `test_reap_idle_sleep_does_not_revoke_token` for the contrast."""
+        client_as_user.post("/api/data-apps/sapp/deploy", json={})
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            token_id = DataAppsRepository(conn).get_by_slug("sapp")["service_token_id"]
+        finally:
+            conn.close()
+        assert token_id
+
+        r = client_as_user.post("/api/data-apps/sapp/stop")
+        assert r.status_code == 200
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("sapp")
+            from src.repositories.access_tokens import AccessTokenRepository
+
+            token_row = AccessTokenRepository(conn).get_by_id(token_id)
+        finally:
+            conn.close()
+        assert row["service_token_id"] == ""
+        assert token_row["revoked_at"] is not None
+
 
 class TestDelete:
     def test_delete_happy_path(self, client_as_user, fake_runner, seeded_repo_with_commit):
@@ -777,6 +843,29 @@ class TestReap:
             conn.close()
         assert row["state"] == "sleeping"
 
+    def test_reap_idle_sleep_does_not_revoke_token(self, admin_client, fake_runner, running_idle_app_with_token):
+        """Contrast with `TestStop.test_stop_revokes_service_token`: only
+        explicit stop/delete revoke — the idle sweep's sleep transition must
+        leave a sleeping app's service token live so it can wake later."""
+        slug, token_id = running_idle_app_with_token
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reaped"] == [slug]
+
+        from src.db import get_system_db
+        from src.repositories.access_tokens import AccessTokenRepository
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug(slug)
+            token_row = AccessTokenRepository(conn).get_by_id(token_id)
+        finally:
+            conn.close()
+        assert row["state"] == "sleeping"
+        assert row["service_token_id"] == token_id
+        assert token_row["revoked_at"] is None
+
     def test_reap_idle_requires_admin(self, client_as_user, fake_runner, running_idle_app):
         r = client_as_user.post("/api/data-apps/reap-idle")
         assert r.status_code == 403
@@ -812,14 +901,44 @@ class TestReap:
             conn.close()
         assert row["state"] == "running"
 
-    def test_reap_idle_recovers_stale_deploying_app(self, admin_client, fake_runner, stale_deploying_app):
-        """A `deploying` row stuck past `_DEPLOY_STALE_TIMEOUT_S` (a wake or
-        operator-deploy that never finished) is flipped to `error`, not left
-        wedged forever, and reported separately from `reaped`."""
+    def test_reap_idle_recovers_stale_deploying_app_when_runner_ready(
+        self, admin_client, fake_runner, stale_deploying_app
+    ):
+        """A `deploying` row stuck past `_DEPLOY_STALE_TIMEOUT_S` is checked
+        against the runner before being declared dead: if the runner reports
+        the container is actually up and ready (a `readiness` poll that
+        never happened to fire, say), the row is recovered to `running`
+        rather than errored out from under a perfectly good deploy."""
+        fake_runner._status = {"container": "running", "ready": True}
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["recovered"] == ["stuck1"]
+        assert body["timed_out"] == []
+        assert body["reaped"] == []
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("stuck1")
+        finally:
+            conn.close()
+        assert row["state"] == "running"
+
+    def test_reap_idle_recovers_stale_deploying_app_when_runner_not_ready(
+        self, admin_client, fake_runner, stale_deploying_app
+    ):
+        """Same stale row, but the runner reports the container absent/not
+        ready — genuinely dead, so it's flipped to `error` (not left wedged
+        forever), reported separately from `reaped`/`recovered`."""
+        fake_runner._status = {"container": "absent", "ready": False}
         r = admin_client.post("/api/data-apps/reap-idle")
         assert r.status_code == 200
         body = r.json()
         assert body["timed_out"] == ["stuck1"]
+        assert body["recovered"] == []
         assert body["reaped"] == []
 
         from src.db import get_system_db
