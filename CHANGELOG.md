@@ -22,6 +22,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.13] - 2026-07-23
+
+### Added
+
+- **Register a BigQuery table from another project without leaving the UI.**
+  The "Live from BigQuery" form gained an optional **Project** field; filling
+  it in sends an explicit `bq_fqn` (`project.dataset.table`) instead of the
+  configured-project + dataset + table triplet. Blank keeps the previous
+  behaviour exactly. Only applies to Live access — synced (materialized)
+  tables always read from the configured project, so the field is hidden
+  for those. Previously the only way to register a cross-project table was
+  to call `POST /api/admin/register-table` or `PUT /api/admin/registry/{id}`
+  by hand.
+- **`data_source.bigquery.project` and `.location` are documented in server
+  config.** Both were missing from the known-fields registry, so the admin
+  form filed them under "Other (YAML-only) keys" with no label, type or hint
+  while their siblings were described. The `project` hint points at `bq_fqn`
+  as the supported way to reach a table in another project, and the
+  `location` hint names the `404 Not found: Table ... was not found in
+  location <location>` symptom of a mismatch.
+
 ## [0.76.12] - 2026-07-23
 
 ### Fixed
