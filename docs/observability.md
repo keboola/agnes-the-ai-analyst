@@ -121,6 +121,67 @@ The unit tests in `tests/test_posthog_*.py` cover the disabled and enabled
 configurations; `tests/test_llm_tracing.py` exercises the success and error
 variants of the LLM event.
 
+## Prometheus `/metrics`
+
+Every role process (api/gateway/worker; `all` in a single-process deployment)
+exposes its own `GET /metrics` (`app/observability/metrics.py`) in the
+standard Prometheus text exposition format. **Unauthenticated, internal-scrape-only** —
+the same posture as `/healthz`/`/readyz` (see `app/api/health_probes.py`):
+no auth dependency, deliberately outside `/api/*`. **Operators must not
+expose this endpoint publicly** — put it behind the same
+TLS-terminating-reverse-proxy / firewall boundary that keeps `/healthz` and
+`/readyz` internal, and scrape it from inside that boundary only.
+
+Every series carries `role` (the process's active `AGNES_ROLE`, or `all`)
+and `replica` (`hostname:pid`) labels so a scrape can attribute a sample to
+the process that emitted it. Whether it is then correct to `sum()` a metric
+across replicas or take its `max()` depends on whether the underlying value
+is genuinely per-replica state or a global value every replica happens to
+sample identically — see the table below.
+
+### Key series
+
+| Series | Kind | Labels (beyond `role`/`replica`) | Scope | Correct cross-replica aggregation |
+|---|---|---|---|---|
+| `agnes_http_requests_total` | Counter | `method`, `path_template`, `status` | Per-replica | `sum() by (...)` — additive. |
+| `agnes_http_request_duration_seconds` | Histogram | `method`, `path_template` | Per-replica | `sum() by (...)` (rate/histogram_quantile as usual) — additive. |
+| `agnes_jobs_queued` | Gauge | `kind` | **Global.** Sampled at scrape time from the shared job queue — every replica reports the same value each scrape. | `max() by (kind)` — `sum()` N-counts the true depth by however many replicas were scraped. |
+| `agnes_jobs_queued_capped` | Gauge | — | **Global.** 1 if the last scrape hit the bounded-scan cap (see the metric's own help text), else 0. | `max() by (...)` — same reasoning as above. |
+| `agnes_jobs_oldest_queued_age_seconds` | Gauge | `kind` | **Global.** `now - min(created_at)` by kind, sampled at scrape time from the SAME bounded scan `agnes_jobs_queued` uses (no second DB hit) — every replica reports the same value each scrape. When `agnes_jobs_queued_capped=1`, the scan (ordered `created_at DESC`) may have scanned the true oldest row(s) out of its window, so this value can UNDERSTATE the real oldest-queued age — uncapped, it's exact. Absent for a kind with no queued jobs (same as `agnes_jobs_queued`). | `max() by (kind)` — same reasoning as `agnes_jobs_queued`; never `sum()`, which is meaningless for an age value and N-counts the same reading by however many replicas were scraped. |
+| `agnes_jobs_running` | Gauge | `kind`, `lane` | **Per-replica.** In-process count of that replica's own currently-executing jobs. | `sum() by (kind)` — genuinely additive across the fleet. |
+| `agnes_job_duration_seconds` | Histogram | `kind`, `outcome` | Per-replica | `sum() by (...)` — additive. Explicit buckets from 1s to 4h — Agnes jobs range from sub-second housekeeping to multi-hour BigQuery materializations, so the `prometheus_client` default buckets (top bucket ~10s) would collapse almost everything into `+Inf`. |
+| `agnes_job_claims_total` | Counter | `kind` | Per-replica | `sum() by (kind)` — additive. |
+| `agnes_job_failures_total` | Counter | `kind`, `reason` | Per-replica | `sum() by (kind)` — additive. |
+| `agnes_worker_lane_active` | Gauge | `lane` | **Per-replica.** In-process count of busy concurrency slots in a lane. | `sum() by (lane)` — genuinely additive across the fleet. |
+| `agnes_coordination_up` | Gauge | — | **Per-replica.** 1 if that replica's `coordination().ping()` succeeded at scrape time, else 0. | Don't sum — a fleet-wide health view wants `min()` (any replica down flags the fleet) or per-`replica` alerting, not a total. |
+| `agnes_coordination_backend_info` | Info | `backend` (`memory`\|`redis`) | Per-replica (identical across a healthy fleet) | Informational only — join against other series by label, don't aggregate. |
+| `agnes_readiness` | Gauge | — | **Per-replica.** Same value that replica's own `/readyz` reports. | `min()` for fleet-wide readiness (any not-ready replica should surface), or alert per-`replica`. |
+| `agnes_metrics_collector_errors_total` | Counter | `collector` | Per-replica | `sum() by (collector)` — additive; nonzero means a scrape-time collector (`jobs_queued`, `coordination`, `coordination_backend`, `readiness`) swallowed an exception instead of reporting — investigate, don't ignore. |
+
+Request-id → job log correlation (not a Prometheus series, but part of the
+same observability wave): `app/job_correlation.py` stamps the originating
+HTTP request's `request_id` onto a job payload at enqueue time
+(`POST /api/jobs`, the sync-trigger endpoint, and the Jira webhook's
+incremental-transform follow-up) and re-binds it into
+`app.logging_config.request_id_var` for the duration of the worker's
+handler invocation — every JSON log line emitted while that job runs
+carries the `request_id` of the request that enqueued it, so a support
+ticket's request id greps straight through to the async job that serviced
+it, not just the synchronous response.
+
+### Scrape config
+
+The `mtier` Compose profile (`docker-compose.mtier.yml`) ships a
+`prometheus` service (`deploy/prometheus/prometheus.yml`, 15s scrape
+interval) that polls all four role containers by Compose DNS name
+(`api1`/`api2`/`gateway`/`worker:8000/metrics`) plus a `cadvisor` service
+(`gcr.io/cadvisor/cadvisor`, container-level cpu/mem/network metrics,
+`cadvisor:8080`) — see [`DEPLOYMENT.md`](DEPLOYMENT.md) → *Multi-process* →
+*Metrics (Prometheus)* for how to bring it up and the macOS Docker Desktop
+caveat on cAdvisor's fidelity. A production deployment that doesn't use
+this profile should scrape the same `/metrics` path on whatever ports each
+role's `/healthz`/`/readyz` already answer on, at a similar interval.
+
 ## Self-hosting note
 
 PostHog is itself open source — operators with a self-hosted PostHog instance

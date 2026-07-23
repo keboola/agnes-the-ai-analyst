@@ -105,6 +105,13 @@ _KNOB_CATALOGUE: list[dict[str, Any]] = [
         "yaml_path": "instance.workspace_dir",
         "default": "",
     },
+    {
+        "key": "studio_enabled",
+        "resolver": "get_studio_enabled",
+        "env_var": "AGNES_STUDIO_ENABLED",
+        "yaml_path": "studio.enabled",
+        "default": True,
+    },
     # Onboarding & /home
     {
         "key": "home_route",

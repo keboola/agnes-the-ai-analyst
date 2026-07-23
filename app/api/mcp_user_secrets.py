@@ -17,6 +17,7 @@ For ``scope='shared'`` sources we still accept the PUT (operators may
 flip scope later) but warn the caller that the value won't be used
 until scope flips.
 """
+
 from __future__ import annotations
 
 import logging
@@ -40,6 +41,23 @@ class MySecretBody(BaseModel):
 class HasSecretResponse(BaseModel):
     has_secret: bool
     source_scope: str  # 'shared' | 'per_user'
+    updated_at: str | None = None  # ISO-8601 of last set; None when not connected
+
+
+def _require_source_grant(source_id: str, user: dict) -> None:
+    """403 unless the caller is granted at least one tool on ``source_id``.
+
+    Uses the same ``_visible_passthrough_tools`` intersection as the connect
+    page and the ``/test`` endpoint (admin short-circuits to all sources), so a
+    user can only read or manage their own credential for a source they're
+    actually entitled to use — an ungranted caller can't probe an arbitrary
+    source's existence / scope / connection timestamp, nor store a token
+    against it."""
+    from app.api.mcp_passthrough import _visible_passthrough_tools
+
+    granted_source_ids = {t["source_id"] for t in _visible_passthrough_tools(user)}
+    if source_id not in granted_source_ids:
+        raise HTTPException(status_code=403, detail="not_granted")
 
 
 @router.put("/{source_id}/my-secret", status_code=204)
@@ -58,6 +76,7 @@ async def set_my_secret(
         raise HTTPException(status_code=400, detail="secret value required")
     if not mcp_sources_repo().get(source_id):
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    _require_source_grant(source_id, user)
     try:
         per_user_secrets_repo().upsert(source_id, user["id"], body.value)
     except VaultKeyNotConfiguredError as exc:
@@ -76,6 +95,7 @@ async def delete_my_secret(
     sources the next call falls through to the shared vault path."""
     if not mcp_sources_repo().get(source_id):
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    _require_source_grant(source_id, user)
     per_user_secrets_repo().delete(source_id, user["id"])
 
 
@@ -89,7 +109,89 @@ async def get_my_secret_status(
     source = mcp_sources_repo().get(source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    _require_source_grant(source_id, user)
     return HasSecretResponse(
         has_secret=per_user_secrets_repo().has(source_id, user["id"]),
         source_scope=(source.get("scope") or "shared"),
+        updated_at=per_user_secrets_repo().get_updated_at(source_id, user["id"]),
     )
+
+
+# Explicit positive per-minute cap for the connectivity test. check_rate_limit
+# treats None/<=0 as *disabled*, and mcp_sources has no rate_limit_pm column, so
+# this must be a literal or the gate silently no-ops. Each test opens a fresh
+# upstream connection (a subprocess for stdio transports), so keep it low.
+_TEST_CONNECTION_RATE_LIMIT_PM = 6
+
+
+def _redact_then_truncate(text: str, token: str, limit: int = 300) -> str:
+    """Redact the caller's own token from the FULL string first, then truncate.
+    Order matters: truncating first could split the token across the boundary so
+    the substring match misses it and a fragment leaks."""
+    if token:
+        text = text.replace(token, "***")
+    return text[:limit]
+
+
+class TestResult(BaseModel):
+    ok: bool
+    tool_count: int | None = None
+    message: str
+
+
+@router.post("/{source_id}/my-secret/test", response_model=TestResult)
+async def test_my_secret(source_id: str, user: dict = Depends(get_current_user)) -> TestResult:
+    """Verify the caller's own stored credential works against the upstream.
+
+    Gated in order, all before any upstream call: unknown source → 404; a
+    non-per_user (shared) source → 400 (its introspection would run under the
+    operator's shared credential — nothing personal to test); no grant on the
+    source → 403; over the rate limit → 429; no personal credential → 403 with
+    the connect remedy. Only then does it introspect under the caller's token.
+    """
+    from app.api.mcp_policy import (
+        PerUserCredentialMissing,
+        RateLimited,
+        check_rate_limit,
+        enforce_per_user_credential,
+    )
+    from connectors.mcp.client import list_tools_async
+
+    source = mcp_sources_repo().get(source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    if (source.get("scope") or "shared").lower() != "per_user":
+        raise HTTPException(status_code=400, detail="source_scope_not_per_user")
+    _require_source_grant(source_id, user)
+    try:
+        check_rate_limit(source_id, user["id"], _TEST_CONNECTION_RATE_LIMIT_PM)
+    except RateLimited as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_seconds) + 1)},
+        ) from exc
+    try:
+        enforce_per_user_credential(source, user["id"])
+    except PerUserCredentialMissing as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    token = per_user_secrets_repo().get(source_id, user["id"]) or ""
+    try:
+        tools = await list_tools_async(source, caller_user_id=user["id"])
+    except Exception as exc:  # upstream unreachable / bad token
+        # Log the sanitized cause for operators; show the user a friendly,
+        # actionable line rather than a raw SDK/TaskGroup exception string
+        # (e.g. "unhandled errors in a TaskGroup (1 sub-exception)").
+        source_name = source.get("name") or source_id
+        logger.info(
+            "my-secret test failed for source %s: %s",
+            source_id,
+            _redact_then_truncate(str(exc), token),
+        )
+        return TestResult(
+            ok=False,
+            tool_count=None,
+            message=f"Couldn't connect to {source_name}. Check that your token is valid and try again.",
+        )
+    return TestResult(ok=True, tool_count=len(tools), message="ok")

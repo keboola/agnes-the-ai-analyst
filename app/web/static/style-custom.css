@@ -74,6 +74,11 @@
     --space-10: 48px;
     --space-12: 64px;
 
+    /* App header — single source of truth for the sticky header height so
+       page-level sticky sub-toolbars can offset off it (var, not magic
+       numbers). Kept in sync with `.app-header` padding + content height. */
+    --app-header-height: 57px;
+
     /* Border radius */
     --radius-sm: 4px;
     --radius-md: 6px;
@@ -3704,33 +3709,86 @@ a.slack-badge:hover {
 /* ─── Shared modern header (used by base.html + future pages) ─── */
 /* Mirrors the inline header styles in dashboard.html so all pages share chrome. */
 
+/* Adaptive header. Narrow/medium screens: a compact two-row layout —
+     Row 1 (.app-header-bar) — product name (left) + search / help / user (right).
+     Row 2 (.app-header-nav) — primary navigation, left-aligned under the name.
+   Wide screens (≥1200px, see media query below): everything collapses onto a
+   single compact row so the header isn't unnecessarily tall.
+   A subtle 1px bottom border separates the header from page content. */
+/* Single horizontal band: [logo] [primary nav ····] ⟨spacer⟩ [search]
+   [Admin*] [help] [user]. The nav grows to fill the middle and hands overflow
+   to the "More" menu (priority-plus in app.js) so the row never wraps on
+   desktop/laptop widths. `flex-wrap` is the graceful fallback for very narrow
+   (mobile) viewports where even a minimal nav + the actions cluster can't
+   share a line with the logo — the actions cluster wraps below rather than
+   clipping. */
 .app-header {
     background: var(--surface, #fff);
     border-bottom: 1px solid var(--border, #e5e7eb);
-    padding: 0 32px;
-    /* Cancel the generic `header { margin-bottom: 24px }` from style.css,
-       which would otherwise leave a 24px stripe of pale grey under the
-       app-header. Invisible on white-on-white pages (dashboard) but very
-       visible on /home where the blue install-hero sits directly below. */
-    margin-bottom: 0;
-    height: 72px;
     /* Override the legacy generic `header { margin-bottom: 24px }` rule from
-       style.css — the .app-header sits flush against the page container so
-       all base.html pages match the dashboard's header-to-content spacing. */
+       style.css — the .app-header sits flush against the page container. */
     margin-bottom: 0;
+    padding: var(--space-2) var(--space-8);   /* 8px 32px — compact single row */
     display: flex;
+    flex-direction: row;
+    /* nowrap so a tight width squeezes the nav (which then sheds items into
+       "More" via priority-plus) instead of wrapping the actions cluster to a
+       second row. Mobile (<640px) flips this to `wrap` for a deliberate
+       two-row layout. */
+    flex-wrap: nowrap;
     align-items: center;
-    justify-content: space-between;
+    column-gap: var(--space-6);
+    row-gap: var(--space-2);
+    /* Neutralize the legacy generic `header { text-align: center }`
+       (@media max-width:600px in this file) so the header never center-aligns. */
+    text-align: left;
+    min-height: var(--app-header-height);
     position: sticky;
     top: 0;
     z-index: 100;
 }
 
-.app-header-left {
+/* Logo pinned left — never shrinks. */
+.app-header-logo { flex: 0 0 auto; }
+
+/* `.app-header-left` — kept for the `ds.primary_nav` macro (_components.html),
+   the scaffolded future header that groups logo + subtitle in a left cluster.
+   `_app_header.html` places the logo directly now, but the macro still wraps
+   it, so this rule keeps that cluster a sane inline flex item on the single
+   row. */
+.app-header-left { display: inline-flex; align-items: center; gap: var(--space-3); flex: 0 0 auto; }
+
+/* Primary nav — the flexible middle. Grows to fill, shrinks toward zero
+   (handing items to "More") so the actions cluster keeps its space. */
+.app-header-nav {
     display: flex;
-    flex-direction: column;
-    justify-content: center;
-    gap: 2px;
+    align-items: center;
+    flex: 1 1 auto;
+    gap: var(--space-1);
+    /* Never let the nav grow past the header (otherwise a too-wide nav
+       overflows the page instead of being measured as overflow). Combined
+       with `.is-priority`'s `overflow:hidden`, this makes clientWidth track
+       the available width so the priority-plus logic can detect overflow. */
+    min-width: 0;
+    max-width: 100%;
+    flex-wrap: wrap;   /* no-JS fallback: links wrap rather than clip */
+}
+.app-header-nav.is-priority {
+    flex-wrap: nowrap;
+    overflow: hidden;
+}
+
+/* Right cluster — search + Admin + help + user. Pinned right (margin-left
+   auto so it hugs the far edge even when the nav shrinks), never shrinks its
+   own gaps; the search inside it does the shrinking. */
+.app-header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex: 0 0 auto;
+    margin-left: auto;
+    justify-content: flex-end;
+    min-width: 0;
 }
 
 .app-header-logo {
@@ -3765,6 +3823,10 @@ a.app-header-logo:focus-visible {
     display: flex;
     align-items: center;
     gap: 16px;
+    /* `.app-header` now uses `justify-content: flex-start` (was
+       space-between), so the legacy `primary_nav` macro that still uses
+       this class keeps its right alignment via an explicit auto margin. */
+    margin-left: auto;
 }
 
 .app-header-email {
@@ -3816,6 +3878,9 @@ a.app-header-logo:focus-visible {
     background: transparent;
     cursor: pointer;
     line-height: 1.2;
+    /* Keep each label on one line so a tight nav row overflows horizontally
+       (→ items move into the "More" menu) instead of wrapping its text. */
+    white-space: nowrap;
     transition: all 0.15s ease;
 }
 .app-nav-link:hover {
@@ -3837,10 +3902,17 @@ a.app-header-logo:focus-visible {
    Admin dropdown / user menu. Combobox input + listbox dropdown; fetch +
    debounce wiring in app/web/static/js/global_search.js. Tokens only
    (var(--ds-*)) so it themes for free in dark mode. ── */
-.app-header-search { position: relative; margin: 0 4px; }
+.app-header-search {
+    position: relative;
+    /* Sits in the right cluster (not the flexible middle), so it takes a
+       responsive fixed-ish width and shrinks — never clips — as the viewport
+       narrows before the nav starts shedding items into "More". */
+    flex: 0 1 clamp(180px, 22vw, 300px);
+    min-width: 150px;
+}
 .app-header-search-input {
-    width: 220px;
-    height: 34px;
+    width: 100%;
+    height: 36px;
     padding: 0 12px;
     font-family: inherit;
     font-size: 13px;
@@ -3853,7 +3925,8 @@ a.app-header-logo:focus-visible {
 .app-header-search-input::placeholder { color: var(--ds-text-muted); }
 .app-header-search-input:focus {
     outline: none;
-    width: 280px;
+    /* Width is owned by the flexible `.app-header-search` wrapper now, so
+       focus only changes the surface/border (no jarring width jump). */
     background: var(--ds-surface);
     border-color: var(--ds-primary);
 }
@@ -3864,8 +3937,12 @@ a.app-header-logo:focus-visible {
 .app-header-search-panel {
     position: absolute;
     top: calc(100% + 8px);
-    left: 0;
-    width: 340px;
+    /* Right-anchored: the search now sits on the right of the top row, so the
+       results panel opens leftward and is capped to the viewport width to
+       avoid overflowing off-screen on narrow widths. */
+    right: 0;
+    left: auto;
+    width: min(360px, 92vw);
     max-height: 60vh;
     overflow-y: auto;
     background: var(--ds-surface);
@@ -3952,7 +4029,11 @@ a.app-header-logo:focus-visible {
 .app-user-menu-trigger[aria-expanded="true"] .app-user-menu-chevron { transform: rotate(180deg); }
 .app-user-menu-panel {
     position: absolute; top: calc(100% + 8px); right: 0;
-    min-width: 220px;
+    min-width: 240px;
+    /* The Admin sections now live in here, so cap the height and scroll
+       rather than run off the bottom of the viewport. */
+    max-height: calc(100vh - 88px);
+    overflow-y: auto;
     background: var(--surface, #fff);
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 10px;
@@ -3961,6 +4042,12 @@ a.app-header-logo:focus-visible {
     z-index: 50;
 }
 .app-user-menu-panel[hidden] { display: none; }
+/* Admin block inside the user dropdown — the collapsible <details> groups
+   reuse the .app-nav-menu-* look; this just labels the block and nudges the
+   nested section headers to line up with the flat items above them. */
+.app-user-menu-admin-label { padding-left: 12px; }
+.app-user-menu-admin .app-nav-menu-group > summary.app-nav-menu-section { padding-left: 12px; }
+.app-user-menu-admin .app-nav-menu-item { padding-left: 20px; }
 .app-user-menu-header {
     padding: 10px 12px 8px;
     border-bottom: 1px solid var(--border-light, #f3f4f6);
@@ -4023,6 +4110,10 @@ a.app-header-logo:focus-visible {
 
 /* ── Admin nav dropdown — same vocabulary as user menu, scoped under nav links ── */
 .app-nav-menu { position: relative; display: inline-flex; }
+/* The "More" overflow container is toggled via the `hidden` attribute by
+   app.js; the class `display:inline-flex` above would otherwise defeat the
+   native `[hidden]`, so restore it explicitly. */
+.app-nav-more[hidden] { display: none; }
 /* .app-nav-menu-trigger styling flows entirely from .app-nav-link above.
    The trigger class is kept in markup as a hook for app.js dropdown
    wiring and for targeting the chevron rotation below. */
@@ -4048,6 +4139,79 @@ a.app-header-logo:focus-visible {
 }
 .app-nav-menu-item:hover { background: var(--border-light, #f3f4f6); }
 .app-nav-menu-item.is-active { background: var(--primary-light); color: var(--primary-dark); font-weight: 500; }
+
+/* ── Admin mega-menu — first-class, admin-only. The trigger reuses
+   `.app-nav-link`; this styles its wide multi-column panel so all admin
+   domains are visible at once (vs. the old one-at-a-time accordion buried in
+   the user menu). Panel is right-anchored under the trigger and capped to the
+   viewport so it never runs off-screen. ── */
+.app-admin-menu { position: relative; display: inline-flex; }
+.app-admin-menu-trigger .app-nav-menu-chevron { margin-left: 2px; }
+.app-admin-menu-panel {
+    /* Override the narrow single-column `.app-nav-menu-panel` width. */
+    width: min(680px, 94vw);
+    min-width: 0;
+    max-height: calc(100vh - var(--app-header-height) - 24px);
+}
+.app-admin-menu-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding: 4px 8px 8px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+}
+.app-admin-menu-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary, #6b7280);
+}
+.app-admin-menu-hub {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--primary-dark);
+    text-decoration: none;
+    padding: 2px 8px;
+    border-radius: 6px;
+}
+.app-admin-menu-hub:hover { background: var(--primary-light); }
+.app-admin-menu-hub.is-active { background: var(--primary-light); }
+.app-admin-menu-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 2px var(--space-4);
+}
+.app-admin-menu-col { min-width: 0; }
+/* Column section header — small-caps label, no background band (the columns
+   already separate the groups visually). First label in a column has no top
+   margin; subsequent ones (a column holding two groups) get breathing room. */
+.app-admin-menu-section {
+    padding: 6px 12px 2px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted, #9ca3af);
+}
+.app-admin-menu-col > .app-admin-menu-section:first-child { padding-top: 0; }
+.app-admin-menu-panel .app-nav-menu-item { padding: 6px 12px; }
+@media (max-width: 720px) {
+    .app-admin-menu-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Primary-nav links relocated into the "More" overflow menu by app.js: render
+   the pill links as full-width block rows so they read as menu items. Their
+   hover / active / focus states come from `.app-nav-link` above, unchanged. */
+.app-nav-more-panel .app-nav-link {
+    display: flex;
+    width: 100%;
+    justify-content: flex-start;
+    padding: 8px 12px;
+    border-radius: 6px;
+}
 /* One-line explainer under a nav item (#755 "Sources" group — Data sources
    vs. MCP sources were visually indistinguishable, which is exactly the
    confusion the issue reported). Muted, wraps under the link label. */
@@ -4118,11 +4282,31 @@ a.app-header-logo:focus-visible {
     border-radius: 10px 10px 0 0;
 }
 
-@media (max-width: 720px) {
-    .app-header { padding: 0 16px; gap: 8px; }
-    .app-header-email { display: none; }
-    .app-nav-link { padding: 6px 8px; }
+/* Mobile — a single row can't hold logo + nav + the full actions cluster, so
+   deliberately wrap into two rows: row 1 is logo + actions (search / Admin /
+   help / user), row 2 is the primary nav full-width beneath. This is the only
+   width at which the header is intentionally multi-row. */
+@media (max-width: 640px) {
+    .app-header {
+        flex-wrap: wrap;
+        padding-left: var(--space-4);
+        padding-right: var(--space-4);
+        column-gap: var(--space-4);
+    }
+    .app-header-logo { order: 1; }
+    .app-header-actions { order: 2; flex: 0 0 auto; margin-left: auto; gap: var(--space-1); }
+    /* The global search is dropped on mobile — there isn't room for logo +
+       search + Admin + help + user on one line, and a squeezed ~40px stub is
+       worse than none. Row 1 is a comfortable logo + Admin + help + user; the
+       nav wraps to row 2. In-page search remains available on each surface. */
     .app-header-search { display: none; }
+    .app-header-nav { order: 3; flex-basis: 100%; }
+    /* initPriorityNav() adds .is-priority regardless of viewport (it only
+       reacts to overflow, not screen width), which would otherwise force
+       flex-wrap: nowrap here and fight the two-row mobile layout above —
+       the nav needs to wrap on its own row, not overflow into "More". */
+    .app-header-nav.is-priority { flex-wrap: wrap; overflow: visible; }
+    .app-nav-link { padding: 6px 10px; }
 }
 
 /* ── Standard page shell ─────────────────────────────────────────────

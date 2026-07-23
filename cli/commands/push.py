@@ -37,14 +37,16 @@ is unaffected.
 
 from __future__ import annotations
 
+import gzip
 import json
+import os
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
 import typer
 
-from cli.client import api_post
+from cli.client import api_get, api_post
 from cli.config import get_server_url, get_token, get_workspace_root
 from cli.error_render import render_error
 from cli.lib.private_list import read_all_private
@@ -83,20 +85,49 @@ def _is_permanent_failure(info: dict) -> bool:
     return 400 <= status < 500
 
 
-def _upload_one(transcript: Path) -> tuple[bool, dict]:
+_GZIP_CAPABILITY = "session-gzip"
+
+
+def _server_accepts_gzip() -> bool:
+    """One capability probe per push run: does the server accept gzip uploads?
+
+    Fail-open to the legacy plain format — env kill-switch set, probe error,
+    or an old server without the `X-Agnes-Accepts` header all mean "no".
+    A new client must NEVER send `.gz` to an old server: it would store the
+    compressed bytes verbatim and silently corrupt the session corpus.
+    """
+    if os.environ.get("AGNES_PUSH_NO_GZIP") == "1":
+        return False
+    try:
+        resp = api_get("/api/health", timeout=10.0)
+    except Exception:
+        return False
+    caps = resp.headers.get("X-Agnes-Accepts", "")
+    return _GZIP_CAPABILITY in [t.strip() for t in caps.split(",")]
+
+
+def _upload_one(transcript: Path, use_gzip: bool = False) -> tuple[bool, dict]:
     """Upload a single session jsonl. Returns (success, error_or_meta).
 
     The on-disk bytes are redacted (JWT-shaped tokens stripped, #753) into an
     in-memory buffer before upload — transcripts are bounded in size, so
-    holding a redacted copy in memory is fine. The ledger records the
-    on-disk size (see the caller), not this redacted buffer's size.
+    holding a redacted copy in memory is fine. With ``use_gzip`` the redacted
+    buffer is additionally gzip-compressed and the part filename gains a
+    ``.gz`` suffix (server capability ``session-gzip``); redaction ALWAYS
+    happens first, on the raw bytes. The ledger records the on-disk size
+    (see the caller), not this buffer's size.
     """
     if not transcript.exists():
         return False, {"file": transcript.name, "error": "file not found on disk"}
     try:
         raw = transcript.read_bytes()
-        buf = BytesIO(redact_bytes(raw))
-        resp = api_post("/api/upload/sessions", files={"file": (transcript.name, buf)})
+        payload = redact_bytes(raw)
+        name = transcript.name
+        if use_gzip:
+            payload = gzip.compress(payload)
+            name = f"{name}.gz"
+        buf = BytesIO(payload)
+        resp = api_post("/api/upload/sessions", files={"file": (name, buf)})
     except Exception as exc:
         return False, {"file": transcript.name, "error": str(exc)}
     if resp.status_code == 200:
@@ -300,8 +331,12 @@ def push(
                 mark_private_skipped(workspace, sid, p, now)
                 already_skipped.add(sid)
 
+        # One capability probe per run, and only when there is work — a
+        # no-change push (the common SessionEnd case) makes no extra request.
+        use_gzip = bool(to_upload) and _server_accepts_gzip()
+
         for sid, p, size in to_upload:
-            ok, info = _upload_one(p)
+            ok, info = _upload_one(p, use_gzip=use_gzip)
             if ok:
                 results["sessions"] += 1
                 # Record immediately (crash-safe): the next push won't re-send.

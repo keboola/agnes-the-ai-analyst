@@ -105,6 +105,39 @@ def _seed_event(
     )
 
 
+class TestUpsertSummary:
+    """upsert_summary — the per-session_file PK upsert the usage session
+    processor calls on every tick (~every 10 min) for every session it
+    touches."""
+
+    def test_repeated_upsert_same_key_updates_in_place(self, tmp_path, monkeypatch):
+        """Regression 2026-07-17: `INSERT OR REPLACE` deletes-then-inserts
+        the conflicting row internally on DuckDB 1.5.4, hitting the same
+        PRIMARY KEY index assertion as the DELETE-then-bulk-INSERT rollup
+        producers (#909) — it crashed the whole app process in production
+        twice, on two different session_file keys, ~24h apart. Switched to
+        INSERT ... ON CONFLICT DO UPDATE. Two upserts of the same
+        session_file must not raise and must leave exactly one row with the
+        latest values."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        repo = UsageRepository(conn)
+        base = {
+            "session_file": "alice/s1.jsonl",
+            "session_id": "s1",
+            "username": "alice",
+            "started_at": datetime.now(timezone.utc),
+            "tool_calls": 3,
+        }
+        repo.upsert_summary(base, processor_version=1)
+        repo.upsert_summary({**base, "tool_calls": 7}, processor_version=2)
+
+        rows = conn.execute(
+            "SELECT tool_calls, processor_version FROM usage_session_summary WHERE session_file = ?",
+            [base["session_file"]],
+        ).fetchall()
+        assert rows == [(7, 2)]
+
+
 class TestRebuildRollupsToolDaily:
     """Legacy rollup still ticks — must keep its behaviour after v46."""
 
@@ -120,6 +153,42 @@ class TestRebuildRollupsToolDaily:
         row = dict(zip(desc, rows[0]))
         assert row["invocations"] == 3
         assert row["tool_name"] == "Bash"
+
+    def test_repeated_rebuild_same_key_does_not_raise(self, tmp_path, monkeypatch):
+        """Regression: two rebuild_rollups calls whose since_day window both
+        cover the same (day, tool_name, source) key must not raise. The prior
+        DELETE-then-bulk-INSERT implementation hit a DuckDB 1.5.4 PRIMARY KEY
+        index assertion in production whenever a scheduler tick re-rebuilt a
+        window containing a key it had already written on a previous tick."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+        _seed_event(conn, occurred_at=today, tool_name="Edit", event_id="e-1")
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        _seed_event(conn, occurred_at=today, tool_name="Edit", event_id="e-2")
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        rows = conn.execute("SELECT invocations FROM usage_tool_daily WHERE tool_name = 'Edit'").fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == 2
+
+    def test_stale_key_removed_when_source_event_deleted(self, tmp_path, monkeypatch):
+        """Regression (agnes-reviewer-parity finding on PR #909): switching to
+        ON CONFLICT DO UPDATE must not silently retain a rollup row forever
+        once its only source event is gone (e.g. a corrected/deleted usage
+        event). The anti-join delete only removes keys ABSENT from the fresh
+        set, so it can coexist with the ON CONFLICT upsert without
+        delete-then-reinserting the same key."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+        _seed_event(conn, occurred_at=today, tool_name="Bash", event_id="e-stale")
+        _seed_event(conn, occurred_at=today, tool_name="Edit", event_id="e-keep")
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        tools = {r[0] for r in conn.execute("SELECT tool_name FROM usage_tool_daily").fetchall()}
+        assert tools == {"Bash", "Edit"}
+
+        conn.execute("DELETE FROM usage_events WHERE id = ?", ["e-stale"])
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        tools = {r[0] for r in conn.execute("SELECT tool_name FROM usage_tool_daily").fetchall()}
+        assert tools == {"Edit"}, "stale Bash row must be removed once its source event is deleted"
 
     def test_distinct_users(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
@@ -156,6 +225,27 @@ class TestMarketplaceItemDaily:
             "WHERE type='skill' ORDER BY name"
         ).fetchall()
         assert rows == [("curated", "skill", "myplug", "design", 3)]
+
+    def test_stale_key_removed_when_source_event_deleted(self, tmp_path, monkeypatch):
+        """Same anti-join-delete regression as usage_tool_daily (PR #909
+        parity finding), for the marketplace daily fact table. Uses two
+        distinct curated plugins (not a builtin tool — see
+        test_builtin_excluded — which never enters this table at all and
+        would make the "stale" side a no-op)."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        _seed_curated_plugin(conn, "myplug")
+        _seed_curated_plugin(conn, "otherplug")
+        today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id="e-keep")
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="otherplug:gone", event_id="e-stale")
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        names = {r[0] for r in conn.execute("SELECT name FROM usage_marketplace_item_daily").fetchall()}
+        assert names == {"design", "myplug", "gone", "otherplug"}
+
+        conn.execute("DELETE FROM usage_events WHERE id = ?", ["e-stale"])
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        names = {r[0] for r in conn.execute("SELECT name FROM usage_marketplace_item_daily").fetchall()}
+        assert names == {"design", "myplug"}, "stale entries must be removed once their source events are gone"
 
     def test_curated_plugin_row_aggregates_children(self, tmp_path, monkeypatch):
         """Plugin-level row sums child invocations (skills + agents) for the
@@ -301,6 +391,62 @@ class TestMarketplaceItemDaily:
 class TestMarketplaceItemWindow:
     """Sliding-window snapshot — distinct_users is TRUE distinct across the
     window (not sum-of-daily-distincts)."""
+
+    def test_refreshed_at_updates_on_conflict(self, tmp_path, monkeypatch):
+        """Devin Review finding on PR #909: switching to ON CONFLICT DO
+        UPDATE must still bump `refreshed_at` for an existing key — the
+        prior DELETE-then-INSERT path always got a fresh
+        DEFAULT current_timestamp on every rebuild, so an existing key that's
+        merely upserted (not freshly inserted) must not keep its original
+        timestamp forever."""
+        import time
+
+        conn = _fresh_db(tmp_path, monkeypatch)
+        _seed_curated_plugin(conn, "myplug")
+        today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id="e1")
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        first = conn.execute("SELECT refreshed_at FROM usage_marketplace_item_window WHERE name='design'").fetchone()[0]
+
+        time.sleep(0.01)
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id="e2")
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        second = conn.execute("SELECT refreshed_at FROM usage_marketplace_item_window WHERE name='design'").fetchone()[
+            0
+        ]
+
+        assert second > first, "refreshed_at must advance when an existing key is upserted, not just inserted"
+
+    def test_stale_key_removed_when_source_event_deleted(self, tmp_path, monkeypatch):
+        """Same anti-join-delete regression as usage_tool_daily (PR #909
+        parity finding), for the sliding-window snapshot table. Uses two
+        distinct curated plugins (not a builtin tool — see
+        test_builtin_excluded — which never enters this table at all and
+        would make the "stale" side a no-op)."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        _seed_curated_plugin(conn, "myplug")
+        _seed_curated_plugin(conn, "otherplug")
+        today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="myplug:design", event_id="e-keep")
+        _seed_event(conn, occurred_at=today, tool_name="Skill", skill_name="otherplug:gone", event_id="e-stale")
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        names = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM usage_marketplace_item_window WHERE period_label='last_7d'"
+            ).fetchall()
+        }
+        assert names == {"design", "myplug", "gone", "otherplug"}
+
+        conn.execute("DELETE FROM usage_events WHERE id = ?", ["e-stale"])
+        UsageRepository(conn).rebuild_rollups(since_day=today.date())
+        names = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM usage_marketplace_item_window WHERE period_label='last_7d'"
+            ).fetchall()
+        }
+        assert names == {"design", "myplug"}, "stale entries must be removed once their source events are gone"
 
     def test_true_distinct_users_across_days(self, tmp_path, monkeypatch):
         """Alice invokes the same skill on day 1 and day 5 — daily fact rows

@@ -352,6 +352,100 @@ def test_anthropic_proxy_wif_failure_returns_generic_detail(broker_app, monkeypa
     assert "workload_identity token exchange failed" in body
 
 
+class _StubResponseClient:
+    """Fake httpx.AsyncClient whose outbound forward returns a canned upstream
+    response, so we can drive the broker's LLM-credential health signal (#884).
+
+    Follows the ``_HeaderCapturingClient`` pattern: when constructed with a
+    ``transport`` kwarg it is the harness's ASGI-driving client and delegates to
+    the real ``httpx.AsyncClient``; otherwise it is the broker's outbound
+    anthropic client and returns the canned ``status_code`` / ``body``. Without
+    this delegation, monkeypatching ``httpx.AsyncClient`` also breaks the test's
+    own request into the app (no ``.post``) and leaks the stub across tests."""
+
+    status_code = 200
+    body = b"{}"
+    _real_cls = httpx.AsyncClient
+
+    def __init__(self, *a, **k):
+        self._real = self._real_cls(*a, **k) if "transport" in k else None
+
+    async def __aenter__(self):
+        return await self._real.__aenter__() if self._real else self
+
+    async def __aexit__(self, *a):
+        return await self._real.__aexit__(*a) if self._real else False
+
+    async def request(self, *a, **k):
+        if self._real:
+            return await self._real.request(*a, **k)
+        cls = type(self)
+
+        class _R:
+            status_code = cls.status_code
+            headers = {"content-type": "application/json"}
+            content = cls.body
+            text = cls.body.decode()
+
+            def json(self):
+                import json as _json
+
+                return _json.loads(cls.body)
+
+        return _R()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _forward_anthropic(broker_app, tok):
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                "/api/broker/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {tok}"},
+                content=b'{"model":"x"}',
+            )
+
+    return asyncio.run(_run())
+
+
+def test_anthropic_proxy_records_credit_diagnostic(broker_app, monkeypatch):
+    """A 400 'credit balance too low' upstream response is classified and
+    recorded on app.state so the admin readiness banner can surface it (#884)."""
+    import app.api.broker as broker_mod
+    from app.chat.readiness import LLM_REASON_CREDIT, get_llm_runtime_diagnostic
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static")
+    _StubResponseClient.status_code = 400
+    _StubResponseClient.body = b'{"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the API."}}'
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _StubResponseClient)
+    tok = ticket_repo().mint("chat_credit", "main", ttl_seconds=60)
+
+    r = _forward_anthropic(broker_app, tok)
+    assert r.status_code == 400  # the upstream status is passed through unchanged
+    diag = get_llm_runtime_diagnostic(broker_app.state)
+    assert diag is not None and diag["reason"] == LLM_REASON_CREDIT
+
+
+def test_anthropic_proxy_success_clears_diagnostic(broker_app, monkeypatch):
+    """A healthy (2xx) forward clears any stale LLM-credential signal."""
+    import app.api.broker as broker_mod
+    from app.chat.readiness import get_llm_runtime_diagnostic, record_llm_runtime_failure
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static")
+    record_llm_runtime_failure(broker_app.state, 401, "stale")
+    _StubResponseClient.status_code = 200
+    _StubResponseClient.body = b"{}"
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _StubResponseClient)
+    tok = ticket_repo().mint("chat_ok", "main", ttl_seconds=60)
+
+    r = _forward_anthropic(broker_app, tok)
+    assert r.status_code == 200
+    assert get_llm_runtime_diagnostic(broker_app.state) is None
+
+
 def test_normalize_broker_path_rejects_smuggling():
     """Unit: the path canonicalizer returns the EXACT URL the ASGI dispatch
     routes on (percent-decoded, dot-segments collapsed) and rejects authority
@@ -468,3 +562,137 @@ def test_cosession_ticket_mints_cosession_jwt(broker_app, e2e_env):
     # for brokered chat traffic (security review on #849).
     assert solo_payload.get("scope") == "chat"
     assert co_payload.get("scope") == "chat"
+
+
+class _UrlCapturingClient(_HeaderCapturingClient):
+    """_HeaderCapturingClient that additionally records the outbound URL, so
+    the dispatcher opt-in tests can assert WHERE the broker forwarded."""
+
+    _captured_url: str = ""
+
+    async def request(self, method, url, *a, **k):
+        if self._real:
+            return await self._real.request(method, url, *a, **k)
+        _UrlCapturingClient._captured_url = str(url)
+        return await super().request(method, url, *a, **k)
+
+
+def _post_broker_anthropic(broker_app, subpath, ticket_label):
+    # Clear captured state from earlier tests so every assertion proves THIS
+    # request was forwarded — stale class attributes could otherwise satisfy
+    # the URL/header checks even if the broker never made the outbound call.
+    # NB: headers live on the BASE class (its request() assigns
+    # `_HeaderCapturingClient._captured` explicitly); resetting via the
+    # subclass would shadow that attribute and break the read-back.
+    _HeaderCapturingClient._captured = {}
+    _UrlCapturingClient._captured_url = ""
+    tok = ticket_repo().mint(ticket_label, "main", ttl_seconds=60)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                f"/api/broker/anthropic{subpath}",
+                headers={"Authorization": f"Bearer {tok}"},
+                content=b'{"model":"x"}',
+            )
+
+    return asyncio.run(_run())
+
+
+def test_dispatcher_optin_routes_v1_messages(broker_app, monkeypatch):
+    """LLM_DISPATCHER_URL set → POST /v1/messages goes to the dispatcher with
+    the dispatcher key; the static Anthropic key is NOT sent."""
+    import app.api.broker as broker_mod
+
+    monkeypatch.setenv("LLM_DISPATCHER_URL", "http://127.0.0.1:8600")
+    monkeypatch.setenv("LLM_DISPATCHER_API_KEY", "agnes-team-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static-KEY")
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _UrlCapturingClient)
+
+    r = _post_broker_anthropic(broker_app, "/v1/messages", "chat_disp1")
+    assert r.status_code == 200
+    assert _UrlCapturingClient._captured_url == "http://127.0.0.1:8600/v1/messages"
+    h = _lower_keys(_UrlCapturingClient._captured)
+    assert h.get("x-api-key") == "agnes-team-key"
+
+
+def test_dispatcher_optin_other_subpaths_stay_on_anthropic(broker_app, monkeypatch):
+    """count_tokens (and any non-/v1/messages subpath) keeps the pinned
+    Anthropic upstream + static key even while opted in — the dispatcher
+    only implements /v1/messages."""
+    import app.api.broker as broker_mod
+
+    monkeypatch.setenv("LLM_DISPATCHER_URL", "http://127.0.0.1:8600")
+    monkeypatch.setenv("LLM_DISPATCHER_API_KEY", "agnes-team-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static-KEY")
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _UrlCapturingClient)
+
+    r = _post_broker_anthropic(broker_app, "/v1/messages/count_tokens", "chat_disp2")
+    assert r.status_code == 200
+    assert _UrlCapturingClient._captured_url == (
+        "https://api.anthropic.com/v1/messages/count_tokens"
+    )
+    h = _lower_keys(_UrlCapturingClient._captured)
+    assert h.get("x-api-key") == "sk-ant-static-KEY"
+
+
+def test_dispatcher_unset_default_upstream_unchanged(broker_app, monkeypatch):
+    """No LLM_DISPATCHER_URL → today's pinned-Anthropic behavior."""
+    import app.api.broker as broker_mod
+
+    monkeypatch.delenv("LLM_DISPATCHER_URL", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static-KEY")
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _UrlCapturingClient)
+
+    r = _post_broker_anthropic(broker_app, "/v1/messages", "chat_disp3")
+    assert r.status_code == 200
+    assert _UrlCapturingClient._captured_url == "https://api.anthropic.com/v1/messages"
+    h = _lower_keys(_UrlCapturingClient._captured)
+    assert h.get("x-api-key") == "sk-ant-static-KEY"
+
+
+def test_dispatcher_optin_takes_precedence_over_wif(broker_app, monkeypatch):
+    """Explicit dispatcher opt-in wins over workload_identity for /v1/messages:
+    dispatcher key auth, no Bearer, and the WIF exchange is never attempted."""
+    import types
+
+    import app.api.broker as broker_mod
+    import app.auth.wif as wif
+
+    broker_app.state.chat_config = types.SimpleNamespace(llm_auth="workload_identity")
+
+    def _must_not_be_called():
+        raise AssertionError("WIF exchange must not run when dispatcher is opted in")
+
+    monkeypatch.setattr(wif, "get_federated_access_token", _must_not_be_called)
+    monkeypatch.setenv("LLM_DISPATCHER_URL", "http://127.0.0.1:8600")
+    monkeypatch.setenv("LLM_DISPATCHER_API_KEY", "agnes-team-key")
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _UrlCapturingClient)
+
+    r = _post_broker_anthropic(broker_app, "/v1/messages", "chat_disp4")
+    assert r.status_code == 200
+    h = _lower_keys(_UrlCapturingClient._captured)
+    assert h.get("x-api-key") == "agnes-team-key"
+    assert "authorization" not in h
+
+
+def test_dispatcher_optin_empty_key_logs_warning(broker_app, monkeypatch, caplog):
+    """URL set but key unset is a deployment misconfig: the request is still
+    forwarded to the dispatcher (no fallback) and the broker logs a
+    server-side warning naming the cause. This test asserts the forwarding
+    and the warning; the eventual 401 is the real dispatcher's behavior, not
+    something the fake outbound client here reproduces."""
+    import logging
+
+    import app.api.broker as broker_mod
+
+    monkeypatch.setenv("LLM_DISPATCHER_URL", "http://127.0.0.1:8600")
+    monkeypatch.delenv("LLM_DISPATCHER_API_KEY", raising=False)
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _UrlCapturingClient)
+
+    with caplog.at_level(logging.WARNING, logger="app.api.broker"):
+        r = _post_broker_anthropic(broker_app, "/v1/messages", "chat_disp5")
+    assert r.status_code == 200
+    assert _UrlCapturingClient._captured_url == "http://127.0.0.1:8600/v1/messages"
+    assert any("LLM_DISPATCHER_API_KEY is empty" in rec.message for rec in caplog.records)

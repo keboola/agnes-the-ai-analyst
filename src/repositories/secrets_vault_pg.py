@@ -153,6 +153,21 @@ class SystemSecretsPgRepository:
             ).fetchone()
         return row is not None
 
+    def list_names_with_prefix(self, prefix: str) -> list[str]:
+        """Names of every row whose ``name`` starts with ``prefix``, sorted.
+
+        Signature-compatible with the DuckDB sibling
+        (``app.secrets_vault.SystemSecretsRepository.list_names_with_prefix``)
+        — see its docstring for why ``position(... IN ...)`` is used instead
+        of ``LIKE``.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text("SELECT name FROM system_secrets WHERE position(:prefix IN name) = 1 ORDER BY name"),
+                {"prefix": prefix},
+            ).fetchall()
+        return [r[0] for r in rows]
+
 
 class PerUserSecretsPgRepository:
     """Per-user MCP source secrets (PG). One row per ``(source_id, user_id)``.
@@ -220,6 +235,16 @@ class PerUserSecretsPgRepository:
                 {"source_id": source_id, "user_id": user_id},
             ).fetchone()
         return row is not None
+
+    def get_updated_at(self, source_id: str, user_id: str) -> Optional[str]:
+        """ISO-8601 timestamp of the last upsert for ``(source_id, user_id)``,
+        or ``None`` when not connected. Never returns the secret value."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text("SELECT updated_at FROM mcp_user_secrets WHERE source_id = :source_id AND user_id = :user_id"),
+                {"source_id": source_id, "user_id": user_id},
+            ).fetchone()
+        return row[0].isoformat() if row and row[0] is not None else None
 
     def list_for_source(self, source_id: str) -> list[str]:
         """List of user_ids that have stored a secret for this source.

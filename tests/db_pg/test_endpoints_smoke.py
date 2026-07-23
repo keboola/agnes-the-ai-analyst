@@ -122,6 +122,63 @@ class TestHealthSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Health probes (LB liveness/readiness — unauthenticated, app/api/health_probes.py)
+# ---------------------------------------------------------------------------
+
+
+class TestHealthProbesSmoke:
+    COVERED_ROUTES = {
+        "GET /healthz",
+        "GET /readyz",
+    }
+
+    def test_healthz(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/healthz")
+        assert r.status_code == 200
+        assert r.json() == {"status": "alive"}
+
+    def test_readyz(self, seeded_app_both):
+        # The write-canary runs on a background timer, not per request, so a
+        # fresh app either hasn't run it yet (ReadinessState defaults to
+        # ready) or has recorded canary results already — either way the
+        # only valid outcomes are 200 (ready) or 503 (not ready).
+        r = seeded_app_both["client"].get("/readyz")
+        assert r.status_code in (200, 503), r.text
+        body = r.json()
+        assert body["status"] in ("ready", "not_ready")
+        assert "failed_checks" in body
+        assert "canary_ready" in body
+
+    def test_canary_write_path(self, seeded_app_both):
+        # /readyz's 200-or-503 assertion above tolerates a permanently failing
+        # canary, so it can't catch a broken write path on its own. Call the
+        # canary directly against the active backend (DuckDB or Postgres, per
+        # seeded_app_both) to assert the write genuinely succeeds — otherwise
+        # a regression here would ship a /readyz that's always 503 in prod
+        # while this suite stays green.
+        from app.api.health_probes import _write_canary
+
+        assert _write_canary() is True
+
+
+# ---------------------------------------------------------------------------
+# Metrics (Prometheus scrape endpoint — unauthenticated, app/observability/metrics.py)
+# ---------------------------------------------------------------------------
+
+
+class TestMetricsProbeSmoke:
+    COVERED_ROUTES = {
+        "GET /metrics",
+    }
+
+    def test_metrics(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/metrics")
+        assert r.status_code == 200
+        assert "text/plain" in r.headers["content-type"]
+        assert "agnes_http_requests_total" in r.text
+
+
+# ---------------------------------------------------------------------------
 # Me
 # ---------------------------------------------------------------------------
 
@@ -285,10 +342,13 @@ class TestSyncSmoke:
         assert r.status_code == 200
         assert "tables" in r.json()
 
-    def test_sync_trigger(self, seeded_app_both, monkeypatch):
-        monkeypatch.setattr("app.api.sync._run_sync", lambda *a, **kw: None)
+    def test_sync_trigger(self, seeded_app_both):
+        # Enqueues a `data-refresh` job (wave-2B job queue) rather than
+        # running `_run_sync` inline — nothing to monkeypatch here, the
+        # handler only touches `jobs_repo()`, which both backends provide.
         r = seeded_app_both["client"].post("/api/sync/trigger", headers=_admin_headers(seeded_app_both))
         assert r.status_code in (200, 202)
+        assert r.json().get("job_id")
 
     def test_sync_settings(self, seeded_app_both):
         r = seeded_app_both["client"].get("/api/sync/settings", headers=_admin_headers(seeded_app_both))
@@ -480,6 +540,33 @@ class TestMetricsSmoke:
             headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code in (200, 204, 422)
+
+
+# ---------------------------------------------------------------------------
+# Glossary
+# ---------------------------------------------------------------------------
+
+
+class TestGlossarySmoke:
+    COVERED_ROUTES = {
+        "GET /api/glossary",
+        "GET /api/glossary/search",
+        "GET /api/glossary/{glossary_id}",
+    }
+
+    def test_glossary_list(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/glossary", headers=_admin_headers(seeded_app_both))
+        assert r.status_code == 200
+
+    def test_glossary_search(self, seeded_app_both):
+        r = seeded_app_both["client"].get(
+            "/api/glossary/search", params={"q": "revenue"}, headers=_admin_headers(seeded_app_both)
+        )
+        assert r.status_code == 200
+
+    def test_glossary_get_by_id(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/glossary/does-not-exist", headers=_admin_headers(seeded_app_both))
+        assert r.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -848,6 +935,31 @@ class TestStoreSmoke:
         )
         assert r.status_code == 201, r.text
         assert r.json()["id"]
+
+    def test_entities_create_from_markdown_agent(self, seeded_app_both):
+        """POST /entities/from-markdown with type=agent — Studio Agent Builder's
+        JSON publish path; bakes a bare <name>.md instead of <name>/SKILL.md."""
+        r = seeded_app_both["client"].post(
+            "/api/store/entities/from-markdown",
+            json={
+                "type": "agent",
+                "name": "smoke-from-markdown-agent",
+                "description": (
+                    "Use when smoke-testing the from-markdown agent publish endpoint across both backends."
+                ),
+                "category": "Other",
+                "skill_md": (
+                    "Step one: describe the scenario under test in plain language. "
+                    "Step two: call the endpoint with a valid payload and capture the response. "
+                    "Step three: assert the entity was created with status 201 and a non-empty id field."
+                ),
+            },
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["id"]
+        assert body["type"] == "agent"
 
 
 # ---------------------------------------------------------------------------
@@ -1416,6 +1528,24 @@ KNOWN_UNTESTED = {
     # tests/test_api_knowledge_digests_distribution.py (manifest kind:"digest"
     # entries, 401/403/404/200, staleness md5 change-token).
     "GET /api/knowledge/digests/{digest_id}/content",
+    # Wave-2B job queue REST surface (Task 5) — POST /api/jobs requires a body
+    # (`kind`) and enqueue behavior depends on the process-wide `JOB_KINDS`
+    # registry (empty outside the app lifespan's `register_all_kinds()`, so
+    # tests register their own fake kinds), so it has no place in this
+    # parameter-free smoke sweep. Behaviour (401/403, enqueue/get/list,
+    # unknown-kind 400, idempotency dedup) covered in tests/test_jobs_api.py;
+    # jobs_repo() dual-backend parity already covered by
+    # tests/db_pg/test_jobs_contract.py.
+    "POST /api/jobs",
+    # DuckLake analytics-backend migration (wave-2G Task 6) — requires a
+    # body (`to`) and, for `to="ducklake"`, runs a real prerequisite probe
+    # (extension/catalog reachability) before enqueueing, so it has no
+    # place in this parameter-free smoke sweep. Behaviour (401/403, `to`
+    # validation, prerequisite 400/enqueue 202/dedup 409) covered in
+    # tests/test_admin_analytics_api.py.
+    "POST /api/admin/analytics/migrate",
+    "GET /api/jobs",
+    "GET /api/jobs/{job_id}",
     "GET /api/collections/{collection_id}",
     "DELETE /api/collections/{collection_id}",
     "POST /api/collections/{collection_id}/files",
@@ -1432,6 +1562,7 @@ KNOWN_UNTESTED = {
     # Authoring studio + suggestion queue + memory-mining consent — covered by
     # dedicated suites (tests/test_authoring_suggestions_api.py, tests/test_web_studio.py);
     # web-form / admin-moderation flows, not part of the parameter-free smoke sweep.
+    "GET /admin/studio",
     "GET /admin/studio/suggestions",
     "GET /admin/studio/{domain}",
     "GET /api/admin/authoring-suggestions",
@@ -1464,6 +1595,32 @@ KNOWN_UNTESTED = {
     # dulwich smart-HTTP git bridge — requires git repo on disk, explicit non-goal
     "GET /marketplace.git/{path}",
     "POST /marketplace.git/{path}",
+    # Per-app git-over-HTTP hosting (Task 6, data apps) — same "requires a
+    # git repo on disk" non-goal; auth-matrix behavior covered by
+    # tests/test_data_apps_git.py.
+    "GET /data-apps.git/{slug}/{path}",
+    "POST /data-apps.git/{slug}/{path}",
+    # Control-plane REST for hosted data apps (Task 7) — every mutating route
+    # needs a real `data_apps` row (+ owner/Admin/grant RBAC, and deploy needs
+    # a seeded git repo + runner stub), so none of these are parameter-free.
+    # Full CRUD/RBAC/deploy/stop/delete/secrets/logs/readiness/reap-idle
+    # coverage lives in tests/test_data_apps_api.py.
+    "GET /api/data-apps",
+    "POST /api/data-apps",
+    "GET /api/data-apps/{slug}",
+    "POST /api/data-apps/{slug}/deploy",
+    "POST /api/data-apps/{slug}/stop",
+    "DELETE /api/data-apps/{slug}",
+    "PUT /api/data-apps/{slug}/secrets",
+    "GET /api/data-apps/{slug}/logs",
+    "GET /api/data-apps/{slug}/readiness",
+    "POST /api/data-apps/reap-idle",
+    # Data apps web UI (Task 12) — HTML pages, not part of the parameter-free
+    # API smoke sweep (same convention as the other `GET /admin/*` / `GET
+    # /library*` web routes above). RBAC/rendering/feature-flag/route-collision
+    # behaviour covered by tests/test_web_data_apps.py.
+    "GET /apps",
+    "GET /apps/detail/{slug}",
     # Google OAuth — requires live credentials
     "GET /auth/google/login",
     "GET /auth/google/callback",
@@ -1580,6 +1737,7 @@ KNOWN_UNTESTED = {
     "GET /api/connectors/manifest",
     "GET /api/connectors/params",
     # HTML admin pages — covered by separate UI test suite
+    "GET /admin",  # admin hub — tests/test_web_admin_hub.py
     "GET /admin/access",
     "GET /admin/activity",
     "GET /admin/adoption",
@@ -1626,6 +1784,9 @@ KNOWN_UNTESTED = {
     "GET /ask",
     "GET /catalog",
     "GET /catalog/p/{slug}",
+    # Semantic-layer browser (#853 + glossary) — covered by
+    # tests/test_catalog_semantics_page.py.
+    "GET /catalog/semantics",
     "GET /catalog/r/{slug}",
     "GET /catalog/t/{table_id}",
     "GET /chat",
@@ -1655,6 +1816,7 @@ KNOWN_UNTESTED = {
     "GET /marketplace/info",
     "GET /me/activity",
     "GET /me/ai-connector",
+    "GET /me/connections",  # per-user MCP connect page tested in tests/test_me_connections_page.py
     "GET /me/cowork",
     "GET /me/mcp",
     "GET /me/profile",
@@ -1937,6 +2099,7 @@ KNOWN_UNTESTED = {
     "GET /api/mcp/sources/{source_id}/my-secret",
     "POST /api/mcp/passthrough/tools/{tool_id}/call",
     "POST /api/mcp/query-table/{table_id}",
+    "POST /api/mcp/sources/{source_id}/my-secret/test",  # gates tested in tests/test_mcp_passthrough_api.py
     "PUT /api/mcp/sources/{source_id}/my-secret",
     # Memory advanced routes (audit, votes, tree, etc.)
     "DELETE /api/memory/{item_id}/dismiss",
@@ -2008,6 +2171,14 @@ KNOWN_UNTESTED = {
     "POST /webhooks/jira",
     # My-stack curated toggle
     "PUT /api/my-stack/curated/{marketplace_id}/{plugin_name}",
+    # Data-apps ingress proxy (Task 8) — `GET /apps/{slug}` (redirect to the
+    # trailing-slash form) is the only piece of this surface that still
+    # appears in the OpenAPI schema: the catch-all proxy/wake/holding-page
+    # route (`/apps/{slug}/{path}`, all methods) is registered with
+    # `include_in_schema=False` (see app/api/data_apps_proxy.py's
+    # `proxy_app` docstring for why) and so never reaches `all_routes`
+    # here at all. Behaviour covered in tests/test_data_apps_proxy.py.
+    "GET /apps/{slug}",
 }
 
 

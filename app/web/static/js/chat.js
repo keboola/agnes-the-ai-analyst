@@ -12,6 +12,22 @@ let ws = null;
 let currentChatId = null;
 let inFlightToolCalls = new Map();
 
+// Per-session monotonic frame sequence tracking (wave-2F task 2). The
+// server stamps every outbound WS frame with `seq` (monotonic int per
+// chat_id) + `id` (see app.chat.frame_seq.stamp_frame) — this map tracks
+// the highest `seq` seen per chat_id, for two things (wave-2F task 3):
+//   1. openSession sends it back as `?last_seq=` on (re)connect so the
+//      server can replay anything missed, or send `full_refresh` if it
+//      can't confidently do that (see handleFrame's "full_refresh" case).
+//   2. handleFrame uses it to drop a frame whose seq is <= the highest
+//      already applied — a defensive dedup guard against the replay
+//      window and the manager's own mid-turn turn_buffer resend
+//      (app.chat.manager.ChatManager._seat_sink) ever overlapping.
+// Frames without a numeric `seq` (older server, or a frame kind that
+// isn't stamped) are simply skipped either way — "a client that ignores
+// seq works exactly as today" still holds for those.
+let lastSeenSeqByChat = new Map();
+
 // §5.3 Co-presence: the current user's email for per-message sender attribution.
 // Sourced from <body data-user-email="..."> set by the server-rendered template.
 // Empty string for unauthenticated / anonymous views — co-presence degrades
@@ -426,6 +442,37 @@ async function newChat() {
   openSession(created.id, created.ws_url);
 }
 
+/** Fetch persisted history for ``chatId`` and render it into
+ * #chat-messages (or show the capability/intro panel if there is none
+ * yet). Shared by openSession's initial hydrate and the ``full_refresh``
+ * reconnect path (wave-2F task 3, see handleFrame) — the server sends
+ * ``full_refresh`` when it can't confidently replay everything since our
+ * last-seen seq (coordination-backend reset, or the replay stream's
+ * MAXLEN evicted past our watermark), and reloading from REST is exactly
+ * what openSession already does on first open, so this is just that
+ * logic made callable a second time. */
+async function loadAndRenderHistory(chatId) {
+  $("chat-messages").innerHTML = "";
+  let history = [];
+  try {
+    history = await api(`/api/chat/sessions/${chatId}/messages`);
+  } catch (err) {
+    setStatus(`Could not load history: ${err.message}`, "warn");
+    return;
+  }
+  if (history.length === 0) {
+    showCapabilities();
+  } else {
+    hideCapabilities();
+    lastAssistantArticle = null;
+    lastUserText = "";
+    for (const m of history) {
+      renderMessage(m);
+      if (m.role === "user") lastUserText = m.content || "";
+    }
+  }
+}
+
 /** Open (or resume) a chat session.
  *
  * For an existing ``chatId`` we POST ``/sessions/{id}/ticket`` to mint a
@@ -443,30 +490,13 @@ async function openSession(chatId, wsUrlOverride) {
   // correctly the moment the session opens, before history hydrates.
   const meta = _sessionsCache.find(s => s.id === chatId);
   setThreadTitle(meta && meta.title ? meta.title : "Untitled chat");
-  $("chat-messages").innerHTML = "";
   setStatus("");
 
   // Hydrate history. Show the capability/intro panel only when this
   // session has no messages yet — otherwise the chat-main area is a
   // blank rectangle and the user has no visual guidance about what
   // they can ask.
-  let history = [];
-  try {
-    history = await api(`/api/chat/sessions/${chatId}/messages`);
-  } catch (err) {
-    setStatus(`Could not load history: ${err.message}`, "warn");
-  }
-  if (history.length === 0) {
-    showCapabilities();
-  } else {
-    hideCapabilities();
-    lastAssistantArticle = null;
-    lastUserText = "";
-    for (const m of history) {
-      renderMessage(m);
-      if (m.role === "user") lastUserText = m.content || "";
-    }
-  }
+  await loadAndRenderHistory(chatId);
 
   // Mint a fresh WS ticket for THIS chat_id (unless caller already has one).
   let wsUrl = wsUrlOverride;
@@ -478,6 +508,17 @@ async function openSession(chatId, wsUrlOverride) {
       setStatus(`Could not resume chat: ${err.message}`, "error");
       return;
     }
+  }
+
+  // Reconnect replay (wave-2F task 3): tell the server the highest seq we
+  // already saw for this chat so it can resend anything we missed (or
+  // signal full_refresh) before resuming live delivery. Omitted/0 for a
+  // chat we've never received a frame for yet — see
+  // app.chat.replay.replay_since for why that's the correct no-op case,
+  // not a gap.
+  const lastSeq = lastSeenSeqByChat.get(chatId);
+  if (typeof lastSeq === "number" && lastSeq > 0) {
+    wsUrl += (wsUrl.includes("?") ? "&" : "?") + `last_seq=${lastSeq}`;
   }
 
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -498,6 +539,25 @@ async function openSession(chatId, wsUrlOverride) {
 }
 
 function handleFrame(frame) {
+  // Track last-seen seq per session (wave-2F task 2/3 — see
+  // lastSeenSeqByChat above). Additive/back-compat: a frame with no `seq`
+  // (rollout window, or a frame kind the server doesn't stamp) just isn't
+  // tracked — every other code path below is unaffected either way.
+  //
+  // Dedup guard (wave-2F task 3): a frame whose seq is <= the highest
+  // we've already applied is a duplicate we must NOT re-render — it would
+  // double-append a token, re-fire a tool-call-start, etc. This can
+  // legitimately happen at the seam between the reconnect replay stream
+  // and the manager's own mid-turn turn_buffer resend (both can cover the
+  // same in-flight turn), so silently dropping is the correct behavior,
+  // not a bug signal.
+  if (currentChatId && typeof frame.seq === "number") {
+    const seen = lastSeenSeqByChat.get(currentChatId);
+    if (seen !== undefined && frame.seq <= seen) {
+      return;
+    }
+    lastSeenSeqByChat.set(currentChatId, frame.seq);
+  }
   switch (frame.type) {
     case "ready":
     case "runner_ready":
@@ -542,6 +602,19 @@ function handleFrame(frame) {
       // Co fields are optional — an older server that never sends this frame
       // degrades gracefully (renderParticipants with empty list is a no-op).
       renderParticipants(frame.participants || []);
+      break;
+    case "full_refresh":
+      // wave-2F task 3: the server couldn't confidently replay everything
+      // since our last-seen seq (coordination-backend reset, or the
+      // replay stream's MAXLEN evicted past our watermark) — reload
+      // persisted history from REST instead of risking a silently
+      // incomplete transcript. Drop our seq watermark for this chat too:
+      // reloaded history carries no seq (see app.chat.frame_seq's
+      // docstring on unstamped historical messages), so the next
+      // reconnect must start fresh (last_seq omitted) rather than ask for
+      // a replay window we have no way to reason about anymore.
+      lastSeenSeqByChat.delete(currentChatId);
+      if (currentChatId) loadAndRenderHistory(currentChatId);
       break;
   }
 }
@@ -1071,9 +1144,12 @@ const _TOOL_RESULT_PREVIEW_ROWS = 5;
 const _TOOL_RESULT_TEXT_PREVIEW_CHARS = 280;
 
 function _toolCallId(frame) {
-  // Prefer a unique id (e.g. tool_use_id) so two concurrent calls to
-  // the same tool don't share a DOM node; fall back to the tool name.
-  return frame.id || frame.tool_use_id || frame.tool;
+  // Pair tool_call ↔ tool_result via the runner's dedicated tool_use_id:
+  // frame.id is NOT usable — the server's frame envelope overwrites it
+  // with "chat_id:seq", which differs between the call and result frames,
+  // so pairing on it left every tool block stuck on "running…" forever.
+  // Fall back to id (pre-envelope runners) then tool name.
+  return frame.tool_use_id || frame.id || frame.tool;
 }
 
 function _summarizeArgs(args) {

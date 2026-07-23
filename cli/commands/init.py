@@ -265,10 +265,10 @@ def init(
         False,
         "--no-shortcut",
         help=(
-            "Skip writing the one-word launcher shortcut to ~/.zshrc / "
-            "~/.bashrc (POSIX) or PowerShell $PROFILE (Windows). By default "
-            "`agnes init` appends an idempotent shell function named after "
-            "the workspace folder so you can launch from any terminal."
+            "Skip installing the one-word launcher script into ~/.local/bin "
+            "(POSIX) or ~/.local/bin/<word>.cmd (Windows). By default "
+            "`agnes init` installs an executable script named after the "
+            "workspace folder so you can launch from any terminal."
         ),
     ),
 ):
@@ -979,9 +979,10 @@ def init(
     # action (`/agnes-private`) — never something the tooling does for them.
 
     # ------------------------------------------------------------------
-    # Install the one-word launcher shortcut. Runs in BOTH default and
-    # override modes — the workspace launcher (bin/<word>) is seeded by
-    # the IWT in override mode; default mode falls back to
+    # Install the one-word launcher script into ~/.local/bin (also cleans
+    # up legacy rc-function blocks). Runs in BOTH default and override
+    # modes — the workspace launcher (bin/<word>) is seeded by the IWT in
+    # override mode; default mode falls back to
     # `claude --permission-mode auto`. Best-effort; never aborts init.
     # ------------------------------------------------------------------
     install_launcher_shortcut(workspace, no_shortcut=no_shortcut)

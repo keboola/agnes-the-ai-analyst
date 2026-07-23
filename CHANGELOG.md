@@ -57,6 +57,1099 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - Retired the guided product-tour overlay (replaced by chat-driven onboarding).
 
+### Internal
+
+### Security
+
+## [0.76.15] - 2026-07-23
+
+### Fixed
+
+- **`docker compose up` no longer requires `APPS_RUNNER_TOKEN` for stacks that never touch Data Apps.** The `apps-runner` service's env var was declared hard-required (`${APPS_RUNNER_TOKEN:?...}`), which broke every `docker compose up` invocation without it set — compose validates interpolation for the whole file before profile filtering, so this fired even though `apps-runner` is gated behind `profiles: ["apps"]`. Caused the v0.76.14 release to fail its smoke test and auto-rollback (#1007). Now soft-defaults to empty; the service's own token check already fails closed (rejects every request) when unset, so this is not an auth-bypass regression.
+
+## [0.76.14] - 2026-07-23
+
+### Added
+
+- **Data Apps** (schema v96): host user web applications next to the data
+  using the upstream `data-app-python-js` runtime image — internal git repos
+  with push-to-deploy (or BYO external repo), RBAC-gated ingress at
+  `/apps/<slug>/` (optional per-app subdomains), auto-sleep with
+  wake-on-request, an `apps-runner` sidecar as the sole holder of the Docker
+  socket, `agnes app {list,show,create,deploy,logs,open,stop,delete}` CLI,
+  MCP tools (`data_apps_list`, `data_app_get`, `data_app_deploy`,
+  `data_app_logs`), and a server-rendered `/apps` dashboard (list +
+  detail/logs page). Off by default (`data_apps.enabled`) + compose profile
+  `apps`. New `data_apps` table (DuckDB `_v95_to_v96` + Alembic
+  `0043_data_apps_v96`, both backends).
+  - `agnes app create` accepts `--repo-url`/`--repo-branch` to track an
+    external git repo instead of the internal template (`repo_mode=external`).
+    Deploying an external-repo app always redeploys HEAD of `repo_branch`
+    (the internal fast-forward-to-a-pinned-sha ref only exists for
+    `repo_mode=internal`); passing an explicit `--sha` is rejected
+    (`external_repo_sha_unsupported`) since sha pinning isn't supported for
+    external repos yet.
+  - `agnes app open` prints the app's URL only — it never launches a
+    browser, for headless parity across environments.
+  - `agnes app delete` prompts for confirmation unless `--yes`/`-y` is
+    passed.
+  - The MCP tools split by permission tier: `data_apps_list`/`data_app_get`
+    are viewer-level (owner, Admin, or a group with a `resource_grants` row
+    may call them); `data_app_deploy`/`data_app_logs` are owner/Admin-only.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.13] - 2026-07-23
+
+### Added
+
+- **Register a BigQuery table from another project without leaving the UI.**
+  The "Live from BigQuery" form gained an optional **Project** field; filling
+  it in sends an explicit `bq_fqn` (`project.dataset.table`) instead of the
+  configured-project + dataset + table triplet. Blank keeps the previous
+  behaviour exactly. Only applies to Live access — synced (materialized)
+  tables always read from the configured project, so the field is hidden
+  for those. Previously the only way to register a cross-project table was
+  to call `POST /api/admin/register-table` or `PUT /api/admin/registry/{id}`
+  by hand.
+- **`data_source.bigquery.project` and `.location` are documented in server
+  config.** Both were missing from the known-fields registry, so the admin
+  form filed them under "Other (YAML-only) keys" with no label, type or hint
+  while their siblings were described. The `project` hint points at `bq_fqn`
+  as the supported way to reach a table in another project, and the
+  `location` hint names the `404 Not found: Table ... was not found in
+  location <location>` symptom of a mismatch.
+
+## [0.76.12] - 2026-07-23
+
+### Fixed
+
+- **The tarball workspace transport actually engages** — the 0.76.9
+  speedup silently never did: the E2B template bakes `/work` as root-owned,
+  so the in-sandbox `tar` extraction (running as `user`) failed with
+  `Permission denied` on every member and EVERY spawn fell back to the
+  slow per-file upload path (found live in production logs). Extraction
+  now runs as root and `chown`s the tree (and `/work` itself) to the
+  sandbox `user` account, which also makes `/work` writable for
+  agent-created files.
+- **A wedged tool call no longer hangs the chat turn forever.** The
+  real-agent path has no per-tool timeout, so an in-sandbox tool that
+  never returned (e.g. a blocked `agnes pull`) left the user staring at
+  "running…" indefinitely. A turn-idle watchdog
+  (`AGNES_TURN_IDLE_SECONDS`, default 300 s of no agent activity) now
+  interrupts the turn and surfaces a `turn_idle_timeout` error frame; the
+  session keeps working.
+- **Chat tool blocks no longer stay stuck on "running…" forever.** The
+  frame envelope (`stamp_frame`) overwrites every frame's `id` with
+  `chat_id:seq`, so the web UI could never pair a `tool_call` with its
+  `tool_result` — every tool block kept its hourglass even after the
+  answer arrived. The runner now sends the pairing key on a dedicated
+  `tool_use_id` field (both frames) and the UI pairs on it; `tool_result`
+  frames also ride the mid-turn replay buffer so a page refresh during a
+  turn doesn't strand the replayed tool blocks without their results.
+- **Chat answers no longer squash prose segments together.** Text blocks
+  bracketing tool calls were joined with no separator in the persisted
+  assistant message ("…tables.35", "…znovu:Z MCP…"); they now join with a
+  blank line.
+
+## [0.76.11] - 2026-07-22
+
+### Fixed
+
+- Keboola semantic-layer sync (`sync_semantic_layer()`) now falls back to the default named Keboola `source_connections` entry (the connection `/admin/data-sources` manages) when the legacy `KEBOOLA_STACK_URL`/`KEBOOLA_STORAGE_TOKEN` env-or-vault slot is empty. Verified live: an instance that connects a Keboola project only through the admin wizard previously failed every semantic-layer sync with "credentials not configured", even though the same connection's regular table syncs and its own `/test` endpoint both resolve their token off it correctly.
+
+## [0.76.10] - 2026-07-22
+
+### Fixed
+
+- Pages rendered through `_chrome_ctx` (`/admin/studio*`, `/me/memory-mining`, `/admin/store/lint`) no longer drop the Chat nav link or render an empty instance name in the page title ("Studio — ") — the helper now provides the same shared `can_chat` and `config` context as `_build_context` (#993).
+- **`bq_fqn` is now honored on the query and scan paths**: a registry row
+  whose `bq_fqn` names a project other than `data_source.bigquery.project`
+  was still resolved as `<configured-project>.<bucket>.<source_table>` by
+  `agnes query --remote` (bare-name rewrite + dry-run) and by
+  `/api/v2/scan`, `/api/v2/scan/estimate` and `agnes snapshot create`. The
+  row pointed at a table that does not exist, so it was unqueryable for
+  every user with no analyst-side workaround, since the cross-project guard
+  rejects explicit full paths in user SQL. Both sites now resolve the
+  project, dataset and table from `bq_fqn` when present, matching the
+  precedence `connectors/bigquery/extractor.py` has applied since v51
+  (issue #343); rows without `bq_fqn` keep the legacy triplet unchanged.
+  A malformed `bq_fqn` raises on the scan path and degrades to the legacy
+  triplet with a warning on the query path, where one bad row must not
+  fail unrelated queries.
+
+## [0.76.9] - 2026-07-22
+
+### Changed
+
+- **Cloud-chat spawn and first-response latency cut across the whole E2B
+  path.** The per-session workspace now travels as one gzipped tarball
+  extracted in-sandbox (one E2B round-trip instead of one per file; per-file
+  writes remain as a fallback); the agnes CLI wheel is staged before the
+  workspace push so the in-sandbox `pip install` overlaps the upload (the
+  runner gates the agent-CLI spawn on a new workspace-ready sentinel,
+  `AGNES_WORKSPACE_SYNC_SENTINEL`); the `claude` CLI boots eagerly at runner
+  start and every user message goes through `query()` — previously the first
+  message re-connected and paid a second full CLI boot; and assistant text
+  now streams token-by-token (`include_partial_messages` stream-event deltas,
+  falling back to whole-block frames on older SDKs).
+
+### Fixed
+
+- **Chat Stop button actually interrupts the running turn.** Two stacked
+  bugs: the runner called the SDK's async `interrupt()` without awaiting it,
+  and the single-consumer agent loop only read stdin frames between turns —
+  a cancel arriving mid-turn sat in the queue until the turn finished on its
+  own. Each turn now drains in a concurrent task while the loop keeps
+  watching stdin, so cancel interrupts the live turn (an interrupt surfaced
+  by the SDK as an exception no longer tears down the runner); follow-up
+  messages arriving mid-turn are buffered and processed in order.
+- A chat turn that crashes mid-stream (not from a user-initiated Stop) no
+  longer discards the partial answer already shown to the user. The `done`
+  frame — which the manager treats as clearing the in-flight turn buffer —
+  is now emitted by the caller only after the turn genuinely finished
+  without raising, instead of unconditionally from a `finally` block; a
+  crash now surfaces only an `error` frame, leaving the buffer intact for
+  the reconnect/teardown partial-save path.
+
+## [0.76.8] - 2026-07-22
+
+### Added
+
+- **Full agent/skill lifecycle over MCP** — six new foundation tools close the
+  REST × CLI × MCP parity gap for managing marketplace items and own store
+  entities from any MCP surface (web chat, remote connectors):
+  `marketplace_search`, `marketplace_detail`, `marketplace_add`,
+  `marketplace_remove` (mirroring `agnes marketplace …`) and `store_update`,
+  `store_delete` (mirroring `agnes store …`). Together with the existing
+  `store_publish_markdown` / `store_status` / `store_rate`, an agent can now
+  create, review, publish, discover, install, edit, and delete an agent or
+  skill end-to-end without the CLI. Binary paths (ZIP upload/replace, photo,
+  `store mine` bundle) remain CLI-only. The covered endpoints moved from the
+  triple-surface grandfather baseline into the enforced cohort.
+
+### Fixed
+
+- `agnes marketplace add/detail/remove` — and the new MCP siblings — now accept
+  item ids exactly as `agnes marketplace search` / `marketplace_search` print
+  them (tab-prefixed `curated-<mid>/<plugin>`, `flea-<uuid>`). Previously a
+  copy-pasted search id 404ed because the detail/install endpoints take the
+  bare forms.
+
+## [0.76.7] - 2026-07-22
+
+### Fixed
+
+- Observability/hygiene follow-ups from the three-plane architecture audit
+  (spec §3.7): every log line (JSON and dev/rich text formats) now carries
+  this process's replica id (`hostname:pid`), matching the `replica` label
+  already used on Prometheus series; a new `agnes_ducklake_snapshot_age_seconds`
+  gauge is populated by the `ducklake-maintenance` job so DuckLake staleness
+  is observable (absent when `analytics.backend` is not `ducklake`); the
+  m-tier reference `deploy/caddy/Caddyfile.mtier` now serves a small static
+  maintenance page (HTTP 503) instead of a hard/bare error when every
+  upstream is unhealthy; and `config/instance.yaml.example` documents the
+  previously-undocumented `deployment.role`, `coordination.backend` /
+  `redis.url`, and `analytics.backend` / `ducklake.*` keys, with two stale
+  "lands next wave" comments in the m-tier compose/config files corrected to
+  reflect that the coordination backend already shipped.
+- On role-split deployments, the three remaining in-api analytics writers now
+  enqueue jobs instead of writing in-process (three-plane spec §3.1 — the api
+  plane is analytics-write-free): admin `register-table` / `registry/rebuild` /
+  BigQuery-row updates ride a new `analytics-rebuild` job, and collection/file
+  delete + reingest derived-table purges ride a new `collections-purge` job
+  (both HEAVY lane). Single-box `all` deployments are unchanged — the original
+  synchronous/BackgroundTask paths still run and neither kind is enqueued.
+
+## [0.76.6] - 2026-07-22
+
+### Fixed
+
+- A configured object-store bucket on an image without the `[distribution]`
+  extra (boto3) no longer breaks manifest builds: `object_store()` now
+  degrades to `None` with a loud ERROR log — `GET /api/sync/manifest` serves
+  the app-download fallback instead of returning 500, for both
+  `distribution.signed_urls: auto` and explicit `on`. Direct
+  `S3ObjectStore(...)` construction still raises the actionable
+  install-the-extra error.
+- `data-refresh` jobs no longer stay permanently `failed` when a registered
+  table's upstream object was deleted (Keboola Storage HTTP 404,
+  `storage.tables.notFound` — e.g. a table dropped or moved to another bucket
+  after registration). Such per-table failures are now classified *permanent*:
+  they still surface in `sync_state` per-table errors, the admin registry UI,
+  and the operator webhook notifier, but they no longer flip the whole job to
+  `failed` — retrying cannot heal them (the fix is re-pointing or
+  unregistering the row), and a forever-red job masked real transient
+  failures from monitoring. Transient failures keep the existing
+  fail-and-retry semantics.
+
+## [0.76.5] - 2026-07-21
+
+### Added
+
+- The authoring Studio (`/admin/studio*`) can now be disabled per-instance.
+  Default stays on; set `AGNES_STUDIO_ENABLED=0` (the infra/Terraform `.env`
+  override, exposed as the `studio_enabled` module variable) or
+  `studio.enabled: false` in `instance.yaml`. When off, the Studio nav entry
+  and command-palette items are hidden, `/admin/studio*` (incl. the admin
+  moderation queue) redirects to home, and the whole suggestion API — public
+  (`POST /api/studio/suggestions`, `GET /api/studio/suggestions/mine`) and
+  admin (`/api/admin/authoring-suggestions*`) — returns 403 `studio_disabled`.
+  Pending suggestions persist and reappear when Studio is re-enabled. The
+  store submission surface (`/api/store/entities/from-markdown`, also used by
+  the CLI and MCP) is a separate feature and is not gated.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.4] - 2026-07-21
+
+### Fixed
+
+- Install prompt (`/setup` clipboard payload) no longer instructs the agent to
+  suppress its own security judgment around the freshly-minted PAT. Removed the
+  step-3 NOTE that told the agent not to warn / not to mark the session private
+  / not to run `agnes mark-private`, the `!`-prefix "bypass the auto-classifier"
+  paragraph, the `--token` "credential-exfil pattern" framing, and the step-4
+  "never run it for them" clause. Hardened Claude Code security protocols read
+  that copy as an attempt to bypass their protections and blocked the whole
+  install; the legitimate mechanics (write the PAT to a file so it stays out of
+  the command-line argv) are unchanged. Also dropped the step-4 `/agnes-private`
+  private-session tip — that guidance belongs in the workspace docs, not the
+  one-shot setup prompt.
+
+## [0.76.3] - 2026-07-21
+
+### Fixed
+
+- **`customer-instance` VMs now write `SERVER_URL` into `/opt/agnes/.env`**,
+  derived from the configured domain (`https://<domain>`) or the VM's
+  external IP (`http://<ip>:8000`) when no domain is set; an operator-edited
+  value in the existing `.env` wins (same precedence as `AGNES_TAG`).
+  Without it, `agnes_server_url()` fell back to loopback and every
+  cloud-chat sandbox was told to reach Agnes at `http://127.0.0.1:8000` —
+  unreachable from inside the sandbox, so the in-sandbox CLI failed its
+  first model call with `ECONNRESET` and chat was dead on arrival on any
+  module-provisioned VM (previously masked by hand-edited `.env` files that
+  VM recreates wipe).
+
+## [0.76.2] - 2026-07-21
+
+### Fixed
+
+- **Postgres container could fail with "Permission denied" on `global/pg_filenode.map` after a VM delete+recreate.** The `agnes-state-applier-bootstrap.service` unit runs on every boot and chowns `/data/postgres` to uid:gid `70:70` (the Postgres Alpine image's user) — but the chown wasn't recursive. `/data/postgres` lives on the persistent data disk, so a boot-disk-only VM recreate (auto-upgrade rollout, instance-template change) leaves its existing PGDATA contents in place with whatever uid the *previous* instance's postgres container mapped to 70; the non-recursive chown fixed only the top-level directory, leaving nested files like `global/pg_filenode.map` owned by the stale uid and unreadable to the freshly-started container. Observed live on a customer VM after a delete+insert. `scripts/ops/agnes-state-applier-bootstrap.service` now chowns `-R`.
+
+## [0.76.1] - 2026-07-21
+
+### Fixed
+
+- **`customer-instance` VM recreation no longer breaks side-car Postgres or
+  half-boots the stack** (all three hit a customer VM recreation on
+  2026-07-21). The
+  startup script's every-boot `chown -R 999 /data` now excludes the postgres
+  data dirs (`/data/postgres`, `/data/dispatcher-postgres` — they must stay
+  uid 70; the blanket chown bricked a live DB with `pg_filenode.map:
+  Permission denied`), and the uid-70 ownership is re-asserted recursively
+  to self-heal already-damaged dirs. A persisted `instance.yaml` side-car
+  `database.url` is re-aligned with the current Secret Manager postgres
+  password at boot (a recreate previously left the app crash-looping on
+  `FATAL: password authentication failed` when the URL carried stale
+  credentials). `docker compose up` is retried (3×, 60s apart) so a slow
+  first app start no longer kills the script before the Caddy/auto-upgrade/
+  watchdog sections install.
+
+## [0.76.0] - 2026-07-21
+
+### Added
+
+- Agent authoring domain in Studio (`/admin/studio/agent`): a chat-assisted
+  builder for reusable Claude Code subagents, mirroring the existing Skill
+  Builder — publishes directly to the store via `POST
+  /api/store/entities/from-markdown` (now accepting `type: "agent"`, which
+  bakes a bare `<name>.md` instead of `<name>/SKILL.md`). Plus a new Studio
+  landing page (`/admin/studio`) listing every authoring domain, and a
+  top-level "Studio" primary-nav link.
+## [0.75.16] - 2026-07-21
+
+### Fixed
+
+- DuckDB→Postgres migrator (`scripts.migrate_duckdb_to_pg`) no longer aborts a
+  cutover on a dangling RBAC grant: `resource_grants` rows whose typed-FK
+  target (table / data-package / memory-domain / memory-item / recipe) was
+  deleted from the source are now dropped-with-warning instead of raising a
+  `ForeignKeyViolation` that fails the whole copy.
+- The migrator's post-copy validation now treats the DuckDB source being a
+  **subset** of the Postgres target as success, instead of requiring exact
+  equality. After cutover the app writes new rows to Postgres and the compose
+  `data-migrate` one-shot re-runs on every deploy; the old equality check
+  failed once Postgres had grown and — because `app` gates on `data-migrate`
+  exiting 0 — took the instance down. A genuine copy failure (a source row
+  missing from the target) still fails via the new `missing_count`.
+
+## [0.75.15] - 2026-07-21
+
+### Fixed
+
+- `system.duckdb` ART-index self-heal: the rebuild now swaps the corrupt
+  file for the rebuilt one with an atomic `os.replace` (copy-to-`.broken`
+  first) instead of move-aside-then-move-in, closing a window where
+  `db_path` was momentarily absent and a concurrent opener could create a
+  fresh empty DB that the swap then orphaned. The corruption canary also
+  schema-qualifies table identifiers so it probes robustly across
+  FTS-created schemas instead of relying on `search_path`.
+
+## [0.75.14] - 2026-07-20
+
+### Fixed
+
+- Auto-upgrade now keeps the placement-driven `docker-compose.gcp-logging.yml`
+  overlay in sync with `@main` (refreshed in place on every tick, but only when
+  the file already exists so non-GCE hosts never acquire it). A service removed
+  from the base compose while a stale, boot-time-only overlay still referenced
+  it (e.g. `ws-gateway`) made the merged compose project invalid, so every
+  `docker compose` in `agnes-auto-upgrade.sh` (`pull`/`config`/`up`) failed and
+  the VM was silently stranded on its cached image. The overlay now also
+  participates in the config-drift hash, so an overlay-only change triggers a
+  recreate on GCE hosts (absent on non-GCE → a stable `missing` entry, no
+  spurious drift).
+
+## [0.75.13] - 2026-07-20
+
+### Added
+
+- `/admin/data-sources` now shows the Keboola semantic-layer sync status
+  (never-synced / last-sync-ok-with-N-items / last-attempt-failed-with-reason)
+  even when the metric/glossary counts are currently zero, plus a "Sync now"
+  button that calls the existing admin refresh endpoint in place. Previously
+  the summary card only rendered once a sync had produced nonzero counts, so
+  an admin who hadn't synced yet — or whose last attempt errored — saw
+  nothing. Status is tracked in-memory (since last process restart); no new
+  DB table.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+- `GET /api/metrics`, `GET /api/metrics/{id}`, and the `/catalog/semantics`
+  Metrics tab now RBAC-gate metric definitions the same way table reads are
+  gated: a metric is only visible if the caller can access its
+  `table_name`/`tables` via their Data Package stack (admins unaffected).
+  Previously any authenticated user could read any metric's SQL, table name,
+  and description regardless of table-stack membership, leaking
+  schema/business information about tables they had no grant to see.
+  Glossary terms are unaffected — they're business vocabulary, not
+  table-derived data. The CLAUDE.md generator's metric summary
+  (`src/claude_md.py`, surfaced via `agnes pull`/session start) had the same
+  gap — metric count and category names were computed from every metric
+  regardless of the requesting user's table-stack — and is now filtered
+  through the same gate.
+
+## [0.75.12] - 2026-07-20
+
+### Fixed
+
+- Health probe no longer emits `alembic.runtime.migration` INFO noise every ~30s. The Postgres schema-revision read now uses a plain `SELECT` from `alembic_version` instead of configuring an Alembic `MigrationContext` per call, and `/api/health/detailed?include=schema` runs the read off the event loop (worker thread + reuse of the 30s liveness cache) so it no longer does a synchronous DB round-trip on the loop.
+
+## [0.75.11] - 2026-07-20
+
+### Added
+
+- `system.duckdb` now **self-heals on-disk ART-index corruption on start**. DuckDB
+  backs `PRIMARY KEY`/`UNIQUE` constraints with an ART index; a termination that
+  bypasses the graceful `CHECKPOINT`-and-close path (OOM `SIGKILL`, VM `-replace`
+  destroy, host crash) can leave that index torn while the base table stays intact —
+  the file opens fine, then the first index write fails with `Failed to delete all
+  rows from index` / `database has been invalidated` and a plain restart cannot fix
+  it. On open, a rollback-only canary probe detects that signature and transparently
+  rebuilds the database via `EXPORT`/`IMPORT` (data preserved; the corrupt original
+  is quarantined as `system.duckdb.broken.<ts>`). Runs on every successful-open path
+  (clean open, WAL-salvage recovery, and pre-migrate snapshot restore) — the same
+  abrupt termination that dirties the WAL can also tear the ART index. Disable with
+  `AGNES_DB_SELF_HEAL=0`.
+- `agnes admin db repair` — force the same `EXPORT`/`IMPORT` rebuild of a corrupt
+  `system.duckdb` from the CLI (operates on the state file directly, since the HTTP
+  API is unusable while the DB is invalidated; stop the app first — DuckDB is
+  single-writer). No-ops on a Postgres app-state backend.
+
+## [0.75.10] - 2026-07-20
+
+### Fixed
+
+- Dropped the 3 non-unique secondary indexes on `usage_session_summary`
+  (on `username`, `started_at`, `user_id`). A corrupt entry in one of them
+  turned the periodic usage session-processor's routine upsert into a
+  fatal, connection-invalidating DuckDB error ("Failed to delete all rows
+  from index" → "database has been invalidated") that took down the whole
+  instance (including login) and recurred every scheduler tick. Schema
+  v94 → v95 (DuckDB migration + matching Alembic revision) repairs existing
+  instances on upgrade; `session_file` remains the primary key and the
+  upsert keeps refreshing all columns (safe once unindexed).
+
+## [0.75.9] - 2026-07-20
+
+### Added
+
+- E2B SDK contract tests (`tests/test_e2b_sdk_contract.py`) that assert against
+  the *installed* `e2b` package — `AsyncSandbox.list` is a lazy paginator
+  factory (not a coroutine), `AsyncSandbox.create` still accepts the `network`
+  kwarg, and the symbols `app/chat` calls still exist. These catch SDK contract
+  drift at `pip install` time (zero network, normal CI) — the class of breakage
+  that hit chat three times but stayed green because the unit mocks encoded the
+  old shape (#872). Plus a key-gated real-SDK smoke test
+  (`tests/test_e2b_smoke.py`, `-m e2b`, skipped unless `E2B_API_KEY` is set) that
+  drives the real `list() → await next_items()` auth round trip.
+
+## [0.75.8] - 2026-07-20
+
+### Security
+
+- OAuth `client_secret` is now encrypted at rest instead of stored in plaintext,
+  so a database or backup leak no longer exposes usable MCP client secrets
+  (#869, audit M4 follow-up). Secrets are encrypted (Fernet, key derived from an
+  app-managed secret / `AGNES_OAUTH_ENC_KEY`) on `register_client` and decrypted
+  in `get_client` for the SDK's client-auth comparison. Legacy plaintext rows
+  keep working and re-encrypt on next registration; a decrypt failure fails
+  authentication **closed**. (Hashing was not possible: the MCP SDK verifies the
+  presented secret by equality against the value `get_client` returns.)
+
+## [0.75.7] - 2026-07-20
+
+### Fixed
+
+- `/api/v2/scan` and `/api/v2/scan/estimate` on a `source_type='bigquery'` +
+  `query_mode='materialized'` table previously re-ran a billable BigQuery scan
+  of the raw upstream table on every snapshot, ignoring the server-side parquet
+  the scheduled materialize run already wrote. Both now serve from the parquet
+  (zero upstream scan cost), mirroring the schema endpoint's materialized
+  branch (#261). `--where` predicates accept BigQuery or DuckDB flavor and are
+  rendered as DuckDB for local execution; a predicate that still fails at
+  DuckDB execution returns a clean 400 instead of an unhandled 500 (operational
+  failures such as a corrupt parquet still reach the 500 handler). A missing
+  parquet (materialize not yet run) is a 404 — never a fallback to a billable
+  raw-table scan.
+
+### Removed
+
+## [0.75.6] - 2026-07-20
+
+### Fixed
+
+- Chat: a sandbox that spawned but then failed post-spawn setup (a broken-pipe
+  ticket push when the runner died on boot, a DB `set_sandbox_ref` error, etc.)
+  before its kill-on-exit `wait_task` was wired is now torn down immediately
+  instead of being orphaned. Orphaned microVMs later paused and persisted
+  (billable) with the reaper unable to find them (#867, early-crash leak; the
+  reaper-cadence half is tracked separately).
+
+## [0.75.5] - 2026-07-20
+
+### Changed
+
+- The Admin nav dropdown's catch-all "Agent Experience" section is split into three intent-based groups — **Moderation queues** (Curated memory reviews, Flea Submissions), **Marketplace & knowledge distribution** (Curated Marketplaces, Maintained digests), and **Onboarding & messaging** (Initial Workspace, News, Prompts) — so an admin lands on the right page by the job they're doing instead of scanning seven loosely-related items. Nav-only change in `app/web/templates/_app_header.html`; same links, same routes, same RBAC.
+
+## [0.75.4] - 2026-07-20
+
+### Changed
+
+- BigQuery cost attribution: the billable job on the fully-materialized
+  remote-select path (`agnes query --remote --auto-snapshot` /
+  `run_remote_select_to_arrow`) now runs via labeled
+  `client.query(labels=...)` instead of the unlabeled DuckDB `bigquery_query()`
+  extension, so those jobs carry per-user `workload_type` / `agent_name` /
+  `environment` / `user_id` labels for `INFORMATION_SCHEMA.JOBS` / billing-export
+  attribution (#752). Shared with `/api/v2/scan` via a new
+  `connectors.bigquery.access.run_bq_query_to_arrow` helper. The interactive,
+  LIMIT-capped `/api/query --remote` path (small, bounded byte volume) still
+  runs through the extension — see
+  [docs/planning/752-bq-billable-labels.md](docs/planning/752-bq-billable-labels.md).
+
+## [0.75.3] - 2026-07-20
+
+### Added
+
+- Keboola relationship-based JOIN metrics: `semantic-metric` expressions previously skipped as `foreign_alias_reference` now compose a two-table `LEFT JOIN` when exactly one `semantic-relationship` connects the metric's dataset (on the live-verified `to` side) to a registered Agnes table, resolved by real column metadata rather than alias-name matching (verified live: alias names in `semantic-relationship.on` never matched the aliases metric authors used). Anything ambiguous, an unverified join direction, or an unsupported relationship type still skips and counts under a specific reason — never a guessed JOIN.
+
+## [0.75.2] - 2026-07-20
+
+### Added
+
+- **Actionable diagnostic when the chat LLM credential fails at runtime.** An invalid/expired key (HTTP 401/403), an unfunded account ("credit balance too low", HTTP 400), or a provider outage forwarding chat traffic through the broker previously surfaced only as an opaque synthetic assistant message. The broker now classifies the failure (reusing `app/chat/readiness.py::classify_llm_failure`, shared with the admin "test connection" probe), records a key-free signal, and audits it as `broker_llm_auth_failure`. `GET /admin/chat/readiness` gains an `llm_runtime` field and the *Cloud chat readiness* admin panel shows a red banner naming the exact fault; the signal clears on the next successful forward. Operator remediation runbook added to `docs/DEPLOYMENT.md`.
+
+### Internal
+
+- Fixed `tests/test_cli_push.py` and `tests/test_e2e_privacy.py` making real,
+  uncontrolled network calls during the test suite: the gzip-capability
+  health probe added in #929 (`_server_accepts_gzip()`) resolves `api_get`
+  from `push.py`'s own module scope, a separate binding from
+  `cli.commands.push.get_server_url` — the tests' config stubs patched the
+  latter but not the former, so the probe silently hit whatever server the
+  machine running the suite was really configured against. Sandboxed the
+  probe in both files' config-stub helpers and added a regression test
+  guarding against this gap reopening.
+
+## [0.75.1] - 2026-07-20
+
+### Added
+
+- Jira parquet: reproducible bloom-filter benchmark
+  (`connectors/jira/scripts/bloom_benchmark.py`) and a decision record
+  ([docs/planning/749-jira-parquet-bloom-filters.md](docs/planning/749-jira-parquet-bloom-filters.md)).
+  Measured before/after numbers show bloom filters on `issue_key` give ≤1.12× on
+  the real hive-partitioned layout at +47 % file size and ~11× slower writes —
+  the existing hive partitioning + min/max statistics + page index already prune
+  our selective queries — so bloom filters are intentionally not added. Closes
+  the benchmark acceptance criterion left open since #406/#665.
+
+### Fixed
+
+- **Session processors could hold the request-serving process for minutes under a large session backlog (e.g. a bulk onboarding wave), causing app-wide `503`s on completely unrelated endpoints.** `run_processor()` (`services/session_pipeline/runner.py`) now enforces a per-tick wall-clock time budget (default 150s) across the whole cross-session loop, in addition to the existing per-tick attempt-count cap — once the budget is exceeded, the loop stops visiting new candidates and leaves the rest for the next scheduler tick (already-processed sessions in that tick stay marked processed; no exception is raised, since a partial tick is a normal outcome). This closes a gap the attempt-count cap alone didn't cover: one processor (`usage`) is deliberately exempt from the attempt-count cap as cheap/local-only, so a large backlog could previously drain unboundedly in one tick.
+
+## [0.75.0] - 2026-07-20
+
+### Added
+
+- **Process roles for multi-process deployments** (wave-1, WS A):
+  `AGNES_ROLE=api|gateway|worker|all` (or `instance.yaml::deployment.role`;
+  default `all` — unchanged single-process behavior) with startup guards
+  (`app/startup_guards.py`) that refuse any multi-process topology (role
+  split, or `UVICORN_WORKERS>1`) unless Postgres app-state, explicit
+  `JWT_SECRET_KEY`/`SESSION_SECRET`, and `coordination.backend: redis` are
+  all configured; unauthenticated `/healthz` (liveness) and `/readyz`
+  (readiness — background write-canary with M-of-N hysteresis) probes for
+  load balancers; lease-guarded startup seeds so concurrent cold boots
+  don't double-seed; role-gated lifecycle (chat manager, Slack socket-mode,
+  startup warmup, rebuild-on-boot run only on their owning role); and an
+  experimental m-tier Compose profile (`docker-compose.mtier.yml` +
+  `scripts/dev/mtier-smoke.sh`) exercising a role-split topology end to
+  end.
+
+- **Durable job queue + worker runtime** (wave-2B, WS B): a `jobs` table
+  (DuckDB and Postgres, schema v94) backs `POST /api/jobs` (enqueue `{kind, payload?,
+  idempotency_key?}` → 202; unknown `kind` → 400 listing the registered
+  kinds), `GET /api/jobs/{job_id}` and `GET /api/jobs?status=&kind=&limit=`
+  — gated by `require_admin` (also accepts the scheduler's shared-secret
+  token), with `agnes admin jobs enqueue|show|list` CLI and
+  `admin_job_enqueue`/`admin_job_get`/`admin_jobs_list` MCP tools. A worker
+  runtime (`app/worker/runtime.py`, `Role.WORKER`) claims rows through a
+  lease/heartbeat/retry lifecycle across two lanes — heavy (`data-refresh`,
+  `jira-refresh`) and light (`marketplaces-sync`, `session-collector`,
+  `corporate-memory`) — each kind a thin adapter over its existing HTTP
+  handler; rebuilds are additionally serialized across processes via a
+  Postgres advisory lock (`src/db_pg.py::rebuild_lease`, a no-op on the
+  DuckDB backend). The scheduler and `POST /api/sync/trigger` now enqueue
+  these kinds instead of running them inline, and the Jira webhook enqueues
+  `jira-refresh` instead of rebuilding the orchestrator synchronously,
+  collapsing a burst of webhook events into one queued rebuild. See
+  [`docs/jobs-classification.md`](docs/jobs-classification.md) for which
+  scheduler rows moved to the queue and which stay synchronous HTTP.
+
+- **Swappable coordination backend** (wave-2C, WS C):
+  `coordination.backend: memory|redis` (`AGNES_COORDINATION_BACKEND` env
+  override; `memory` remains the default — behavior unchanged for
+  single-process deployments) plus `redis.url`/`AGNES_REDIS_URL` now backs
+  every piece of cross-process ephemeral state that previously lived in
+  in-process module dicts: chat WS auth tickets (including the admin-tail
+  ticket); leader leases for Slack Socket Mode, the Telegram long-poll
+  loop, and the paused-sandbox TTL sweep (exactly one active replica per
+  singleton consumer); shared per-IP auth-endpoint rate limiting and chat
+  per-user hourly-message/daily-token quotas; cache-invalidation pub/sub
+  for the v2 catalog/schema/sample TTL caches; CLI-auth login codes and
+  Slack binding codes (removing one of the two remaining always-RW DuckDB
+  files across a multi-process topology); and `.env_overlay` secret tokens
+  (moved into the control-plane vault with cross-process reload on
+  rotation). `coordination.backend: redis` is also now a third trigger for
+  the wave-1 multi-process startup guard, and every consumer above is
+  designed to recover cleanly from a Redis `FLUSHALL` within its lease TTL
+  — see [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) → *Multi-process* for the
+  disposability invariant.
+
+- **Prometheus `/metrics` on every role** (wave-2D, WS G): an
+  unauthenticated, internal-scrape-only endpoint
+  (`app/observability/metrics.py`, same posture as `/healthz`/`/readyz` —
+  operators must not expose it publicly) exporting HTTP request metrics,
+  job-queue and worker-runtime metrics (queue depth, queue-lag, lane
+  occupancy, claim/failure counters, job duration), coordination-backend
+  health, and the readiness signal — every series labeled `role` and
+  `replica`. A job enqueued within a request now carries that request's
+  `request_id` in its payload, and the worker binds it into its logging
+  context while running the job, so a job's logs correlate back to the
+  request that triggered it. The `mtier` Compose profile gains
+  `prometheus` (scraping all role containers) and `cadvisor` services for
+  a working local example. See
+  [`observability.md`](docs/observability.md).
+
+- **Role-split-aware ops tooling** (wave-2E, WS I): the
+  `customer-instance` Terraform module's startup script now provisions
+  `SESSION_SECRET` the same way it already handles `JWT_SECRET_KEY`,
+  closing the gap that tripped the wave-1 multi-process guard on a
+  role-split deployment through this module; the daily backup script also
+  `pg_dump`s the Postgres control-plane DB (same retention + a
+  restore-canary) when that backend is in use; the auto-upgrade script
+  does a sequential, `/readyz`-gated rolling recreate (worker + gateway
+  first, then API replicas one at a time) instead of a one-shot recreate
+  when it detects a role-split topology, and its sync-in-flight defer
+  probe also checks for a running `data-refresh` job; and the watchdog now
+  monitors every role container instead of a single hardcoded `app`, with
+  a new coordination-backend-unreachable incident signature. Single-container
+  deployments are unaffected in all four cases.
+
+- **Multi-replica chat HA** (wave-2F, WS D): `ChatManager` state —
+  previously in-process dicts, unusable across replicas — is now
+  coordination-backed, so multi-worker/multi-replica chat is allowed
+  whenever `coordination.backend: redis` (previously refused outright
+  regardless of backend). Building blocks: a per-session routing lease
+  (`chat:{chat_id}`) naming the gateway currently hosting a session's
+  sandbox; a monotonic frame envelope feeding a bounded outbound replay
+  stream so a WS reconnect gets exactly the frames it missed (or a
+  `full_refresh` signal when the gap can't be confidently closed); an
+  inbound command stream forwarding a message landing on a non-owning
+  gateway to whichever gateway owns the session instead of racing a second
+  runner; a WS reconnect landing on a gateway that doesn't hold the lease
+  claims (steals) it and takes over — destroys the old sandbox, spawns a
+  fresh runner, and replays recent turns for continuity (v1 semantics, not
+  a live handoff: an in-flight turn on the old gateway is lost, the same
+  trade-off a plain process restart already accepts); and Slack webhook
+  handlers on `api`-role replicas (which run no `ChatManager`) degrade to
+  a thin-producer path that publishes straight to the inbound stream
+  instead of crashing. Desktop/browser notifications are absorbed into
+  the same coordination fabric (see Removed, below). Under the default
+  `memory` backend every mechanism above is a no-op — single-process
+  behavior is unchanged.
+
+- **Opt-in signed-URL distribution** (wave-2H, WS F — off by default; no
+  behavior change unless an operator configures an object store): when
+  `distribution.object_store` is set (bucket + optional S3-compatible
+  `endpoint_url`, credentials via `access_key_env`/`secret_key_env`
+  indirection) and `distribution.signed_urls` is `auto`/`on`, the worker
+  mirrors distribution parquets to the bucket after each sync (a new
+  `distribution-mirror` LIGHT job chained off `data-refresh`, md5-keyed and
+  idempotent), the `/api/sync/manifest` per-table entries gain a short-TTL
+  (~15 min) presigned `signed_url` + `signed_url_expires_at` next to the
+  existing md5/size, and `agnes pull` prefers the presigned URL — fetching
+  the parquet straight from object storage — with automatic fallback to the
+  app-served `/api/data/{id}/download` on any failure, md5-verifying the
+  bytes on both paths. Moves download bandwidth off the single app NIC onto
+  object storage at L tier; the S/M default (app-served path + reverse-proxy
+  file-server bypass) is unchanged. Vendor-agnostic by construction — one
+  S3-compatible client (`boto3`, shipped as the optional `[distribution]`
+  extra) covers AWS S3, GCS's S3-interop endpoint, SeaweedFS, and managed
+  buckets; there is no bundled object store. Presigned URLs never widen
+  access (emitted only for tables the caller can already download, and never
+  for row-level-RBAC internal tables), and the `agnes pull` fetch is
+  DNS-rebinding-guarded with redirects disabled. Config guide:
+  [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#signed-url-distribution-object-store);
+  architecture: [`docs/architecture.md`](docs/architecture.md).
+
+- **Opt-in DuckLake analytics backend** (wave-2G, WS E — `legacy` remains the
+  default; every existing deployment is unaffected until an operator opts
+  in): `analytics.backend: ducklake` (or `AGNES_ANALYTICS_BACKEND=ducklake`)
+  moves the server-side analytics query surface from the rebuilt-and-swapped
+  `server.duckdb` file to a DuckLake catalog — Postgres-backed for
+  multi-process deployments (`ducklake.catalog_dsn` / `AGNES_DUCKLAKE_CATALOG_DSN`,
+  enforced by `app/startup_guards.py::validate_deployment`), a DuckDB-file
+  catalog for single-process `all` mode. The extracts tree
+  (`/data/extracts/{source}/{extract.duckdb, data/*.parquet}`) is untouched
+  and remains the distribution artifact + rollback truth for both backends —
+  neither ever re-extracts from a source system. Building blocks: session
+  management (`src/ducklake_session.py`) with a long-lived reader singleton
+  per api/gateway process (cursor-per-request, snapshot-isolated against
+  concurrent writes, no per-request catalog writes) and a separate writer
+  singleton for the worker; a copy-ingest rebuild path
+  (`src/orchestrator.py::_do_rebuild_ducklake`) that ports the legacy
+  rebuild's view-ownership claim/collision semantics and — unlike the
+  legacy full-rebuild-on-any-change path — re-ingests only the touched
+  source's own catalog schema on a per-source rebuild (e.g. a Jira webhook);
+  a reader path wired into `/api/query` and the BigQuery-hybrid query
+  endpoint; a daily `ducklake-maintenance` job (`merge_adjacent_files` →
+  `ducklake_expire_snapshots` → `ducklake_cleanup_old_files` → catalog
+  `VACUUM`, mutually exclusive with any concurrent rebuild via a shared
+  `rebuild_mutex()`, with a configurable snapshot-retention window floored
+  at 1 hour so a live query's snapshot can never be reclaimed out from
+  under it) plus an m-tier Compose profile flip exercising it end-to-end;
+  and an `agnes admin analytics migrate --to ducklake|legacy`
+  command/`POST /api/admin/analytics/migrate` endpoint (REST+CLI+MCP) that
+  validates prerequisites (extension loadable; for a Postgres catalog, a
+  real reachability probe that auto-repairs a missing catalog database via
+  `CREATE DATABASE` when possible, or reports the exact manual command),
+  enqueues a full rebuild into the named target backend from the on-disk
+  extracts tree regardless of the currently configured backend, and
+  instructs the operator to flip `analytics.backend` and restart once that
+  job completes (config is read once at boot, not hot-reloaded) — the same
+  shape in reverse rolls back to `legacy`. Full architecture:
+  [`docs/architecture.md`](docs/architecture.md#analytics-data-plane-legacy-vs-ducklake);
+  deployment/config guide:
+  [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#ducklake-analytics-backend).
+
+### Changed
+
+- Chat per-user hourly message-rate limiting (wave-2C) moved from a
+  sliding-window deque to a fixed UTC-hour window as part of switching its
+  counter onto the coordination backend. **Disclosure:** this allows up to
+  ~2x the configured rate in a short burst straddling an hour boundary (a
+  full quota just before `:00`, another full quota just after) — standard
+  fixed-window limiter behavior, looser rather than stricter than what it
+  replaced.
+
+- Chat idle reaper no longer dies permanently on a single failed sweep. The
+  loop had no error guard, so one unhandled exception in a sweep (a transient
+  sandbox kill/destroy or DB hiccup) killed the reaper task — after which idle
+  and paused E2B sandboxes accumulated indefinitely (billable) with nothing
+  reaping them (#867, reaper-cadence half). The loop now logs and continues to
+  the next sweep, and the kill phase + paused-TTL teardown are per-item guarded
+  so one bad session can't abort the rest of a sweep. (Note: paused sandboxes
+  are still retained for `chat.paused_ttl_seconds`, default 7 days, by design —
+  lower it to reduce paused-VM cost.)
+
+### Removed
+
+- **BREAKING**: the standalone `services/ws_gateway` process (wave-2F — a
+  separate aiohttp server plus a Unix-socket HTTP dispatch endpoint, with
+  its own in-memory connection registry) is gone; its role folds into the
+  gateway role of the main app process (see Added, above). The
+  `ws-gateway` Docker Compose service is removed — deployments using the
+  `full` profile no longer start it, and Telegram's notification dispatch
+  now publishes through the coordination fabric instead of the removed
+  Unix socket.
+
+### Internal
+
+- **De-flaked the wave-2F chat test suite** (`tests/test_chat_manager.py`,
+  `tests/test_chat_inbound.py`, `tests/test_chat_takeover.py`,
+  `tests/test_chat_replay.py`) under `pytest -n auto`: fixed `asyncio.sleep(0.0x)`
+  waits on async background setup (session `attach()`, cross-gateway
+  publish/takeover, replay) replaced with condition polling via a shared
+  `_wait_until` helper (`tests/chat_fakes.py`). Along the way, fixed two
+  real races these fixed sleeps were masking: a cross-gateway
+  `send_user_message`/`kill`/`cancel` could race `ChatManager._spawn_live`'s
+  routing-lease claim and raise `SessionNotFound`, and a message/control
+  command published in the narrow window before a fresh
+  `_inbound_consumer_loop`'s initial `peek_seq` cursor-seed was silently
+  treated as already-delivered and never seen — both now covered by
+  test-side instrumentation that waits for those steps to actually land
+  before the next action, not just for the `LiveSession` to exist.
+### Security
+
+- Query RBAC: non-admins can no longer reach an un-granted source's rows via a
+  catalog-qualified path. Each source's `extract.duckdb` is ATTACHed as its own
+  catalog, and the previous non-admin gate was a denylist of master-VIEW names
+  in the default catalog — so `<ungranted_source>.main."<table>"` slipped past
+  it (base relations in other catalogs aren't default-catalog views). `/api/query`
+  and `/api/v2/scan (from_query)` now reject any catalog-qualified reference into
+  a local extract catalog for non-admins (the granted surface is the unqualified
+  master views); remote-extension catalogs (`bq`/`kbc`) keep their registry gate.
+  Generalizes the audit M1 internal-table fix (#868). The two duplicated
+  enforcement copies were consolidated into one helper.
+
+## [0.74.121] - 2026-07-20
+
+### Added
+
+- **Per-table timing in the scheduled BigQuery metadata refresh.** A slow
+  refresh cycle (one run taking minutes instead of the usual ~100 s over the
+  same table set, with no errors and no CPU pressure) previously could not be
+  attributed to any specific table — the job logged only a single per-run
+  summary line. `run_bq_metadata_refresh` now emits one INFO line per table
+  (`bq metadata refresh table: run_id=… table_id=… status=… fetch_ms=… total_ms=…`)
+  where `fetch_ms` isolates the BigQuery `bq_metadata.fetch` call (the up-to-4
+  sequential jobs-API round-trips) and `total_ms` covers the whole per-row
+  work including the local DuckDB upsert. The two timings are also returned in
+  the `refresh_one` outcome dict, so `POST /api/v2/metadata-cache/refresh`
+  surfaces them for operator on-demand refreshes. `app/api/bq_metadata_refresh.py`.
+
+## [0.74.120] - 2026-07-20
+
+### Added
+
+- New admin/analyst web page `/catalog/semantics` — a read-only browser for
+  the semantic layer: business metrics (`metric_definitions`) and the
+  glossary (`glossary_terms`), reusing `GET /api/metrics` and
+  `GET /api/glossary(/search)` (no new REST endpoints). Metrics tab is
+  server-rendered and grouped by category with a client-side filter;
+  Glossary tab is a live, debounced search. Row detail expands inline
+  (accordion), source badges (`manual` / `yaml_import` / `openmetadata` /
+  `keboola_semantic_layer`) use the existing 4-slot badge vocabulary. Linked
+  from `/catalog`. `/admin/data-sources` gets a small summary card —
+  "Semantic layer: N metrics, M glossary terms synced from Keboola" — once a
+  connection has synced. Picks up issue #853 plus the glossary.
+
+## [0.74.119] - 2026-07-20
+
+### Changed
+
+- `agnes push` now gzip-compresses session transcript uploads (~10x smaller transfers) when the server advertises the `session-gzip` capability; older client/server combinations keep the plain format automatically. Escape hatch: `AGNES_PUSH_NO_GZIP=1`. The server stream-decompresses uploads at ingest and stores plain JSONL — the size cap binds on decompressed bytes and per-call decompression output is bounded (zip-bomb / peak-memory guard).
+
+## [0.74.118] - 2026-07-18
+
+### Changed
+
+- `/me/connections` Connect / Replace token / Test / Remove buttons now use the
+  design-system button classes (`btn btn-primary` / `btn-secondary` /
+  `btn-danger`, size `btn-sm`) instead of unstyled browser-default buttons, and
+  the row wraps on narrow viewports.
+
+## [0.74.117] - 2026-07-18
+
+### Changed
+
+- `/me/connections` "Test connection" now shows a friendly, actionable failure
+  ("Couldn't connect to <source>. Check that your token is valid and try
+  again.") instead of the raw upstream/SDK exception string (e.g. "unhandled
+  errors in a TaskGroup"). The sanitized cause is logged server-side for
+  operators. Status messages are also styled by state — failures use the
+  design-system danger token, successes the success token — so an error is
+  visually distinct from a neutral message.
+
+## [0.74.116] - 2026-07-18
+
+### Added
+
+- New analyst HOWTO: [Installing skills in Claude Cowork](docs/HOWTO/06-claude-cowork.md)
+  — the download → `Customize → Personal plugins → Upload plugin` loop, the
+  no-sync update model, what packages carry, connector reachability caveat,
+  and troubleshooting for upload-validation failures.
+
+## [0.74.115] - 2026-07-18
+
+### Added
+
+- Keboola glossary import: `semantic-glossary` Metastore items sync into a new `glossary_terms` table (DuckDB + Postgres, schema v93), tagged `source='keboola_semantic_layer'` and upsert+pruned each `keboola-semantic-layer-refresh` run alongside metrics — no new scheduler job. Relevance-ranked search (`GET /api/glossary/search`, `agnes glossary search`, the `glossary_search` MCP tool) uses DuckDB FTS BM25 (Postgres: `ts_rank`) with an ILIKE fallback, mirroring the corporate-memory knowledge search.
+
+## [0.74.114] - 2026-07-18
+
+### Fixed
+
+- Cowork per-plugin zips (`GET /marketplace/cowork/<prefixed_name>.zip`) no
+  longer fail Claude Cowork's upload validation when a skill or plugin
+  `description` exceeds 1024 characters. `sanitize_description` now truncates
+  over-long descriptions on a word boundary with a trailing ellipsis (the
+  validator rejects `description` fields over 1024 characters — previously the
+  packager shipped them through unchanged, so the upload failed with "field
+  'description' in SKILL.md must be at most 1024 characters").
+  `COWORK_FORMAT_VERSION` bumped so cached ETags bust and clients re-download
+  the corrected zip.
+
+### Security
+
+- The `GET`/`PUT`/`DELETE /api/mcp/sources/{id}/my-secret` endpoints now require
+  a grant on the source (the same `_visible_passthrough_tools` intersection the
+  connect page and `/test` use; admin short-circuits). Previously any signed-in
+  user could probe an arbitrary source's existence, scope, and connection
+  timestamp, or store a token against a source they had no grant on. Closes the
+  gap left when the self-service connect flow (#919) grant-gated the page and
+  `/test` but not these three sibling verbs.
+
+## [0.74.113] - 2026-07-18
+
+### Added
+
+- Self-service per-user MCP credential management. A new `/me/connections`
+  page lets any signed-in user connect, replace, test, and remove their own
+  token for the `per_user` MCP sources they are granted — no operator in the
+  loop. Backed by a new `POST /api/mcp/sources/{id}/my-secret/test`
+  connectivity check (gated by scope + grant + rate limit + credential, and
+  reachable via `agnes mcp my-secret test` and the `my_secret_test` MCP tool),
+  an `updated_at` field on the `my-secret` status, and a per-source
+  `connect_hint` (schema v92) that tells the user where to obtain their token
+  (admin-authored, rendered through the safe markdown pipeline). When an
+  unconnected caller invokes a `per_user` tool, the error is now an actionable,
+  web-linked remedy pointing at the connect page (falling back to the CLI hint
+  when no public URL is configured).
+
+## [0.74.112] - 2026-07-17
+
+### Added
+
+- `customer-instance` Terraform module can now deploy the opt-in LLM
+  dispatcher (token-arbitrage PoC) alongside Agnes. Per-VM flag
+  `dispatcher_enabled` on `prod_instance` / `dev_instances` (dev-first
+  rollouts), module-wide config `dispatcher_image` (pin a `:<sha>` tag),
+  `dispatcher_policies` (deployment-owned routing YAML content),
+  `dispatcher_key_secret` and `dispatcher_vertex_sa_secret` (Secret Manager
+  names; module grants the VM SA scoped secretAccessor, fetches fail loudly
+  at boot). The startup script writes `/opt/agnes/dispatcher/{policies,keys,
+  vertex-sa}` plus a `docker-compose.dispatcher.yml` overlay (dispatcher +
+  dedicated ledger postgres on the persistent disk) appended to
+  `COMPOSE_FILE`, and sets `LLM_DISPATCHER_URL=http://dispatcher:8600` +
+  `LLM_DISPATCHER_API_KEY` in `/opt/agnes/.env` so the chat broker's
+  dispatcher opt-in (0.74.108) engages. Disabled instances render a
+  byte-identical startup script — the feature is fully inert unless enabled.
+  The dispatcher ledger Postgres password is minted once and persisted on
+  the same persistent data disk as the ledger data it protects (falls back
+  to reading an existing boot-disk `.env` value for migration, then mints
+  fresh only if neither exists), so a VM recreate never desyncs the
+  password from the surviving database.
+
+## [0.74.111] - 2026-07-17
+
+### Fixed
+
+- **`INSERT OR REPLACE` could crash the whole app process on DuckDB, same class of bug as #909.**
+  `UsageRepository.upsert_summary` (`usage_session_summary`, hit every ~10
+  minutes by the usage session processor) and `ChatRepository.upsert_workdir`
+  (`user_workdirs`) both used `INSERT OR REPLACE`, which deletes-then-inserts
+  the conflicting row internally on DuckDB 1.5.4 — the same PRIMARY KEY index
+  assertion that #909 fixed for the rollup producers, just via a different
+  SQL surface. Observed live twice more in production within 24h of #909
+  shipping, on two different `session_file` keys, each time invalidating the
+  shared connection for every subsequent query until the process restarted.
+  Switched both to `INSERT ... ON CONFLICT DO UPDATE`, which updates the
+  existing row in place instead of deleting it. Postgres siblings already
+  used `ON CONFLICT DO UPDATE` (native syntax, no equivalent bug), so this
+  also removes a semantic difference between the two backends' SQL shape.
+  `src/repositories/usage.py`, `app/chat/persistence.py`.
+
+## [0.74.110] - 2026-07-17
+
+### Internal
+- Tests: `agnes init` / launcher tests can no longer write into the developer's real home — all in-process and subprocess init invocations redirect `HOME` into tmp, and a `tests/conftest.py` autouse guard fails any test that mutates the real shell rc files (legacy-block cleanup) or drops launcher scripts into the real `~/.local/bin`.
+
+## [0.74.109] - 2026-07-17
+
+### Fixed
+
+- Marketplace git smart-HTTP: a `git http-backend` subprocess that exited (or
+  closed its stdin) before the request body was written — e.g. an `info/refs`
+  GET, which never reads stdin — crashed the request with an unhandled
+  `RuntimeError: … the handler is closed` (uvloop transport write-after-close),
+  returning a traceback 500 and leaking the child process. The stdin
+  write/drain/close is now guarded (empty bodies skip the write entirely) and
+  runs inside the cleanup block; a child that produced no output is still
+  reported as a 500 with its stderr and exit code logged.
+  `app/marketplace_server/git_router.py` (race introduced in #887).
+
+## [0.74.108] - 2026-07-17
+
+### Added
+
+- Opt-in LLM dispatcher upstream for chat completions (token-arbitrage PoC).
+  When `LLM_DISPATCHER_URL` (+ `LLM_DISPATCHER_API_KEY`, the dispatcher team
+  key that doubles as the cost-ledger identity) is set in the server env, the
+  chat broker forwards `POST /v1/messages` to the dispatcher instead of
+  `api.anthropic.com`; all other Anthropic subpaths (e.g. `count_tokens`) keep
+  the pinned Anthropic upstream. Takes precedence over `chat.llm_auth`
+  (including `workload_identity`) for `/v1/messages`; deliberately no fallback
+  to direct Anthropic on dispatcher failure. Unset ⇒ behavior unchanged. The
+  broker logs a warning when the URL is set without the key.
+  `app/api/broker.py`, documented in `config/.env.template`.
+
+## [0.74.107] - 2026-07-17
+
+### Security
+
+- **Jira attachment download: SSRF via the webhook-supplied URL (audit L3).**
+  `download_attachment` fetched `attachment.content` straight from the webhook
+  payload — caller-supplied — with redirects followed and no host check, so an
+  HMAC-valid webhook for a nonexistent issue could reach the fetch-failure
+  fallback and make the server GET an arbitrary internal URL (blind; the body
+  landed under `/data`). The content URL is now checked against an explicit
+  **host allowlist** (the configured Jira domain + `api.atlassian.com`, https
+  only, `urlsplit`-parsed so `https://jira.example.com@evil.tld/` resolves to
+  the real host) before any HTTP call. An allowlist rather than a private-IP
+  denylist: a denylist would wrongly break a self-hosted Jira on a private
+  address.
+- **Co-session seed embedded the owner-chosen session title undelimited
+  (audit L5).** The intersection seed interpolated the source session's title
+  raw into a `role="system"` message read by the *invitee's* agent, so an owner
+  could give their own instruction text system-role authority in a session
+  shared with a higher-grant colleague. The title is now length-capped, wrapped
+  in `<untrusted_title>` markers, tag-defanged so a crafted title can't close
+  the wrapper, and explicitly labelled as data-never-instructions (mirrors the
+  `<untrusted_notes>` boundary in the corporate-memory curator). Bounded before
+  and after — a co-session runs under the grant *intersection* and egress is
+  brokered, so the ceiling was behavioral manipulation, not data escalation.
+
+### Changed
+- The one-word workspace launcher installed by `agnes init` is now an executable script in `~/.local/bin` (`<word>.cmd` on Windows) instead of a shell function appended to `~/.zshrc` / `~/.bashrc` / PowerShell profiles. Scripts are visible to `which`, work from non-interactive shells, and on Windows are immune to the default `ExecutionPolicy Restricted` (which silently blocked the old profile function from loading). The collision guard now also refuses to shadow any existing executable on PATH (a workspace named `Node` gets `nodeai`, not `node`). `agnes init` and a new `agnes update` convergence step automatically remove the legacy marked rc-function blocks and install the script — never before the replacement script is in place; users who opted out via `agnes init --no-shortcut` are left untouched. `scripts/dev/agnes-client-reset.sh` removes marker-carrying launcher scripts on reset.
+
+## [0.74.106] - 2026-07-17
+
+### Fixed
+
+- **Keboola export scratch dirs could leak silently, filling the data disk.**
+  `materialize_query` / `_extract_via_legacy` pass `ignore_cleanup_errors=True`
+  to their owning `TemporaryDirectory` so a cleanup failure never masks the
+  export's real exception — but that flag also silently swallows the failure,
+  so a leaked `kbc-export-*` dir was indistinguishable from a hard-kill
+  orphan and the only signal was the disk slowly filling (observed live:
+  disk climbed from 32% to 91% in under two hours on a 15-minute materialize
+  cadence, repeatedly failing table syncs on ENOSPC). Added
+  `warn_if_scratch_survived()`, called right after each export's
+  `TemporaryDirectory` block exits — logs a warning naming the surviving dir
+  instead of leaving operators to discover it via `df -h`.
+  `connectors/keboola/storage_api.py`, `connectors/keboola/extractor.py`.
+- **`UsageRepository.rebuild_rollups()` could crash the whole app process on DuckDB.**
+  The `usage_tool_daily` / `usage_marketplace_item_daily` / `usage_marketplace_item_window`
+  rollup producers deleted a day/period range then bulk-reinserted overlapping
+  keys within the same transaction; on DuckDB 1.5.4 this could hit an internal
+  PRIMARY KEY index assertion ("duplicate key") that aborted the process
+  uncatchably rather than raising a Python exception, taking down the whole
+  instance on the next scheduler tick whenever a key at the rolling window's
+  boundary got deleted and reinserted in the same commit. Switched all three
+  producers to `INSERT ... ON CONFLICT DO UPDATE`, which never deletes the row
+  so it can't hit that path — paired with a targeted anti-join `DELETE` (only
+  keys *absent* from the freshly computed set, never one about to be
+  upserted) so a stale row whose source event was deleted/corrected still
+  gets cleaned up, matching the previous DELETE-then-reinsert behavior
+  without reintroducing the same-key delete+reinsert crash. Postgres sibling
+  is unaffected and intentionally unchanged (documented in `usage_pg.py` —
+  this is a DuckDB engine bug workaround, not a general anti-pattern fix).
+  `src/repositories/usage.py`.
+
+## [0.74.105] - 2026-07-16
+
+### Fixed
+
+- **`agnes pull` no longer aborts when a table's display name contains spaces or punctuation.** The stack sync used a table/package/domain label verbatim as an on-disk path segment; a display name like `Agnes audit log` failed the strict path-segment guard with `unsafe path segment: 'Agnes audit log'` and, because the check ran inside the server-map comprehension (before the per-table `try/except`), aborted the entire sync so `sync_state.json` was never written. Path segments are now sanitized (unsafe runs → `_`, already-safe names preserved verbatim), a genuinely un-nameable row is logged and skipped instead of raising, and the pre-existing `.`/`..` traversal pass-through is closed.
+
+## [0.74.104] - 2026-07-16
+
+### Added
+
+- **Admin hub page (`GET /admin`)** — a settings-style landing page that indexes
+  every `/admin` surface grouped by domain (Activity Center, Users & Access,
+  Data Packages, Sources, Agent Experience, Server, Documentation). It's the
+  scalable home for administration as the surface grows, and the header's Admin
+  menu links to it. Gated by `require_admin` like every other `/admin` route.
+
+### Changed
+
+- **Redesigned the app header into a single compact row** (~57px) at all
+  desktop/laptop widths: product name, primary navigation, then global search,
+  Admin, help, and user profile on one line. When the navigation runs out of
+  room the lowest-priority items collapse into a **"More" overflow menu**
+  (priority-plus, in `app.js`) before anything shrinks or clips; only on mobile
+  (<640px) does it intentionally wrap to two rows. Header height is now a single
+  `--app-header-height` token so sticky sub-toolbars offset off it instead of
+  hard-coded pixels.
+- **Admin is now a first-class header entry for admins** — its own trigger that
+  opens a multi-column **mega-menu** (every admin domain visible at once, versus
+  the previous one-at-a-time accordion) with a link to the new `/admin` hub. It
+  is no longer buried in the user-profile dropdown, which is slimmed back to
+  personal items (Profile, AI Connector, My activity, Logout, Theme). All routes
+  and permissions are unchanged — every `/admin/*` route is still gated by
+  `require_admin`; this is a discoverability/IA change only.
+
 ## [0.74.103] - 2026-07-16
 
 ### Fixed

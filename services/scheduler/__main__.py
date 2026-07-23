@@ -15,6 +15,14 @@ from the scheduler raced the app's long-lived handle and 500-ed on
 ``Could not set lock on file``. Going through HTTP makes the app the sole
 writer; the scheduler is reduced to a pure cron clock.
 
+Wave-2B job-queue migration (Task 6): four rows (``data-refresh``,
+``marketplaces``, ``session-collector``, ``corporate-memory``) no longer
+run their work inside that HTTP call at all — they POST a fire-and-forget
+enqueue request to ``/api/jobs`` and a worker process executes the job
+out-of-band. Wave-2G Task 5 added a fifth such row, ``ducklake-maintenance``.
+See ``_ENQUEUE_BODIES`` below and ``docs/jobs-classification.md`` for the
+full per-row classification.
+
 Usage: python -m services.scheduler
 """
 
@@ -135,6 +143,11 @@ _DEFAULTS = {
     # Same cadence class as corporate-memory, but a longer default since
     # digest regeneration is a heavier LLM call than the packaging rebuild.
     "SCHEDULER_KNOWLEDGE_DIGESTS_INTERVAL": 30 * 60,
+    # Data apps idle-reaper: terminates idle data-app VMs (Task 7+9).
+    # Default 5 min — lightweight (just marks stale VM rows for cleanup),
+    # so the cadence doesn't require tuning. The actual cleanup runs
+    # out-of-band via the jobs queue (not on the scheduler's tick).
+    "SCHEDULER_DATA_APP_REAP_INTERVAL": 5 * 60,
 }
 
 
@@ -348,10 +361,45 @@ def resolved_bq_metadata_initial_offset_seconds(rng=None) -> int:
     return r.randint(0, cap)
 
 
-def build_jobs() -> list[tuple[str, str, str, str, int]]:
+# Wave-2B job-queue migration (Task 6), plus ``ducklake-maintenance`` (wave-2G
+# Task 5). These scheduler rows no longer run their work synchronously inside
+# the scheduler's HTTP call — they POST
+# an enqueue request to ``/api/jobs`` (see ``app/api/jobs.py``) and return
+# immediately; a worker process picks the job up and does the actual work
+# out-of-band. ``idempotency_key`` is a fixed per-kind string (not per-tick)
+# so a second enqueue before the previous run finished is deduped by
+# ``JobsRepository.enqueue`` instead of piling up duplicate queued rows.
+# Full queued-vs-stays-HTTP classification of every scheduler row:
+# docs/jobs-classification.md.
+_ENQUEUE_BODIES: dict[str, dict[str, str]] = {
+    "data-refresh": {"kind": "data-refresh", "idempotency_key": "sync"},
+    "marketplaces": {"kind": "marketplaces-sync", "idempotency_key": "marketplaces-sync"},
+    "session-collector": {"kind": "session-collector", "idempotency_key": "session-collector"},
+    "corporate-memory": {"kind": "corporate-memory", "idempotency_key": "corporate-memory"},
+    # wave-2G Task 5: DuckLake merge/expire/cleanup/VACUUM maintenance pass.
+    # The handler itself (app/worker/kinds.py::_run_ducklake_maintenance)
+    # no-ops when analytics.backend != "ducklake", so this row is enqueued
+    # unconditionally — harmless on a legacy-backend instance.
+    "ducklake-maintenance": {"kind": "ducklake-maintenance", "idempotency_key": "ducklake-maintenance"},
+}
+
+# HTTP timeout for a ``/api/jobs`` enqueue call. Short on purpose: enqueueing
+# just inserts a row and returns 202 — the work no longer runs inside this
+# HTTP call, so there's no reason to hold the long timeouts (120s-900s) the
+# old synchronous endpoints needed.
+_ENQUEUE_TIMEOUT_SEC = 30
+
+JobRow = tuple[str, str, str, str, int]
+EnqueueJobRow = tuple[str, str, str, str, int, dict[str, str]]
+
+
+def build_jobs() -> list[JobRow | EnqueueJobRow]:
     """Build the JOBS list from env, applying defaults and validation.
 
-    Tuple shape: (name, schedule_string, endpoint, method, http_timeout_sec).
+    Tuple shape: (name, schedule_string, endpoint, method, http_timeout_sec)
+    for HTTP-executed jobs, with an optional 6th element
+    (json_body: dict) for jobs that enqueue via ``POST /api/jobs`` instead
+    of running synchronously — see ``_ENQUEUE_BODIES`` above.
     Marketplaces stays hardcoded — promoting it to env is out of #77 scope.
     """
     refresh = _read_positive_int("SCHEDULER_DATA_REFRESH_INTERVAL")
@@ -368,6 +416,7 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
     jiraconsis = _read_positive_int("SCHEDULER_JIRA_CONSISTENCY_INTERVAL")
     kpkg = _read_positive_int("SCHEDULER_KNOWLEDGE_PACKAGING_INTERVAL")
     kdig = _read_positive_int("SCHEDULER_KNOWLEDGE_DIGESTS_INTERVAL")
+    reap = _read_positive_int("SCHEDULER_DATA_APP_REAP_INTERVAL")
     tick = _read_positive_int("SCHEDULER_TICK_SECONDS")
     smallest = min(
         refresh,
@@ -384,6 +433,7 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         jiraconsis,
         kpkg,
         kdig,
+        reap,
     )
     if tick > smallest:
         raise ValueError(
@@ -391,11 +441,25 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
             f"interval ({smallest}s) so jobs don't consistently miss their "
             f"cadence by up to one tick"
         )
-    jobs: list[tuple[str, str, str, str, int]] = [
-        ("data-refresh", _seconds_to_schedule(refresh), "/api/sync/trigger", "POST", 120),
+    jobs: list[JobRow | EnqueueJobRow] = [
+        (
+            "data-refresh",
+            _seconds_to_schedule(refresh),
+            "/api/jobs",
+            "POST",
+            _ENQUEUE_TIMEOUT_SEC,
+            _ENQUEUE_BODIES["data-refresh"],
+        ),
         ("health-check", _seconds_to_schedule(health), "/api/health", "GET", 30),
         ("script-runner", _seconds_to_schedule(scripts), "/api/scripts/run-due", "POST", 600),
-        ("marketplaces", "daily 03:00", "/api/marketplaces/sync-all", "POST", 900),
+        (
+            "marketplaces",
+            "daily 03:00",
+            "/api/jobs",
+            "POST",
+            _ENQUEUE_TIMEOUT_SEC,
+            _ENQUEUE_BODIES["marketplaces"],
+        ),
         # LLM pipeline (#176, #179 review). Cadences are deliberately offset
         # (10m / 15m / 17m by default — all coprime modulo the 30s tick) so
         # the three LLM-driven jobs don't fire on the same tick and stack
@@ -403,7 +467,14 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # without a code change; the verification-detector cadence is the
         # single source of truth for the health-check staleness grace
         # window in app/api/health.py (which uses 2x the cadence).
-        ("session-collector", _seconds_to_schedule(sess), "/api/admin/run-session-collector", "POST", 300),
+        (
+            "session-collector",
+            _seconds_to_schedule(sess),
+            "/api/jobs",
+            "POST",
+            _ENQUEUE_TIMEOUT_SEC,
+            _ENQUEUE_BODIES["session-collector"],
+        ),
         # session-pipeline processors — independent loops, each invoked on
         # its own cadence via the parametrized run-session-processor endpoint.
         # Adding a third processor in the future is one line here + one entry
@@ -422,13 +493,34 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
             "POST",
             300,
         ),
-        ("corporate-memory", _seconds_to_schedule(corpmem), "/api/admin/run-corporate-memory", "POST", 900),
+        (
+            "corporate-memory",
+            _seconds_to_schedule(corpmem),
+            "/api/jobs",
+            "POST",
+            _ENQUEUE_TIMEOUT_SEC,
+            _ENQUEUE_BODIES["corporate-memory"],
+        ),
         # v30: TTL purge of blocked-bundle bytes. Cheap (just rmtree
         # + UPDATE), runs once daily at 04:00 UTC so the spike is
         # visible in audit_log without competing with the marketplaces
         # job at 03:00. Endpoint reads guardrails.blocked_bundle_ttl_days
         # from instance.yaml and short-circuits when set to 0.
         ("store-blocked-purge", "daily 04:00", "/api/admin/run-blocked-purge", "POST", 600),
+        # wave-2G Task 5: DuckLake merge_adjacent_files/expire_snapshots/
+        # cleanup_old_files/VACUUM pass (app/worker/kinds.py::
+        # _run_ducklake_maintenance). Offset 30 min after the 04:00 store
+        # purge so the two nightly maintenance passes don't stack. LIGHT
+        # lane, enqueued unconditionally — the handler itself no-ops when
+        # analytics.backend != "ducklake" (see docs/jobs-classification.md).
+        (
+            "ducklake-maintenance",
+            "daily 04:30",
+            "/api/jobs",
+            "POST",
+            _ENQUEUE_TIMEOUT_SEC,
+            _ENQUEUE_BODIES["ducklake-maintenance"],
+        ),
         # Stuck-review reaper (#7). A submission stays at
         # status='pending_llm' until the BackgroundTasks worker writes
         # a verdict. If the worker crashes, the row sits forever. Run
@@ -493,6 +585,10 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # changed. Longer 900s timeout — same job class as corporate-memory
         # (an LLM generation, not just a DuckDB rebuild).
         ("knowledge-digests", _seconds_to_schedule(kdig), "/api/admin/run-knowledge-digests", "POST", 900),
+        # Data-app idle-reaper (Task 7+9): marks stale VMs for cleanup.
+        # Lightweight operation that runs every 5m by default; the actual
+        # VM cleanup runs out-of-band via jobs.
+        ("data-app-idle-reaper", _seconds_to_schedule(reap), "/api/data-apps/reap-idle", "POST", 120),
     ]
 
     # Initial Workspace Template nightly auto-sync (#622 Slice 3 PR-B).
@@ -522,8 +618,18 @@ def _signal_handler(sig, frame):
     _running = False
 
 
-def _call_api(endpoint: str, method: str, timeout_sec: int) -> bool:
-    """Call the main app API. Returns True on success."""
+def _call_api(
+    endpoint: str,
+    method: str,
+    timeout_sec: int,
+    json_body: Optional[dict] = None,
+) -> bool:
+    """Call the main app API. Returns True on success.
+
+    ``json_body`` is set for the jobs that enqueue via ``POST /api/jobs``
+    instead of running synchronously (see ``_ENQUEUE_BODIES``); ``None``
+    for every other job, which sends no request body exactly as before.
+    """
     url = f"{API_URL}{endpoint}"
     headers = {}
     token = _get_auth_token()
@@ -531,7 +637,7 @@ def _call_api(endpoint: str, method: str, timeout_sec: int) -> bool:
         headers["Authorization"] = f"Bearer {token}"
     try:
         if method == "POST":
-            resp = httpx.post(url, headers=headers, timeout=timeout_sec)
+            resp = httpx.post(url, headers=headers, timeout=timeout_sec, json=json_body)
         else:
             resp = httpx.get(url, headers=headers, timeout=timeout_sec)
         if resp.status_code < 400:
@@ -614,7 +720,11 @@ def run():
 
     while _running:
         now_iso = datetime.now(timezone.utc).isoformat()
-        for name, schedule, endpoint, method, timeout_sec in jobs:
+        for job in jobs:
+            # Most rows are a 5-tuple; the four enqueue-migrated jobs
+            # (see _ENQUEUE_BODIES) carry a 6th json_body element.
+            name, schedule, endpoint, method, timeout_sec = job[:5]
+            json_body = job[5] if len(job) > 5 else None
             if not is_table_due(schedule, last_run[name]):
                 continue
             with in_flight_lock:
@@ -633,6 +743,7 @@ def run():
                 last_run,
                 in_flight,
                 in_flight_lock,
+                json_body,
             )
         time.sleep(tick)
 
@@ -650,6 +761,7 @@ def _run_job(
     last_run: dict[str, "str | None"],
     in_flight: set[str],
     in_flight_lock: threading.Lock,
+    json_body: Optional[dict] = None,
 ) -> None:
     """Execute one scheduled job + bookkeeping. Lifted out of run() so it's
     unit-testable.
@@ -659,9 +771,12 @@ def _run_job(
     tick (default 30s). Pre-fix behavior caused a hot-loop on persistent 5xx —
     30× more requests + LLM tokens than the operator configured. Errors still
     surface via _call_api's logging + audit_log on the receiving side.
+
+    ``json_body`` (default None) is forwarded to ``_call_api`` unchanged —
+    set only for the four enqueue-migrated jobs (see ``_ENQUEUE_BODIES``).
     """
     try:
-        _call_api(endpoint, method, timeout)
+        _call_api(endpoint, method, timeout, json_body=json_body)
     finally:
         last_run[name] = now_iso
         with in_flight_lock:

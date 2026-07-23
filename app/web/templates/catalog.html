@@ -111,6 +111,15 @@
     {% endif %}
   </div>
 
+  {# Entry point into the read-only semantic-layer browser (metrics +
+     glossary, issue #853 + #920) — a nav link, not a redesign of this
+     page. Always visible (analyst-facing, same tier as this page). #}
+  <div class="catalog-semantics-cta" style="margin: -4px 0 12px; font-size: 12px;">
+    <a href="/catalog/semantics" style="color: var(--ds-primary); font-weight: 600; text-decoration: none;">
+      Browse the semantic layer — metrics &amp; glossary →
+    </a>
+  </div>
+
   {# Curator-style info block — mirrors marketplace .mp-curator-block.
      Sits BELOW the tab strip per the unified section order — same
      position marketplace.html uses (marketplace.html:497). #}

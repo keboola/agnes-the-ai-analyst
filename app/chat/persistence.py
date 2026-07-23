@@ -716,11 +716,20 @@ class ChatRepository:
                 agnes_version=agnes_version,
             )
             return
+        # INCIDENT 2026-07-17: INSERT OR REPLACE deletes-then-inserts the
+        # conflicting row internally on DuckDB, hitting the same PRIMARY KEY
+        # index assertion (see UsageRepository.upsert_summary). ON CONFLICT
+        # DO UPDATE updates in place instead.
         now = datetime.now(timezone.utc)
         self._conn.execute(
-            "INSERT OR REPLACE INTO user_workdirs "
+            "INSERT INTO user_workdirs "
             "(user_email, last_init_at, marketplace_sha, initial_workspace_sha, agnes_version_at_init) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT (user_email) DO UPDATE SET "
+            "last_init_at = EXCLUDED.last_init_at, "
+            "marketplace_sha = EXCLUDED.marketplace_sha, "
+            "initial_workspace_sha = EXCLUDED.initial_workspace_sha, "
+            "agnes_version_at_init = EXCLUDED.agnes_version_at_init",
             [user_email, now, marketplace_sha, initial_workspace_sha, agnes_version],
         )
 

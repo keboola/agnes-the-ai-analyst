@@ -1,6 +1,7 @@
 """Shared test fixtures for E2E tests."""
 
 import contextlib as _contextlib
+import hashlib as _hashlib
 import os
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -35,6 +36,68 @@ if _xdist_worker and os.path.normpath(os.environ["DATA_DIR"]) == _default_data_d
     os.environ["DATA_DIR"] = os.path.join(_default_data_dir, _xdist_worker)
 os.makedirs(os.path.join(os.environ["DATA_DIR"], "notifications"), exist_ok=True)
 os.makedirs(os.path.join(os.environ["DATA_DIR"], "state"), exist_ok=True)
+
+# Real-home shell configs that `agnes init` (cli/lib/shortcut.py) can append
+# launcher blocks to. Resolved at import time — before any test monkeypatches
+# HOME — so the guard below always watches the developer's *actual* rc files,
+# not a per-test fake home.
+
+_REAL_HOME = Path(os.path.expanduser("~"))
+_GUARDED_SHELL_CONFIGS = (
+    _REAL_HOME / ".zshrc",
+    _REAL_HOME / ".bashrc",
+    _REAL_HOME / ".bash_profile",
+    _REAL_HOME / "Documents" / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
+    _REAL_HOME / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
+)
+# The launcher install dir (`~/.local/bin`) is watched by *name listing* only:
+# a leaking test drops a new script named after its tmp workspace there.
+_REAL_LOCAL_BIN = _REAL_HOME / ".local" / "bin"
+
+
+def _shell_config_fingerprints() -> dict:
+    fps = {}
+    for path in _GUARDED_SHELL_CONFIGS:
+        try:
+            fps[path] = _hashlib.sha256(path.read_bytes()).hexdigest()
+        except FileNotFoundError:
+            fps[path] = None
+        except OSError:
+            # Unreadable (permissions, etc.) — treat as opaque-but-stable.
+            fps[path] = "<unreadable>"
+    try:
+        fps[_REAL_LOCAL_BIN] = tuple(sorted(os.listdir(_REAL_LOCAL_BIN)))
+    except OSError:
+        fps[_REAL_LOCAL_BIN] = None
+    return fps
+
+
+@pytest.fixture(autouse=True)
+def _guard_real_shell_config():
+    """Fail any test that mutates the developer's real shell rc files.
+
+    Tests that exercise `agnes init` / `install_launcher_shortcut` must
+    redirect writes into tmp (monkeypatch.setenv("HOME", ...) for in-process
+    calls, env["HOME"] = <tmp> for subprocess calls) or pass --no-shortcut.
+    Forgetting either silently appends per-test launcher blocks to the
+    developer's real ~/.zshrc — this guard turns that leak into a loud
+    failure at the offending test.
+
+    Under pytest-xdist a leak in a concurrently running test on another
+    worker can, rarely, be blamed on the wrong test — but any failure here
+    still means some test in the run is leaking.
+    """
+    before = _shell_config_fingerprints()
+    yield
+    after = _shell_config_fingerprints()
+    changed = [str(p) for p in before if before[p] != after[p]]
+    if changed:
+        pytest.fail(
+            "This test wrote to the developer's REAL shell config / launcher dir: "
+            + ", ".join(changed)
+            + ". Redirect HOME into tmp (monkeypatch.setenv('HOME', str(tmp_path)) "
+            "or env['HOME'] for subprocesses) or pass --no-shortcut to `agnes init`."
+        )
 
 
 @pytest.fixture(autouse=True)

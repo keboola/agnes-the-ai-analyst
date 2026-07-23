@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import secrets
-import time
 from typing import Optional
 
 import duckdb
@@ -14,11 +14,15 @@ from pydantic import BaseModel
 
 from app.auth.access import require_resource_access
 from app.auth.dependencies import _get_db
+from app.chat.frame_seq import stamp_frame
 from app.chat.manager import ChatManager, ConcurrencyCapHit, SessionNotFound
 from app.chat.persistence import ChatRepository
 from app.chat.profiles import get_profile
+from app.chat.replay import GapReplayGate, replay_since
 from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR, list_recognized_commands, merged_skills
 from app.chat.types import Surface
+from app.coordination.base import CoordinationUnavailable
+from app.coordination.factory import coordination
 from app.resource_types import ResourceType
 from src.repositories import user_journey_repo
 
@@ -33,26 +37,32 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 require_chat_access = require_resource_access(ResourceType.CHAT, "chat")
 
 
-# In-memory ticket store. Per spec: single-worker constraint enforced at
-# startup; HA needs ticket store in DuckDB or Redis (future spec).
-_TICKETS: dict[str, tuple[str, str, float]] = {}  # ticket -> (chat_id, user_email, expires_at)
+# WS auth tickets ride the coordination backend (single-use KV with TTL) —
+# not a module-level dict. In single-process ``memory`` mode that's still
+# just an in-process dict under the hood (see app.coordination.memory), so
+# behavior is unchanged from the original in-memory store; configuring the
+# ``redis`` backend makes tickets visible across replicas, which is what HA
+# deployments need (see app/startup_guards.py for the multi-process gate).
 _TICKET_TTL_SEC = 60
+_TICKET_KEY_PREFIX = "ws-ticket:"
 
 
 def _issue_ticket(chat_id: str, user_email: str) -> str:
     ticket = secrets.token_urlsafe(32)
-    _TICKETS[ticket] = (chat_id, user_email, time.time() + _TICKET_TTL_SEC)
+    payload = json.dumps({"chat_id": chat_id, "user_email": user_email})
+    coordination().kv_set(f"{_TICKET_KEY_PREFIX}{ticket}", payload, ttl_s=_TICKET_TTL_SEC)
     return ticket
 
 
 def _consume_ticket(ticket: str) -> Optional[tuple[str, str]]:
-    rec = _TICKETS.pop(ticket, None)
-    if rec is None:
+    raw = coordination().kv_delete(f"{_TICKET_KEY_PREFIX}{ticket}")
+    if raw is None:
         return None
-    chat_id, user_email, expires_at = rec
-    if time.time() > expires_at:
+    try:
+        rec = json.loads(raw)
+        return rec["chat_id"], rec["user_email"]
+    except (ValueError, KeyError, TypeError):
         return None
-    return chat_id, user_email
 
 
 class CreateSessionBody(BaseModel):
@@ -259,9 +269,53 @@ async def archive_session(
     repo.archive_session(chat_id)
 
 
+async def _flush_gap_replay(ws: WebSocket, gate: GapReplayGate, mgr: ChatManager, chat_id: str, last_seq: int) -> None:
+    """Send the gap-replay (or ``full_refresh``) for a just-reconnected WS,
+    then release ``gate`` so buffered + future live frames reach the socket.
+
+    CRITICAL fix (2026-07-18 — reconnect replay silent-gap race): this is
+    called AFTER the caller has already seated ``gate`` as a live sink via
+    ``mgr.attach``/``mgr.add_sink`` — never before. The previous design
+    computed this replay BEFORE seating the sink; a frame broadcast in that
+    window landed in neither the snapshot nor live delivery and was
+    silently lost (the client only dedups by seq — it cannot detect a gap
+    it was never told about). Seating first closes that window: from the
+    moment ``attach()``/``add_sink()`` returns, every broadcast for this
+    session is captured — either directly in ``gate``'s buffer (if it
+    raced with this function) or in the replay stream this function reads
+    from (or, in the overlap case, both — ``gate.release`` de-duplicates).
+
+    ``last_seq`` comes straight off the connect query string — a client
+    that has never seen a frame for this chat (first-ever open; history
+    for that case comes from ``GET /sessions/{id}/messages`` instead)
+    sends ``0`` or omits it, which ``replay_since`` treats as "nothing to
+    replay", not a gap (wave-2F task 3 — see ``app.chat.replay``).
+
+    Frames at or past ``mgr.turn_buffer_min_seq(chat_id)`` are excluded
+    from the stream-replay side: ``attach()``'s own ``_seat_sink`` (or
+    ``add_sink``) already unconditionally queued the WHOLE in-flight turn
+    buffer into ``gate`` before this function ever runs — replaying those
+    same frames again from the stream would double-count them ahead of
+    ``gate.release``'s de-dup (which only catches an EXACT seq match, and
+    the turn-buffer frames are real, seq'd entries that would exact-match).
+    """
+    outcome = await replay_since(chat_id, last_seq)
+    if outcome.full_refresh:
+        await ws.send_json(stamp_frame(chat_id, {"type": "full_refresh"}))
+        await gate.release()
+        return
+    turn_min = mgr.turn_buffer_min_seq(chat_id)
+    frames = outcome.frames if turn_min is None else [f for f in outcome.frames if f.get("seq", 0) < turn_min]
+    await gate.release(extra_frames=frames)
+
+
 @router.websocket("/sessions/{chat_id}/stream")
-async def ws_stream(ws: WebSocket, chat_id: str, ticket: str):
-    consumed = _consume_ticket(ticket)
+async def ws_stream(ws: WebSocket, chat_id: str, ticket: str, last_seq: int = 0):
+    try:
+        consumed = _consume_ticket(ticket)
+    except CoordinationUnavailable:
+        await ws.close(code=4503, reason="coordination_unavailable")
+        return
     if consumed is None or consumed[0] != chat_id:
         await ws.close(code=4401, reason="invalid_or_expired_ticket")
         return
@@ -269,6 +323,11 @@ async def ws_stream(ws: WebSocket, chat_id: str, ticket: str):
 
     await ws.accept()
     mgr: ChatManager = ws.app.state.chat_manager
+    # CRITICAL fix (2026-07-18): wrap ws in a GapReplayGate and seat the
+    # GATE as the live sink (via attach() below) BEFORE computing the
+    # gap-replay/full_refresh decision — see _flush_gap_replay's docstring
+    # for why the seat must happen first.
+    gate = GapReplayGate(ws)
 
     async def reader_loop() -> None:
         try:
@@ -294,12 +353,19 @@ async def ws_stream(ws: WebSocket, chat_id: str, ticket: str):
                         except SessionNotFound:
                             await asyncio.sleep(0.5)
                     else:
+                        # Sent directly on the WS before any LiveSession
+                        # exists (so it can't go through
+                        # ChatManager._broadcast) — stamp it here (wave-2F
+                        # task 2).
                         await ws.send_json(
-                            {
-                                "type": "error",
-                                "kind": "runner_not_ready",
-                                "message": "Runner did not become ready within 30 s.",
-                            }
+                            stamp_frame(
+                                chat_id_v,
+                                {
+                                    "type": "error",
+                                    "kind": "runner_not_ready",
+                                    "message": "Runner did not become ready within 30 s.",
+                                },
+                            )
                         )
                 elif kind == "cancel":
                     await mgr.cancel(chat_id_v)
@@ -307,34 +373,39 @@ async def ws_stream(ws: WebSocket, chat_id: str, ticket: str):
             return
 
     try:
-        await mgr.attach(chat_id_v, ws)
+        await mgr.attach(chat_id_v, gate)
+        await _flush_gap_replay(ws, gate, mgr, chat_id_v, last_seq)
         await reader_loop()
     except SessionNotFound:
         await ws.close(code=4404, reason="session_not_found")
     finally:
-        await mgr.detach_sink(chat_id_v, ws)
+        await mgr.detach_sink(chat_id_v, gate)
 
 
 @router.websocket("/sessions/{session_id}/join")
-async def ws_join(ws: WebSocket, session_id: str, ticket: str):
+async def ws_join(ws: WebSocket, session_id: str, ticket: str, last_seq: int = 0):
     """WebSocket join route for co-drive participants.
 
     A participant who obtained a ticket via POST /api/chat/{id}/join-ticket
     connects here to join a live co-session.  The route:
 
-      1. Consumes the short-lived opaque ticket (same _TICKETS mechanism as
-         ws_stream) to recover (session_id, participant_email).
+      1. Consumes the short-lived opaque ticket (same coordination-backed
+         ticket mechanism as ws_stream) to recover (session_id, participant_email).
       2. Re-verifies that the email is a live (left_at IS NULL) participant
          of the session (SR-9: membership re-verified at WS connect time,
          not just at ticket issuance).
-      3. Calls mgr.add_sink(session_id, ws, participant_email), which
+      3. Calls mgr.add_sink(session_id, gate, participant_email), which
          replays persisted history to the joiner and then fans out new
          frames to them alongside the primary sink.
 
     This is the ONLY path that calls add_sink for web co-drive joiners.
     The primary owner always connects via ws_stream (which calls attach).
     """
-    consumed = _consume_ticket(ticket)
+    try:
+        consumed = _consume_ticket(ticket)
+    except CoordinationUnavailable:
+        await ws.close(code=4503, reason="coordination_unavailable")
+        return
     if consumed is None or consumed[0] != session_id:
         await ws.close(code=4401, reason="invalid_or_expired_ticket")
         return
@@ -352,6 +423,10 @@ async def ws_join(ws: WebSocket, session_id: str, ticket: str):
         return
 
     await ws.accept()
+    # CRITICAL fix (2026-07-18): same seat-before-replay gate as ws_stream
+    # (see _flush_gap_replay's docstring), using the verified session_id
+    # (consumed[0] already checked == session_id above).
+    gate = GapReplayGate(ws)
 
     async def joiner_reader_loop() -> None:
         try:
@@ -369,12 +444,17 @@ async def ws_join(ws: WebSocket, session_id: str, ticket: str):
                         except SessionNotFound:
                             await asyncio.sleep(0.5)
                     else:
+                        # See ws_stream's identical branch above — stamp for
+                        # the same reason (wave-2F task 2).
                         await ws.send_json(
-                            {
-                                "type": "error",
-                                "kind": "runner_not_ready",
-                                "message": "Runner did not become ready within 30 s.",
-                            }
+                            stamp_frame(
+                                session_id,
+                                {
+                                    "type": "error",
+                                    "kind": "runner_not_ready",
+                                    "message": "Runner did not become ready within 30 s.",
+                                },
+                            )
                         )
                 elif kind == "cancel":
                     await mgr.cancel(session_id)
@@ -382,10 +462,11 @@ async def ws_join(ws: WebSocket, session_id: str, ticket: str):
             return
 
     try:
-        # add_sink replays history and appends the joiner to live.sinks.
+        # add_sink replays history and appends the gate to live.sinks.
         # SR-9: raises PermissionError if participant left between accept()
         # and add_sink(); close with 4403 in that case.
-        await mgr.add_sink(session_id, ws, participant_email)
+        await mgr.add_sink(session_id, gate, participant_email)
+        await _flush_gap_replay(ws, gate, mgr, session_id, last_seq)
         await joiner_reader_loop()
     except PermissionError:
         await ws.close(code=4403, reason="not_a_live_participant")
@@ -395,4 +476,4 @@ async def ws_join(ws: WebSocket, session_id: str, ticket: str):
         # Mirror ws_stream: a departed joiner must not leave a dead sink in
         # live.sinks — it would block the last-sink detach (linger→pause)
         # policy until the idle reaper. No-op if add_sink never seated it.
-        await mgr.detach_sink(session_id, ws)
+        await mgr.detach_sink(session_id, gate)

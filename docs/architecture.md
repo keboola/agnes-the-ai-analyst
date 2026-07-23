@@ -12,7 +12,7 @@ agnes-the-ai-analyst/
 │   ├── api/              REST API routers
 │   ├── auth/             Auth providers (JWT, Google OAuth, email magic link, password)
 │   └── web/              HTML dashboard routes
-├── services/             Standalone background services (scheduler, telegram_bot, ws_gateway, …)
+├── services/             Standalone background services (scheduler, telegram_bot, …)
 ├── cli/                  CLI tool (agnes pull, agnes query, agnes admin)
 ├── scripts/              Utility and migration scripts
 ├── config/               Instance configuration templates
@@ -56,7 +56,7 @@ system.duckdb       analytics.duckdb
 
 **Deployment:** Docker Compose. The `app` service runs Uvicorn. The `scheduler` sidecar triggers
 sync jobs and the LLM pipeline (corporate-memory, verification-detector, session-collector) via
-the app's REST API on offset cadences. Optional `full` profile adds telegram-bot and ws-gateway.
+the app's REST API on offset cadences. Optional `full` profile adds telegram-bot.
 
 ```bash
 docker compose up               # app + scheduler
@@ -118,9 +118,13 @@ any connector can use it. Auth credentials are never stored in `extract.duckdb`.
 
 ## SyncOrchestrator
 
-`src/orchestrator.py` — thread-safe via `_rebuild_lock`.
+`src/orchestrator.py` — thread-safe via `_rebuild_lock` (and, cross-process, the
+Postgres advisory lock `rebuild_lease()` — both taken together by the
+`rebuild_mutex()` context manager). `rebuild()` and `rebuild_source(source_name)`
+dispatch on the configured [analytics backend](#analytics-data-plane-legacy-vs-ducklake)
+— `legacy` (below) or `ducklake` — before doing anything else.
 
-### rebuild()
+### rebuild() — legacy backend
 
 1. Open a **temporary** DuckDB file (`analytics.duckdb.tmp`).
 2. Scan `/data/extracts/*/extract.duckdb` (sorted, skips non-directories and missing files).
@@ -132,15 +136,85 @@ any connector can use it. Auth credentials are never stored in `extract.duckdb`.
 8. `CHECKPOINT` and close the temp connection.
 9. **Atomic swap**: `shutil.move(tmp_path, target_path)` — replaces `analytics.duckdb` in-place.
 
-### rebuild_source(source_name)
+### rebuild_source(source_name) — legacy backend
 
 Convenience wrapper that calls `rebuild()` in full (partial rebuild is not possible because
 `analytics.duckdb` is written fresh from scratch each time). Used after Jira webhooks.
+
+On the `ducklake` backend the equivalent call is genuinely incremental instead —
+see below.
 
 ### Identifier validation
 
 Both `source_name` and `table_name` are checked against `^[a-zA-Z_][a-zA-Z0-9_]{0,63}$`
 before being interpolated into SQL. Invalid names are skipped with a warning.
+
+---
+
+## Analytics Data Plane: legacy vs DuckLake
+
+`analytics.backend` (`instance.yaml` / `AGNES_ANALYTICS_BACKEND` env) — `legacy`
+(default, zero-config) or `ducklake` (opt-in, wave-2G/WS E). Resolved once per
+process and cached for its lifetime (`src/analytics_backend.py`) — config is
+read at boot, not hot-reloaded, so flipping it requires a restart of every role
+process.
+
+**The invariant that never changes between backends:** the `extract.duckdb`
+contract above — `/data/extracts/{source}/{extract.duckdb, data/*.parquet}` —
+is the distribution artifact and the rollback truth for BOTH backends. Neither
+backend re-extracts from the source system; both are populated purely by
+reading what the connectors already wrote to that tree. Migrating between
+backends is therefore always a rebuild-from-extracts, never a re-sync (see
+`agnes admin analytics migrate` below).
+
+- **`legacy`** — the rebuild-and-swap `{DATA_DIR}/analytics/server.duckdb`
+  described above: a full temp-file rebuild, atomically swapped in.
+- **`ducklake`** (`src/ducklake_session.py`, `src/orchestrator.py`'s
+  `_do_rebuild_ducklake`) — a DuckLake catalog (Postgres-backed for
+  multi-process deployments, a DuckDB-file catalog for single-process `all`
+  mode) with data files DuckLake itself owns under `ducklake.data_path`.
+  Three properties define this plane:
+  - **Copy-ingest writer.** The worker is the only writer: after each sync,
+    `CREATE OR REPLACE TABLE lake."<source>"."<table>" AS SELECT * FROM
+    read_parquet(...)` copies each source's parquet into its own catalog
+    schema, then master views (`lake.main."<view>"`) are (re)created —
+    porting the same view-ownership claim/collision semantics the legacy
+    rebuild uses. `rebuild_source(name)` only re-ingests that one source's
+    schema — every other source's DuckLake tables/snapshots are untouched,
+    fixing the legacy "any webhook forces a full rebuild" cost by
+    construction.
+  - **Read-only reader plane.** `api`/`gateway` roles hold one long-lived
+    DuckLake attach per process (`get_ducklake_read()`), reused across
+    requests via `.cursor()` — never `CREATE VIEW`/lake DDL, never a
+    catalog-write commit, per request. This matters because a DuckLake
+    catalog commits a new snapshot on every DDL statement even when nothing
+    changed; a reader that wrote on every request would be unbounded write
+    amplification onto the shared Postgres catalog. `query_mode='remote'`
+    (BigQuery) wrapper views are therefore created by the writer once per
+    rebuild, not by the reader per request.
+  - **Snapshot-isolated concurrent reads.** A reader mid-request sees a
+    consistent snapshot even while the writer commits a new one concurrently
+    — DuckLake's MVCC, not anything Agnes builds itself.
+  - **Maintenance.** A daily `ducklake-maintenance` job (see
+    [Background Jobs](#background-jobs)) runs `merge_adjacent_files` →
+    `ducklake_expire_snapshots` → `ducklake_cleanup_old_files` → a catalog
+    `VACUUM` (Postgres-catalog only), mutually exclusive with a rebuild via
+    the same `rebuild_mutex()` lock pair.
+
+**Migrating an existing instance** (`agnes admin analytics migrate --to
+ducklake|legacy`, `POST /api/admin/analytics/migrate`) never flips config
+itself — config is operator-owned and boot-time-cached, as above. It (1)
+validates prerequisites (`ducklake` extension loadable; for a Postgres
+catalog, a real reachability probe, auto-repairing a missing catalog database
+on an existing Postgres volume), (2) enqueues a full rebuild into the named
+target backend from the on-disk extracts tree (`SyncOrchestrator
+.migrate_to_backend`, bypassing whichever backend is currently configured),
+and (3) tells the operator to flip `analytics.backend` and restart once that
+job completes. Rollback (`--to legacy`) is the same shape in reverse — the
+extracts tree never stopped being legacy's source of truth either.
+Materialized-SQL tables are not re-materialized by either direction; they
+follow their own scheduler cadence. Full operator recipe:
+[`DEPLOYMENT.md`](DEPLOYMENT.md#ducklake-analytics-backend).
 
 ---
 
@@ -185,7 +259,7 @@ POST /api/sync/trigger (admin)
 - Runs admin-registered SQL through the DuckDB BigQuery extension via `BqAccess.duckdb_session()` and writes the result to `/data/extracts/bigquery/data/<id>.parquet` atomically (`<id>.parquet.tmp` → `os.replace`).
 - Triggered by `_run_materialized_pass` in `app/api/sync.py` between custom-connectors and orchestrator rebuild on every `/api/sync/trigger`. Per-table `sync_schedule` honored via `is_table_due()`.
 - Cost guardrail: BQ dry-run via `app.api.v2_scan._bq_dry_run_bytes` (single source of truth for cost-estimate logic). `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB; `0` disables). Fail-open when dry-run errors (DuckDB three-part syntax the native BQ client can't parse) — log warning + proceed.
-- Distribution: result parquet rides the same manifest + `agnes pull` flow as Keboola tables. Per-user RBAC unchanged (`resource_grants(group, ResourceType.TABLE, table_id)`).
+- Distribution: result parquet rides the same manifest + `agnes pull` flow as Keboola tables. Per-user RBAC unchanged (`resource_grants(group, ResourceType.TABLE, table_id)`). That flow optionally gains a bucket-mirror + presigned-URL hop — see [Distribution: signed-URL object store mirror](#distribution-signed-url-object-store-mirror) below.
 
 ### Jira — Real-Time Push
 
@@ -210,11 +284,60 @@ Files NOT to modify: `connectors/jira/file_lock.py`, `connectors/jira/transform.
 
 ---
 
+## Distribution: signed-URL object store mirror
+
+Optional (off by default), wave-2H addition on top of the manifest +
+`agnes pull` flow every connector above already rides. When an
+S3-compatible object store is configured (`distribution.object_store.*` /
+`distribution.signed_urls`, see
+[`DEPLOYMENT.md`](DEPLOYMENT.md#signed-url-distribution-object-store)), three
+extra hops layer on top of the existing distribution path — none of them
+change what's authoritative:
+
+1. **Bucket mirror** (`app/worker/kinds.py::_run_distribution_mirror`, a
+   `distribution-mirror` LIGHT job chained off every successful
+   `data-refresh`) reads the same `extracts/**/data/<table_id>.parquet`
+   files `agnes pull` has always served, and uploads any whose content
+   changed (md5-compared against the object's stamped metadata) to
+   `{prefix}/<table_id>.parquet` in the configured bucket via
+   `src.object_store.ObjectStore` (one S3-compatible implementation,
+   `S3ObjectStore`, built on `boto3`). It never moves, deletes, or
+   rewrites the extracts tree — that tree remains the sole source of
+   truth and the rollback path regardless of whether the mirror is
+   configured, current, or has ever run.
+2. **Manifest v2 signed URLs** (`app/api/sync.py::_build_manifest_for_user`
+   / `_apply_signed_url`) add `signed_url` + `signed_url_expires_at`
+   (15-minute TTL) to a table's `tables[<id>]` manifest entry — but only
+   when the mirror's marker index (`src/distribution.py`) shows that
+   table's object is present *and* current. An unmirrored or stale table
+   gets no `signed_url`; older CLIs that don't recognize the field ignore
+   it. RBAC is unaffected — a `signed_url` only ever appears on an entry
+   the caller could already reach via `get_accessible_tables`.
+3. **`agnes pull` prefers the signed URL** (`cli/lib/pull.py::_download_one`
+   / `_fetch_signed_url`) when present, fetching directly from the bucket
+   (SSRF-guarded, no redirects). On ANY failure — network error, expired/
+   403, md5 mismatch — it falls back to the existing app-served
+   `/api/data/{id}/download` route, and md5-verifies again via the same
+   `_verify_and_promote` step either path uses. A misconfigured or expired
+   signed URL therefore degrades to "slightly slower pull," never to a
+   corrupted or missing local parquet.
+
+**Separate concern from DuckLake's `data_path`.** `ducklake.data_path`
+(see [Analytics Data Plane](#analytics-data-plane-legacy-vs-ducklake) above)
+is where DuckLake stores its *own* managed data files for the analytics
+query engine — a different filesystem-coupling problem with its own
+migration path. This mirror only ever reads the `extracts/` tree the
+orchestrator already scans; the two do not share config, code, or a
+migration story, and moving one to object storage says nothing about the
+other.
+
+---
+
 ## DuckDB Schema
 
 ### system.duckdb — `{DATA_DIR}/state/system.duckdb`
 
-Current schema version: **90** (auto-migrated from any earlier version on startup — see `src/db.py`).
+Current schema version: **96** (auto-migrated from any earlier version on startup — see `src/db.py`).
 
 | Table | Purpose |
 |-------|---------|
@@ -380,12 +503,35 @@ Docker Compose service.
 |---------|---------|-----------------|-------------|
 | `scheduler` | default | Always-on; polls every N seconds | Lightweight sidecar that triggers jobs via the app's REST API: `POST /api/sync/trigger` every 15 min, `GET /api/health` every 5 min, `POST /api/admin/run-session-collector` every 10 min, `POST /api/admin/run-verification-detector` every 15 min, `POST /api/admin/run-corporate-memory` every 17 min, `POST /api/marketplaces/sync-all` daily 03:00. Auth via `SCHEDULER_API_TOKEN` or auto-fetch from `/auth/token`. |
 | `telegram_bot` | `full` | Always-on (long-poll) | Telegram bot: polling + HTTP dispatch, `/status` command, notification script execution. |
-| `ws_gateway` | `full` | Always-on | WebSocket gateway (TCP 8765) + HTTP dispatch socket. JWT auth. Per-user connection limit (5). Heartbeat ping/pong. |
 | `corporate_memory` | (driven by scheduler) | Every 17 min | Scans `CLAUDE.local.md` files, extracts knowledge via LLM (Claude Haiku), writes to `knowledge_items` in system.duckdb. Inline contradiction detection runs after each new item: one batched Haiku structured-output call returns judgments + structured resolution suggestions for every same-domain candidate (no SQL keyword pre-filter — see [ADR Decision 4](ADR-corporate-memory-v1.md)). Driven by scheduler-v2 since #176. |
 | `verification_detector` | (driven by scheduler) | Every 15 min | Scans unprocessed analyst session JSONLs, extracts corrections / confirmations / unprompted definitions via Haiku structured outputs. Confidence is computed in code from `(source_type, detection_type)` — never trusted from the LLM. Each verification persists a `verification_evidence` row carrying `user_quote` + `detection_type` ([ADR Decision 3](ADR-corporate-memory-v1.md)). Driven by scheduler-v2 since #176. |
 | `session_collector` | (driven by scheduler) | Every 10 min | Copies Claude Code `.jsonl` session transcripts to central storage. Driven by scheduler-v2 since #176. |
 
-Files NOT to modify: `services/ws_gateway/` (stable WebSocket infrastructure).
+**Desktop/browser notifications** (formerly the standalone `ws_gateway` service, TCP 8765 + a Unix-socket HTTP dispatch): absorbed into the main app (wave-2F task 6). The WS endpoint (`/api/notifications/ws`, same JWT auth, per-user connection limit, heartbeat ping/pong) lives in `app/api/notifications_ws.py` and serves only on `Role.GATEWAY` processes; producers (e.g. the Telegram bot) call `app/notifications.py::publish_notification(user, payload)`, which publishes on the coordination pub/sub channel `notify:{user}` — replacing the old in-memory `connections` dict + Unix socket, and making delivery work across replicas when `coordination.backend=redis`.
+
+**Multi-replica chat HA** (wave-2F): `ChatManager` state — previously a
+single process's in-memory dicts — is now coordination-backed so chat can
+run on any number of `Role.GATEWAY` replicas once `coordination.backend:
+redis`. A **routing lease** (`app/chat/routing.py`, key `chat:{chat_id}`)
+names the one gateway currently hosting a session's live sandbox, claimed
+on spawn and renewed on the idle-reaper heartbeat. Every outbound frame
+carries a monotonic `seq` (`app/chat/frame_seq.py`) and is appended to a
+bounded **replay stream** (`app/chat/replay.py`, `chat-out:{chat_id}`), so
+a WS reconnect with `?last_seq=` gets exactly the missed frames, or a
+`full_refresh` control frame if the gap can't be closed. Commands that
+land on a non-owning gateway (a webhook behind a load balancer, an
+`/agnes` slash command) are forwarded over an **inbound stream**
+(`app/chat/inbound.py`, `chat-in:{chat_id}`) to the owning gateway instead
+of racing a second runner. A reconnect that lands on a gateway which
+doesn't hold the lease **claims (steals) it and takes over**
+(`ChatManager._takeover_foreign_session`): destroy the old sandbox, spawn
+a fresh runner, replay recent turns for continuity — not a live handoff,
+so any turn in flight on the old gateway at that moment is lost (accepted
+v1 trade-off). Desktop/browser notifications (above) ride the same
+coordination fabric. Full operator-facing detail — the gate-lift
+condition, and why N single-worker replicas beat `UVICORN_WORKERS > 1` on
+a gateway — lives in [`DEPLOYMENT.md`](DEPLOYMENT.md) → *Multi-process →
+Multi-replica chat HA*.
 
 ### Corporate-memory privacy boundary
 
@@ -396,6 +542,151 @@ Files NOT to modify: `services/ws_gateway/` (stable WebSocket infrastructure).
 - Contributors reach their own personal items via `/api/memory/my-contributions`.
 
 See [ADR Decision 1](ADR-corporate-memory-v1.md) for the full reasoning.
+
+---
+
+## Hosted Data Apps
+
+Off by default (`data_apps.enabled`). Lets analysts host their own web
+applications — Flask/Dash dashboards, static SPAs — next to the data, using
+the same upstream `data-app-python-js` runtime image and `keboola-config/`
+app-repo contract as Keboola's existing Data Apps product. Full design:
+[`docs/superpowers/specs/2026-07-21-data-apps-design.md`](superpowers/specs/2026-07-21-data-apps-design.md).
+
+```
+┌──────────────┐   deploy    ┌──────────────┐   docker    ┌──────────────┐
+│   registry   │ ──────────▶ │ apps-runner  │ ──────────▶ │  runtime     │
+│ (data_apps   │  spec +     │  (sidecar,   │  run/stop/  │  container   │
+│  table +     │  config.json│  holds the   │  status     │ agnes-       │
+│  git repo)   │             │  Docker sock)│             │ dataapp-<slug>│
+└──────────────┘             └──────────────┘             └──────┬───────┘
+       ▲                                                          │
+       │ RBAC-gated ingress + wake-on-request                     │ :8888
+       └──────────────────── ingress proxy ◀───────────────────────┘
+                          `/apps/<slug>/…` (or subdomain)
+```
+
+- **Registry** (`src/data_apps/`, `src/repositories/data_apps.py`): the
+  `data_apps` table is the source of truth (owner, repo mode/URL, resource
+  limits, sleep state). `src/data_apps/spec.py` builds the runtime's
+  `config.json` (git remote + secrets) and the Docker container spec from a
+  registry row; `src/data_apps/git_repos.py` hosts internal (`repo_mode:
+  internal`) app repos as bare git repos served over HTTP with
+  push-to-deploy (`POST /api/data-apps/{slug}/deploy` fast-forwards the
+  `agnes-live` branch and calls the runner).
+- **apps-runner** (`services/apps_runner/`): the only process holding the
+  Docker socket — deliberately dumb, no registry access or RBAC of its own,
+  just `up`/`stop`/`resume`/`status`/`logs` translated to Docker Engine API
+  calls over a token-gated internal HTTP API (`src/data_apps/runner_client.py`
+  is the app-side client). Image name is allowlisted, mounts are fixed
+  per-slug paths — no arbitrary image or volume ever reaches `docker run`.
+- **Ingress proxy** (`app/api/data_apps_proxy.py`): reverse-proxies
+  `/apps/<slug>/…` (and, when `data_apps.subdomain_base` is configured,
+  `<slug>.<subdomain_base>`) to the running container, RBAC-gated the same
+  way as every other resource type. A sleeping app gets woken on first
+  request (holding page while it starts) rather than 404ing; an idle-reaper
+  scheduler job puts unused apps back to sleep after
+  `data_apps.default_idle_timeout_s`.
+
+Apps reach Agnes data the same way the CLI/MCP surfaces do — as an API
+client, via an owner-scoped token injected as `AGNES_TOKEN` — never through a
+mounted parquet. See spec §8 for the full rationale and the owner-inherited
+access model this implies for sharing.
+
+---
+
+## Background Jobs
+
+A durable job queue (the `jobs` table, present on both backends —
+`src/repositories/jobs.py` / `jobs_pg.py`, routed through the
+`jobs_repo()` factory) backs a worker runtime for the heaviest,
+most contention-prone recurring work; the rest of the Services table
+above stays on direct synchronous HTTP calls from the scheduler.
+
+**Schema** (migration v94 / Alembic `0041_jobs_v94`): `id`, `kind`,
+`payload_json`, `status` (`queued`/`running`/`done`/`failed`), `priority`,
+`run_after`, `attempts`/`max_attempts`, `lease_expires_at`/`leased_by`/
+`lease_token`, `idempotency_key`, `error`, plus `created_at`/`started_at`/
+`finished_at`. `idempotency_key` dedup is enforced in
+`JobsRepository.enqueue()` via an in-process lock on DuckDB (which has no
+partial-index support) and via a partial unique index + `ON CONFLICT` on
+Postgres — same dedup behavior, different mechanism per backend.
+
+**Worker loop** (`app/worker/runtime.py`, started from `app/main.py`'s
+lifespan when the process's `AGNES_ROLE` includes the worker plane): two
+lanes share one asyncio loop — heavy (concurrency 1) and light
+(concurrency 2). Each lane slot repeats `claim_next()` → runs the kind's
+handler in a thread while a heartbeat extends the lease →
+`complete()`/`fail()`. A fresh-per-claim `lease_token` (not just
+`worker_id`) guards every call so a stale slot can't clobber a fresh
+claim of the same job by another slot in the same process. A separate
+sweep task reclaims exhausted/expired leases (`reap_exhausted()`), and
+shutdown drains in-flight jobs within a bound instead of hard-killing
+them.
+
+**Kinds registry** (`app/worker/kinds.py::register_all_kinds()`,
+`app/worker/registry.py`): five kinds today — `data-refresh` and
+`jira-refresh` (heavy lane), `marketplaces-sync`, `session-collector`,
+and `corporate-memory` (light lane). Each handler is a thin adapter over
+the function already backing the equivalent HTTP endpoint — no logic is
+duplicated between the queued and HTTP-triggered call sites.
+
+**Cross-process rebuild lease**: `SyncOrchestrator`'s `_rebuild_lock` is
+an in-process `threading.Lock` — invisible across processes. In a
+role-split topology (a dedicated `api` process handling
+`/api/sync/trigger` + the Jira webhook, and a separate `worker` process
+running enqueued jobs) both can independently reach `rebuild()`/
+`rebuild_source()`'s critical section and race on `analytics.duckdb`.
+`src/db_pg.py::rebuild_lease()` wraps that section in a Postgres
+advisory lock (no-op on the DuckDB backend, already single-process by
+the startup guard) so the two processes serialize instead of racing.
+
+**REST/CLI/MCP**: `app/api/jobs.py` (`POST /api/jobs`,
+`GET /api/jobs/{id}`, `GET /api/jobs`), `agnes admin jobs
+enqueue|show|list`, and the `admin_job_enqueue`/`admin_job_get`/
+`admin_jobs_list` MCP tools — all gated by `require_admin` (the
+scheduler's shared-secret bearer resolves to a synthetic admin user, so
+no special-casing is needed).
+
+Which scheduler rows moved to the queue vs. stayed synchronous HTTP, and
+why: [`jobs-classification.md`](jobs-classification.md).
+
+---
+
+## Coordination Backend
+
+`app/coordination/` provides a `CoordinationBackend` abstraction (`base.py`)
+with two implementations — `MemoryCoordinationBackend` (in-process dict +
+lock, the default) and `RedisCoordinationBackend` (redis-py) — selected by
+`app.coordination.factory.coordination()`, a process-wide singleton keyed
+off `coordination.backend` (`instance.yaml`) / `AGNES_COORDINATION_BACKEND`
+(env) and `redis.url` / `AGNES_REDIS_URL`. The interface is four primitive
+groups: TTL key/value (`kv_set`/`kv_get`/`kv_delete`, the latter an atomic
+get-and-delete for single-use tokens), counters (`incr`, TTL applied only
+on first increment — window semantics are the caller's), leases
+(`lease_acquire`/`lease_renew`/`lease_release`, exclusive per name/holder),
+and pub/sub (`publish`/`subscribe`). Both implementations are exercised
+against the same contract suite (`tests/test_coordination_contract.py`) so
+a consumer written against the ABC behaves identically regardless of
+backend. `app/coordination/leases.py::run_with_lease` layers an
+acquire-or-wait-then-renew-then-release loop on top of the raw lease
+primitives for long-running singleton consumers (Slack Socket Mode,
+Telegram long-poll, the paused-sandbox sweep).
+
+`coordination.backend=redis` is itself one of the three conditions
+`app/startup_guards.py::is_multi_process()` checks — configuring it
+declares multi-process intent even ahead of an actual role split, and the
+same guard module then requires it (alongside `DATABASE_URL` and explicit
+secrets) for any topology that is role-split or runs
+`UVICORN_WORKERS > 1`.
+
+Consumers riding this abstraction: chat WS auth tickets, leader leases,
+shared rate limits/chat quotas, cache-invalidation pub/sub, operational
+auth codes, and `.env_overlay` token reload — enumerated with their key
+prefixes and TTLs in [`DEPLOYMENT.md`](DEPLOYMENT.md) → *Multi-process →
+Coordination backend*, which also states the disposability invariant this
+design is built around: a single non-HA Redis is the supported shape, and
+every consumer recovers cleanly from a `FLUSHALL`.
 
 ---
 

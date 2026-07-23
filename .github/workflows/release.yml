@@ -258,12 +258,26 @@ jobs:
       # private GHCR image. The `build-and-push` job logs in for itself;
       # this job needs its own login since GitHub Actions tokens are scoped
       # per-job.
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      #
+      # Retried, because a transient ghcr.io blip here is NOT a broken
+      # `:stable` — but a non-zero exit fails smoke-test → auto-rollback.
+      # Issue #892: `Get "https://ghcr.io/v2/": ... Client.Timeout exceeded`
+      # during this job rolled prod back from stable-2026.07.525 to 520; the
+      # exact same commit passed smoke on re-run. Infra flakes must not roll
+      # back prod.
+      - name: Log in to GHCR (with retry)
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_ACTOR: ${{ github.actor }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_ACTOR" --password-stdin; then
+              exit 0
+            fi
+            [ "$attempt" = 5 ] && { echo "::error::ghcr.io login failed after 5 attempts (transient registry error?)"; exit 1; }
+            echo "login attempt $attempt failed; retrying in $((attempt * 5))s"
+            sleep $((attempt * 5))
+          done
 
       - name: Start Agnes from built image
         run: |
@@ -271,7 +285,20 @@ jobs:
           touch .env
           # Use prod compose (GHCR images) + CI overlay (test secrets)
           export AGNES_TAG="${{ needs.build-and-push.outputs.image_tag }}"
-          docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml up -d app
+          compose="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml"
+          # Pull the app image with retries BEFORE `up` — a transient ghcr.io
+          # pull timeout is an infra flake, not a broken :stable, and must not
+          # trip the auto-rollback (issue #892). `up` below then starts from
+          # the already-pulled local image.
+          for attempt in 1 2 3 4 5; do
+            if $compose pull app; then
+              break
+            fi
+            [ "$attempt" = 5 ] && { echo "::error::failed to pull app image after 5 attempts (transient ghcr.io error?)"; exit 1; }
+            echo "pull attempt $attempt failed; retrying in $((attempt * 5))s"
+            sleep $((attempt * 5))
+          done
+          $compose up -d app
           # Wait for healthy (max 60s)
           timeout 60 bash -c 'until curl -sf http://localhost:8000/api/health | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d[\"status\"]!=\"unhealthy\" else 1)"; do sleep 3; done'
 

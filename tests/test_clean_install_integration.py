@@ -22,6 +22,12 @@ def _isolated_env(tmp_path: Path) -> dict:
     config_dir = tmp_path / "agnes-config"
     config_dir.mkdir(parents=True, exist_ok=True)
     env["AGNES_CONFIG_DIR"] = str(config_dir)
+    # `agnes init` installs a launcher shortcut into the shell rc under
+    # $HOME — redirect it into tmp so the subprocess cannot append marker
+    # blocks to the developer's real ~/.zshrc (guard in tests/conftest.py).
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir(parents=True, exist_ok=True)
+    env["HOME"] = str(fake_home)
     return env
 
 

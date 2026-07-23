@@ -72,6 +72,7 @@ __all__ = [
     "sync_state_repo",
     # Config / templates / tokens
     "metric_repo",
+    "glossary_repo",
     "claude_md_template_repo",
     "welcome_template_repo",
     "news_template_repo",
@@ -135,6 +136,10 @@ __all__ = [
     "knowledge_digests_repo",
     # Chat sandbox secret broker tickets
     "ticket_repo",
+    # Job queue (wave-2B worker runtime foundation)
+    "jobs_repo",
+    # Data apps (hosted user web apps registry)
+    "data_apps_repo",
 ]
 
 
@@ -242,6 +247,10 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
     "metric": {
         DUCKDB: ("src.repositories.metrics", "MetricRepository"),
         PG: ("src.repositories.metrics_pg", "MetricPgRepository"),
+    },
+    "glossary": {
+        DUCKDB: ("src.repositories.glossary", "GlossaryRepository"),
+        PG: ("src.repositories.glossary_pg", "GlossaryPgRepository"),
     },
     "claude_md_template": {
         DUCKDB: ("src.repositories.claude_md_template", "ClaudeMdTemplateRepository"),
@@ -459,6 +468,16 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.ticket", "TicketRepository"),
         PG: ("src.repositories.ticket_pg", "TicketPgRepository"),
     },
+    # Job queue (wave-2B worker runtime foundation)
+    "jobs": {
+        DUCKDB: ("src.repositories.jobs", "JobsRepository"),
+        PG: ("src.repositories.jobs_pg", "JobsPgRepository"),
+    },
+    # Data apps (hosted user web apps registry)
+    "data_apps": {
+        DUCKDB: ("src.repositories.data_apps", "DataAppsRepository"),
+        PG: ("src.repositories.data_apps_pg", "DataAppsPgRepository"),
+    },
 }
 
 
@@ -514,6 +533,10 @@ def sync_state_repo() -> Any:
 # config / templates / tokens
 def metric_repo() -> Any:
     return _build("metric")
+
+
+def glossary_repo() -> Any:
+    return _build("glossary")
 
 
 def claude_md_template_repo() -> Any:
@@ -728,3 +751,13 @@ def knowledge_digests_repo() -> Any:
 # chat sandbox secret broker tickets
 def ticket_repo() -> Any:
     return _build("ticket")
+
+
+# job queue (wave-2B worker runtime foundation)
+def jobs_repo() -> Any:
+    return _build("jobs")
+
+
+# data apps (hosted user web apps registry)
+def data_apps_repo() -> Any:
+    return _build("data_apps")

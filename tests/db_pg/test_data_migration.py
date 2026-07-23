@@ -10,9 +10,14 @@ Contract:
     the copy. Idempotent (re-runs are safe; ON CONFLICT DO NOTHING on
     the PK).
   - ``validate_task(task, duckdb_conn, pg_engine)`` returns a dict with
-    ``duckdb_rows``, ``pg_rows``, and ``checksum_match: bool``.
+    ``duckdb_rows``, ``pg_rows``, ``missing_count``, and
+    ``checksum_match: bool``. ``checksum_match`` is subset containment
+    (source ⊆ target), not exact equality: a target superset (PG grown
+    post-cutover) validates clean; a source row missing from the target
+    fails via ``missing_count > 0``.
   - Dry-run mode logs intent but does not write to PG.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -34,6 +39,7 @@ def duckdb_with_audit_rows(tmp_path):
     _ensure_schema(conn)
 
     from src.repositories.audit import AuditRepository
+
     repo = AuditRepository(conn)
     repo.log(user_id="u1", action="auth.login", correlation_id="c-1")
     repo.log(user_id="u1", action="sync.trigger", correlation_id="c-2")
@@ -55,6 +61,7 @@ def pg_with_schema(pg_engine, monkeypatch):
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
     import src.db_pg as db_pg
+
     db_pg.dispose()
     return db_pg.get_engine()
 
@@ -62,6 +69,7 @@ def pg_with_schema(pg_engine, monkeypatch):
 def test_module_imports():
     """The migration framework module exists."""
     import scripts.migrate_duckdb_to_pg as m
+
     assert hasattr(m, "MigrationTask")
     assert hasattr(m, "run_task")
     assert hasattr(m, "validate_task")
@@ -185,6 +193,7 @@ def test_migrate_pg_array_columns_coerce_from_duckdb_json_strings(tmp_path, pg_w
     # All four ARRAY columns must round-trip as native PG arrays.
     with pg_with_schema.connect() as conn:
         from sqlalchemy import text as sa_text
+
         row = conn.execute(
             sa_text("SELECT tables, dimensions, synonyms, notes FROM metric_definitions WHERE id='test/m'")
         ).first()
@@ -235,10 +244,9 @@ def test_migrate_substitutes_default_for_not_null_columns_with_null_value(tmp_pa
     run_task(task, duck_conn, pg_with_schema)
 
     from sqlalchemy import text as sa_text
+
     with pg_with_schema.connect() as conn:
-        row = conn.execute(
-            sa_text("SELECT marketplace_id, name, created_at FROM marketplace_plugins")
-        ).first()
+        row = conn.execute(sa_text("SELECT marketplace_id, name, created_at FROM marketplace_plugins")).first()
     assert row is not None, "marketplace_plugins row was not migrated"
     assert row.created_at is not None, "created_at must be auto-filled, not NULL"
     # The substituted timestamp should be close to now (within the last
@@ -296,6 +304,7 @@ def test_run_all_reports_per_table_error(tmp_path, pg_with_schema):
     # Drop the PG table to force per-table failure on copy.
     with pg_with_schema.connect() as conn:
         from sqlalchemy import text as sa_text
+
         conn.execute(sa_text("DROP TABLE IF EXISTS audit_log CASCADE"))
         conn.commit()
 
@@ -337,8 +346,7 @@ def test_run_raises_on_duckdb_column_missing_in_pg_with_data(tmp_path, pg_with_s
     # Add an extra column DuckDB-side that PG doesn't have.
     duck.execute("ALTER TABLE table_registry ADD COLUMN extra_field VARCHAR")
     duck.execute(
-        "INSERT INTO table_registry (id, name, source_type, extra_field) "
-        "VALUES ('t1', 'tbl', 'duckdb', 'has-data')"
+        "INSERT INTO table_registry (id, name, source_type, extra_field) VALUES ('t1', 'tbl', 'duckdb', 'has-data')"
     )
     task = next(t for t in TASKS if t.target_table == "table_registry")
     with pytest.raises(RuntimeError, match="extra_field.*data will be lost"):
@@ -431,8 +439,7 @@ def test_jsonb_dict_round_trip_through_full_copy(tmp_path, pg_engine_with_schema
     # serialised form so DuckDB accepts it, then the migrator must
     # deserialize+re-serialize correctly on the PG side.
     conn.execute(
-        "INSERT INTO audit_log (id, timestamp, action, params) "
-        "VALUES (?, CURRENT_TIMESTAMP, ?, ?)",
+        "INSERT INTO audit_log (id, timestamp, action, params) VALUES (?, CURRENT_TIMESTAMP, ?, ?)",
         ["test-jsonb-1", "test.jsonb_round_trip", json.dumps(sentinel_value)],
     )
     conn.close()
@@ -643,9 +650,7 @@ def test_run_all_halts_on_first_failure(tmp_path, pg_with_schema):
         TASKS[fail_idx_in_tasks].run = original_run
 
     # The failing table's report must carry an error.
-    fail_report_idx = next(
-        i for i, r in enumerate(reports) if r.get("table") == fail_table
-    )
+    fail_report_idx = next(i for i, r in enumerate(reports) if r.get("table") == fail_table)
     assert "error" in reports[fail_report_idx]
 
     # Every report AFTER the failing one must be marked skipped — no
@@ -653,12 +658,8 @@ def test_run_all_halts_on_first_failure(tmp_path, pg_with_schema):
     after_failure = reports[fail_report_idx + 1 :]
     assert after_failure, "test ineffective: no tables after the failure point"
     for r in after_failure:
-        assert r.get("skipped") is True, (
-            f"task {r.get('table')!r} should be skipped after the prior failure, got {r}"
-        )
-        assert "halted" in r.get("reason", "").lower(), (
-            f"skip reason should mention halting, got {r.get('reason')!r}"
-        )
+        assert r.get("skipped") is True, f"task {r.get('table')!r} should be skipped after the prior failure, got {r}"
+        assert "halted" in r.get("reason", "").lower(), f"skip reason should mention halting, got {r.get('reason')!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -682,9 +683,7 @@ def test_run_all_reset_target_rebuilds_fresh(tmp_path, pg_with_schema):
 
     # A prior failed attempt left a stale version of the same user in PG.
     with pg_with_schema.begin() as c:
-        c.execute(sa.text(
-            "INSERT INTO users (id, email, name) VALUES ('u1', 'stale@x', 'Stale')"
-        ))
+        c.execute(sa.text("INSERT INTO users (id, email, name) VALUES ('u1', 'stale@x', 'Stale')"))
 
     duck = duckdb.connect(str(duck_path), read_only=True)
     run_all(duck, pg_with_schema, reset_target=True)
@@ -710,9 +709,7 @@ def test_run_all_default_does_not_truncate(tmp_path, pg_with_schema):
     duck.close()
 
     with pg_with_schema.begin() as c:
-        c.execute(sa.text(
-            "INSERT INTO users (id, email, name) VALUES ('ghost', 'g@x', 'Ghost')"
-        ))
+        c.execute(sa.text("INSERT INTO users (id, email, name) VALUES ('ghost', 'g@x', 'Ghost')"))
 
     duck = duckdb.connect(str(duck_path), read_only=True)
     run_all(duck, pg_with_schema)  # default: reset_target=False
@@ -735,9 +732,7 @@ def test_run_all_reset_target_dry_run_does_not_truncate(tmp_path, pg_with_schema
     duck.close()
 
     with pg_with_schema.begin() as c:
-        c.execute(sa.text(
-            "INSERT INTO users (id, email, name) VALUES ('ghost', 'g@x', 'Ghost')"
-        ))
+        c.execute(sa.text("INSERT INTO users (id, email, name) VALUES ('ghost', 'g@x', 'Ghost')"))
 
     duck = duckdb.connect(str(duck_path), read_only=True)
     run_all(duck, pg_with_schema, reset_target=True, dry_run=True)
@@ -746,3 +741,128 @@ def test_run_all_reset_target_dry_run_does_not_truncate(tmp_path, pg_with_schema
     with pg_with_schema.connect() as c:
         n = c.execute(sa.text("SELECT COUNT(*) FROM users WHERE id='ghost'")).scalar()
     assert n == 1, "a dry run must not truncate even with reset_target=True"
+
+
+# ---------------------------------------------------------------------------
+# FK-orphan tolerance + subset (target-superset) validation
+# ---------------------------------------------------------------------------
+
+
+def test_resource_grants_registered_with_fk_parents():
+    """resource_grants declares all five typed-FK parents so dangling
+    grants are dropped-with-warning instead of aborting the copy."""
+    from scripts.migrate_duckdb_to_pg.tasks import EXPLICIT_TASKS
+
+    task = EXPLICIT_TASKS.get("resource_grants")
+    assert task is not None, "resource_grants must have an explicit task"
+    assert task.fk_parents == {
+        "group_id": ("user_groups", "id"),
+        "resource_id_table": ("table_registry", "id"),
+        "resource_id_data_package": ("data_packages", "id"),
+        "resource_id_memory_domain": ("memory_domains", "id"),
+        "resource_id_memory_item": ("knowledge_items", "id"),
+        "resource_id_recipe": ("recipes", "id"),
+    }
+
+
+def test_orphaned_fk_grant_skipped_with_warning(tmp_path, pg_with_schema, caplog):
+    """A resource_grants row pointing at a table absent from the registry
+    is dropped (with a warning), not fatal; the valid grant still copies."""
+    import logging
+
+    import sqlalchemy as sa
+
+    from src.db import _ensure_schema
+    from scripts.migrate_duckdb_to_pg import run_task, TASKS
+
+    duck_path = tmp_path / "src.duckdb"
+    duck = duckdb.connect(str(duck_path))
+    _ensure_schema(duck)
+    duck.execute("INSERT INTO user_groups (id, name) VALUES ('g-test', 'Test')")
+    duck.execute("INSERT INTO table_registry (id, name) VALUES ('real_tbl', 'Real')")
+    duck.execute(
+        "INSERT INTO resource_grants (id, group_id, resource_type, resource_id, "
+        "resource_id_table) VALUES "
+        "('grant-ok', 'g-test', 'table', 'real_tbl', 'real_tbl'), "
+        "('grant-orphan', 'g-test', 'table', 'ghost_tbl', 'ghost_tbl')"
+    )
+    duck.close()
+
+    duck = duckdb.connect(str(duck_path), read_only=True)
+    # Copy FK parents first, then the grants.
+    for name in ("user_groups", "table_registry", "resource_grants"):
+        task = next(t for t in TASKS if t.target_table == name)
+        with caplog.at_level(logging.WARNING):
+            run_task(task, duck, pg_with_schema)
+    duck.close()
+
+    with pg_with_schema.connect() as conn:
+        ids = {r[0] for r in conn.execute(sa.text("SELECT id FROM resource_grants WHERE id LIKE 'grant-%'")).all()}
+    assert ids == {"grant-ok"}, "orphan grant must be dropped, valid grant kept"
+    assert any("orphan" in rec.getMessage().lower() and "ghost_tbl" in rec.getMessage() for rec in caplog.records), (
+        "dropping the orphan must be logged as a warning"
+    )
+
+
+def test_orphaned_grant_not_counted_as_missing_in_validation(tmp_path, pg_with_schema):
+    """The intentionally-dropped orphan must not make validation fail —
+    it is excluded from the 'missing' set, so checksum_match stays True."""
+    from src.db import _ensure_schema
+    from scripts.migrate_duckdb_to_pg import run_task, validate_task, TASKS
+
+    duck_path = tmp_path / "src.duckdb"
+    duck = duckdb.connect(str(duck_path))
+    _ensure_schema(duck)
+    duck.execute("INSERT INTO user_groups (id, name) VALUES ('g-test', 'Test')")
+    duck.execute("INSERT INTO table_registry (id, name) VALUES ('real_tbl', 'Real')")
+    duck.execute(
+        "INSERT INTO resource_grants (id, group_id, resource_type, resource_id, "
+        "resource_id_table) VALUES "
+        "('grant-ok', 'g-test', 'table', 'real_tbl', 'real_tbl'), "
+        "('grant-orphan', 'g-test', 'table', 'ghost_tbl', 'ghost_tbl')"
+    )
+    duck.close()
+
+    duck = duckdb.connect(str(duck_path), read_only=True)
+    for name in ("user_groups", "table_registry", "resource_grants"):
+        task = next(t for t in TASKS if t.target_table == name)
+        run_task(task, duck, pg_with_schema)
+    grants_task = next(t for t in TASKS if t.target_table == "resource_grants")
+    report = validate_task(grants_task, duck, pg_with_schema)
+    duck.close()
+
+    assert report["missing_count"] == 0
+    assert report["checksum_match"] is True
+
+
+def test_validation_tolerates_target_superset(duckdb_with_audit_rows, pg_with_schema):
+    """After cutover PG accumulates rows the frozen DuckDB source lacks.
+    Validation must treat source ⊆ target as success (not require equality),
+    so the compose data-migrate re-run stays exit 0 and the app boots."""
+    import sqlalchemy as sa
+
+    from scripts.migrate_duckdb_to_pg import run_task, validate_task, TASKS
+
+    audit_task = next(t for t in TASKS if t.target_table == "audit_log")
+    run_task(audit_task, duckdb_with_audit_rows, pg_with_schema)
+
+    # Simulate post-cutover divergence: a row written to PG only.
+    with pg_with_schema.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO audit_log (id, timestamp, user_id, action, correlation_id) "
+                "VALUES ('pg-only-1', now(), 'pg-only', 'post.cutover.write', 'c-late')"
+            )
+        )
+
+    report = validate_task(audit_task, duckdb_with_audit_rows, pg_with_schema)
+    assert report["pg_rows"] > report["duckdb_rows"], "PG must be a superset here"
+    assert report["missing_count"] == 0
+    assert report["checksum_match"] is True, "target superset must validate clean"
+
+
+# NB: `group_id` is also declared in resource_grants' fk_parents (asserted in
+# test_resource_grants_registered_with_fk_parents) as a defensive net for legacy
+# sources, but a dedicated orphan test can't be constructed: DuckDB enforces the
+# group_id → user_groups FK at insert time, so a dangling group_id cannot be
+# seeded through a normal INSERT the way an untyped resource_id_table orphan can.

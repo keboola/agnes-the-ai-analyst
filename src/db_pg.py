@@ -160,12 +160,32 @@ def _pg_revisions() -> tuple[Optional[str], Optional[str], bool]:
     revision is unknown to this image's scripts — the app-rollback case,
     whose remedy differs from plain drift.
     """
-    from alembic.migration import MigrationContext
+    import sqlalchemy as sa
     from alembic.script import ScriptDirectory
 
+    # Read the stamped revision with a plain SELECT rather than
+    # MigrationContext.configure(): the latter logs two INFO lines on the
+    # ``alembic.runtime.migration`` logger ("Context impl …" / "… transactional
+    # DDL") every call, and the 30s ``/api/health`` probe calls this
+    # continuously — thousands of noise lines/day drowning real app logs. A
+    # never-stamped DB (``alembic_version`` table absent) reads as None,
+    # matching ``get_current_revision()``'s old contract.
+    #
+    # ``scalar_one_or_none()`` (not ``scalar()``) keeps the old fail-closed
+    # behavior on a divergent DB: an ``alembic_version`` with >1 row (multiple
+    # heads / a botched manual stamp) raises rather than silently taking the
+    # first row. And only SQLSTATE 42P01 (UndefinedTable) is swallowed to None —
+    # psycopg maps 42501 (InsufficientPrivilege) onto the same ``ProgrammingError``
+    # class, so a permission failure must re-raise and surface as "unreachable"
+    # rather than a masked "never stamped" (which would read as false drift).
     engine = get_engine()
     with engine.connect() as conn:
-        current = MigrationContext.configure(conn).get_current_revision()
+        try:
+            current = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+        except sa.exc.ProgrammingError as exc:
+            if getattr(exc.orig, "sqlstate", None) != "42P01":
+                raise
+            current = None
 
     script = ScriptDirectory.from_config(_alembic_config())
     head = script.get_current_head()
@@ -194,9 +214,9 @@ def assert_pg_at_head() -> None:
     column (issue #636). This converts that silent drift into an
     operator-visible boot refusal.
 
-    Reads the DB's current revision via
-    ``MigrationContext.configure(conn).get_current_revision()`` and the
-    script head via ``ScriptDirectory.get_current_head()``. Raises
+    Reads the DB's current revision (a plain ``SELECT`` from
+    ``alembic_version`` via ``_pg_revisions()``) and the script head via
+    ``ScriptDirectory.get_current_head()``. Raises
     ``RuntimeError`` when they disagree (including the never-stamped
     ``current is None`` case) naming both revisions and the manual
     remediation. A no-op when they match.
@@ -395,3 +415,88 @@ def dispose() -> None:
             _engine.dispose()
         _engine = None
         _session_factory = None
+
+
+#: Session-scoped PG advisory lock id for the startup seed block —
+#: "AGNS" packed as an int, distinct from ``_PG_MIGRATE_LOCK_KEY``.
+_SEED_LEASE_ID = 0x41474E53
+
+
+def _lease_use_pg() -> bool:
+    from src.repositories import use_pg
+
+    return use_pg()
+
+
+@contextlib.contextmanager
+def seed_lease() -> Iterator[None]:
+    """Serialize the startup seed block across concurrently-booting replicas.
+
+    Several replicas can reach the lifespan's seed block at once on a
+    Postgres backend (e.g. a rolling deploy or a cold multi-replica
+    boot). The seeds themselves are idempotent, but running them
+    unserialized invites duplicate-insert races on tables without a
+    unique constraint to lean on. This wraps the block in a session-scoped
+    Postgres advisory lock: losers block until the winner finishes, then
+    run the (idempotent) seeds themselves rather than skipping them —
+    correctness over throughput, and startup-only so the extra latency
+    is a one-time cost.
+
+    No-op on the DuckDB backend — Task 2's startup guard already
+    restricts DuckDB app-state to a single process, so there is nothing
+    to serialize.
+    """
+    if not _lease_use_pg():
+        yield
+        return
+    engine = get_engine()
+    with engine.connect() as conn:
+        conn.execute(sa.text("SELECT pg_advisory_lock(:key)"), {"key": _SEED_LEASE_ID})
+        try:
+            yield
+        finally:
+            conn.execute(sa.text("SELECT pg_advisory_unlock(:key)"), {"key": _SEED_LEASE_ID})
+
+
+#: Session-scoped PG advisory lock id for the orchestrator rebuild critical
+#: section — "AGNT" packed as an int, distinct from ``_SEED_LEASE_ID`` and
+#: ``_PG_MIGRATE_LOCK_KEY``.
+_REBUILD_LEASE_ID = 0x41474E54
+
+
+@contextlib.contextmanager
+def rebuild_lease() -> Iterator[None]:
+    """Serialize ``SyncOrchestrator.rebuild()``/``rebuild_source()`` across processes.
+
+    In a role-split topology (a dedicated ``api`` process handling
+    ``/api/sync/trigger`` + the Jira webhook, and a separate ``worker``
+    process running enqueued jobs) both processes can independently reach
+    the orchestrator's rebuild critical section. ``SyncOrchestrator``'s
+    ``_rebuild_lock`` (a ``threading.Lock``) only serializes rebuilds
+    *within* one process — it is invisible across processes — so a
+    job-triggered rebuild in the worker and an HTTP-triggered rebuild in
+    the api process can concurrently ATTACH/swap ``analytics.duckdb``,
+    which is the known DuckDB corruption class this repo guards against
+    elsewhere (see ``docs/architecture.md``).
+
+    This wraps the rebuild critical section in a session-scoped Postgres
+    advisory lock, blocking (not failing) until the current holder
+    finishes, so the caller can just wait its turn: the in-process
+    ``_rebuild_lock`` still runs first (cheap, avoids reaching Postgres
+    when nothing outside this process can contend), and this lease adds
+    the cross-process guarantee.
+
+    No-op on the DuckDB backend — DuckDB app-state deployments are
+    single-process (Task 2's startup guard), so there is no second
+    process to serialize against.
+    """
+    if not _lease_use_pg():
+        yield
+        return
+    engine = get_engine()
+    with engine.connect() as conn:
+        conn.execute(sa.text("SELECT pg_advisory_lock(:key)"), {"key": _REBUILD_LEASE_ID})
+        try:
+            yield
+        finally:
+            conn.execute(sa.text("SELECT pg_advisory_unlock(:key)"), {"key": _REBUILD_LEASE_ID})

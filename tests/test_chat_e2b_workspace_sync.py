@@ -4,10 +4,16 @@ Per Q1 (owner-signed): v1 pushes the entire per-user workspace into the
 sandbox at spawn (rsync-style — every file). Cap at 100 MB. Symlinks
 (.claude/skills, CLAUDE.md, etc.) are dereferenced so the sandbox sees
 real files.
+
+Transport: one gzipped tarball + in-sandbox ``tar -x`` (single round-trip);
+per-file ``files.write`` remains as a fallback when the tar step fails.
 """
+
 from __future__ import annotations
 
 import asyncio
+import io
+import tarfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -16,6 +22,8 @@ import pytest
 from app.chat.e2b_workspace_sync import (
     SANDBOX_WHEEL_DIR,
     SANDBOX_WHEEL_READY,
+    SANDBOX_WORKSPACE_READY,
+    SANDBOX_WORKSPACE_TARBALL,
     WorkspaceTooLarge,
     download_workspace,
     upload_agnes_wheel,
@@ -30,11 +38,34 @@ def _make_fake_sandbox():
     sb.files.make_dir = AsyncMock(return_value=True)
     sb.files.list = AsyncMock(return_value=[])
     sb.files.read = AsyncMock(return_value=b"")
+    sb.commands = MagicMock()
+    sb.commands.run = AsyncMock()
     return sb
 
 
-def test_upload_walks_workspace_tree(tmp_path: Path):
-    """Every regular file in the workspace tree lands as a files.write call."""
+def _written(sb) -> dict[str, bytes]:
+    """Map of files.write calls: sandbox path → payload."""
+    return {c.args[0]: c.args[1] for c in sb.files.write.await_args_list}
+
+
+def _tar_members(sb) -> dict[str, tarfile.TarInfo]:
+    """Extract the uploaded workspace tarball's members keyed by name."""
+    blob = _written(sb)[SANDBOX_WORKSPACE_TARBALL]
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        return {m.name: m for m in tar.getmembers()}
+
+
+def _tar_body(sb, name: str) -> bytes:
+    blob = _written(sb)[SANDBOX_WORKSPACE_TARBALL]
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        fh = tar.extractfile(name)
+        assert fh is not None
+        return fh.read()
+
+
+def test_upload_packs_workspace_tree_into_one_tarball(tmp_path: Path):
+    """The whole tree travels as ONE files.write (the tarball) + one tar -x
+    command — not one round-trip per file."""
 
     async def _run():
         ws = tmp_path / "workspace"
@@ -47,10 +78,80 @@ def test_upload_walks_workspace_tree(tmp_path: Path):
         sb = _make_fake_sandbox()
         await upload_workspace(sb, ws, max_bytes=10 * 1024 * 1024)
 
-        # Every file should be written under /work/
-        written_paths = [c.args[0] for c in sb.files.write.await_args_list]
-        assert "/work/CLAUDE.md" in written_paths
-        assert "/work/.claude/hooks/pre_tool_use.py" in written_paths
+        members = _tar_members(sb)
+        assert "CLAUDE.md" in members
+        assert ".claude/hooks/pre_tool_use.py" in members
+        # Exactly two writes: the tarball + the ready sentinel. No per-file
+        # round-trips on the happy path.
+        assert set(_written(sb)) == {SANDBOX_WORKSPACE_TARBALL, SANDBOX_WORKSPACE_READY}
+        # Extraction command targets /work, hands the tree to the sandbox
+        # "user" account, and cleans the archive up. It must run as root:
+        # the template's /work is root-owned drwxr-xr-x, so tar under
+        # "user" EACCESes on every member and every spawn silently pays
+        # the per-file fallback (found live in production).
+        call = sb.commands.run.await_args_list[0]
+        cmd = call.args[0]
+        assert SANDBOX_WORKSPACE_TARBALL in cmd
+        assert "-C /work" in cmd
+        assert "chown -R user:user /work" in cmd
+        assert call.kwargs.get("user") == "root"
+
+    asyncio.run(_run())
+
+
+def test_upload_writes_ready_sentinel_last(tmp_path: Path):
+    """SANDBOX_WORKSPACE_READY lands after the tree is in place — the runner
+    gates the agent-CLI spawn on it."""
+
+    async def _run():
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        (ws / "a.txt").write_text("a")
+
+        sb = _make_fake_sandbox()
+        await upload_workspace(sb, ws, max_bytes=1024 * 1024)
+
+        paths = [c.args[0] for c in sb.files.write.await_args_list]
+        assert paths[-1] == SANDBOX_WORKSPACE_READY
+
+    asyncio.run(_run())
+
+
+def test_upload_falls_back_to_per_file_writes(tmp_path: Path):
+    """A failed in-sandbox extraction degrades to the legacy per-file loop —
+    the workspace still arrives, and the ready sentinel is still written."""
+
+    async def _run():
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        (ws / "CLAUDE.md").write_text("# greetings")
+
+        sb = _make_fake_sandbox()
+        sb.commands.run.side_effect = RuntimeError("tar: not found")
+        await upload_workspace(sb, ws, max_bytes=1024 * 1024)
+
+        written = _written(sb)
+        assert written["/work/CLAUDE.md"] == b"# greetings"
+        assert SANDBOX_WORKSPACE_READY in written
+
+    asyncio.run(_run())
+
+
+def test_upload_preserves_exec_bit(tmp_path: Path):
+    """Hook/scripts permissions survive the tar transport."""
+
+    async def _run():
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        script = ws / "scripts_run.sh"
+        script.write_text("#!/bin/sh\necho hi\n")
+        script.chmod(0o755)
+
+        sb = _make_fake_sandbox()
+        await upload_workspace(sb, ws, max_bytes=1024 * 1024)
+
+        member = _tar_members(sb)["scripts_run.sh"]
+        assert member.mode & 0o111
 
     asyncio.run(_run())
 
@@ -76,16 +177,8 @@ def test_upload_dereferences_symlinks(tmp_path: Path):
         sb = _make_fake_sandbox()
         await upload_workspace(sb, session, max_bytes=10 * 1024 * 1024)
 
-        written_paths = [c.args[0] for c in sb.files.write.await_args_list]
-        written_bodies = {
-            c.args[0]: c.args[1] for c in sb.files.write.await_args_list
-        }
-        # File reached the sandbox via the symlink
-        assert "/work/.claude/skills/x.md" in written_paths
-        body = written_bodies["/work/.claude/skills/x.md"]
-        if isinstance(body, bytes):
-            body = body.decode("utf-8")
-        assert "skill body" in body
+        assert ".claude/skills/x.md" in _tar_members(sb)
+        assert b"skill body" in _tar_body(sb, ".claude/skills/x.md")
 
     asyncio.run(_run())
 
@@ -103,7 +196,8 @@ def test_upload_refuses_oversize_workspace(tmp_path: Path):
         with pytest.raises(WorkspaceTooLarge):
             await upload_workspace(sb, ws, max_bytes=1 * 1024 * 1024)
 
-        # No files should have been pushed
+        # No files should have been pushed — not even the ready sentinel
+        # (the caller tears the sandbox down on this exception).
         assert sb.files.write.await_count == 0
 
     asyncio.run(_run())
@@ -126,24 +220,27 @@ def test_upload_skips_hidden_runtime_dirs(tmp_path: Path):
         sb = _make_fake_sandbox()
         await upload_workspace(sb, ws, max_bytes=10 * 1024 * 1024)
 
-        written = [c.args[0] for c in sb.files.write.await_args_list]
-        assert "/work/good.txt" in written
-        assert not any("__pycache__" in p for p in written)
-        assert not any(".git/" in p for p in written)
-        assert not any(".venv/" in p for p in written)
+        members = _tar_members(sb)
+        assert "good.txt" in members
+        assert not any("__pycache__" in n for n in members)
+        assert not any(".git/" in n for n in members)
+        assert not any(".venv/" in n for n in members)
 
     asyncio.run(_run())
 
 
 def test_upload_handles_empty_workspace(tmp_path: Path):
-    """An empty workspace is a no-op, not an error."""
+    """An empty workspace is a no-op upload — but the ready sentinel is
+    still written so the runner's bounded wait terminates promptly."""
 
     async def _run():
         ws = tmp_path / "empty"
         ws.mkdir()
         sb = _make_fake_sandbox()
-        await upload_workspace(sb, ws, max_bytes=1024 * 1024)
-        assert sb.files.write.await_count == 0
+        total = await upload_workspace(sb, ws, max_bytes=1024 * 1024)
+        assert total == 0
+        assert [c.args[0] for c in sb.files.write.await_args_list] == [SANDBOX_WORKSPACE_READY]
+        sb.commands.run.assert_not_awaited()
 
     asyncio.run(_run())
 
@@ -205,9 +302,7 @@ def test_upload_agnes_wheel_preserves_pep427_filename(tmp_path: Path, monkeypatc
         wheel.write_bytes(b"PK\x03\x04 fake wheel bytes")
 
         # Stub the shared wheel-discovery helper to return our fake wheel.
-        monkeypatch.setattr(
-            "app.api.cli_artifacts._find_wheel", lambda: wheel
-        )
+        monkeypatch.setattr("app.api.cli_artifacts._find_wheel", lambda: wheel)
 
         sb = _make_fake_sandbox()
         dest = await upload_agnes_wheel(sb)
@@ -218,7 +313,7 @@ def test_upload_agnes_wheel_preserves_pep427_filename(tmp_path: Path, monkeypatc
         # version-less name pip would reject.
         assert not dest.startswith("/work")
         assert dest.endswith(".whl") and "0.55.25" in dest
-        written = {c.args[0]: c.args[1] for c in sb.files.write.await_args_list}
+        written = _written(sb)
         assert expected in written
         assert written[expected] == b"PK\x03\x04 fake wheel bytes"
         # Sentinel written so the runner's wait terminates.

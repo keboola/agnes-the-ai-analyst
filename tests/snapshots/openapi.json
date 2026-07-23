@@ -369,6 +369,20 @@
         "title": "AnalystInitialWorkspaceResponse",
         "type": "object"
       },
+      "AnalyticsMigrateRequest": {
+        "description": "Body for ``POST /api/admin/analytics/migrate``.",
+        "properties": {
+          "to": {
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to"
+        ],
+        "title": "AnalyticsMigrateRequest",
+        "type": "object"
+      },
       "AppliedRequest": {
         "description": "CLI audit event after the analyst's workspace has been extracted.",
         "properties": {
@@ -1709,6 +1723,66 @@
         "title": "CreateContradictionRequest",
         "type": "object"
       },
+      "CreateDataAppRequest": {
+        "properties": {
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "idle_timeout_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idle Timeout S"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "repo_branch": {
+            "default": "main",
+            "title": "Repo Branch",
+            "type": "string"
+          },
+          "repo_mode": {
+            "default": "internal",
+            "title": "Repo Mode",
+            "type": "string"
+          },
+          "repo_url": {
+            "default": "",
+            "title": "Repo Url",
+            "type": "string"
+          },
+          "sleep_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sleep Mode"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "name"
+        ],
+        "title": "CreateDataAppRequest",
+        "type": "object"
+      },
       "CreateDataPackageRequest": {
         "properties": {
           "category": {
@@ -1883,7 +1957,7 @@
         "type": "object"
       },
       "CreateFromMarkdownBody": {
-        "description": "JSON contract for markdown-first publishing (studio Skill Builder).",
+        "description": "JSON contract for markdown-first publishing (studio Skill Builder /\nAgent Builder).",
         "properties": {
           "category": {
             "anyOf": [
@@ -1921,8 +1995,11 @@
             "type": "string"
           },
           "type": {
-            "const": "skill",
             "default": "skill",
+            "enum": [
+              "skill",
+              "agent"
+            ],
             "title": "Type",
             "type": "string"
           }
@@ -2144,6 +2221,17 @@
               }
             ],
             "title": "Command"
+          },
+          "connect_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connect Hint"
           },
           "enabled": {
             "default": true,
@@ -2827,6 +2915,23 @@
         "title": "DatasourceSecretBody",
         "type": "object"
       },
+      "DeployRequest": {
+        "properties": {
+          "sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha"
+          }
+        },
+        "title": "DeployRequest",
+        "type": "object"
+      },
       "DeployScriptRequest": {
         "properties": {
           "name": {
@@ -2993,6 +3098,36 @@
           "items"
         ],
         "title": "EffectiveAccessResponse",
+        "type": "object"
+      },
+      "EnqueueJobRequest": {
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "EnqueueJobRequest",
         "type": "object"
       },
       "EntityRating": {
@@ -3233,6 +3368,17 @@
           "source_scope": {
             "title": "Source Scope",
             "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
           }
         },
         "required": [
@@ -3843,6 +3989,90 @@
           "suggested"
         ],
         "title": "IwtFilesResponse",
+        "type": "object"
+      },
+      "JourneyUpdateBody": {
+        "description": "Partial update \u2014 every field optional; only the ones present change.",
+        "properties": {
+          "catalog_discovered": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalog Discovered"
+          },
+          "explored_stack": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Explored Stack"
+          },
+          "first_asked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Asked"
+          },
+          "onboarded": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Onboarded"
+          },
+          "stack_setup_done": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stack Setup Done"
+          },
+          "successful_answers": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successful Answers"
+          },
+          "use_anywhere": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Use Anywhere"
+          }
+        },
+        "title": "JourneyUpdateBody",
         "type": "object"
       },
       "KnobEntry": {
@@ -6344,6 +6574,20 @@
         "title": "SecretBody",
         "type": "object"
       },
+      "SecretsRequest": {
+        "properties": {
+          "secrets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Secrets",
+            "type": "object"
+          }
+        },
+        "title": "SecretsRequest",
+        "type": "object"
+      },
       "ServerConfigUpdateRequest": {
         "description": "Patch payload for POST /api/admin/server-config.\n\nOnly the sections listed in `_EDITABLE_SECTIONS` are accepted; anything\nelse is rejected with 400. `confirm_danger` must be true if the patch\ntouches any danger-zone section (auth.*, server.*).",
         "properties": {
@@ -7137,6 +7381,35 @@
         "title": "TemplatePutRequest",
         "type": "object"
       },
+      "TestResult": {
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "tool_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Count"
+          }
+        },
+        "required": [
+          "ok",
+          "message"
+        ],
+        "title": "TestResult",
+        "type": "object"
+      },
       "ToggleRequest": {
         "properties": {
           "enabled": {
@@ -7620,6 +7893,17 @@
               }
             ],
             "title": "Command"
+          },
+          "connect_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connect Hint"
           },
           "enabled": {
             "anyOf": [
@@ -8966,7 +9250,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.74.103"
+    "version": "0.76.15"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -9034,6 +9318,56 @@
           }
         },
         "summary": "Activity Center Redirect",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/admin": {
+      "get": {
+        "description": "Admin hub \u2014 the canonical landing page for instance administration.\n\nA settings-style index that groups every /admin/* surface by domain\n(Activity Center, Users & Access, Data Packages, Sources, Agent\nExperience, Documentation, Server). The header's Admin mega-menu links\nhere; this page is the scalable home as the admin surface grows past what\na dropdown holds. Shell-only \u2014 every card links to an existing gated\nroute (each still enforces require_admin independently).",
+        "operationId": "admin_hub_admin_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Hub",
         "tags": [
           "web"
         ]
@@ -9320,7 +9654,7 @@
     },
     "/admin/chat/readiness": {
       "get": {
-        "description": "Presence-only readiness snapshot (no secret values leak).",
+        "description": "Presence-only readiness snapshot (no secret values leak).\n\n``llm_runtime`` carries the last classified LLM-credential failure the chat\nbroker hit at runtime (``{reason, detail, status_code, at}``) or ``None``\nwhen healthy \u2014 so the admin banner distinguishes an invalid/expired key, an\nunfunded account, and a provider outage instead of guessing from an opaque\nchat error (#884).",
         "operationId": "chat_readiness_admin_chat_readiness_get",
         "parameters": [
           {
@@ -11068,6 +11402,56 @@
         ]
       }
     },
+    "/admin/studio": {
+      "get": {
+        "description": "Studio landing page \u2014 a card grid linking to every authoring domain.\n\nWhen Studio is enabled, available to all signed-in users (same gate as\n``/admin/studio/{domain}``, not admin-only \u2014 most domains route non-admins\nthrough the suggestions queue instead of blocking them outright); when the\ninstance-level toggle is off, every viewer is redirected home.\nRegistered as a static path\nalongside (and before) ``/admin/studio/{domain}`` so it does not fall\nthrough to the dynamic domain matcher.",
+        "operationId": "studio_index_admin_studio_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Studio Index",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/admin/studio/suggestions": {
       "get": {
         "description": "Admin moderation queue for authoring-studio suggestions.\n\nRegistered BEFORE ``/admin/studio/{domain}`` so the static ``suggestions``\npath wins over the dynamic domain matcher.",
@@ -11120,7 +11504,7 @@
     },
     "/admin/studio/{domain}": {
       "get": {
-        "description": "Authoring-agent studio \u2014 available to all signed-in users.\n\nA generic form-based builder with an embedded assistant panel. The domain\nconfig (``app/web/studio.py``) drives the fields, the chat profile, and the\ncreate endpoint, so all five authoring agents share one surface. Most\ndomains: admins create directly, non-admins submit a suggestion to the\nmoderation queue (the page renders the right action via ``is_admin``).\nDomains with ``submit_directly=True`` (e.g. the Skill Builder) skip the\nqueue entirely \u2014 everyone posts straight to ``endpoint``, which runs its\nown guardrail/review pipeline instead.",
+        "description": "Authoring-agent studio \u2014 available to all signed-in users while the\ninstance-level Studio toggle is on (off \u2192 redirect home).\n\nA generic form-based builder with an embedded assistant panel. The domain\nconfig (``app/web/studio.py``) drives the fields, the chat profile, and the\ncreate endpoint, so all five authoring agents share one surface. Most\ndomains: admins create directly, non-admins submit a suggestion to the\nmoderation queue (the page renders the right action via ``is_admin``).\nDomains with ``submit_directly=True`` (e.g. the Skill Builder) skip the\nqueue entirely \u2014 everyone posts straight to ``endpoint``, which runs its\nown guardrail/review pipeline instead.",
         "operationId": "studio_admin_studio__domain__get",
         "parameters": [
           {
@@ -12533,6 +12917,74 @@
         "summary": "Adoption User Top Tools",
         "tags": [
           "admin-adoption"
+        ]
+      }
+    },
+    "/api/admin/analytics/migrate": {
+      "post": {
+        "description": "Validate prerequisites (``to=\"ducklake\"`` only) then enqueue an\n``analytics-migrate`` job that rebuilds the named target backend from\nthe on-disk extracts tree. See the module docstring for the full\noperator flow (this call never flips config).\n\nReturns 202 with ``{status, to, job_id, message}`` on success \u2014 poll\n``GET /api/jobs/{job_id}`` (or ``agnes admin jobs show <job_id>``) for\nprogress. 400 with the full list of unmet prerequisites when\n``to=\"ducklake\"`` and this environment can't populate/query a DuckLake\ncatalog yet. 409 (with the in-flight ``job_id``) when a migration is\nalready running.",
+        "operationId": "migrate_analytics_backend_api_admin_analytics_migrate_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalyticsMigrateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Migrate Analytics Backend Api Admin Analytics Migrate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Migrate Analytics Backend",
+        "tags": [
+          "admin-analytics"
         ]
       }
     },
@@ -25526,7 +25978,7 @@
     },
     "/api/broker/anthropic": {
       "post": {
-        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849).",
+        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849). When LLM_DISPATCHER_URL is set, POST /v1/messages is\ninstead forwarded to that dispatcher with LLM_DISPATCHER_API_KEY\n(token-arbitrage PoC); all other subpaths keep the pinned Anthropic\nupstream.",
         "operationId": "anthropic_proxy_bare_api_broker_anthropic_post",
         "responses": {
           "200": {
@@ -25552,7 +26004,7 @@
     },
     "/api/broker/anthropic/{subpath}": {
       "post": {
-        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849).",
+        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849). When LLM_DISPATCHER_URL is set, POST /v1/messages is\ninstead forwarded to that dispatcher with LLM_DISPATCHER_API_KEY\n(token-arbitrage PoC); all other subpaths keep the pinned Anthropic\nupstream.",
         "operationId": "anthropic_proxy_subpath_api_broker_anthropic__subpath__post",
         "responses": {
           "200": {
@@ -25819,6 +26271,121 @@
         "summary": "List Catalog Tables",
         "tags": [
           "catalog"
+        ]
+      }
+    },
+    "/api/chat/journey": {
+      "get": {
+        "description": "Return the caller's own onboarding journey state (self-scoped \u2014\nthe RBAC gate is the chat-access resource; there is no cross-user\nread/write here since the repo call is always keyed off the caller's\nown ``user[\"id\"]``).",
+        "operationId": "get_journey_api_chat_journey_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Journey",
+        "tags": [
+          "chat"
+        ]
+      },
+      "put": {
+        "operationId": "update_journey_api_chat_journey_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JourneyUpdateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Journey",
+        "tags": [
+          "chat"
         ]
       }
     },
@@ -26392,7 +26959,7 @@
     },
     "/api/chat/{session_id}/join-ticket": {
       "post": {
-        "description": "Issue a short-lived WS ticket for a live participant of a co-session.\n\nSR-9: only a user with an active (left_at IS NULL) participant row\ncan obtain a ticket.  Strangers receive 403.\n\nThe ticket is an opaque secret (same _TICKETS mechanism as the primary\nstream path) carrying (session_id, participant_email).  The WS join\nroute /api/chat/sessions/{id}/join consumes it, re-verifies\nparticipant membership (SR-9), and calls add_sink.",
+        "description": "Issue a short-lived WS ticket for a live participant of a co-session.\n\nSR-9: only a user with an active (left_at IS NULL) participant row\ncan obtain a ticket.  Strangers receive 403.\n\nThe ticket is an opaque secret (same coordination-backed ticket\nmechanism as the primary stream path) carrying\n(session_id, participant_email).  The WS join\nroute /api/chat/sessions/{id}/join consumes it, re-verifies\nparticipant membership (SR-9), and calls add_sink.",
         "operationId": "join_ticket_api_chat__session_id__join_ticket_post",
         "parameters": [
           {
@@ -27106,7 +27673,7 @@
     },
     "/api/collections/{collection_id}/files/{file_id}/reingest": {
       "post": {
-        "description": "Re-run ingestion for one file (after a fix, a new extractor, or a\npre-status-honesty backfill).\n\nPurges the file's derived artifacts first \u2014 the derived table_registry\nrow/parquet for tabular files (chunks are cleared by the ingest itself,\nwhich is idempotent) \u2014 then resets the row to ``pending`` and re-runs\n``ingest_file`` in the background. Returns 202 with the pending row.",
+        "description": "Re-run ingestion for one file (after a fix, a new extractor, or a\npre-status-honesty backfill).\n\nPurges the file's derived artifacts first \u2014 the derived table_registry\nrow/parquet for tabular files (chunks are cleared by the ingest itself,\nwhich is idempotent) \u2014 then resets the row to ``pending`` and re-runs\n``ingest_file``. Returns 202 with the pending row.\n\nWorker-role process (single-box ``all``) \u2192 purge runs inline, then\n``ingest_file`` is scheduled as a FastAPI BackgroundTask \u2014 unchanged from\nbefore this endpoint existed on role-split deployments, since purge always\ncompletes first.\n\nProcess WITHOUT the worker role (role-split ``api`` replica) \u2192 purge and\nre-ingest must run as ONE ordered unit on the worker plane, not decoupled:\nan enqueued purge job racing an in-process ``ingest_file`` BackgroundTask\ncould have the purge land *after* the re-ingest completes and delete the\nfreshly rebuilt table (same deterministic ``table_id``). So a single\n``collections-purge`` job is enqueued with ``reingest_after_purge=True``;\nthe worker handler purges, then calls ``ingest_file`` \u2014 always in that\norder, in one job.",
         "operationId": "reingest_file_api_collections__collection_id__files__file_id__reingest_post",
         "parameters": [
           {
@@ -27285,6 +27852,633 @@
         "summary": "Get Params",
         "tags": [
           "connectors"
+        ]
+      }
+    },
+    "/api/data-apps": {
+      "get": {
+        "operationId": "list_data_apps_api_data_apps_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Data Apps",
+        "tags": [
+          "data-apps"
+        ]
+      },
+      "post": {
+        "operationId": "create_data_app_api_data_apps_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDataAppRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Data App",
+        "tags": [
+          "data-apps"
+        ]
+      }
+    },
+    "/api/data-apps/reap-idle": {
+      "post": {
+        "description": "Admin-only idle sweep (called by the scheduler, whose synthetic user\nis Admin). `idle_timeout_s` is per-app, so each `running` row is\ncompared, in Python, against its *own* configured threshold rather than\none shared value \u2014 a single `repo.list(state=\"running\", ...)` scan\n(`list_idle` stays on the repo for callers that want SQL-side filtering\nagainst one shared threshold \u2014 e.g. any future admin/ops tooling \u2014 and\nremains contract-tested, but reap-idle itself no longer calls it per row).\n\nA runner failure on one app is recorded (state -> \"error\",\nstate_detail carries the runner's message) and does not abort the rest\nof the sweep \u2014 one dead container must not wedge every other reap.\n\nAlso checks `deploying` rows stuck longer than `_DEPLOY_STALE_TIMEOUT_S`\n(a wake or operator-deploy that never finished \u2014 e.g. the ingress\nproxy's backgrounded `_spawn_wake` task died without anything left to\nobserve it, or a `POST .../deploy` request process crashed mid-flight)\nagainst the runner before declaring the app dead: if the runner reports\nthe container is actually up and ready, the row is recovered to\n`running` (reported as `recovered`) rather than errored out from under\na deploy that in fact succeeded; only when the runner says otherwise\n(or can't be reached) is the row flipped to `error` (reported as\n`timed_out`).",
+        "operationId": "reap_idle_data_apps_api_data_apps_reap_idle_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reap Idle Data Apps",
+        "tags": [
+          "data-apps"
+        ]
+      }
+    },
+    "/api/data-apps/{slug}": {
+      "delete": {
+        "description": "Runner stop + service-token revoke + registry row delete.\n\n204 No Content, no body (project convention \u2014 see\n``tests/test_api_design_rules.py::test_delete_returns_204``). The git\nrepo directory under ``${DATA_DIR}/apps/git/<slug>.git`` is\nintentionally left on disk \u2014 deletion is a registry-only operation;\nthat fact is recorded in the audit log params, not the response body.\nThe RUNTIME config dir (``${DATA_DIR}/apps/<slug>``, holding the\n``config.json`` apps-runner wrote \u2014 see ``_resolve_host_path`` in\n``services/apps_runner/api.py``) is different: it carries the\nnow-revoked service JWT in plaintext, so it's removed best-effort as\nhygiene rather than kept like the git repo.",
+        "operationId": "delete_data_app_api_data_apps__slug__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Data App",
+        "tags": [
+          "data-apps"
+        ]
+      },
+      "get": {
+        "operationId": "get_data_app_api_data_apps__slug__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Data App",
+        "tags": [
+          "data-apps"
+        ]
+      }
+    },
+    "/api/data-apps/{slug}/deploy": {
+      "post": {
+        "operationId": "deploy_data_app_api_data_apps__slug__deploy_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeployRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deploy Data App",
+        "tags": [
+          "data-apps"
+        ]
+      }
+    },
+    "/api/data-apps/{slug}/logs": {
+      "get": {
+        "operationId": "get_data_app_logs_api_data_apps__slug__logs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tail",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "title": "Tail",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Data App Logs",
+        "tags": [
+          "data-apps"
+        ]
+      }
+    },
+    "/api/data-apps/{slug}/readiness": {
+      "get": {
+        "description": "Runner-backed readiness probe. Doubles as the wake-completion flip:\nwhen a `deploying` app's runner reports `ready`, this call itself\ntransitions the row to `running` \u2014 the ingress proxy's holding page\n(`app/api/data_apps_proxy.py``, ``data_app_waking.html``'s poll loop)\nis the only caller that hits this endpoint on a cadence, so the flip\nhappening here (rather than a dedicated poller) is what actually\nsurfaces \"the app is up\" back to the browser tab that triggered the\nwake. See that module's docstring for the other half of this contract.",
+        "operationId": "get_data_app_readiness_api_data_apps__slug__readiness_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Data App Readiness",
+        "tags": [
+          "data-apps"
+        ]
+      }
+    },
+    "/api/data-apps/{slug}/secrets": {
+      "put": {
+        "operationId": "set_data_app_secrets_api_data_apps__slug__secrets_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Data App Secrets",
+        "tags": [
+          "data-apps"
+        ]
+      }
+    },
+    "/api/data-apps/{slug}/stop": {
+      "post": {
+        "operationId": "stop_data_app_api_data_apps__slug__stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop Data App",
+        "tags": [
+          "data-apps"
         ]
       }
     },
@@ -27569,6 +28763,213 @@
         ]
       }
     },
+    "/api/glossary": {
+      "get": {
+        "description": "List glossary terms, ordered by term.",
+        "operationId": "list_glossary_terms_api_glossary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Glossary Terms",
+        "tags": [
+          "glossary"
+        ]
+      }
+    },
+    "/api/glossary/search": {
+      "get": {
+        "description": "Relevance-ranked search across term + definition (BM25, ILIKE fallback).",
+        "operationId": "search_glossary_terms_api_glossary_search_get",
+        "parameters": [
+          {
+            "description": "Search query",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "description": "Search query",
+              "minLength": 1,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Glossary Terms",
+        "tags": [
+          "glossary"
+        ]
+      }
+    },
+    "/api/glossary/{glossary_id}": {
+      "get": {
+        "description": "Get a single glossary term by ID.",
+        "operationId": "get_glossary_term_api_glossary__glossary_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "glossary_id",
+            "required": true,
+            "schema": {
+              "title": "Glossary Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Glossary Term",
+        "tags": [
+          "glossary"
+        ]
+      }
+    },
     "/api/health": {
       "get": {
         "description": "Minimal health check for load balancers / compose healthcheck. No auth required.\n\nThe schema read is offloaded to a worker thread (`get_system_db()` hands\nout a cursor-per-call, so this is thread-safe) and memoized \u2014 see\n`_cached_db_schema` \u2014 so a probe never blocks the event loop on DB\ncontention during an orchestrator rebuild.",
@@ -27820,6 +29221,233 @@
         "summary": "Analyst Applied",
         "tags": [
           "initial_workspace"
+        ]
+      }
+    },
+    "/api/jobs": {
+      "get": {
+        "operationId": "list_jobs_api_jobs_get",
+        "parameters": [
+          {
+            "description": "Filter by job status (queued|running|done|failed)",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by job status (queued|running|done|failed)",
+              "title": "Status"
+            }
+          },
+          {
+            "description": "Filter by job kind",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by job kind",
+              "title": "Kind"
+            }
+          },
+          {
+            "description": "Max rows to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "description": "Max rows to return",
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Jobs",
+        "tags": [
+          "jobs"
+        ]
+      },
+      "post": {
+        "description": "Enqueue a job. 400 if ``kind`` isn't registered in ``JOB_KINDS``.\n\nDedup: passing an ``idempotency_key`` that matches an existing\nqueued/running job of the caller returns that job unchanged instead of\ninserting a duplicate (see ``JobsRepository.enqueue`` docstring).",
+        "operationId": "enqueue_job_api_jobs_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnqueueJobRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enqueue Job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}": {
+      "get": {
+        "operationId": "get_job_api_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job",
+        "tags": [
+          "jobs"
         ]
       }
     },
@@ -30300,6 +31928,71 @@
         ]
       }
     },
+    "/api/mcp/sources/{source_id}/my-secret/test": {
+      "post": {
+        "description": "Verify the caller's own stored credential works against the upstream.\n\nGated in order, all before any upstream call: unknown source \u2192 404; a\nnon-per_user (shared) source \u2192 400 (its introspection would run under the\noperator's shared credential \u2014 nothing personal to test); no grant on the\nsource \u2192 403; over the rate limit \u2192 429; no personal credential \u2192 403 with\nthe connect remedy. Only then does it introspect under the caller's token.",
+        "operationId": "test_my_secret_api_mcp_sources__source_id__my_secret_test_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test My Secret",
+        "tags": [
+          "mcp-user-secrets"
+        ]
+      }
+    },
     "/api/me/effective-access": {
       "get": {
         "description": "Same payload as /api/admin/users/{id}/effective-access but scoped to\nthe calling user. Drives the /me/profile page's read-only access summary \u2014\nso non-admin callers can self-audit without elevation. Admins get the\nsame explicit grant breakdown as everyone else (no short-circuit) so\nthe profile page audits the actual grant graph; runtime authorization\nstill gives Admin god-mode regardless of this list.",
@@ -30775,7 +32468,7 @@
     },
     "/api/me/stats/tokens": {
       "get": {
-        "description": "Token breakdown for the Tokens tab.\n\nReturns a daily series (last *days* days), by-model breakdown\n(lifetime), top-10 biggest sessions (by total tokens, lifetime),\nand the lifetime grand total. Single round-trip via three\nsub-queries \u2014 each scans the same per-user partition of\n``usage_session_summary`` which the\n``idx_usage_session_user`` index supports.",
+        "description": "Token breakdown for the Tokens tab.\n\nReturns a daily series (last *days* days), by-model breakdown\n(lifetime), top-10 biggest sessions (by total tokens, lifetime),\nand the lifetime grand total. Single round-trip via three\nsub-queries \u2014 each scans the same per-user partition of\n``usage_session_summary`` (filtered on ``username``; no secondary\nindex \u2014 see ``src/db.py::_v94_to_v95`` for why).",
         "operationId": "get_tokens_api_me_stats_tokens_get",
         "parameters": [
           {
@@ -33417,7 +35110,7 @@
     },
     "/api/metrics": {
       "get": {
-        "description": "List all metric definitions, optionally filtered by category.",
+        "description": "List all metric definitions, optionally filtered by category.\n\nRBAC-gated (#953): a metric whose ``table_name``/``tables`` reference a\ntable the caller can't access via their Data Package stack is silently\nomitted \u2014 same fail-closed filtering convention as the table catalog\n(see ``app/api/knowledge_search.py``). Admin sees everything.",
         "operationId": "list_metrics_api_metrics_get",
         "parameters": [
           {
@@ -33487,7 +35180,7 @@
     },
     "/api/metrics/{metric_id}": {
       "get": {
-        "description": "Get a single metric definition by ID.",
+        "description": "Get a single metric definition by ID.\n\nRBAC-gated (#953): 404 if the metric doesn't exist; 403 (using the\nstandard ``table_not_in_stack_message``) if it exists but the caller\nlacks access to (any of) its table(s).",
         "operationId": "get_metric_api_metrics__metric_id__get",
         "parameters": [
           {
@@ -35273,7 +36966,7 @@
     },
     "/api/store/entities/from-markdown": {
       "post": {
-        "description": "JSON sibling of ``POST /entities`` \u2014 synthesizes ``<name>/SKILL.md``\ninto an in-memory ZIP and delegates to ``create_entity``, so quota,\nguardrails, LLM review, naming and versioning apply identically.",
+        "description": "JSON sibling of ``POST /entities`` \u2014 synthesizes a bare markdown\ndocument into an in-memory ZIP and delegates to ``create_entity``, so\nquota, guardrails, LLM review, naming and versioning apply identically.\n\n``type == \"skill\"`` synthesizes ``<name>/SKILL.md``; ``type == \"agent\"``\nsynthesizes a bare ``<name>.md`` at the ZIP root (agents have no\nsub-directory in the baked plugin tree \u2014 see ``_bake_plugin_tree``).",
         "operationId": "create_entity_from_markdown_api_store_entities_from_markdown_post",
         "parameters": [
           {
@@ -36733,7 +38426,7 @@
     },
     "/api/sync/status": {
       "get": {
-        "description": "Whether a sync is currently in flight on this app process.\n\nPublic (no auth) \u2014 used by the host-side ``agnes-auto-upgrade.sh``\ncron to decide whether to skip a `docker compose up -d` that would\nkill a running extractor / materialized pass mid-flight. Cheap to\nserve (single Lock.locked() check) and contains no sensitive data.\n\nReturns:\n    ``{\"locked\": bool}`` \u2014 True if `_sync_lock` is currently held by\n    a `_run_sync` invocation, OR a sync was triggered within the\n    last ``_TRIGGER_HOLD_SEC`` seconds (so the FastAPI background\n    task hasn't yet acquired the lock). Without the trigger-hold\n    window, an auto-upgrade probe firing in the gap between the\n    trigger handler's 200 response and the background task's\n    ``_sync_lock.acquire()`` would see ``locked=False`` and proceed\n    with ``up -d`` \u2014 killing the just-spawning extractor.",
+        "description": "Whether a sync is currently in flight on this app process.\n\nPublic (no auth) \u2014 used by the host-side ``agnes-auto-upgrade.sh``\ncron to decide whether to skip a `docker compose up -d` that would\nkill a running extractor / materialized pass mid-flight. Cheap to\nserve (single Lock.locked() check) and contains no sensitive data.\n\nReturns:\n    ``{\"locked\": bool}`` \u2014 True if `_sync_lock` is currently held by\n    a `_run_sync` invocation, OR a `data-refresh` job was triggered\n    within the last ``_TRIGGER_HOLD_SEC`` seconds (so the worker loop\n    hasn't yet claimed it and acquired the lock). Without the\n    trigger-hold window, an auto-upgrade probe firing in the gap\n    between the trigger handler's response and the worker's\n    ``_sync_lock.acquire()`` would see ``locked=False`` and proceed\n    with ``up -d`` \u2014 killing the just-spawning extractor.",
         "operationId": "sync_status_api_sync_status_get",
         "responses": {
           "200": {
@@ -36875,7 +38568,7 @@
     },
     "/api/sync/trigger": {
       "post": {
-        "description": "Trigger data sync from configured source. Admin only. Runs in background.\n\nBody accepts three shapes (all optional \u2014 empty body / `null` syncs\nevery registered table):\n\n  - ``[\"kbc_job\", \"orders\"]`` \u2014 bare JSON array of table ids\n  - ``{\"tables\": [\"kbc_job\", \"orders\"]}`` \u2014 object with a ``tables``\n    key (matches the wire shape of the response, more discoverable\n    for clients building requests by hand)\n  - ``null`` / no body \u2014 sync everything\n\nBoth array forms have shipped at different times; accepting both\nkeeps older clients (PR-build CLIs, helper scripts) working while\nsurfacing the shape that mirrors the response payload. Anything\nelse returns HTTP 422 with a structured detail.\n\n``?source=<source_type>`` scopes the rebuild to a single registered\nsource (partial rebuild): only that source's local + materialized\nrows are rebuilt, and the other source's ``extract.duckdb`` is left\nuntouched. Useful on dual-source deployments where a BQ refresh\nshould not pay the cost of re-extracting every Keboola table.\n\nReturns 409 if a previously-triggered sync is still running. Two\nconcurrent extractor subprocesses fight for the same `extract.duckdb`\nfile lock \u2014 that contention starves uvicorn, makes `/api/health` time\nout, flips the container to `unhealthy`, and (behind a `reverse_proxy`\nupstream like the bundled Caddy overlay) bricks external traffic\nuntil contention drains. Fast-fail here keeps that from happening.",
+        "description": "Trigger data sync from configured source. Admin only.\n\nEnqueues a ``data-refresh`` job (``src/repositories/jobs.py``, worker\nruntime wave-2B) instead of running the sync inline via\n``BackgroundTasks`` \u2014 the worker loop (in-process by default; a\ndedicated ``worker`` role/process on split deployments) claims and\nexecutes it. This is the SAME queue + idempotency key\n(``\"sync\"``) the scheduler's cadence-driven trigger uses\n(``services/scheduler/__main__.py``), so a manual trigger and the next\nscheduled tick collapse into one in-flight job instead of racing two\nextractor subprocesses.\n\nBody accepts three shapes (all optional \u2014 empty body / `null` syncs\nevery registered table):\n\n  - ``[\"kbc_job\", \"orders\"]`` \u2014 bare JSON array of table ids\n  - ``{\"tables\": [\"kbc_job\", \"orders\"]}`` \u2014 object with a ``tables``\n    key (matches the wire shape of the response, more discoverable\n    for clients building requests by hand)\n  - ``null`` / no body \u2014 sync everything\n\nBoth array forms have shipped at different times; accepting both\nkeeps older clients (PR-build CLIs, helper scripts) working while\nsurfacing the shape that mirrors the response payload. Anything\nelse returns HTTP 422 with a structured detail.\n\n``?source=<source_type>`` scopes the rebuild to a single registered\nsource (partial rebuild): only that source's local + materialized\nrows are rebuilt, and the other source's ``extract.duckdb`` is left\nuntouched. Useful on dual-source deployments where a BQ refresh\nshould not pay the cost of re-extracting every Keboola table.\n\nReturns 409 (``detail={\"error\": \"sync_already_in_progress\", \"job_id\":\n...}``) if a ``data-refresh`` job is already queued or running under\nthe shared ``\"sync\"`` idempotency key \u2014 this status code is kept\n(rather than 200 ``already_running``) because `agnes admin sync`\n(``cli/commands/admin.py``) and the admin web UI\n(``app/web/templates/admin_sync.html``) both branch on 409 today for a\nfriendlier \"already running\" message; both now also get ``job_id`` in\nthe body. On success (a new job was enqueued), the response keeps its\nexisting shape plus ``job_id`` so a caller can poll\n``GET /api/jobs/{job_id}``.\n\nThe 200-vs-409 decision is made from ``enqueue()``'s own ``\"deduped\"``\nreturn key (see ``JobsRepository.enqueue`` docstring), not a\npre-``enqueue()`` peek at the job queue. A separate peek-then-enqueue\nis inherently racy: two concurrent triggers can both see \"no in-flight\njob\" during the peek, then both call ``enqueue()`` \u2014 the loser's call\ndedups server-side (returns the winner's row), but a pre-check-based\nhandler has no way to tell it apart from \"I just created this job\",\nso it would incorrectly report 200 \"triggered\" for a job it didn't\ncreate. Branching on the return value of the SAME ``enqueue()`` call\nthat produced ``job`` is race-free: only the caller whose row was\nactually inserted (``deduped=False``) gets 200.",
         "operationId": "trigger_sync_api_sync_trigger_post",
         "parameters": [
           {
@@ -38709,6 +40402,155 @@
         ]
       }
     },
+    "/apps": {
+      "get": {
+        "description": "List the hosted data apps the caller may view.\n\nReuses ``app.api.data_apps``'s own serializer/visibility helpers (no\nparallel RBAC/shape logic) \u2014 server-rendered, matching the other\ninventory-style pages (``studio_index``, ``admin_marketplaces``) rather\nthan a client-side ``fetch('/api/data-apps')``.\n\nWhen the feature is disabled, renders an empty-state note instead of\n404ing \u2014 the nav item is already hidden via ``data_apps_enabled()``, so\na direct hit here (bookmark, typed URL) should explain why nothing is\nhere rather than look like a broken link.",
+        "operationId": "data_apps_list_page_apps_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Data Apps List Page",
+        "tags": [
+          "web-data-apps"
+        ]
+      }
+    },
+    "/apps/detail/{slug}": {
+      "get": {
+        "description": "Detail page for a single hosted data app.\n\nMetadata + state render server-side; the logs `<pre>` and the\nDeploy/Stop buttons are client-side ``fetch`` calls against the existing\ncontrol-plane API (``app/api/data_apps.py``) \u2014 this route only decides\nwhat to SHOW (``can_manage`` gates the mutating controls + the logs\nsection, since ``GET .../logs`` is owner/Admin-only server-side too;\nhiding it for a viewer avoids a page-load fetch that would 403).",
+        "operationId": "data_app_detail_page_apps_detail__slug__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Data App Detail Page",
+        "tags": [
+          "web-data-apps"
+        ]
+      }
+    },
+    "/apps/{slug}": {
+      "get": {
+        "operationId": "proxy_redirect_trailing_slash_apps__slug__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Proxy Redirect Trailing Slash",
+        "tags": [
+          "data-apps-proxy"
+        ]
+      }
+    },
     "/auth/admin/tokens": {
       "get": {
         "operationId": "admin_list_tokens_auth_admin_tokens_get",
@@ -39904,6 +41746,56 @@
         ]
       }
     },
+    "/catalog/semantics": {
+      "get": {
+        "description": "Read-only browser for the semantic layer \u2014 business metrics\n(`metric_definitions`) and the glossary (`glossary_terms`) in one page\n(issue #853 + the Keboola glossary import, #920).\n\nAnalyst-facing tier: ``get_current_user``, no admin gate and no\nper-resource grant \u2014 matches the RBAC tier of the underlying\n``GET /api/metrics`` / ``GET /api/glossary*`` endpoints this page reuses,\nand mirrors /catalog's own gate.\n\nMetrics are RBAC-filtered the same way ``GET /api/metrics`` is (#953):\na metric whose ``table_name``/``tables`` reference a table outside the\ncaller's Data Package stack is omitted before grouping, so a category\nleft with zero visible metrics never renders its header either. Glossary\nis intentionally NOT gated this way (business vocabulary, not data).\n\nMetrics are server-rendered (grouped by category, same reading order as\n``agnes catalog --metrics``) \u2014 the scale is tens-to-low-hundreds so a\nclient-side substring filter over the rendered rows is enough; no new\nsearch endpoint. Glossary starts empty and is populated client-side via\nthe existing ``GET /api/glossary`` / ``GET /api/glossary/search``.",
+        "operationId": "catalog_semantics_catalog_semantics_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Catalog Semantics",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/catalog/t/{table_id}": {
       "get": {
         "description": "Per-table drill-down \u2014 sample questions, columns, things to know,\npairs-well-with. Closes the \"/catalog detail bounces into /admin\"\nUX gap: this is the user-facing surface for table docs, and admins\nedit those docs inline on the same page instead of round-tripping\nthrough /admin/tables.\n\nRBAC: admin god-mode or grant on ANY data package containing this\ntable. Falls back to 403 otherwise \u2014 analysts only see tables that\nbelong to packages they're granted on.",
@@ -40382,6 +42274,96 @@
         ]
       }
     },
+    "/data-apps.git/{slug}/{path}": {
+      "get": {
+        "operationId": "data_apps_git_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": " Data Apps Git"
+      },
+      "post": {
+        "operationId": "data_apps_git_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": " Data Apps Git"
+      }
+    },
     "/documentation/api": {
       "get": {
         "description": "Render docs/api-reference.md as a logged-in HTML page.\n\nSame pattern and rationale as /marketplace/format-guide above: the\nMarkdown source lives in docs/ so it's readable on the GitHub mirror;\nthe web rendering is the in-product entry point (Admin menu \u2192\nDocumentation). Auth is ``get_current_user`` only \u2014 the audience is\n\"anyone scripting against the API\", which is broader than admins.\nFreshness is enforced by tests/test_api_docs_coverage.py, which fails\nCI when a public /api/* route is missing from the document.",
@@ -40451,6 +42433,29 @@
         "summary": "Setup Wizard",
         "tags": [
           "web"
+        ]
+      }
+    },
+    "/healthz": {
+      "get": {
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Healthz Healthz Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Healthz",
+        "tags": [
+          "probes"
         ]
       }
     },
@@ -41744,6 +43749,56 @@
         ]
       }
     },
+    "/me/connections": {
+      "get": {
+        "description": "Self-service page: connect / replace / test / remove your own credential\nfor the per_user MCP sources you are granted. Any authenticated user.",
+        "operationId": "me_connections_page_me_connections_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Me Connections Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/me/cowork": {
       "get": {
         "description": "Legacy redirects \u2014 /me/mcp and /me/cowork \u2192 /me/ai-connector.",
@@ -42017,6 +44072,25 @@
         ]
       }
     },
+    "/metrics": {
+      "get": {
+        "operationId": "metrics_endpoint_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Metrics Endpoint",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
     "/news": {
       "get": {
         "description": "Permalink page for the latest published news. Renders empty-state\ncopy when no version is published. Authed-only (same as /home).",
@@ -42143,6 +44217,25 @@
         "summary": "Profile Session Download",
         "tags": [
           "web"
+        ]
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "readyz_readyz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readyz",
+        "tags": [
+          "probes"
         ]
       }
     },
@@ -42308,7 +44401,7 @@
     },
     "/stack": {
       "get": {
-        "description": "Unified My Stack (rail layout / #896 prototype IA) \u2014 everything\nthe caller has opted into, across kinds: Data (data packages),\nPlugins (curated subscriptions + flea installs, hydrated\nclient-side from /api/marketplace/items?tab=my), Memory (memory\ndomains). One personal-collection surface instead of per-page\nstack tabs. Reachable under any layout; the rail's \"My Stack\"\nentry points here.",
+        "description": "Unified My Stack (rail layout / #896 prototype IA) \u2014 the caller's\npersonal workspace: \"Everything in your Stack\", one inventory table\nover every kind \u2014 Data (data packages), Plugins (hydrated client-side\nfrom /api/marketplace/items?tab=my), Memory (memory domains), Uploads\n(private file collections). Growing the stack happens on /catalog,\nwhich carries the \"Recommended for you\" row.\n\nReachable under any layout; the rail's \"My Stack\" entry points here.",
         "operationId": "my_stack_page_stack_get",
         "parameters": [
           {

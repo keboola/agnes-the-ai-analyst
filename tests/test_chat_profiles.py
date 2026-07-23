@@ -8,6 +8,7 @@ ALL_SLUGS = [
     "marketplace-author",
     "corporate-memory",
     "skill-author",
+    "agent-author",
 ]
 
 
@@ -28,6 +29,16 @@ def test_skill_author_profile_registered():
     assert "use when" in p.claude_md.lower()  # trigger-quality rule is in the persona
     assert p.skill_body.startswith("---\n")
     assert "/api/store/entities/from-markdown" in p.skill_body
+
+
+def test_agent_author_profile_registered():
+    p = get_profile("agent-author")
+    assert p is not None
+    assert p.skill_name == "agnes-agent-authoring"
+    assert "use when" in p.claude_md.lower()  # trigger-quality rule is in the persona
+    assert p.skill_body.startswith("---\n")
+    assert "/api/store/entities/from-markdown" in p.skill_body
+    assert "type" in p.skill_body.lower() and "agent" in p.skill_body.lower()
 
 
 @pytest.mark.parametrize("slug", ALL_SLUGS)

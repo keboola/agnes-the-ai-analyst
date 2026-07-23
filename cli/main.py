@@ -45,6 +45,7 @@ from cli.commands.setup import setup_app
 from cli.commands.server import server_app
 from cli.commands.explore import explore_app
 from cli.commands.catalog import catalog_app
+from cli.commands.glossary import glossary_app
 from cli.commands.schema import schema_app
 from cli.commands.describe import describe
 from cli.commands.sample import sample
@@ -58,6 +59,7 @@ from cli.commands.mcp import mcp_app
 from cli.commands.docs import docs_app
 from cli.commands.collections import collections_app
 from cli.commands.config import config_app
+from cli.commands.data_apps import data_apps_app
 from cli.commands.search import search_app
 
 
@@ -305,6 +307,7 @@ app.add_typer(setup_app, name="setup")
 app.add_typer(server_app, name="server")
 app.add_typer(explore_app, name="explore")
 app.add_typer(catalog_app, name="catalog")
+app.add_typer(glossary_app, name="glossary")
 app.add_typer(schema_app, name="schema")
 app.command("describe")(describe)
 # `agnes sample <table>` — shorthand for `agnes describe <table> -n 5`.
@@ -320,6 +323,7 @@ app.add_typer(stack_app, name="stack")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(docs_app, name="docs")
 app.add_typer(collections_app, name="collections")
+app.add_typer(data_apps_app, name="app")
 app.add_typer(search_app, name="search")
 app.add_typer(config_app, name="config")
 

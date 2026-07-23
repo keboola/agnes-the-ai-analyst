@@ -1,0 +1,142 @@
+{% extends "base_page.html" %}
+{% block title %}My connections — {{ instance_brand }}{% endblock %}
+
+{% set page_hero_eyebrow = "MCP" %}
+{% set page_hero_title = "My connections" %}
+{% set page_hero_subtitle = "Connect your own accounts so Agnes queries data as you. You see only what you are allowed to see." %}
+
+{% block head_extra %}
+<style>
+.conn-page { max-width: 760px; }
+.conn-card {
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-md, 8px);
+  padding: 16px 18px;
+  margin-bottom: 14px;
+  background: var(--ds-surface);
+}
+.conn-card__head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.conn-card__name { font-weight: 600; }
+.conn-card__meta { font-size: 13px; color: var(--ds-text-secondary); }
+.conn-pill {
+  margin-left: auto; font-size: 12px; font-weight: 600;
+  padding: 3px 10px; border-radius: 999px;
+}
+.conn-pill--on { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+.conn-pill--off { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
+.conn-hint { font-size: 13px; color: var(--ds-text-secondary); margin: 8px 0; }
+.conn-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.conn-row input { flex: 1; min-width: 200px; }
+.conn-updated { font-size: 12px; color: var(--ds-text-muted); margin-top: 6px; }
+.conn-note {
+  font-size: 12px; color: var(--ds-text-secondary);
+  border: 1px solid var(--ds-border); border-radius: var(--ds-radius-md, 8px);
+  padding: 10px 12px; margin-top: 18px;
+}
+.conn-status { font-size: 13px; margin-top: 6px; min-height: 18px; color: var(--ds-text-secondary); }
+.conn-status--error { color: var(--ds-accent-danger-ink); }
+.conn-status--ok { color: var(--ds-accent-success-ink); }
+.conn-empty { color: var(--ds-text-secondary); }
+</style>
+{% endblock %}
+
+{% block page %}
+<div class="conn-page" data-highlight="{{ highlight_source }}">
+  {% if not connect_sources %}
+    <p class="conn-empty">You have no per-user MCP sources to connect. When an admin grants you a source that authenticates per person, it appears here.</p>
+  {% endif %}
+
+  {% for s in connect_sources %}
+  <div class="conn-card" id="source-{{ s.id }}" data-source="{{ s.id }}">
+    <div class="conn-card__head">
+      <div>
+        <div class="conn-card__name">{{ s.name }}</div>
+        <div class="conn-card__meta">{{ s.transport }} · per-user credential</div>
+      </div>
+      {% if s.has_secret %}
+        <span class="conn-pill conn-pill--on">Connected</span>
+      {% else %}
+        <span class="conn-pill conn-pill--off">Not connected</span>
+      {% endif %}
+    </div>
+
+    {% if s.hint_html %}<div class="conn-hint">{{ s.hint_html | safe }}</div>{% endif %}
+
+    <div class="conn-row">
+      <input type="password" autocomplete="off" placeholder="Paste your token" data-token />
+      <button type="button" class="btn btn-primary btn-sm" data-action="save">{% if s.has_secret %}Replace token{% else %}Connect{% endif %}</button>
+      {% if s.has_secret %}
+      <button type="button" class="btn btn-secondary btn-sm" data-action="test">Test</button>
+      <button type="button" class="btn btn-danger btn-sm" data-action="remove">Remove</button>
+      {% endif %}
+    </div>
+    {% if s.updated_at %}<div class="conn-updated">Updated {{ s.updated_at }}</div>{% endif %}
+    <div class="conn-status" data-status></div>
+  </div>
+  {% endfor %}
+
+  <div class="conn-note">
+    Your token is encrypted and used only for your own requests. Admins cannot see it, and it never passes through the chat.
+    Remove stops Agnes from using the token — to fully revoke it, revoke it in the upstream system.
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  function api(method, path, body) {
+    return fetch(path, {
+      method: method,
+      headers: body ? { "Content-Type": "application/json" } : {},
+      credentials: "same-origin",
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  }
+  function say(card, msg, state) {
+    var el = card.querySelector("[data-status]");
+    el.textContent = msg || "";
+    el.classList.remove("conn-status--error", "conn-status--ok");
+    if (state) { el.classList.add("conn-status--" + state); }
+  }
+
+  document.querySelectorAll(".conn-card").forEach(function (card) {
+    var id = card.getAttribute("data-source");
+    var base = "/api/mcp/sources/" + encodeURIComponent(id) + "/my-secret";
+    card.addEventListener("click", async function (ev) {
+      var btn = ev.target.closest("button[data-action]");
+      if (!btn) return;
+      var action = btn.getAttribute("data-action");
+      var input = card.querySelector("[data-token]");
+      try {
+        if (action === "save") {
+          if (!input.value) { say(card, "Enter your token first.", "error"); return; }
+          say(card, "Saving…");
+          var r = await api("PUT", base, { value: input.value });
+          if (r.status === 204) { input.value = ""; location.reload(); }
+          else { say(card, "Save failed (" + r.status + ").", "error"); }
+        } else if (action === "test") {
+          say(card, "Testing…");
+          var t = await api("POST", base + "/test");
+          var body = await t.json().catch(function () { return {}; });
+          if (t.ok && body.ok) { say(card, "Works — " + (body.tool_count ?? "?") + " tools reachable.", "ok"); }
+          else { say(card, body.detail || body.message || ("Test failed (" + t.status + ")."), "error"); }
+        } else if (action === "remove") {
+          if (!confirm("Remove your token for this source?")) return;
+          say(card, "Removing…");
+          var d = await api("DELETE", base);
+          if (d.status === 204) { location.reload(); }
+          else { say(card, "Remove failed (" + d.status + ").", "error"); }
+        }
+      } catch (e) { say(card, "Network error.", "error"); }
+    });
+  });
+
+  var hl = document.querySelector(".conn-page")?.getAttribute("data-highlight");
+  if (hl) {
+    var el = document.getElementById("source-" + hl);
+    if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.querySelector("[data-token]")?.focus(); }
+  }
+})();
+</script>
+{% endblock %}

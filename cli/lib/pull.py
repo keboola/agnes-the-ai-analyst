@@ -37,6 +37,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+import httpx
+
 from cli.client import api_get, api_post, stream_download
 from cli.config import get_sync_state, save_sync_state
 
@@ -72,6 +74,15 @@ class PullResult:
       `{"stage": "knowledge_artifacts", "corpus_id": ..., "error": ...}` /
       `{"stage": "knowledge_digests", "digest": ..., "error": ...}`) —
       best-effort flow, individual failures don't abort the whole pull.
+    - `tables_via_signed_url`: of `tables_updated`, how many landed via the
+      manifest's direct-to-object-storage `signed_url` (WF-4, wave 2H)
+      rather than the app-served `/api/data/{tid}/download` route. Always
+      0 against a manifest that never carries `signed_url` (no object
+      store configured, or `distribution.signed_urls: off`).
+    - `tables_via_app`: of `tables_updated`, how many landed via the
+      app-served route — either because the manifest entry had no
+      `signed_url`, or because the signed-URL attempt failed (network
+      error, non-2xx, md5 mismatch, SSRF-guard rejection) and fell back.
     """
 
     tables_updated: int = 0
@@ -82,6 +93,8 @@ class PullResult:
     knowledge_removed: int = 0
     digests_updated: int = 0
     digests_removed: int = 0
+    tables_via_signed_url: int = 0
+    tables_via_app: int = 0
     duration_s: float = 0.0
     errors: list[dict] = field(default_factory=list)
     # v49 (Phase 7, Task 7.5) — per-type stack-sync result. Populated when
@@ -102,6 +115,123 @@ _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
 # even a persistent mismatch never leaves the table missing from disk.
 _DOWNLOAD_RETRIES = 2
 _DOWNLOAD_RETRY_BACKOFFS_S = (0.5, 1.0)
+
+# WF-4 (wave 2H) — direct-to-object-storage fetch of a manifest `signed_url`.
+# Bounded connect/read timeouts so a stalled object-store endpoint doesn't
+# hang the whole pull; the app-served fallback below has its own budget.
+_SIGNED_URL_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=300.0, pool=10.0)
+# Chunk size matches `_file_md5`'s read chunking — no functional requirement
+# (the md5 is computed over the whole file after it lands), just keeps the
+# streaming discipline visibly consistent with the rest of this module.
+_SIGNED_URL_CHUNK_BYTES = 8192
+
+
+def _fetch_signed_url(url: str, target_path: str, progress_callback=None) -> None:
+    """SSRF-guarded direct-to-object-storage download of a manifest
+    `signed_url` (WF-4, wave 2H) into `target_path`.
+
+    Raises on ANY failure — disallowed scheme, private/loopback/
+    link-local/metadata-range IP, a redirect, a non-2xx response, or a
+    transport error. `_download_one` treats any exception raised here as
+    "fall back to the app-served `/api/data/{tid}/download` path"; this
+    function never promotes a file itself — md5 verification against the
+    manifest hash happens afterwards, unconditionally, via
+    `_verify_and_promote`, on whichever path's bytes end up in the
+    sidecar.
+
+    SSRF guard: reuses `_resolve_safe` *and* `_SSRFGuardTransport` from
+    `src.marketplace_asset_mirror` — the same DNS-rebinding-aware
+    scheme/host/private-IP check (plus IP-pinned connection) the
+    curated-marketplace asset mirror already relies on — rather than
+    hand-rolling a second implementation for a narrower case. Imported
+    lazily (matching this module's other lazy imports, e.g.
+    `_rebuild_duckdb_views`'s `src.duckdb_conn` import) so a plain `agnes
+    pull` that never sees a `signed_url` in its manifest doesn't pay for
+    the import.
+
+    A prior version of this function ran the `_resolve_safe` pre-flight
+    check and then connected with a plain `httpx.Client()`, which lets
+    httpcore re-resolve the hostname at connect time — a compromised or
+    malicious signed-URL host could resolve to a public IP for the
+    pre-flight check and a private/metadata IP (e.g. `169.254.169.254`)
+    for the actual connection (DNS rebinding), completely defeating the
+    guard. `_SSRFGuardTransport.handle_request` closes that gap: it
+    re-validates the URL, rewrites `request.url.host` to the *exact* IP
+    `_resolve_safe` just resolved (so httpcore connects there directly,
+    with no further hostname resolution possible), and stashes the
+    original hostname in the `Host` header + the `sni_hostname` extension.
+    That header/SNI preservation is load-bearing for presigned
+    object-storage URLs specifically: an S3-style V4 signature is computed
+    over a canonical request that includes the `Host` header, so if we
+    connected to the IP *and* sent `Host: <ip>` the signature would no
+    longer match what the server re-derives — preserving the original
+    hostname in `Host` (while physically connecting to the pinned IP)
+    keeps the presigned signature valid.
+
+    Redirects are still refused outright (`follow_redirects=False` on this
+    one-off `httpx.Client`, not the module's shared `follow_redirects=True`
+    client) — a presigned object-storage GET URL is a single, final
+    location by construction (the signature covers exactly the request it
+    was issued for), so a 3xx response here means either a misconfigured
+    store or something worth treating with suspicion; "refuse, fall back
+    to the app path" is the right reaction either way. Because redirects
+    are disabled, the transport only ever runs once per fetch — no
+    redirect-hop revalidation loop is needed here, unlike the marketplace
+    module's own multi-hop use of the same transport.
+
+    Streams the body to `target_path` in `_SIGNED_URL_CHUNK_BYTES`-sized
+    chunks — nothing is buffered fully in memory even for a multi-GB
+    parquet.
+    """
+    from src.marketplace_asset_mirror import _resolve_safe, _SSRFGuardTransport, _SSRFRejected
+
+    safe, reason, _ip = _resolve_safe(url)
+    if not safe:
+        raise ValueError(f"signed_url rejected: {reason}")
+
+    with httpx.Client(
+        transport=_SSRFGuardTransport(),
+        timeout=_SIGNED_URL_TIMEOUT,
+        follow_redirects=False,
+    ) as client:
+        try:
+            with client.stream("GET", url) as resp:
+                if resp.status_code >= 300:
+                    raise ValueError(f"signed_url http_{resp.status_code}")
+                with open(target_path, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=_SIGNED_URL_CHUNK_BYTES):
+                        f.write(chunk)
+                        if progress_callback and chunk:
+                            progress_callback(len(chunk))
+        except _SSRFRejected as e:
+            raise ValueError(f"signed_url rejected: {e.reason}") from e
+
+
+def _verify_and_promote(sidecar: Path, target: Path, expected_hash: str) -> tuple[bool, str | None]:
+    """md5-verify `sidecar` against `expected_hash` and atomically promote
+    it to `target` on success. Returns `(promoted, error)`.
+
+    Shared tail of both download paths (WF-4, wave 2H) so verify/promote
+    semantics are identical regardless of whether the bytes came from the
+    manifest's `signed_url` or the app-served route — only the byte
+    source differs between callers.
+
+    On a hash-less legacy manifest (`expected_hash` empty), falls back to
+    the structural PAR1 check. On failure the sidecar is removed and
+    `target` is left untouched — the prior good parquet, if any, survives
+    a failed refresh; the caller decides whether to retry or fall back.
+    """
+    if expected_hash:
+        actual_hash = _file_md5(sidecar)
+        if actual_hash != expected_hash:
+            err = f"hash mismatch: expected {expected_hash[:12]}, got {actual_hash[:12]}"
+            sidecar.unlink(missing_ok=True)
+            return False, err
+    elif not _is_valid_parquet(sidecar):
+        sidecar.unlink(missing_ok=True)
+        return False, "not a valid parquet (missing PAR1 magic)"
+    os.replace(sidecar, target)
+    return True, None
 
 
 def _read_progress_interval_seconds() -> float:
@@ -568,12 +698,19 @@ def run_pull(
                 file_sizes={tid: int(server_tables[tid].get("size_bytes") or 0) for tid in to_download},
             )
 
-        def _download_one(tid: str) -> tuple[str, dict | None, str | None]:
-            """Returns (tid, local_table_entry_or_None, error_or_None).
-            One bound thread per call; stream_download is sync I/O so a
-            ThreadPoolExecutor (not asyncio) is the right tool. The
-            progress callback is thread-safe — Rich's Progress.update
-            and the textual fallback's lock both serialize internally.
+        def _download_one(tid: str) -> tuple[str, dict | None, str | None, str | None]:
+            """Returns (tid, local_table_entry_or_None, error_or_None,
+            source_or_None). ``source`` is ``"signed_url"`` when the
+            parquet landed via the manifest's direct-to-object-storage
+            ``signed_url`` (WF-4, wave 2H), ``"app"`` when it landed via
+            the app-served route (the default, and the fallback whenever
+            the signed URL is absent, unreachable, rejected by the SSRF
+            guard, or md5-mismatches), and ``None`` when the table never
+            landed at all. One bound thread per call; stream_download is
+            sync I/O so a ThreadPoolExecutor (not asyncio) is the right
+            tool. The progress callback is thread-safe — Rich's
+            Progress.update and the textual fallback's lock both
+            serialize internally.
 
             Durability contract (#596): the prior good `<tid>.parquet`
             (if any) is NEVER unlinked before a fresh download has
@@ -588,10 +725,22 @@ def run_pull(
             before giving up. On persistent failure the sidecar is
             removed, the OLD good parquet stays in place, and the table
             is recorded under ``result.errors`` — the table is never
-            left missing from disk."""
+            left missing from disk.
+
+            WF-4 (wave 2H): when the manifest entry carries a
+            ``signed_url``, a single direct-to-object-storage attempt
+            runs first — no internal retry, since ANY failure (SSRF
+            rejection, transport error, non-2xx, md5 mismatch) falls
+            straight through to the app-served retry loop below, which
+            remains the durability safety net. md5 verification against
+            the manifest hash gates BOTH paths unconditionally via the
+            shared ``_verify_and_promote`` helper — a signed-URL download
+            that mismatches is never promoted, only ever falls back."""
             target = parquet_dir / f"{tid}.parquet"
             sidecar = parquet_dir / f"{tid}.parquet.verify.tmp"
-            expected_hash = server_tables[tid].get("hash", "")
+            info = server_tables[tid]
+            expected_hash = info.get("hash", "")
+            signed_url = info.get("signed_url") or ""
             cb = None
             reset_progress = None
             if progress is not None and tid in progress_tasks:
@@ -610,8 +759,28 @@ def run_pull(
                 def reset_progress(_tid=tid):
                     textual.reset(_tid)
 
-            last_err: str | None = None
+            def _entry() -> dict:
+                return {
+                    "hash": expected_hash,
+                    "rows": info.get("rows", 0),
+                    "size_bytes": info.get("size_bytes", 0),
+                }
+
             try:
+                if signed_url:
+                    try:
+                        _fetch_signed_url(signed_url, str(sidecar), progress_callback=cb)
+                        ok, _verify_err = _verify_and_promote(sidecar, target, expected_hash)
+                        if ok:
+                            return tid, _entry(), None, "signed_url"
+                        # md5 mismatch (or, on a hash-less legacy manifest, a
+                        # failed PAR1 check) — fall through to the app path.
+                    except Exception:
+                        sidecar.unlink(missing_ok=True)
+                    if reset_progress is not None:
+                        reset_progress()
+
+                last_err: str | None = None
                 for attempt in range(_DOWNLOAD_RETRIES + 1):
                     # A failed attempt already reported its bytes; zero the
                     # bar so the retry doesn't display 2x/3x the file size.
@@ -625,42 +794,25 @@ def run_pull(
                             str(sidecar),
                             progress_callback=cb,
                         )
-                        if expected_hash:
-                            actual_hash = _file_md5(sidecar)
-                            if actual_hash != expected_hash:
-                                last_err = f"hash mismatch: expected {expected_hash[:12]}, got {actual_hash[:12]}"
-                                sidecar.unlink(missing_ok=True)
-                                # Re-download on mismatch before giving up.
-                                if attempt < _DOWNLOAD_RETRIES:
-                                    time.sleep(
-                                        _DOWNLOAD_RETRY_BACKOFFS_S[min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)]
-                                    )
-                                    continue
-                                # Persistent mismatch: prior good target
-                                # (if any) is untouched; record + bail.
-                                return tid, None, last_err
-                        elif not _is_valid_parquet(sidecar):
-                            # Pre-v49 / no-hash legacy path — unchanged
-                            # semantics, just verified on the sidecar.
-                            sidecar.unlink(missing_ok=True)
-                            raise ValueError("not a valid parquet (missing PAR1 magic)")
-                        # Verified — promote the sidecar atomically.
-                        os.replace(sidecar, target)
-                        entry = {
-                            "hash": expected_hash,
-                            "rows": server_tables[tid].get("rows", 0),
-                            "size_bytes": server_tables[tid].get("size_bytes", 0),
-                        }
-                        return tid, entry, None
+                        ok, verify_err = _verify_and_promote(sidecar, target, expected_hash)
+                        if ok:
+                            return tid, _entry(), None, "app"
+                        last_err = verify_err
+                        if attempt < _DOWNLOAD_RETRIES:
+                            time.sleep(_DOWNLOAD_RETRY_BACKOFFS_S[min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)])
+                            continue
+                        # Persistent mismatch: prior good target (if any)
+                        # is untouched; record + bail.
+                        return tid, None, last_err, None
                     except Exception as exc:
                         last_err = str(exc)
                         sidecar.unlink(missing_ok=True)
                         if attempt < _DOWNLOAD_RETRIES:
                             time.sleep(_DOWNLOAD_RETRY_BACKOFFS_S[min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)])
                             continue
-                        return tid, None, last_err
+                        return tid, None, last_err, None
                 # Loop exhausted without an explicit return (defensive).
-                return tid, None, last_err or "download failed"
+                return tid, None, last_err or "download failed", None
             finally:
                 sidecar.unlink(missing_ok=True)
 
@@ -678,12 +830,16 @@ def run_pull(
             if textual is not None:
                 textual.finish()
 
-        for tid, entry, err in outcomes:
+        for tid, entry, err, source in outcomes:
             if err is not None:
                 result.errors.append({"table": tid, "error": err})
             else:
                 local_tables[tid] = entry
                 result.tables_updated += 1
+                if source == "signed_url":
+                    result.tables_via_signed_url += 1
+                elif source == "app":
+                    result.tables_via_app += 1
 
         # 4b. #506 — prune local parquets that left the authorized typed
         # stack. Runs only when the manifest carries typed sections (else

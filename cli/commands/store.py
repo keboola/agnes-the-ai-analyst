@@ -69,8 +69,9 @@ def upload_entity(
 
 @store_app.command("publish-md")
 def publish_markdown(
-    name: str = typer.Argument(..., help="Skill name (lowercase, digits, dashes)"),
-    skill_md: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True, help="Path to the SKILL.md"),
+    name: str = typer.Argument(..., help="Skill/agent name (lowercase, digits, dashes)"),
+    skill_md: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True, help="Path to the Markdown file"),
+    type: str = typer.Option("skill", "--type", help="skill | agent"),
     description: Optional[str] = typer.Option(None, "--description"),
     category: Optional[str] = typer.Option(
         None,
@@ -78,13 +79,13 @@ def publish_markdown(
         help="Category (case-insensitive). One of: " + ", ".join(STORE_CATEGORIES),
     ),
 ):
-    """Publish a skill from a single Markdown file — no ZIP needed.
+    """Publish a skill or agent from a single Markdown file — no ZIP needed.
 
     The server wraps the file into the same guardrail + review pipeline as
     ``agnes store upload``.
     """
     payload: dict = {
-        "type": "skill",
+        "type": type,
         "name": name,
         "skill_md": skill_md.read_text(encoding="utf-8"),
     }

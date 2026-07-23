@@ -59,6 +59,10 @@ variable "prod_instance" {
     # concurrent load; keep app_cpus + scheduler_cpus <= host cores.
     app_cpus       = optional(string, "2.0")
     scheduler_cpus = optional(string, "1.0")
+    # Opt-in LLM dispatcher (token-arbitrage PoC) on this VM. Per-VM so a
+    # dev-first rollout doesn't touch prod. Requires the module-level
+    # dispatcher_* variables to be set — see their docs.
+    dispatcher_enabled = optional(bool, false)
   })
 }
 
@@ -96,6 +100,7 @@ variable "dev_instances" {
     scheduler_mem_limit = optional(string, "2g")
     app_cpus            = optional(string, "2.0")
     scheduler_cpus      = optional(string, "1.0")
+    dispatcher_enabled  = optional(bool, false)
   }))
   default = []
 }
@@ -242,10 +247,75 @@ variable "home_route" {
   }
 }
 
+variable "studio_enabled" {
+  description = "Expose the authoring Studio (/admin/studio). Set false to hide it and close its routes for this instance (plumbed to the app as AGNES_STUDIO_ENABLED)."
+  type        = bool
+  default     = true
+}
+
 variable "enable_watchdog" {
   description = "Install the host-side watchdog + daily DB backup on every VM. The watchdog (5-min systemd timer) greps container logs for known incident signatures — DuckDB fatal crash loops, the invalidated-database \"zombie\" state (app answers /api/health 200 while every write 500s), WAL salvage data-loss events, index-desync errors — plus container restart bursts, cgroup OOM kills, scheduler failure streaks and /data disk pressure. The backup (daily systemd timer) copies system.duckdb+WAL to /data/backups/system-duckdb/ with 7-day retention and proves each copy restorable via a canary open+replay. Complements enable_monitoring: uptime checks see the VM from outside; the watchdog sees failure states the health endpoint cannot express, and PD snapshots preserve a corrupted file faithfully while the canary verify catches the corruption."
   type        = bool
   default     = true
+}
+
+variable "dispatcher_image" {
+  description = <<-EOT
+    Image for the opt-in LLM dispatcher (token-arbitrage PoC), e.g.
+    "ghcr.io/keboola/token-arbitrage-dispatcher:<sha>". Pin to a commit-sha
+    tag — CI publishes :<sha> and :latest on every token-arbitrage main push;
+    deploying :latest makes rollouts non-reproducible.
+
+    The dispatcher runs as an extra compose service (overlay written by the
+    startup script) on any VM whose instance object sets
+    `dispatcher_enabled = true`; the Agnes chat broker then routes chat
+    completions to it via LLM_DISPATCHER_URL (see app/api/broker.py).
+    Required (with the other dispatcher_* variables) when any instance
+    enables the dispatcher.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "dispatcher_policies" {
+  description = <<-EOT
+    Routing-policy YAML CONTENT for the dispatcher (pass file(...) from the
+    deployment repo — policy is deployment-owned). Delivered to the VM as
+    /opt/agnes/dispatcher/policies.yaml via the startup script. Must parse
+    under the dispatcher's PolicyEngine (top-level `default:` route is
+    mandatory). Required when any instance enables the dispatcher.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "dispatcher_key_secret" {
+  description = <<-EOT
+    Secret Manager secret name holding the dispatcher API key (the value the
+    Agnes broker sends as x-api-key; doubles as the cost-ledger team
+    identity). The startup script builds /opt/agnes/dispatcher/keys.yaml
+    mapping this key to team "agnes" and writes LLM_DISPATCHER_API_KEY into
+    /opt/agnes/.env. Module grants the VM SA secretAccessor. Fetch fails
+    LOUDLY at boot when the dispatcher is enabled — a dispatcher without its
+    key would 401 every chat request. Required when any instance enables the
+    dispatcher.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "dispatcher_vertex_sa_secret" {
+  description = <<-EOT
+    Secret Manager secret name holding a GCP service-account KEY JSON with
+    Vertex AI access in the project the routing policy targets (the VM's own
+    SA usually lives in a different project, so ADC is not enough). Written
+    to /opt/agnes/dispatcher/vertex-sa.json and mounted into the dispatcher
+    container as GOOGLE_APPLICATION_CREDENTIALS. Module grants the VM SA
+    secretAccessor; fetch fails loudly at boot when the dispatcher is
+    enabled. Required when any instance enables the dispatcher.
+  EOT
+  type        = string
+  default     = ""
 }
 
 variable "alert_webhook_url" {

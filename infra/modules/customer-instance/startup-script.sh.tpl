@@ -72,7 +72,19 @@ if [ -b "$DATA_DEV" ]; then
     # root-owned, that mkdir 403s and the container crashloops — so
     # pre-create the dir here under the SAME chown -R that already
     # covers state/analytics/extracts. Cheap insurance.
-    chown -R 999:999 "$DATA_MNT"
+    #
+    # NEVER recurse into the postgres data dirs: they must stay uid 70 (the
+    # postgres image's user), and this script runs on EVERY boot — a blanket
+    # `chown -R 999 /data` bricked a live side-car DB during a customer
+    # VM recreation (2026-07-21: "could not open file global/pg_filenode.map: Permission
+    # denied" once host-mounted /data/postgres existed). Recursively chowning
+    # everything EXCEPT those dirs, then re-asserting uid 70 on them below,
+    # keeps both app and DB ownership correct across reboots and also
+    # self-heals disks damaged by the old blanket chown.
+    find "$DATA_MNT" -mindepth 1 -maxdepth 1 \
+        ! -name postgres ! -name dispatcher-postgres \
+        -exec chown -R 999:999 {} +
+    chown 999:999 "$DATA_MNT"
 fi
 
 # Initial instance.yaml::database = {backend: "duckdb"} so the app starts in
@@ -134,7 +146,9 @@ mkdir -p /data/state /data/postgres
 chown -R agnes-applier:agnes-applier /data/state
 # /data/postgres must stay 70:70 (postgres image uid) — applier just
 # runs docker exec against the container, doesn't touch the volume.
-chown 70:70 /data/postgres
+# Recursive: also repairs a data dir damaged by the pre-2026-07-21 blanket
+# `chown -R 999 /data` (idempotent and cheap on a healthy dir).
+chown -R 70:70 /data/postgres
 chmod 700 /data/postgres
 
 install -m 0755 "$APP_DIR/agnes-state-applier.sh" /usr/local/bin/agnes-state-applier.sh
@@ -166,6 +180,13 @@ if [ "$DATA_SOURCE" = "keboola" ]; then
     KEBOOLA_TOKEN=$(gcloud secrets versions access latest --secret=keboola-storage-token)
 fi
 JWT_KEY=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}-jwt-secret)
+# SESSION_SECRET — signs session cookies (app/secrets.py::get_session_secret).
+# Single-node deployments would otherwise fall back to a per-node generated-and-
+# persisted file, which desyncs across processes in a role-split deployment and
+# trips the multi-process startup guard (app/startup_guards.py). Fetched the
+# exact same way as JWT_KEY above: a dedicated Secret Manager secret, no on-VM
+# fallback generation.
+SESSION_KEY=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}-session-secret)
 
 # ── Postgres password from Secret Manager + side-car data dir prep ──
 # Task 2A.1 provisioned agnes-<customer>-postgres-password with VM SA bound to
@@ -181,8 +202,37 @@ POSTGRES_PASSWORD=$(gcloud secrets versions access latest --secret=agnes-$${CUST
 # Cheap to do unconditionally — the dir is unused when the side-car runs on
 # the default named volume.
 mkdir -p "$DATA_MNT/postgres"
-chown 70:70 "$DATA_MNT/postgres"
+chown -R 70:70 "$DATA_MNT/postgres"
 chmod 700 "$DATA_MNT/postgres"
+
+# Re-align a persisted side-car database.url with the CURRENT postgres
+# password. The password survives recreates (Secret Manager), but a VM
+# recreate replaces the side-car's container while /data/state/instance.yaml
+# persists — an instance.yaml written against an older side-car (e.g. one
+# initialized on a named volume with different credentials, as observed
+# during a customer VM recreation pre-2026-07-21) leaves the app crash-looping on FATAL password auth. The
+# rewrite is a no-op when the url already carries the current password, and
+# never touches non-side_car backends (cloud urls point at managed instances
+# with their own credentials).
+#
+# sed -i replaces the file via temp-file + rename. GNU sed running as root
+# preserves ownership and mode, but restore them explicitly so the re-align
+# can never change who may read the state file regardless of sed flavor —
+# both fresh-created (999, 0644, above) and applier-rewritten
+# (agnes-applier, 0600, scripts/ops/agnes-state-applier.sh) shapes exist in
+# the field.
+# Matches side_car AND the transient side_car_in_progress deliberately (both
+# anchored-exact, not a prefix accident): in both states database.url targets
+# the local side-car, so a reboot mid-migration needs the same credential
+# re-align. The overlay selection below stays exact-match on side_car — an
+# in-progress migration must not engage the side-car overlay set early.
+if [ -f "$INSTANCE_YAML" ] && grep -qE '^[[:space:]]*backend:[[:space:]]*"?side_car(_in_progress)?"?[[:space:]]*$' "$INSTANCE_YAML"; then
+    IY_OWNER=$(stat -c '%u:%g' "$INSTANCE_YAML")
+    IY_MODE=$(stat -c '%a' "$INSTANCE_YAML")
+    sed -i "s|postgresql+psycopg://agnes:[^@]*@postgres:5432/agnes|postgresql+psycopg://agnes:$POSTGRES_PASSWORD@postgres:5432/agnes|" "$INSTANCE_YAML"
+    chown "$IY_OWNER" "$INSTANCE_YAML"
+    chmod "$IY_MODE" "$INSTANCE_YAML"
+fi
 
 # SCHEDULER_API_TOKEN — shared secret between the app and scheduler containers.
 # Both source the same /opt/agnes/.env via Docker Compose env_file:, so the
@@ -322,6 +372,92 @@ if [ -n "$EXISTING_AGNES_TEMP_DIR" ]; then
     AGNES_TEMP_DIR_LINE="AGNES_TEMP_DIR=\"$EXISTING_AGNES_TEMP_DIR\""
 fi
 
+# SERVER_URL — the deployment's public URL. app.chat.manager::agnes_server_url
+# resolves SERVER_URL (then AGNES_INTERNAL_URL, then loopback) and feeds it to
+# every cloud-chat sandbox as AGNES_SERVER; without it the sandbox is told to
+# reach Agnes at http://127.0.0.1:8000, which inside the sandbox is nothing —
+# the in-sandbox CLI dies with ECONNRESET on its first call and chat is dead
+# on arrival on any module-provisioned VM (previously masked by hand-edited
+# .env files that VM recreates wipe). Precedence: operator-edited value in the
+# existing .env wins (same pattern as AGNES_TAG above), else https on the
+# configured domain, else plain HTTP on the VM's external IP (the same :8000
+# the firewall exposes for tls_mode=none deployments).
+#
+# Setting SERVER_URL reaches beyond chat: it pins the public_base_url origin
+# (OAuth redirects, magic links, MCP issuer — previously request-derived).
+# On domain VMs that origin becomes https://<domain>, the canonical address
+# for both supported TLS shapes; a VM reached under several hostnames (or a
+# public origin that differs from the configured domain) should hand-set
+# SERVER_URL, which this block preserves. On domain-less VMs it becomes the
+# pinned http://<ip>:8000 and, being plain-HTTP non-localhost, deliberately
+# trips app/main.py's RFC 8414 issuer check so the streamable MCP connector
+# degrades gracefully — both intended for a direct-access plain-HTTP
+# deployment; a fronted deployment should set a domain or hand-set
+# SERVER_URL. AGNES_INTERNAL_URL is not a module-level knob: the .env
+# heredoc below rewrites the file wholesale each boot and has never carried
+# that variable, so no module-provisioned VM can rely on it and auto-setting
+# SERVER_URL shadows nothing here (split-horizon support would be a new
+# module variable, not an .env edit).
+EXISTING_SERVER_URL=""
+if [ -f "$APP_DIR/.env" ]; then
+    EXISTING_SERVER_URL=$(grep -E '^SERVER_URL=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
+fi
+# Two classes of persisted value are NOT meaningful operator overrides and
+# must be re-derived instead of preserved:
+#   1. Loopback — can only be a previously-persisted failed derivation;
+#      preserving it locks the failure in forever (the exact bug this block
+#      fixes).
+#   2. http://<IPv4>:8000 — the shape this block itself derives. Preserving
+#      it would freeze a stale IP on deployments without a reserved address
+#      (this module reserves static IPs, but forks may not); re-deriving is
+#      idempotent on a static IP and self-healing on an ephemeral one. An
+#      operator who genuinely wants a raw-IP override should use a hostname
+#      or a different port, which stays sticky.
+# Host extraction handles bracketed IPv6 ([::1]:8000) and port/path suffixes;
+# exact-match only — https://localhost.internal.example.com must survive.
+EXISTING_SERVER_HOST="$${EXISTING_SERVER_URL#*://}"
+case "$EXISTING_SERVER_HOST" in
+    \[*)
+        EXISTING_SERVER_HOST="$${EXISTING_SERVER_HOST#\[}"
+        EXISTING_SERVER_HOST="$${EXISTING_SERVER_HOST%%\]*}"
+        ;;
+    *)
+        EXISTING_SERVER_HOST="$${EXISTING_SERVER_HOST%%[:/]*}"
+        ;;
+esac
+case "$EXISTING_SERVER_HOST" in
+    127.0.0.1|localhost|::1) EXISTING_SERVER_URL="" ;;
+esac
+case "$EXISTING_SERVER_URL" in
+    http://[0-9]*.[0-9]*.[0-9]*.[0-9]*:8000) EXISTING_SERVER_URL="" ;;
+esac
+SERVER_URL=""
+if [ -n "$EXISTING_SERVER_URL" ]; then
+    SERVER_URL="$EXISTING_SERVER_URL"
+elif [ -n "$DOMAIN" ]; then
+    # A configured domain implies TLS termination on this VM — ACME
+    # (tls_mode=caddy) or corp-PKI cert-file mode (tls_mode=none + certs on
+    # disk; agnes-auto-upgrade engages the tls overlay when it sees them) —
+    # so https is the right scheme for both supported shapes. The unsupported
+    # plain-HTTP-on-a-domain shape needs a hand-set SERVER_URL, which the
+    # override above preserves.
+    SERVER_URL="https://$DOMAIN"
+else
+    EXTERNAL_IP=$(curl -sf -H "Metadata-Flavor: Google" \
+        "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip" \
+        || true)
+    if [ -n "$EXTERNAL_IP" ]; then
+        SERVER_URL="http://$EXTERNAL_IP:8000"
+    fi
+    # Metadata read failed: write NO SERVER_URL line rather than persisting a
+    # wrong value — the app keeps its request-derived/loopback behavior
+    # (status quo ante) and the next boot re-derives.
+fi
+SERVER_URL_LINE=""
+if [ -n "$SERVER_URL" ]; then
+    SERVER_URL_LINE="SERVER_URL=$SERVER_URL"
+fi
+
 # Select the docker-compose overlay set from the persisted backend state.
 # instance.yaml is written above only when absent, so a VM an operator migrated
 # to side_car / cloud keeps that backend across reboots. The on-VM Postgres
@@ -338,8 +474,118 @@ else
     COMPOSE_FILE_VALUE="docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml"
 fi
 
+%{ if dispatcher_enabled ~}
+# --- 4b. Opt-in LLM dispatcher (token-arbitrage PoC) ---
+# Runs as extra compose services (docker-compose.dispatcher.yml below —
+# module-owned, NOT extracted from the Agnes image) in the same compose
+# project: the app reaches it as http://dispatcher:8600 over compose DNS
+# and nothing is exposed beyond the host loopback. The lifecycle rides the
+# existing scripts for free: agnes-auto-upgrade honors COMPOSE_FILE from
+# .env (pull + up include the overlay), and agnes-state-applier only ever
+# targets named services with --no-deps, so it neither touches nor removes
+# the dispatcher (neither script runs `compose down`/--remove-orphans).
+DISP_DIR="$APP_DIR/dispatcher"
+mkdir -p "$DISP_DIR"
+
+# Both fetches fail LOUDLY (no ||-fallback, same posture as the Keboola
+# token): an enabled dispatcher without its key or Vertex credentials would
+# 401/500 every chat request — better a visible boot failure than a
+# silently broken PoC.
+DISPATCHER_KEY=$(gcloud secrets versions access latest --secret=${dispatcher_key_secret})
+gcloud secrets versions access latest --secret=${dispatcher_vertex_sa_secret} > "$DISP_DIR/vertex-sa.json"
+
+echo "${dispatcher_policies_b64}" | base64 -d > "$DISP_DIR/policies.yaml"
+cat > "$DISP_DIR/keys.yaml" <<KEYSEOF
+keys:
+  "$DISPATCHER_KEY": agnes
+KEYSEOF
+
+# The dispatcher image runs as uid 10001 (non-root): key material readable
+# only by that uid, the policy file by anyone.
+chown 10001 "$DISP_DIR/keys.yaml" "$DISP_DIR/vertex-sa.json"
+chmod 0400 "$DISP_DIR/keys.yaml" "$DISP_DIR/vertex-sa.json"
+chmod 0444 "$DISP_DIR/policies.yaml"
+
+# Ledger postgres password. Same durability concern as AGNES_VAULT_KEY above:
+# /opt/agnes/.env lives on the BOOT disk, which a VM recreate wipes, but the
+# ledger Postgres data dir lives on the persistent DATA disk and only honors
+# POSTGRES_PASSWORD on first initdb — a recreate that re-mints the password
+# would desync it from the surviving database, locking the dispatcher out of
+# its own ledger. Precedence mirrors the vault key: existing keyfile on the
+# data disk > key already in .env (adopted into the keyfile so it survives
+# the NEXT recreate) > mint fresh.
+# --- dispatcher-pg-password begin (extracted + executed by tests/test_startup_dispatcher_pg_password.py) ---
+# The keyfile must NOT live inside $DATA_MNT/dispatcher-postgres — that
+# directory is bind-mounted as the container's PGDATA, and postgres:16-alpine's
+# initdb aborts on first boot if PGDATA contains anything but "lost+found".
+DISPATCHER_PG_PASSWORD_FILE="$DATA_MNT/state/dispatcher-pg-password"
+DISPATCHER_PG_PASSWORD=""
+if [ -f "$DISPATCHER_PG_PASSWORD_FILE" ]; then
+    DISPATCHER_PG_PASSWORD=$(tr -d '[:space:]' < "$DISPATCHER_PG_PASSWORD_FILE" || true)
+fi
+if [ -z "$DISPATCHER_PG_PASSWORD" ] && [ -f "$APP_DIR/.env" ]; then
+    DISPATCHER_PG_PASSWORD=$(grep -E '^DISPATCHER_PG_PASSWORD=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
+fi
+if [ -z "$DISPATCHER_PG_PASSWORD" ]; then
+    DISPATCHER_PG_PASSWORD=$(openssl rand -hex 24)
+fi
+
+mkdir -p "$DATA_MNT/state"
+(umask 077; printf '%s\n' "$DISPATCHER_PG_PASSWORD" > "$DISPATCHER_PG_PASSWORD_FILE")
+chmod 600 "$DISPATCHER_PG_PASSWORD_FILE"
+
+# Ledger data on the persistent disk, kept separate from the keyfile above.
+# postgres:16-alpine's entrypoint runs as root and chowns its data dir to
+# uid 70 on first init itself; the recursive re-assert repairs dirs damaged
+# by the pre-2026-07-21 blanket `chown -R 999 /data` (same fix as
+# /data/postgres in section 2 — this dir is excluded from that chown now).
+mkdir -p "$DATA_MNT/dispatcher-postgres"
+# --- dispatcher-pg-password end ---
+# Outside the extracted test block: chown needs root, which the block's
+# test harness doesn't have. Recursive to repair dirs damaged by the
+# pre-2026-07-21 blanket `chown -R 999 /data` (this dir is excluded from
+# that chown now — same fix as /data/postgres in section 2).
+chown -R 70:70 "$DATA_MNT/dispatcher-postgres"
+
+# Quoted heredoc: the $${...} below are resolved by docker compose from
+# /opt/agnes/.env at `compose up` time, not by this shell.
+cat > "$APP_DIR/docker-compose.dispatcher.yml" <<'DISPYAML'
+services:
+  dispatcher:
+    image: $${DISPATCHER_IMAGE}
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://dispatcher:$${DISPATCHER_PG_PASSWORD}@dispatcher-pg:5432/dispatcher
+      GOOGLE_APPLICATION_CREDENTIALS: /config/vertex-sa.json
+    volumes:
+      - /opt/agnes/dispatcher:/config:ro
+    ports:
+      - "127.0.0.1:8600:8600" # host-side debugging; the app uses compose DNS
+    depends_on:
+      dispatcher-pg:
+        condition: service_healthy
+  dispatcher-pg:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: dispatcher
+      POSTGRES_PASSWORD: $${DISPATCHER_PG_PASSWORD}
+      POSTGRES_DB: dispatcher
+    volumes:
+      - /data/dispatcher-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dispatcher"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+DISPYAML
+
+COMPOSE_FILE_VALUE="$COMPOSE_FILE_VALUE:docker-compose.dispatcher.yml"
+%{ endif ~}
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
+SESSION_SECRET=$SESSION_KEY
+$SERVER_URL_LINE
 DATA_DIR=$DATA_MNT
 DATA_SOURCE=$DATA_SOURCE
 KEBOOLA_STORAGE_TOKEN=$KEBOOLA_TOKEN
@@ -358,6 +604,9 @@ AGNES_SCHEDULER_CPUS=${scheduler_cpus}
 %{ if home_route != "" ~}
 AGNES_HOME_ROUTE=${home_route}
 %{ endif ~}
+%{ if !studio_enabled ~}
+AGNES_STUDIO_ENABLED=false
+%{ endif ~}
 ACME_EMAIL=$ACME_EMAIL
 GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
@@ -366,6 +615,12 @@ ${env_name}=$${${env_name}}
 %{ endfor ~}
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 DATABASE_URL=postgresql+psycopg://agnes:$POSTGRES_PASSWORD@postgres:5432/agnes
+%{ if dispatcher_enabled ~}
+DISPATCHER_IMAGE=${dispatcher_image}
+DISPATCHER_PG_PASSWORD=$DISPATCHER_PG_PASSWORD
+LLM_DISPATCHER_URL=http://dispatcher:8600
+LLM_DISPATCHER_API_KEY=$DISPATCHER_KEY
+%{ endif ~}
 COMPOSE_FILE=$COMPOSE_FILE_VALUE
 $CADDY_TLS_LINE
 $AGNES_TEMP_DIR_LINE
@@ -408,7 +663,29 @@ set -a; . "$APP_DIR/.env"; set +a
 export COMPOSE_FILE="$${COMPOSE_FILE:-$COMPOSE_FILE_DEFAULT}"
 
 docker compose $COMPOSE_PROFILES_ARG pull
-docker compose $COMPOSE_PROFILES_ARG up -d
+# Retry `up`: on a first boot the app can exceed its healthcheck start window
+# (fresh image, DuckDB->PG data migration, keboola table attach), which makes
+# `up -d` exit non-zero on the dependency gate — and under `set -e` that used
+# to kill this script BEFORE the caddy/cron/watchdog sections, leaving a VM
+# with a healthy app but no TLS and no auto-upgrade (hit on a customer dev
+# VM, 2026-07-21).
+# Three attempts with a pause give slow first boots time to converge; if the
+# app is genuinely broken the third failure still fails the boot loudly.
+COMPOSE_UP_OK=0
+for attempt in 1 2 3; do
+    if docker compose $COMPOSE_PROFILES_ARG up -d; then
+        COMPOSE_UP_OK=1
+        break
+    fi
+    if [ "$attempt" != 3 ]; then
+        echo "WARN: docker compose up attempt $attempt failed; retrying in 60s"
+        sleep 60
+    fi
+done
+if [ "$COMPOSE_UP_OK" != "1" ]; then
+    echo "ERROR: docker compose up failed after 3 attempts"
+    exit 1
+fi
 
 # --- 6. Auto-upgrade via cron (pulls new image digest every 5 min) ---
 if [ "$UPGRADE_MODE" = "auto" ]; then

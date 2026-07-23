@@ -14,6 +14,7 @@ from pathlib import Path
 import duckdb
 
 from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+from src.analytics_backend import analytics_backend
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +48,42 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 92
+SCHEMA_VERSION = 97
 
-_SYSTEM_SCHEMA = """
+# v96: data_apps registry (hosted user web apps). Extracted as a shared
+# module-level constant so the fresh-install DDL (appended to
+# _SYSTEM_SCHEMA below) and the _v95_to_v96 upgrade step execute the
+# identical CREATE TABLE — see _v95_to_v96 for the upgrade-path wiring.
+_DATA_APPS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS data_apps (
+    id              VARCHAR PRIMARY KEY,
+    slug            VARCHAR UNIQUE NOT NULL,
+    name            VARCHAR NOT NULL,
+    description     TEXT DEFAULT '',
+    owner_user_id   VARCHAR NOT NULL,
+    repo_mode       VARCHAR NOT NULL DEFAULT 'internal',
+    repo_url        VARCHAR DEFAULT '',
+    repo_branch     VARCHAR DEFAULT 'main',
+    deployed_sha    VARCHAR DEFAULT '',
+    runtime_tag     VARCHAR DEFAULT '',
+    state           VARCHAR NOT NULL DEFAULT 'created',
+    state_detail    TEXT DEFAULT '',
+    secrets_enc     TEXT DEFAULT '',
+    env             TEXT DEFAULT '{}',
+    cpu_limit       VARCHAR DEFAULT '',
+    mem_limit       VARCHAR DEFAULT '',
+    idle_timeout_s  INTEGER DEFAULT 1800,
+    sleep_mode      VARCHAR DEFAULT 'recreate',
+    service_token_id VARCHAR DEFAULT '',
+    last_request_at TIMESTAMP,
+    last_deploy_at  TIMESTAMP,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    updated_at      TIMESTAMP DEFAULT current_timestamp
+);
+"""
+
+_SYSTEM_SCHEMA = (
+    """
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL,
     applied_at TIMESTAMP DEFAULT current_timestamp
@@ -1152,10 +1186,15 @@ CREATE TABLE IF NOT EXISTS usage_session_summary (
     cache_creation_tokens BIGINT DEFAULT 0,
     user_id               VARCHAR
 );
-CREATE INDEX IF NOT EXISTS idx_usage_session_user ON usage_session_summary(username);
-CREATE INDEX IF NOT EXISTS idx_usage_session_started ON usage_session_summary(started_at);
--- idx_usage_session_user_id is created by _v44_to_v45, not here — see the
--- note on idx_usage_events_user_id above.
+-- No secondary indexes here (deliberately, since v95): idx_usage_session_user
+-- (username), idx_usage_session_started (started_at) and idx_usage_session_user_id
+-- (user_id) used to be created here / by _v44_to_v45, but upsert_summary's
+-- ON CONFLICT DO UPDATE rewrites all three columns on every re-process tick,
+-- and a single corrupt ART entry on any of them turned that rewrite's
+-- delete-old-entry step into a FATAL, connection-invalidating error
+-- (INCIDENT 2026-07-20). _v94_to_v95 drops the indexes on upgrade; fresh
+-- installs simply never create them. See _v94_to_v95 for the full incident
+-- writeup.
 
 -- usage_tool_daily: legacy rollup of tool invocations by day/source. Currently
 -- only consumed by `src/usage_ask.py` SCHEMA_DIGEST + admin reprocess endpoint;
@@ -1459,7 +1498,7 @@ CREATE TABLE IF NOT EXISTS store_lint_entity_state (
     linted_at    TIMESTAMP NOT NULL
 );
 
--- v92: user_journey_state — per-user onboarding "journey" progress
+-- v97: user_journey_state — per-user onboarding "journey" progress
 -- (backend foundation for chat-driven onboarding). One row per user;
 -- absent row means the caller should treat the user as fresh (defaults
 -- live in the repository, not the schema).
@@ -1474,7 +1513,77 @@ CREATE TABLE IF NOT EXISTS user_journey_state (
     successful_answers  INTEGER NOT NULL DEFAULT 0,
     updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp
 );
+
+-- glossary_terms: v93. Keboola semantic-glossary import destination
+-- (docs/superpowers/specs/2026-07-17-keboola-glossary-import-design.md).
+-- id = "keboola/{model_uuid}/{slug(term)}" for Keboola-sourced rows, or
+-- admin-chosen for source='manual' rows. see_also is an opaque string
+-- list (not resolved/validated against other Metastore types).
+CREATE TABLE IF NOT EXISTS glossary_terms (
+    id           VARCHAR PRIMARY KEY,
+    term         VARCHAR NOT NULL,
+    definition   TEXT NOT NULL,
+    see_also     VARCHAR[],
+    model_uuid   VARCHAR,
+    source       VARCHAR NOT NULL DEFAULT 'manual',
+    created_at   TIMESTAMP DEFAULT current_timestamp,
+    updated_at   TIMESTAMP DEFAULT current_timestamp
+);
+
+-- v94: jobs — durable job queue, the foundation of the worker runtime
+-- (wave-2B). This table + JobsRepository/JobsPgRepository cover
+-- enqueue/get/list + idempotency dedup only; the claim/lease lifecycle and
+-- the worker loop are later tasks in the same wave.
+--
+-- idempotency_key dedup note: a *partial* unique index
+-- (`... WHERE idempotency_key IS NOT NULL AND status IN ('queued',
+-- 'running')`) would let a duplicate key be reused once the earlier job
+-- leaves queued/running, but DuckDB does not support partial indexes
+-- ("Not implemented Error: Creating partial indexes is not supported
+-- currently"). Dedup is therefore enforced in JobsRepository.enqueue()
+-- (guarded by an in-process lock — safe under DuckDB's single-writer
+-- model) rather than at the DB level. `idx_jobs_idem` below is a plain
+-- (non-unique) lookup index on this side.
+--
+-- The Postgres ladder (migrations/versions/0041_jobs_v94.py /
+-- src/models/jobs.py) is asymmetric here: it DOES create `idx_jobs_idem`
+-- as a partial unique index, because a plain SELECT-then-INSERT in
+-- JobsPgRepository would race under READ COMMITTED (two concurrent
+-- transactions can both miss each other's uncommitted row). The CONTRACT
+-- shared by both backends is the dedup *behavior*, not the index shape.
+--
+-- `lease_token` is a fresh uuid4 minted by claim_next() on every claim
+-- (including a same-worker reclaim of its own previously-abandoned lease).
+-- heartbeat()/complete()/fail() guard on `lease_token = ? AND status =
+-- 'running'` rather than `leased_by = ?`: all lane slots in one worker
+-- process share the same `leased_by` (worker_id = hostname:pid), so a
+-- worker_id-only guard cannot tell a stale slot's late call apart from a
+-- same-process reclaim of the same job by a DIFFERENT slot — a
+-- same-worker double-execution bug, empirically reproduced. `leased_by`
+-- is kept for audit/logging only.
+CREATE TABLE IF NOT EXISTS jobs (
+    id                VARCHAR PRIMARY KEY,
+    kind              VARCHAR NOT NULL,
+    payload_json      VARCHAR NOT NULL DEFAULT '{}',
+    status            VARCHAR NOT NULL DEFAULT 'queued',
+    priority          INTEGER NOT NULL DEFAULT 0,
+    run_after         TIMESTAMP,
+    attempts          INTEGER NOT NULL DEFAULT 0,
+    max_attempts      INTEGER NOT NULL DEFAULT 3,
+    lease_expires_at  TIMESTAMP,
+    leased_by         VARCHAR,
+    lease_token       VARCHAR,
+    idempotency_key   VARCHAR,
+    error             VARCHAR,
+    created_at        TIMESTAMP NOT NULL,
+    started_at        TIMESTAMP,
+    finished_at       TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, priority, run_after);
+CREATE INDEX IF NOT EXISTS idx_jobs_idem ON jobs(idempotency_key);
 """
+    + _DATA_APPS_CREATE_SQL
+)
 
 
 import threading  # noqa: E402
@@ -1569,6 +1678,218 @@ def _peek_schema_version(snapshot_path: Path) -> int:
         return 0
 
 
+def _system_self_heal_enabled() -> bool:
+    """Whether the ART-index self-heal on open is active (default: yes).
+
+    ``AGNES_DB_SELF_HEAL=0`` (or ``false``/``no``) turns it off — e.g. to
+    freeze a corrupt DB for forensics instead of auto-rebuilding it.
+    """
+    return os.environ.get("AGNES_DB_SELF_HEAL", "1").strip().lower() not in {"0", "false", "no"}
+
+
+# The runtime signature DuckDB raises when an on-disk ART (PK/UNIQUE)
+# index has diverged from its base table. Either substring means the
+# file itself needs an EXPORT/IMPORT rebuild — a reopen cannot fix it.
+_ART_CORRUPTION_MARKERS = (
+    "Failed to delete all rows from index",
+    "database has been invalidated",
+)
+
+
+def _probe_art_integrity(
+    conn: duckdb.DuckDBPyConnection,
+) -> tuple[bool, str | None]:
+    """Canary for on-disk ART-index corruption.
+
+    For each table backed by a PRIMARY KEY / UNIQUE (ART) index, delete one
+    row *inside a transaction and roll it back*. The delete forces DuckDB to
+    remove the row's key from the index — the exact operation that fails
+    (``Failed to delete all rows from index``) when the index is corrupt —
+    while the ROLLBACK guarantees no data changes. Empty and index-less
+    tables are skipped (nothing to corrupt).
+
+    Returns ``(True, None)`` when every probe succeeds. Returns
+    ``(False, detail)`` when a probe raises the ART-corruption signature —
+    at which point ``conn`` is invalidated and the caller must discard it
+    and rebuild. Any *other* DuckDB error on a given table (e.g. a
+    foreign-key ``ConstraintException`` from a referenced row) is caught,
+    that table's probe transaction is rolled back, and the loop moves on
+    to the next table — this canary's sole job is spotting the ART-
+    corruption signature, so it must never itself abort the DB open or
+    trigger a needless rebuild over an unrelated per-table quirk
+    (Devin Review, PR #948 — this docstring previously said such errors
+    are "re-raised", which never matched the implementation below).
+    """
+    # Schema-qualify: duckdb_constraints() spans every schema (the FTS
+    # extension grows fts_main_* schemas with their own PK'd internal
+    # tables), so resolving a bare table name via search_path is fragile.
+    # DISTINCT (schema, table) + a qualified identifier probes each real
+    # constraint-backed table exactly once, wherever it lives.
+    indexed = conn.execute(
+        "SELECT DISTINCT schema_name, table_name FROM duckdb_constraints() "
+        "WHERE constraint_type IN ('PRIMARY KEY', 'UNIQUE')"
+    ).fetchall()
+    for schema, table in indexed:
+        ident = '"' + str(schema).replace('"', '""') + '"."' + str(table).replace('"', '""') + '"'
+        try:
+            row = conn.execute(f"SELECT rowid FROM {ident} LIMIT 1").fetchone()
+            if row is None:
+                # Empty table: no index entries to delete, so the canary
+                # can't exercise (and thus can't detect) a torn index here.
+                # Known coverage gap — corruption localized to a currently
+                # empty PK/UNIQUE table surfaces on its next real write.
+                continue
+            conn.execute("BEGIN")
+            conn.execute(f"DELETE FROM {ident} WHERE rowid = {int(row[0])}")
+            conn.execute("ROLLBACK")
+        except duckdb.Error as e:
+            if any(m in str(e) for m in _ART_CORRUPTION_MARKERS):
+                return (False, str(e))
+            # Anything else — a foreign-key ConstraintException on a
+            # referenced row, or any other engine quirk — is NOT evidence of
+            # index corruption. The probe must never break the DB open nor
+            # trigger a needless rebuild: roll back this table's txn and move
+            # on. Its sole job is spotting the corruption signature.
+            try:
+                conn.execute("ROLLBACK")
+            except duckdb.Error:
+                pass
+            continue
+    return (True, None)
+
+
+def _probe_and_heal_art_index(conn: duckdb.DuckDBPyConnection, db_path: str) -> duckdb.DuckDBPyConnection:
+    """Run :func:`_probe_art_integrity` on an already-open connection and
+    transparently rebuild via :func:`_rebuild_system_db` if it's corrupt.
+
+    Shared by every successful-open path in :func:`_try_open_system_db` —
+    the clean open AND both WAL-recovery paths (STEP A salvage, STEP B
+    snapshot restore). The same abrupt termination that leaves a dirty WAL
+    can also tear the on-disk ART index; a DB that needed WAL recovery is
+    not evidence the index survived (Devin Review, PR #948). Returns the
+    connection, possibly rebuilt.
+    """
+    if not _system_self_heal_enabled():
+        return conn
+    healthy, detail = _probe_art_integrity(conn)
+    if healthy:
+        return conn
+    logger.critical(
+        "system.duckdb ART-index corruption detected on open (%s). A "
+        "restart cannot fix on-disk index corruption; rebuilding via "
+        "EXPORT/IMPORT (original preserved as .broken.<ts>).",
+        (detail or "").split("\n", 1)[0][:200],
+    )
+    try:
+        conn.close()
+    except Exception:  # noqa: BLE001 - the handle is already invalidated
+        pass
+    _rebuild_system_db(db_path)
+    conn = _open_duckdb(db_path)
+    healthy_again, detail_again = _probe_art_integrity(conn)
+    if not healthy_again:
+        logger.critical(
+            "system.duckdb STILL reports index corruption after rebuild (%s) — manual recovery required.",
+            (detail_again or "").split("\n", 1)[0][:200],
+        )
+    return conn
+
+
+def _rebuild_system_db(db_path: str) -> Path:
+    """Rebuild ``system.duckdb`` in place via EXPORT/IMPORT, healing a
+    corrupt on-disk ART index. Returns the ``.broken.<ts>`` path the
+    corrupt original was quarantined to.
+
+    The base-table data is fully readable (only the index is broken), so
+    ``EXPORT DATABASE`` (full table scans, no index use) dumps every row to
+    parquet, and ``IMPORT DATABASE`` into a fresh file re-creates every
+    table and rebuilds every index from scratch. The rebuilt file is
+    assembled completely *before* the original is touched. The corrupt
+    original is then preserved as ``.broken.<ts>`` (a copy, chmod ``0o600``)
+    and the rebuilt file swapped in with an atomic ``os.replace`` — so
+    ``db_path`` is never momentarily absent for a concurrent opener. On any
+    failure before the swap the original is left untouched.
+
+    Sibling files (``.export``/``.rebuild`` scratch) live next to
+    ``db_path`` so the final swap is a same-filesystem rename.
+    """
+    export_dir = f"{db_path}.export.{os.getpid()}"
+    rebuilt = f"{db_path}.rebuild.{os.getpid()}"
+    for stale in (export_dir, rebuilt):
+        if os.path.isdir(stale):
+            shutil.rmtree(stale, ignore_errors=True)
+        elif os.path.exists(stale):
+            os.remove(stale)
+
+    # 1. Export the readable data from the (index-corrupt) live file. A
+    # normal (read-write) open, not read-only: read-only bypasses WAL
+    # replay entirely (see _peek_schema_version's docstring), so any
+    # transactions committed since the last checkpoint but still only in
+    # ``db_path + ".wal"`` would silently be missing from the export —
+    # the opposite of this function's "data preserved" contract (Devin
+    # Review, PR #948). A normal open is safe here: the whole premise of
+    # this self-heal path is that the file OPENS fine on a plain
+    # read-write connection — only an explicit write against the corrupt
+    # index fails — and EXPORT DATABASE itself only does full table
+    # scans, no index writes, so it can't re-trigger the corruption.
+    src = _open_duckdb(db_path)
+    try:
+        src.execute(f"EXPORT DATABASE '{export_dir}' (FORMAT PARQUET)")
+    finally:
+        src.close()
+
+    # 2. Import into a fresh file — this rebuilds all indexes.
+    dst = _open_duckdb(rebuilt)
+    try:
+        dst.execute(f"IMPORT DATABASE '{export_dir}'")
+        dst.execute("CHECKPOINT")
+    finally:
+        dst.close()
+
+    # 3. Swap atomically. Preserve the corrupt original as .broken.<ts> with
+    #    a COPY (so db_path is never momentarily absent), then os.replace()
+    #    the rebuilt file over it — an atomic same-filesystem rename. A
+    #    concurrent opener (a second app instance mid-rolling-restart, or an
+    #    operator running `agnes admin db repair`) therefore always sees
+    #    either the old or the new file, never a missing path — which
+    #    duckdb.connect() would silently re-create as an empty DB whose writes
+    #    the rename then orphans. (This is why the rebuild path does NOT use
+    #    _move_to_broken, which moves db_path aside and reopens that window;
+    #    the WAL-recovery branches can, as they replace the file wholesale.)
+    wal_path = Path(db_path + ".wal")
+    broken = Path(db_path + f".broken.{int(time.time())}")
+    n = 1  # 1s timestamp isn't unique across back-to-back rebuilds
+    while broken.exists():
+        broken = Path(db_path + f".broken.{int(time.time())}.{n}")
+        n += 1
+    shutil.copy2(db_path, broken)
+    try:
+        os.chmod(broken, 0o600)  # holds password hashes / PAT rows / audit log
+    except OSError:
+        pass
+    if wal_path.exists():
+        broken_wal = str(broken) + ".wal"
+        shutil.copy2(str(wal_path), broken_wal)
+        try:
+            os.chmod(broken_wal, 0o600)
+        except OSError:
+            pass
+        # Drop the corrupt file's stale WAL so it can't replay onto the
+        # rebuilt DB (already CHECKPOINTed above; it needs no WAL).
+        wal_path.unlink()
+    os.replace(rebuilt, db_path)
+    try:
+        os.chmod(db_path, 0o600)
+    except OSError:
+        pass
+    shutil.rmtree(export_dir, ignore_errors=True)
+    logger.warning(
+        "system.duckdb rebuilt via EXPORT/IMPORT; corrupt original preserved at %s",
+        broken,
+    )
+    return broken
+
+
 def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
     """Open ``system.duckdb``. If DuckDB's WAL replay raises an
     ``INTERNAL Error`` from ``ReplayAlter`` (a known failure mode when a
@@ -1583,9 +1904,25 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
 
     Only fires on the specific WAL-replay error class to avoid masking
     legitimate corruption (operator-edited DB, disk failure, etc.).
+
+    Layered on top: once ANY path above lands an open connection — clean
+    open, STEP A salvage, or STEP B snapshot restore — an ART-index
+    integrity probe (:func:`_probe_art_integrity`, via the shared
+    :func:`_probe_and_heal_art_index`) runs on it. On-disk ART (PRIMARY
+    KEY / UNIQUE) index corruption — caused by a termination that bypasses
+    the graceful CHECKPOINT-and-close path (OOM SIGKILL, VM ``-replace``
+    destroy, host crash) — lets the file OPEN cleanly but makes the first
+    index write fail with ``Failed to delete all rows from index`` and
+    invalidate the whole connection. A restart cannot heal it; only an
+    EXPORT/IMPORT rebuild can. The same abrupt termination that dirties
+    the WAL can also tear the ART index, so a WAL-recovered DB gets the
+    same probe, not just a cleanly-opened one (Devin Review, PR #948).
+    When the probe detects that signature the DB is transparently rebuilt
+    (:func:`_rebuild_system_db`) and reopened. Disable with
+    ``AGNES_DB_SELF_HEAL=0``.
     """
     try:
-        return _open_duckdb(db_path)
+        conn = _open_duckdb(db_path)
     except duckdb.Error as e:
         msg = str(e)
         is_wal_replay = (
@@ -1609,7 +1946,7 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
         # version and the idempotent ladder re-runs forward on this start.
         salvaged = _salvage_discard_wal(db_path, wal_path, original_error=e)
         if salvaged is not None:
-            return salvaged
+            return _probe_and_heal_art_index(salvaged, db_path)
 
         # STEP B — the live file itself won't open. Fall back to the
         # pre-migrate snapshot (with the #379 version guard below). The
@@ -1682,8 +2019,16 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
         _move_to_broken(db_path, wal_path)
         shutil.copy2(str(snapshot), db_path)
         # Re-open. If THIS also fails, propagate — auto-recovery has
-        # exhausted its options.
-        return _open_duckdb(db_path)
+        # exhausted its options. Same ART-index probe as the other paths:
+        # the WAL-replay failure that forced this fallback can co-occur
+        # with on-disk index corruption from the same abrupt termination.
+        return _probe_and_heal_art_index(_open_duckdb(db_path), db_path)
+    else:
+        # File opened cleanly. Guard against on-disk ART-index corruption
+        # (a different failure mode from WAL replay: the file opens, then
+        # the first index write fails at runtime and invalidates the
+        # connection — a restart cannot heal it).
+        return _probe_and_heal_art_index(conn, db_path)
 
 
 def _salvage_discard_wal(
@@ -1737,16 +2082,29 @@ def _move_to_broken(db_path: str, wal_path: Path) -> Path:
     """Move the broken DB (+ WAL if present) aside to ``.broken.<ts>``.
 
     Shared by both branches of :func:`_try_open_system_db` (refusal and
-    happy-path recovery). The preserved files are chmod'd to ``0o600``
-    because ``system.duckdb`` holds argon2 password hashes, personal-
-    access-token rows, and the audit log — ``shutil.move`` inherits the
-    source mode (typically ``0o644`` under default umask), so a stale
-    ``.broken.*`` would be world-readable on its way out. The
+    happy-path recovery), and can now fire twice in one call chain: STEP
+    B quarantines the WAL-replay-failed file, then — if the restored
+    pre-migrate snapshot ALSO fails the ART probe — ``_rebuild_system_db``
+    quarantines it too (Devin Review, PR #948). The preserved files are
+    chmod'd to ``0o600`` because ``system.duckdb`` holds argon2 password
+    hashes, personal-access-token rows, and the audit log — ``shutil.move``
+    inherits the source mode (typically ``0o644`` under default umask), so
+    a stale ``.broken.*`` would be world-readable on its way out. The
     containing ``state/`` directory is usually ``0o700``, but defense
     in depth matters: backups, container volumes, and tab-completion
     mistakes can all surface the file. Returns the chosen broken path.
     """
     broken = Path(db_path + f".broken.{int(time.time())}")
+    # Collision guard: the 1-second timestamp resolution isn't unique
+    # across two calls milliseconds apart in the same synchronous chain
+    # (STEP B → failed re-probe → rebuild, above). shutil.move silently
+    # overwrites an existing destination file, which would clobber an
+    # earlier quarantine and destroy forensics data — append a counter
+    # instead of overwriting.
+    n = 1
+    while broken.exists():
+        broken = Path(db_path + f".broken.{int(time.time())}.{n}")
+        n += 1
     shutil.move(db_path, str(broken))
     try:
         os.chmod(broken, 0o600)
@@ -1994,6 +2352,17 @@ def close_singleton_connections() -> None:
     open database file; without releasing it here the subprocess raises
     ``IOException: Conflicting lock is held in /usr/local/bin/python3.13``.
 
+    Also closes the DuckLake reader/writer singletons (``src.ducklake_session
+    .close_ducklake_sessions()``) — when ``analytics.backend=ducklake`` is
+    active, an open DuckLake attach holds the same kind of exclusive lock on
+    a file-catalog target (or a live libpq connection on a Postgres catalog
+    target) that would otherwise survive into the subprocess handoff and
+    conflict with it, same as the DuckDB singletons above. Imported locally
+    to avoid a module-level circular import (``src.ducklake_session`` itself
+    imports from this module); safe to call unconditionally regardless of
+    which analytics backend is configured — ``close_ducklake_sessions()`` is
+    a no-op when no DuckLake session has ever been opened.
+
     Idempotent. The next call to ``get_system_db()`` / ``get_analytics_db()``
     will lazily re-open if the file is still on disk; if the migration
     flipped the backend to Postgres, the app process will be recreated by
@@ -2024,6 +2393,10 @@ def close_singleton_connections() -> None:
             except Exception:
                 pass
             _analytics_db_conn = None
+
+    from src.ducklake_session import close_ducklake_sessions
+
+    close_ducklake_sessions()
 
 
 def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: Path) -> None:
@@ -2114,7 +2487,23 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                     alias,
                 )
                 continue
-            if alias in attached_dbs:
+            already_attached = alias in attached_dbs
+            # Non-BQ remote extensions carry no expiring credential — the
+            # existing ATTACH (from an earlier call on this same
+            # connection) is still good, nothing to refresh. BQ is
+            # different: its ACCESS_TOKEN secret is a short-lived GCE
+            # metadata token (or TOKEN literal), and this function is
+            # called from a long-lived connection under the DuckLake
+            # backend (`src.ducklake_session.get_ducklake_read`'s
+            # process-wide reader singleton) as well as the legacy
+            # per-request path. On the legacy path `already_attached` is
+            # never True (each call gets a brand-new connection with
+            # nothing attached yet), so this branch is a no-op there;
+            # on the long-lived DuckLake reader, skipping the refresh
+            # here would leave the BQ secret to expire after its TTL and
+            # start failing every remote query for the rest of the
+            # process's life — see the wave-2G task-4 report.
+            if already_attached and extension != "bigquery":
                 logger.debug("Remote source %s already attached, skipping", alias)
                 continue
             try:
@@ -2136,6 +2525,10 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                 # is the contract that signals "use built-in metadata path". The
                 # secret is created here on every readonly-connection open because
                 # secrets are session-scoped and don't persist with analytics.duckdb.
+                # DuckDB resolves a secret by (TYPE, name) match at query time, not
+                # at ATTACH time, so replacing `bq_secret_{alias}` refreshes
+                # credentials for an ATTACH that already exists — no re-ATTACH
+                # needed (and re-ATTACHing an already-attached alias would error).
                 if extension == "bigquery":
                     try:
                         bq_token = get_metadata_token()
@@ -2152,7 +2545,8 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                     from connectors.bigquery.access import apply_bq_session_settings
 
                     apply_bq_session_settings(conn)
-                    conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
+                    if not already_attached:
+                        conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
                 elif token:
                     escaped_token = escape_sql_string_literal(token)
                     conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')")
@@ -2181,7 +2575,35 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
     """Read-only connection to analytics DB. Blocks writes and external access.
 
     ATTACHes extract.duckdb files so views that reference them work.
+
+    Backend dispatch (wave-2G, DuckLake): when ``analytics.backend`` /
+    ``AGNES_ANALYTICS_BACKEND`` resolves to ``"ducklake"``, this delegates
+    to ``src.ducklake_session.get_ducklake_read()`` instead of the
+    open-file-and-re-ATTACH-every-request path below.
+
+    **Connection-model choice (documented per the wave-2G task-4 brief):**
+    the legacy path below opens a brand-new connection on every call — a
+    cheap operation for a local DuckDB file, so per-request open/close is
+    fine. DuckLake is different: when the catalog target is a Postgres
+    DSN, every ``ATTACH`` opens its own libpq connection (see
+    ``src/ducklake_session.py``'s module docstring and the W2G-2 POC
+    finding — "one PG connection per ATTACH, no extra per query"), so a
+    naive per-request open would churn one new Postgres connection per
+    API request. Instead, ``get_ducklake_read()`` keeps ONE long-lived
+    attach per process and hands back a ``.cursor()`` per caller —
+    mirroring the ``get_analytics_db()`` singleton+cursor pattern in this
+    module rather than this function's per-call-open pattern. A cursor
+    still gives snapshot-consistent reads (DuckLake's MVCC — a cursor
+    opened before a concurrent writer commits keeps seeing the
+    pre-commit snapshot) and callers here already only ever call
+    ``.close()`` on the returned handle, which is exactly the
+    cursor-close contract ``get_ducklake_read()`` documents.
     """
+    if analytics_backend() == "ducklake":
+        from src.ducklake_session import get_ducklake_read
+
+        return get_ducklake_read()
+
     db_path = _get_data_dir() / "analytics" / "server.duckdb"
     if not db_path.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4016,8 +4438,9 @@ def _v41_to_v42(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_tool ON usage_events(tool_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_skill ON usage_events(skill_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_ref ON usage_events(source, ref_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session_user ON usage_session_summary(username)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session_started ON usage_session_summary(started_at)")
+    # No idx_usage_session_user / idx_usage_session_started here (removed in
+    # v95 — see the comment on usage_session_summary in _SYSTEM_SCHEMA and
+    # _v94_to_v95's incident writeup).
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_attr_skill_lookup ON usage_attribution_skills(skill_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_attr_agent_lookup ON usage_attribution_agents(agent_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_attr_command_lookup ON usage_attribution_commands(command_name)")
@@ -4084,10 +4507,14 @@ def _v44_to_v45(conn: duckdb.DuckDBPyConnection) -> None:
     (re)process run. Existing rows get backfilled when
     ``USAGE_PROCESSOR_VERSION`` bumps, which triggers the session-pipeline
     reprocess loop.
+
+    No index on ``usage_session_summary.user_id`` here (removed in v95 —
+    see _v94_to_v95): it used to be created in this step, but it is one of
+    the three secondary indexes ``upsert_summary``'s ON CONFLICT DO UPDATE
+    kept rewriting, which is what made a corrupt entry fatal.
     """
     conn.execute("ALTER TABLE usage_session_summary ADD COLUMN IF NOT EXISTS user_id VARCHAR")
     conn.execute("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS user_id VARCHAR")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session_user_id ON usage_session_summary(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_user_id ON usage_events(user_id)")
 
 
@@ -5887,8 +6314,143 @@ def _v90_to_v91(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def _v91_to_v92(conn: duckdb.DuckDBPyConnection) -> None:
-    """v91→v92: ``user_journey_state`` — per-user onboarding "journey"
+    """v92: mcp_sources.connect_hint — per-source, admin-authored instructions
+    telling a user where to obtain their personal token for a per_user source.
+    Rendered through app/markdown_render.render_safe on the connect page.
+
+    Guarded on table existence: minimal-fixture migration tests replay the
+    ladder from an intermediate version onto a DB that never created
+    ``mcp_sources`` (it is created at v64). On a real ladder the table always
+    exists by v92, so the guard only no-ops those partial replays."""
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'mcp_sources'").fetchone()
+    if exists:
+        conn.execute("ALTER TABLE mcp_sources ADD COLUMN IF NOT EXISTS connect_hint VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 92")
+
+
+def _v92_to_v93(conn: duckdb.DuckDBPyConnection) -> None:
+    """v92→v93: ``glossary_terms`` — Keboola semantic-glossary import
+    destination (docs/superpowers/specs/2026-07-17-keboola-glossary-import-design.md).
+
+    Additive-only; ``_SYSTEM_SCHEMA`` already creates the table on fresh
+    installs (no-op ``CREATE TABLE IF NOT EXISTS`` here).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS glossary_terms (
+            id           VARCHAR PRIMARY KEY,
+            term         VARCHAR NOT NULL,
+            definition   TEXT NOT NULL,
+            see_also     VARCHAR[],
+            model_uuid   VARCHAR,
+            source       VARCHAR NOT NULL DEFAULT 'manual',
+            created_at   TIMESTAMP DEFAULT current_timestamp,
+            updated_at   TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 93")
+
+
+def _v93_to_v94(conn: duckdb.DuckDBPyConnection) -> None:
+    """v93→v94: ``jobs`` — durable job queue (wave-2B worker runtime
+    foundation). This migration covers table + claim/lookup index only;
+    ``_SYSTEM_SCHEMA`` already creates it on fresh installs (no-op
+    ``CREATE IF NOT EXISTS`` here).
+
+    See the ``jobs`` block in ``_SYSTEM_SCHEMA`` above for why
+    ``idx_jobs_idem`` is a plain index rather than a partial unique index
+    (DuckDB does not support partial indexes) — idempotency dedup is
+    enforced in ``JobsRepository.enqueue()`` instead. The Postgres ladder
+    uses a real partial unique index for this same column; see that
+    docstring block for why the two ladders are intentionally asymmetric.
+
+    ``lease_token`` is the same-worker double-execution guard — see the
+    ``_SYSTEM_SCHEMA`` docstring block above for the full rationale.
+
+    Renumbered from v93 to v94 after upstream's glossary_terms migration
+    (#920) claimed schema v93 first.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS jobs (
+            id                VARCHAR PRIMARY KEY,
+            kind              VARCHAR NOT NULL,
+            payload_json      VARCHAR NOT NULL DEFAULT '{}',
+            status            VARCHAR NOT NULL DEFAULT 'queued',
+            priority          INTEGER NOT NULL DEFAULT 0,
+            run_after         TIMESTAMP,
+            attempts          INTEGER NOT NULL DEFAULT 0,
+            max_attempts      INTEGER NOT NULL DEFAULT 3,
+            lease_expires_at  TIMESTAMP,
+            leased_by         VARCHAR,
+            lease_token       VARCHAR,
+            idempotency_key   VARCHAR,
+            error             VARCHAR,
+            created_at        TIMESTAMP NOT NULL,
+            started_at        TIMESTAMP,
+            finished_at       TIMESTAMP
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, priority, run_after)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_idem ON jobs(idempotency_key)")
+    conn.execute("UPDATE schema_version SET version = 94")
+
+
+def _v94_to_v95(conn: duckdb.DuckDBPyConnection) -> None:
+    """v94→v95: drop the 3 secondary (non-unique) ART indexes on
+    ``usage_session_summary`` — ``idx_usage_session_user`` (username),
+    ``idx_usage_session_started`` (started_at), ``idx_usage_session_user_id``
+    (user_id).
+
+    INCIDENT 2026-07-20: the periodic usage session-processor calls
+    ``UsageRepository.upsert_summary`` every ~10 minutes, which refreshes
+    all three of these columns via ``ON CONFLICT (session_file) DO UPDATE
+    SET ...`` on every re-process tick. Updating an ART-indexed column runs
+    as delete-old-entry + insert-new-entry; a single corrupt secondary-
+    index entry turned that delete into a FATAL ``Failed to delete all rows
+    from index`` error, which invalidates the whole DuckDB connection
+    ("database has been invalidated ... must be restarted") for every
+    subsequent query on the process — including login — and recurred on
+    every scheduler tick since nothing marked the session processed. This
+    migration removes the indexes themselves — repairing the already-
+    corrupt structure on a live instance and removing the index maintenance
+    that made those column rewrites fatal. ``upsert_summary`` still
+    refreshes the columns (safe now that they are unindexed: a plain
+    in-place write with no ART maintenance), so late-resolution identity
+    backfill is preserved; do NOT re-add secondary indexes on them.
+    ``session_file`` (the PRIMARY KEY) is untouched.
+
+    Plain ``DROP INDEX IF EXISTS`` rather than a CTAS table rebuild: it is
+    a catalog-only structural operation that does not need to walk (and
+    therefore does not need to trust) the corrupted index's contents, so
+    it succeeds even against a broken ART.
+    """
+    conn.execute("DROP INDEX IF EXISTS idx_usage_session_user")
+    conn.execute("DROP INDEX IF EXISTS idx_usage_session_started")
+    conn.execute("DROP INDEX IF EXISTS idx_usage_session_user_id")
+    conn.execute("UPDATE schema_version SET version = 95")
+
+
+def _v95_to_v96(conn: duckdb.DuckDBPyConnection) -> None:
+    """v95→v96: ``data_apps`` registry (hosted user web apps).
+
+    ``_SYSTEM_SCHEMA`` already creates the table on fresh installs (it is
+    appended via the shared ``_DATA_APPS_CREATE_SQL`` constant); this
+    migration covers the sequential-upgrade path from a pre-v96 instance.
+    """
+    conn.execute(_DATA_APPS_CREATE_SQL)
+    conn.execute("UPDATE schema_version SET version = 96")
+
+
+def _v96_to_v97(conn: duckdb.DuckDBPyConnection) -> None:
+    """v96→v97: ``user_journey_state`` — per-user onboarding "journey"
     progress (backend foundation for chat-driven onboarding).
+
+    Renumbered from v92 to v97 after upstream's mcp_sources.connect_hint
+    (v92), glossary_terms (v93), jobs (v94), usage-index-fix (v95), and
+    data_apps (v96) migrations landed first.
 
     Idempotent CREATE TABLE IF NOT EXISTS; fresh installs already get the
     table from ``_SYSTEM_SCHEMA`` (no-op here).
@@ -5906,7 +6468,7 @@ def _v91_to_v92(conn: duckdb.DuckDBPyConnection) -> None:
             updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp
         )
     """)
-    conn.execute("UPDATE schema_version SET version = 92")
+    conn.execute("UPDATE schema_version SET version = 97")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -6283,10 +6845,28 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # _SYSTEM_SCHEMA already creates them on fresh installs (no-op
             # CREATE IF NOT EXISTS here).
             _v90_to_v91(conn)
-            # v91→v92: user_journey_state table (chat-driven onboarding
+            # v91→v92: mcp_sources.connect_hint column.
+            _v91_to_v92(conn)
+            # v92→v93: glossary_terms table (Keboola semantic-glossary
+            # import). _SYSTEM_SCHEMA already creates it on fresh installs
+            # (no-op CREATE IF NOT EXISTS here).
+            _v92_to_v93(conn)
+            # v93→v94: jobs table (durable job queue, wave-2B worker runtime
+            # foundation). _SYSTEM_SCHEMA already creates it on fresh
+            # installs (no-op CREATE IF NOT EXISTS here).
+            _v93_to_v94(conn)
+            # v94→v95: drop usage_session_summary's 3 secondary indexes
+            # (index-corruption hotfix). No-op here — _SYSTEM_SCHEMA never
+            # creates them on fresh installs.
+            _v94_to_v95(conn)
+            # v95→v96: data_apps table (hosted user web apps registry).
+            # _SYSTEM_SCHEMA already creates it on fresh installs (no-op
+            # CREATE IF NOT EXISTS here).
+            _v95_to_v96(conn)
+            # v96→v97: user_journey_state table (chat-driven onboarding
             # backend foundation). _SYSTEM_SCHEMA already creates it on
             # fresh installs (no-op CREATE IF NOT EXISTS here).
-            _v91_to_v92(conn)
+            _v96_to_v97(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -6524,6 +7104,16 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v90_to_v91(conn)
             if current < 92:
                 _v91_to_v92(conn)
+            if current < 93:
+                _v92_to_v93(conn)
+            if current < 94:
+                _v93_to_v94(conn)
+            if current < 95:
+                _v94_to_v95(conn)
+            if current < 96:
+                _v95_to_v96(conn)
+            if current < 97:
+                _v96_to_v97(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

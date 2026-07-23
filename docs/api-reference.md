@@ -675,6 +675,39 @@ checks against.
 - /api/admin/knowledge-digests
 - /api/admin/knowledge-digests/{digest_id}
 
+### `/api/jobs` — Job queue (wave-2B worker runtime)
+
+- /api/jobs
+- /api/jobs/{job_id}
+
+Enqueue (`POST /api/jobs`), fetch (`GET /api/jobs/{job_id}`), and list
+(`GET /api/jobs?status=&kind=&limit=`) jobs on the durable job queue
+(`src/repositories/jobs.py`). `kind` must be registered in the server's
+`JOB_KINDS` registry (`app/worker/registry.py`, populated by
+`register_all_kinds()` at startup) — an unrecognized kind 400s with the
+list of currently-registered kinds. Gated by `require_admin`, which also
+accepts the scheduler's shared-secret bearer token
+(`app/auth/scheduler_token.py`) since that token resolves to a synthetic
+user in the `Admin` group. CLI: `agnes admin jobs enqueue|show|list`. MCP:
+`admin_job_enqueue`, `admin_job_get`, `admin_jobs_list`.
+
+### `/api/admin/analytics/migrate` — DuckLake analytics-backend migration (wave-2G)
+
+- /api/admin/analytics/migrate
+
+`POST` with `{"to": "ducklake"}` or `{"to": "legacy"}`. Validates
+prerequisites (`to="ducklake"` only — the DuckLake extension is loadable
+and the catalog is reachable, auto-repairing a missing catalog database
+on an existing Postgres volume) and enqueues an `analytics-migrate` job
+(`app/worker/kinds.py`, HEAVY lane) that rebuilds the named target
+backend from the on-disk extracts tree, via
+`SyncOrchestrator.migrate_to_backend`. Returns 202 with a `job_id` to
+poll via `GET /api/jobs/{job_id}`; 400 with the full list of unmet
+prerequisites; 409 if a migration is already in flight. Never flips
+`analytics.backend` in config — see `docs/DEPLOYMENT.md`'s DuckLake
+section for the full operator flow. CLI: `agnes admin analytics migrate
+--to <target>`. MCP: `admin_analytics_migrate`.
+
 ### `/api/admin/mcp-sources` — MCP source management
 
 - /api/admin/mcp-sources
@@ -971,6 +1004,37 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/connectors/manifest
 - /api/connectors/params
 
+### `/api/data-apps` — Hosted data apps control plane
+
+Control-plane REST for hosted user web apps (`data_apps` registry, v96) — a
+user-owned app (internal template or external git repo) deployed to a
+runtime container and put to sleep after an idle timeout. RBAC: owner,
+Admin, or a group holding a `resource_grants` row on `(data_app, <slug>)`
+may view; only owner or Admin may mutate. Gated behind
+`data_apps.enabled` in `instance.yaml` (404 `data_apps_disabled` when off).
+CLI: `agnes app list/show/create/deploy/stop/delete/logs`. MCP tools (list/
+show/deploy/logs, matching the view-vs-mutate RBAC split above):
+`data_apps_list`, `data_app_get`, `data_app_deploy`, `data_app_logs` — no
+MCP analogue for create/stop/delete/secrets/reap-idle.
+
+- /api/data-apps
+- /api/data-apps/reap-idle
+- /api/data-apps/{slug}
+- /api/data-apps/{slug}/deploy
+- /api/data-apps/{slug}/logs
+- /api/data-apps/{slug}/readiness
+- /api/data-apps/{slug}/secrets
+- /api/data-apps/{slug}/stop
+
+`POST /{slug}/deploy` fast-forwards the app's internal git repo's
+`agnes-live` branch, mints a fresh PAT scoped to `data-app:<slug>` (revoking
+the previous one), decrypts the app's stored secrets, builds the runtime
+`config.json` + container spec, and hands both to the `apps-runner` sidecar.
+A dead/erroring sidecar sets the app's state to `error` and returns 502
+`runner_unavailable`. `POST /reap-idle` is `require_admin`-gated (the
+scheduler's shared-secret token resolves to a synthetic Admin user) and
+stops any `running` app idle longer than its own `idle_timeout_s`.
+
 ### `/api/data-packages` — Public data packages
 
 - /api/data-packages/{slug}
@@ -983,6 +1047,17 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 ### `/api/debug` — Debug utilities
 
 - /api/debug/throw
+
+### `/api/glossary` — Keboola-imported business-term glossary (user-facing)
+
+Read/search over `glossary_terms`, populated by the Keboola semantic-layer
+importer (`keboola-semantic-layer-refresh` job) — see
+`docs/superpowers/specs/2026-07-17-keboola-glossary-import-design.md`.
+Relevance-ranked search uses DuckDB FTS BM25 with an ILIKE fallback.
+
+- /api/glossary
+- /api/glossary/search
+- /api/glossary/{glossary_id}
 
 ### `/api/health` — Health checks
 
@@ -1048,6 +1123,7 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/mcp/passthrough/tools/{tool_id}/call
 - /api/mcp/query-table/{table_id}
 - /api/mcp/sources/{source_id}/my-secret
+- /api/mcp/sources/{source_id}/my-secret/test
 
 ### `/api/mcp-connect` — Headless MCP client setup
 

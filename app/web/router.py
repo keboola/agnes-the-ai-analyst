@@ -18,7 +18,7 @@ import duckdb
 import jinja2
 
 from app.auth.access import is_user_admin, require_admin
-from app.web.studio import get_domain as get_studio_domain
+from app.web.studio import STUDIO_DOMAINS, get_domain as get_studio_domain
 from app.auth.dependencies import get_current_user, get_optional_user, _get_db
 from app.instance_config import (
     get_instance_name,
@@ -39,14 +39,18 @@ from app.instance_config import (
     get_instance_theme,
     get_ui_layout,
     get_custom_scripts,
+    get_data_apps_config,
+    get_studio_enabled,
 )
 from src.repositories import (
     audit_repo,
     corpus_files_repo,
     data_packages_repo,
     file_corpora_repo,
+    glossary_repo,
     knowledge_repo,
     memory_domains_repo,
+    metric_repo,
     news_template_repo,
     notifications_telegram_repo,
     profile_repo,
@@ -289,6 +293,24 @@ templates.env.globals["posthog_user_block"] = _posthog_user_block
 templates.env.globals["static_url"] = _static_url
 
 
+def _data_apps_nav_enabled() -> bool:
+    """Whether the "Apps" primary-nav entry should render. Registered as a
+    Jinja global (like `static_url` above) rather than threaded through
+    per-route context, so `_app_header.html` — shared by both `base.html`
+    (built via `_build_context`) and `base_ds.html`/`base_page.html` (built
+    via `_chrome_ctx`) — gates consistently regardless of which context
+    builder the current page uses. Re-read on every call (not cached at
+    import time) so an admin flipping `data_apps.enabled` via
+    /admin/server-config takes effect without a process restart."""
+    try:
+        return bool(get_data_apps_config().get("enabled"))
+    except Exception:
+        return False
+
+
+templates.env.globals["data_apps_enabled"] = _data_apps_nav_enabled
+
+
 class _FlexDict(dict):
     """Dict that returns empty _FlexDict for missing keys and attributes.
     Prevents Jinja2 UndefinedError when templates access missing nested values."""
@@ -490,18 +512,45 @@ def _read_agnes_ca_pem() -> Optional[str]:
 _CONN_UNSET: Any = object()
 
 
-def _build_context(
-    request: Request,
-    user: Optional[dict] = None,
-    conn: Any = _CONN_UNSET,
-    **extra,
-) -> dict:
-    """Build template context with config, user, and theme.
+def _compute_can_chat(request: Request, user: Optional[dict]) -> bool:
+    """Cloud-chat nav visibility, shared by every page-context builder.
 
-    `conn` is optional: when supplied alongside a logged-in `user`, the
-    setup-prompt preview/clipboard payload is rendered with that user's
-    RBAC-allowed Claude Code marketplace plugins inlined as install
-    commands. Routes that don't render the env-setup-cta block can omit it.
+    The /chat link is shown only when chat is enabled AND one of the viewer's
+    groups holds an explicit chat grant. We deliberately use
+    `has_explicit_grant` (NOT `can_access`) so the link tracks actual rollout
+    state, not effective access: admins do NOT see it until chat is granted to
+    a group they're in, even though god-mode still lets them reach /chat by
+    URL (the route guard uses can_access). This is UX only — the hard gate is
+    on the route + API.
+
+    Computed on EVERY page — both `_build_context` and `_chrome_ctx` must set
+    it, otherwise the link flickers out on the pages using the other builder
+    (the studio pages regressed on exactly this). `has_explicit_grant` is
+    backend-aware (it routes through the repo factory), so no connection is
+    threaded here — it reads the active backend itself. Defaults False when
+    chat is disabled or there's no user.
+    """
+    try:
+        _cc = getattr(request.app.state, "chat_config", None)
+        if user and _cc is not None and _cc.enabled:
+            from app.auth.access import has_explicit_grant
+            from app.resource_types import ResourceType
+
+            return bool(has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat"))
+    except Exception:
+        return False
+    return False
+
+
+def _config_proxy() -> type:
+    """Template-facing ``config`` object, shared by every page-context builder.
+
+    Defined as a class built at call time so every attribute is re-read per
+    request (operators can flip env vars / instance.yaml without a restart).
+    Both `_build_context` and `_chrome_ctx` must expose it as ``config`` —
+    templates read e.g. ``config.INSTANCE_NAME`` in ``<title>`` blocks and
+    the shared header logo, which rendered empty on the pages whose builder
+    skipped it (the studio pages regressed on exactly this).
     """
 
     class ConfigProxy:
@@ -541,6 +590,24 @@ def _build_context(
             if isinstance(theme, dict):
                 return {k: v for k, v in theme.items() if v}
             return {}
+
+    return ConfigProxy
+
+
+def _build_context(
+    request: Request,
+    user: Optional[dict] = None,
+    conn: Any = _CONN_UNSET,
+    **extra,
+) -> dict:
+    """Build template context with config, user, and theme.
+
+    `conn` is optional: when supplied alongside a logged-in `user`, the
+    setup-prompt preview/clipboard payload is rendered with that user's
+    RBAC-allowed Claude Code marketplace plugins inlined as install
+    commands. Routes that don't render the env-setup-cta block can omit it.
+    """
+    ConfigProxy = _config_proxy()
 
     ctx_server_url = str(request.base_url).rstrip("/")
 
@@ -657,28 +724,11 @@ def _build_context(
         # the OSS vendor-neutral.
         "custom_scripts": get_custom_scripts(),
     }
-    # Cloud-chat nav visibility. The /chat link is shown only when chat is
-    # enabled AND one of the viewer's groups holds an explicit chat grant. We
-    # deliberately use `has_explicit_grant` (NOT `can_access`) so the link
-    # tracks actual rollout state, not effective access: admins do NOT see it
-    # until chat is granted to a group they're in, even though god-mode still
-    # lets them reach /chat by URL (the route guard uses can_access). This is
-    # UX only — the hard gate is on the route + API.
-    #
-    # Computed on EVERY page. `has_explicit_grant` is backend-aware (it routes
-    # through the repo factory), so no connection is threaded here — it reads
-    # the active backend itself. Defaults False when chat is disabled or
-    # there's no user.
-    ctx["can_chat"] = False
-    try:
-        _cc = getattr(request.app.state, "chat_config", None)
-        if user and _cc is not None and _cc.enabled:
-            from app.auth.access import has_explicit_grant
-            from app.resource_types import ResourceType
-
-            ctx["can_chat"] = bool(has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat"))
-    except Exception:
-        ctx["can_chat"] = False
+    ctx["can_chat"] = _compute_can_chat(request, user)
+    # Studio nav visibility. Pure instance-level toggle (no per-user grant,
+    # unlike can_chat) — the enclosing `{% if session.user %}` already scopes
+    # the nav to signed-in users. The hard gate lives on the routes.
+    ctx["can_studio"] = get_studio_enabled()
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
     for k, v in extra.items():
@@ -1098,6 +1148,46 @@ async def mcp_connect_page(
         is_admin=is_user_admin(user["id"], conn),
     )
     return templates.TemplateResponse(request, "mcp_connect.html", ctx)
+
+
+@router.get("/me/connections", response_class=HTMLResponse)
+async def me_connections_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Self-service page: connect / replace / test / remove your own credential
+    for the per_user MCP sources you are granted. Any authenticated user."""
+    from app.api.mcp_passthrough import _visible_passthrough_tools
+    from app.markdown_render import render_safe
+    from src.repositories import mcp_sources_repo, per_user_secrets_repo
+
+    granted_ids = {t["source_id"] for t in _visible_passthrough_tools(user)}
+    sources = []
+    for src in mcp_sources_repo().list_all(enabled_only=True):
+        if src["id"] not in granted_ids:
+            continue
+        if (src.get("scope") or "shared").lower() != "per_user":
+            continue
+        sources.append(
+            {
+                "id": src["id"],
+                "name": src["name"],
+                "transport": src.get("transport"),
+                "hint_html": render_safe(src.get("connect_hint")),
+                "has_secret": per_user_secrets_repo().has(src["id"], user["id"]),
+                "updated_at": per_user_secrets_repo().get_updated_at(src["id"], user["id"]),
+            }
+        )
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=is_user_admin(user["id"], conn),
+        connect_sources=sources,
+        highlight_source=request.query_params.get("source") or "",
+    )
+    return templates.TemplateResponse(request, "me_connections.html", ctx)
 
 
 @router.get("/me/activity", response_class=HTMLResponse)
@@ -1722,6 +1812,64 @@ async def my_stack_page(
         upload_cards=upload_card_models,
     )
     return templates.TemplateResponse(request, "stack_unified.html", ctx)
+
+
+@router.get("/catalog/semantics", response_class=HTMLResponse)
+async def catalog_semantics(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Read-only browser for the semantic layer — business metrics
+    (`metric_definitions`) and the glossary (`glossary_terms`) in one page
+    (issue #853 + the Keboola glossary import, #920).
+
+    Analyst-facing tier: ``get_current_user``, no admin gate and no
+    per-resource grant — matches the RBAC tier of the underlying
+    ``GET /api/metrics`` / ``GET /api/glossary*`` endpoints this page reuses,
+    and mirrors /catalog's own gate.
+
+    Metrics are RBAC-filtered the same way ``GET /api/metrics`` is (#953):
+    a metric whose ``table_name``/``tables`` reference a table outside the
+    caller's Data Package stack is omitted before grouping, so a category
+    left with zero visible metrics never renders its header either. Glossary
+    is intentionally NOT gated this way (business vocabulary, not data).
+
+    Metrics are server-rendered (grouped by category, same reading order as
+    ``agnes catalog --metrics``) — the scale is tens-to-low-hundreds so a
+    client-side substring filter over the rendered rows is enough; no new
+    search endpoint. Glossary starts empty and is populated client-side via
+    the existing ``GET /api/glossary`` / ``GET /api/glossary/search``.
+    """
+    from app.api.metrics import _first_inaccessible_table
+    from src.rbac import get_accessible_tables
+
+    accessible_ids = get_accessible_tables(user, conn)
+    allowed = None if accessible_ids is None else set(accessible_ids)
+    metrics = [m for m in metric_repo().list() if _first_inaccessible_table(m, allowed) is None]
+    by_category: dict[str, list[dict]] = {}
+    for m in metrics:
+        by_category.setdefault(m.get("category") or "uncategorized", []).append(m)
+    metric_categories = [
+        {"name": cat, "metrics": sorted(items, key=lambda m: m.get("name") or "")}
+        for cat, items in sorted(by_category.items())
+    ]
+
+    # Total glossary count for the tab label. GlossaryRepository.list() has
+    # no unlimited mode (deliberately, to bound a full-table scan) — 500 is
+    # the endpoint's own max `limit` (app/api/glossary.py), comfortably above
+    # the "tens-to-low-hundreds" scale this feature targets, so it's an
+    # exact count in practice rather than a true cap.
+    glossary_count = len(glossary_repo().list(limit=500))
+
+    ctx = _build_context(
+        request,
+        user=user,
+        metric_categories=metric_categories,
+        metric_count=len(metrics),
+        glossary_count=glossary_count,
+    )
+    return templates.TemplateResponse(request, "catalog_semantics.html", ctx)
 
 
 @router.get("/catalog/p/{slug}", response_class=HTMLResponse)
@@ -2351,7 +2499,141 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         "ui_layout": get_ui_layout(),
         "home_automode": {"show": get_home_automode_visibility()},
         "custom_scripts": get_custom_scripts(),
+        # Set here too (not only in _build_context) so the Studio nav link
+        # survives on pages that render via _chrome_ctx — including the studio
+        # pages themselves and the command palette.
+        "can_studio": get_studio_enabled(),
+        # Same `config` object as _build_context — templates read
+        # config.INSTANCE_NAME in <title> blocks and the header logo, which
+        # rendered empty on _chrome_ctx pages ("Studio — " title).
+        "config": _config_proxy(),
+        # Same visibility rule as _build_context — the shared header hides
+        # the Chat nav link when this key is missing/False, so skipping it
+        # here made the link vanish on every _chrome_ctx page (/admin/studio*).
+        "can_chat": _compute_can_chat(request, user),
     }
+
+
+# ---------------------------------------------------------------------------
+# Hosted data apps — /apps web UI (Task 12)
+# ---------------------------------------------------------------------------
+#
+# A DEDICATED router, not routes on the main ``router`` above. The ingress
+# proxy (``app/api/data_apps_proxy.py``) registers
+# ``GET /apps/{slug}`` (redirect to trailing slash) and
+# ``GET/POST/... /apps/{slug}/{path:path}`` (the actual proxy), and
+# ``app/main.py`` includes ``data_apps_proxy_router`` BEFORE the main
+# ``web_router``. Starlette matches routes in registration-list order, not
+# by specificity, so a literal ``/apps/detail/{slug}`` living on the main
+# ``router`` would never be reached: the proxy's ``{path:path}`` catch-all
+# matches ``/apps/detail/<slug>`` first (slug="detail", path="<slug>").
+# ``apps_web_router`` is included in ``app/main.py`` BEFORE
+# ``data_apps_proxy_router`` specifically so these two literal routes win
+# that match race; the bare ``GET /apps`` (list page) route doesn't
+# actually collide with anything (both proxy routes require at least one
+# path segment after ``apps``), but it lives here too for locality.
+apps_web_router = APIRouter(tags=["web-data-apps"])
+
+# State -> `.badge--*` accent modifier (design-system vocabulary, see
+# style-custom.css's "Badges — accent vocabulary" block). `created` and
+# `stopped` get the neutral base `.badge` (no modifier) — nothing to
+# highlight, they're just "not currently running".
+_STATE_BADGE_CLASS = {
+    "running": "badge--success",
+    "deploying": "badge--info",
+    "sleeping": "badge--warn",
+    "error": "badge--danger",
+}
+
+
+def _state_badge_class(state: str) -> str:
+    return _STATE_BADGE_CLASS.get(state, "")
+
+
+@apps_web_router.get("/apps", response_class=HTMLResponse)
+async def data_apps_list_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """List the hosted data apps the caller may view.
+
+    Reuses ``app.api.data_apps``'s own serializer/visibility helpers (no
+    parallel RBAC/shape logic) — server-rendered, matching the other
+    inventory-style pages (``studio_index``, ``admin_marketplaces``) rather
+    than a client-side ``fetch('/api/data-apps')``.
+
+    When the feature is disabled, renders an empty-state note instead of
+    404ing — the nav item is already hidden via ``data_apps_enabled()``, so
+    a direct hit here (bookmark, typed URL) should explain why nothing is
+    here rather than look like a broken link.
+    """
+    from app.api.data_apps import _can_view, _serialize
+    from src.repositories import data_apps_repo, users_repo
+
+    cfg = get_data_apps_config()
+    enabled = bool(cfg.get("enabled"))
+    apps: list[dict] = []
+    if enabled:
+        u_repo = users_repo()
+        rows = [r for r in data_apps_repo().list() if _can_view(user, r)]
+        for row in rows:
+            serialized = _serialize(row, cfg)
+            owner = u_repo.get_by_id(row["owner_user_id"])
+            serialized["owner_email"] = (owner or {}).get("email") or row["owner_user_id"]
+            serialized["badge_class"] = _state_badge_class(row["state"])
+            apps.append(serialized)
+
+    return templates.TemplateResponse(
+        request,
+        "data_apps.html",
+        {**_chrome_ctx(request, user), "apps": apps, "data_apps_feature_enabled": enabled},
+    )
+
+
+@apps_web_router.get("/apps/detail/{slug}", response_class=HTMLResponse)
+async def data_app_detail_page(
+    slug: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Detail page for a single hosted data app.
+
+    Metadata + state render server-side; the logs `<pre>` and the
+    Deploy/Stop buttons are client-side ``fetch`` calls against the existing
+    control-plane API (``app/api/data_apps.py``) — this route only decides
+    what to SHOW (``can_manage`` gates the mutating controls + the logs
+    section, since ``GET .../logs`` is owner/Admin-only server-side too;
+    hiding it for a viewer avoids a page-load fetch that would 403).
+    """
+    from app.api.data_apps import _can_view, _serialize
+    from src.repositories import data_apps_repo, users_repo
+
+    row = data_apps_repo().get_by_slug(slug)
+    if not row:
+        raise HTTPException(status_code=404, detail="data_app_not_found")
+    if not _can_view(user, row):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    is_admin = is_user_admin(user["id"])
+    is_owner = user["id"] == row["owner_user_id"]
+    can_manage = is_owner or is_admin
+
+    owner = users_repo().get_by_id(row["owner_user_id"])
+    serialized = _serialize(row)
+    serialized["owner_email"] = (owner or {}).get("email") or row["owner_user_id"]
+    serialized["badge_class"] = _state_badge_class(row["state"])
+
+    return templates.TemplateResponse(
+        request,
+        "data_app_detail.html",
+        {
+            **_chrome_ctx(request, user),
+            "app": serialized,
+            "is_owner": is_owner,
+            "is_admin": is_admin,
+            "can_manage": can_manage,
+        },
+    )
 
 
 @router.get("/me/memory-mining", response_class=HTMLResponse)
@@ -2407,6 +2689,35 @@ async def store_lint_admin_page(
     )
 
 
+@router.get("/admin/studio", response_class=HTMLResponse)
+async def studio_index(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Studio landing page — a card grid linking to every authoring domain.
+
+    When Studio is enabled, available to all signed-in users (same gate as
+    ``/admin/studio/{domain}``, not admin-only — most domains route non-admins
+    through the suggestions queue instead of blocking them outright); when the
+    instance-level toggle is off, every viewer is redirected home.
+    Registered as a static path
+    alongside (and before) ``/admin/studio/{domain}`` so it does not fall
+    through to the dynamic domain matcher.
+    """
+    if not get_studio_enabled():
+        return RedirectResponse("/")
+    return templates.TemplateResponse(
+        request,
+        "admin_studio_index.html",
+        {
+            **_chrome_ctx(request, user),
+            "domains": list(STUDIO_DOMAINS.values()),
+            "is_admin": is_user_admin(user["id"], conn),
+        },
+    )
+
+
 @router.get("/admin/studio/suggestions", response_class=HTMLResponse)
 async def studio_suggestions_admin(
     request: Request,
@@ -2417,6 +2728,8 @@ async def studio_suggestions_admin(
     Registered BEFORE ``/admin/studio/{domain}`` so the static ``suggestions``
     path wins over the dynamic domain matcher.
     """
+    if not get_studio_enabled():
+        return RedirectResponse("/")
     return templates.TemplateResponse(request, "admin_studio_suggestions.html", _chrome_ctx(request, user))
 
 
@@ -2426,7 +2739,8 @@ async def studio(
     request: Request,
     user: dict = Depends(get_current_user),
 ):
-    """Authoring-agent studio — available to all signed-in users.
+    """Authoring-agent studio — available to all signed-in users while the
+    instance-level Studio toggle is on (off → redirect home).
 
     A generic form-based builder with an embedded assistant panel. The domain
     config (``app/web/studio.py``) drives the fields, the chat profile, and the
@@ -2437,6 +2751,8 @@ async def studio(
     queue entirely — everyone posts straight to ``endpoint``, which runs its
     own guardrail/review pipeline instead.
     """
+    if not get_studio_enabled():
+        return RedirectResponse("/")
     spec = get_studio_domain(domain)
     if spec is None:
         raise HTTPException(status_code=404, detail="unknown studio domain")
@@ -3211,6 +3527,23 @@ async def documentation_api(
     )
 
 
+@router.get("/admin", response_class=HTMLResponse)
+async def admin_hub(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Admin hub — the canonical landing page for instance administration.
+
+    A settings-style index that groups every /admin/* surface by domain
+    (Activity Center, Users & Access, Data Packages, Sources, Agent
+    Experience, Documentation, Server). The header's Admin mega-menu links
+    here; this page is the scalable home as the admin surface grows past what
+    a dropdown holds. Shell-only — every card links to an existing gated
+    route (each still enforces require_admin independently)."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_hub.html", ctx)
+
+
 @router.get("/admin/tables", response_class=HTMLResponse)
 async def admin_tables(
     request: Request,
@@ -3301,10 +3634,26 @@ async def admin_data_sources_page(
     ``AGNES_VAULT_KEY`` is absent (the wizard can't store a secret without
     it).
     """
+    from app.api.keboola_semantic_layer_refresh import get_last_refresh_summary
     from app.secrets_vault import vault_key_configured
 
     ctx = _build_context(request, user=user)
     ctx["vault_key_configured"] = vault_key_configured()
+
+    # Semantic-layer sync summary (#853 + #920 follow-up, #953 status
+    # visibility): metric_definitions / glossary_terms carry no
+    # per-connection column, so the counts are global — scoped to
+    # source='keboola_semantic_layer' so a manual/yaml_import/openmetadata
+    # row doesn't inflate the "synced from Keboola" figure. The card always
+    # renders — never-synced-yet / last-sync-ok / last-attempt-failed are all
+    # visible states, not just "something has successfully synced" (#953).
+    semantic_metric_count = sum(1 for m in metric_repo().list() if m.get("source") == "keboola_semantic_layer")
+    semantic_glossary_count = sum(
+        1 for t in glossary_repo().list(limit=500) if t.get("source") == "keboola_semantic_layer"
+    )
+    ctx["semantic_metric_count"] = semantic_metric_count
+    ctx["semantic_glossary_count"] = semantic_glossary_count
+    ctx["semantic_refresh_summary"] = get_last_refresh_summary()
     return templates.TemplateResponse(request, "admin_data_sources.html", ctx)
 
 

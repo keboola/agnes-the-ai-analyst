@@ -308,6 +308,41 @@ def _purge_derived_tabular_rows(corpus_id: str) -> None:
         logger.warning("rebuild_source(%s) after derived-table purge failed: %s", source_name, exc)
 
 
+def _schedule_derived_purge(corpus_id: str, file_id: str | None = None) -> None:
+    """Route a derived-table purge to the right executor.
+
+    Worker-role process (single-box ``all``) → run the purge inline, exactly
+    as before. Process WITHOUT the worker role (role-split ``api`` replica) →
+    enqueue the ``collections-purge`` job so the worker plane performs the
+    extract.duckdb surgery + ``rebuild_source`` — the api plane must stay
+    analytics-write-free (three-plane spec §3.1). The purge helpers are
+    already tolerant of rows/files that vanished between enqueue and run
+    (they no-op on missing state), so at-least-once delivery is safe.
+    """
+    from app.roles import Role, role_enabled
+
+    if role_enabled(Role.WORKER):
+        if file_id:
+            _purge_derived_tabular_row_for_file(corpus_id, file_id)
+        else:
+            _purge_derived_tabular_rows(corpus_id)
+        return
+    from src.repositories import jobs_repo
+
+    row = jobs_repo().enqueue(
+        "collections-purge",
+        payload={"corpus_id": corpus_id, "file_id": file_id},
+        idempotency_key=f"collections-purge:{corpus_id}:{file_id or ''}",
+    )
+    logger.info(
+        "api-role replica: derived purge for corpus=%s file=%s enqueued as job %s (deduped=%s)",
+        corpus_id,
+        file_id,
+        row.get("id"),
+        row.get("deduped"),
+    )
+
+
 def _purge_derived_tabular_row_for_file(corpus_id: str, file_id: str) -> None:
     """Variant of ``_purge_derived_tabular_rows`` for a single file deletion.
 
@@ -385,7 +420,7 @@ async def delete_collection(
         raise HTTPException(status_code=404, detail="collection_not_found")
     if not is_user_admin(user["id"]) and row.get("created_by") != user["id"]:
         raise HTTPException(status_code=403, detail="collection_not_owned")
-    _purge_derived_tabular_rows(collection_id)
+    _schedule_derived_purge(collection_id)
     file_corpora_repo().soft_delete(collection_id)
     logger.info("collection deleted id=%s by=%s", collection_id, user.get("email"))
 
@@ -565,7 +600,7 @@ async def delete_file(
     # Do this BEFORE the corpus_files row is deleted: if the purge raises, the
     # file row is still intact and the user can retry (mirrors delete_collection
     # ordering which purges derived data before the soft-delete).
-    _purge_derived_tabular_row_for_file(collection_id, file_id)
+    _schedule_derived_purge(collection_id, file_id)
     # Delete the file's chunks first — otherwise they linger and still surface
     # in search results (with a null filename once the file row is gone).
     corpus_chunks_repo().delete_for_file(file_id)
@@ -612,7 +647,21 @@ async def reingest_file(
     Purges the file's derived artifacts first — the derived table_registry
     row/parquet for tabular files (chunks are cleared by the ingest itself,
     which is idempotent) — then resets the row to ``pending`` and re-runs
-    ``ingest_file`` in the background. Returns 202 with the pending row.
+    ``ingest_file``. Returns 202 with the pending row.
+
+    Worker-role process (single-box ``all``) → purge runs inline, then
+    ``ingest_file`` is scheduled as a FastAPI BackgroundTask — unchanged from
+    before this endpoint existed on role-split deployments, since purge always
+    completes first.
+
+    Process WITHOUT the worker role (role-split ``api`` replica) → purge and
+    re-ingest must run as ONE ordered unit on the worker plane, not decoupled:
+    an enqueued purge job racing an in-process ``ingest_file`` BackgroundTask
+    could have the purge land *after* the re-ingest completes and delete the
+    freshly rebuilt table (same deterministic ``table_id``). So a single
+    ``collections-purge`` job is enqueued with ``reingest_after_purge=True``;
+    the worker handler purges, then calls ``ingest_file`` — always in that
+    order, in one job.
     """
     cf_repo = corpus_files_repo()
     row = cf_repo.get(file_id)
@@ -630,10 +679,23 @@ async def reingest_file(
     if row.get("processing_status") == "processing" and not _is_stale_processing(row):
         raise HTTPException(status_code=409, detail="reingest_in_progress")
 
-    _purge_derived_tabular_row_for_file(collection_id, file_id)
-    cf_repo.set_status(file_id, status="pending", detail={"reason": "reingest requested"})
+    from app.roles import Role, role_enabled
 
-    from src.ingest.runner import ingest_file
+    if role_enabled(Role.WORKER):
+        _purge_derived_tabular_row_for_file(collection_id, file_id)
+        cf_repo.set_status(file_id, status="pending", detail={"reason": "reingest requested"})
 
-    background_tasks.add_task(ingest_file, file_id)
+        from src.ingest.runner import ingest_file
+
+        background_tasks.add_task(ingest_file, file_id)
+    else:
+        from src.repositories import jobs_repo
+
+        jobs_repo().enqueue(
+            "collections-purge",
+            payload={"corpus_id": collection_id, "file_id": file_id, "reingest_after_purge": True},
+            idempotency_key=f"collections-purge:{collection_id}:{file_id}",
+        )
+        cf_repo.set_status(file_id, status="pending", detail={"reason": "reingest requested"})
+
     return {**_file_out(cf_repo.get(file_id))}

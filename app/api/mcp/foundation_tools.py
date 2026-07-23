@@ -24,6 +24,22 @@ from typing import Any, Callable
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+
+def _split_marketplace_id(item_id: str) -> tuple[str, str, str]:
+    """Split a marketplace item id into ``(source, part1, part2)``.
+
+    ``GET /api/marketplace/items`` prefixes row ids with their tab
+    (``curated-<marketplace_id>/<plugin_name>``, ``flea-<entity_uuid>``), while
+    the REST detail/install paths take the bare forms. Accept both, so an id
+    can be passed straight from ``marketplace_search`` output — same
+    normalization as the CLI's ``_parse_id`` in ``cli/commands/marketplace.py``.
+    """
+    if "/" in item_id:
+        head, plugin = item_id.split("/", 1)
+        return "curated", head.removeprefix("curated-"), plugin
+    return "flea", item_id.removeprefix("flea-"), ""
+
+
 FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "server_info",
     "catalog",
@@ -31,6 +47,7 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "collection_get",
     "collections_search",
     "knowledge_search",
+    "glossary_search",
     "collections_reingest",
     "schema",
     "describe",
@@ -43,6 +60,16 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "store_rate",
     "store_status",
     "store_publish_markdown",
+    # Full agent/skill lifecycle parity (REST × CLI × MCP): discover, inspect,
+    # install/remove, edit, delete — an agent can manage its own store
+    # entities and stack without leaving the chat. Binary paths (ZIP upload,
+    # photo, bundle download) stay CLI-only.
+    "marketplace_search",
+    "marketplace_detail",
+    "marketplace_add",
+    "marketplace_remove",
+    "store_update",
+    "store_delete",
     "admin_store_lint_findings",
     "admin_store_lint_audit",
     "admin_store_lint_dismiss",
@@ -61,6 +88,23 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "admin_knowledge_digest_delete",
     # Chat workspace file upload — any authenticated user.
     "chat_upload_file",
+    # Per-user MCP credential connectivity check (triple-surface with
+    # /api/mcp/sources/{id}/my-secret/test + `agnes mcp my-secret test`).
+    "my_secret_test",
+    # Wave-2B job queue (Task 5) — admin CRUD-lite, triple-surface with
+    # /api/jobs* + `agnes admin jobs`.
+    "admin_jobs_list",
+    "admin_job_get",
+    "admin_job_enqueue",
+    # DuckLake analytics-backend migration (wave-2G Task 6), triple-surface
+    # with /api/admin/analytics/migrate + `agnes admin analytics migrate`.
+    "admin_analytics_migrate",
+    # Hosted data apps (data-apps platform plan, Task 11) — triple-surface
+    # with /api/data-apps* + `agnes app list/show/deploy/logs`.
+    "data_apps_list",
+    "data_app_get",
+    "data_app_deploy",
+    "data_app_logs",
 )
 
 
@@ -201,6 +245,29 @@ def register_foundation_tools(
                 headers=headers_fn(),
                 params={"q": query, "k": k},
                 timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def glossary_search(query: str, k: int = 10) -> dict:
+        """Search Keboola-imported business-term definitions (glossary).
+
+        Relevance-ranked (BM25) search across term + definition, RBAC tier
+        matches knowledge_search (any authenticated user). Use this to
+        resolve business terminology (e.g. "what does MRR mean here?")
+        before assuming a term's meaning.
+
+        Args:
+            query: Natural-language or keyword query.
+            k: Max results (default 10).
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/glossary/search",
+                headers=headers_fn(),
+                params={"q": query, "limit": k},
+                timeout=30,
             )
             r.raise_for_status()
             return r.json()
@@ -478,28 +545,31 @@ def register_foundation_tools(
     async def store_publish_markdown(
         name: str,
         skill_md: str,
+        type: str = "skill",
         description: str | None = None,
         category: str | None = None,
     ) -> dict:
-        """Publish a skill to the store from Markdown content — no ZIP needed.
+        """Publish a skill or agent to the store from Markdown content — no ZIP needed.
 
-        The server synthesizes the SKILL.md folder and routes it through the same
+        The server synthesizes the single-file bundle (``<name>/SKILL.md`` for a
+        skill, ``<name>.md`` for an agent) and routes it through the same
         guardrail + review pipeline as a ZIP upload. The result may be held for
         automated review (``visibility_status: pending``) before it appears.
         Mirrors ``POST /api/store/entities/from-markdown`` and
         ``agnes store publish-md``.
 
         Args:
-            name:        Skill name — lowercase letters, digits, dashes.
-            skill_md:    The SKILL.md content (frontmatter optional; synthesized
+            name:        Name — lowercase letters, digits, dashes.
+            skill_md:    The Markdown content (frontmatter optional; synthesized
                          from ``name``/``description`` when absent).
+            type:        ``"skill"`` (default) or ``"agent"``.
             description: One-line *use when …* trigger (goes into frontmatter).
             category:    Optional store category (case-insensitive).
 
         Returns the created entity — ``{"id", "name", "invocation_name",
         "version", "visibility_status", …}``.
         """
-        payload: dict = {"type": "skill", "name": name, "skill_md": skill_md}
+        payload: dict = {"type": type, "name": name, "skill_md": skill_md}
         if description:
             payload["description"] = description
         if category:
@@ -513,6 +583,203 @@ def register_foundation_tools(
             )
             r.raise_for_status()
             return r.json()
+
+    @mcp.tool()
+    async def marketplace_search(
+        query: str = "",
+        type: str = "",
+        source: str = "",
+        sort: str = "recent",
+        limit: int = 24,
+    ) -> dict:
+        """Search the marketplace — Curated and Flea Market — for installable items.
+
+        Default scope is EVERYWHERE: both the curated marketplaces and the Flea
+        Market are searched, and every result carries a ``source`` label
+        (``curated`` | ``flea``) plus an ``installed`` flag so you can tell what
+        is already in the caller's stack. Results are RBAC-filtered to what the
+        caller may access. Mirrors ``GET /api/marketplace/items`` and
+        ``agnes marketplace search``.
+
+        Args:
+            query:  Search text (empty = browse all).
+            type:   Filter: ``skill`` | ``agent`` | ``plugin`` (empty = all).
+            source: Restrict to one tab: ``curated`` | ``flea`` (empty = both).
+            sort:   ``recent`` (default) | ``most_used`` | ``trending``.
+            limit:  Max results per tab (1–100).
+
+        Returns ``{"items": [{"id", "type", "source", "name", "owner",
+        "installed", …}], "total"}``. Install an item with ``marketplace_add``;
+        inspect one with ``marketplace_detail``.
+        """
+        tabs = [source] if source else ["curated", "flea"]
+        items: list = []
+        async with httpx.AsyncClient() as c:
+            for tab in tabs:
+                params: dict = {"tab": tab, "sort": sort, "page_size": max(1, min(limit, 100))}
+                if query:
+                    params["q"] = query
+                if type:
+                    params["type"] = type
+                r = await c.get(
+                    f"{base_url}/api/marketplace/items",
+                    headers=headers_fn(),
+                    params=params,
+                    timeout=30,
+                )
+                r.raise_for_status()
+                items.extend(r.json().get("items", []))
+        return {"items": items, "total": len(items)}
+
+    @mcp.tool()
+    async def marketplace_detail(item_id: str) -> dict:
+        """Show full details for one marketplace item (curated or flea).
+
+        Accepts the same id shapes as ``agnes marketplace detail``: a curated id
+        is ``<marketplace_id>/<plugin_name>`` (contains a slash), a Flea Market
+        id is the bare entity UUID. Returns the enriched detail — description,
+        contents (skills / agents / commands / MCP servers), install state.
+        Mirrors ``GET /api/marketplace/curated/{mid}/{plugin}`` /
+        ``GET /api/marketplace/flea/{entity_id}/detail``.
+
+        Args:
+            item_id: ``<marketplace_id>/<plugin_name>`` or a flea entity UUID —
+                     the tab-prefixed forms printed by ``marketplace_search``
+                     (``curated-<mid>/<plugin>``, ``flea-<uuid>``) work as-is.
+        """
+        source, part1, part2 = _split_marketplace_id(item_id)
+        if source == "curated":
+            path = f"/api/marketplace/curated/{part1}/{part2}"
+        else:
+            path = f"/api/marketplace/flea/{part1}/detail"
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}{path}", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def marketplace_add(item_id: str) -> dict:
+        """Add a marketplace item (plugin, skill, or agent) to the caller's stack.
+
+        Persistent, like clicking "Add" in the web UI — applies to all future
+        sessions. Same id shapes as ``marketplace_detail``. Flea items must have
+        passed guardrail review (``approved``) — pending/blocked entities return
+        409. Mirrors ``POST /api/store/entities/{id}/install`` (flea) /
+        ``POST /api/marketplace/curated/{mid}/{plugin}/install`` (curated) and
+        ``agnes marketplace add``.
+
+        Args:
+            item_id: ``<marketplace_id>/<plugin_name>`` or a flea entity UUID
+                     (tab-prefixed ``marketplace_search`` ids work as-is).
+
+        Returns ``{"installed": true, "next_step": …}`` — the plugin activates
+        after the user's next plugin refresh.
+        """
+        source, part1, part2 = _split_marketplace_id(item_id)
+        if source == "curated":
+            path = f"/api/marketplace/curated/{part1}/{part2}/install"
+        else:
+            path = f"/api/store/entities/{part1}/install"
+        async with httpx.AsyncClient() as c:
+            r = await c.post(f"{base_url}{path}", json={}, headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+        return {
+            "installed": True,
+            "next_step": "Run /update-agnes-plugins in Claude Code (or `agnes update`) to activate it.",
+        }
+
+    @mcp.tool()
+    async def marketplace_remove(item_id: str) -> dict:
+        """Remove a marketplace item from the caller's stack.
+
+        Inverse of ``marketplace_add``; same id shapes. System plugins pinned by
+        an admin cannot be removed (409). Mirrors the DELETE install endpoints
+        and ``agnes marketplace remove``.
+
+        Args:
+            item_id: ``<marketplace_id>/<plugin_name>`` or a flea entity UUID
+                     (tab-prefixed ``marketplace_search`` ids work as-is).
+        """
+        source, part1, part2 = _split_marketplace_id(item_id)
+        if source == "curated":
+            path = f"/api/marketplace/curated/{part1}/{part2}/install"
+        else:
+            path = f"/api/store/entities/{part1}/install"
+        async with httpx.AsyncClient() as c:
+            r = await c.delete(f"{base_url}{path}", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+        return {
+            "removed": True,
+            "next_step": "Run /update-agnes-plugins in Claude Code (or `agnes update`) to apply it.",
+        }
+
+    @mcp.tool()
+    async def store_update(
+        entity_id: str,
+        description: str = "",
+        category: str = "",
+        video_url: str = "",
+    ) -> dict:
+        """Edit the metadata of an owned Flea Market entity (owner or admin).
+
+        Metadata-only: text fields update in place with no version bump or
+        re-review. Binary replacements (new ZIP bundle, photo) have no MCP
+        analogue — use ``agnes store update --zip/--photo``. Omitted (empty)
+        fields are left untouched. Mirrors ``PUT /api/store/entities/{id}`` and
+        ``agnes store update``.
+
+        Args:
+            entity_id:   The store entity id (from ``store_publish_markdown``
+                         output or ``marketplace_search``).
+            description: New description (empty = unchanged).
+            category:    New category, case-insensitive (empty = unchanged).
+            video_url:   New demo-video URL (empty = unchanged).
+
+        Returns the updated entity ``{"id", "version", …}``.
+        """
+        data: dict = {}
+        if description:
+            data["description"] = description
+        if category:
+            data["category"] = category
+        if video_url:
+            data["video_url"] = video_url
+        if not data:
+            return {
+                "error": "nothing_to_update",
+                "hint": "Pass at least one of description / category / video_url.",
+            }
+        async with httpx.AsyncClient() as c:
+            r = await c.put(
+                f"{base_url}/api/store/entities/{entity_id}",
+                data=data,
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def store_delete(entity_id: str) -> dict:
+        """Delete an owned Flea Market entity (owner or admin).
+
+        Soft-archives the entity by default (reversible): it is hidden from
+        browse and refuses new installs, but the bundle stays on disk so users
+        who already installed it keep it. Hard delete (drops the bundle and
+        removes existing installs) is admin-only via the web/CLI. Mirrors
+        ``DELETE /api/store/entities/{id}`` and ``agnes store delete``.
+
+        Args:
+            entity_id: The store entity id to delete.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.delete(
+                f"{base_url}/api/store/entities/{entity_id}",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+        return {"deleted": True, "entity_id": entity_id}
 
     @mcp.tool()
     async def admin_store_lint_findings(include_dismissed: bool = False) -> dict:
@@ -901,5 +1168,236 @@ def register_foundation_tools(
             "file with `agnes chat upload <file>` from your machine, or use the "
             "local stdio MCP tool which reads your local filesystem."
         )
+
+    @mcp.tool()
+    async def my_secret_test(source_id: str) -> dict:
+        """Verify your own stored credential for a per_user MCP source.
+
+        Runs a live connectivity check against the upstream under YOUR
+        credential (not the shared one). Returns ``{ok, tool_count, message}``.
+        If you are not connected (or another 4xx condition applies — not
+        granted, rate-limited, ...), ``ok`` is ``False`` and ``message``
+        carries the server's remedy text (e.g. where to add your token).
+
+        Args:
+            source_id: The MCP source id (``src_*``).
+
+        Mirrors ``POST /api/mcp/sources/{id}/my-secret/test`` and
+        ``agnes mcp my-secret test``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/mcp/sources/{source_id}/my-secret/test",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            # 4xx bodies carry the connect remedy (e.g. the not-connected 403's
+            # `detail` — see mcp_user_secrets.py) — raise_for_status() would
+            # discard it and surface only a generic "403 Forbidden" to the
+            # model, defeating the "tells you where to add your token" promise
+            # above. Only genuine 5xx/transport errors still raise.
+            if 400 <= r.status_code < 500:
+                try:
+                    detail = r.json().get("detail", r.text)
+                except ValueError:
+                    detail = r.text
+                return {"ok": False, "tool_count": None, "message": detail}
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def admin_jobs_list(status: str = "", kind: str = "", limit: int = 50) -> dict:
+        """List jobs on the wave-2B durable job queue (admin only).
+
+        Jobs are the worker-runtime's unit of work (data-refresh, jira-refresh,
+        marketplaces-sync, session-collector, corporate-memory, and any other
+        kind registered in ``JOB_KINDS``). Use this to check whether an
+        enqueued job has started, finished, or is retrying after a failure.
+
+        Args:
+            status: Filter by status: "queued" | "running" | "done" | "failed".
+                    Empty (default) returns all statuses.
+            kind:   Filter by job kind (e.g. "data-refresh"). Empty (default)
+                    returns all kinds.
+            limit:  Max rows to return, most recent first (default 50).
+
+        Returns ``{"jobs": [{"id", "kind", "status", "priority", "attempts",
+        "max_attempts", "payload", "created_at", "started_at", "finished_at",
+        "error", ...}, ...]}``. Mirrors ``GET /api/jobs`` and
+        ``agnes admin jobs list``.
+
+        Requires an admin PAT.
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if status:
+            params["status"] = status
+        if kind:
+            params["kind"] = kind
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}/api/jobs", headers=headers_fn(), params=params, timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def admin_job_get(job_id: str) -> dict:
+        """Show one job's full detail, incl. payload and error (admin only).
+
+        Args:
+            job_id: The job id (from ``admin_jobs_list`` or the id returned by
+                    ``admin_job_enqueue``).
+
+        Mirrors ``GET /api/jobs/{job_id}`` and ``agnes admin jobs show``.
+        Requires an admin PAT. 404 if the job doesn't exist.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}/api/jobs/{job_id}", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def admin_job_enqueue(kind: str, payload: dict | None = None, idempotency_key: str = "") -> dict:
+        """Enqueue a job on the wave-2B worker runtime (admin only).
+
+        ``kind`` must already be registered in the server's ``JOB_KINDS``
+        registry (populated at startup by ``register_all_kinds()``) — an
+        unrecognized kind 400s with the list of currently-registered kinds.
+
+        Args:
+            kind:            Registered job kind (e.g. "data-refresh",
+                             "marketplaces-sync", "session-collector",
+                             "corporate-memory", "jira-refresh").
+            payload:         Job-specific payload dict. Defaults to empty.
+            idempotency_key: Dedup key — if a queued/running job already has
+                             this key, that job is returned unchanged instead
+                             of enqueuing a duplicate. Empty (default) disables
+                             dedup.
+
+        Mirrors ``POST /api/jobs`` and ``agnes admin jobs enqueue``. Requires
+        an admin PAT.
+        """
+        body: dict[str, Any] = {"kind": kind, "payload": payload or {}}
+        if idempotency_key:
+            body["idempotency_key"] = idempotency_key
+        async with httpx.AsyncClient() as c:
+            r = await c.post(f"{base_url}/api/jobs", json=body, headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def admin_analytics_migrate(to: str) -> dict:
+        """Migrate the analytics query surface between backends (admin only).
+
+        Validates prerequisites (``to="ducklake"`` only: the DuckLake DuckDB
+        extension is loadable and the catalog is reachable, auto-repairing a
+        missing catalog database on an existing Postgres volume where the
+        init-script never ran) and enqueues an ``analytics-migrate`` job that
+        rebuilds the named target backend from the on-disk extracts tree —
+        no re-extract from the source system, in either direction.
+
+        This call never flips ``analytics.backend`` in config — it is read
+        once at boot, not hot-reloaded. Once the returned job completes
+        (poll with ``admin_job_get``), set ``analytics.backend`` in
+        ``instance.yaml`` (or ``AGNES_ANALYTICS_BACKEND`` env) on every role
+        process and restart to actually switch query serving over.
+
+        Args:
+            to: Target backend — "ducklake" or "legacy" (rollback).
+
+        Returns ``{status, to, job_id, message}`` on success. Mirrors
+        ``POST /api/admin/analytics/migrate`` and
+        ``agnes admin analytics migrate --to <target>``. Requires an admin
+        PAT. Raises on a 400 (unmet prerequisites — see the error body for
+        the full problem list) or a 409 (a migration is already running).
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/admin/analytics/migrate",
+                json={"to": to},
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_apps_list() -> dict:
+        """List hosted data apps you can see (RBAC-filtered).
+
+        Visible to any authenticated user: apps you own, apps a group you're
+        in has a ``resource_grants`` row for, or (Admin) all apps. Returns a
+        list of app summaries — ``slug``, ``name``, ``state``
+        (``stopped``/``deploying``/``running``/``sleeping``/``error``),
+        ``url``, and metadata; secrets are never included. Mirrors
+        ``GET /api/data-apps`` and ``agnes app list``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}/api/data-apps", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_get(slug: str) -> dict:
+        """Show one hosted data app's detail.
+
+        Any authenticated user with view access to the app (owner, Admin, or
+        a group granted access via ``resource_grants``) may call this.
+
+        Args:
+            slug: The app's slug (from ``data_apps_list``).
+
+        Mirrors ``GET /api/data-apps/{slug}`` and ``agnes app show``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}/api/data-apps/{slug}", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_deploy(slug: str, sha: str = "") -> dict:
+        """Deploy (or redeploy) a hosted data app — app owner or Admin only.
+
+        Fast-forwards the app's ``agnes-live`` ref (to ``sha`` if given,
+        otherwise the tracked branch's latest), mints a fresh service token,
+        and hands the build off to the runner sidecar.
+
+        Args:
+            slug: The app's slug.
+            sha:  Optional commit sha to deploy. Empty (default) fast-forwards
+                  to the tracked branch's latest commit.
+
+        Returns ``{"state": "running", "deployed_sha": "..."}``. Mirrors
+        ``POST /api/data-apps/{slug}/deploy`` and ``agnes app deploy``.
+        """
+        payload: dict = {"sha": sha} if sha else {}
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/data-apps/{slug}/deploy",
+                json=payload,
+                headers=headers_fn(),
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_logs(slug: str, tail: int = 200) -> dict:
+        """Show the last N lines of runner logs for a hosted data app — app owner or Admin only.
+
+        Args:
+            slug: The app's slug.
+            tail: Number of trailing log lines to return (default 200).
+
+        Returns ``{"logs": "..."}``. Mirrors ``GET /api/data-apps/{slug}/logs``
+        and ``agnes app logs``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/data-apps/{slug}/logs",
+                headers=headers_fn(),
+                params={"tail": tail},
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
 
     return list(FOUNDATION_TOOL_NAMES)

@@ -24,7 +24,8 @@ Full step-by-step (local dev, Docker, TLS) lives in [`docs/QUICKSTART.md`](docs/
 │   ├── orchestrator.py     # SyncOrchestrator — ATTACHes extract.duckdb files
 │   ├── repositories/       # DuckDB-backed CRUD (sync_state, table_registry, users, etc.)
 │   ├── profiler.py         # Data profiling
-│   └── catalog_export.py   # OpenMetadata catalog export
+│   ├── catalog_export.py   # OpenMetadata catalog export
+│   └── data_apps/          # Hosted data-apps registry: config.json + container spec builders
 ├── app/                    # FastAPI application
 │   ├── main.py             # App setup, router registration
 │   ├── api/                # REST API (sync, data, catalog, admin, auth)
@@ -35,7 +36,7 @@ Full step-by-step (local dev, Docker, TLS) lives in [`docs/QUICKSTART.md`](docs/
 │   └── jira/               # Jira: webhook + incremental parquet → extract.duckdb
 ├── cli/                    # CLI tool (`agnes pull`, `agnes query`, `agnes admin`)
 ├── app/auth/               # Authentication (FastAPI-based providers)
-├── services/               # Standalone services (scheduler, telegram_bot, ws_gateway, etc.)
+├── services/               # Standalone services (scheduler, telegram_bot, apps_runner sidecar, etc.)
 ├── server/                 # Legacy deployment infrastructure
 ├── scripts/                # Utility + migration scripts
 ├── config/                 # Configuration templates (instance.yaml.example)
@@ -319,6 +320,9 @@ HTML dashboard pages use the design-system **page shell** (#367/#482): `{% exten
 
 **Visual standard (binding for ALL UI work):** `.claude/skills/agnes-conventions/references/design-system.md` — `--ds-*` tokens only, theme switch via `data-theme` (`blue` default, `paper` = the issue-#896 prototype look), chrome layout via `data-ui-layout` (`topnav` default, `rail` = left sidebar). Visual changes ship as opt-in scoped theme/skin blocks; the default look of existing instances never changes (guarded by `tests/test_ui_layout_theme.py`).
 
+### Hosted Data Apps
+`src/data_apps/` (registry + spec builders) + `services/apps_runner/` (the sidecar that alone holds the Docker socket) host user web apps next to the data — off by default (`data_apps.enabled`), compose profile `apps`. See [`docs/architecture.md`](docs/architecture.md#hosted-data-apps) and [`docs/superpowers/specs/2026-07-21-data-apps-design.md`](docs/superpowers/specs/2026-07-21-data-apps-design.md).
+
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
@@ -345,9 +349,15 @@ HTML dashboard pages use the design-system **page shell** (#367/#482): `{% exten
 
 ### Files NOT to modify (stable infrastructure)
 - `connectors/jira/file_lock.py` — advisory file locking
-- `services/ws_gateway/` — WebSocket notification gateway
 
-(`connectors/jira/transform.py` was previously listed here but has been
+(`services/ws_gateway/` was previously listed here but the standalone
+service no longer exists: wave-2F task 6 absorbed its WS + auth + heartbeat
+logic into `app/api/notifications_ws.py` (gated to `Role.GATEWAY` processes)
+and its dispatch path into `app/notifications.py::publish_notification`,
+which rides the coordination pub/sub channel `notify:{user}` instead of the
+old in-memory `connections` dict + Unix-socket HTTP dispatch.
+
+`connectors/jira/transform.py` was previously listed here but has been
 removed: the `_remote_links` hardening in 0.54.19 required modifying
 `transform_remote_links` and `transform_all` to honor a new "overlay
 absent → preserve existing rows" contract. The transform module remains

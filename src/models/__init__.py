@@ -13,8 +13,9 @@ from src.models.audit import AuditLog
 from src.models.chat import ChatMessage, ChatSession, UserWorkdir
 from src.models.chat_broker_tickets import ChatBrokerTicket
 from src.models.collections import CorpusChunk, CorpusFile, FileCorpus
-from src.models.config import InstanceTemplate, MetricDefinition, PersonalAccessToken
+from src.models.config import GlossaryTerm, InstanceTemplate, MetricDefinition, PersonalAccessToken
 from src.models.connections import ConnectionSecret, SourceConnection
+from src.models.data_apps import DataApp
 from src.models.data_packages import DataPackage, DataPackageTable, DataPackageTool
 from src.models.knowledge import (
     KnowledgeContradiction,
@@ -27,6 +28,7 @@ from src.models.knowledge import (
     MemoryDomainSuggestion,
     VerificationEvidence,
 )
+from src.models.jobs import Job
 from src.models.knowledge_digests import KnowledgeDigest
 from src.models.lookup import (
     BqMetadataCache,
@@ -96,10 +98,13 @@ __all__ = [
     "CorpusChunk",
     "CorpusFile",
     "FileCorpus",
+    "DataApp",
     "DataPackage",
+    "GlossaryTerm",
     "DataPackageTable",
     "DataPackageTool",
     "InstanceTemplate",
+    "Job",
     "KnowledgeContradiction",
     "KnowledgeDigest",
     "KnowledgeItem",

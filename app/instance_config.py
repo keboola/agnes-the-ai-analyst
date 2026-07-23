@@ -429,6 +429,25 @@ def get_home_status_frame_visibility() -> bool:
     return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
 
 
+def get_studio_enabled() -> bool:
+    """Whether the authoring Studio surface (/admin/studio*) is exposed.
+
+    On by default. Disable per-instance with ``AGNES_STUDIO_ENABLED=0`` (the
+    infra/Terraform ``.env`` override) or ``studio.enabled: false`` in
+    instance.yaml — hides the Studio nav entry and redirects ``/admin/studio*``
+    to home.
+
+    Resolution: env var > ``studio.enabled`` YAML > True. Mirrors
+    :func:`get_home_automode_visibility` so infra overrides land the same way.
+    """
+    raw = os.environ.get("AGNES_STUDIO_ENABLED")
+    if raw is None:
+        raw = get_value("studio", "enabled", default=True)
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
+
+
 def get_instance_name() -> str:
     return get_value("instance", "name", default="AI Harness")
 
@@ -849,6 +868,38 @@ def get_corporate_memory_config() -> dict:
     return get_value("corporate_memory", default={})
 
 
+def get_data_apps_config() -> dict:
+    """``data_apps:`` block — hosted user web apps feature (v96).
+
+    ``get_value(..., default={})`` only substitutes the default when the
+    key is absent — an explicit null block in instance.yaml (or a
+    config-not-loaded-yet state some bootstrap/test paths hit) can still
+    make this come back ``None``. Hardened to always return a dict: this
+    accessor runs on every request via ``DataAppSubdomainMiddleware``
+    (``app/data_apps_subdomain.py``) and ``session_cookie_domain()`` below
+    (itself called from every login flow), so callers should never need
+    their own ``(get_data_apps_config() or {})`` guard.
+    """
+    return get_value("data_apps", default={}) or {}
+
+
+def session_cookie_domain() -> Optional[str]:
+    """``Domain`` attribute for the session cookie (``access_token``), or
+    ``None`` for no ``Domain`` attribute at all — i.e. exactly today's
+    pre-data-apps behavior (cookie scoped to the exact host that set it).
+
+    Only set when ``data_apps.subdomain_base`` is configured (Task 8's
+    ingress proxy — ``app/data_apps_subdomain.py``): a subdomain like
+    ``<slug>.apps.example.com`` needs the cookie minted on the main host to
+    also be sent on the data-app subdomain, which requires scoping it to
+    the shared parent domain (``.example.com``) rather than the exact host.
+    """
+    base = (get_data_apps_config().get("subdomain_base") or "").strip()
+    if not base or "." not in base:
+        return None
+    return "." + base.split(".", 1)[1]
+
+
 def get_guardrails_config() -> dict:
     """Flea-market upload-guardrail config (see docs/STORE_GUARDRAILS.md).
 
@@ -1063,3 +1114,94 @@ def get_lint_audit_min_interval_hours() -> int:
         return max(1, int(val))
     except (TypeError, ValueError):
         return 144
+
+
+# --- Distribution (signed-URL bucket mirror, three-plane wave 2-H) ------
+
+_DISTRIBUTION_SIGNED_URL_MODES = ("auto", "on", "off")
+_DEFAULT_DISTRIBUTION_OBJECT_STORE_PREFIX = "agnes/distribution"
+
+
+def distribution_signed_urls_mode() -> str:
+    """Signed-URL distribution mode: ``"auto"`` (default) | ``"on"`` | ``"off"``.
+
+    Resolution: ``AGNES_DISTRIBUTION_SIGNED_URLS`` env (Terraform-friendly,
+    overrides everything) > ``distribution.signed_urls`` in instance.yaml >
+    default ``"auto"``. Mirrors :func:`get_slack_transport` /
+    :func:`src.analytics_backend.resolve_analytics_backend_name`'s
+    env-overrides-yaml shape.
+
+    ``auto`` means "on when an object store is configured, off otherwise"
+    (decided by :func:`src.object_store.object_store`, not here — this
+    function only resolves the mode token). ``off`` is an explicit escape
+    hatch that forces the app-served download path even with a store
+    configured. An unrecognized token falls back to ``"auto"`` (logged) —
+    a typo should degrade to the safe default, not crash sync/manifest
+    building.
+    """
+    raw = os.environ.get("AGNES_DISTRIBUTION_SIGNED_URLS") or get_value("distribution", "signed_urls", default="auto")
+    value = (raw or "auto").strip().lower()
+    if value not in _DISTRIBUTION_SIGNED_URL_MODES:
+        logger.warning(
+            "invalid distribution.signed_urls mode %r (AGNES_DISTRIBUTION_SIGNED_URLS env var / "
+            "instance.yaml::distribution.signed_urls) — falling back to 'auto'",
+            value,
+        )
+        return "auto"
+    return value
+
+
+def distribution_object_store_config() -> Optional[dict]:
+    """Resolved object-store connection config, or ``None`` when no bucket
+    is configured (the store is simply not set up for this instance).
+
+    Reads ``distribution.object_store.{endpoint_url,bucket,prefix,region,
+    access_key_env,secret_key_env}`` from instance.yaml, with
+    ``AGNES_DISTRIBUTION_OBJECT_STORE_*`` env vars winning per-field
+    (same env-overrides-yaml shape as everything else in this module).
+
+    Credentials are never stored directly in instance.yaml or read
+    straight from an ``AGNES_DISTRIBUTION_OBJECT_STORE_ACCESS_KEY`` /
+    ``..._SECRET_KEY`` env var — ``access_key_env`` / ``secret_key_env``
+    (or their env-var overrides) name *other* environment variables that
+    hold the actual credential, resolved via a plain ``os.environ.get``
+    lookup. This mirrors the ``token_env`` indirection used throughout the
+    codebase (see ``src/connection_resolver.py``, ``src/marketplace.py``)
+    so secrets never round-trip through the instance.yaml editor.
+
+    ``prefix`` defaults to ``"agnes/distribution"`` when unset.
+    """
+    endpoint_url = os.environ.get("AGNES_DISTRIBUTION_OBJECT_STORE_ENDPOINT_URL") or get_value(
+        "distribution", "object_store", "endpoint_url", default=None
+    )
+    bucket = os.environ.get("AGNES_DISTRIBUTION_OBJECT_STORE_BUCKET") or get_value(
+        "distribution", "object_store", "bucket", default=None
+    )
+    prefix = os.environ.get("AGNES_DISTRIBUTION_OBJECT_STORE_PREFIX") or get_value(
+        "distribution", "object_store", "prefix", default=_DEFAULT_DISTRIBUTION_OBJECT_STORE_PREFIX
+    )
+    region = os.environ.get("AGNES_DISTRIBUTION_OBJECT_STORE_REGION") or get_value(
+        "distribution", "object_store", "region", default=None
+    )
+    access_key_env = os.environ.get("AGNES_DISTRIBUTION_OBJECT_STORE_ACCESS_KEY_ENV") or get_value(
+        "distribution", "object_store", "access_key_env", default=None
+    )
+    secret_key_env = os.environ.get("AGNES_DISTRIBUTION_OBJECT_STORE_SECRET_KEY_ENV") or get_value(
+        "distribution", "object_store", "secret_key_env", default=None
+    )
+
+    bucket = (bucket or "").strip()
+    if not bucket:
+        return None
+
+    access_key = os.environ.get(access_key_env) if access_key_env else None
+    secret_key = os.environ.get(secret_key_env) if secret_key_env else None
+
+    return {
+        "bucket": bucket,
+        "endpoint_url": (endpoint_url or "").strip() or None,
+        "prefix": (prefix or "").strip() or _DEFAULT_DISTRIBUTION_OBJECT_STORE_PREFIX,
+        "region": (region or "").strip() or None,
+        "access_key": access_key,
+        "secret_key": secret_key,
+    }

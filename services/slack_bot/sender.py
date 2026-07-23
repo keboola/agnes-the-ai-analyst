@@ -1,4 +1,5 @@
 """Outbound Slack API calls (chat.postMessage in a thread)."""
+
 from __future__ import annotations
 
 import logging
@@ -12,7 +13,9 @@ logger = logging.getLogger(__name__)
 
 
 async def send_ephemeral(
-    response_url: str, text: str, blocks: Optional[list] = None,
+    response_url: str,
+    text: str,
+    blocks: Optional[list] = None,
 ) -> None:
     """Deliver an ephemeral message to a slash command's response_url.
 
@@ -75,7 +78,10 @@ async def send_ephemeral_to_user(channel: str, slack_user_id: str, text: str) ->
 
 
 async def post_thread_reply_with_blocks(
-    channel: str, thread_ts: str, text: str, blocks: list[dict],
+    channel: str,
+    thread_ts: str,
+    text: str,
+    blocks: list[dict],
 ) -> str | None:
     """Post a threaded reply with Block Kit blocks; return the message ts
     (so the caller can later chat.update it to strip the buttons), or None
@@ -84,11 +90,17 @@ async def post_thread_reply_with_blocks(
     if not token:
         logger.error("SLACK_BOT_TOKEN missing — cannot reply")
         return None
+    # Empty thread_ts (e.g. a SlackSinkBridge re-established by the owner
+    # from a forwarded /agnes command, which has no message ts) → post a
+    # top-level message; Slack rejects an empty-string thread_ts.
+    payload: dict = {"channel": channel, "text": text, "blocks": blocks}
+    if thread_ts:
+        payload["thread_ts"] = thread_ts
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
             "https://slack.com/api/chat.postMessage",
             headers={"Authorization": f"Bearer {token}"},
-            json={"channel": channel, "thread_ts": thread_ts, "text": text, "blocks": blocks},
+            json=payload,
         )
     data = resp.json()
     if not data.get("ok"):
@@ -140,9 +152,13 @@ async def send_thread_reply(channel: str, thread_ts: str, text: str) -> None:
     if not token:
         logger.error("SLACK_BOT_TOKEN missing — cannot reply")
         return
+    # Empty thread_ts → top-level message (see post_thread_reply_with_blocks).
+    payload: dict = {"channel": channel, "text": text}
+    if thread_ts:
+        payload["thread_ts"] = thread_ts
     async with httpx.AsyncClient(timeout=10) as client:
         await client.post(
             "https://slack.com/api/chat.postMessage",
             headers={"Authorization": f"Bearer {token}"},
-            json={"channel": channel, "thread_ts": thread_ts, "text": text},
+            json=payload,
         )

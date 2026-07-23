@@ -56,9 +56,29 @@ _env_get() {
 AGNES_TAG="$(_env_get AGNES_TAG)"
 STATE_DIR="$(_env_get STATE_DIR)"
 COMPOSE_FILE="$(_env_get COMPOSE_FILE)"
-export AGNES_TAG STATE_DIR COMPOSE_FILE
+# SCHEDULER_API_TOKEN: same shared secret startup-script.sh.tpl mints for
+# the scheduler container (see services/scheduler/__main__.py) — reused
+# here as the `Authorization: Bearer` credential for the data-refresh-job
+# defer probe below (GET /api/jobs is Depends(require_admin), and this
+# token resolves to the synthetic scheduler@system.local admin user).
+# COMPOSE_PROFILES: docker compose honors this exactly like COMPOSE_FILE
+# (both are picked up automatically once exported) — an operator opts a
+# VM into the role-split (m-tier) topology purely by setting COMPOSE_FILE
+# to include docker-compose.mtier.yml and COMPOSE_PROFILES=mtier in
+# /opt/agnes/.env; no change to how this script invokes `docker compose`
+# is needed. Wiring the Terraform module to set these by default is a
+# later wave (this one only makes the host scripts role-split-ready).
+SCHEDULER_API_TOKEN="$(_env_get SCHEDULER_API_TOKEN)"
+COMPOSE_PROFILES="$(_env_get COMPOSE_PROFILES)"
+export AGNES_TAG STATE_DIR COMPOSE_FILE SCHEDULER_API_TOKEN COMPOSE_PROFILES
 
 STATE_DIR="${STATE_DIR:-/data/state}"
+
+# Shared alert-webhook config (same file + payload contract as
+# agnes-watchdog.sh / agnes-db-backup.sh): empty WEBHOOK_URL = log-only.
+# Used below when a role-split rolling recreate has to abort mid-rollout.
+[ -f /etc/agnes-watchdog.env ] && . /etc/agnes-watchdog.env
+WEBHOOK_URL="${WEBHOOK_URL:-}"
 
 # Fail-fast guard: if the VM has a config disk attached, it MUST be
 # mounted at $STATE_DIR before any container action. Otherwise the
@@ -153,7 +173,12 @@ hash_config_files() {
   # Sort to keep hash stable across operator add/remove, missing files
   # contribute the empty string (sha256 of "" is well-defined). Run
   # from /opt/agnes to keep relative paths terse in the hash input.
-  ( cd /opt/agnes && for f in "${CONFIG_FILES[@]}"; do
+  # docker-compose.gcp-logging.yml is hashed here too (even though it is NOT
+  # in CONFIG_FILES, which are fetched unconditionally) so an overlay-only
+  # refresh triggers a recreate and actually lands on running containers.
+  # Absent on non-GCE hosts it contributes a stable "missing" line, so it
+  # never causes spurious drift there.
+  ( cd /opt/agnes && for f in "${CONFIG_FILES[@]}" docker-compose.gcp-logging.yml; do
       sha256sum "$f" 2>/dev/null || printf 'missing %s\n' "$f"
     done ) | sort | sha256sum | awk '{print $1}'
 }
@@ -165,6 +190,25 @@ for f in "${CONFIG_FILES[@]}"; do
     logger -t agnes-auto-upgrade "WARN: failed to fetch $f from $RAW_BASE — keeping existing /opt/agnes/$f"
   fi
 done
+
+# docker-compose.gcp-logging.yml is placement-driven: deliberately NOT in
+# CONFIG_FILES (those are fetched unconditionally). It must exist ONLY where
+# the deploy layer placed it -- the overlay-append further down gates on its
+# presence, and its gcplogs driver needs the GCE metadata server, so a
+# non-GCE host must never acquire it. But once present it still has to track
+# @main: if a service is dropped from the base compose (e.g. ws-gateway) while
+# a stale gcp-logging.yml keeps referencing it, the merged project becomes
+# invalid and every `docker compose` below fails (pull, config, up) -- which
+# silently strands the VM on its cached image. So refresh it in place, but
+# only when it already exists.
+if [ -f /opt/agnes/docker-compose.gcp-logging.yml ]; then
+  if curl -fsSL "$RAW_BASE/docker-compose.gcp-logging.yml" -o /opt/agnes/docker-compose.gcp-logging.yml.new 2>/dev/null; then
+    mv -f /opt/agnes/docker-compose.gcp-logging.yml.new /opt/agnes/docker-compose.gcp-logging.yml
+  else
+    rm -f /opt/agnes/docker-compose.gcp-logging.yml.new
+    logger -t agnes-auto-upgrade "WARN: failed to refresh docker-compose.gcp-logging.yml from $RAW_BASE -- keeping existing"
+  fi
+fi
 CONFIG_AFTER=$(hash_config_files)
 
 # `-s` (size > 0) instead of `-f` — guards against the corner case where
@@ -216,6 +260,123 @@ fi
 docker compose pull >/dev/null 2>&1 \
   || logger -t agnes-auto-upgrade "WARN: docker compose pull failed — proceeding with locally available images"
 
+# ---------------------------------------------------------------------------
+# Role-split (m-tier) rolling-recreate support (spec §3.8/§3.9).
+#
+# list_api_replicas: the resolved compose config (COMPOSE_FILE +
+# COMPOSE_PROFILES, both sourced from /opt/agnes/.env above) defines
+# dedicated `worker` + `gateway` services alongside 2+ named api-replica
+# services (api1, api2, ...) only for a role-split topology — the exact
+# shape docker-compose.mtier.yml ships. `docker compose config --services`
+# already filters by active profiles the same way `up` does, so an
+# operator opts into this path purely via .env, no change to how this
+# script invokes `docker compose` elsewhere. Single-container (S tier)
+# deployments never define `worker`/`gateway` at all, so this always
+# prints nothing there — the one-shot recreate path below is unchanged.
+list_api_replicas() {
+    local services
+    services=$(docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} config --services 2>/dev/null) || return 0
+    grep -qx worker <<<"$services" || return 0
+    grep -qx gateway <<<"$services" || return 0
+    grep -E '^api[0-9]+$' <<<"$services" | sort || true
+}
+
+# wait_for_readyz: polls /readyz INSIDE the replica's own container — api
+# replicas are proxy-only exposure under docker-compose.mtier.yml (no host
+# port to curl from the VM directly), so this shells into the container via
+# `docker compose exec`. /readyz (app/api/health_probes.py) answers 503
+# until ready, 200 with {"status":"ready", ...} once it is — `curl -sf`
+# already fails (empty stdout) on the 503 case, so the grep is a cheap
+# double-check rather than the only signal. Both knobs are overridable env
+# (the bash-harness unit test uses a near-zero interval/timeout instead of
+# sleeping through the production defaults).
+READYZ_POLL_INTERVAL="${AGNES_AUTO_UPGRADE_READYZ_INTERVAL:-5}"
+READYZ_POLL_TIMEOUT="${AGNES_AUTO_UPGRADE_READYZ_TIMEOUT:-120}"
+wait_for_readyz() {
+    local svc="$1"
+    local waited=0
+    while :; do
+        if docker compose exec -T "$svc" curl -sf -m 5 http://localhost:8000/readyz 2>/dev/null \
+            | grep -q '"status"[[:space:]]*:[[:space:]]*"ready"'; then
+            return 0
+        fi
+        [ "$waited" -ge "$READYZ_POLL_TIMEOUT" ] && return 1
+        sleep "$READYZ_POLL_INTERVAL"
+        waited=$((waited + READYZ_POLL_INTERVAL))
+    done
+}
+
+# send_rollout_alert: same shared webhook config + JSON-escaping as
+# agnes-watchdog.sh / agnes-db-backup.sh (Slack/Google-Chat compatible
+# `{"text": "..."}` POST). Always logs; only POSTs when WEBHOOK_URL is set.
+send_rollout_alert() {
+    local msg="$1"
+    logger -t agnes-auto-upgrade "$msg"
+    [ -n "$WEBHOOK_URL" ] || return 0
+    local esc
+    esc=$(printf '%s' "$msg" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n", $0}')
+    curl -sf -m 10 -X POST -H 'Content-Type: application/json' \
+        -d "{\"text\": \"$esc\"}" "$WEBHOOK_URL" >/dev/null 2>&1 \
+        || logger -t agnes-auto-upgrade "webhook send failed"
+}
+
+# recreate_role_split: worker + gateway recreate together first (they sit
+# behind no load balancer, so no readyz gate buys anything for them); the
+# api replicas passed as args then recreate ONE AT A TIME, each gated on
+# its own /readyz before the next is even touched. A replica that never
+# reports ready within the bounded timeout ABORTS the whole rollout —
+# alerts and returns non-zero WITHOUT recreating the remaining replicas,
+# which stay on the previous image and keep serving traffic. The initial
+# worker+gateway recreate gets the same abort posture: a hard failure
+# there (bad image, compose config error, daemon hiccup) must not fall
+# through into recreating api replicas against a worker/gateway pair that
+# never came up — alert and abort before touching any api replica.
+recreate_role_split() {
+    if ! docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d --no-deps worker gateway; then
+        send_rollout_alert "agnes-auto-upgrade: ABORTED role-split rolling recreate — worker/gateway recreate failed (docker compose up -d --no-deps worker gateway exited non-zero). Api replicas were not touched and remain on the previous image."
+        return 1
+    fi
+
+    local svc
+    for svc in "$@"; do
+        docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d --no-deps "$svc"
+        if ! wait_for_readyz "$svc"; then
+            send_rollout_alert "agnes-auto-upgrade: ABORTED role-split rolling recreate — $svc did not report /readyz ready within ${READYZ_POLL_TIMEOUT}s. Remaining api replicas left on the previous image."
+            return 1
+        fi
+        logger -t agnes-auto-upgrade "rolling recreate: $svc ready, proceeding"
+    done
+}
+
+# sync_or_refresh_busy: populates the DEFER_REASON array (global) and
+# returns true (0) when either signal says "busy" — the original
+# /api/sync/status lock, OR (new) a queued/claimed `data-refresh` job
+# actually running in the worker (GET /api/jobs, same require_admin gate
+# every other admin endpoint uses, accepting the SCHEDULER_API_TOKEN
+# bearer per app/api/jobs.py). Needed because sync now runs in the worker
+# process under role-split — /api/sync/status alone only reflects this
+# process's in-memory lock and under-reports when the worker is a separate
+# container. Fails OPEN on an unreachable app or a missing token, exactly
+# like the original probe: being stuck on a wedged previous version is
+# worse than interrupting a hypothetical sync.
+sync_or_refresh_busy() {
+    DEFER_REASON=()
+    local lock_json jobs_json
+    lock_json=$(curl -sf --max-time 5 http://localhost:8000/api/sync/status 2>/dev/null || true)
+    if echo "$lock_json" | grep -q '"locked"[[:space:]]*:[[:space:]]*true'; then
+        DEFER_REASON+=("sync/status locked")
+    fi
+    if [ -n "$SCHEDULER_API_TOKEN" ]; then
+        jobs_json=$(curl -sf --max-time 5 \
+            -H "Authorization: Bearer $SCHEDULER_API_TOKEN" \
+            "http://localhost:8000/api/jobs?kind=data-refresh&status=running&limit=1" 2>/dev/null || true)
+        if echo "$jobs_json" | grep -q '"id"'; then
+            DEFER_REASON+=("data-refresh job running")
+        fi
+    fi
+    [ "${#DEFER_REASON[@]}" -gt 0 ]
+}
+
 # Drift-based change detection — STATELESS on the image side, marker-based
 # on the config side. The previous implementation compared the local tag
 # digest before/after the pull; that permanently LOST a deferred upgrade:
@@ -226,14 +387,37 @@ docker compose pull >/dev/null 2>&1 \
 # sitting pulled beside it). Comparing what is actually RUNNING against
 # what the tag points to has no such window: drift persists across ticks
 # until a recreate succeeds.
+# Role-split topology check runs here (not earlier) so it sees the fully
+# resolved COMPOSE_FILE/COMPOSE_PROFILES (including any tls/gcplogs overlay
+# appended above) — `docker compose config --services` needs the same
+# environment `up`/`ps` below will use. Single-container deployments never
+# define `worker`/`gateway`, so API_REPLICAS is always empty there and the
+# one-shot recreate path is exercised unchanged.
+API_REPLICAS=()
+while IFS= read -r _api_svc; do
+    [ -n "$_api_svc" ] && API_REPLICAS+=("$_api_svc")
+done < <(list_api_replicas || true)
+
+if [ "${#API_REPLICAS[@]}" -ge 1 ]; then
+    ROLE_SPLIT=1
+    # All role services extend the same base `app` image, so any one of
+    # them is a valid drift reference; `worker` is never gated behind the
+    # tls/gcplogs profile logic above, unlike `app` itself under mtier
+    # (profiles: ["standalone"], never started there).
+    DRIFT_REF_SERVICE=worker
+else
+    ROLE_SPLIT=0
+    DRIFT_REF_SERVICE=app
+fi
+
 TAG_ID=$(docker images --no-trunc --format '{{.ID}}' "$IMAGE" | head -1)
-RUNNING_CID=$(docker compose ps -q app 2>/dev/null | head -1)
+RUNNING_CID=$(docker compose ps -q "$DRIFT_REF_SERVICE" 2>/dev/null | head -1)
 RUNNING_ID=""
 if [ -n "$RUNNING_CID" ]; then
     RUNNING_ID=$(docker inspect --format '{{.Image}}' "$RUNNING_CID" 2>/dev/null || true)
 fi
 # No local tag image (pull failed on a fresh host) → nothing to compare,
-# skip. No running app container → recreate (compose up starts it).
+# skip. No running reference container → recreate (compose up starts it).
 IMAGE_DRIFT=0
 if [ -n "$TAG_ID" ] && [ "$RUNNING_ID" != "$TAG_ID" ]; then
     IMAGE_DRIFT=1
@@ -267,15 +451,13 @@ if [ "$IMAGE_DRIFT" = "1" ] || [ "$CONFIG_DRIFT" = "1" ]; then
     # longer for big Snowflake UNLOADs). Deferring is SAFE with the drift
     # detection above: the drift persists until a recreate actually
     # succeeds, so the next 5-min tick re-detects the same pending change
-    # — there is no state to lose. curl with a 5s timeout: if the app is
-    # unreachable for any reason (already crashed, port not bound,
-    # older app version without /api/sync/status), we proceed with the
-    # upgrade — being stuck on a wedged previous version is worse than
-    # interrupting a hypothetical sync.
-    LOCK_JSON=$(curl -sf --max-time 5 http://localhost:8000/api/sync/status 2>/dev/null || true)
-    if echo "$LOCK_JSON" | grep -q '"locked"[[:space:]]*:[[:space:]]*true'; then
-        echo "$(date): sync in flight (${REASON[*]} pending) — deferring recreate to next tick"
-        logger -t agnes-auto-upgrade "deferred recreate: sync in flight (${REASON[*]})"
+    # — there is no state to lose. Both probes fail OPEN (see
+    # sync_or_refresh_busy above): an unreachable app, an older release
+    # without one of the endpoints, or a missing SCHEDULER_API_TOKEN
+    # proceed with the upgrade rather than wedge on the previous version.
+    if sync_or_refresh_busy; then
+        echo "$(date): sync/refresh in flight (${DEFER_REASON[*]}; pending: ${REASON[*]}) — deferring recreate to next tick"
+        logger -t agnes-auto-upgrade "deferred recreate: sync/refresh in flight (${DEFER_REASON[*]})"
         exit 0
     fi
 
@@ -317,7 +499,21 @@ if [ "$IMAGE_DRIFT" = "1" ] || [ "$CONFIG_DRIFT" = "1" ]; then
     # empty (vs. plain "${arr[@]}" which trips `set -u` on bash <4.4).
     # COMPOSE_FILE (incl. any conditionally-appended overlays) is exported
     # above and picked up by docker compose automatically.
-    docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d
+    #
+    # Role-split topology: sequential /readyz-gated rolling recreate
+    # (worker+gateway, then api replicas one at a time) instead of the
+    # one-shot recreate — see recreate_role_split above. A persistent
+    # readyz failure aborts here WITHOUT touching the config marker below,
+    # so the next tick re-detects the same pending drift and retries; the
+    # remaining api replicas are left serving the previous image.
+    if [ "$ROLE_SPLIT" = "1" ]; then
+        if ! recreate_role_split "${API_REPLICAS[@]}"; then
+            echo "$(date): role-split rolling recreate ABORTED (${REASON[*]}) — see logs/alert" >&2
+            exit 1
+        fi
+    else
+        docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d
+    fi
     # Record the config hash that is now in effect — config drift is
     # declared against this marker on subsequent ticks.
     printf '%s\n' "$CONFIG_AFTER" > "$CONFIG_MARKER"

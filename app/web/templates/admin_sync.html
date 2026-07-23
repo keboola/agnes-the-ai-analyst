@@ -286,10 +286,13 @@ document.getElementById("trigger-btn").addEventListener("click", async () => {
   try {
     const r = await fetch("/api/sync/trigger", { method: "POST", credentials: "include" });
     if (r.ok || r.status === 202) {
-      toast("Sync started", "success");
+      const body = await r.json().catch(() => ({}));
+      toast(body.job_id ? "Sync started (job " + body.job_id + ")" : "Sync started", "success");
       await checkStatus();
     } else if (r.status === 409) {
-      toast("Sync already running", "");
+      const body = await r.json().catch(() => ({}));
+      const jobId = body.detail && body.detail.job_id;
+      toast(jobId ? "Sync already running (job " + jobId + ")" : "Sync already running", "");
       await checkStatus();
     } else {
       const d = await r.json().catch(() => ({}));

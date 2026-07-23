@@ -192,13 +192,16 @@ it's admin territory and never reaches the analyst anyway.
 
 ### Launcher script convention (IWT contract)
 
-`agnes init` automatically installs a one-word shell shortcut named after
+`agnes init` automatically installs a one-word launcher named after
 the workspace folder, sanitized to alphanumerics and lowercased
 (`re.sub(r'[^A-Za-z0-9]', '', workspace.name).lower()`, matching the
-server's `get_workspace_dir_name`).  When the IWT ships a
-launcher script at `workspace/bin/<word>` (POSIX) or
-`workspace/bin/<word>.cmd` / `workspace/bin/<word>.ps1` (Windows), the
-auto-installed shortcut **routes through it** — adding
+server's `get_workspace_dir_name`).  The launcher is an executable script
+in `~/.local/bin` — `<word>` (POSIX) or `<word>.cmd` (Windows) — the same
+directory `uv tool install` places the `agnes` binary itself, so it is
+already on PATH, visible to `which`, and callable from non-interactive
+shells.  When the IWT ships a launcher script at `workspace/bin/<word>`
+(POSIX) or `workspace/bin/<word>.cmd` / `workspace/bin/<word>.ps1`
+(Windows), the installed script **routes through it** — adding
 `--permission-mode auto` on top — so the welcome skill fires correctly on
 each launch.
 
@@ -211,16 +214,24 @@ fall back to the plain `claude --permission-mode auto` path, which still
 works but skips the welcome skill.
 
 **Collision guard:** when the sanitized word would shadow a POSIX shell
-built-in (`test`, `cd`, ...) or a command the toolchain itself depends on
-(`agnes`, `claude`), the shell *function* gets an `ai` suffix (workspace
-`Agnes` → function `agnesai`) so sourcing the rc file never breaks the
-CLI.  The `bin/<word>` script keeps the sanitized name from the contract
-above — the shortcut checks both the suffixed and the raw name, so a
-launcher seeded as `workspace/bin/agnes` still routes correctly.
+built-in (`test`, `cd`, ...), a command the toolchain itself depends on
+(`agnes`, `claude`), or any executable already on the user's PATH, the
+installed *script* gets an `ai` suffix (workspace `Agnes` →
+`~/.local/bin/agnesai`) so the launcher never breaks an existing command.
+The `bin/<word>` script inside the workspace keeps the sanitized name from
+the contract above — the launcher checks both the suffixed and the raw
+name, so a launcher seeded as `workspace/bin/agnes` still routes
+correctly.
 
 When there is no `workspace/bin/<word>` launcher (e.g. the default OSS
-seed), the shortcut falls back to `cd <workspace> && claude
+seed), the script falls back to `cd <workspace> && exec claude
 --permission-mode auto` — fully functional, just without the welcome skill.
+
+**Legacy note:** older releases installed the shortcut as a shell
+*function* appended to `~/.zshrc` / `~/.bashrc` / PowerShell `$PROFILE`.
+Both `agnes init` and `agnes update` automatically remove those marked
+blocks when installing the script; users who opted out with
+`agnes init --no-shortcut` are left untouched.
 
 ## What Agnes stops doing when override is active
 

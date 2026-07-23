@@ -127,6 +127,14 @@ def refresh_one(row: dict[str, Any]) -> dict[str, Any]:
     from connectors.bigquery import metadata as bq_metadata
     from src.identifier_validation import validate_quoted_identifier
 
+    # ``total_ms`` covers the whole per-row cost (identifier validation +
+    # the BQ fetch + the local DuckDB upsert/mark_error); ``fetch_ms``
+    # isolates the ``bq_metadata.fetch`` call — the up-to-4 sequential BQ
+    # jobs-API round-trips the ticket suspects. Both are surfaced per table
+    # so a slow refresh cycle is attributable to BigQuery vs. local work.
+    t0 = time.monotonic()
+    fetch_ms: Optional[int] = None
+
     table_id = row["id"]
     bucket = row.get("bucket") or ""
     source_table = row.get("source_table") or table_id
@@ -137,25 +145,37 @@ def refresh_one(row: dict[str, Any]) -> dict[str, Any]:
         and validate_quoted_identifier(source_table, "source_table")
     ):
         repo.mark_error(table_id, "invalid bucket/source_table identifier")
-        return {"table_id": table_id, "status": "error", "error": "invalid identifier"}
+        return {
+            "table_id": table_id, "status": "error", "error": "invalid identifier",
+            "fetch_ms": fetch_ms, "total_ms": int((time.monotonic() - t0) * 1000),
+        }
 
     req = MetadataRequest(
         table_id=table_id, bucket=bucket, source_table=source_table,
     )
+    fetch_t0 = time.monotonic()
     try:
         result = bq_metadata.fetch(req)
     except Exception as e:
         # bq_metadata.fetch is documented as never-raises, but defense in
         # depth: catch any regression so one bad row doesn't kill the
         # whole scheduler tick.
+        fetch_ms = int((time.monotonic() - fetch_t0) * 1000)
         msg = f"{type(e).__name__}: {e}"
         logger.warning("bq metadata refresh failed for %s: %s", table_id, msg)
         repo.mark_error(table_id, msg)
-        return {"table_id": table_id, "status": "error", "error": msg}
+        return {
+            "table_id": table_id, "status": "error", "error": msg,
+            "fetch_ms": fetch_ms, "total_ms": int((time.monotonic() - t0) * 1000),
+        }
+    fetch_ms = int((time.monotonic() - fetch_t0) * 1000)
 
     if result is None:
         repo.mark_error(table_id, "provider returned no data")
-        return {"table_id": table_id, "status": "no_data"}
+        return {
+            "table_id": table_id, "status": "no_data",
+            "fetch_ms": fetch_ms, "total_ms": int((time.monotonic() - t0) * 1000),
+        }
 
     repo.upsert_success(
         table_id,
@@ -172,6 +192,8 @@ def refresh_one(row: dict[str, Any]) -> dict[str, Any]:
         "rows": result.rows,
         "size_bytes": result.size_bytes,
         "entity_type": result.entity_type,
+        "fetch_ms": fetch_ms,
+        "total_ms": int((time.monotonic() - t0) * 1000),
     }
 
 
@@ -256,7 +278,21 @@ async def run_bq_metadata_refresh(
 
             async def _one(row: dict[str, Any]) -> dict[str, Any]:
                 async with sem:
-                    return await asyncio.to_thread(refresh_one, row)
+                    result = await asyncio.to_thread(refresh_one, row)
+                # Per-table timing: one INFO line per table so a
+                # slow refresh cycle is attributable to specific tables/calls
+                # from the logs alone. ``%s`` (not ``%d``) — ``fetch_ms`` is
+                # ``None`` when the row failed identifier validation before
+                # any BQ call.
+                logger.info(
+                    "bq metadata refresh table: run_id=%s table_id=%s status=%s fetch_ms=%s total_ms=%s",
+                    run_id,
+                    result.get("table_id"),
+                    result.get("status"),
+                    result.get("fetch_ms"),
+                    result.get("total_ms"),
+                )
+                return result
 
             t0 = time.monotonic()
             results = await asyncio.gather(

@@ -78,6 +78,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Analyst workspace folder name (`~/<name>`) | `AGNES_WORKSPACE_DIR_NAME` | `instance.workspace_dir` | derived from brand (non-alphanumerics stripped) | `get_workspace_dir_name()` |
 | Operator-injected HTML/JS blocks (analytics, widgets) | — | `instance.custom_scripts` | `[]` | `get_custom_scripts()` |
 | Hide individual `/login` feature cards (keys: `data`, `marketplace`, `mcp`, `memory`, `anywhere`; list or comma-string) | `AGNES_INSTANCE_HIDE_LOGIN_FEATURES` | `instance.hide_login_features` | `""` (nothing hidden) | `get_hidden_login_features()` |
+| Expose the authoring Studio (`/admin/studio*` incl. the admin moderation queue, plus the public suggestion API). `false` hides the nav/palette entries, redirects the routes home, and 403s the suggestion API | `AGNES_STUDIO_ENABLED` | `studio.enabled` | `true` | `get_studio_enabled()` |
 | Legacy theme block (colors/fonts) | — | `theme` | `{}` | `get_theme()` |
 
 ### Onboarding & `/home`
@@ -113,6 +114,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | SSRF allowlist — hostnames exempt from the private/reserved-network guard on **all** admin URLs routed through the shared validator (marketplace + initial-workspace clone URLs, Keboola `stack_url`, server-config URL fields), not just clone URLs; use for an internal git host on a private network (e.g. on-prem GitHub Enterprise). List or comma-string. Empty = guard fail-closed. | `AGNES_SSRF_ALLOWED_HOSTS` | `security.ssrf_allowed_hosts` | `""` (fail-closed) | `get_ssrf_allowed_hosts()` |
 | Dataset registry | — | `datasets` | `{}` | `get_datasets()` |
 | Corporate Memory block | — | `corporate_memory` | `{}` | `get_corporate_memory_config()` |
+| Hosted data apps block (`enabled`, `runtime_image`, `subdomain_base`, `default_idle_timeout_s`, `default_sleep_mode`, `default_mem_limit`, `default_cpus`, `max_apps_per_user`) — see [`DEPLOYMENT.md`](DEPLOYMENT.md#data-apps) | — | `data_apps` | `{}` (feature off) | `get_data_apps_config()` |
 
 ### Flea-market upload guardrails
 
