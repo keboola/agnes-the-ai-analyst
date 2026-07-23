@@ -32,6 +32,23 @@ def test_studio_renders_for_non_admin_in_submit_mode(seeded_app, domain):
     assert "Submit for approval" in body  # non-admin sees the suggestion action
 
 
+def test_studio_index_title_carries_instance_name(seeded_app):
+    """Regression: /admin/studio rendered ``<title>Studio — </title>`` — the
+    title template reads ``config.INSTANCE_NAME`` but ``_chrome_ctx`` didn't
+    provide ``config``, so Jinja rendered the undefined as empty. The title
+    must carry the instance name (default: "AI Harness")."""
+    import re
+
+    c = seeded_app["client"]
+    resp = c.get("/admin/studio", headers=_auth(seeded_app["admin_token"]))
+    assert resp.status_code == 200
+    m = re.search(r"<title>(.*?)</title>", resp.text, re.S)
+    assert m is not None
+    title = m.group(1).strip()
+    assert title.startswith("Studio — ")
+    assert len(title) > len("Studio — "), f"empty instance name in title: {title!r}"
+
+
 def test_studio_requires_login(seeded_app):
     c = seeded_app["client"]
     # No auth header → redirect to login (don't follow it) or 401/403.
