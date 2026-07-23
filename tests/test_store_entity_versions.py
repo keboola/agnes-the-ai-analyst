@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import io
 import json
-import re
 import zipfile
 from pathlib import Path
 
@@ -2837,30 +2836,25 @@ class TestFullLifecycleFromInstaller:
 
 
 class TestItemDetailHeroPlaceholder:
-    """The flea skill/agent detail hero must reuse the card grid's
-    name-derived, type-tinted placeholder (#791). Regression guard for the
-    hardcoded ``{{ 'SK' if kind == 'skill' else 'AG' }}`` that survived on
-    marketplace_item_detail.html after #791 tinted every other surface —
-    the detail hero showed a generic dark "SK" glyph instead of the same
-    name-derived initials + type tint as the tile the user clicked from.
+    """The flea skill/agent detail hero rides the shared detail scaffold
+    (#896): a per-kind dark gradient whose accent resolves from the
+    ``--ds-kind-<kind>`` token on the ``.detail`` scope, with the shared
+    per-kind glyph tile as the cover placeholder (JS overlays a curator
+    cover when present). Regression guard against a future revert to the
+    bespoke macOS-"window" hero + hardcoded initials placeholder.
     """
 
-    def test_flea_skill_hero_name_derived_initials_and_type_tint(self, web_client):
+    def test_flea_skill_hero_uses_shared_kind_scaffold(self, web_client):
         _, owner_cookies = _create_user(web_client, "heroinit@x.com")
-        # Multi-word slug → distinctive derived glyph ("SD"), not "SK".
         eid = _upload_clean(web_client, owner_cookies, name="sales-dashboard")
         r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
         assert r.status_code == 200, r.text
 
-        m = re.search(
-            r'<div\s+class="([^"]*)"\s+id="hero-window-body"\s*>([^<]*)</div>',
-            r.text,
-        )
-        assert m, "hero-window-body element not found in rendered detail HTML"
-        cls, text = m.group(1), m.group(2).strip()
-
-        assert "hero-window-body--skill" in cls, f"skill hero must carry the type-tint class (green); got class={cls!r}"
-        assert text == "SD", (
-            "hero placeholder must show name-derived initials 'SD' for "
-            f"'sales-dashboard', not a generic per-kind glyph; got {text!r}"
-        )
+        # Root .detail scope carries the per-kind token so the shared dark
+        # hero renders green for skills.
+        assert 'data-kind="skill"' in r.text
+        assert "var(--ds-kind-skill)" in r.text
+        # The shared icon tile is the cover placeholder; the bespoke macOS
+        # window + name-derived initials are gone.
+        assert 'id="hero-icon"' in r.text
+        assert 'id="hero-window-body"' not in r.text

@@ -57,35 +57,54 @@
 {%- endif -%}
 {% endmacro %}
 
+{# ── Hero decoration layers (dots + waves) ──────────────────────────────
+   Extracted so both the server-rendered `hero()` macro and the
+   JS-hydrated marketplace heroes (which hand-write the hero markup to keep
+   their per-id hydration slots) share ONE decoration source. Each detail
+   page renders a single hero, so the fixed pattern id never collides. #}
+{% macro hero_deco() %}
+<div class="detail-hero__deco" aria-hidden="true">
+  {# Layer 2 — dot pattern (SVG <pattern>, tuned via --hero-dots-opacity). #}
+  <svg class="detail-hero__dots">
+    <defs>
+      <pattern id="detail-hero-dots" width="22" height="22" patternUnits="userSpaceOnUse">
+        <circle cx="1.5" cy="1.5" r="1.2" fill="currentColor"/>
+      </pattern>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#detail-hero-dots)"/>
+  </svg>
+  {# Layer 3 — flowing wave lines (SVG, tuned via --hero-waves-opacity). #}
+  <svg class="detail-hero__waves" viewBox="0 0 460 240" fill="none" stroke="currentColor" preserveAspectRatio="xMaxYMax meet">
+    <path d="M30 250 C 130 195, 205 285, 300 222 S 445 165, 490 208"/>
+    <path d="M20 228 C 120 172, 200 268, 300 200 S 445 143, 490 188"/>
+    <path d="M40 206 C 140 150, 215 246, 305 180 S 445 122, 490 166"/>
+    <path d="M60 184 C 155 130, 225 224, 310 158 S 440 100, 485 142"/>
+    <path d="M85 162 C 170 112, 240 204, 315 138 S 435 82, 480 120"/>
+  </svg>
+</div>
+{% endmacro %}
+
 {# ── Hero ───────────────────────────────────────────────────────────── #}
+{# `panel` (optional): pre-rendered HTML for a white content card nested at
+   the BOTTOM of the hero, inside the dark gradient box (e.g. the data
+   package "What it is" card, or a plugin's "What it does" + "Details").
+   Build it with `{% set panel %}…{% endset %}` and pass `panel=panel`.
+   When empty the hero renders exactly as before (single action bar), so
+   existing callers are unaffected. The hero's action buttons still come
+   through `caller()`. #}
 {% macro hero(kind='data', name='', color=None, cover_image_url=None, icon=None,
               eyebrow=None, badges=None, owner_name=None, owner_team=None,
               description=None, tags=None, meta=None,
-              back_href='/catalog', back_label='Back') %}
+              back_href='/catalog', back_label='Back', panel='') %}
 <div class="detail" data-kind="{{ kind }}"
      style="--kind: var(--ds-kind-{{ kind }}); --kind-soft: var(--ds-kind-{{ kind }}-soft);">
 <a class="detail-back" href="{{ back_href }}">{{ ico('back') }}{{ back_label }}</a>
 
-<div class="detail-hero">
-  <div class="detail-hero__deco" aria-hidden="true">
-    {# Layer 2 — dot pattern (SVG <pattern>, tuned via --hero-dots-opacity). #}
-    <svg class="detail-hero__dots">
-      <defs>
-        <pattern id="detail-hero-dots" width="22" height="22" patternUnits="userSpaceOnUse">
-          <circle cx="1.5" cy="1.5" r="1.2" fill="currentColor"/>
-        </pattern>
-      </defs>
-      <rect width="100%" height="100%" fill="url(#detail-hero-dots)"/>
-    </svg>
-    {# Layer 3 — flowing wave lines (SVG, tuned via --hero-waves-opacity). #}
-    <svg class="detail-hero__waves" viewBox="0 0 460 240" fill="none" stroke="currentColor" preserveAspectRatio="xMaxYMax meet">
-      <path d="M30 250 C 130 195, 205 285, 300 222 S 445 165, 490 208"/>
-      <path d="M20 228 C 120 172, 200 268, 300 200 S 445 143, 490 188"/>
-      <path d="M40 206 C 140 150, 215 246, 305 180 S 445 122, 490 166"/>
-      <path d="M60 184 C 155 130, 225 224, 310 158 S 440 100, 485 142"/>
-      <path d="M85 162 C 170 112, 240 204, 315 138 S 435 82, 480 120"/>
-    </svg>
-  </div>
+<div class="detail-hero{% if panel %} detail-hero--paneled{% endif %}">
+  {{ hero_deco() }}
+  {# The action bar (icon + body + actions) is one horizontal row; an
+     optional white content panel stacks beneath it inside the same hero. #}
+  <div class="detail-hero__bar">
   <div class="detail-hero__icon{% if cover_image_url %} detail-hero__icon--cover{% endif %}">
     {# Kind glyph — matches the index cards: soft kind-tinted tile + the
        section accent color, so it reads clearly and aligns with the
@@ -121,6 +140,8 @@
   <div class="detail-hero__actions">
     {{ caller() }}
   </div>
+  </div>
+  {% if panel %}<div class="detail-hero__panel">{{ panel }}</div>{% endif %}
 </div>
 {% endmacro %}
 
@@ -161,27 +182,40 @@
 
   /* ── Hero ── */
   /* Ambient branding behind the content, composed as three independent,
-     individually tunable layers (~95% white, 5% decoration):
-       Layer 1 — ambient radial gradient (CSS, below).
+     individually tunable layers over a per-kind DARK gradient:
+       Layer 1 — per-kind gradient + a soft top-right highlight (CSS, below).
        Layer 2 — dot pattern (SVG `.detail-hero__dots`, --hero-dots-opacity).
        Layer 3 — flowing wave lines (SVG `.detail-hero__waves`, --hero-waves-opacity).
-     Per-kind hue comes from --kind; per-layer strength from the two opacity
-     vars — override either on `.detail-hero` (or a `data-kind` scope) to
-     retune without touching the layers. */
+     Per-kind hue comes from the single --kind token (gradient endpoints are
+     mixed from it — no separate from/to tokens); per-layer strength from the
+     two opacity vars — override either on `.detail-hero` (or a `data-kind`
+     scope) to retune without touching the layers. The dot + wave motifs are
+     the same ones the design system uses elsewhere, here recoloured white so
+     they read as ambient texture on the dark surface. */
   .detail-hero {
-    --hero-dots-opacity: 0.06;
-    --hero-waves-opacity: 0.10;
+    --hero-dots-opacity: 0.12;
+    --hero-waves-opacity: 0.20;
     position: relative; overflow: hidden;
-    display: flex; gap: 18px; align-items: flex-start;
-    /* Layer 1 — ambient radial gradient. */
+    display: flex; flex-direction: column;
+    color: #fff;
+    /* Layer 1 — per-kind gradient. The `--ds-kind-*` bases are deliberately
+       dark (they must clear 4.5:1 as text on their -soft tints), so the ramp
+       is LIFTED toward the hue's full saturation rather than darkened: a
+       brighter top-left, pure `--kind` through the middle, and only a light
+       deepening at the bottom for depth. A stronger top-right glow (mixed
+       further toward white) gives the surface its highlight. Kept dark enough
+       for the white hero text; theme-agnostic since `--kind` is one token. */
     background:
-      radial-gradient(135% 150% at 100% -8%,
-        color-mix(in srgb, var(--kind-soft) 78%, transparent) 0%,
-        color-mix(in srgb, var(--kind-soft) 20%, transparent) 30%,
-        transparent 58%),
-      var(--ds-surface);
-    border: 1px solid var(--ds-border);
-    border-radius: 16px; box-shadow: var(--ds-shadow-sm);
+      radial-gradient(130% 150% at 100% -12%,
+        color-mix(in srgb, var(--kind) 42%, white) 0%,
+        transparent 60%),
+      linear-gradient(140deg,
+        color-mix(in srgb, var(--kind) 80%, white) 0%,
+        var(--kind) 52%,
+        color-mix(in srgb, var(--kind) 88%, black) 100%);
+    border: 1px solid color-mix(in srgb, var(--kind) 82%, black);
+    border-radius: 16px;
+    box-shadow: 0 6px 22px color-mix(in srgb, var(--kind) 40%, transparent);
     padding: 22px 26px; margin-bottom: 14px;
   }
   .detail-hero__deco {
@@ -192,7 +226,7 @@
      reaches the title/content on the left. */
   .detail-hero__dots {
     position: absolute; inset: 0; width: 100%; height: 100%;
-    color: var(--kind);
+    color: #fff;
     opacity: var(--hero-dots-opacity);
     -webkit-mask-image: radial-gradient(125% 125% at 100% 0%, black 0%, rgba(0,0,0,0.4) 33%, transparent 64%);
             mask-image: radial-gradient(125% 125% at 100% 0%, black 0%, rgba(0,0,0,0.4) 33%, transparent 64%);
@@ -202,7 +236,7 @@
   .detail-hero__waves {
     position: absolute; right: -22px; bottom: -26px;
     width: min(50%, 520px); height: auto;
-    color: var(--kind);
+    color: #fff;
     opacity: var(--hero-waves-opacity);
     -webkit-mask-image: radial-gradient(92% 96% at 100% 100%, black 14%, rgba(0,0,0,0.5) 46%, transparent 78%);
             mask-image: radial-gradient(92% 96% at 100% 100%, black 14%, rgba(0,0,0,0.5) 46%, transparent 78%);
@@ -210,14 +244,72 @@
   .detail-hero__waves path { stroke-width: 1.1; vector-effect: non-scaling-stroke; }
   .detail-hero > *:not(.detail-hero__deco) { position: relative; z-index: 1; }
 
+  /* Action bar — the horizontal row (icon + body + actions) that used to be
+     the hero's direct flex layout. Kept as its own row so an optional white
+     content panel can stack beneath it inside the same hero box. */
+  .detail-hero__bar { display: flex; gap: 18px; align-items: flex-start; }
+
+  /* Nested content panel — a white card pinned to the bottom of the hero,
+     inside the dark gradient (the dark padding frames it on all sides). Used
+     for the data-package "What it is" card and the plugin "What it does" +
+     "Details" pair, so the primary content reads as part of the header. */
+  .detail-hero__panel {
+    margin-top: 20px;
+    /* Frosted glass — the panel is slightly translucent so the dark hero
+       gradient bleeds through, and backdrop-filter blurs it into a premium
+       frost. Theme-aware via --ds-surface (frosted white in light, frosted
+       dark in dark); a light rim + soft drop shadow give it glass depth. */
+    background: color-mix(in srgb, var(--ds-surface) 82%, transparent);
+    -webkit-backdrop-filter: blur(18px) saturate(1.4);
+    backdrop-filter: blur(18px) saturate(1.4);
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    border-radius: 14px;
+    padding: 20px 22px;
+    color: var(--ds-text-primary);
+    box-shadow: 0 10px 34px rgba(0, 0, 0, 0.22);
+  }
+  /* Browsers without backdrop-filter fall back to a near-opaque surface so
+     text contrast never depends on the blur landing. */
+  @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+    .detail-hero__panel { background: color-mix(in srgb, var(--ds-surface) 96%, transparent); }
+  }
+  .detail-hero__panel > *:first-child { margin-top: 0; }
+  .detail-hero__panel > *:last-child { margin-bottom: 0; }
+  /* Two-column split (main + side rail) used by the plugin/skill panels so
+     "What it does" sits beside "Details" on one card. Collapses to a single
+     column on narrow viewports. */
+  .detail-hero__panel-split {
+    display: grid; grid-template-columns: minmax(0, 1fr) 300px;
+    gap: 0;
+  }
+  .detail-hero__panel-split > .side {
+    border-left: 1px solid var(--ds-border-light);
+    margin-left: 24px; padding-left: 24px;
+  }
+  @media (max-width: 820px) {
+    .detail-hero__panel-split { grid-template-columns: 1fr; }
+    .detail-hero__panel-split > .side {
+      border-left: 0; border-top: 1px solid var(--ds-border-light);
+      margin-left: 0; padding-left: 0;
+      margin-top: 18px; padding-top: 18px;
+    }
+  }
+
   .detail-hero__icon {
     position: relative;
     width: 60px; height: 60px; border-radius: 14px; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
-    background: var(--kind-soft); color: var(--kind); overflow: hidden;
+    background: rgba(255, 255, 255, 0.15); color: #fff; overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.22);
   }
   .detail-hero__icon svg { width: 30px; height: 30px; }
   .detail-hero__icon img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  /* Cover variant — a curator screenshot (wide) reads poorly cropped to a
+     60px square, so when a cover is present the tile widens to a small
+     framed thumbnail. Toggled by the caller/JS adding `--cover` (server-side
+     when `cover_image_url` is passed; at hydration time on the marketplace
+     pages, where the URL only resolves after the detail XHR). */
+  .detail-hero__icon--cover { width: 132px; height: 74px; border-radius: 12px; }
   .detail-hero__body { flex: 1; min-width: 0; }
   .detail-hero__title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .detail-hero__title-row h1 { margin: 0; font-size: 25px; font-weight: 600; letter-spacing: -0.5px; }
@@ -229,14 +321,15 @@
   .detail-badge--curated { background: #fef3c7; color: #92400e; }
   .detail-badge--new     { background: var(--kind-soft); color: var(--kind); }
 
-  .detail-hero__owner { margin-top: 5px; font-size: 13px; color: var(--ds-text-secondary); }
+  .detail-hero__owner { margin-top: 5px; font-size: 13px; color: rgba(255, 255, 255, 0.82); }
+  .detail-hero__owner strong { color: #fff; }
   .detail-hero__desc {
-    margin: 9px 0 0; color: var(--ds-text-secondary);
+    margin: 9px 0 0; color: rgba(255, 255, 255, 0.92);
     font-size: 14.5px; line-height: 1.5; max-width: 60ch;
   }
   .detail-hero__meta {
     display: flex; gap: 16px; flex-wrap: wrap; margin-top: 13px;
-    font-size: 12.5px; color: var(--ds-text-muted);
+    font-size: 12.5px; color: rgba(255, 255, 255, 0.78);
   }
   .detail-hero__meta span { display: inline-flex; align-items: center; gap: 6px; }
   .detail-hero__meta svg { width: 14px; height: 14px; }
@@ -249,6 +342,26 @@
   /* Keep every hero action on one radius — the paper skin turns .btn into a
      pill, which clashes with the rounded-rect Ask Kai / Edit controls. */
   .detail-hero__actions .btn { border-radius: var(--radius-md, 8px); }
+  /* Hero buttons ride the dark gradient, so the design-system variants are
+     retinted here: primary → solid white with kind-coloured text (the
+     prominent CTA), secondary/danger → translucent "glass" that reads on any
+     kind hue. Commit-on-hover darkens the glass rather than shifting colour. */
+  .detail-hero__actions .btn-primary {
+    background: #fff; color: var(--kind); border: 1px solid #fff;
+  }
+  .detail-hero__actions .btn-primary:hover {
+    background: rgba(0, 0, 0, 0.18); color: #fff; border-color: rgba(255, 255, 255, 0.55);
+  }
+  .detail-hero__actions .btn-secondary,
+  .detail-hero__actions .btn-danger {
+    background: rgba(255, 255, 255, 0.12); color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.42);
+  }
+  .detail-hero__actions .btn-secondary:hover { background: rgba(255, 255, 255, 0.2); }
+  .detail-hero__actions .btn-danger:hover {
+    background: rgba(220, 38, 38, 0.85); border-color: rgba(220, 38, 38, 0.95);
+  }
+  .detail-hero__actions .btn[disabled] { opacity: 0.6; }
 
   .detail-ask {
     display: inline-flex; align-items: center; gap: 7px;
@@ -261,10 +374,10 @@
   .detail-edit-icon {
     display: inline-flex; align-items: center; justify-content: center;
     width: 38px; height: 38px; border-radius: var(--radius-md, 8px);
-    border: 1px solid var(--ds-border); background: var(--ds-surface);
-    color: var(--ds-text-muted); text-decoration: none;
+    border: 1px solid rgba(255, 255, 255, 0.42); background: rgba(255, 255, 255, 0.12);
+    color: #fff; text-decoration: none;
   }
-  .detail-edit-icon:hover { border-color: var(--ds-text-muted); color: var(--ds-text-secondary); }
+  .detail-edit-icon:hover { border-color: rgba(255, 255, 255, 0.7); background: rgba(255, 255, 255, 0.2); }
   .detail-edit-icon svg { width: 16px; height: 16px; }
 
   /* ── Section cards ── */

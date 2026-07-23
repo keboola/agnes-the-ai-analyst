@@ -1,135 +1,51 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}{{ (entity.title if entity else None) or plugin_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block body_attrs %}class="detail-page"{% endblock %}
 
-{% block content %}
-{# Design-system component macros — owner-actions row (Edit + 7 delete/
-   archive variants) renders via `ds.button`. Hero, install/remove
-   JS-generated buttons, .btn-copy on dark surfaces, and per-kind
-   colour chrome stay page-local. #}
-{% import "_components.html" as ds %}
+{% block head_extra %}
+{# Shared entity-detail chrome (hero + section cards + tokens) comes from
+   detail.styles(); only the marketplace-specific sub-content lives in the
+   page-local block below. All colours resolve through --ds-* — the local
+   var block just aliases the historical names the sub-content CSS uses. #}
+{% import "macros/_detail.html" as detail %}
+{{ detail.styles() }}
 <style>
   .plugin-detail {
-    --primary-light: color-mix(in srgb, var(--ds-primary) 12%, transparent);
-    --border-light: #eceff1;
-    --text-primary: #202124;
-    --text-secondary: #5f6368;
+    --border: var(--ds-border);
+    --border-light: var(--ds-border-light);
+    --card-bg: var(--ds-surface);
+    --surface-alt: var(--ds-surface-dim);
+    --text-primary: var(--ds-text-primary);
+    --text-secondary: var(--ds-text-secondary);
     --warn-color: #b45309;
-    --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    --font-mono: var(--ds-font-mono);
     --font-medium: 500;
     --font-semibold: 600;
     --font-bold: 700;
   }
 
-  /* ── Hero ─────────────────────────────────────────────────────────── */
-  .plugin-detail .hero {
-    position: relative;
-    background: linear-gradient(135deg, var(--ds-primary) 0%, var(--ds-primary-dark) 100%);
-    border-radius: 14px;
-    padding: 22px 28px 28px;
-    margin-bottom: 24px;
-    box-shadow: 0 4px 16px color-mix(in srgb, var(--ds-primary) 18%, transparent);
-    color: #fff;
-  }
-  .plugin-detail .crumbs {
-    display: flex; gap: 6px; align-items: center;
-    font-size: 12px; color: rgba(255,255,255,0.78);
-    margin-bottom: 18px;
-  }
-  .plugin-detail .crumbs a { color: #fff; opacity: 0.92; text-decoration: none; }
-  .plugin-detail .crumbs a:hover { text-decoration: underline; }
-  .plugin-detail .crumbs .sep { opacity: 0.5; }
-
-  .plugin-detail .hero-head {
-    display: grid;
-    grid-template-columns: 380px minmax(0, 1fr) 300px;
-    gap: 22px;
-    align-items: start;
-  }
-  @media (max-width: 1100px) {
-    .plugin-detail .hero-head { grid-template-columns: 380px minmax(0, 1fr); }
-  }
-  @media (max-width: 720px) {
-    .plugin-detail .hero-head {
-      grid-template-columns: 1fr;
-    }
-  }
-  /* Hero window — macOS-style frame around the cover photo. The body has
-     aspect-ratio 715/310 so curator-uploaded covers never crop to a
-     square. Titlebar shows 3 traffic-light dots + the plugin's
-     manifest_name as a centered label. When cover_photo_url is missing
-     (or the image 404s), the body falls back to a translucent gradient
-     with the plugin's initials — same placeholder feel as before. */
-  .plugin-detail .hero-window {
-    width: 380px;
-    background: #1e293b;
-    border-radius: 10px;
-    overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.40),
-                0 2px 6px rgba(0, 0, 0, 0.18);
-    flex-shrink: 0;
-    align-self: start;
-  }
-  .plugin-detail .hero-window-titlebar {
-    background: linear-gradient(180deg, #2a3445 0%, #1e293b 100%);
-    height: 26px;
-    display: flex; align-items: center; gap: 6px;
-    padding: 0 10px;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.25);
-  }
-  .plugin-detail .hwdot {
-    width: 11px; height: 11px; border-radius: 50%;
-    box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
-    flex-shrink: 0;
-  }
-  .plugin-detail .hwdot.red    { background: #ff5f56; }
-  .plugin-detail .hwdot.yellow { background: #ffbd2e; }
-  .plugin-detail .hwdot.green  { background: #27c93f; }
-  .plugin-detail .hero-window-label {
-    margin: 0 auto;
-    /* mirror the dots' left footprint (~46px) on the right so the
-       label lands optically centered, not visually offset by the dots */
-    padding-right: 46px;
-    font-size: 10.5px; color: rgba(255, 255, 255, 0.55);
-    font-family: var(--font-mono);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    max-width: 100%;
-  }
-  .plugin-detail .hero-window-body {
-    aspect-ratio: 715 / 310;
-    overflow: hidden;
-    background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.04) 100%);
-    display: flex; align-items: center; justify-content: center;
-    color: #fff; font-size: 44px; font-weight: 700; letter-spacing: 1px;
-  }
-  .plugin-detail .hero-window-body img {
-    width: 100%; height: 100%; object-fit: cover; display: block;
-  }
-  /* Per-type tint for the initials placeholder — matches the card grid
-     (marketplace.css): plugin (blue) / skill (green) / agent (amber).
-     Overridden by the cover <img> when present. */
-  .plugin-detail .hero-window-body--plugin { background: var(--ds-accent-info-bg);    color: var(--ds-accent-info-ink); }
-  .plugin-detail .hero-window-body--skill  { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
-  .plugin-detail .hero-window-body--agent  { background: var(--ds-accent-warn-bg);    color: var(--ds-accent-warn-ink); }
-
-  .plugin-detail .meta { min-width: 0; }
-  .plugin-detail h1 {
-    margin: 0 0 6px; font-size: 28px; font-weight: 700;
-    letter-spacing: -0.4px; color: #fff;
-    word-wrap: break-word;
+  /* ── Hero hydration slots ─────────────────────────────────────────────
+     The hero shell (dark per-kind gradient + patterns + icon tile) is the
+     shared `.detail-hero` from detail.styles(); these rules only cover the
+     JS-hydrated pieces that live inside it: tagline, pills, telemetry and
+     the install/remove/cowork action column. */
+  /* Column container so the post-add hint / recipe panel stacks BELOW the
+     action row; the buttons themselves share one row (.actions-row) so
+     install / remove / Cowork sit next to each other. The column sizes to
+     its widest child (no width cap) so the row never wraps and the layout
+     stays put when the install state toggles between "+ Add to my stack"
+     and "In your stack · Remove · Cowork". */
+  .plugin-detail .detail-hero__actions {
+    flex-direction: column; align-items: flex-end; align-self: flex-start;
+    gap: 10px; width: auto; max-width: none;
   }
   .plugin-detail .tagline {
-    font-size: 14.5px; line-height: 1.6;
-    color: rgba(255,255,255,0.92); margin-bottom: 6px;
+    font-size: 14.5px; line-height: 1.55;
+    color: rgba(255, 255, 255, 0.92); margin: 6px 0 0;
   }
-  .plugin-detail .curator {
-    font-size: 12.5px; color: rgba(255,255,255,0.78);
-    margin-bottom: 14px;
-  }
-  .plugin-detail .curator strong { color: #fff; font-weight: 600; }
-  .plugin-detail .curator .todo { color: #FED7AA; font-style: italic; }
   .plugin-detail .pills {
     display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+    margin-top: 10px;
   }
   .plugin-detail .pill {
     background: rgba(255,255,255,0.16); color: #fff;
@@ -173,31 +89,19 @@
   .plugin-detail .hero-telemetry .trend-up   { color: #6ee7b7; font-weight: 600; }
   .plugin-detail .hero-telemetry .trend-down { color: #fca5a5; font-weight: 600; }
 
-  .plugin-detail .actions {
-    /* Absolute on .hero — anchored at the top-right corner with equal
-       22px offsets from top and right. Hint card stacks below the
-       button row inside this absolute container, so it stays inside
-       the hero gradient and toggling it doesn't shift body content. */
-    position: absolute; top: 22px; right: 22px;
-    width: 300px;
-    display: flex; flex-direction: column; gap: 10px;
-    align-items: stretch;
-    z-index: 1;
-  }
-  @media (max-width: 1100px) {
-    .plugin-detail .actions {
-      position: static; width: auto; margin-top: 18px;
-      align-items: flex-end;
-    }
-  }
   .plugin-detail .actions-row {
     display: flex; flex-direction: row; align-items: center;
-    justify-content: flex-end; gap: 12px;
+    justify-content: flex-end; gap: 12px; flex-wrap: nowrap;
+  }
+  /* Only let the action buttons wrap on genuinely narrow viewports, where
+     one row of three would overflow. */
+  @media (max-width: 720px) {
+    .plugin-detail .actions-row { flex-wrap: wrap; }
   }
   /* Without this rule the [hidden] HTML attribute is overridden by the
      explicit `display: inline-flex` on .status-pill, leaving the "✓ In
      your stack" label visible on plugins the user has NOT installed. */
-  .plugin-detail .actions [hidden] { display: none !important; }
+  .plugin-detail .detail-hero__actions [hidden] { display: none !important; }
   .plugin-detail .btn-install {
     appearance: none; cursor: pointer;
     padding: 11px 22px; border-radius: 9px;
@@ -206,7 +110,7 @@
        visible white border without shifting the button's size. */
     border: 1px solid transparent;
     transition: all 0.15s ease;
-    background: #fff; color: var(--ds-primary);
+    background: #fff; color: var(--kind);
   }
   .plugin-detail .btn-install:hover {
     /* Darken-glass — same formula as the secondary "Open parent plugin"
@@ -233,32 +137,29 @@
     color: #fef3c7;
     cursor: not-allowed;
   }
-  /* Remove from stack — outlined red border by default so the
-     destructive intent is announced even before hover; on hover the
-     full red fill commits to the message. The red-on-blue contrast is
-     intentional — same palette logic as the X close button on the
-     hero's quarantine banner. */
+  /* Remove from stack — unified with the shared detail.hero() danger
+     button used across the catalog / memory / library detail pages:
+     translucent white "glass" by default (reads as a quiet secondary
+     control on the gradient hero), committing to a full red fill only on
+     hover. Padding + font-size mirror .btn-install so the off-state CTA
+     and the on-state Remove button are the same physical height — no
+     layout shift when the user toggles the install state. */
   .plugin-detail .btn-remove {
     appearance: none; cursor: pointer;
-    /* Padding + font-size mirror .btn-install so the off-state CTA and
-       the on-state Remove button are the same physical height — no
-       layout shift when the user toggles the install state. */
     padding: 11px 22px; border-radius: 9px;
     font-size: 13px; font-weight: 600; font-family: inherit;
-    background: transparent; color: #fecaca;
-    border: 1px solid rgba(248, 113, 113, 0.7);
+    background: rgba(255, 255, 255, 0.12); color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.42);
     transition: all 0.15s ease;
   }
   .plugin-detail .btn-remove:hover {
     background: rgba(220, 38, 38, 0.85); color: #fff;
     border-color: rgba(220, 38, 38, 0.95);
   }
-  /* Cowork export — secondary outlined action on its OWN line below the
-     stack/remove row, right-aligned. Padding/font/border mirror .btn-remove
-     so the two stacked actions read as the same control size; align-self
-     flex-end pins it to the right edge of the column-flex .actions box. */
+  /* Cowork export — secondary outlined action sharing the same row as the
+     stack/remove buttons. Padding/font/border mirror .btn-remove so the
+     row's controls read as the same size. */
   .plugin-detail .btn-cowork {
-    align-self: flex-end;
     display: inline-flex; align-items: center; justify-content: center;
     cursor: pointer; text-decoration: none;
     /* box-sizing + line-height pinned to match the <button>.btn-remove UA
@@ -368,40 +269,9 @@
   }
   .plugin-detail .stack-hint .learn-more:hover { text-decoration: underline; }
 
-  /* ── Top row ─────────────────────────────────────────────────────── */
-  .plugin-detail .top-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 320px;
-    gap: 20px;
-    margin-bottom: 24px;
-    align-items: stretch;
-  }
-
-  /* Spacing between the bottom panels (use-cases / sample / video / docs /
-     internal structure). The hero-row has its own margin-bottom; subsequent
-     stacked panels need equivalent breathing room or they collide visually
-     (~2px between bordered cards looks like a render bug). */
-  .plugin-detail #panel-use-cases,
-  .plugin-detail #panel-sample,
-  .plugin-detail #panel-video,
-  .plugin-detail #panel-docs,
-  .plugin-detail .structure {
-    margin-top: 24px;
-  }
-  @media (max-width: 900px) {
-    .plugin-detail .top-row { grid-template-columns: 1fr; }
-  }
-  .plugin-detail .panel {
-    background: var(--card-bg); border: 1px solid var(--border);
-    border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-    padding: 22px 26px;
-  }
-  .plugin-detail .panel h2 {
-    font-size: 15px; font-weight: 600;
-    margin: 0 0 14px;
-    text-transform: uppercase; letter-spacing: 0.6px;
-    color: var(--text-secondary);
-  }
+  /* "What it does" + "Details" live in the hero's nested white panel
+     (`.detail-hero__panel` / `.detail-hero__panel-split` from detail.styles()),
+     so the page-local two-column grid that used to sit below the hero is gone. */
   .plugin-detail .lead { font-size: 14.5px; line-height: 1.65; color: var(--text-primary); white-space: pre-wrap; }
   /* `.lead-rendered` switches the lead block from plain-text mode (which
      uses `white-space: pre-wrap` so plain `description` line breaks survive)
@@ -770,8 +640,14 @@
     color: var(--text-secondary); font-size: 13px; font-style: italic;
   }
 </style>
+{% endblock %}
 
-<div class="plugin-detail page-shell" id="root"
+{% block content %}
+{% import "_components.html" as ds %}
+{% import "macros/_detail.html" as detail %}
+{% import "macros/_catalog_card.html" as cards %}
+<div class="detail plugin-detail" id="root" data-kind="plugin"
+     style="--kind: var(--ds-kind-plugin); --kind-soft: var(--ds-kind-plugin-soft);"
      data-source="{{ source }}"
      data-marketplace-id="{{ marketplace_id or '' }}"
      data-plugin-name="{{ plugin_name or '' }}"
@@ -857,60 +733,47 @@
 
   {% include "_flea_versions.html" %}
 
-  <div class="hero">
-    <div class="crumbs">
-      <a href="/marketplace?tab={{ 'curated' if source == 'curated' else 'flea' }}">Marketplace</a>
-      <span class="sep">›</span>
-      <a href="/marketplace?tab={{ 'curated' if source == 'curated' else 'flea' }}" id="crumb-mid">{{ 'Curated Marketplace' if source == 'curated' else 'Flea Market' }}</a>
-      <span class="sep">›</span>
-      <span id="crumb-name">{{ (entity.title if entity else None) or plugin_name }}</span>
-    </div>
-    <div class="hero-head">
-      <div class="hero-window" id="hero-photo" aria-hidden="true">
-        <div class="hero-window-titlebar">
-          <span class="hwdot red"></span>
-          <span class="hwdot yellow"></span>
-          <span class="hwdot green"></span>
-          <span class="hero-window-label" id="hero-window-label">{{ (entity.title if entity else None) or plugin_name }}</span>
-        </div>
-        {%- set _pn_parts = (plugin_name or 'plugin').replace('_', '-').split('-') | select | list %}
-        <div class="hero-window-body" id="hero-window-body">
-          {{- ((_pn_parts[0][0] ~ _pn_parts[1][0]) | upper) if _pn_parts | length >= 2 else (_pn_parts[0][:2] | upper if _pn_parts else 'PL') -}}
-        </div>
-      </div>
-      <div class="meta">
+  {# Back target is layout-aware: the rail IA browses the marketplace through
+     the unified Catalog (`/catalog?kind=plugins`), not the topnav-only
+     `/marketplace` page — hardcoding the latter dead-ends rail users on an
+     orphaned surface. Topnav keeps the classic per-tab marketplace link. #}
+  {% set _back = '/catalog?kind=plugins' if (ui_layout | default('topnav')) == 'rail' else ('/marketplace?tab=' ~ ('curated' if source == 'curated' else 'flea')) %}
+  {% set _back_label = 'All plugins' if (ui_layout | default('topnav')) == 'rail' else ('Curated Marketplace' if source == 'curated' else 'Flea Market') %}
+  <a class="detail-back" href="{{ _back }}">{{ detail.ico('back') }}{{ _back_label }}</a>
+
+  <div class="detail-hero detail-hero--paneled">
+    {{ detail.hero_deco() }}
+    <div class="detail-hero__bar">
+    {# Icon tile — the per-kind glyph is the placeholder; JS swaps in the
+       curator cover (adds `--cover`, injects <img>) once the detail XHR
+       resolves, since curated cover URLs aren't known server-side. #}
+    <div class="detail-hero__icon" id="hero-icon">{{ cards.kind_glyph('plugin') }}</div>
+    <div class="detail-hero__body">
+      <div class="detail-hero__title-row">
         <h1 id="hero-name">{{ (entity.title if entity else None) or plugin_name }}</h1>
-        <!-- v49 phase-2: hidden by default; JS only un-hides when d.tagline
-             is truthy. Pre-fix this rendered "Loading…" then collapsed to
-             empty for entities without a tagline, causing a flicker. -->
-        <div class="tagline" id="hero-tagline" hidden></div>
-        <div class="pills" id="hero-pills"></div>
-        <!-- Telemetry funnel chip — same shape as the listing card so a
-             user who clicks through from /marketplace sees identical
-             figures. Visibility decided by JS: hidden when stack_count
-             == 0 AND invocations_30d == 0 (brand-new plugin, no signals
-             yet). Lives at the bottom of meta so it reads as the last
-             "what is this" facet before the action buttons take over. -->
-        <div class="hero-telemetry" id="hero-telemetry" hidden></div>
       </div>
+      <!-- v49 phase-2: hidden by default; JS only un-hides when d.tagline
+           is truthy, so entities without a tagline don't flash "Loading…". -->
+      <div class="tagline" id="hero-tagline" hidden></div>
+      <div class="pills" id="hero-pills"></div>
+      <!-- Telemetry funnel chip — same shape as the listing card so a user
+           clicking through from /marketplace sees identical figures. Hidden
+           by JS when stack_count == 0 AND invocations_30d == 0. -->
+      <div class="hero-telemetry" id="hero-telemetry" hidden></div>
     </div>
-    <!-- Actions absolutely anchored at the hero's top-right corner with
-         the post-action hint card stacked below them. Both stay inside
-         the hero gradient — the hero's natural height (window titlebar
-         + 715:310 body ≈ 191px) contains them without overflow. -->
-    <div class="actions">
+    <div class="detail-hero__actions">
+      {# All hero actions sit on one row (matches the shared detail.hero()
+         layout used by the catalog / memory / library detail pages). The
+         Cowork export lives alongside install/remove rather than on its own
+         line. Href + visibility for Cowork set by JS once the payload
+         resolves. #}
       <div class="actions-row">
         <button class="btn-install" id="install-btn" type="button" hidden>+ Add to my stack</button>
         <span class="status-pill" id="status-pill" hidden>✓ In your stack</span>
         <button class="btn-remove" id="remove-btn" type="button" hidden>✕ Remove from stack</button>
+        <a class="btn-cowork" id="cowork-btn" hidden
+           title="Download this plugin as a single zip to upload in Claude Cowork (claude.ai)">&darr; Download for Cowork</a>
       </div>
-      {# Cowork export — its own line UNDER the stack/remove row, right-
-         aligned via align-self:flex-end. Downloads this plugin transformed
-         into a single Cowork-uploadable zip. Href + visibility set by JS
-         once the detail payload resolves (curated plugins have a stable
-         prefixed_name; see GET /marketplace/cowork/<prefixed>.zip). #}
-      <a class="btn-cowork" id="cowork-btn" hidden
-         title="Download this plugin as a single zip to upload in Claude Cowork (claude.ai)">&darr; Download for Cowork</a>
       <div class="stack-hint" id="stack-hint" hidden>
         <div class="head">
           <span class="title" id="stack-hint-title">✓ Added to your stack</span>
@@ -924,52 +787,57 @@
         </div>
       </div>
     </div>
-  </div>
-
-  <div class="top-row">
-    <div class="panel" id="panel-what">
-      <h2>What it does</h2>
-      <div class="lead" id="lead-text">Loading…</div>
     </div>
-    <div class="panel details" id="panel-details">
-      <h2>Details</h2>
-      <dl id="details-list"></dl>
+
+    {# "What it does" + "Details" nested in the hero as one white card at the
+       bottom of the header (mirrors the data-package hero panel). Populated
+       by the hydration script below via #lead-text / #details-list. #}
+    <div class="detail-hero__panel">
+      <div class="detail-hero__panel-split">
+        <div class="main" id="panel-what">
+          <h2 class="detail-section__title">{{ detail.ico('info') }}What it does</h2>
+          <div class="lead" id="lead-text">Loading…</div>
+        </div>
+        <div class="side details" id="panel-details">
+          <h2 class="detail-section__title">{{ detail.ico('file') }}Details</h2>
+          <dl id="details-list"></dl>
+        </div>
+      </div>
     </div>
   </div>
 
   <!-- Use cases — populated from marketplace-metadata.json use_cases[]. Hidden
        until the curator has supplied at least one card. -->
-  <div class="panel" id="panel-use-cases" hidden>
-    <h2>When to use it</h2>
+  <section class="ds-card detail-section" id="panel-use-cases" hidden>
+    <h2 class="detail-section__title">{{ detail.ico('check') }}When to use it</h2>
     <div class="use-cases-grid" id="panel-use-cases-grid"></div>
-  </div>
+  </section>
 
   <!-- Sample interaction — single user/assistant Q&A from
        marketplace-metadata.json sample_interaction. Hidden until populated. -->
-  <div class="panel" id="panel-sample" hidden>
-    <h2>Example</h2>
+  <section class="ds-card detail-section" id="panel-sample" hidden>
+    <h2 class="detail-section__title">{{ detail.ico('chat') }}Example</h2>
     <div class="sample-interaction">
       <div class="sample-user"><span class="sample-label">You</span><div id="sample-user"></div></div>
       <div class="sample-assistant"><span class="sample-label">Claude</span><div id="sample-assistant" class="sample-assistant-body"></div></div>
     </div>
-  </div>
+  </section>
 
   <!-- v32: video + doc_links section. Both blocks stay hidden until populated
        so the layout collapses gracefully when an upstream marketplace ships
-       no marketplace-metadata.json. Doc icons differentiate internal-cached files
-       (📄) from external links (🔗) so the user knows what's a click away. -->
-  <div class="panel" id="panel-video" hidden>
-    <h2>Demo video</h2>
+       no marketplace-metadata.json. -->
+  <section class="ds-card detail-section" id="panel-video" hidden>
+    <h2 class="detail-section__title">{{ detail.ico('play') }}Demo video</h2>
     <div class="video-embed" id="video-wrap"></div>
-  </div>
+  </section>
 
-  <div class="panel" id="panel-docs" hidden>
-    <h2>Documentation</h2>
+  <section class="ds-card detail-section" id="panel-docs" hidden>
+    <h2 class="detail-section__title">{{ detail.ico('book') }}Documentation</h2>
     <ul class="doc-link-list" id="doc-link-list"></ul>
-  </div>
+  </section>
 
   <div class="structure" id="structure" hidden>
-    <h2>Internal structure</h2>
+    <h2 class="detail-section__title">{{ detail.ico('layers') }}Internal structure</h2>
     <div id="struct-skills"></div>
     <div id="struct-agents"></div>
     <div id="struct-commands"></div>
@@ -977,9 +845,9 @@
     <div id="struct-mcps"></div>
   </div>
 
-  <div id="error-msg" class="panel" hidden>
+  <section class="ds-card detail-section" id="error-msg" hidden>
     <p class="empty-msg" id="error-text"></p>
-  </div>
+  </section>
 </div>
 
 <script>
@@ -1069,10 +937,6 @@
   // when the curator hasn't filled the friendly tagline yet — preserves
   // the historical hero look for un-enriched plugins.
   const heroTitle = d.display_name || d.manifest_name || d.plugin_name;
-  // crumb-mid is rendered server-side as the generic "Curated Marketplace"
-  // / "Flea Market" link — no JS update needed (was previously overwritten
-  // with the per-instance marketplace_name, which was opaque to analysts).
-  document.getElementById('crumb-name').textContent = heroTitle;
   document.title = `${heroTitle} — Marketplace`;
 
   document.getElementById('hero-name').textContent = heroTitle;
@@ -1089,11 +953,6 @@
     tagEl.textContent = '';
     tagEl.hidden = true;
   }
-  // Window titlebar label mirrors the h1 — keeps the mac-window framing
-  // consistent with whichever name the user actually sees as the title.
-  const heroWindowLabel = document.getElementById('hero-window-label');
-  if (heroWindowLabel) heroWindowLabel.textContent = heroTitle;
-
   // Hero curator line removed — the Details sidebar already carries
   // the Curator row (renamed from "Owner"), so duplicating it under
   // the h1 was visual noise.
@@ -1155,34 +1014,22 @@
     slot.hidden = false;
   })();
 
-  // Hero window — macOS-style frame around the cover photo. The titlebar
-  // label carries the plugin's manifest_name; the body holds the cover
-  // photo (or a placeholder gradient + initials when no cover is set).
-  const labelEl = document.getElementById('hero-window-label');
-  if (labelEl) labelEl.textContent = d.manifest_name || d.plugin_name;
-
-  const bodyEl = document.getElementById('hero-window-body');
-  // Placeholder initials derived from the plugin name so the hero looks
-  // distinct per entity ("keboola-cli" → "KC") instead of a generic "PL".
-  // Mirrors initialsFor() in marketplace.html (the card grid).
-  const initials = deriveInitials(d.display_name || d.manifest_name || d.plugin_name, d.type);
-  // Per-type tint matching the card grid (see marketplace.css). Known types
-  // only; unknown types keep the default hero gradient.
-  if (d.type === 'plugin' || d.type === 'skill' || d.type === 'agent') {
-    bodyEl.classList.add(`hero-window-body--${d.type}`);
-  }
-  if (d.cover_photo_url) {
-    // Same fallback pattern as the marketplace card grid — when the cover
-    // 404s (missing internal file, or external mirror failed and the
-    // pass-through URL is dead), restore the initials placeholder so the
-    // hero looks identical to the no-cover case rather than showing the
-    // browser's broken-image icon.
-    bodyEl.innerHTML = `<img src="${esc(d.cover_photo_url)}" alt=""
-        onerror="this.parentElement.classList.add('photo-failed');
-                 this.parentElement.textContent=this.dataset.fallback;"
-        data-fallback="${esc(initials)}">`;
-  } else {
-    bodyEl.textContent = initials;
+  // Hero cover — the shared icon tile shows the per-kind glyph by default.
+  // When the curator supplied a cover, overlay it on the tile (widening it
+  // via `--cover`, mirroring the detail.hero() macro's overlay contract).
+  // On a 404 (missing internal file or dead external mirror), drop the
+  // overlay and revert to the glyph rather than a broken-image icon.
+  const iconEl = document.getElementById('hero-icon');
+  if (iconEl && d.cover_photo_url) {
+    iconEl.classList.add('detail-hero__icon--cover');
+    const coverImg = document.createElement('img');
+    coverImg.alt = '';
+    coverImg.src = d.cover_photo_url;
+    coverImg.onerror = () => {
+      iconEl.classList.remove('detail-hero__icon--cover');
+      coverImg.remove();
+    };
+    iconEl.appendChild(coverImg);
   }
 
   // Three-element install state: install button (off-state CTA), status

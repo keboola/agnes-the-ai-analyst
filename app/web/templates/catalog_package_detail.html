@@ -67,28 +67,11 @@
 {% set _meta = [{'icon': 'table', 'text': (tables|length|string) ~ ' table' ~ ('s' if tables|length != 1 else '')}] %}
 {% if total_size_bytes %}{% set _ = _meta.append({'icon': 'db', 'text': total_size_display}) %}{% endif %}
 
-{% call detail.hero(
-     kind='data', name=pkg.name, color=pkg.color,
-     cover_image_url=pkg.cover_image_url, icon=pkg.icon,
-     badges=badges, owner_name=pkg.owner_name, owner_team=pkg.owner_team,
-     description=pkg.description, tags=pkg.tags, meta=_meta,
-     back_href='/catalog', back_label='All data packages') %}
-  {% if effective_requirement == 'required' %}
-    <button class="btn btn-required" disabled title="Required by your organization">In stack (required)</button>
-  {% elif in_stack %}
-    {{ ds.button('Remove from stack', variant='danger', type='button', id='pkg-remove-btn') }}
-  {% else %}
-    {{ ds.button('+ Add to stack', variant='primary', type='button', id='pkg-add-btn') }}
-  {% endif %}
-  {{ detail.ask_kai('Tell me about the ' ~ pkg.name ~ ' data package — what can I analyze with it?') }}
-  {% if user.is_admin %}
-    {{ detail.edit_icon('/admin/tables?edit_package=' ~ pkg.id, 'Edit package metadata (admin)') }}
-  {% endif %}
-{% endcall %}
-
-{# ── What it is + Use / Skip (one card) ──────────────────── #}
+{# ── What it is + Use / Skip — rendered into the hero's nested white panel
+   (bottom of the header) rather than a separate card below it. ──────── #}
+{% set pkg_panel %}
 {% if pkg.long_description or pkg.when_to_use or pkg.when_not_to_use %}
-{{ detail.section_open('What it is' if pkg.long_description else 'When to use it', icon='info') }}
+  <h2 class="detail-section__title">{{ detail.ico('info') }}{{ 'What it is' if pkg.long_description else 'When to use it' }}</h2>
   {% if pkg.long_description %}
   <div data-section="long-description"><div class="detail-prose">{{ pkg.long_description }}</div></div>
   {% endif %}
@@ -109,8 +92,27 @@
       {% endif %}
     </div>
   {% endif %}
-{{ detail.section_close() }}
 {% endif %}
+{% endset %}
+
+{% call detail.hero(
+     kind='data', name=pkg.name, color=pkg.color,
+     cover_image_url=pkg.cover_image_url, icon=pkg.icon,
+     badges=badges, owner_name=pkg.owner_name, owner_team=pkg.owner_team,
+     description=pkg.description, tags=pkg.tags, meta=_meta,
+     back_href='/catalog', back_label='All data packages', panel=pkg_panel|trim) %}
+  {% if effective_requirement == 'required' %}
+    <button class="btn btn-required" disabled title="Required by your organization">In stack (required)</button>
+  {% elif in_stack %}
+    {{ ds.button('Remove from stack', variant='danger', type='button', id='pkg-remove-btn') }}
+  {% else %}
+    {{ ds.button('+ Add to stack', variant='primary', type='button', id='pkg-add-btn') }}
+  {% endif %}
+  {{ detail.ask_kai('Tell me about the ' ~ pkg.name ~ ' data package — what can I analyze with it?') }}
+  {% if user.is_admin %}
+    {{ detail.edit_icon('/admin/tables?edit_package=' ~ pkg.id, 'Edit package metadata (admin)') }}
+  {% endif %}
+{% endcall %}
 
 {# ── Tables in this package ─────────────────────────────── #}
 {{ detail.section_open('Tables in this package', icon='table') }}

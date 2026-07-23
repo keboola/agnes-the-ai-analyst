@@ -227,6 +227,14 @@
     --ds-kind-library-soft: #e9eff6;
     --ds-kind-recipe: #9c1264;
     --ds-kind-recipe-soft: #fbe6f1;
+    /* Marketplace entity kinds — skill (green) / agent (violet). Same
+       vocabulary as data/plugin/etc.; deepened to clear 4.5:1 on their
+       -soft tints. Replaces the per-page hex that marketplace_item_detail
+       previously inlined so skill/agent heroes resolve through tokens. */
+    --ds-kind-skill: #0e7c57;
+    --ds-kind-skill-soft: #e6f6f0;
+    --ds-kind-agent: #6d28d9;
+    --ds-kind-agent-soft: #f0e9fb;
 
     --ds-agnes: #047857;
     --ds-agnes-soft: #ecfdf5;

@@ -1,140 +1,39 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}{{ (entity.title if entity else None) or inner_name or item_name or plugin_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block body_attrs %}class="detail-page"{% endblock %}
 
-{% block content %}
-{# Design-system component macros — owner-actions row (Edit + 7 delete/
-   archive variants) renders via `ds.button`. Hero, panels, JS-generated
-   install/remove buttons, .btn-copy on dark surfaces, and per-kind
-   colour chrome stay page-local. #}
-{% import "_components.html" as ds %}
+{% block head_extra %}
+{# Shared entity-detail chrome (dark per-kind hero + section cards + tokens)
+   comes from detail.styles(); only the marketplace-specific sub-content
+   lives in the page-local block below, retokenized to --ds-*. #}
+{% import "macros/_detail.html" as detail %}
+{{ detail.styles() }}
 <style>
   .item-detail {
-    --bg: var(--background);
+    --border: var(--ds-border);
+    --border-light: var(--ds-border-light);
+    --surface: var(--ds-surface);
+    --surface-alt: var(--ds-surface-dim);
+    --text-primary: var(--ds-text-primary);
+    --text-secondary: var(--ds-text-secondary);
     --warn-color: #b45309;
+    --font-mono: var(--ds-font-mono);
+    --font-medium: 500;
+    --font-semibold: 600;
+    --font-bold: 700;
   }
-  /* Per-kind accents — driven from data-kind. `--kind-from` / `--kind-to`
-     are the gradient endpoints for the dark hero, mirroring how
-     plugin_detail uses var(--ds-primary) → #0056A3. The lighter shade leads
-     (top-left), darker trails (bottom-right). */
-  .item-detail[data-kind="skill"] {
-    --kind: #0e9b6a;
-    --kind-from: #10b77f;
-    --kind-to:   #047857;
-    --kind-bg: rgba(16, 183, 127, 0.14);
-    --kind-shadow: rgba(16, 183, 127, 0.22);
-  }
-  .item-detail[data-kind="agent"] {
-    --kind: #6d28d9;
-    --kind-from: #7c3aed;
-    --kind-to:   #5b21b6;
-    --kind-bg: rgba(124, 58, 237, 0.14);
-    --kind-shadow: rgba(124, 58, 237, 0.22);
-  }
+  /* Per-kind hue (skill=green, agent=violet) resolves through --kind /
+     --kind-soft, set on the root element from the `kind` context var so the
+     shared dark hero gradient in detail.styles() derives its endpoints. */
 
-  /* ── Hero — full kind-coloured gradient (parity with plugin detail) ─ */
-  .item-detail .hero {
-    position: relative;
-    background: linear-gradient(135deg, var(--kind-from) 0%, var(--kind-to) 100%);
-    border-radius: 14px;
-    padding: 22px 28px 28px;
-    margin-bottom: 24px;
-    box-shadow: 0 4px 16px var(--kind-shadow);
-    color: #fff;
-  }
-
-  /* Breadcrumbs — moved INSIDE hero, white-tinted (parity with plugin detail). */
-  .item-detail .hero .crumbs {
-    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
-    font-size: 12px; color: rgba(255,255,255,0.78);
-    margin-bottom: 18px;
-  }
-  .item-detail .hero .crumbs a { color: #fff; opacity: 0.92; text-decoration: none; }
-  .item-detail .hero .crumbs a:hover { text-decoration: underline; }
-  .item-detail .hero .crumbs .sep { opacity: 0.5; }
-  .item-detail .hero .crumbs .current { color: #fff; font-weight: var(--font-medium); }
-
-  .item-detail .hero .head {
-    display: grid;
-    grid-template-columns: 380px minmax(0, 1fr) 300px;
-    gap: 24px;
-    align-items: start;
-  }
-  @media (max-width: 1100px) {
-    .item-detail .hero .head { grid-template-columns: 380px minmax(0, 1fr); }
-  }
-  @media (max-width: 720px) {
-    .item-detail .hero .head { grid-template-columns: 1fr; }
-  }
-
-  /* Hero window — macOS-style frame around the skill/agent cover photo.
-     Mirrors the plugin-detail hero window so the curated/flea detail
-     pages share a consistent visual language. The window's dark chrome
-     stays constant; only the surrounding hero gradient changes per kind
-     (skill=green, agent=purple). The body has aspect-ratio 715/310 so
-     curator-uploaded covers never crop to a square. */
-  .item-detail .hero .hero-window {
-    width: 380px;
-    background: #1e293b;
-    border-radius: 10px;
-    overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.40),
-                0 2px 6px rgba(0, 0, 0, 0.18);
-    flex-shrink: 0;
-    align-self: start;
-  }
-  .item-detail .hero .hero-window-titlebar {
-    background: linear-gradient(180deg, #2a3445 0%, #1e293b 100%);
-    height: 26px;
-    display: flex; align-items: center; gap: 6px;
-    padding: 0 10px;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.25);
-  }
-  .item-detail .hero .hwdot {
-    width: 11px; height: 11px; border-radius: 50%;
-    box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
-    flex-shrink: 0;
-  }
-  .item-detail .hero .hwdot.red    { background: #ff5f56; }
-  .item-detail .hero .hwdot.yellow { background: #ffbd2e; }
-  .item-detail .hero .hwdot.green  { background: #27c93f; }
-  .item-detail .hero .hero-window-label {
-    margin: 0 auto;
-    padding-right: 46px;
-    font-size: 10.5px; color: rgba(255, 255, 255, 0.55);
-    font-family: var(--font-mono);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    max-width: 100%;
-  }
-  .item-detail .hero .hero-window-body {
-    aspect-ratio: 715 / 310;
-    overflow: hidden;
-    background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.04) 100%);
-    display: flex; align-items: center; justify-content: center;
-    color: #fff; font-size: 44px; font-weight: var(--font-bold);
-    letter-spacing: 1px;
-  }
-  .item-detail .hero .hero-window-body img {
-    width: 100%; height: 100%; object-fit: cover; display: block;
-  }
-  /* Per-type tint for the placeholder initials — matches the card grid
-     (marketplace.css) and the plugin detail hero: skill (green) / agent
-     (amber) / plugin (blue). Reuses the theme-aware --ds-accent-* family
-     (light bg + ink text) so the cover-less hero reads as the same legend
-     as the tile the user clicked from. Overridden by the cover <img> when
-     present. Same specificity as the base rule above, so ordering wins. */
-  .item-detail .hero .hero-window-body--skill  { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
-  .item-detail .hero .hero-window-body--agent  { background: var(--ds-accent-warn-bg);    color: var(--ds-accent-warn-ink); }
-  .item-detail .hero .hero-window-body--plugin { background: var(--ds-accent-info-bg);    color: var(--ds-accent-info-ink); }
-
-  .item-detail .hero .meta {
-    min-width: 0;
-  }
+  /* Hero surface (dark per-kind gradient + patterns + icon tile) comes from
+     the shared .detail-hero in detail.styles(). Only the hydrated hero
+     contents (pills, telemetry, meta-row, actions) are styled below. */
   /* Pills — name + CSS structure copied from marketplace_plugin_detail.html
      so plugin / skill / agent hero badges are visually identical except
      for the per-item variants. Item-only addition: `.pill.type` (Skill /
      Agent uppercase label) — plugin detail has no kind axis. */
-  .item-detail .hero .pills {
+  .item-detail .pills {
     display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
     margin-top: 12px;
   }
@@ -157,48 +56,43 @@
      a "Plugin:" prefix on the installed segment because skills/agents
      show the *parent plugin's* stack count (no per-skill subscription
      model exists). Recoloured for the kind-tinted hero background. */
-  .item-detail .hero .hero-telemetry {
+  .item-detail .hero-telemetry {
     margin-top: 12px;
     font-size: 12.5px;
     color: rgba(255,255,255,0.92);
     line-height: 1.7;
   }
-  .item-detail .hero .hero-telemetry > span {
+  .item-detail .hero-telemetry > span {
     white-space: nowrap;
     display: inline-flex;
     align-items: center;
     gap: 4px;
   }
-  .item-detail .hero .hero-telemetry svg {
+  .item-detail .hero-telemetry svg {
     width: 14px; height: 14px;
     flex-shrink: 0;
   }
   /* Icon colors mirror the plugin detail page so the four-segment
      chip reads identically across plugin + skill/agent surfaces. */
-  .item-detail .hero .hero-telemetry .seg-active    > svg { color: #6ee7b7; }
-  .item-detail .hero .hero-telemetry .seg-calls     > svg { color: #fdba74; }
-  .item-detail .hero .hero-telemetry .seg-installed > svg { color: #fde68a; }
-  .item-detail .hero .hero-telemetry .seg-installed .seg-installed-label {
+  .item-detail .hero-telemetry .seg-active    > svg { color: #6ee7b7; }
+  .item-detail .hero-telemetry .seg-calls     > svg { color: #fdba74; }
+  .item-detail .hero-telemetry .seg-installed > svg { color: #fde68a; }
+  .item-detail .hero-telemetry .seg-installed .seg-installed-label {
     opacity: 0.78;
     font-weight: 600;
     margin-right: 2px;
   }
-  .item-detail .hero .hero-telemetry .trend-up   { color: #6ee7b7; font-weight: 600; }
-  .item-detail .hero .hero-telemetry .trend-down { color: #fca5a5; font-weight: 600; }
+  .item-detail .hero-telemetry .trend-up   { color: #6ee7b7; font-weight: 600; }
+  .item-detail .hero-telemetry .trend-down { color: #fca5a5; font-weight: 600; }
 
-  .item-detail .hero h1 {
-    margin: 0 0 6px; font-size: 28px; font-weight: var(--font-bold);
-    letter-spacing: -0.4px; color: #fff;
-    word-wrap: break-word;
-  }
-  .item-detail .hero .meta-row {
+  .item-detail .meta-row {
     display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
     font-size: 13px; color: rgba(255,255,255,0.85);
   }
-  .item-detail .hero .meta-row strong { color: #fff; font-weight: var(--font-semibold); }
-  .item-detail .hero .meta-row a { color: #fff; text-decoration: none; }
-  .item-detail .hero .meta-row a:hover { text-decoration: underline; }
-  .item-detail .hero .meta-row .dot { color: rgba(255,255,255,0.4); }
+  .item-detail .meta-row strong { color: #fff; font-weight: var(--font-semibold); }
+  .item-detail .meta-row a { color: #fff; text-decoration: none; }
+  .item-detail .meta-row a:hover { text-decoration: underline; }
+  .item-detail .meta-row .dot { color: rgba(255,255,255,0.4); }
 
   /* Invocation block — flea only. Lives inside the Description panel so
      "what it does" sits next to "how to call it". The chip itself matches
@@ -250,29 +144,20 @@
     background: rgba(166, 227, 161, 0.08);
   }
 
-  .item-detail .hero .actions {
-    /* Absolute on .hero — anchored at the top-right corner with equal
-       22px offsets from top and right. Hint card stacks below the
-       button row inside this absolute container, so it stays inside
-       the hero gradient and toggling it doesn't shift body content. */
-    position: absolute; top: 22px; right: 22px;
-    width: 300px;
-    display: flex; flex-direction: column; gap: 10px;
-    align-items: stretch;
-    z-index: 1;
+  /* Column stack (install/remove row → helper → hint) pinned to the right
+     of the shared in-flow hero actions slot. */
+  /* Sizes to its widest child (no width cap) so the action row never wraps
+     and the layout stays put when the install state toggles. */
+  .item-detail .detail-hero__actions {
+    flex-direction: column; align-items: flex-end; align-self: flex-start;
+    gap: 10px; width: auto; max-width: none;
   }
-  @media (max-width: 1100px) {
-    .item-detail .hero .actions {
-      position: static; width: auto; margin-top: 18px;
-      align-items: flex-end;
-    }
-  }
-  .item-detail .hero .actions .actions-row {
+  .item-detail .detail-hero__actions .actions-row {
     display: flex; flex-direction: row; align-items: center;
     justify-content: flex-end; gap: 12px;
   }
-  .item-detail .hero .actions [hidden] { display: none !important; }
-  .item-detail .hero .actions .btn {
+  .item-detail .detail-hero__actions [hidden] { display: none !important; }
+  .item-detail .detail-hero__actions .btn {
     appearance: none; cursor: pointer;
     padding: 9px 16px; border-radius: 8px;
     font-size: 12px; font-weight: var(--font-semibold); font-family: inherit;
@@ -282,17 +167,17 @@
     text-decoration: none;
     transition: all 0.15s ease;
   }
-  .item-detail .hero .actions .btn:hover {
+  .item-detail .detail-hero__actions .btn:hover {
     /* Darken instead of lightening — white text on a brighter white
        background was washing out. */
     background: rgba(0, 0, 0, 0.2);
     border-color: rgba(255, 255, 255, 0.55);
     color: #fff;
   }
-  .item-detail .hero .actions .btn.primary {
+  .item-detail .detail-hero__actions .btn.primary {
     background: #fff; color: var(--kind); border-color: #fff;
   }
-  .item-detail .hero .actions .btn.primary:hover {
+  .item-detail .detail-hero__actions .btn.primary:hover {
     /* Darken-glass — same formula as the secondary .btn:hover above so
        primary and secondary hero actions feel consistent. The kind
        gradient shows through the 20% black tint, the white border + text
@@ -305,33 +190,34 @@
      in stack" sitting before the Remove button. No border, no fill —
      visual weight intentionally below the adjacent action so the
      user's eye lands on the button. */
-  .item-detail .hero .actions .status-pill {
+  .item-detail .detail-hero__actions .status-pill {
     display: inline-flex; align-items: center;
     font-size: 13px; font-weight: 500;
     color: #fff;
     cursor: default; user-select: none;
   }
-  /* Remove from stack — red border by default so the destructive
-     intent is announced before hover; full red fill on hover commits
-     to it. */
-  .item-detail .hero .actions .btn-remove {
+  /* Remove from stack — unified with the shared detail.hero() danger
+     button used across the catalog / memory / library detail pages:
+     translucent white "glass" by default (a quiet secondary control on
+     the gradient hero), committing to a full red fill only on hover.
+     Padding + font-size match .btn.primary so the install / remove
+     buttons render at the same height across state transitions. */
+  .item-detail .detail-hero__actions .btn-remove {
     appearance: none; cursor: pointer;
-    /* Padding + font-size match .btn.primary so the install / remove
-       buttons render at the same height across state transitions. */
     padding: 9px 16px; border-radius: 8px;
     font-size: 12px; font-weight: var(--font-semibold); font-family: inherit;
-    background: transparent; color: #fecaca;
-    border: 1px solid rgba(248, 113, 113, 0.7);
+    background: rgba(255, 255, 255, 0.12); color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.42);
     transition: all 0.15s ease;
   }
-  .item-detail .hero .actions .btn-remove:hover {
+  .item-detail .detail-hero__actions .btn-remove:hover {
     background: rgba(220, 38, 38, 0.85); color: #fff;
     border-color: rgba(220, 38, 38, 0.95);
   }
-  .item-detail .hero .actions .btn-remove:focus-visible {
+  .item-detail .detail-hero__actions .btn-remove:focus-visible {
     outline: 2px solid rgba(254, 202, 202, 0.85); outline-offset: 2px;
   }
-  .item-detail .hero .actions .helper {
+  .item-detail .detail-hero__actions .helper {
     font-size: 11px; color: rgba(255,255,255,0.78); line-height: 1.45;
     text-align: right; max-width: 260px;
     /* Anchor the 260px box at the right edge of the 300px .actions column
@@ -341,7 +227,7 @@
        which sits ~40px short of the button. */
     align-self: flex-end;
   }
-  .item-detail .hero .actions .helper strong {
+  .item-detail .detail-hero__actions .helper strong {
     color: #fff; font-weight: var(--font-semibold);
   }
 
@@ -428,38 +314,17 @@
   }
   .item-detail .stack-hint .learn-more:hover { text-decoration: underline; }
 
-  /* ── Top row: Description + Details ───────────────────────────────── */
-  .item-detail .top-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 320px;
-    gap: 20px;
-    margin-bottom: 20px;
-    align-items: stretch;
-  }
-  @media (max-width: 900px) {
-    .item-detail .top-row { grid-template-columns: 1fr; }
-  }
+  /* Description + Details live in the hero's nested white panel
+     (`.detail-hero__panel` / `.detail-hero__panel-split` from detail.styles()),
+     so the page-local two-column grid that used to sit below the hero is gone. */
 
-  .item-detail .panel {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-    padding: 22px 26px;
-  }
-  .item-detail .panel h2 {
-    font-size: 15px; font-weight: var(--font-semibold);
-    margin: 0 0 14px;
-    text-transform: uppercase; letter-spacing: 0.6px;
-    color: var(--text-secondary);
-  }
-  .item-detail .panel .lead {
+  .item-detail .lead {
     font-size: 14.5px; line-height: 1.65; color: var(--text-primary);
     white-space: pre-wrap;
   }
   /* Hero tagline — single-line friendly subtitle below the h1. Same
      placement contract as the plugin-detail hero tagline. */
-  .item-detail .hero .hero-tagline {
+  .item-detail .hero-tagline {
     font-size: 14.5px; line-height: 1.5;
     color: rgba(255,255,255,0.92);
     margin: -2px 0 8px;
@@ -704,10 +569,15 @@
     text-align: center; padding: 32px 16px;
   }
 </style>
+{% endblock %}
 
-<div class="item-detail page-shell" id="root"
+{% block content %}
+{% import "_components.html" as ds %}
+{% import "macros/_detail.html" as detail %}
+{% import "macros/_catalog_card.html" as cards %}
+<div class="detail item-detail" id="root" data-kind="{{ kind }}"
+     style="--kind: var(--ds-kind-{{ kind }}); --kind-soft: var(--ds-kind-{{ kind }}-soft);"
      data-source="{{ source }}"
-     data-kind="{{ kind }}"
      data-marketplace-id="{{ marketplace_id or '' }}"
      data-plugin-name="{{ plugin_name or '' }}"
      data-entity-id="{{ entity_id or '' }}"
@@ -800,52 +670,35 @@
   </script>
   {% endif %}
 
-  <!-- Hero (full kind-coloured gradient, parity with plugin detail) -->
-  <div class="hero">
-    <div class="crumbs" id="crumbs">
-      <a href="/marketplace">Marketplace</a>
-      <span class="sep">›</span>
-      <span id="crumb-loading">Loading…</span>
-    </div>
-    <div class="head">
-      <div class="hero-window" id="hero-photo" aria-hidden="true">
-        <div class="hero-window-titlebar">
-          <span class="hwdot red"></span>
-          <span class="hwdot yellow"></span>
-          <span class="hwdot green"></span>
-          <span class="hero-window-label" id="hero-window-label">{{ (entity.title if entity else None) or inner_name or item_name or plugin_name }}</span>
-        </div>
-        {#- Name-derived placeholder initials (progressive-enhancement fallback;
-            JS re-derives from the API display name after load). Mirrors
-            initialsFor() in marketplace.html — split on separators + whitespace,
-            first letter of the first two words. Empty name → type abbreviation. #}
-        {%- set _hero_nm = ((entity.title if entity else None) or inner_name or item_name or plugin_name or '') | string %}
-        {%- set _hero_parts = (_hero_nm | replace('-', ' ') | replace('_', ' ') | replace('.', ' ') | replace('/', ' ') | replace(':', ' ') | string).split() %}
-        {%- set _hero_ini = ((_hero_parts[0][0] ~ _hero_parts[1][0]) if _hero_parts | length >= 2 else (_hero_parts[0][:2] if _hero_parts else '')) | upper %}
-        <div class="hero-window-body{% if kind in ['skill', 'agent', 'plugin'] %} hero-window-body--{{ kind }}{% endif %}" id="hero-window-body">{{ _hero_ini or ('SK' if kind == 'skill' else 'AG') }}</div>
-      </div>
-      <div class="meta">
+  {# Layout-aware back target — rail browses the marketplace via the unified
+     Catalog (`/catalog?kind=plugins`); topnav keeps the classic per-tab link. #}
+  {% set _back = '/catalog?kind=plugins' if (ui_layout | default('topnav')) == 'rail' else ('/marketplace?tab=' ~ ('curated' if source == 'curated' else 'flea')) %}
+  {% set _back_label = 'All plugins' if (ui_layout | default('topnav')) == 'rail' else ('Curated Marketplace' if source == 'curated' else 'Flea Market') %}
+  <a class="detail-back" href="{{ _back }}">{{ detail.ico('back') }}{{ _back_label }}</a>
+
+  <div class="detail-hero detail-hero--paneled">
+    {{ detail.hero_deco() }}
+    <div class="detail-hero__bar">
+    {# Icon tile — per-kind glyph placeholder; JS overlays the curator cover
+       (adds `--cover`, injects <img>) once the detail XHR resolves. #}
+    <div class="detail-hero__icon" id="hero-icon">{{ cards.kind_glyph(kind) }}</div>
+    <div class="detail-hero__body">
+      <div class="detail-hero__title-row">
         <h1 id="hero-name">{{ (entity.title if entity else None) or inner_name or item_name or plugin_name }}</h1>
-        <div class="hero-tagline" id="hero-tagline" hidden></div>
-        <div class="meta-row" id="hero-meta-row"></div>
-        <div class="pills" id="hero-pills">
-          <span class="pill type">{{ kind }}</span>
-          <span class="pill {{ source }}">{{ 'Curated' if source == 'curated' else 'Flea' }}</span>
-        </div>
-        <!-- Telemetry funnel chip — same four segments as the plugin
-             detail page (active · calls · trend · Plugin: N installed).
-             The installed count is the *parent plugin's* stack count
-             with a "Plugin:" prefix because skills/agents don't have a
-             per-item subscription model; tooltip spells it out. JS
-             hides the slot when the parent isn't installed AND the
-             item has no 30d activity. -->
-        <div class="hero-telemetry" id="hero-telemetry" hidden></div>
       </div>
+      <div class="hero-tagline" id="hero-tagline" hidden></div>
+      <div class="meta-row" id="hero-meta-row"></div>
+      <div class="pills" id="hero-pills">
+        <span class="pill type">{{ kind }}</span>
+        <span class="pill {{ source }}">{{ 'Curated' if source == 'curated' else 'Flea' }}</span>
+      </div>
+      <!-- Telemetry funnel chip — active · calls · trend · Plugin: N installed.
+           The installed count is the parent plugin's stack count (skills/agents
+           have no per-item subscription). JS hides it when the parent isn't
+           installed AND the item has no 30d activity. -->
+      <div class="hero-telemetry" id="hero-telemetry" hidden></div>
     </div>
-    <!-- Actions absolutely anchored at the hero's top-right corner.
-         Action-row holds the install/remove buttons (JS writes into
-         #hero-actions); stack-hint stacks below as a glass card. -->
-    <div class="actions">
+    <div class="detail-hero__actions">
       <div class="actions-row" id="hero-actions"></div>
       <div class="helper" id="hero-helper" hidden></div>
       <div class="stack-hint" id="stack-hint" hidden>
@@ -861,49 +714,53 @@
         </div>
       </div>
     </div>
-  </div>
+    </div>
 
-  <div class="top-row">
-    <div class="panel">
-      <h2>Description</h2>
-      <div class="lead" id="description-body">Loading…</div>
-      <div class="invocation-block" id="invocation-block" hidden>
-        <h3 class="invocation-label">How to call it</h3>
-        <div class="invocation" id="invocation" title="Run in Claude Code">
-          <span class="prompt">/</span>
-          <span class="cmd" id="invocation-cmd"></span>
-          <button class="btn-copy" id="invocation-copy" type="button">Copy</button>
+    {# Description (+ "how to call it") + Details nested in the hero as one
+       white card at the bottom of the header (mirrors the plugin + data
+       package hero panels). Populated by the hydration script below. #}
+    <div class="detail-hero__panel">
+      <div class="detail-hero__panel-split">
+        <div class="main">
+          <h2 class="detail-section__title">{{ detail.ico('info') }}Description</h2>
+          <div class="lead" id="description-body">Loading…</div>
+          <div class="invocation-block" id="invocation-block" hidden>
+            <h3 class="invocation-label">How to call it</h3>
+            <div class="invocation" id="invocation" title="Run in Claude Code">
+              <span class="prompt">/</span>
+              <span class="cmd" id="invocation-cmd"></span>
+              <button class="btn-copy" id="invocation-copy" type="button">Copy</button>
+            </div>
+          </div>
+        </div>
+        <div class="side details">
+          <h2 class="detail-section__title">{{ detail.ico('file') }}Details</h2>
+          <dl id="details-list"></dl>
         </div>
       </div>
     </div>
-    <aside class="panel details">
-      <h2>Details</h2>
-      <dl id="details-list"></dl>
-    </aside>
   </div>
 
-  <!-- Use cases — populated from marketplace-metadata.json use_cases[].
-       Hidden until the curator has supplied at least one card. -->
-  <div class="panel section-block" id="panel-use-cases" hidden>
-    <h2>When to use it</h2>
+  <!-- Use cases — populated from marketplace-metadata.json use_cases[]. -->
+  <section class="ds-card detail-section" id="panel-use-cases" hidden>
+    <h2 class="detail-section__title">{{ detail.ico('check') }}When to use it</h2>
     <div class="use-cases-grid" id="panel-use-cases-grid"></div>
-  </div>
+  </section>
 
   <!-- Sample interaction — Claude Code-style dark transcript panel. -->
-  <div class="panel section-block" id="panel-sample" hidden>
-    <h2>Example</h2>
+  <section class="ds-card detail-section" id="panel-sample" hidden>
+    <h2 class="detail-section__title">{{ detail.ico('chat') }}Example</h2>
     <div class="sample-interaction">
       <div class="sample-user"><span class="sample-label">You</span><div id="sample-user"></div></div>
       <div class="sample-assistant"><span class="sample-label">Claude</span><div id="sample-assistant" class="sample-assistant-body"></div></div>
     </div>
-  </div>
+  </section>
 
-  <!-- When-to-use disambiguation: rendered markdown ("Use X for Y, see Z
-       for the alternative…"). Hidden until populated. -->
-  <div class="panel section-block" id="panel-when-to-use" hidden>
-    <h2>When to use this</h2>
+  <!-- When-to-use disambiguation: rendered markdown. Hidden until populated. -->
+  <section class="ds-card detail-section" id="panel-when-to-use" hidden>
+    <h2 class="detail-section__title">{{ detail.ico('search') }}When to use this</h2>
     <div class="lead" id="when-to-use-body"></div>
-  </div>
+  </section>
 
   <div class="section" id="docs-section" hidden>
     <div class="section-head">
@@ -1053,74 +910,27 @@
   // (curated only) links to the plugin detail page so users can climb
   // one level. Flea items have no parent plugin, so their path is
   // Marketplace › Flea Market › <self>.
-  const crumbs = document.getElementById('crumbs');
-  const parentPluginLabel = d.parent_display_name || d.manifest_name || pluginName;
-  if (source === 'curated') {
-    crumbs.innerHTML =
-      `<a href="/marketplace?tab=curated">Marketplace</a>
-       <span class="sep">›</span>
-       <a href="/marketplace?tab=curated">Curated Marketplace</a>
-       <span class="sep">›</span>
-       <a href="/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}">${esc(parentPluginLabel)}</a>
-       <span class="sep">›</span>
-       <span class="current">${esc(heroTitle)}</span>`;
-  } else if (innerName) {
-    // Flea inner skill/agent — 4-segment path mirroring curated inner:
-    //   Marketplace > Flea Market > <plugin display name> > <self>
-    crumbs.innerHTML =
-      `<a href="/marketplace?tab=flea">Marketplace</a>
-       <span class="sep">›</span>
-       <a href="/marketplace?tab=flea">Flea Market</a>
-       <span class="sep">›</span>
-       <a href="/marketplace/flea/${esc(entityId)}">${esc(d.parent_display_name || d.manifest_name || pluginName)}</a>
-       <span class="sep">›</span>
-       <span class="current">${esc(heroTitle)}</span>`;
-  } else {
-    // v49 phase-2: drop `d.manifest_name` fallback. manifest_name is the
-    // suffixed slug (e.g. `xlsx-by-c-marustamyan`) and users explicitly
-    // didn't want to see it in breadcrumbs. heroTitle (resolved from
-    // `display_name` which now mirrors `entity.title`) is the
-    // user-friendly label.
-    crumbs.innerHTML =
-      `<a href="/marketplace?tab=flea">Marketplace</a>
-       <span class="sep">›</span>
-       <a href="/marketplace?tab=flea">Flea Market</a>
-       <span class="sep">›</span>
-       <span class="current">${esc(heroTitle)}</span>`;
-  }
+  // Breadcrumbs are replaced by the shared `.detail-back` link (rendered
+  // server-side). The meta-row below still links to the parent plugin, so
+  // climbing one level up is preserved.
 
   // ── Hero name ──────────────────────────────────────────────────────
   document.getElementById('hero-name').textContent = heroTitle;
 
-  // Hero window — macOS-style frame around the cover. The titlebar label
-  // carries the skill/agent name (heroTitle); the body holds the cover
-  // photo (or a placeholder gradient + 'SK'/'AG' initials when no cover).
-  const labelEl = document.getElementById('hero-window-label');
-  if (labelEl) labelEl.textContent = heroTitle;
-
-  // Cover photo — flea may have one; curated v32 may also have one when
-  // marketplace-metadata.json sub-tree references a skill/agent cover via
-  // either an internal path (resolved to /asset/) or an external URL.
-  const bodyEl = document.getElementById('hero-window-body');
-  // Placeholder initials derived from the display name — mirrors the card
-  // grid so the cover-less hero shows "SD" for "Sales Dashboard" instead
-  // of a generic "SK"/"AG". Re-derived here (not just server-rendered)
-  // because the curated path fills the title from the API after load.
-  const heroInitials = deriveInitials(heroTitle, kind);
-  // Per-kind tint matching the card grid + plugin detail hero (skill=green,
-  // agent=amber, plugin=blue). Known kinds only; others keep the gradient.
-  if (kind === 'skill' || kind === 'agent' || kind === 'plugin') {
-    bodyEl.classList.add(`hero-window-body--${kind}`);
-  }
-  if (d.cover_photo_url) {
-    // When the cover 404s, the onerror handler restores these initials so
-    // the hero looks identical to the no-cover case (not a broken image).
-    bodyEl.innerHTML = `<img src="${esc(d.cover_photo_url)}" alt=""
-        onerror="this.parentElement.classList.add('photo-failed');
-                 this.parentElement.textContent=this.dataset.fallback;"
-        data-fallback="${esc(heroInitials)}">`;
-  } else {
-    bodyEl.textContent = heroInitials;
+  // Hero cover — the shared icon tile shows the per-kind glyph by default;
+  // overlay the curator cover when present (widening the tile via `--cover`,
+  // mirroring the detail.hero() macro), reverting to the glyph on a 404.
+  const iconEl = document.getElementById('hero-icon');
+  if (iconEl && d.cover_photo_url) {
+    iconEl.classList.add('detail-hero__icon--cover');
+    const coverImg = document.createElement('img');
+    coverImg.alt = '';
+    coverImg.src = d.cover_photo_url;
+    coverImg.onerror = () => {
+      iconEl.classList.remove('detail-hero__icon--cover');
+      coverImg.remove();
+    };
+    iconEl.appendChild(coverImg);
   }
 
   // Pills — same structure / class names as plugin detail hero so the two
