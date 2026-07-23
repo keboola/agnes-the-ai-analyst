@@ -1,4 +1,4 @@
-"""SQLAlchemy models for the agent profiles + agent-as-API cluster (DuckDB v96).
+"""SQLAlchemy models for the agent profiles + agent-as-API cluster (DuckDB v96/v97).
 
 Mirrors:
   - ``agents``                  (src/db.py, v96)
@@ -6,9 +6,12 @@ Mirrors:
   - ``llm_usage``                (src/db.py, v96)
   - ``agent_scope_snapshots``    (src/db.py, v96)
   - ``idempotency_keys``         (src/db.py, v96)
+  - ``agent_webhooks``           (src/db.py, v97)
+  - ``agent_artifacts``          (src/db.py, v97)
 
-and the Alembic migration ``migrations/versions/0043_agents_v96.py``. This is
-the schema foundation for agent profiles + agent-as-API
+and the Alembic migrations ``migrations/versions/0043_agents_v96.py`` /
+``migrations/versions/0044_agent_webhooks_artifacts_v97.py``. This is the
+schema foundation for agent profiles + agent-as-API
 (docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md);
 repos/endpoints land in later tasks of the same wave.
 
@@ -136,3 +139,51 @@ class IdempotencyKey(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (PrimaryKeyConstraint("key", "owner_user_id", "agent_id", name="pk_idempotency_keys"),)
+
+
+class AgentWebhook(Base):
+    """Outbound webhook registration for an agent — HMAC-signed POSTs on
+    the subscribed comma-joined ``events`` (e.g. ``job.completed,job.failed``).
+    ``secret`` is a random signing secret shown once at create, like a PAT.
+    ``consecutive_failures``/``disabled_at`` back the auto-disable-after-N-
+    failures policy resolved in a later task."""
+
+    __tablename__ = "agent_webhooks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String, nullable=False)
+    owner_user_id: Mapped[str] = mapped_column(String, nullable=False)
+    url: Mapped[str] = mapped_column(String, nullable=False)
+    secret: Mapped[str] = mapped_column(String, nullable=False)
+    events: Mapped[str] = mapped_column(String, server_default=text("'job.completed,job.failed'"), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, server_default=text("TRUE"), nullable=False)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=True
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=True
+    )
+
+
+class AgentArtifact(Base):
+    """Metadata row for a file an agent run produced — the blob itself
+    lives in the object store under ``object_key``; this table is
+    metadata only (filename/size/content-type/md5 for listing + download
+    redirects)."""
+
+    __tablename__ = "agent_artifacts"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, nullable=False)
+    agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    owner_user_id: Mapped[str] = mapped_column(String, nullable=False)
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    object_key: Mapped[str] = mapped_column(String, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), nullable=False)
+    content_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    md5: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=True
+    )

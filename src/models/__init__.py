@@ -9,7 +9,15 @@ from ``src.db_pg`` and adds it to the ``__all__`` re-export below.
 
 from __future__ import annotations
 
-from src.models.agents import Agent, AgentScope, AgentScopeSnapshot, IdempotencyKey, LlmUsage
+from src.models.agents import (
+    Agent,
+    AgentArtifact,
+    AgentScope,
+    AgentScopeSnapshot,
+    AgentWebhook,
+    IdempotencyKey,
+    LlmUsage,
+)
 from src.models.audit import AuditLog
 from src.models.chat import ChatMessage, ChatSession, UserWorkdir
 from src.models.chat_broker_tickets import ChatBrokerTicket
@@ -88,8 +96,10 @@ from src.models.vault import SystemSecret
 
 __all__ = [
     "Agent",
+    "AgentArtifact",
     "AgentScope",
     "AgentScopeSnapshot",
+    "AgentWebhook",
     "AuditLog",
     "BqMetadataCache",
     "ChatBrokerTicket",

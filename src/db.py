@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 96
+SCHEMA_VERSION = 97
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1605,6 +1605,35 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
     created_at    TIMESTAMP DEFAULT current_timestamp,
     expires_at    TIMESTAMP,
     PRIMARY KEY (key, owner_user_id, agent_id)
+);
+
+-- v97: agent webhooks + artifacts (agent-api V1b). No secondary indexes
+-- (ART-index incident — see _v94_to_v95).
+CREATE TABLE IF NOT EXISTS agent_webhooks (
+    id                   VARCHAR PRIMARY KEY,
+    agent_id             VARCHAR NOT NULL,
+    owner_user_id        VARCHAR NOT NULL,
+    url                  VARCHAR NOT NULL,
+    secret               VARCHAR NOT NULL,
+    events               VARCHAR NOT NULL DEFAULT 'job.completed,job.failed',
+    active               BOOLEAN NOT NULL DEFAULT TRUE,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    disabled_at          TIMESTAMP,
+    created_at           TIMESTAMP DEFAULT current_timestamp,
+    updated_at           TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS agent_artifacts (
+    id            VARCHAR PRIMARY KEY,
+    session_id    VARCHAR NOT NULL,
+    agent_id      VARCHAR,
+    owner_user_id VARCHAR NOT NULL,
+    filename      VARCHAR NOT NULL,
+    object_key    VARCHAR NOT NULL,
+    size_bytes    BIGINT NOT NULL DEFAULT 0,
+    content_type  VARCHAR,
+    md5           VARCHAR,
+    created_at    TIMESTAMP DEFAULT current_timestamp
 );
 """
 
@@ -6532,6 +6561,41 @@ def _v95_to_v96(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 96")
 
 
+def _v96_to_v97(conn: duckdb.DuckDBPyConnection) -> None:
+    """v96→v97: agent webhooks + artifacts (agent-api V1b). No secondary
+    indexes (ART-index incident — see _v94_to_v95)."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_webhooks (
+            id                   VARCHAR PRIMARY KEY,
+            agent_id             VARCHAR NOT NULL,
+            owner_user_id        VARCHAR NOT NULL,
+            url                  VARCHAR NOT NULL,
+            secret               VARCHAR NOT NULL,
+            events               VARCHAR NOT NULL DEFAULT 'job.completed,job.failed',
+            active               BOOLEAN NOT NULL DEFAULT TRUE,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            disabled_at          TIMESTAMP,
+            created_at           TIMESTAMP DEFAULT current_timestamp,
+            updated_at           TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_artifacts (
+            id            VARCHAR PRIMARY KEY,
+            session_id    VARCHAR NOT NULL,
+            agent_id      VARCHAR,
+            owner_user_id VARCHAR NOT NULL,
+            filename      VARCHAR NOT NULL,
+            object_key    VARCHAR NOT NULL,
+            size_bytes    BIGINT NOT NULL DEFAULT 0,
+            content_type  VARCHAR,
+            md5           VARCHAR,
+            created_at    TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 97")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6926,6 +6990,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # agent-as-API foundation). _SYSTEM_SCHEMA already creates/
             # declares all of these on fresh installs (no-op here).
             _v95_to_v96(conn)
+            # v96→v97: agent_webhooks / agent_artifacts tables (agent-api
+            # V1b). _SYSTEM_SCHEMA already creates them on fresh installs
+            # (no-op CREATE IF NOT EXISTS here).
+            _v96_to_v97(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7171,6 +7239,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v94_to_v95(conn)
             if current < 96:
                 _v95_to_v96(conn)
+            if current < 97:
+                _v96_to_v97(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
