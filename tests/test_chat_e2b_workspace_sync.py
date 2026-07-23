@@ -84,10 +84,17 @@ def test_upload_packs_workspace_tree_into_one_tarball(tmp_path: Path):
         # Exactly two writes: the tarball + the ready sentinel. No per-file
         # round-trips on the happy path.
         assert set(_written(sb)) == {SANDBOX_WORKSPACE_TARBALL, SANDBOX_WORKSPACE_READY}
-        # Extraction command targets /work and cleans the archive up.
-        cmd = sb.commands.run.await_args_list[0].args[0]
+        # Extraction command targets /work, hands the tree to the sandbox
+        # "user" account, and cleans the archive up. It must run as root:
+        # the template's /work is root-owned drwxr-xr-x, so tar under
+        # "user" EACCESes on every member and every spawn silently pays
+        # the per-file fallback (found live in production).
+        call = sb.commands.run.await_args_list[0]
+        cmd = call.args[0]
         assert SANDBOX_WORKSPACE_TARBALL in cmd
         assert "-C /work" in cmd
+        assert "chown -R user:user /work" in cmd
+        assert call.kwargs.get("user") == "root"
 
     asyncio.run(_run())
 

@@ -48,6 +48,59 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.13] - 2026-07-23
+
+### Added
+
+- **Register a BigQuery table from another project without leaving the UI.**
+  The "Live from BigQuery" form gained an optional **Project** field; filling
+  it in sends an explicit `bq_fqn` (`project.dataset.table`) instead of the
+  configured-project + dataset + table triplet. Blank keeps the previous
+  behaviour exactly. Only applies to Live access — synced (materialized)
+  tables always read from the configured project, so the field is hidden
+  for those. Previously the only way to register a cross-project table was
+  to call `POST /api/admin/register-table` or `PUT /api/admin/registry/{id}`
+  by hand.
+- **`data_source.bigquery.project` and `.location` are documented in server
+  config.** Both were missing from the known-fields registry, so the admin
+  form filed them under "Other (YAML-only) keys" with no label, type or hint
+  while their siblings were described. The `project` hint points at `bq_fqn`
+  as the supported way to reach a table in another project, and the
+  `location` hint names the `404 Not found: Table ... was not found in
+  location <location>` symptom of a mismatch.
+
+## [0.76.12] - 2026-07-23
+
+### Fixed
+
+- **The tarball workspace transport actually engages** — the 0.76.9
+  speedup silently never did: the E2B template bakes `/work` as root-owned,
+  so the in-sandbox `tar` extraction (running as `user`) failed with
+  `Permission denied` on every member and EVERY spawn fell back to the
+  slow per-file upload path (found live in production logs). Extraction
+  now runs as root and `chown`s the tree (and `/work` itself) to the
+  sandbox `user` account, which also makes `/work` writable for
+  agent-created files.
+- **A wedged tool call no longer hangs the chat turn forever.** The
+  real-agent path has no per-tool timeout, so an in-sandbox tool that
+  never returned (e.g. a blocked `agnes pull`) left the user staring at
+  "running…" indefinitely. A turn-idle watchdog
+  (`AGNES_TURN_IDLE_SECONDS`, default 300 s of no agent activity) now
+  interrupts the turn and surfaces a `turn_idle_timeout` error frame; the
+  session keeps working.
+- **Chat tool blocks no longer stay stuck on "running…" forever.** The
+  frame envelope (`stamp_frame`) overwrites every frame's `id` with
+  `chat_id:seq`, so the web UI could never pair a `tool_call` with its
+  `tool_result` — every tool block kept its hourglass even after the
+  answer arrived. The runner now sends the pairing key on a dedicated
+  `tool_use_id` field (both frames) and the UI pairs on it; `tool_result`
+  frames also ride the mid-turn replay buffer so a page refresh during a
+  turn doesn't strand the replayed tool blocks without their results.
+- **Chat answers no longer squash prose segments together.** Text blocks
+  bracketing tool calls were joined with no separator in the persisted
+  assistant message ("…tables.35", "…znovu:Z MCP…"); they now join with a
+  blank line.
+
 ## [0.76.11] - 2026-07-22
 
 ### Fixed

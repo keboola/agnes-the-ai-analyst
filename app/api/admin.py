@@ -410,6 +410,29 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             "kind": "object",
             "hint": "BigQuery connection knobs (read more in docs/DEPLOYMENT.md)",
             "fields": {
+                "project": {
+                    "kind": "string",
+                    "hint": (
+                        "GCP project holding the data. Every registered BigQuery "
+                        "row resolves under it unless the row sets `bq_fqn` "
+                        "(`project.dataset.table`), which overrides all three "
+                        "parts for that row alone. Register a table living in "
+                        "another project that way rather than repointing this "
+                        "global. Analyst `--remote` SQL may only name this "
+                        "project directly; other projects are reachable only "
+                        "through a registered row."
+                    ),
+                },
+                "location": {
+                    "kind": "string",
+                    "hint": (
+                        "BigQuery location/region the datasets live in (e.g. "
+                        "`us-central1`, `EU`). Must match the data's actual "
+                        "location: a mismatch surfaces as `404 Not found: "
+                        "Table ... was not found in location <location>` even "
+                        "when the table exists."
+                    ),
+                },
                 "billing_project": {
                     "kind": "string",
                     "hint": (
