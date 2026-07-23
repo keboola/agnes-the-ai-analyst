@@ -827,9 +827,14 @@ async def reap_idle_data_apps(
             logger.warning("reap-idle: runner stop failed for %s: %s", row["slug"], detail)
             continue
         finally:
+            # The state write must happen while still holding the lease —
+            # releasing first (as a bare `finally: release_op_lease(...)`
+            # would) opens a window where a concurrent deploy/wake grabs the
+            # freed lease, starts a container, and then this sweep's
+            # "sleeping" write lands after it and clobbers that state.
+            repo.set_state(row["id"], "sleeping")
+            reaped.append(row["slug"])
             release_op_lease(row["slug"], holder)
-        repo.set_state(row["id"], "sleeping")
-        reaped.append(row["slug"])
 
     recovered: list[str] = []
     timed_out: list[str] = []
