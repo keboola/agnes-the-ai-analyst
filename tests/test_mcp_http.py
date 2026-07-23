@@ -247,6 +247,14 @@ class TestToolRegistration:
             # verifies their own stored token. Triple-surface with POST
             # /api/mcp/sources/{id}/my-secret/test + `agnes mcp my-secret test`.
             "my_secret_test",
+            # Hosted data apps (data-apps platform plan, Task 11) — list/get
+            # for any authenticated user with view access, deploy/logs for
+            # app owner or Admin. Triple-surface with /api/data-apps* +
+            # `agnes app list/show/deploy/logs`.
+            "data_apps_list",
+            "data_app_get",
+            "data_app_deploy",
+            "data_app_logs",
         }
 
     def test_no_client_only_tools(self):

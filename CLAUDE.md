@@ -24,7 +24,8 @@ Full step-by-step (local dev, Docker, TLS) lives in [`docs/QUICKSTART.md`](docs/
 │   ├── orchestrator.py     # SyncOrchestrator — ATTACHes extract.duckdb files
 │   ├── repositories/       # DuckDB-backed CRUD (sync_state, table_registry, users, etc.)
 │   ├── profiler.py         # Data profiling
-│   └── catalog_export.py   # OpenMetadata catalog export
+│   ├── catalog_export.py   # OpenMetadata catalog export
+│   └── data_apps/          # Hosted data-apps registry: config.json + container spec builders
 ├── app/                    # FastAPI application
 │   ├── main.py             # App setup, router registration
 │   ├── api/                # REST API (sync, data, catalog, admin, auth)
@@ -35,7 +36,7 @@ Full step-by-step (local dev, Docker, TLS) lives in [`docs/QUICKSTART.md`](docs/
 │   └── jira/               # Jira: webhook + incremental parquet → extract.duckdb
 ├── cli/                    # CLI tool (`agnes pull`, `agnes query`, `agnes admin`)
 ├── app/auth/               # Authentication (FastAPI-based providers)
-├── services/               # Standalone services (scheduler, telegram_bot, etc.)
+├── services/               # Standalone services (scheduler, telegram_bot, apps_runner sidecar, etc.)
 ├── server/                 # Legacy deployment infrastructure
 ├── scripts/                # Utility + migration scripts
 ├── config/                 # Configuration templates (instance.yaml.example)
@@ -316,6 +317,9 @@ Auth providers in `app/auth/` (FastAPI-based):
 
 ### Web pages
 HTML dashboard pages use the design-system **page shell** (#367/#482): `{% extends "base_page.html" %}` (gradient hero + `{% block toolbar %}` + `{% block page %}`) or `{% extends "base_ds.html" %}` (everything else; body in `{% block content %}`). **Never `base.html`** — it is legacy. The base auto-imports the `ds.*` macros (no `{% import "_components.html" %}`), sets theme/favicon/nav/global-JS, and provides the canonical `.container`; page CSS goes in `{% block head_extra %}`, never inline in the body. Contract guards in `tests/test_design_system_contract.py` reject `.container:has()` opt-outs, bare `:root{}`, raw `#hex`, and `var(--primary)` (use `var(--ds-primary)`). Full step-by-step recipe: [`docs/architecture.md`](docs/architecture.md) → *Extending the Platform → New Web Page*.
+
+### Hosted Data Apps
+`src/data_apps/` (registry + spec builders) + `services/apps_runner/` (the sidecar that alone holds the Docker socket) host user web apps next to the data — off by default (`data_apps.enabled`), compose profile `apps`. See [`docs/architecture.md`](docs/architecture.md#hosted-data-apps) and [`docs/superpowers/specs/2026-07-21-data-apps-design.md`](docs/superpowers/specs/2026-07-21-data-apps-design.md).
 
 ## Key Implementation Details
 

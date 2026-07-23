@@ -59,6 +59,7 @@ from cli.commands.mcp import mcp_app
 from cli.commands.docs import docs_app
 from cli.commands.collections import collections_app
 from cli.commands.config import config_app
+from cli.commands.data_apps import data_apps_app
 from cli.commands.search import search_app
 
 
@@ -322,6 +323,7 @@ app.add_typer(stack_app, name="stack")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(docs_app, name="docs")
 app.add_typer(collections_app, name="collections")
+app.add_typer(data_apps_app, name="app")
 app.add_typer(search_app, name="search")
 app.add_typer(config_app, name="config")
 

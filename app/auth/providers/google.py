@@ -181,6 +181,8 @@ async def google_callback(request: Request):
         # actually sent over plain HTTP in dev.
         use_secure = os.environ.get("DOMAIN", "") != ""
         response = RedirectResponse(url=target, status_code=302)
+        from app.instance_config import session_cookie_domain
+
         response.set_cookie(
             key="access_token",
             value=jwt_token,
@@ -188,6 +190,7 @@ async def google_callback(request: Request):
             max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
             samesite="lax",
             secure=use_secure,
+            domain=session_cookie_domain(),
         )
         return response
 

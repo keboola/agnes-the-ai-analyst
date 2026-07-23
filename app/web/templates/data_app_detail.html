@@ -1,0 +1,126 @@
+{% extends "base_page.html" %}
+{% block title %}{{ app.name }} — Data apps — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% set page_hero_eyebrow = "Data Apps" %}
+{% set page_hero_title = app.name %}
+{% set page_hero_subtitle = app.slug %}
+
+{% block head_extra %}
+<style>
+  .dda-page .info-grid { margin-bottom: var(--space-6); }
+  .dda-page .info-item .value code { font-size: var(--text-sm); }
+  .dda-actions { display: flex; gap: 8px; margin-bottom: var(--space-6); flex-wrap: wrap; }
+  .dda-logs-section h3 { margin-bottom: var(--space-2); }
+  .dda-logs { max-height: 480px; overflow-y: auto; }
+  .dda-grant-note { margin-top: var(--space-6); color: var(--ds-text-secondary); font-size: var(--text-sm); }
+</style>
+{% endblock %}
+
+{% block page %}
+<div class="dda-page">
+  <div class="info-grid ds-card">
+    <div class="info-item">
+      <span class="label">Slug</span>
+      <span class="value"><code>{{ app.slug }}</code></span>
+    </div>
+    <div class="info-item">
+      <span class="label">State</span>
+      <span class="value"><span class="badge {{ app.badge_class }}" id="dda-state-badge">{{ app.state }}</span></span>
+    </div>
+    <div class="info-item">
+      <span class="label">Owner</span>
+      <span class="value">{{ app.owner_email }}</span>
+    </div>
+    <div class="info-item">
+      <span class="label">Description</span>
+      <span class="value">{{ app.description or "—" }}</span>
+    </div>
+    <div class="info-item">
+      <span class="label">Deployed SHA</span>
+      <span class="value"><code>{{ (app.deployed_sha or "—")[:12] }}</code></span>
+    </div>
+    <div class="info-item">
+      <span class="label">URL</span>
+      <span class="value">
+        {% if app.state == 'running' %}
+        <a href="{{ app.url }}" target="_blank" rel="noopener">{{ app.url }} ↗</a>
+        {% else %}
+        <code>{{ app.url }}</code>
+        {% endif %}
+      </span>
+    </div>
+  </div>
+
+  {% if can_manage %}
+  <div class="dda-actions">
+    {{ ds.button('Deploy', variant='primary', id='dda-deploy-btn') }}
+    {{ ds.button('Stop', variant='secondary', id='dda-stop-btn') }}
+  </div>
+
+  <div class="dda-logs-section">
+    <h3>Logs</h3>
+    <pre class="dda-logs" id="dda-logs">Loading…</pre>
+  </div>
+  {% endif %}
+
+  <p class="dda-grant-note">
+    To give another user or group access to this app, grant them
+    <code>data_app:{{ app.slug }}</code> on <a href="/admin/access">/admin/access</a>.
+  </p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if can_manage %}
+<script>
+(function () {
+  const slug = {{ app.slug | tojson }};
+  const logsEl = document.getElementById("dda-logs");
+  const deployBtn = document.getElementById("dda-deploy-btn");
+  const stopBtn = document.getElementById("dda-stop-btn");
+
+  async function loadLogs() {
+    try {
+      const r = await fetch(`/api/data-apps/${encodeURIComponent(slug)}/logs?tail=200`, { credentials: "include" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const body = await r.json();
+      logsEl.textContent = body.logs || "(no logs yet)";
+    } catch (e) {
+      logsEl.textContent = "Failed to load logs: " + e.message;
+    }
+  }
+
+  async function runAction(btn, path) {
+    btn.disabled = true;
+    const prev = btn.textContent;
+    btn.textContent = "Working…";
+    try {
+      const r = await fetch(`/api/data-apps/${encodeURIComponent(slug)}/${path}`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert("Failed: " + (err.detail || r.status));
+        btn.disabled = false;
+        btn.textContent = prev;
+        return;
+      }
+      location.reload();
+    } catch (e) {
+      alert("Network error: " + e.message);
+      btn.disabled = false;
+      btn.textContent = prev;
+    }
+  }
+
+  deployBtn.addEventListener("click", () => runAction(deployBtn, "deploy"));
+  stopBtn.addEventListener("click", () => runAction(stopBtn, "stop"));
+
+  loadLogs();
+})();
+</script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,59 @@
+{% extends "base_page.html" %}
+{% block title %}Data apps — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% set page_hero_eyebrow = "Data Apps" %}
+{% set page_hero_title = "Data apps" %}
+{% set page_hero_subtitle = "Hosted web apps deployed from a git repo. Owners and Admin can deploy, stop, and view logs from an app's detail page." %}
+
+{% block head_extra %}
+<style>
+  .data-apps-page .muted { color: var(--ds-text-muted); }
+</style>
+{% endblock %}
+
+{% block page %}
+<div class="data-apps-page">
+  {% if not data_apps_feature_enabled %}
+  <div class="empty-state">
+    <p>Data apps aren't enabled on this instance.</p>
+    <p>An admin can turn the feature on by adding a <code>data_apps:</code> block with <code>enabled: true</code> to <code>config/instance.yaml</code>.</p>
+  </div>
+  {% elif not apps %}
+  <div class="empty-state">
+    <p>No data apps yet.</p>
+    <p>Apps are created via <code>POST /api/data-apps</code> — see the API reference for the full create/deploy flow.</p>
+  </div>
+  {% else %}
+  <div class="data-table-wrap">
+    <table class="data-table" id="data-apps-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Slug</th>
+          <th>State</th>
+          <th>Owner</th>
+          <th>Open</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in apps %}
+        <tr>
+          <td><a href="/apps/detail/{{ a.slug }}">{{ a.name }}</a></td>
+          <td><code>{{ a.slug }}</code></td>
+          <td><span class="badge {{ a.badge_class }}">{{ a.state }}</span></td>
+          <td>{{ a.owner_email }}</td>
+          <td>
+            {% if a.state == 'running' %}
+            <a href="{{ a.url }}" target="_blank" rel="noopener">Open ↗</a>
+            {% else %}
+            <span class="muted">not running</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
