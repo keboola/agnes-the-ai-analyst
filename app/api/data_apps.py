@@ -448,10 +448,8 @@ async def create_data_app(
             repo_url=payload.repo_url,
             repo_branch=payload.repo_branch,
         )
-        if idle_timeout_s is not None:
-            kwargs["idle_timeout_s"] = idle_timeout_s
-        if payload.sleep_mode is not None:
-            kwargs["sleep_mode"] = payload.sleep_mode
+        kwargs["idle_timeout_s"] = idle_timeout_s if idle_timeout_s is not None else cfg["default_idle_timeout_s"]
+        kwargs["sleep_mode"] = payload.sleep_mode if payload.sleep_mode is not None else cfg["default_sleep_mode"]
 
         try:
             app_id = repo.create(**kwargs)

@@ -53,5 +53,7 @@ def fast_forward_live(slug: str, sha: Optional[str] = None) -> str:
     target = sha or resolve_ref(slug, "main") or resolve_ref(slug, "HEAD")
     if not target:
         raise ValueError(f"app repo {slug} has no commits to deploy")
+    if sha and not resolve_ref(slug, sha):
+        raise ValueError(f"commit {sha!r} not found in app repo {slug}")
     subprocess.run(["git", "-C", str(repo_path(slug)), "update-ref", LIVE_REF, target], check=True, capture_output=True)
     return target
