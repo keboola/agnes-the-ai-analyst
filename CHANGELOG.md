@@ -15,13 +15,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+
 ### Removed
 
 ### Internal
 
 ### Security
 
-## [0.76.11] - 2026-07-22
+## [0.76.12] - 2026-07-23
 
 ### Fixed
 
@@ -52,13 +53,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   bracketing tool calls were joined with no separator in the persisted
   assistant message ("…tables.35", "…znovu:Z MCP…"); they now join with a
   blank line.
-- Keboola semantic-layer sync (`sync_semantic_layer()`) now falls back to the default named Keboola `source_connections` entry (the connection `/admin/data-sources` manages) when the legacy `KEBOOLA_STACK_URL`/`KEBOOLA_STORAGE_TOKEN` env-or-vault slot is empty. Verified live: an instance that connects a Keboola project only through the admin wizard previously failed every semantic-layer sync with "credentials not configured", even though the same connection's regular table syncs and its own `/test` endpoint both resolve their token off it correctly.
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.76.11] - 2026-07-22
 
