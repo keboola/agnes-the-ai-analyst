@@ -168,8 +168,16 @@ async def bootstrap(
     import hmac
     import os
 
+    # "Admin exists" must mean a HUMAN admin. The synthetic scheduler service
+    # user (scheduler@system.local) is auto-added to the Admin group at startup
+    # whenever SCHEDULER_API_TOKEN is set (see ensure_scheduler_user), so a raw
+    # member count would wrongly lock first-install bootstrap on a fresh
+    # scheduler-token instance that has no real admin yet. Exclude it by email.
+    from app.auth.scheduler_token import SCHEDULER_USER_EMAIL
+
     admin_group = user_groups_repo().get_by_name(SYSTEM_ADMIN_GROUP)
-    admin_exists = bool(admin_group) and user_group_members_repo().count_members(admin_group["id"]) > 0
+    admin_members = user_group_members_repo().list_members_for_group(admin_group["id"]) if admin_group else []
+    admin_exists = any(m.get("email") != SCHEDULER_USER_EMAIL for m in admin_members)
     users_with_password = [u for u in existing if u.get("password_hash")]
 
     bootstrap_token = os.environ.get("AGNES_BOOTSTRAP_TOKEN") or ""

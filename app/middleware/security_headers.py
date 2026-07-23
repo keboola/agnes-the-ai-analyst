@@ -24,17 +24,36 @@ from __future__ import annotations
 
 from starlette.datastructures import MutableHeaders
 
+import re
+
 # Non-breaking CSP subset — see module docstring.
 _CSP = "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
 
+# Always-safe headers — applied to every response including proxied Data Apps.
 _STATIC_HEADERS = {
     "x-content-type-options": "nosniff",
-    "x-frame-options": "DENY",
     "referrer-policy": "strict-origin-when-cross-origin",
+}
+
+# Framing / embedding restrictions. These are the headers that would break a
+# reverse-proxied hosted Data App (`/apps/<slug>/...`) — user-authored content
+# that may legitimately rely on being embedded in a frame, on `<object>` /
+# `<embed>`, or on a remote `<base>`. Skipped for proxied-app responses (the
+# app controls its own framing/CSP); still applied to the Agnes `/apps`
+# dashboard and every other Agnes-owned surface.
+_FRAMING_HEADERS = {
+    "x-frame-options": "DENY",
     "content-security-policy": _CSP,
 }
 
 _HSTS = "max-age=31536000; includeSubDomains"
+
+# Proxied Data App content is served at `/apps/<slug>/...` (three+ path
+# segments), including subdomain requests which DataAppSubdomainMiddleware
+# rewrites to that shape before routing. The `/apps` dashboard list and the
+# `/apps/<slug>` detail/redirect (two segments) are Agnes-owned and DO get the
+# framing headers.
+_DATA_APP_PROXY_PATH_RE = re.compile(r"^/apps/[^/]+/")
 
 
 class SecurityHeadersMiddleware:
@@ -59,6 +78,12 @@ class SecurityHeadersMiddleware:
                     headers.setdefault(key, value)
                 if is_https:
                     headers.setdefault("strict-transport-security", _HSTS)
+                # scope["path"] is read at response time, so it reflects any
+                # in-place rewrite done by DataAppSubdomainMiddleware on the way
+                # in — subdomain-routed apps are matched here too.
+                if not _DATA_APP_PROXY_PATH_RE.match(scope.get("path", "")):
+                    for key, value in _FRAMING_HEADERS.items():
+                        headers.setdefault(key, value)
             await send(message)
 
         await self.app(scope, receive, send_wrapper)

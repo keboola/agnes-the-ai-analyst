@@ -1141,10 +1141,18 @@ async def lifespan(app):
             # pass None so the system DuckDB is never opened (forbidden).
             conn = None if use_pg() else get_system_db()
             try:
+                from app.auth.scheduler_token import SCHEDULER_USER_EMAIL
                 from src.db import SYSTEM_ADMIN_GROUP
 
                 admin_group = user_groups_repo().get_by_name(SYSTEM_ADMIN_GROUP)
-                admin_exists = bool(admin_group) and user_group_members_repo().count_members(admin_group["id"]) > 0
+                admin_members = (
+                    user_group_members_repo().list_members_for_group(admin_group["id"]) if admin_group else []
+                )
+                # Exclude the synthetic scheduler service user — mirrors the
+                # /auth/bootstrap lock so this warning agrees with actual
+                # reachability (the scheduler user is auto-added to Admin but
+                # doesn't count as a human admin).
+                admin_exists = any(m.get("email") != SCHEDULER_USER_EMAIL for m in admin_members)
                 has_password = any(u.get("password_hash") for u in users_repo().list_all())
                 # /auth/bootstrap is reachable UNAUTHENTICATED only until an admin
                 # exists (or a password-holding user does); after that it is locked

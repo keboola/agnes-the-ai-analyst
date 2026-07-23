@@ -183,6 +183,39 @@ class TestBootstrap:
         assert ok.status_code == 200
         assert ok.json()["role"] == "admin"
 
+    def test_bootstrap_allowed_when_only_admin_is_scheduler_user(self, tmp_path, monkeypatch):
+        """The synthetic scheduler service user (scheduler@system.local) is
+        auto-added to the Admin group when SCHEDULER_API_TOKEN is set. It must
+        NOT count as 'an admin exists' — otherwise first-install bootstrap would
+        be impossible on a fresh scheduler-token instance with no real admin."""
+        import uuid
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+        from app.auth.scheduler_token import SCHEDULER_USER_EMAIL, SCHEDULER_USER_NAME
+        from app.main import create_app
+        from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+        from src.repositories.user_group_members import UserGroupMembersRepository
+        from src.repositories.user_groups import UserGroupsRepository
+        from src.repositories.users import UserRepository
+
+        conn = get_system_db()
+        sched_id = str(uuid.uuid4())
+        UserRepository(conn).create(id=sched_id, email=SCHEDULER_USER_EMAIL, name=SCHEDULER_USER_NAME)
+        admin_group = UserGroupsRepository(conn).get_by_name(SYSTEM_ADMIN_GROUP)
+        UserGroupMembersRepository(conn).add_member(
+            user_id=sched_id, group_id=admin_group["id"], source="system_seed", added_by="test"
+        )
+        conn.close()
+
+        client = TestClient(create_app())
+        resp = client.post(
+            "/auth/bootstrap",
+            json={"email": "firstadmin@test.com", "password": "newpass123"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["role"] == "admin"
+
     def test_bootstrap_then_login(self, fresh_client):
         """After bootstrap with password, /auth/token login works; without password it requires OAuth."""
         # Bootstrap with a password
