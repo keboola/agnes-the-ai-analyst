@@ -3,8 +3,9 @@ from fastapi.testclient import TestClient
 
 
 class FakeContainer:
-    def __init__(self, name, status="running"):
+    def __init__(self, name, status="running", attrs=None):
         self.name, self.status = name, status
+        self.attrs = attrs or {}
         self.removed = self.paused = self.unpaused = False
 
     def remove(self, force=False):
@@ -245,3 +246,51 @@ def test_up_maps_docker_api_error(client):
     r = c.post("/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {}})
     assert r.status_code == 502
     assert r.json()["detail"].startswith("docker_error:")
+
+
+# ---------------------------------------------------------------------------
+# _resolve_host_path — DinD bind-mount source translation
+# ---------------------------------------------------------------------------
+#
+# In production apps-runner itself runs as a container whose own `/data` is
+# the named volume `data` (see docker-compose.yml). Docker resolves a bind
+# mount's *source* against the daemon's host namespace, not the caller's, so
+# bind-mounting a path from apps-runner's own mount namespace as another
+# container's bind source silently resolves to an empty, unrelated host
+# directory instead of the config.json this process just wrote. These tests
+# use the fake self-container's mount `Destination` set to `tmp` (the
+# fixture's own tmp_path) rather than the real `/data` — that's an arbitrary
+# choice standing in for whatever this container's config-dir ancestor mount
+# happens to be; the resolution logic doesn't care what the literal
+# destination string is, only that it's a prefix of the path being resolved.
+
+
+def test_up_resolves_config_mount_via_dind(client, monkeypatch):
+    c, fake, tmp = client
+    import socket
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "runner123")
+    fake.by_name["runner123"] = FakeContainer(
+        "runner123",
+        attrs={"Mounts": [{"Destination": str(tmp), "Source": "/var/lib/docker/volumes/proj_data/_data"}]},
+    )
+    r = c.post("/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {}})
+    assert r.status_code == 200
+    _, kw = fake.run_calls[-1]
+    bind_sources = list(kw["volumes"].keys())
+    assert "/var/lib/docker/volumes/proj_data/_data/apps/s" in bind_sources
+    assert str(tmp / "apps" / "s") not in bind_sources
+
+
+def test_up_keeps_container_path_when_not_containerized(client, monkeypatch):
+    """apps-runner's own container isn't found by the Docker daemon (bare
+    host/dev/E2E process talking to the same daemon) — the config bind
+    source stays the raw container_path, matching pre-fix behavior."""
+    c, fake, tmp = client
+    import socket
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "not-a-container")
+    r = c.post("/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {}})
+    assert r.status_code == 200
+    _, kw = fake.run_calls[-1]
+    assert str(tmp / "apps" / "s") in kw["volumes"]

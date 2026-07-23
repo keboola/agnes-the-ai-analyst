@@ -75,6 +75,50 @@ def _ensure_cache_volume(client, spec: dict) -> None:
     )
 
 
+def _resolve_host_path(container_path: str) -> str:
+    """Translate a path inside *this* apps-runner container to the path the
+    Docker daemon must use as a bind-mount *source* for a new container.
+
+    Docker resolves bind-mount sources against the daemon's host filesystem
+    namespace, never the calling container's — but in production apps-runner
+    is itself a container whose own ``/data`` is the named volume ``data``
+    (see docker-compose.yml), so a path like ``/data/apps/<slug>`` computed
+    inside this process is meaningless to the daemon as a bind source and
+    silently resolves to an empty, unrelated directory.
+
+    Finds *this* container (Docker sets the container hostname to its own
+    id; ``HOSTNAME`` carries the same value) via the daemon, and walks its
+    ``Mounts`` for the entry whose ``Destination`` is the longest prefix of
+    ``container_path`` — that mount's ``Source`` is what the daemon
+    understands (a named-volume mountpoint or a host directory, either
+    way). Returns ``container_path`` unchanged when this process isn't
+    itself a container the daemon knows about (bare host/dev/E2E process
+    talking to the same daemon) — the historical, already-correct behavior
+    for that case.
+    """
+    import docker.errors
+
+    hostname = os.environ.get("HOSTNAME") or socket.gethostname()
+    try:
+        self_container = _docker().containers.get(hostname)
+    except (docker.errors.NotFound, docker.errors.APIError):
+        return container_path
+
+    best_dest = ""
+    best_source = ""
+    for mount in self_container.attrs.get("Mounts", []) or []:
+        dest = (mount.get("Destination") or "").rstrip("/")
+        if not dest:
+            continue
+        if container_path == dest or container_path.startswith(dest + "/"):
+            if len(dest) > len(best_dest):
+                best_dest, best_source = dest, mount.get("Source") or ""
+
+    if not best_dest:
+        return container_path
+    return best_source + container_path[len(best_dest) :]
+
+
 def _docker_errors(fn):
     """Map Docker SDK / transport errors to structured HTTP responses.
 
@@ -141,7 +185,7 @@ def up(slug: str, payload: dict = Body(...), x_runner_token: str | None = Header
         nano_cpus=int(float(spec["cpus"]) * 1e9),
         ports=spec.get("ports"),
         volumes={
-            str(cfg_dir): {"bind": "/data", "mode": "rw"},
+            _resolve_host_path(str(cfg_dir)): {"bind": "/data", "mode": "rw"},
             spec["cache_volume"]: {"bind": "/home/app/.cache", "mode": "rw"},
         },
         restart_policy={"Name": "unless-stopped"},
