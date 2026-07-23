@@ -12,16 +12,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-- **Data Apps**: host user web applications next to the data using the
-  upstream `data-app-python-js` runtime image — internal git repos with
-  push-to-deploy (or BYO external repo), RBAC-gated ingress at
+- **Data Apps** (schema v96): host user web applications next to the data
+  using the upstream `data-app-python-js` runtime image — internal git repos
+  with push-to-deploy (or BYO external repo), RBAC-gated ingress at
   `/apps/<slug>/` (optional per-app subdomains), auto-sleep with
   wake-on-request, an `apps-runner` sidecar as the sole holder of the Docker
   socket, `agnes app {list,show,create,deploy,logs,open,stop,delete}` CLI,
   MCP tools (`data_apps_list`, `data_app_get`, `data_app_deploy`,
   `data_app_logs`), and a server-rendered `/apps` dashboard (list +
   detail/logs page). Off by default (`data_apps.enabled`) + compose profile
-  `apps`.
+  `apps`. New `data_apps` table (DuckDB `_v95_to_v96` + Alembic
+  `0043_data_apps_v96`, both backends).
   - `agnes app create` accepts `--repo-url`/`--repo-branch` to track an
     external git repo instead of the internal template (`repo_mode=external`).
     Deploying an external-repo app always redeploys HEAD of `repo_branch`

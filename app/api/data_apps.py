@@ -234,8 +234,17 @@ def _revoke_service_token(row: dict) -> None:
 
 
 def _mint_service_token(slug: str, owner: dict) -> tuple[str, str]:
-    """Mint a PAT scoped to this app (`extra_claims={"scope": "data-app:<slug>"}`),
-    store it via `access_token_repo().create`, and return the new token id.
+    """Mint a PAT for this app's owner, store it via `access_token_repo().create`,
+    and return the new token id.
+
+    The `scope: "data-app:<slug>"` claim is a label for `agnes admin token
+    list`/audit purposes only — no code path enforces it, so this is
+    functionally a full-privilege PAT for `owner`, not one actually confined
+    to this app's API surface. Any code running inside the hosted container
+    (including an externally-cloned, less-trusted repo) can use it against
+    the whole Agnes REST API. This mirrors the documented trade-off in
+    docs/DEPLOYMENT.md ("granting access to view/open an app is an act of
+    publication") — narrowing it to a real per-app scope is a follow-up.
 
     Mirrors `app/api/tokens.py::create_token`'s minting lines exactly (JWT +
     sha256 hash + prefix) — the raw JWT is only handed to `build_config_json`
