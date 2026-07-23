@@ -241,9 +241,11 @@ _BROKER_REASON = (
 )
 _AGENTS_MGMT_REASON = (
     "agent-profile management (agent-api V1a, Task 5) — temporary exemption: "
-    "`agnes agent …` CLI lands in Task 11 and MCP tools in Task 12 of "
-    "docs/superpowers/plans/2026-07-22-agent-api-v1a.md (same PR); those tasks "
-    "MOVE these entries into _COHORT with their CLI/MCP names"
+    "`agnes agent …` CLI landed in Task 11 (cli/commands/agent.py: list/create/"
+    "show/scope set/token/delete/ask); MCP tools still pending in Task 12 of "
+    "docs/superpowers/plans/2026-07-22-agent-api-v1a.md (same PR). Task 12 "
+    "MOVEs these entries into _COHORT with their CLI/MCP names once the MCP "
+    "side lands"
 )
 
 _EXEMPT: dict[str, str] = {
