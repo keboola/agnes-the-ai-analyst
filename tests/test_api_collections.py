@@ -1154,3 +1154,27 @@ class TestFileUpsert:
             headers=_auth(seeded_app["analyst_token"]),
         )
         assert listing.json()["files"] == []
+
+    def test_duplicate_path_in_same_batch_rejected(self, seeded_app):
+        """Two files in one request sharing a path would have the second
+        purge the first's already-queued row mid-request — reject up front
+        instead of silently dropping a file (Devin Review on #1004)."""
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app, "Duplicate Path Batch")
+        resp = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files=[
+                ("files", ("a.md", io.BytesIO(b"a"), "text/markdown")),
+                ("files", ("b.md", io.BytesIO(b"b"), "text/markdown")),
+            ],
+            data={"paths": ["docs/same.md", "docs/same.md"]},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 400, resp.text
+        assert "duplicate_path_in_batch" in resp.text
+        # Nothing was created.
+        listing = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert listing.json()["files"] == []

@@ -534,6 +534,18 @@ async def upload_files(
             detail=f"paths_length_mismatch: {len(paths)} paths for {len(files)} files",
         )
 
+    # A duplicate non-blank path within the same batch would replace an
+    # earlier file in this same request with a later one — the earlier
+    # file's row (and blob) get purged by `_replace_existing_by_path`
+    # after its `_file_out` entry and ingest task were already queued, so
+    # the response would reference a file_id that no longer exists and
+    # schedule a no-op ingest. Reject up front instead of silently
+    # dropping a file.
+    if paths is not None:
+        non_blank = [p.strip() for p in paths if p and p.strip()]
+        if len(non_blank) != len(set(non_blank)):
+            raise HTTPException(status_code=400, detail="duplicate_path_in_batch")
+
     cf_repo = corpus_files_repo()
     results = []
     any_rejected = False
