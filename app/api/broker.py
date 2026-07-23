@@ -36,7 +36,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.routing import APIRoute
 
 from app.api.broker_agent_policy import (
-    INSTANCE_DEFAULT_MODEL,
     cached_month_total,
     check_budget,
     check_model,
@@ -138,6 +137,22 @@ def _normalize_broker_path(raw: Any) -> httpx.URL:
     if not target.path.startswith("/") or target.path.startswith("//"):
         raise HTTPException(status_code=400, detail="broker_path_must_be_local")
     return target
+
+
+def _normalize_upstream_path(path: str) -> str:
+    """Strip trailing slashes and collapse duplicate slashes in an upstream
+    subpath, e.g. ``"/v1/messages/"`` or ``"//v1//messages"`` -> ``"/v1/messages"``.
+
+    ``anthropic_proxy`` is registered on a ``{subpath:path}`` wildcard, so
+    ``upstream_path`` is whatever raw string the caller put after
+    ``/api/broker/anthropic`` — a literal ``== "/v1/messages"`` comparison
+    diverges from what actually reaches the Anthropic API for any
+    trailing/duplicate-slash variant. The model-policy/ledger gate and the
+    ``use_dispatcher`` check must agree on the SAME normalized value — using
+    two independent computations of "is this /v1/messages" is exactly how
+    they'd drift apart.
+    """
+    return "/" + "/".join(seg for seg in path.split("/") if seg)
 
 
 # Anthropic traffic is always forwarded to this pinned host — the sandbox's
@@ -377,6 +392,13 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
     }
 
     upstream_path = request.url.path[len("/api/broker/anthropic") :] or "/"
+    # Normalized ONCE and reused for both the policy gate below and the
+    # `use_dispatcher` check further down — two independent `== "/v1/messages"`
+    # comparisons against a `{subpath:path}` wildcard is exactly how they'd
+    # diverge for a trailing/duplicate-slash variant (see
+    # `_normalize_upstream_path`'s docstring).
+    normalized_upstream_path = _normalize_upstream_path(upstream_path)
+    is_messages_post = request.method == "POST" and normalized_upstream_path == "/v1/messages"
 
     # Agent-as-API policy: per-agent model allowlist + monthly token budget
     # (Task 8, agent-profiles V1a). Sits BEFORE the credential fork below so
@@ -387,7 +409,7 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
     agent_row: Optional[Dict[str, Any]] = None
     budget_headers: Dict[str, str] = {}
     chat_cfg = getattr(request.app.state, "chat_config", None)
-    if request.method == "POST" and upstream_path == "/v1/messages":
+    if is_messages_post:
         agent_row = _agent_for_ticket(row)
     if agent_row is not None:
         utility_models = getattr(chat_cfg, "agent_api_utility_models", []) or []
@@ -400,7 +422,7 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
                 "x-agnes-budget-limit": str(budget),
                 "x-agnes-budget-used": str(month_total),
             }
-        model_err = check_model(raw_body, agent_row, utility_models, INSTANCE_DEFAULT_MODEL)
+        model_err = check_model(raw_body, agent_row, utility_models)
         if model_err:
             raise HTTPException(status_code=403, detail={"code": model_err}, headers=budget_headers or None)
         if month_total is not None:
@@ -423,7 +445,7 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
     # dispatcher failure: silently bypassing the cost-routing PoC would
     # corrupt its measurements; the sandbox sees the ordinary upstream error.
     dispatcher_url = os.environ.get("LLM_DISPATCHER_URL", "").strip().rstrip("/")
-    use_dispatcher = bool(dispatcher_url) and request.method == "POST" and upstream_path == "/v1/messages"
+    use_dispatcher = bool(dispatcher_url) and is_messages_post
 
     # Credential injection is the ONE thing that differs between auth modes; the
     # sandbox never carries either credential (it's added here, server-side).
@@ -523,7 +545,7 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
                         "user_id": agent_row.get("owner_user_id"),
                         "session_id": row.get("session_id"),
                     },
-                    budget_ttl_s=getattr(chat_cfg, "agent_api_budget_cache_ttl_s", 60),
+                    budget_ttl_s=budget_ttl_s,
                 )
         except Exception:
             logger.exception(

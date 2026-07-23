@@ -20,44 +20,48 @@ from app.api import broker_agent_policy as pol
 def test_check_model_agent_model_allowed():
     agent_row = {"model": "claude-opus-4-7"}
     body = json.dumps({"model": "claude-opus-4-7"}).encode()
-    assert pol.check_model(body, agent_row, [], pol.INSTANCE_DEFAULT_MODEL) is None
+    assert pol.check_model(body, agent_row, []) is None
 
 
 def test_check_model_utility_model_allowed():
     agent_row = {"model": "claude-opus-4-7"}
     body = json.dumps({"model": "claude-haiku-4-5-20251001"}).encode()
-    err = pol.check_model(body, agent_row, ["claude-haiku-4-5-20251001"], pol.INSTANCE_DEFAULT_MODEL)
+    err = pol.check_model(body, agent_row, ["claude-haiku-4-5-20251001"])
     assert err is None
 
 
-def test_check_model_instance_default_when_agent_model_null():
+def test_check_model_null_model_means_no_policy():
+    """Design decision: an agent whose owner never pinned a model has NO
+    model policy at all — every model is allowed, and the body isn't even
+    inspected (no ``model`` key required)."""
     agent_row = {"model": None}
-    body = json.dumps({"model": pol.INSTANCE_DEFAULT_MODEL}).encode()
-    assert pol.check_model(body, agent_row, [], pol.INSTANCE_DEFAULT_MODEL) is None
+    assert pol.check_model(json.dumps({"model": "literally-anything"}).encode(), agent_row, []) is None
+    assert pol.check_model(b"not json at all", agent_row, []) is None
+    assert pol.check_model(b"", agent_row, []) is None
 
 
 def test_check_model_foreign_model_rejected():
     agent_row = {"model": "claude-opus-4-7"}
     body = json.dumps({"model": "some-other-vendor-model"}).encode()
-    err = pol.check_model(body, agent_row, ["claude-haiku-4-5-20251001"], pol.INSTANCE_DEFAULT_MODEL)
+    err = pol.check_model(body, agent_row, ["claude-haiku-4-5-20251001"])
     assert err == "model_not_allowed"
 
 
 def test_check_model_malformed_body_passes():
     agent_row = {"model": "claude-opus-4-7"}
-    assert pol.check_model(b"not json at all", agent_row, [], pol.INSTANCE_DEFAULT_MODEL) is None
-    assert pol.check_model(b"", agent_row, [], pol.INSTANCE_DEFAULT_MODEL) is None
+    assert pol.check_model(b"not json at all", agent_row, []) is None
+    assert pol.check_model(b"", agent_row, []) is None
 
 
 def test_check_model_missing_model_key_passes():
     agent_row = {"model": "claude-opus-4-7"}
     body = json.dumps({"messages": []}).encode()
-    assert pol.check_model(body, agent_row, [], pol.INSTANCE_DEFAULT_MODEL) is None
+    assert pol.check_model(body, agent_row, []) is None
 
 
 def test_check_model_non_dict_json_passes():
     agent_row = {"model": "claude-opus-4-7"}
-    assert pol.check_model(b"[1, 2, 3]", agent_row, [], pol.INSTANCE_DEFAULT_MODEL) is None
+    assert pol.check_model(b"[1, 2, 3]", agent_row, []) is None
 
 
 # ---------------------------------------------------------------------------

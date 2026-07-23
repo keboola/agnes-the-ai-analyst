@@ -27,12 +27,14 @@ Three responsibilities:
 
 Adaptation note: the wiring sketch in the task brief assumed a
 ``cfg.model_default`` config knob already existed on ``ChatConfig``. It
-doesn't — the chat sandbox has no instance-wide "default model" setting
-today (the Claude Code CLI inside the sandbox picks its own default
-unless a session profile overrides it). ``INSTANCE_DEFAULT_MODEL`` below
-is a plain module constant standing in for that until a real knob exists;
-picked to match the "sonnet" alias in
-``connectors/llm/factory.py::_MODEL_ALIASES``.
+doesn't — there is no instance-wide "default model" setting anywhere in
+this codebase; the Claude Code CLI inside the sandbox picks its own
+default unless a session profile overrides it. Design decision
+(controller-approved): an agent whose ``model`` column is ``NULL`` has NO
+model policy at all — ``check_model`` returns ``None`` (allow) without
+even inspecting the request body. Enforcement only kicks in once the
+owner has pinned a model on the agent, in which case the allowed set is
+``{agent.model} ∪ utility_models``.
 """
 
 from __future__ import annotations
@@ -49,9 +51,6 @@ from app.coordination.factory import coordination
 from src.repositories import llm_usage_repo
 
 logger = logging.getLogger(__name__)
-
-# See the module docstring's adaptation note.
-INSTANCE_DEFAULT_MODEL = "claude-sonnet-4-6"
 
 # Anthropic Messages API usage field names, mapped onto the llm_usage
 # ledger's column names.
@@ -75,17 +74,22 @@ def check_model(
     body_bytes: bytes,
     agent_row: Dict[str, Any],
     utility_models: Optional[List[str]],
-    instance_default: str,
 ) -> Optional[str]:
     """``"model_not_allowed"`` if the request body's ``model`` field is
     outside the agent's allowed set, else ``None``.
 
-    Allowed set = ``{agent_row["model"] or instance_default} ∪ utility_models``.
+    An agent with ``model IS NULL`` has NO model policy — the owner never
+    pinned one, so every model is allowed and the body isn't even
+    inspected. Once a model is pinned, allowed set =
+    ``{agent_row["model"]} ∪ utility_models``.
 
     A non-JSON body, a non-object JSON body, or a body with no ``model``
     key is NOT a policy failure — it returns ``None`` and lets the
     upstream Anthropic API reject the malformed request on its own terms.
     """
+    pinned_model = agent_row.get("model")
+    if not pinned_model:
+        return None
     try:
         body = json.loads(body_bytes) if body_bytes else None
     except (json.JSONDecodeError, ValueError, TypeError):
@@ -95,7 +99,7 @@ def check_model(
     model = body.get("model")
     if not model:
         return None
-    allowed = {agent_row.get("model") or instance_default}
+    allowed = {pinned_model}
     allowed.update(utility_models or [])
     if model not in allowed:
         return "model_not_allowed"
@@ -275,8 +279,11 @@ class UsageAccumulator:
     synchronous single-row DB write — flush happens when the buffer
     reaches ``flush_size`` rows OR ``flush_interval_s`` seconds have
     elapsed since the last flush, whichever comes first. Thread-safe: the
-    broker offloads work across the anyio thread pool, so concurrent
-    ``add`` calls are expected.
+    ``anthropic_proxy`` async endpoint itself runs single-threaded on the
+    event loop, but the lock guards this singleton against any future or
+    multi-worker caller that adds/flushes concurrently (e.g. a
+    multi-process deployment, or a background flush task sharing the same
+    instance) — a call from the request path alone would never race.
     """
 
     def __init__(
