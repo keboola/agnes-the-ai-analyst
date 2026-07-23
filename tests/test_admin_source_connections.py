@@ -370,6 +370,9 @@ class TestSourceConnectionsTest:
 
         with (
             patch("app.api.admin_source_connections.httpx.AsyncClient", return_value=mock_client),
+            # example.com subdomains don't resolve; the SSRF validator is exercised
+            # by its own test below, so no-op it here to test connectivity logic.
+            patch("app.api.admin._validate_url_not_private", return_value=None),
             patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
         ):
             resp2 = c.post(f"{BASE}/{conn_id}/test", headers=_auth(token))
@@ -378,6 +381,49 @@ class TestSourceConnectionsTest:
         data = resp2.json()
         assert data["ok"] is True
         assert data["project_name"] == "Test Project"
+
+    def test_test_endpoint_rejects_private_stack_url(self, seeded_app):
+        # SSRF guard: a stack_url pointing at the cloud metadata endpoint (or any
+        # private/reserved/link-local host) is refused before any outbound call.
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            BASE,
+            json={
+                "name": "test-keboola-ssrf",
+                "source_type": "keboola",
+                "config": {"stack_url": "https://169.254.169.254"},
+                "token_env": "KEBOOLA_STORAGE_TOKEN",
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        conn_id = resp.json()["id"]
+        with patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}):
+            resp2 = c.post(f"{BASE}/{conn_id}/test", headers=_auth(token))
+        assert resp2.status_code == 200
+        data = resp2.json()
+        assert data["ok"] is False
+        assert "private or reserved" in data["error"]
+
+    def test_create_rejects_disallowed_token_env(self, seeded_app):
+        # token_env allowlist: an admin cannot point a connection at an arbitrary
+        # server-process env var (e.g. JWT_SECRET_KEY) to exfiltrate it via the
+        # outbound token header.
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            BASE,
+            json={
+                "name": "test-keboola-badenv",
+                "source_type": "keboola",
+                "config": {"stack_url": "https://connection.example.com"},
+                "token_env": "JWT_SECRET_KEY",
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+        assert "allowlist" in resp.json()["detail"].lower()
 
     def test_test_endpoint_missing_connection_returns_404(self, seeded_app):
         c = seeded_app["client"]
@@ -427,6 +473,7 @@ class TestSourceConnectionsTables:
                     },
                 ],
             ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
             patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
         ):
             resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
@@ -448,7 +495,10 @@ class TestSourceConnectionsTables:
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         conn_id = self._create(c, token, name="test-kbc-tables-notoken", token_env="")
-        resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+        # no-op the SSRF validator so the 400 comes from the no-token path, not
+        # from example.com failing to resolve.
+        with patch("app.api.admin._validate_url_not_private", return_value=None):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
         assert resp.status_code == 400
 
     def test_tables_endpoint_non_keboola_returns_400(self, seeded_app):
@@ -480,6 +530,7 @@ class TestSourceConnectionsTables:
                 "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
                 side_effect=StorageApiError("boom"),
             ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
             patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
         ):
             resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))

@@ -542,19 +542,46 @@ async def health_check_detailed(
     # based on their own privilege. Admins/operators see ``overall``;
     # analysts see ``overall_analyst`` and an optional flag to opt in.
     caller_role = "admin" if _user.get("is_admin") else "analyst"
+    is_admin_caller = caller_role == "admin"
+
+    # SECURITY (#16): the per-check ``audience`` tags were advisory only — every
+    # authenticated caller received the full body, including operator-only infra
+    # detail (real GCP billing/data project ids in bq_config, total user count,
+    # stale table ids, schema versions) plus the build fingerprints
+    # (image_tag/commit_sha). Enforce the tags: a non-admin analyst gets
+    # operator-audience checks reduced to a bare {status, audience} and the
+    # image_tag/commit_sha omitted. Admins/operators still get everything.
+    if is_admin_caller:
+        services = checks
+        build_meta = {
+            "version": os.environ.get("AGNES_VERSION", "dev"),
+            "channel": os.environ.get("RELEASE_CHANNEL", "dev"),
+            "image_tag": os.environ.get("AGNES_TAG", "unknown"),
+            "commit_sha": os.environ.get("AGNES_COMMIT_SHA", "unknown"),
+        }
+    else:
+        services = {
+            name: (
+                {"status": check.get("status"), "audience": "operator"}
+                if check.get("audience") == "operator"
+                else check
+            )
+            for name, check in checks.items()
+        }
+        build_meta = {
+            "version": os.environ.get("AGNES_VERSION", "dev"),
+            "channel": os.environ.get("RELEASE_CHANNEL", "dev"),
+        }
 
     return {
         "status": overall,
         "overall_analyst": overall_analyst,
         "caller_role": caller_role,
-        "version": os.environ.get("AGNES_VERSION", "dev"),
-        "channel": os.environ.get("RELEASE_CHANNEL", "dev"),
-        "image_tag": os.environ.get("AGNES_TAG", "unknown"),
-        "commit_sha": os.environ.get("AGNES_COMMIT_SHA", "unknown"),
+        **build_meta,
         "schema_version": SCHEMA_VERSION,
         "deployed_at": _DEPLOYED_AT,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "services": checks,
+        "services": services,
     }
 
 

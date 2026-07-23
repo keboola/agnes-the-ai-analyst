@@ -578,8 +578,13 @@ RESOURCE_TYPES: dict[ResourceType, ResourceTypeSpec] = {
         key=ResourceType.MEMORY_DOMAIN,
         display_name="Memory domains",
         description=(
-            "A corporate-memory domain — items belonging to a granted domain "
-            "are visible to members of the granted group."
+            "A corporate-memory domain. A grant is ADDITIVE — it makes the "
+            "domain's items visible to the granted group; it does NOT hide them "
+            "from anyone else. Visibility is restricted only by an item's "
+            "`audience` (an item with the default audience is visible to every "
+            "authenticated user regardless of which domain it belongs to). To "
+            "keep sensitive corporate-memory items private, set their audience "
+            "to the intended group — granting a domain alone does not restrict."
         ),
         id_format="<memory_domain_id>",
         list_blocks=_memory_domain_blocks,
