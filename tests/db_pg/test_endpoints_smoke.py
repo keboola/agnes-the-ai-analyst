@@ -1495,6 +1495,12 @@ class TestReportsSmoke:
 # ---------------------------------------------------------------------------
 
 KNOWN_UNTESTED = {
+    # Agent-profile builder page (Task 10) — self-contained web page, tested
+    # in tests/test_agents_page.py (chrome/list/auth) rather than duplicated
+    # in this PG smoke harness. The management API it drives
+    # (/api/v1/agents/*) is covered separately in
+    # tests/test_agents_management_api.py.
+    "GET /agents",
     # Chat sandbox secret broker (2026-07-14 incident) — internal
     # sandbox→server routes, ticket-authed, never parameter-free (require a
     # POST body + a valid broker ticket), so they have no place in this
