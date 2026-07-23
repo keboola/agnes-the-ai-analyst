@@ -27,7 +27,17 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     op.add_column("corpus_files", sa.Column("path", sa.String(), nullable=True))
+    # At most one row per (corpus_id, path). Plain unique index (not partial):
+    # NULLs are distinct on both PG and DuckDB, so path=NULL rows are exempt
+    # while set paths stay unique. Matches the DuckDB `_v95_to_v96` index.
+    op.create_index(
+        "idx_corpus_files_corpus_path",
+        "corpus_files",
+        ["corpus_id", "path"],
+        unique=True,
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("idx_corpus_files_corpus_path", table_name="corpus_files")
     op.drop_column("corpus_files", "path")

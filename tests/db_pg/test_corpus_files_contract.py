@@ -346,3 +346,40 @@ def test_count_by_storage_path(repo):
     assert repo.count_by_storage_path(CORPUS_ID, "/blobs/absent.md") == 0
     assert repo.count_by_storage_path("col_other", "/blobs/shared.md") == 0
     assert repo.count_by_storage_path(CORPUS_ID, None) == 0
+
+
+def test_duplicate_path_rejected_by_unique_index(repo):
+    """The (corpus_id, path) unique index forbids a second row on the same path."""
+    repo.add(
+        corpus_id=CORPUS_ID,
+        filename="a.md",
+        sha256="x",
+        file_type="md",
+        size_bytes=1,
+        storage_path="/p/a.md",
+        path="docs/a.md",
+    )
+    with pytest.raises(Exception):
+        repo.add(
+            corpus_id=CORPUS_ID,
+            filename="a-again.md",
+            sha256="y",
+            file_type="md",
+            size_bytes=1,
+            storage_path="/p/a-again.md",
+            path="docs/a.md",
+        )
+
+
+def test_multiple_null_paths_allowed(repo):
+    """path=NULL rows are exempt from the unique index (NULLs distinct)."""
+    for i in range(3):
+        repo.add(
+            corpus_id=CORPUS_ID,
+            filename=f"loose{i}.md",
+            sha256=f"s{i}",
+            file_type="md",
+            size_bytes=1,
+            storage_path=f"/p/loose{i}.md",
+        )
+    assert len(repo.list_for_corpus(CORPUS_ID)) == 3

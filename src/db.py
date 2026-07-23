@@ -1363,6 +1363,13 @@ CREATE TABLE IF NOT EXISTS corpus_files (
     updated_at TIMESTAMP DEFAULT current_timestamp
 );
 
+-- Enforce the upsert invariant: at most one row per (corpus_id, path). Plain
+-- (not partial) UNIQUE INDEX — DuckDB has no partial indexes, but NULLs are
+-- distinct on both DuckDB and Postgres, so path=NULL (plain-insert files,
+-- bundle children) is exempt while set paths stay unique.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_files_corpus_path
+    ON corpus_files(corpus_id, path);
+
 -- corpus_chunks: prose-document chunks + embedding vector.
 -- embedding FLOAT[384]: fixed-size array for array_cosine_similarity.
 -- Repo deferred to Retrieval slice; table created here so a single
@@ -6396,6 +6403,12 @@ def _v95_to_v96(conn: duckdb.DuckDBPyConnection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info('corpus_files')").fetchall()}
     if "path" not in cols:
         conn.execute("ALTER TABLE corpus_files ADD COLUMN path VARCHAR")
+    # Enforce at most one row per (corpus_id, path). Existing rows all have
+    # path=NULL (just-added column), so the index build can't collide.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_files_corpus_path "
+        "ON corpus_files(corpus_id, path)"
+    )
     conn.execute("UPDATE schema_version SET version = 96")
 
 

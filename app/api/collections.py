@@ -514,7 +514,10 @@ async def upload_files(
     so a doc-sync client can re-upload idempotently. Files without a ``path``
     keep the legacy plain-insert behavior. The purge runs only after the
     replacement is safely stored, so a failed re-upload never destroys the
-    existing file.
+    existing file. When ``paths`` is supplied it MUST have exactly one entry
+    per file (positional pairing), else the request is rejected with **400** —
+    a short/misaligned list would silently assign paths to the wrong files.
+    The ``(corpus_id, path)`` invariant is also enforced by a unique index.
 
     Returns a list of ``{file_id, filename, path, processing_status, …}`` for
     every uploaded file (in upload order).
@@ -523,6 +526,13 @@ async def upload_files(
     corpus = file_corpora_repo().get(collection_id)
     if not corpus:
         raise HTTPException(status_code=404, detail="collection_not_found")
+
+    # Positional pairing is only safe when the lists line up 1:1.
+    if paths is not None and len(paths) != len(files):
+        raise HTTPException(
+            status_code=400,
+            detail=f"paths_length_mismatch: {len(paths)} paths for {len(files)} files",
+        )
 
     cf_repo = corpus_files_repo()
     results = []

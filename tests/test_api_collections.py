@@ -1132,3 +1132,25 @@ class TestFileUpsert:
         # b.md still points at the (still-present) shared blob.
         assert os.path.exists(blob_b)
         assert corpus_files_repo().get_by_path(corpus_id, "b.md")["storage_path"] == blob_b
+
+    def test_paths_length_mismatch_rejected(self, seeded_app):
+        """`paths` must pair 1:1 with `files`; a misaligned list is a 400."""
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app, "Paths Mismatch")
+        resp = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files=[
+                ("files", ("a.md", io.BytesIO(b"a"), "text/markdown")),
+                ("files", ("b.md", io.BytesIO(b"b"), "text/markdown")),
+            ],
+            data={"paths": "docs/only-one.md"},  # 1 path for 2 files
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 400, resp.text
+        assert "paths_length_mismatch" in resp.text
+        # Nothing was created.
+        listing = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert listing.json()["files"] == []
