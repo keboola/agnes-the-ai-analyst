@@ -1,6 +1,6 @@
 {% extends "base_ds.html" %}
 
-{% block title %}{{ collection.name }} — Library — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
+{% block title %}{{ collection.name }} — {{ 'Upload' if (ui_layout | default('topnav')) == 'rail' else 'Library' }} — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
 
 {% block body_attrs %}class="detail-page"{% endblock %}
 
@@ -82,27 +82,38 @@
 {% block content %}
 {% import "macros/_detail.html" as detail %}
 
-{% set _back = '/catalog?kind=library' if (ui_layout | default('topnav')) == 'rail' else '/library' %}
+{% set _rail = (ui_layout | default('topnav')) == 'rail' %}
+{# Under the rail layout uploads live on My Stack's Upload tab — there is no
+   Library index to return to (that surface is topnav-only), so send "back"
+   to the Uploads tab instead of the dead-end /catalog?kind=library, which
+   has no library tab. #}
+{% set _back = '/stack?kind=upload' if _rail else '/library' %}
+{% set _back_label = 'Uploads' if _rail else 'All library collections' %}
+{# In the rail IA this surface is a private "upload", not a shared library
+   "collection" — swap the user-facing noun so the copy matches the tab the
+   user came from. Topnav keeps the "collection" wording. #}
+{% set _noun = 'upload' if _rail else 'collection' %}
+{% set _desc = collection.description or ('Search across your uploaded files, or add more.' if _rail else 'Search across the files in this collection, or add more.') %}
 {% set _n = (files or [])|length %}
 {% set _meta = [{'icon': 'file', 'text': (_n|string) ~ ' file' ~ ('s' if _n != 1 else '')}] %}
 
 {% call detail.hero(
      kind='library', name=collection.name,
-     description=(collection.description or 'Search across the files in this collection, or add more.'),
-     meta=_meta, back_href=_back, back_label='All library collections') %}
-  {{ detail.ask_kai('Search the ' ~ collection.name ~ ' collection and answer from its files.') }}
+     description=_desc,
+     meta=_meta, back_href=_back, back_label=_back_label) %}
+  {{ detail.ask_kai('Search the ' ~ collection.name ~ ' ' ~ _noun ~ ' and answer from its files.') }}
 {% endcall %}
 
-{{ detail.section_open('Ask this collection', icon='search') }}
+{{ detail.section_open('Ask this ' ~ _noun, icon='search') }}
   <div class="ask">
     <svg class="ask__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-    <input id="lib-q" type="search" placeholder="Search across files in this collection…" aria-label="Search">
+    <input id="lib-q" type="search" placeholder="Search across files in this {{ _noun }}…" aria-label="Search">
     {{ ds.button("Search", variant="primary", attrs='id="lib-search-btn" type="button"') }}
   </div>
   <p class="ask__note">
     Search combines lexical term matching with semantic embeddings (when available) over the
     indexed file chunks. Confidence reflects how clearly the top match stands out — on a small
-    collection or a close call, treat "low confidence" results as a starting point.
+    {{ _noun }} or a close call, treat "low confidence" results as a starting point.
   </p>
   <div class="results" id="lib-results"></div>
 {{ detail.section_close() }}

@@ -306,12 +306,21 @@
         body: fd,
       });
       if (!fResp.ok && fResp.status !== 422) throw new Error('upload failed (' + fResp.status + ')');
-      // Land on the new collection's detail page — same as the existing library
-      // upload flow (library_detail.html). On 422 the file was rejected (e.g.
-      // unsupported type) but the collection exists; the detail page shows each
-      // file's status (rejected with reason + a re-ingest action), so the user
-      // always sees what happened instead of a silent reload onto /stack.
+      // Where to land after the upload depends on the chrome layout:
+      //  • topnav — go to the collection's detail page (library_detail.html).
+      //    On 422 the file was rejected (e.g. unsupported type) but the
+      //    collection exists; the detail page shows each file's status
+      //    (rejected with reason + a re-ingest action), so the user always
+      //    sees what happened instead of a silent reload onto /stack.
+      //  • rail — there is no Library surface; uploads *are* the "Uploads" tab
+      //    on My Stack. Reload back onto that tab so the user stays in their
+      //    stack instead of being kicked to /library/{slug}. The ?kind=upload
+      //    param re-activates the Upload tab on load (see below).
+      {% if (ui_layout | default('topnav')) == 'rail' %}
+      window.location.href = '/stack?kind=upload';
+      {% else %}
       window.location.href = '/library/' + encodeURIComponent(col.slug || col.id);
+      {% endif %}
     } catch (err) {
       uploadSubmit.disabled = false;
       uploadSubmit.textContent = 'Upload';
