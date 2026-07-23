@@ -323,3 +323,27 @@ git commit -m "feat(cli,docs): agent memory CLI + V1c changelog and docs"
 ## Deferred to V2 (explicitly out of V1c scope)
 
 Local Claude Code "power mode" (`agnes agent up`), agent sharing across users/groups, `requires_action` human-in-the-loop approval, agent-memory promotion into governed corporate memory, A2A agent card, OpenAI-compatible shim. See the spec's V2 section.
+
+---
+
+## Review corrections — BINDING (2026-07-23, post codebase + adversarial review)
+
+These override the task text above wherever they conflict. Verified against the real tree.
+
+**C1 (Task 3 — materialize at the PRE-spawn seam, not post-spawn).** `build_profile` runs pre-spawn feeding `prepare_session_dir` (`app/chat/manager.py:894/902`); `record_snapshot` runs POST-spawn, AFTER `upload_workspace` (`manager.py:945`). A memory file written at the `record_snapshot` site is never uploaded into the VM. `materialize_memories(agent_row, session_dir)` MUST be called at the `build_profile`/`prepare_session_dir` point, before `_spawn_runner` (`manager.py:904`) — same host-dir-then-uploaded path as the persona. (Same remote-VM fact as V1b C1.)
+
+**C2 (Task 4 — bind the remember write to the CALLER's session, never the path `{id}`).** This is the memory-poisoning hole. The broker mints the sandbox's JWT with `chat_session_id` = the caller's real session and stashes it on `request.state.chat_session_id` (`app/api/broker.py:254`, consumed in `app/api/query.py:74`). The write endpoint MUST derive the target session/agent from `request.state.chat_session_id` (fall back to the `AGNES_SESSION_ID` claim), and REJECT (`403 session_mismatch`) if a path `{id}` is supplied that differs. Otherwise a prompt-injected `auto`-mode agent A can POST to a session of agent B (whose mode is `off`) and poison B's notebook. Enforce the CALLING agent's `memory_write_mode`, not the path agent's.
+
+**C3 (Task 4 — total pending cap, not just rate limit).** The 20/hr rate limit doesn't bound total `pending` rows — a propose-mode agent accrues unbounded pending memories (DB growth + owner-UI DoS). Add `agent_memory_max_pending` (default 100): at the cap, new writes → `429 memory_pending_full`. Reap `pending` rows older than `agent_memory_pending_ttl_days` (default 30).
+
+**C4 (Task 3 — active-memory eviction is explicit, and surfaced).** The ~6000-token materialize budget can be exceeded by many `active` memories; newest-first means a freshly-approved memory may silently never materialize ("active" ≠ "in effect"). Document the newest-first precedence, and the management list (Task 5) must show which active memories are IN-BUDGET vs shadowed, so an owner who just approved one isn't misled.
+
+**C5 (Task 1/2 — cascade on agent delete).** `agent_memories` must be cascade-deleted when the agent is deleted (with the V1b webhooks/artifacts cascade — see V1b C14). Add `agent_memories_repo().delete_for_agent(agent_id)` (both backends) and wire it into `delete_agent`; test the cascade.
+
+**C6 (Task 6 — session-scoped auth dep + reaper keepalive).** `agnes chat` consumes V1b's session endpoints, which require the NEW `require_session_principal` dep (V1b C7), not the slug-keyed one. Also: a long interactive chat with think-pauses must not have its sandbox reaped mid-conversation — each `POST /messages` must extend the session's idle deadline (the attach already cancels linger; confirm a message resets the paused-TTL clock), else the next turn 404s. Document the interactive keepalive.
+
+**C7 (Task 6 — Ctrl-C cancel race).** Interrupting the httpx SSE iterator while POSTing `/sessions/{id}/cancel` on a separate connection and returning cleanly to the REPL: install a SIGINT handler that (a) stops consuming the stream, (b) fires cancel best-effort, (c) returns to the prompt — never leaves a half-read stream or a wedged terminal. Test the handler in isolation (simulate KeyboardInterrupt mid-iteration).
+
+**C8 (Task 6 — disconnect ≠ cancel).** Same as V1b C9: abandoning the stream does NOT stop the run or refund budget; only `/cancel` does. `agnes chat` `/exit` should best-effort `DELETE` the session (frees the sandbox); document that a bare disconnect leaves it to the reaper.
+
+**C9 (cross-plan sequencing).** V1c Task 6 is BLOCKED until V1b Task 4 lands. If executing V1b then V1c as one wave, V1c's `manager.py`/`agent_profile.py` edits (Task 3 materialize) merge-couple with V1b's harvest edits (V1b C1) — integrate those two files' changes together, don't build them in isolated parallel worktrees.

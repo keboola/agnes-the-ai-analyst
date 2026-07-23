@@ -453,3 +453,41 @@ git commit -m "feat(api,cli,mcp): agent usage endpoint + parity + V1b changelog"
 - Task order is dependency order: 1→2 (schema→repos), 3 (SSE mapper, independent), 4 (sessions, needs 3), 5 (artifacts, needs 2), 6 (webhooks, needs 2), 7 (structured output, independent of 4-6), 8 (parity+docs, last). Tasks 3 and 7 can run in parallel with others.
 - Before the PR: `/agnes-review` on the full diff, scan for customer-specific tokens, release-cut per `docs/RELEASING.md`.
 - This stacks on the V1a branch; the release-cut decision (one PR for V1a+V1b+V1c, or split) is the user's at merge time.
+
+---
+
+## Review corrections — BINDING (2026-07-23, post codebase + adversarial review)
+
+These override the task text above wherever they conflict. Verified against the real tree.
+
+**C1 (Task 5 — artifacts live in a REMOTE E2B microVM, not the host workdir).** There is no host `workdir/outputs` to scan. The session dir is *uploaded into* the VM after spawn (`app/chat/manager.py:1643` `upload_workspace`), and the agent writes under `/work` **inside** the VM (`SANDBOX_WORKDIR="/work"`, `app/chat/e2b_provider.py:49`). Harvest MUST read back over the sandbox API — reuse `app/chat/e2b_workspace_sync.py:205 download_workspace(sandbox, local_root, sandbox_root=SANDBOX_WORKDIR)` (or `sandbox.files.list/read`) against the live handle, then upload those bytes to the object store. The live sandbox is reached via `manager.list_live()` → `LiveSession.handle` (the concrete `E2BSandboxHandle._sandbox` is private; add a small accessor on the handle rather than reaching into it). Harvest must run BEFORE detach→linger→pause tears the VM down. `harvest_session_artifacts` signature becomes `(session_id, agent_id, owner_user_id, handle)` — no `workdir: Path`. Tests use a fake handle exposing `files.list/read`, not a tmp dir.
+
+**C2 (Task 5 — filename sanitization).** The in-VM filename is agent-chosen (injection surface). Before keying/serving: take `os.path.basename`, reject/normalize `..` and path separators, strip CR/LF (else `content-disposition` header injection). Object-key prefix is `agent-artifacts/{session_id}/{safe_filename}` EVERYWHERE (fix the Task 2 contract test that used `artifacts/c1/...` to match).
+
+**C3 (Task 5 — restore spec-mandated controls).** Per-session artifact size cap + total-count cap (config `agent_api.artifact_max_bytes` default 25 MiB, `agent_api.artifact_max_files` default 20) and a retention story: artifacts rows + blobs are GC'd on session delete (see C9) and by a reaper honoring `agent_api.artifact_retention_days` (default 30). Not "best-effort/no controls".
+
+**C4 (Task 5 — multi-turn harvest trigger).** Harvest fires at session teardown (`DELETE`/kill) and at one-shot `run_one_shot` completion — NOT after every turn of a live session (remote `/work` listing is costly). Document this.
+
+**C5 (Task 5 — artifact download auth).** Stream through the authenticated endpoint by default (`get_bytes` + `content-type` + sanitized `content-disposition`). A `307` to `presign_get` is opt-in only, with a short TTL (≤120 s) and a documented leakage tradeoff — a presigned URL bypasses auth for its TTL and lands in logs.
+
+**C6 (Task 3 — correct frame field names).** The runner's tool-call frame carries `tool` and `args` (see `_pump_subprocess_to_ws` audit block, `app/chat/manager.py` ~1782), NOT `name`/`input`. Mapper: `tool_call` → `{"type":"TOOL_CALL_START","name":frame.get("tool"),"args":frame.get("args")}`. (`tool_result`→`result` is correct.)
+
+**C7 (Task 4 — session-scoped auth dep, NEW).** `require_agent_runtime_principal` is slug-parametrized and unusable on `/sessions/{id}/...`; `require_session_token` rejects all PATs (kills the agent-PAT flow). Add `require_session_principal(session_id, request, user, conn)`: load session via `chat_session_repo().get_session(id)` → its `agent_id` → `agents_repo().get_by_id`; verify owner match OR (agent PAT present AND `agent_id_from_request(request) == session.agent_id`); 404 (never 403-leak) on any mismatch or missing session.
+
+**C8 (Task 4 — StreamingSink must NOT drop-oldest; single turn per session).** Dropping a frame corrupts the ordered AG-UI protocol (unbalanced `TEXT_MESSAGE_END`/tool boundaries) and punches holes in the per-session `id:` sequence that V1.1 `Last-Event-ID` resume depends on. Use bounded-block-with-timeout; on sustained overflow emit a terminal `RUN_ERROR{code:"stream_overflow"}` and stop — never silently drop. AND add a per-session in-flight turn lock: a second concurrent `POST /sessions/{id}/messages` → `409 {"code":"turn_in_flight"}` (two turns interleaving one `id` sequence is otherwise unrecoverable).
+
+**C9 (Task 4 — SSE lifecycle facts).** cancel seam is `await manager.cancel(chat_id)` (`app/chat/manager.py:2429`), NOT `cancel_turn`. `ready`→`RUN_STARTED` is emitted per-attach (`_seat_sink`, `manager.py:844`), so filter it to fire once per turn, not per reconnect. Client disconnect → `finally: detach_sink` fires, the run KEEPS RUNNING and still burns budget (disconnect ≠ cancel) — document this. Guard the generator against a turn that never emits `done` (idle-timeout the stream).
+
+**C10 (Task 6 — SSRF: resolve-and-PIN, not re-validate).** httpx re-resolves the host at connect, so validate()→POST is TOCTOU-open to DNS rebind. Resolve once, then connect to the PINNED IP (httpx custom transport / `transport=...` with a resolver, or pass the IP as host + original `Host:` header) with `follow_redirects=False`. Re-validation alone does NOT close the window — the spec says "resolve-and-pin".
+
+**C11 (Task 6 — webhook payload is a NOTIFICATION, not the answer).** Do NOT POST the full agent answer/data to an external URL (silent egress). Payload = `{event, job_id, agent_slug, status, ts}` + HMAC signature; the receiver then GETs the result authenticated. State this privacy decision in the endpoint docstring.
+
+**C12 (Task 7 — `response_format` is NOT yet on the model).** `AgentResponseRequest` has only `input/background/timeout_s/metadata`. ADD the `response_format` field. Mechanism is prompt-steering + post-validation (append the schema directive to the message `text`; there is no `send_user_message(response_format=...)` param — fix Task 4 step-1 wording accordingly).
+
+**C13 (Task 7 — 422 must not orphan a paid run).** A `schema_validation_failed` run already spent tokens and may have a session_id/raw answer/artifacts. Return `422 {"code":"schema_validation_failed","session_id","usage","raw_answer"}` and store it under the Idempotency-Key like any other terminal response (so a retry replays, not re-runs). For background jobs the job goes `failed` with the same structured error.
+
+**C14 (cross-cutting — delete cascade).** `DELETE /api/v1/agents/{id}` must cascade-delete `agent_webhooks`, `agent_artifacts` (+ their object-store blobs), and (V1c) `agent_memories`, in addition to the V1a PAT revoke. Add repo `delete_for_agent(agent_id)` methods (both backends) + blob GC; test the cascade.
+
+**C15 (Tasks 3–4 — golden SSE contract test, spec §6).** Add `tests/test_agent_sse_contract.py`: drive a canned frame sequence through StreamingSink + the mapper and assert the exact ordered AG-UI event stream (RUN_STARTED → TEXT_MESSAGE_CONTENT×N → TEXT_MESSAGE_END → RUN_FINISHED), balanced lifecycle events, and gap-free monotonic `id:`. The wire format is a contract.
+
+**C16 (scope note).** Webhooks (SSRF) is the highest-risk surface in V1b — give it its own `/agnes-review` gate even though it ships in the same wave.
