@@ -37,6 +37,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   - The MCP tools split by permission tier: `data_apps_list`/`data_app_get`
     are viewer-level (owner, Admin, or a group with a `resource_grants` row
     may call them); `data_app_deploy`/`data_app_logs` are owner/Admin-only.
+  - A manual `deploy`/`stop` and an auto-wake for the same app can no longer
+    race each other into calling the runner sidecar's `up()` concurrently
+    (the sidecar does an unlocked check-then-act container swap). A single
+    `dataapp:op:<slug>` lease, shared by `deploy_data_app`, `stop_data_app`,
+    and the ingress proxy's wake-on-request path, now serializes all three.
 
 ### Changed
 
