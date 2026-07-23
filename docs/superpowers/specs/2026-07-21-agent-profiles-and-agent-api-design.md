@@ -5,6 +5,10 @@ Status: validated design (brainstorm complete; API shape reviewed against 2025�
 industry practice; revision 2 folds in a codebase-grounded feasibility review and
 an adversarial security/consistency review)
 
+Revision 3 (post-implementation, 2026-07-23): amends §1's `idempotency_keys`
+column list and the `model` semantics (§1 + §3) to match what actually
+shipped — see the inline notes below.
+
 ## Motivation
 
 Users compose a personal "stack" in Agnes today — marketplace plugins/skills,
@@ -62,7 +66,10 @@ agents
 │      -- delete (never reused) — integrations and PATs must not silently
 │      -- rebind to a new agent under an old slug
 ├── system_prompt          TEXT       -- persona; materializes as session CLAUDE.md
-├── model                  TEXT NULL  -- NULL = instance default
+├── model                  TEXT NULL  -- NULL = no model policy (revision 3: there is
+│                                     -- no instance-wide default model anywhere in
+│                                     -- the codebase — the sandbox's Claude Code CLI
+│                                     -- picks its own; see §3 mechanics #1)
 ├── token_budget_monthly   BIGINT NULL-- NULL = no per-agent cap (instance policy applies)
 ├── plugins_mode           TEXT       -- 'all' | 'selected'
 ├── connections_mode       TEXT       -- 'all' | 'selected'
@@ -87,7 +94,12 @@ agent_scope_snapshots (id, session_id, agent_id, effective_scope JSON, created_a
     -- append-only: one row at spawn + one per recompute that differs
 
 idempotency_keys (key, owner_user_id, agent_id, request_hash,
-                  response_ref, created_at, expires_at)
+                  response_body TEXT, status_code INTEGER, created_at, expires_at)
+    -- revision 3: shipped as the response's raw body + HTTP status code,
+    -- not an object-store `response_ref` — the response is small enough
+    -- (a single agent-API answer) that storing it inline in the row is
+    -- simpler than harvesting it into the object store like session
+    -- artifacts.
 ```
 
 Changes to existing tables:
@@ -302,12 +314,18 @@ Reality constraints folded in from code review:
 
 Mechanics:
 
-1. **Per-agent model policy**: check the request's `model` against (agent's
-   main model + instance-wide utility-model allowlist — Claude Code
+1. **Per-agent model policy** (revision 3: shipped semantics — there is no
+   instance-wide default model anywhere in the codebase; the sandbox's
+   Claude Code CLI picks its own unless a session profile overrides it):
+   `NULL` means **no model policy at all** — `check_model` allows the
+   request without even inspecting the body. Enforcement only activates
+   once the owner pins a model on the agent, in which case the allowed set
+   is `{agent.model} ∪ instance-wide utility-model allowlist` (Claude Code
    legitimately uses helper models for auto-title/background tasks).
-   Violation → 403 `model_not_allowed`. **Utility-model usage is attributed
-   to the agent's budget** (so allowlisted models are not free tokens; a
-   compromised run can at worst burn the agent's own budget).
+   Violation → 403 `model_not_allowed`. **Utility-model usage is
+   attributed to the agent's budget** (so allowlisted models are not free
+   tokens; a compromised run
+   can at worst burn the agent's own budget).
 2. **Usage ledger**: parse usage from Anthropic responses (streaming bodies:
    `message_start`/`message_delta` events) and record `llm_usage` rows.
    **Hot-path discipline (DuckDB single-writer reality)**: rows are

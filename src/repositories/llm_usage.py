@@ -6,7 +6,7 @@ month-to-date totals and recent rows for a given agent.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import duckdb
 
@@ -14,12 +14,6 @@ import duckdb
 class LlmUsageRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection):
         self.conn = conn
-
-    def _row_to_dict(self, row) -> Optional[Dict[str, Any]]:
-        if not row:
-            return None
-        columns = [desc[0] for desc in self.conn.description]
-        return dict(zip(columns, row))
 
     def _rows_to_dicts(self, rows) -> List[Dict[str, Any]]:
         if not rows:

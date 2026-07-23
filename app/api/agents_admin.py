@@ -47,6 +47,9 @@ _RESERVED_SLUGS = frozenset({"default"})
 _SELECTED_MODE_FIELDS = ("plugins_mode", "connections_mode", "tables_mode", "memory_mode")
 _ITEM_TYPES = frozenset({"plugin", "connection", "table", "memory_domain"})
 
+_SCOPE_MODE_VALUES = frozenset({"all", "selected"})
+_MEMORY_WRITE_MODE_VALUES = frozenset({"off", "propose", "auto"})
+
 # Mirrors `src.repositories.agents._UPDATABLE` minus `slug` (immutable via
 # this API — see `update_agent`).
 _UPDATABLE_FIELDS = frozenset(
@@ -132,6 +135,44 @@ def _validate_new_slug(slug: str) -> None:
         )
     if slug in _RESERVED_SLUGS:
         raise _err(400, "slug_reserved", f"slug '{slug}' is reserved for the seeded default agent")
+
+
+def _validate_mode_values(updates: Dict[str, Any]) -> None:
+    """400 `invalid_mode` for any of the five mode fields set to a value
+    outside its domain (`_UPDATABLE_FIELDS`/Pydantic only checks presence
+    and type, not the enumerated value set)."""
+    for field in _SELECTED_MODE_FIELDS:
+        value = updates.get(field)
+        if value is not None and value not in _SCOPE_MODE_VALUES:
+            raise _err(
+                400,
+                "invalid_mode",
+                f"{field} must be one of {sorted(_SCOPE_MODE_VALUES)}, got '{value}'",
+            )
+    memory_write_mode = updates.get("memory_write_mode")
+    if memory_write_mode is not None and memory_write_mode not in _MEMORY_WRITE_MODE_VALUES:
+        raise _err(
+            400,
+            "invalid_mode",
+            f"memory_write_mode must be one of {sorted(_MEMORY_WRITE_MODE_VALUES)}, got '{memory_write_mode}'",
+        )
+
+
+def _is_token_live(token: Dict[str, Any]) -> bool:
+    """A token is live if it isn't revoked and (has no expiry, or hasn't
+    expired yet). Mirrors the expiry-comparison hardening in
+    `app.auth.pat_resolver.resolve_token_to_user` (naive-datetime /
+    ISO-string rows from either backend)."""
+    if token.get("revoked_at") is not None:
+        return False
+    expires_at = token.get("expires_at")
+    if expires_at is None:
+        return True
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) <= expires_at
 
 
 def _load_agent(
@@ -247,6 +288,24 @@ async def update_agent(
     bad = set(updates) - _UPDATABLE_FIELDS
     if bad:
         raise _err(400, "invalid_field", f"cannot update field(s): {sorted(bad)}")
+
+    _validate_mode_values(updates)
+
+    # Widen-to-'all' guard (spec §2): agent PATs are issuable only while all
+    # four scope modes are 'selected', but that's an issuance-time check —
+    # 'all' mirrors the owner's LIVE stack, so widening any scope mode to
+    # 'all' *after* a PAT already exists would silently upgrade that PAT
+    # into a full-user credential (every plugin/connection/table/memory
+    # domain the owner has or ever installs). Issuance-time gating alone
+    # doesn't survive a later widen, so re-check here: reject the widen
+    # while a live (non-revoked, non-expired) agent PAT exists.
+    widened_to_all = [field for field in _SELECTED_MODE_FIELDS if updates.get(field) == "all"]
+    if widened_to_all and any(_is_token_live(t) for t in access_token_repo().list_for_agent(agent_id)):
+        raise _err(
+            409,
+            "agent_has_live_tokens",
+            "revoke agent tokens before widening scope to 'all'",
+        )
 
     if updates:
         agents_repo().update(agent_id, **updates)

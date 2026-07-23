@@ -109,7 +109,7 @@ def _print_agent(row: dict) -> None:
     typer.echo(f"name:              {row.get('name')}")
     if row.get("description"):
         typer.echo(f"description:       {row['description']}")
-    typer.echo(f"model:             {row.get('model') or '(instance default)'}")
+    typer.echo(f"model:             {row.get('model') or 'server default (no model policy)'}")
     typer.echo(
         f"token_budget:      {row.get('token_budget_monthly') if row.get('token_budget_monthly') is not None else '(unbounded)'}"
     )
@@ -142,7 +142,7 @@ def list_agents(as_json: bool = typer.Option(False, "--json")):
     for r in rows:
         typer.echo(
             f"{r.get('id', ''):<36}  {r.get('slug', ''):<{slug_w}}  {r.get('name', ''):<{name_w}}  "
-            f"{r.get('model') or '(instance default)'}"
+            f"{r.get('model') or 'server default (no model policy)'}"
         )
 
 
@@ -153,7 +153,9 @@ def create_agent(
     prompt_file: Optional[str] = typer.Option(
         None, "--prompt-file", help="Path to a file containing the system prompt"
     ),
-    model: Optional[str] = typer.Option(None, "--model", help="Model override (omit for instance default)"),
+    model: Optional[str] = typer.Option(
+        None, "--model", help="Model override (omit for server default — no model policy)"
+    ),
     budget: Optional[int] = typer.Option(None, "--budget", help="Monthly token budget"),
     as_json: bool = typer.Option(False, "--json"),
 ):
@@ -364,7 +366,11 @@ def ask(
     timeout: Optional[int] = typer.Option(
         None,
         "--timeout",
-        help=f"Max seconds to wait for a completed answer (default {_DEFAULT_ASK_TIMEOUT_S}, capped {_MAX_ASK_TIMEOUT_S})",
+        help=(
+            f"Max seconds for the synchronous wait (default {_DEFAULT_ASK_TIMEOUT_S}, "
+            f"capped at {_MAX_ASK_TIMEOUT_S} for the sync leg — background job polling "
+            "continues for the full --timeout value)"
+        ),
     ),
     as_json: bool = typer.Option(False, "--json"),
 ):

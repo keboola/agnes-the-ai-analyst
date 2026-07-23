@@ -1071,7 +1071,7 @@ def register_foundation_tools(
 
         Returns ``{"data": [...], "has_more": false, "next_cursor": null}``.
         Each entry has ``id``, ``slug``, ``name``, ``description``,
-        ``model`` (null = instance default), ``token_budget_monthly``
+        ``model`` (null = server default, no model policy), ``token_budget_monthly``
         (null = unbounded), the four scope-mode fields
         (``plugins_mode``/``connections_mode``/``tables_mode``/
         ``memory_mode``, each ``"all"`` or ``"selected"``),

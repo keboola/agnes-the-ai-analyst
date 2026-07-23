@@ -220,6 +220,77 @@ def test_put_updates_whitelisted_fields(mgmt_client):
 
 
 # ---------------------------------------------------------------------------
+# PUT — mode-value validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["plugins_mode", "connections_mode", "tables_mode", "memory_mode"],
+)
+def test_put_rejects_invalid_scope_mode_value(mgmt_client, field):
+    slug = f"bad-mode-{field}".replace("_", "-")
+    created = mgmt_client.post("/api/v1/agents", json={"name": "A", "slug": slug}).json()
+    r = mgmt_client.put(f"/api/v1/agents/{created['id']}", json={field: "bogus"})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "invalid_mode"
+
+
+def test_put_rejects_invalid_memory_write_mode_value(mgmt_client):
+    created = mgmt_client.post("/api/v1/agents", json={"name": "A", "slug": "bad-write-mode"}).json()
+    r = mgmt_client.put(f"/api/v1/agents/{created['id']}", json={"memory_write_mode": "bogus"})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "invalid_mode"
+
+
+def test_put_accepts_valid_mode_values(mgmt_client, selected_agent_id):
+    r = mgmt_client.put(
+        f"/api/v1/agents/{selected_agent_id}",
+        json={"plugins_mode": "all", "memory_write_mode": "auto"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["plugins_mode"] == "all"
+    assert body["memory_write_mode"] == "auto"
+
+
+# ---------------------------------------------------------------------------
+# PUT — widen-to-'all' guard against live agent PATs (spec §2)
+# ---------------------------------------------------------------------------
+
+
+def test_put_widen_to_all_rejected_with_live_token(mgmt_client, selected_agent_id):
+    mint = mgmt_client.post(f"/api/v1/agents/{selected_agent_id}/tokens", json={"name": "t"})
+    assert mint.status_code == 200
+
+    r = mgmt_client.put(f"/api/v1/agents/{selected_agent_id}", json={"plugins_mode": "all"})
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "agent_has_live_tokens"
+
+
+def test_put_widen_to_all_allowed_after_revoke(mgmt_client, selected_agent_id):
+    from src.repositories import access_token_repo
+
+    mint = mgmt_client.post(f"/api/v1/agents/{selected_agent_id}/tokens", json={"name": "t"})
+    assert mint.status_code == 200
+    token_id = mint.json()["id"]
+    access_token_repo().revoke(token_id)
+
+    r = mgmt_client.put(f"/api/v1/agents/{selected_agent_id}", json={"plugins_mode": "all"})
+    assert r.status_code == 200
+    assert r.json()["plugins_mode"] == "all"
+
+
+def test_put_narrowing_allowed_with_live_token(mgmt_client, selected_agent_id):
+    mint = mgmt_client.post(f"/api/v1/agents/{selected_agent_id}/tokens", json={"name": "t"})
+    assert mint.status_code == 200
+
+    r = mgmt_client.put(f"/api/v1/agents/{selected_agent_id}", json={"plugins_mode": "selected"})
+    assert r.status_code == 200
+    assert r.json()["plugins_mode"] == "selected"
+
+
+# ---------------------------------------------------------------------------
 # DELETE — default-agent guard + PAT revocation
 # ---------------------------------------------------------------------------
 
