@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.14] - 2026-07-23
+
+### Added
+
 - **Data Apps** (schema v96): host user web applications next to the data
   using the upstream `data-app-python-js` runtime image — internal git repos
   with push-to-deploy (or BYO external repo), RBAC-gated ingress at
