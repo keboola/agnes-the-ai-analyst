@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 95
+SCHEMA_VERSION = 96
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1356,6 +1356,7 @@ CREATE TABLE IF NOT EXISTS corpus_files (
     size_bytes BIGINT,
     storage_path VARCHAR,
     parent_file_id VARCHAR,
+    path VARCHAR,
     processing_status VARCHAR NOT NULL DEFAULT 'pending',
     processing_detail VARCHAR,
     created_at TIMESTAMP DEFAULT current_timestamp,
@@ -6382,6 +6383,22 @@ def _v94_to_v95(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 95")
 
 
+def _v95_to_v96(conn: duckdb.DuckDBPyConnection) -> None:
+    """v95→v96: ``corpus_files.path`` — logical path for upsert-on-upload.
+
+    An optional caller-supplied identity (e.g. a repo-relative path) so
+    re-uploading the same logical file REPLACES the existing row instead of
+    inserting a duplicate (keyed on ``(corpus_id, path)``). NULL on every
+    existing row and on uploads that omit it — behavior is unchanged (plain
+    insert) until a caller opts in. Guarded ALTER so upgrades from a fresh-
+    install schema (which already carries the column) stay idempotent.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('corpus_files')").fetchall()}
+    if "path" not in cols:
+        conn.execute("ALTER TABLE corpus_files ADD COLUMN path VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 96")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6770,6 +6787,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # (index-corruption hotfix). No-op here — _SYSTEM_SCHEMA never
             # creates them on fresh installs.
             _v94_to_v95(conn)
+            # v95→v96: corpus_files.path (upsert-on-upload identity).
+            # _SYSTEM_SCHEMA already declares it on fresh installs (no-op
+            # ALTER here).
+            _v95_to_v96(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7013,6 +7034,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v93_to_v94(conn)
             if current < 95:
                 _v94_to_v95(conn)
+            if current < 96:
+                _v95_to_v96(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

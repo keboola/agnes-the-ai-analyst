@@ -954,3 +954,91 @@ class TestBundleUpload:
         )
         assert hits.status_code == 200
         assert any("notes.md" in str(h) for h in hits.json()["results"])
+
+
+class TestFileUpsert:
+    """Upsert-on-upload: `paths` form field gives a file a logical identity so
+    re-uploading the same (corpus_id, path) replaces instead of duplicating."""
+
+    def _create_and_grant(self, seeded_app, name: str = "Upsert Target"):
+        c = seeded_app["client"]
+        cr = c.post(
+            "/api/collections",
+            json={"name": name},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        corpus_id = cr.json()["id"]
+        _seed_collection_grant(corpus_id, "analyst1")
+        return corpus_id
+
+    def test_reupload_same_path_replaces_row(self, seeded_app):
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app, "Upsert Replace")
+
+        first = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files={"files": ("a.md", io.BytesIO(b"alpha"), "text/markdown")},
+            data={"paths": "docs/a.md"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert first.status_code == 201, first.text
+        fid1 = first.json()[0]["file_id"]
+        assert first.json()[0]["path"] == "docs/a.md"
+
+        second = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files={"files": ("a.md", io.BytesIO(b"bravo beta gamma"), "text/markdown")},
+            data={"paths": "docs/a.md"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert second.status_code == 201, second.text
+        fid2 = second.json()[0]["file_id"]
+        assert fid2 != fid1  # replaced, not updated-in-place
+
+        listing = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        files = listing.json()["files"]
+        # Exactly one row survives for that path — the new one.
+        assert len(files) == 1
+        assert files[0]["file_id"] == fid2
+        assert files[0]["path"] == "docs/a.md"
+        assert files[0]["size_bytes"] == len(b"bravo beta gamma")
+
+    def test_uploads_without_path_do_not_upsert(self, seeded_app):
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app, "No Path No Upsert")
+        for _ in range(2):
+            r = c.post(
+                f"/api/collections/{corpus_id}/files",
+                files={"files": ("same.md", io.BytesIO(b"x"), "text/markdown")},
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            assert r.status_code == 201, r.text
+            assert r.json()[0]["path"] is None
+        listing = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        # Legacy behavior: two rows, no replacement.
+        assert len(listing.json()["files"]) == 2
+
+    def test_distinct_paths_coexist(self, seeded_app):
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app, "Distinct Paths")
+        for p in ("apis/x.md", "concepts/x.md"):
+            r = c.post(
+                f"/api/collections/{corpus_id}/files",
+                files={"files": ("x.md", io.BytesIO(b"data"), "text/markdown")},
+                data={"paths": p},
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            assert r.status_code == 201, r.text
+        listing = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        # Same basename, different logical path → both kept (no collision).
+        paths = {f["path"] for f in listing.json()["files"]}
+        assert paths == {"apis/x.md", "concepts/x.md"}

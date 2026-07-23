@@ -31,6 +31,7 @@ class CorpusFilesRepository:
         "size_bytes",
         "storage_path",
         "parent_file_id",
+        "path",
         "processing_status",
         "processing_detail",
         "created_at",
@@ -65,18 +66,21 @@ class CorpusFilesRepository:
         size_bytes: Optional[int],
         storage_path: Optional[str],
         parent_file_id: Optional[str] = None,
+        path: Optional[str] = None,
     ) -> str:
         """Insert a new file row with default status 'pending'.
 
         ``parent_file_id`` links a bundle-extracted child to its archive row.
-        Returns the generated ``cf_*`` id.
+        ``path`` is an optional caller-supplied logical identity used for
+        upsert-on-upload (see ``get_by_path``); NULL keeps plain-insert
+        behavior. Returns the generated ``cf_*`` id.
         """
         file_id = "cf_" + secrets.token_hex(8)
         self.conn.execute(
             "INSERT INTO corpus_files "
-            "(id, corpus_id, filename, sha256, file_type, size_bytes, storage_path, parent_file_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [file_id, corpus_id, filename, sha256, file_type, size_bytes, storage_path, parent_file_id],
+            "(id, corpus_id, filename, sha256, file_type, size_bytes, storage_path, parent_file_id, path) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [file_id, corpus_id, filename, sha256, file_type, size_bytes, storage_path, parent_file_id, path],
         )
         return file_id
 
@@ -85,6 +89,23 @@ class CorpusFilesRepository:
         row = self.conn.execute(
             f"SELECT {self._SELECT} FROM corpus_files WHERE id = ?",
             [file_id],
+        ).fetchone()
+        if not row:
+            return None
+        return self._decode_row(dict(zip(self._COLS, row)))
+
+    def get_by_path(self, corpus_id: str, path: str) -> Optional[Dict[str, Any]]:
+        """Fetch one file row by its ``(corpus_id, path)`` logical identity.
+
+        Used for upsert-on-upload. Returns ``None`` when no row carries that
+        path. ``path=None`` never matches (plain-insert files stay distinct).
+        """
+        if path is None:
+            return None
+        row = self.conn.execute(
+            f"SELECT {self._SELECT} FROM corpus_files "
+            "WHERE corpus_id = ? AND path = ? ORDER BY created_at LIMIT 1",
+            [corpus_id, path],
         ).fetchone()
         if not row:
             return None

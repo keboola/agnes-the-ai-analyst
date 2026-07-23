@@ -211,6 +211,39 @@ def test_upload_sends_multipart_per_file(monkeypatch, tmp_path):
     assert "pending" in r.output
 
 
+def test_upload_with_path_sends_paths_form_field(monkeypatch, tmp_path):
+    """`--path` is forwarded as the `paths` multipart form field for upsert."""
+    calls: list[dict] = []
+
+    def _fake_post(path, *, files, data=None):
+        calls.append({"path": path, "data": data})
+        return [{"file_id": "cf_new", "filename": "a.md", "processing_status": "pending", "path": "docs/a.md"}]
+
+    f1 = tmp_path / "a.md"
+    f1.write_bytes(b"alpha")
+
+    with patch("cli.commands.collections.api_post_multipart", _fake_post):
+        r = runner.invoke(collections_app, ["upload", "col_1", str(f1), "--path", "docs/a.md"])
+
+    assert r.exit_code == 0, r.output
+    assert len(calls) == 1
+    assert calls[0]["data"] == {"paths": "docs/a.md"}
+
+
+def test_upload_path_with_multiple_files_errors(tmp_path):
+    """`--path` is single-file only — reject an ambiguous multi-file upload."""
+    f1 = tmp_path / "a.md"
+    f1.write_bytes(b"a")
+    f2 = tmp_path / "b.md"
+    f2.write_bytes(b"b")
+
+    called: list = []
+    with patch("cli.commands.collections.api_post_multipart", lambda *a, **k: called.append(1) or []):
+        r = runner.invoke(collections_app, ["upload", "col_1", str(f1), str(f2), "--path", "docs/x.md"])
+    assert r.exit_code != 0
+    assert not called  # never hit the network
+
+
 def test_upload_server_error_exits_nonzero(monkeypatch, tmp_path):
     from cli.v2_client import V2ClientError
 

@@ -30,7 +30,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from app.auth.access import (
@@ -121,6 +121,7 @@ def _file_out(row: dict) -> dict:
         "file_type": row["file_type"],
         "size_bytes": row["size_bytes"],
         "parent_file_id": row.get("parent_file_id"),
+        "path": row.get("path"),
         "processing_status": row["processing_status"],
         "processing_detail": row.get("processing_detail"),
         "created_at": str(row["created_at"]) if row.get("created_at") else None,
@@ -420,11 +421,48 @@ async def delete_collection(
 # ---------------------------------------------------------------------------
 
 
+def _purge_file_row(collection_id: str, row: dict, *, keep_blob_path: str | None = None) -> None:
+    """Remove a file's blob, derived tables, chunks, and ``corpus_files`` row.
+
+    Shared by ``delete_file`` and upsert-on-upload. Ordering mirrors
+    ``delete_collection``: blob → derived purge → chunks → row, so a mid-way
+    failure leaves the row intact for retry, and chunks never outlive their
+    file (they would otherwise surface in search with a null filename).
+
+    ``keep_blob_path`` skips the blob unlink when the caller has just
+    (re)stored a blob at that content-addressed path. Blobs are keyed by
+    sha256 and NOT refcounted, so a replacement upload of identical bytes
+    lands on the same path — deleting it would wipe the live blob.
+    """
+    old_id = row["id"]
+    storage_path = row.get("storage_path")
+    if storage_path and storage_path != keep_blob_path:
+        delete_corpus_file(storage_path)
+    _schedule_derived_purge(collection_id, old_id)
+    corpus_chunks_repo().delete_for_file(old_id)
+    corpus_files_repo().delete(old_id)
+
+
+def _replace_existing_by_path(collection_id: str, path: str | None, *, keep_blob_path: str | None) -> None:
+    """Upsert helper: purge any existing file sharing ``(collection_id, path)``.
+
+    No-op when ``path`` is None (plain-insert upload) or nothing matches.
+    Called only AFTER the replacement blob is safely stored, so a failed
+    re-upload never destroys the existing file.
+    """
+    if not path:
+        return
+    existing = corpus_files_repo().get_by_path(collection_id, path)
+    if existing:
+        _purge_file_row(collection_id, existing, keep_blob_path=keep_blob_path)
+
+
 @router.post("/{collection_id}/files", status_code=201)
 async def upload_files(
     collection_id: str,
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
+    paths: Optional[List[str]] = Form(None),
     user=Depends(require_resource_access(ResourceType.COLLECTION, "{collection_id}")),
 ):
     """Upload one or more files into a collection.
@@ -444,8 +482,17 @@ async def upload_files(
       rejected (all results are still returned so the caller sees which
       files succeeded and which were rejected).
 
-    Returns a list of ``{file_id, filename, processing_status, …}`` for every
-    uploaded file (in upload order).
+    **Upsert:** an optional ``paths`` form field (repeated, paired positionally
+    with ``files``) gives each file a caller-supplied logical identity. When a
+    file with the same ``(collection_id, path)`` already exists, it is REPLACED
+    (old blob/chunks/derived tables purged) instead of inserting a duplicate —
+    so a doc-sync client can re-upload idempotently. Files without a ``path``
+    keep the legacy plain-insert behavior. The purge runs only after the
+    replacement is safely stored, so a failed re-upload never destroys the
+    existing file.
+
+    Returns a list of ``{file_id, filename, path, processing_status, …}`` for
+    every uploaded file (in upload order).
     """
     # Verify the collection exists (grant check already done by the dependency).
     corpus = file_corpora_repo().get(collection_id)
@@ -457,9 +504,13 @@ async def upload_files(
     any_rejected = False
     _to_ingest: List[str] = []
 
-    for upload in files:
+    for idx, upload in enumerate(files):
         fname = upload.filename or "unknown"
         tier = classify(fname)
+        # Optional per-file logical identity for upsert, paired positionally
+        # with `files`. Blank/missing → None (legacy plain-insert).
+        path = paths[idx].strip() if (paths and idx < len(paths) and paths[idx]) else None
+        path = path or None
 
         if tier is None:
             # Unsupported type — store raw bytes but record as rejected.
@@ -472,12 +523,16 @@ async def upload_files(
                 size = stored.size_bytes
                 ext = stored.ext.lstrip(".")
             except HTTPException:
-                # Oversize or empty — still record as rejected with no path.
+                # Oversize or empty — still record as rejected with no blob.
                 storage_path = None
                 sha = ""
                 size = 0
                 ext = fname.rsplit(".", 1)[-1] if "." in fname else ""
 
+            # Upsert only when the blob was actually stored; a failed store
+            # must not destroy an existing file, and its row carries no path.
+            effective_path = path if storage_path is not None else None
+            _replace_existing_by_path(collection_id, effective_path, keep_blob_path=storage_path)
             file_id = cf_repo.add(
                 corpus_id=collection_id,
                 filename=fname,
@@ -485,6 +540,7 @@ async def upload_files(
                 file_type=ext or None,
                 size_bytes=size or None,
                 storage_path=storage_path,
+                path=effective_path,
             )
             cf_repo.set_status(
                 file_id,
@@ -520,6 +576,10 @@ async def upload_files(
                 any_rejected = True
                 continue
 
+            # Replace any existing file sharing this logical path (no-op when
+            # path is None). keep_blob_path guards the content-addressed blob
+            # we just stored in case the replacement is byte-identical.
+            _replace_existing_by_path(collection_id, path, keep_blob_path=stored.storage_path)
             file_id = cf_repo.add(
                 corpus_id=collection_id,
                 filename=fname,
@@ -527,6 +587,7 @@ async def upload_files(
                 file_type=stored.ext.lstrip(".") or None,
                 size_bytes=stored.size_bytes,
                 storage_path=stored.storage_path,
+                path=path,
             )
             # Default status is 'pending' (set by the repo on insert).
             row = cf_repo.get(file_id)
@@ -584,18 +645,7 @@ async def delete_file(
     row = cf_repo.get(file_id)
     if not row or row.get("corpus_id") != collection_id:
         raise HTTPException(status_code=404, detail="file_not_found")
-    if row.get("storage_path"):
-        delete_corpus_file(row["storage_path"])
-    # Remove derived table_registry row + parquet if this was a tabular file.
-    # Do this BEFORE the corpus_files row is deleted: if the purge raises, the
-    # file row is still intact and the user can retry (mirrors delete_collection
-    # ordering which purges derived data before the soft-delete).
-    _schedule_derived_purge(collection_id, file_id)
-    # Delete the file's chunks first — otherwise they linger and still surface
-    # in search results (with a null filename once the file row is gone).
-    corpus_chunks_repo().delete_for_file(file_id)
-    # Hard-delete the corpus_files row — no soft-delete on individual files.
-    cf_repo.delete(file_id)
+    _purge_file_row(collection_id, row)
     logger.info(
         "corpus_file deleted file_id=%s collection=%s by=%s",
         file_id,

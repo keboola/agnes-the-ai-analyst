@@ -61,6 +61,9 @@ class CorpusFile(Base):
     # Set on children extracted from an uploaded archive (K1 bundle ingest);
     # NULL for directly-uploaded files and for the archive row itself.
     parent_file_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Optional caller-supplied logical identity for upsert-on-upload; a repeat
+    # upload with the same (corpus_id, path) replaces the row. NULL = plain insert.
+    path: Mapped[str | None] = mapped_column(String, nullable=True)
     # Five-state lifecycle: pending | processing | indexed | needs_review | rejected
     processing_status: Mapped[str] = mapped_column(String, server_default=_text("'pending'"), nullable=False)
     # JSON text: {tier, vision_used, error, derived_table_id, chunk_count}

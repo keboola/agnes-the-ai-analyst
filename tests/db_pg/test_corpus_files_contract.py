@@ -280,3 +280,45 @@ def test_set_status_needs_review_roundtrip(repo):
     row = repo.get(fid)
     assert row["processing_status"] == "needs_review"
     assert row["processing_detail"]["reason"] == "extraction produced empty table"
+
+
+def test_path_roundtrips_and_defaults_none(repo):
+    """`path` (v96 upsert identity) persists, and defaults to None when omitted."""
+    with_path = repo.add(
+        corpus_id=CORPUS_ID,
+        filename="storage-api.md",
+        sha256="p1",
+        file_type="md",
+        size_bytes=10,
+        storage_path="/tmp/storage-api.md",
+        path="apis/storage-api.md",
+    )
+    without_path = repo.add(
+        corpus_id=CORPUS_ID,
+        filename="loose.md",
+        sha256="p2",
+        file_type="md",
+        size_bytes=10,
+        storage_path="/tmp/loose.md",
+    )
+    assert repo.get(with_path)["path"] == "apis/storage-api.md"
+    assert repo.get(without_path)["path"] is None
+
+
+def test_get_by_path_finds_row(repo):
+    fid = repo.add(
+        corpus_id=CORPUS_ID,
+        filename="concepts.md",
+        sha256="g1",
+        file_type="md",
+        size_bytes=10,
+        storage_path="/tmp/concepts.md",
+        path="concepts/overview.md",
+    )
+    hit = repo.get_by_path(CORPUS_ID, "concepts/overview.md")
+    assert hit is not None
+    assert hit["id"] == fid
+    # Wrong corpus / missing path / None path all return None.
+    assert repo.get_by_path("col_other", "concepts/overview.md") is None
+    assert repo.get_by_path(CORPUS_ID, "nope.md") is None
+    assert repo.get_by_path(CORPUS_ID, None) is None
