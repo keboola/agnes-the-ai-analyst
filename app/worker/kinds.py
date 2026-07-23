@@ -510,6 +510,16 @@ def _run_distribution_mirror(payload: dict) -> None:
 
 _DEFAULT_AGENT_RESPONSE_JOB_TIMEOUT_S = 1800
 
+#: Prefix marking a `_run_agent_response` failure as a concurrency-cap hit —
+#: see the handler's `except ConcurrencyCapHit` branch below. Duplicated
+#: (not imported) into `app/api/agent_runtime.py::_serialize_job`, which
+#: parses it back out of the persisted `jobs.error` string to surface a
+#: structured `{"code": "concurrency_cap", ...}` — same
+#: HEAVY_LANE/LIGHT_LANE-style duplication rationale as `app/worker/registry
+#: .py`'s module docstring: the CONTRACT is the string value, not which
+#: module owns the source of truth for it.
+CONCURRENCY_CAP_ERROR_PREFIX = "concurrency_cap: "
+
 
 def _agent_response_job_timeout_seconds() -> int:
     raw = os.environ.get("AGNES_AGENT_RESPONSE_JOB_TIMEOUT_S")
@@ -532,11 +542,19 @@ def _run_agent_response(payload: dict) -> dict:
     """
     import asyncio
 
-    from app.chat.manager import get_current_chat_loop, get_current_chat_manager
+    from app.chat.manager import ConcurrencyCapHit, get_current_chat_loop, get_current_chat_manager
 
     manager = get_current_chat_manager()
     loop = get_current_chat_loop()
     if manager is None or loop is None:
+        # Defensive only — should be unreachable post-fix: `register_all_kinds()`
+        # (this module's own caller-facing entry point) only registers
+        # `agent_response` when `get_current_chat_manager()` is non-None at
+        # registration time (see its docstring), so a process without a live
+        # chat manager never has this kind in `JOB_KINDS` and therefore never
+        # claims (or runs) one of these jobs in the first place. Kept as a
+        # fail-closed guard in case that invariant is ever violated (e.g. a
+        # future direct-dispatch caller that bypasses the registry).
         raise RuntimeError("agent_response: chat is disabled on this worker process")
 
     from app.chat.headless import await_completion, run_one_shot
@@ -561,7 +579,23 @@ def _run_agent_response(payload: dict) -> dict:
     # wait so a same-duration race doesn't spuriously time out the OUTER
     # call before the inner `asyncio.wait_for` has a chance to return.
     future = asyncio.run_coroutine_threadsafe(coro, loop)
-    run_result = future.result(timeout=timeout_s + 60)
+    try:
+        run_result = future.result(timeout=timeout_s + 60)
+    except ConcurrencyCapHit as exc:
+        # `run_one_shot`'s `create_session()` call hit the per-user
+        # concurrency cap (`"fresh"` mode only — `await_completion`, the
+        # `"continue"` mode, never creates a session). Re-raised with a
+        # recognizable prefix (not the bare `ConcurrencyCapHit` message) so
+        # `_run_one`'s generic `except Exception` -> `jobs_repo().fail(...,
+        # str(exc), ...)` persists an `error` string
+        # `app/api/agent_runtime.py::_serialize_job` can parse back into a
+        # structured `{"code": "concurrency_cap", ...}` for `GET
+        # /api/v1/jobs/{id}` — a clear signal instead of a raw traceback.
+        # `retry_in_seconds=None` on this kind (see `register_all_kinds()`
+        # below) means this finalizes straight to `'failed'`, no retry loop.
+        raise RuntimeError(f"{CONCURRENCY_CAP_ERROR_PREFIX}{exc}") from exc
+
+    _flush_usage_accumulator()
 
     from app.chat.agent_usage import usage_for_session
 
@@ -574,10 +608,65 @@ def _run_agent_response(payload: dict) -> dict:
     }
 
 
+def _flush_usage_accumulator() -> None:
+    """Flush the broker's batched `llm_usage` ledger before summing usage
+    (review carry-over, Task 9) — a just-finished turn's rows may still be
+    sitting in the in-memory accumulator otherwise, undercounting the
+    `usage` this handler returns. The sync path
+    (`app/api/agent_runtime.py::usage_accumulator_flush`) already does this
+    before its own `usage_for_session()` call; this worker path reads the
+    exact same ledger and needs the identical flush — duplicated (not
+    imported from that router module) because this module must stay
+    independent of FastAPI routing (see `app/chat/agent_usage.py`'s module
+    docstring for the same rationale, one level up the dependency chain).
+    Deferred import + best-effort (never raises) for the same reasons as
+    the router's copy."""
+    try:
+        from app.api.broker_agent_policy import usage_accumulator
+
+        usage_accumulator.flush()
+    except Exception:
+        logger.exception("usage_accumulator.flush() failed — usage totals may undercount this response")
+
+
 def register_all_kinds() -> None:
-    """Register the nine real job kinds. Idempotent — safe to call more
-    than once (e.g. across test re-imports); ``register_kind`` replaces
-    any existing entry of the same name rather than erroring."""
+    """Register the real job kinds. Idempotent — safe to call more than
+    once (e.g. across test re-imports); ``register_kind`` replaces any
+    existing entry of the same name rather than erroring.
+
+    **``agent_response`` is registered CONDITIONALLY** (role-split review
+    carry-over, Task 9) — every other kind here always registers
+    unconditionally, since ``app/worker/runtime.py``'s lane slots only ever
+    claim kinds present in the process-wide ``JOB_KINDS`` registry (see
+    ``_kinds_for_lane``). ``agent_response``'s handler
+    (``_run_agent_response`` above) needs the live ``ChatManager`` singleton
+    (``app.chat.manager.get_current_chat_manager``/``get_current_chat_loop``)
+    to actually run a turn — and in the role-split deployment topology
+    (``Role.GATEWAY`` owns chat; ``Role.WORKER`` may run in a SEPARATE
+    process/replica with no chat manager at all — see ``app/main.py``'s
+    CHAT-INIT block), a worker-only process has neither. Before this fix,
+    every process registered the kind unconditionally regardless of role,
+    so a worker-only process would claim an ``agent_response`` job, find
+    ``get_current_chat_manager()`` is ``None``, raise, and permanently fail
+    the job (``retry_in_seconds=None`` — see below): background/degraded
+    agent runs were silently unrunnable on that topology.
+
+    Gating registration on ``get_current_chat_manager() is not None``
+    instead makes a worker-only process simply never add ``agent_response``
+    to its ``JOB_KINDS`` — ``_kinds_for_lane(LIGHT_LANE)`` then never
+    includes it, so that process's LIGHT lane slots never claim one of
+    these jobs; the job stays ``'queued'``, visible via ``GET
+    /api/v1/jobs/{id}``, until a process that DOES host a chat manager
+    (gateway-colocated worker — i.e. ``Role.GATEWAY`` and ``Role.WORKER``
+    both enabled, which is what the default ``all``/single-container
+    topology already gives you) claims it instead.
+
+    Ordering requirement this relies on: ``app/main.py``'s lifespan calls
+    ``set_current_chat_manager(app.state.chat_manager)`` (CHAT-INIT settling
+    to a real manager or ``None``) BEFORE calling ``register_all_kinds()`` —
+    see the comment at that call site. Calling this function before CHAT-INIT
+    has run would see a stale/no manager even on a real gateway process.
+    """
     register_kind(
         JobKind(
             name="data-refresh",
@@ -659,24 +748,41 @@ def register_all_kinds() -> None:
             retry_in_seconds=300,
         )
     )
-    register_kind(
-        JobKind(
-            name="agent_response",
-            handler=_run_agent_response,
-            lane=LIGHT_LANE,
-            # Lease covers the job's own internal wait (default 1800s,
-            # AGNES_AGENT_RESPONSE_JOB_TIMEOUT_S) plus this margin — the
-            # heartbeat renews well before either expires, so this is a
-            # ceiling on "how long before a crashed/stuck run is
-            # reclaimed", not a hard timeout on the underlying chat turn.
-            lease_seconds=_agent_response_job_timeout_seconds() + 120,
-            # No retry: a fresh retry would re-run `run_one_shot` and
-            # re-send the user's prompt a second time (or, for `"continue"`,
-            # re-attach to a `chat_id` that may have already produced and
-            # lost its only answer) — neither is a safe automatic retry
-            # target. A failed job stays `'failed'`; the caller sees that
-            # via `GET /api/v1/jobs/{id}` and can re-POST if they want a
-            # fresh attempt.
-            retry_in_seconds=None,
+    from app.chat.manager import get_current_chat_manager
+
+    if get_current_chat_manager() is not None:
+        register_kind(
+            JobKind(
+                name="agent_response",
+                handler=_run_agent_response,
+                lane=LIGHT_LANE,
+                # Lease covers the job's own internal wait (default 1800s,
+                # AGNES_AGENT_RESPONSE_JOB_TIMEOUT_S) plus this margin — the
+                # heartbeat renews well before either expires, so this is a
+                # ceiling on "how long before a crashed/stuck run is
+                # reclaimed", not a hard timeout on the underlying chat turn.
+                lease_seconds=_agent_response_job_timeout_seconds() + 120,
+                # No retry: a fresh retry would re-run `run_one_shot` and
+                # re-send the user's prompt a second time (or, for `"continue"`,
+                # re-attach to a `chat_id` that may have already produced and
+                # lost its only answer) — neither is a safe automatic retry
+                # target. A failed job stays `'failed'`; the caller sees that
+                # via `GET /api/v1/jobs/{id}` and can re-POST if they want a
+                # fresh attempt.
+                retry_in_seconds=None,
+            )
         )
-    )
+    else:
+        # This process has no live ChatManager (role-split topology, chat
+        # disabled/misconfigured, or `set_current_chat_manager()` hasn't run
+        # yet — see the docstring above). Leaving the kind unregistered here
+        # means a worker-only process's lane slots never claim an
+        # `agent_response` job — see `_kinds_for_lane` in
+        # `app/worker/runtime.py` — so it stays `'queued'` for a
+        # gateway-colocated worker to pick up instead of being claimed and
+        # failed outright.
+        logger.info(
+            "agent_response job kind NOT registered on this process (no live "
+            "ChatManager) — background agent-response jobs will only be "
+            "claimed by a gateway-colocated worker"
+        )

@@ -127,3 +127,109 @@ def test_purge_expired_removes_only_expired_rows(repo):
 def test_purge_expired_noop_when_nothing_expired(repo):
     repo.put("fresh-2", "owner-1", "agent-1", "hash", "body", 200, ttl_s=3600)
     assert repo.purge_expired() == 0
+
+
+# ---------------------------------------------------------------------------
+# in-flight reservation (review carry-over): reserve/conflict/fulfill/stale
+# ---------------------------------------------------------------------------
+
+
+def _patch_reservation_ttl(monkeypatch, seconds: int) -> None:
+    """`RESERVATION_TTL_S` is imported by value into
+    `src.repositories.idempotency_pg` (`from src.repositories.idempotency
+    import RESERVATION_TTL_S`), so patching the DuckDB module's copy alone
+    does not affect the PG repo's already-bound name — patch both
+    unconditionally; the PG module always exists regardless of which repo
+    parametrization the current test is running."""
+    import src.repositories.idempotency as idempotency_module
+    import src.repositories.idempotency_pg as idempotency_pg_module
+
+    monkeypatch.setattr(idempotency_module, "RESERVATION_TTL_S", seconds)
+    monkeypatch.setattr(idempotency_pg_module, "RESERVATION_TTL_S", seconds)
+
+
+def test_reserve_fresh_key_succeeds(repo):
+    assert repo.reserve("res-1", "owner-1", "agent-1", "hash-a") is True
+    row = repo.get("res-1", "owner-1", "agent-1")
+    assert row is not None
+    assert row["response_body"] is None
+    assert row["status_code"] is None
+    assert row["request_hash"] == "hash-a"
+
+
+def test_reserve_conflicts_with_live_reservation(repo):
+    """A second `reserve()` for the same triple, while the first
+    reservation is still live (unfulfilled, within `RESERVATION_TTL_S`),
+    must fail — this is the double-execution race the fix closes."""
+    assert repo.reserve("res-2", "owner-1", "agent-1", "hash-a") is True
+    assert repo.reserve("res-2", "owner-1", "agent-1", "hash-a") is False
+    assert repo.reserve("res-2", "owner-1", "agent-1", "hash-b") is False  # different hash too
+
+
+def test_reserve_conflicts_with_live_fulfilled_row(repo):
+    """A `reserve()` racing a row that was already fulfilled a moment ago
+    (still within its full TTL) is also a conflict — the caller (`get()`
+    ran first in the real call site) would normally have already served
+    the replay, but `reserve()` itself must still refuse to clobber a live
+    row regardless of which state it's in."""
+    repo.put("res-3", "owner-1", "agent-1", "hash-a", "body", 200, ttl_s=3600)
+    assert repo.reserve("res-3", "owner-1", "agent-1", "hash-a") is False
+
+
+def test_fulfill_populates_row_visible_via_get(repo):
+    assert repo.reserve("res-4", "owner-1", "agent-1", "hash-a") is True
+    repo.fulfill("res-4", "owner-1", "agent-1", "hash-a", '{"answer": "hi"}', 200, ttl_s=3600)
+
+    row = repo.get("res-4", "owner-1", "agent-1")
+    assert row is not None
+    assert row["response_body"] == '{"answer": "hi"}'
+    assert row["status_code"] == 200
+    assert row["request_hash"] == "hash-a"
+
+
+def test_stale_reservation_allows_overwrite(repo, monkeypatch):
+    """An unfulfilled reservation past `RESERVATION_TTL_S` is stale — a
+    fresh `reserve()` for the same triple must succeed (overwrite it)
+    rather than conflict forever because the owning request crashed."""
+    _patch_reservation_ttl(monkeypatch, 0)
+    assert repo.reserve("res-5", "owner-1", "agent-1", "hash-a") is True
+    time.sleep(0.01)
+
+    # get() independently treats the stale reservation as a miss too.
+    assert repo.get("res-5", "owner-1", "agent-1") is None
+
+    # Restore a normal reservation window before overwriting — the new row
+    # must be a genuinely LIVE reservation, not immediately stale itself
+    # (which patching TTL back to 0 here would otherwise cause).
+    _patch_reservation_ttl(monkeypatch, 900)
+    assert repo.reserve("res-5", "owner-1", "agent-1", "hash-b") is True
+    row = repo.get("res-5", "owner-1", "agent-1")
+    assert row is not None
+    assert row["request_hash"] == "hash-b"
+    assert row["response_body"] is None
+
+
+def test_stale_fulfilled_row_also_allows_reserve_overwrite(repo):
+    """The same staleness test applies to an expired FULFILLED (replay)
+    row, not just an unfulfilled reservation — `reserve()` uses the exact
+    same expiry check `get()` does."""
+    repo.put("res-6", "owner-1", "agent-1", "hash-old", "old body", 200, ttl_s=0)
+    time.sleep(0.01)
+
+    assert repo.reserve("res-6", "owner-1", "agent-1", "hash-new") is True
+    row = repo.get("res-6", "owner-1", "agent-1")
+    assert row is not None
+    assert row["request_hash"] == "hash-new"
+    assert row["response_body"] is None
+
+
+def test_fulfill_is_equivalent_to_put(repo):
+    """`fulfill()` is documented as delegating to `put()` — same
+    insert-or-replace semantics, including overwriting a prior row for the
+    same triple regardless of its previous state."""
+    repo.put("res-7", "owner-1", "agent-1", "hash-1", "body-1", 200, ttl_s=3600)
+    repo.fulfill("res-7", "owner-1", "agent-1", "hash-2", "body-2", 201, ttl_s=3600)
+    row = repo.get("res-7", "owner-1", "agent-1")
+    assert row["request_hash"] == "hash-2"
+    assert row["response_body"] == "body-2"
+    assert row["status_code"] == 201

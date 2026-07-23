@@ -19,7 +19,20 @@ Idempotency (`Idempotency-Key` header): scoped to `(key, owner, agent)` —
 see `src/repositories/idempotency.py`. A replay with an identical raw-body
 hash returns the stored response verbatim (same status, same body, `answer`
 NOT re-generated); a replay with a different body under the same key is
-`409 idempotency_key_reuse`.
+`409 idempotency_key_reuse`. A key is RESERVED (via `idempotency_repo()
+.reserve()`) immediately after the initial `get()` miss, before either the
+sync run or the background enqueue — this closes the double-execution
+window where two concurrent requests under the same key both miss `get()`
+and both run the underlying work; the loser of that race gets `409
+idempotency_key_in_flight` (same hash) or `idempotency_key_reuse`
+(different hash) instead. See `reserve()`'s docstring for the staleness
+rules governing a reservation whose owning request crashed.
+
+`ConcurrencyCapHit` (the per-user active-session cap,
+`app.chat.manager.ChatManager.create_session`) is mapped to `429
+{"code": "concurrency_cap"}` on the sync path — same condition
+`app/api/chat.py::create_session` 429s on, just this router's own
+`detail.code` envelope shape instead of `chat.py`'s `detail.kind`.
 """
 
 from __future__ import annotations
@@ -41,7 +54,7 @@ from app.auth.pat_resolver import agent_id_from_request
 from app.auth.session_principal import SessionPrincipal
 from app.chat.agent_usage import agent_config_hash, usage_for_session
 from app.chat.headless import run_one_shot
-from app.chat.manager import get_current_chat_manager
+from app.chat.manager import ConcurrencyCapHit, get_current_chat_manager
 from app.logging_config import request_id_var
 from app.resource_types import ResourceType
 from src.repositories import agents_repo, idempotency_repo, jobs_repo
@@ -54,6 +67,14 @@ router = APIRouter(prefix="/api/v1", tags=["agent-runtime"])
 #: sync-timeout-degrades-to-background path — see `app/worker/kinds.py`'s
 #: `_run_agent_response` for how it branches on `payload["mode"]`.
 JOB_KIND = "agent_response"
+
+#: Duplicated (not imported) from `app/worker/kinds.py::CONCURRENCY_CAP_ERROR_PREFIX`
+#: — same HEAVY_LANE/LIGHT_LANE-style rationale as that module's own comment:
+#: the CONTRACT is the string value persisted into `jobs.error`, not which
+#: module owns the source of truth for it. `_serialize_job` below strips this
+#: prefix back off to surface a structured `{"code": "concurrency_cap", ...}`
+#: instead of a raw string for `GET /api/v1/jobs/{id}`.
+_CONCURRENCY_CAP_ERROR_PREFIX = "concurrency_cap: "
 
 _DEFAULT_TIMEOUT_S = 120
 _MIN_TIMEOUT_S = 1
@@ -143,6 +164,24 @@ def _job_payload_owner_id(job: dict) -> Optional[str]:
     return (job.get("payload_json") or {}).get("owner_user_id")
 
 
+def _job_payload_agent_id(job: dict) -> Optional[str]:
+    return (job.get("payload_json") or {}).get("agent_id")
+
+
+def _serialize_error(raw_error: Optional[str]) -> Any:
+    """`jobs.error` is a plain string for every kind (see
+    `src/repositories/jobs.py::fail`) — for `agent_response` specifically, a
+    `ConcurrencyCapHit` re-raised from `app/worker/kinds.py::_run_agent_response`
+    carries a recognizable `_CONCURRENCY_CAP_ERROR_PREFIX`. Strip it back off
+    into a structured `{"code": "concurrency_cap", "message": ...}` so a
+    caller can branch on `error.code` instead of string-matching; any other
+    error string is returned unchanged (plain string), preserving the
+    existing wire shape for every other failure mode."""
+    if raw_error is not None and raw_error.startswith(_CONCURRENCY_CAP_ERROR_PREFIX):
+        return {"code": "concurrency_cap", "message": raw_error[len(_CONCURRENCY_CAP_ERROR_PREFIX) :]}
+    return raw_error
+
+
 def _serialize_job(job: dict) -> dict:
     payload = job.get("payload_json") or {}
     result = payload.get("result")
@@ -154,7 +193,7 @@ def _serialize_job(job: dict) -> dict:
         "id": job["id"],
         "status": _PUBLIC_STATUS_MAP.get(job["status"], job["status"]),
         "result": result,
-        "error": job.get("error"),
+        "error": _serialize_error(job.get("error")),
         "created_at": _iso(job.get("created_at")),
         "finished_at": _iso(job.get("finished_at")),
     }
@@ -184,8 +223,7 @@ async def create_agent_response(
     if idem_key:
         existing = idempotency_repo().get(idem_key, user["id"], agent["id"])
         if existing is not None:
-            if existing["request_hash"] != request_hash:
-                raise HTTPException(status_code=409, detail={"code": "idempotency_key_reuse"})
+            _raise_for_existing_idempotency_row(existing, request_hash)
             response.status_code = existing["status_code"]
             # The replayed body deliberately keeps the ORIGINAL call's
             # `request_id` (byte-identical replay contract) — it will differ
@@ -193,9 +231,32 @@ async def create_agent_response(
             # middleware always stamps fresh per request.
             return json.loads(existing["response_body"])
 
+        # Reserve the key BEFORE doing any of the actual work below — closes
+        # the double-execution race where two concurrent requests under the
+        # same key both miss the `get()` above. A conflict here means
+        # another request won the race (or left a row `get()` itself would
+        # have already caught, but the timing landed between our `get()` and
+        # this `reserve()`); re-fetch to decide which 409 applies.
+        reserved = idempotency_repo().reserve(idem_key, user["id"], agent["id"], request_hash)
+        if not reserved:
+            conflict = idempotency_repo().get(idem_key, user["id"], agent["id"])
+            if conflict is not None:
+                _raise_for_existing_idempotency_row(conflict, request_hash)
+            # `conflict` is `None` here only in a vanishingly unlikely timing
+            # window (the conflicting row expired/was cleared between our
+            # failed `reserve()` and this re-fetch) — ask the caller to
+            # retry rather than silently double-executing.
+            raise HTTPException(status_code=409, detail={"code": "idempotency_key_in_flight"})
+
     timeout_s = _clamp_timeout(body.timeout_s)
     metadata = body.metadata or {}
 
+    # NOTE: a reservation made above is deliberately left in place if
+    # anything below raises (including a `ConcurrencyCapHit`-derived 429) —
+    # it self-clears once `RESERVATION_TTL_S` elapses (see
+    # `IdempotencyRepository.reserve`'s docstring), so a genuine retry under
+    # the same key is never permanently blocked, just possibly rate-limited
+    # to that window.
     if body.background:
         job = jobs_repo().enqueue(
             JOB_KIND,
@@ -215,17 +276,26 @@ async def create_agent_response(
         if manager is None:
             raise HTTPException(status_code=503, detail={"code": "chat_disabled"})
 
-        run_result = await run_one_shot(
-            manager,
-            user_email=user["email"],
-            agent_id=agent["id"],
-            prompt=body.input,
-            timeout_s=timeout_s,
-        )
-        if run_result["timed_out"]:
-            # The turn keeps running server-side — this only bounds the
-            # WAIT. Degrade to a background job that resumes waiting on
-            # the SAME chat_id (no re-send of the prompt).
+        try:
+            run_result = await run_one_shot(
+                manager,
+                user_email=user["email"],
+                agent_id=agent["id"],
+                prompt=body.input,
+                timeout_s=timeout_s,
+            )
+        except ConcurrencyCapHit as exc:
+            # Mirrors `app/api/chat.py::create_session`'s 429 for the same
+            # underlying condition — this router's own `detail.code`
+            # envelope shape (every other error here uses `code`, not
+            # `chat.py`'s `kind`).
+            raise HTTPException(status_code=429, detail={"code": "concurrency_cap", "hint": str(exc)}) from exc
+
+        if run_result["timed_out"] and not run_result["answer"]:
+            # Genuine timeout with nothing usable collected yet. The turn
+            # keeps running server-side — this only bounds the WAIT.
+            # Degrade to a background job that resumes waiting on the SAME
+            # chat_id (no re-send of the prompt).
             job = jobs_repo().enqueue(
                 JOB_KIND,
                 {
@@ -240,6 +310,12 @@ async def create_agent_response(
             status_code = 202
             result_body = {"job_id": job["id"]}
         else:
+            # Either the turn genuinely completed, OR the wait timed out but
+            # the sink had already collected an answer beforehand (e.g. the
+            # "done" frame landed in the small window right after the last
+            # assistant_message frame but before asyncio.wait_for's timeout
+            # fired) — serve it now rather than degrading to a background
+            # job for an answer already in hand.
             usage_accumulator_flush()
             result_body = {
                 "answer": run_result["answer"],
@@ -254,7 +330,7 @@ async def create_agent_response(
     response.status_code = status_code
 
     if idem_key:
-        idempotency_repo().put(
+        idempotency_repo().fulfill(
             idem_key,
             user["id"],
             agent["id"],
@@ -265,6 +341,20 @@ async def create_agent_response(
         )
 
     return result_body
+
+
+def _raise_for_existing_idempotency_row(row: dict, request_hash: str) -> None:
+    """Shared 409 decision for a live idempotency-key row that isn't a
+    fulfilled replay hit yet: an in-flight reservation
+    (`response_body IS NULL`, still within `RESERVATION_TTL_S`) is
+    `idempotency_key_in_flight`; ANY row (reservation or fulfilled) whose
+    `request_hash` doesn't match the incoming request is
+    `idempotency_key_reuse`. A fulfilled row with a matching hash is left
+    for the caller to replay — this only raises, it never returns a value."""
+    if row["request_hash"] != request_hash:
+        raise HTTPException(status_code=409, detail={"code": "idempotency_key_reuse"})
+    if row.get("response_body") is None:
+        raise HTTPException(status_code=409, detail={"code": "idempotency_key_in_flight"})
 
 
 def usage_accumulator_flush() -> None:
@@ -285,16 +375,29 @@ def usage_accumulator_flush() -> None:
 @router.get("/jobs/{job_id}")
 async def get_agent_job(
     job_id: str,
+    request: Request,
     user: dict = Depends(get_current_user),
 ) -> dict:
     """Owner-scoped job read. 404 (not 403) when the job exists but belongs
     to someone else — existence is not leaked to a non-owner, matching the
-    posture `app/api/agents_admin.py` documents for `{id}` routes."""
+    posture `app/api/agents_admin.py` documents for `{id}` routes.
+
+    Defense-in-depth (mirrors `require_agent_runtime_principal`'s binding
+    on the responses endpoint): when the presented credential is an agent
+    PAT, ALSO 404 unless the job's own payload `agent_id` matches the PAT's
+    `agent_id` claim — an owner's agent-A PAT must not be able to read a job
+    that was created against agent B, even though both jobs belong to the
+    same owner user.
+    """
     if isinstance(user, SessionPrincipal):
         raise HTTPException(status_code=404, detail={"code": "job_not_found"})
 
     job = jobs_repo().get(job_id)
     if job is None or _job_payload_owner_id(job) != user.get("id"):
+        raise HTTPException(status_code=404, detail={"code": "job_not_found"})
+
+    pat_agent_id = agent_id_from_request(request)
+    if pat_agent_id is not None and pat_agent_id != _job_payload_agent_id(job):
         raise HTTPException(status_code=404, detail={"code": "job_not_found"})
 
     return _serialize_job(job)

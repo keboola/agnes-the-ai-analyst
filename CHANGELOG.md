@@ -16,15 +16,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   an owner's agent (agent-api V1a, Task 9). Runs a headless (no-WebSocket)
   chat turn and returns `{answer, session_id, response_id, usage,
   agent_config_hash, request_id}` synchronously, bounded by a clamped
-  `timeout_s` (default 120s, 1..600). `background: true`, or a sync call
-  whose wait outruns `timeout_s`, degrades to a background job — the run
-  itself is never killed, only the wait — via the new `agent_response` job
-  kind; `GET /api/v1/jobs/{job_id}` (owner-scoped) reads the result back.
-  Callable with an interactive session token or an agent PAT scoped to the
-  exact agent. Supports an `Idempotency-Key` header (scoped to caller+agent,
-  24h default TTL): identical-body replay returns the original response
-  verbatim; a different body under the same key is `409
-  idempotency_key_reuse`.
+  `timeout_s` (default 120s, 1..600) — a wait that times out but already
+  collected an answer serves it as a 200 rather than degrading. `background:
+  true`, or a sync call whose wait genuinely times out with no answer yet,
+  degrades to a background job — the run itself is never killed, only the
+  wait — via the new `agent_response` job kind (registered only on a process
+  with a live chat manager, so it runs on gateway-colocated workers);
+  `GET /api/v1/jobs/{job_id}` (owner-scoped, and agent-PAT-bound to the same
+  agent when called with one) reads the result back. Callable with an
+  interactive session token or an agent PAT scoped to the exact agent. A
+  per-user concurrency-cap hit maps to `429 {"code": "concurrency_cap"}`.
+  Supports an `Idempotency-Key` header (scoped to caller+agent, 24h default
+  TTL): the key is reserved before the request runs, closing a
+  double-execution race between concurrent calls under the same key — a
+  losing concurrent call gets `409 idempotency_key_in_flight`; identical-body
+  replay of a completed call returns the original response verbatim; a
+  different body under the same key is `409 idempotency_key_reuse`.
 
 ### Changed
 
@@ -49,6 +56,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   result column) — backs the new `agent_response` job kind's
   `GET /api/v1/jobs/{id}` result surface. Every other job kind's handler
   still returns `None`, so this is a no-op for them.
+- `IdempotencyRepository`/`IdempotencyPgRepository` gained `reserve()`/
+  `fulfill()` (atomic `INSERT ... ON CONFLICT ... WHERE <stale> ...
+  RETURNING` — see `src/repositories/idempotency.py`'s module docstring);
+  `LlmUsageRepository`/`LlmUsagePgRepository` gained `list_for_session()`
+  (exact SQL filter, replacing an in-Python filter over the last 1000 rows
+  per agent) — both Task 9 review carry-overs.
 
 ### Security
 

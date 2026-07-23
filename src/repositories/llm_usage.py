@@ -69,3 +69,22 @@ class LlmUsageRepository:
             [agent_id, limit],
         ).fetchall()
         return self._rows_to_dicts(rows)
+
+    def list_for_session(self, session_id: str, limit: int = 1000) -> List[Dict[str, Any]]:
+        """All `llm_usage` rows for one chat session, filtered in SQL (review
+        carry-over, Task 9) — `app.chat.agent_usage.usage_for_session` used
+        to call `list_for_agent()` and filter by `session_id` in Python over
+        just that agent's most recent `limit` rows, which silently
+        undercounts once an agent has more than `limit` rows total (a busy
+        agent's OLDER session falls out of the scan window even though its
+        own rows are still in the table). `session_id` values are globally
+        unique (minted by `ChatManager.create_session`), so filtering by it
+        alone in SQL is both exact and cheap — no `agent_id` needed."""
+        rows = self.conn.execute(
+            """SELECT * FROM llm_usage
+            WHERE session_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?""",
+            [session_id, limit],
+        ).fetchall()
+        return self._rows_to_dicts(rows)

@@ -82,3 +82,23 @@ class LlmUsagePgRepository:
                 .all()
             )
         return [dict(r) for r in rows]
+
+    def list_for_session(self, session_id: str, limit: int = 1000) -> List[Dict[str, Any]]:
+        """See `LlmUsageRepository.list_for_session`'s docstring."""
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    sa.text(
+                        """
+                        SELECT * FROM llm_usage
+                        WHERE session_id = :session_id
+                        ORDER BY created_at DESC
+                        LIMIT :limit
+                        """
+                    ),
+                    {"session_id": session_id, "limit": limit},
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]

@@ -13,12 +13,73 @@ from typing import Any, Dict, Optional
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
+from src.repositories.idempotency import RESERVATION_TTL_S
+
 
 class IdempotencyPgRepository:
     """Postgres twin of ``IdempotencyRepository``."""
 
     def __init__(self, engine: Engine):
         self._engine = engine
+
+    def reserve(
+        self,
+        key: str,
+        owner_user_id: str,
+        agent_id: str,
+        request_hash: str,
+    ) -> bool:
+        """See ``IdempotencyRepository.reserve``'s docstring — identical
+        contract (atomic ``INSERT ... ON CONFLICT ... WHERE <stale> ...
+        RETURNING``, no separate SELECT-then-decide), which is what makes
+        this safe under REAL concurrent transactions on Postgres, not just
+        concurrent asyncio tasks sharing one connection like the DuckDB
+        side."""
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(seconds=RESERVATION_TTL_S)
+        with self._engine.begin() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """
+                    INSERT INTO idempotency_keys
+                      (key, owner_user_id, agent_id, request_hash, response_body, status_code, created_at, expires_at)
+                    VALUES
+                      (:key, :owner_user_id, :agent_id, :request_hash, NULL, NULL, :created_at, :expires_at)
+                    ON CONFLICT (key, owner_user_id, agent_id) DO UPDATE SET
+                      request_hash = EXCLUDED.request_hash,
+                      response_body = NULL,
+                      status_code = NULL,
+                      created_at = EXCLUDED.created_at,
+                      expires_at = EXCLUDED.expires_at
+                    WHERE idempotency_keys.expires_at IS NOT NULL AND idempotency_keys.expires_at < :now
+                    RETURNING key
+                    """
+                ),
+                {
+                    "key": key,
+                    "owner_user_id": owner_user_id,
+                    "agent_id": agent_id,
+                    "request_hash": request_hash,
+                    "created_at": now,
+                    "expires_at": expires_at,
+                    "now": now,
+                },
+            ).fetchall()
+        return bool(rows)
+
+    def fulfill(
+        self,
+        key: str,
+        owner_user_id: str,
+        agent_id: str,
+        request_hash: str,
+        response_body: str,
+        status_code: int,
+        ttl_s: int,
+    ) -> None:
+        """See ``IdempotencyRepository.fulfill``'s docstring — delegates to
+        `put()`."""
+        self.put(key, owner_user_id, agent_id, request_hash, response_body, status_code, ttl_s)
 
     def get(self, key: str, owner_user_id: str, agent_id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:

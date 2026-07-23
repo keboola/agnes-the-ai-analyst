@@ -27,9 +27,11 @@ _USAGE_KEY_MAP = {
     "cache_creation": "cache_creation_tokens",
 }
 
-# Cap on how many recent `llm_usage` rows to scan per agent when summing a
-# single session's usage — generous for a one-shot turn (which writes at
-# most a handful of rows), while still bounded rather than unbounded.
+# Cap on how many `llm_usage` rows to fetch for a single session when
+# summing its usage — generous for a one-shot turn (which writes at most a
+# handful of rows), while still bounded rather than unbounded. The SQL
+# filter is exact (`WHERE session_id = ?`, see `list_for_session`), so this
+# limit is purely a defensive ceiling, not the actual scoping mechanism.
 _USAGE_SCAN_LIMIT = 1000
 
 
@@ -41,13 +43,22 @@ def usage_for_session(agent_id: str, session_id: str) -> Dict[str, int]:
     first (best-effort — the accumulator batches writes, so a just-finished
     turn's rows may still be sitting in memory otherwise). Not done here so
     this module has no import-time dependency on the broker.
+
+    Filters by ``session_id`` directly in SQL (review carry-over, Task 9) —
+    previously this scanned only the agent's most recent
+    ``_USAGE_SCAN_LIMIT`` rows via ``list_for_agent`` and filtered by
+    ``session_id`` in Python, silently undercounting once an agent has more
+    than that many rows total. ``session_id`` is globally unique (minted by
+    ``ChatManager.create_session``), so the exact ``agent_id`` check below is
+    defense-in-depth (guards a theoretical cross-agent collision), not the
+    primary filter.
     """
     from src.repositories import llm_usage_repo
 
-    rows = llm_usage_repo().list_for_agent(agent_id, limit=_USAGE_SCAN_LIMIT)
+    rows = llm_usage_repo().list_for_session(session_id, limit=_USAGE_SCAN_LIMIT)
     totals = {k: 0 for k in _USAGE_KEY_MAP}
     for row in rows:
-        if row.get("session_id") != session_id:
+        if row.get("agent_id") != agent_id:
             continue
         for short_key, column in _USAGE_KEY_MAP.items():
             totals[short_key] += int(row.get(column) or 0)

@@ -107,3 +107,74 @@ def test_list_for_agent_limit(repo):
     )
     assert len(repo.list_for_agent("a1", limit=2)) == 2
     assert repo.list_for_agent("a-none") == []
+
+
+def test_list_for_session_filters_by_session_id_exactly(repo):
+    """Review carry-over (Task 9): `usage_for_session` used to scan only
+    the agent's most recent `limit` rows via `list_for_agent` and filter by
+    `session_id` in Python — `list_for_session` filters in SQL instead, so
+    it stays exact regardless of how many OTHER rows the agent (or a
+    different agent entirely) has accumulated."""
+    repo.insert_batch(
+        [
+            {
+                "id": "s1",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "session-x",
+                "model": "claude-sonnet-5",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            },
+            {
+                "id": "s2",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "session-x",
+                "model": "claude-sonnet-5",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            },
+            {
+                # Same agent, DIFFERENT session — must not leak into the
+                # "session-x" result.
+                "id": "s3",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "session-y",
+                "model": "claude-sonnet-5",
+                "input_tokens": 999,
+                "output_tokens": 999,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            },
+        ]
+    )
+    rows = repo.list_for_session("session-x")
+    assert len(rows) == 2
+    assert {r["id"] for r in rows} == {"s1", "s2"}
+    assert repo.list_for_session("session-none") == []
+
+
+def test_list_for_session_limit(repo):
+    repo.insert_batch(
+        [
+            {
+                "id": f"r{i}",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "session-limit",
+                "model": "claude-sonnet-5",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            }
+            for i in range(3)
+        ]
+    )
+    assert len(repo.list_for_session("session-limit", limit=2)) == 2

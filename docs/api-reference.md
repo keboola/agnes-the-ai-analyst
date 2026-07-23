@@ -689,7 +689,11 @@ list of currently-registered kinds. Gated by `require_admin`, which also
 accepts the scheduler's shared-secret bearer token
 (`app/auth/scheduler_token.py`) since that token resolves to a synthetic
 user in the `Admin` group. CLI: `agnes admin jobs enqueue|show|list`. MCP:
-`admin_job_enqueue`, `admin_job_get`, `admin_jobs_list`.
+`admin_job_enqueue`, `admin_job_get`, `admin_jobs_list`. One kind,
+`agent_response`, is registered CONDITIONALLY (only on a process with a
+live chat manager) — background agent runs (`POST
+/api/v1/agents/{slug}/responses`) therefore execute on gateway-colocated
+workers, not on a worker-only replica in a role-split deployment.
 
 ### `/api/admin/analytics/migrate` — DuckLake analytics-backend migration (wave-2G)
 
