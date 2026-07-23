@@ -765,6 +765,115 @@ class TestStop:
         assert token_row["revoked_at"] is not None
 
 
+class TestOpLeaseSerialization:
+    """`dataapp:op:{slug}` — the lease shared by `deploy_data_app`,
+    `stop_data_app`, and the ingress proxy's `_trigger_wake`
+    (`app/api/data_apps_proxy.py`) so at most one runner-mutating
+    operation is ever in flight per app. Regression coverage for the race
+    flagged in PR #1002's review: `deploy_data_app`/`stop_data_app` used
+    to call the runner directly with no lease at all, so a manual deploy
+    could race an in-flight auto-wake for the same slug and both call
+    `runner.up()` concurrently.
+    """
+
+    def test_deploy_409s_when_op_lease_held_elsewhere(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        """Simulates another in-flight operation (e.g. the proxy's
+        `_trigger_wake`, which never explicitly releases the lease — see
+        that function's docstring) already holding the lease for this
+        slug. `deploy_data_app` must not proceed to `redeploy_current`."""
+        from app.api.data_apps import release_op_lease, try_acquire_op_lease
+
+        acquired, holder = try_acquire_op_lease("sapp")
+        assert acquired
+        try:
+            r = client_as_user.post("/api/data-apps/sapp/deploy", json={})
+            assert r.status_code == 409
+            assert r.json()["detail"] == "operation_in_progress"
+            assert not fake_runner.up_calls
+        finally:
+            release_op_lease("sapp", holder)
+
+    def test_stop_409s_when_op_lease_held_elsewhere(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        from app.api.data_apps import release_op_lease, try_acquire_op_lease
+
+        client_as_user.post("/api/data-apps/sapp/deploy", json={})
+        fake_runner.up_calls.clear()
+
+        acquired, holder = try_acquire_op_lease("sapp")
+        assert acquired
+        try:
+            r = client_as_user.post("/api/data-apps/sapp/stop")
+            assert r.status_code == 409
+            assert r.json()["detail"] == "operation_in_progress"
+            assert not fake_runner.stop_calls
+        finally:
+            release_op_lease("sapp", holder)
+
+    def test_concurrent_deploy_calls_never_overlap_inside_runner_up(
+        self, client_as_user, monkeypatch, seeded_repo_with_commit
+    ):
+        """The actual race this lease closes: two `up()` invocations for the
+        same slug running at once (`services/apps_runner/api.py::up()` does
+        an unlocked check-then-act — get old container, remove, run new).
+        Runs two real concurrent `deploy` requests through a runner stub
+        that blocks inside `up()` long enough for a second call to exhaust
+        `require_op_lease`'s retries — proving the lease actually serializes
+        the two HTTP requests rather than just rejecting a pre-set-up lease
+        in isolation (see the two tests above)."""
+        import threading
+        import time
+
+        import app.api.data_apps as data_apps_api
+
+        inside = {"current": 0, "peak": 0}
+        lock = threading.Lock()
+        first_call_entered = threading.Event()
+
+        class _BlockingRunner:
+            def up(self, slug, spec, config_json):
+                with lock:
+                    inside["current"] += 1
+                    inside["peak"] = max(inside["peak"], inside["current"])
+                first_call_entered.set()
+                try:
+                    # Long enough that the second call's retry-then-409
+                    # window (`_OP_LEASE_RETRIES` * `_OP_LEASE_RETRY_DELAY_S`
+                    # ~= 0.2s) fully elapses while this call is still inside.
+                    time.sleep(0.5)
+                    return {"container": "running", "ready": True}
+                finally:
+                    with lock:
+                        inside["current"] -= 1
+
+        monkeypatch.setattr(data_apps_api, "_runner", lambda: _BlockingRunner())
+
+        results = []
+
+        def _deploy():
+            results.append(client_as_user.post("/api/data-apps/sapp/deploy", json={}))
+
+        t1 = threading.Thread(target=_deploy)
+        t1.start()
+        assert first_call_entered.wait(timeout=5), "first deploy never reached runner.up()"
+        r2 = client_as_user.post("/api/data-apps/sapp/deploy", json={})
+        t1.join(timeout=5)
+
+        assert inside["peak"] == 1, (
+            f"two deploys called runner.up() concurrently for the same slug (peak={inside['peak']})"
+        )
+        assert len(results) == 1
+        r1 = results[0]
+        # Whichever request actually held the lease first succeeds; the
+        # other is rejected outright — never both "in progress" at once,
+        # never both succeeding.
+        statuses = sorted([r1.status_code, r2.status_code])
+        assert statuses == [200, 409], (r1.status_code, r2.status_code)
+        if r2.status_code == 409:
+            assert r2.json()["detail"] == "operation_in_progress"
+        else:
+            assert r1.json()["detail"] == "operation_in_progress"
+
+
 class TestDelete:
     def test_delete_happy_path(self, client_as_user, fake_runner, seeded_repo_with_commit):
         client_as_user.post("/api/data-apps/sapp/deploy", json={})

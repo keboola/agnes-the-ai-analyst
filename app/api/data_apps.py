@@ -144,6 +144,91 @@ def _release_create_lease(lease_name: str, holder: str) -> None:
         pass
 
 
+# `POST /{slug}/deploy`, `POST /{slug}/stop`, and the ingress proxy's
+# wake-on-request path (`_trigger_wake` in `app/api/data_apps_proxy.py`)
+# all end up calling the runner sidecar's `up()`/`stop()` for the same
+# slug. `services/apps_runner/api.py::up()` does an unlocked
+# check-then-act (get old container -> remove -> run new) — two of these
+# calls racing for the same slug can both observe the same "old"
+# container and both call `containers.run(...)`, landing two containers
+# fighting over the same name/network. `dataapp:op:{slug}` is the single
+# lease shared by all three call sites so at most one runner-mutating
+# operation is ever in flight per app.
+#
+# It intentionally lives here rather than inside `redeploy_current`:
+# `_trigger_wake` and `deploy_data_app` both call `redeploy_current`, and
+# each already holds this lease itself before doing so — acquiring it
+# again inside `redeploy_current` would be a self-deadlock (`lease_acquire`
+# is not reentrant for the same holder, see `CoordinationBackend`'s
+# docstring).
+_OP_LEASE_TTL_S = 120
+_OP_LEASE_RETRIES = 3
+_OP_LEASE_RETRY_DELAY_S = 0.1
+
+
+def _op_lease_name(slug: str) -> str:
+    return f"dataapp:op:{slug}"
+
+
+def try_acquire_op_lease(slug: str) -> tuple[bool, str]:
+    """One non-blocking attempt to acquire the per-slug op lease.
+
+    Used by `_trigger_wake`, which must never block the ingress request
+    on another in-flight operation — losing the race just means
+    returning immediately (the caller renders the holding page either
+    way), same as the wake-specific lease this replaces. Synchronous
+    endpoints that need retry-then-409 semantics instead call
+    `require_op_lease`.
+
+    Returns `(acquired, holder)`. On `CoordinationUnavailable` (no
+    cross-process backend configured), treats the lease as acquired —
+    single-process dev fallback: proceed unserialized rather than
+    refusing the operation just because coordination happens to be down.
+    """
+    from app.coordination.base import CoordinationUnavailable
+    from app.coordination.factory import coordination
+    from app.coordination.leases import default_holder_id
+
+    holder = default_holder_id()
+    try:
+        acquired = coordination().lease_acquire(_op_lease_name(slug), holder, ttl_s=_OP_LEASE_TTL_S)
+    except CoordinationUnavailable:
+        return True, holder
+    return acquired, holder
+
+
+def release_op_lease(slug: str, holder: str) -> None:
+    from app.coordination.base import CoordinationUnavailable
+    from app.coordination.factory import coordination
+
+    try:
+        coordination().lease_release(_op_lease_name(slug), holder)
+    except CoordinationUnavailable:
+        pass
+
+
+def require_op_lease(slug: str) -> str:
+    """Synchronous-endpoint policy for `deploy_data_app`/`stop_data_app`: a
+    few quick retries against `try_acquire_op_lease`, then 409
+    `operation_in_progress` if the lease is still held by someone else
+    (a concurrent deploy/stop request, or an in-flight wake). The retries
+    only smooth over near-simultaneous requests about to release on their
+    own — a genuinely in-flight operation (e.g. a wake's backgrounded
+    redeploy, held for up to `_OP_LEASE_TTL_S`) is expected to make the
+    caller retry later, not block the request for the full TTL.
+
+    Returns the holder id to pass to `release_op_lease` in a `finally`.
+    """
+    holder = ""
+    for attempt in range(_OP_LEASE_RETRIES):
+        acquired, holder = try_acquire_op_lease(slug)
+        if acquired:
+            return holder
+        if attempt < _OP_LEASE_RETRIES - 1:
+            time.sleep(_OP_LEASE_RETRY_DELAY_S)
+    raise HTTPException(status_code=409, detail="operation_in_progress")
+
+
 def _effective_config() -> dict:
     return {**_CONFIG_DEFAULTS, **get_data_apps_config()}
 
@@ -489,38 +574,42 @@ async def deploy_data_app(
     row = _get_row_or_404(slug)
     _require_owner_or_admin(user, row)
 
-    repo = data_apps_repo()
-    if row["repo_mode"] == "external":
-        # External repos have no internal bare repo (`init_app_repo` is
-        # internal-only at create) — nothing for `fast_forward_live` to
-        # fast-forward. The runtime clones HEAD of `repo_branch` at boot
-        # (spec §2: external repos are HEAD-at-wake; sha pinning is future
-        # work), so an explicit sha in the request can't be honored.
-        if payload.sha:
-            raise HTTPException(status_code=400, detail="external_repo_sha_unsupported")
-        sha = ""
-    else:
-        try:
-            sha = fast_forward_live(slug, payload.sha)
-        except ValueError as exc:
-            if "no commits to deploy" in str(exc):
-                raise HTTPException(status_code=409, detail="deploy_empty_repo")
-            raise HTTPException(status_code=400, detail=str(exc))
-
+    holder = require_op_lease(slug)
     try:
-        redeploy_current(row)
-    except OwnerNotFoundError:
-        raise HTTPException(status_code=500, detail="owner_not_found")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except (RunnerUnavailable, RunnerError):
-        raise HTTPException(status_code=502, detail="runner_unavailable")
+        repo = data_apps_repo()
+        if row["repo_mode"] == "external":
+            # External repos have no internal bare repo (`init_app_repo` is
+            # internal-only at create) — nothing for `fast_forward_live` to
+            # fast-forward. The runtime clones HEAD of `repo_branch` at boot
+            # (spec §2: external repos are HEAD-at-wake; sha pinning is future
+            # work), so an explicit sha in the request can't be honored.
+            if payload.sha:
+                raise HTTPException(status_code=400, detail="external_repo_sha_unsupported")
+            sha = ""
+        else:
+            try:
+                sha = fast_forward_live(slug, payload.sha)
+            except ValueError as exc:
+                if "no commits to deploy" in str(exc):
+                    raise HTTPException(status_code=409, detail="deploy_empty_repo")
+                raise HTTPException(status_code=400, detail=str(exc))
 
-    repo.record_deploy(row["id"], sha)
-    repo.set_state(row["id"], "running")
-    _audit(conn, user["id"], "data_app.deploy", f"data_app:{slug}", {"sha": sha})
+        try:
+            redeploy_current(row)
+        except OwnerNotFoundError:
+            raise HTTPException(status_code=500, detail="owner_not_found")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except (RunnerUnavailable, RunnerError):
+            raise HTTPException(status_code=502, detail="runner_unavailable")
 
-    return {"state": "running", "deployed_sha": sha}
+        repo.record_deploy(row["id"], sha)
+        repo.set_state(row["id"], "running")
+        _audit(conn, user["id"], "data_app.deploy", f"data_app:{slug}", {"sha": sha})
+
+        return {"state": "running", "deployed_sha": sha}
+    finally:
+        release_op_lease(slug, holder)
 
 
 @router.post("/{slug}/stop")
@@ -533,22 +622,26 @@ async def stop_data_app(
     row = _get_row_or_404(slug)
     _require_owner_or_admin(user, row)
 
-    repo = data_apps_repo()
+    holder = require_op_lease(slug)
     try:
-        _runner().stop(slug, mode="recreate")
-    except (RunnerUnavailable, RunnerError) as exc:
-        _handle_runner_failure(repo, row["id"], exc)
-        raise HTTPException(status_code=502, detail="runner_unavailable")
+        repo = data_apps_repo()
+        try:
+            _runner().stop(slug, mode="recreate")
+        except (RunnerUnavailable, RunnerError) as exc:
+            _handle_runner_failure(repo, row["id"], exc)
+            raise HTTPException(status_code=502, detail="runner_unavailable")
 
-    repo.set_state(row["id"], "stopped")
-    # Spec §8/§10: an explicit stop revokes the service token — unlike
-    # reap-idle's sleep transition (see reap_idle_data_apps), which leaves
-    # it live so the app can wake later. A stop is an operator decision that
-    # the app isn't coming back on its own; the credential goes with it.
-    _revoke_service_token(row)
-    repo.update(row["id"], service_token_id="")
-    _audit(conn, user["id"], "data_app.stop", f"data_app:{slug}")
-    return {"state": "stopped"}
+        repo.set_state(row["id"], "stopped")
+        # Spec §8/§10: an explicit stop revokes the service token — unlike
+        # reap-idle's sleep transition (see reap_idle_data_apps), which leaves
+        # it live so the app can wake later. A stop is an operator decision that
+        # the app isn't coming back on its own; the credential goes with it.
+        _revoke_service_token(row)
+        repo.update(row["id"], service_token_id="")
+        _audit(conn, user["id"], "data_app.stop", f"data_app:{slug}")
+        return {"state": "stopped"}
+    finally:
+        release_op_lease(slug, holder)
 
 
 @router.delete("/{slug}", status_code=204)
