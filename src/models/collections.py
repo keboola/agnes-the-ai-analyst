@@ -51,10 +51,8 @@ class FileCorpus(Base):
 class CorpusFile(Base):
     __tablename__ = "corpus_files"
     # At most one row per (corpus_id, path). Plain unique index (NULLs distinct
-    # → path=NULL rows exempt); mirrors the DuckDB `_v95_to_v96` index.
-    __table_args__ = (
-        sa.Index("idx_corpus_files_corpus_path", "corpus_id", "path", unique=True),
-    )
+    # → path=NULL rows exempt); mirrors the DuckDB `_v96_to_v97` index.
+    __table_args__ = (sa.Index("idx_corpus_files_corpus_path", "corpus_id", "path", unique=True),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     corpus_id: Mapped[str] = mapped_column(String, nullable=False)
