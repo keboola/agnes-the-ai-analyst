@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 96
+SCHEMA_VERSION = 97
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -1389,11 +1389,19 @@ CREATE TABLE IF NOT EXISTS corpus_files (
     size_bytes BIGINT,
     storage_path VARCHAR,
     parent_file_id VARCHAR,
+    path VARCHAR,
     processing_status VARCHAR NOT NULL DEFAULT 'pending',
     processing_detail VARCHAR,
     created_at TIMESTAMP DEFAULT current_timestamp,
     updated_at TIMESTAMP DEFAULT current_timestamp
 );
+
+-- Enforce the upsert invariant: at most one row per (corpus_id, path). Plain
+-- (not partial) UNIQUE INDEX — DuckDB has no partial indexes, but NULLs are
+-- distinct on both DuckDB and Postgres, so path=NULL (plain-insert files,
+-- bundle children) is exempt while set paths stay unique.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_files_corpus_path
+    ON corpus_files(corpus_id, path);
 
 -- corpus_chunks: prose-document chunks + embedding vector.
 -- embedding FLOAT[384]: fixed-size array for array_cosine_similarity.
@@ -6428,6 +6436,25 @@ def _v95_to_v96(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 96")
 
 
+def _v96_to_v97(conn: duckdb.DuckDBPyConnection) -> None:
+    """v96→v97: ``corpus_files.path`` — logical path for upsert-on-upload.
+
+    An optional caller-supplied identity (e.g. a repo-relative path) so
+    re-uploading the same logical file REPLACES the existing row instead of
+    inserting a duplicate (keyed on ``(corpus_id, path)``). NULL on every
+    existing row and on uploads that omit it — behavior is unchanged (plain
+    insert) until a caller opts in. Guarded ALTER so upgrades from a fresh-
+    install schema (which already carries the column) stay idempotent.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('corpus_files')").fetchall()}
+    if "path" not in cols:
+        conn.execute("ALTER TABLE corpus_files ADD COLUMN path VARCHAR")
+    # Enforce at most one row per (corpus_id, path). Existing rows all have
+    # path=NULL (just-added column), so the index build can't collide.
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_files_corpus_path ON corpus_files(corpus_id, path)")
+    conn.execute("UPDATE schema_version SET version = 97")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6820,6 +6847,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # _SYSTEM_SCHEMA already creates it on fresh installs (no-op
             # CREATE IF NOT EXISTS here).
             _v95_to_v96(conn)
+            # v96→v97: corpus_files.path (upsert-on-upload identity).
+            # _SYSTEM_SCHEMA already declares it on fresh installs (no-op
+            # ALTER here).
+            _v96_to_v97(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7065,6 +7096,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v94_to_v95(conn)
             if current < 96:
                 _v95_to_v96(conn)
+            if current < 97:
+                _v96_to_v97(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

@@ -50,6 +50,9 @@ class FileCorpus(Base):
 
 class CorpusFile(Base):
     __tablename__ = "corpus_files"
+    # At most one row per (corpus_id, path). Plain unique index (NULLs distinct
+    # → path=NULL rows exempt); mirrors the DuckDB `_v96_to_v97` index.
+    __table_args__ = (sa.Index("idx_corpus_files_corpus_path", "corpus_id", "path", unique=True),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     corpus_id: Mapped[str] = mapped_column(String, nullable=False)
@@ -61,6 +64,9 @@ class CorpusFile(Base):
     # Set on children extracted from an uploaded archive (K1 bundle ingest);
     # NULL for directly-uploaded files and for the archive row itself.
     parent_file_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Optional caller-supplied logical identity for upsert-on-upload; a repeat
+    # upload with the same (corpus_id, path) replaces the row. NULL = plain insert.
+    path: Mapped[str | None] = mapped_column(String, nullable=True)
     # Five-state lifecycle: pending | processing | indexed | needs_review | rejected
     processing_status: Mapped[str] = mapped_column(String, server_default=_text("'pending'"), nullable=False)
     # JSON text: {tier, vision_used, error, derived_table_id, chunk_count}

@@ -63,20 +63,23 @@ class CorpusFilesPgRepository:
         size_bytes: Optional[int],
         storage_path: Optional[str],
         parent_file_id: Optional[str] = None,
+        path: Optional[str] = None,
     ) -> str:
         """Insert a new file row with default status 'pending'.
 
         ``parent_file_id`` links a bundle-extracted child to its archive row.
-        Returns the generated ``cf_*`` id.
+        ``path`` is an optional caller-supplied logical identity used for
+        upsert-on-upload (see ``get_by_path``); NULL keeps plain-insert
+        behavior. Returns the generated ``cf_*`` id.
         """
         file_id = "cf_" + secrets.token_hex(8)
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
                     "INSERT INTO corpus_files "
-                    "(id, corpus_id, filename, sha256, file_type, size_bytes, storage_path, parent_file_id) "
+                    "(id, corpus_id, filename, sha256, file_type, size_bytes, storage_path, parent_file_id, path) "
                     "VALUES (:id, :corpus_id, :filename, :sha256, "
-                    "        :file_type, :size_bytes, :storage_path, :parent_file_id)"
+                    "        :file_type, :size_bytes, :storage_path, :parent_file_id, :path)"
                 ),
                 {
                     "id": file_id,
@@ -87,6 +90,7 @@ class CorpusFilesPgRepository:
                     "size_bytes": size_bytes,
                     "storage_path": storage_path,
                     "parent_file_id": parent_file_id,
+                    "path": path,
                 },
             )
         return file_id
@@ -98,6 +102,29 @@ class CorpusFilesPgRepository:
                 conn.execute(
                     sa.text("SELECT * FROM corpus_files WHERE id = :id"),
                     {"id": file_id},
+                )
+                .mappings()
+                .first()
+            )
+        return self._decode_row(dict(row)) if row else None
+
+    def get_by_path(self, corpus_id: str, path: str) -> Optional[Dict[str, Any]]:
+        """Fetch one file row by its ``(corpus_id, path)`` logical identity.
+
+        Used for upsert-on-upload. Returns ``None`` when no row carries that
+        path. ``path=None`` never matches (plain-insert files stay distinct).
+        """
+        if path is None:
+            return None
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    sa.text(
+                        "SELECT * FROM corpus_files "
+                        "WHERE corpus_id = :corpus_id AND path = :path "
+                        "ORDER BY created_at LIMIT 1"
+                    ),
+                    {"corpus_id": corpus_id, "path": path},
                 )
                 .mappings()
                 .first()
@@ -116,6 +143,29 @@ class CorpusFilesPgRepository:
                 .all()
             )
         return [self._decode_row(dict(r)) for r in rows]
+
+    def count_by_storage_path(self, corpus_id: str, storage_path: str) -> int:
+        """How many rows in this corpus reference ``storage_path``.
+
+        Content-addressed blobs are shared (not refcounted): callers use this
+        before unlinking a blob so they never wipe one another row still
+        points at. ``None``/empty path counts as 0.
+        """
+        if not storage_path:
+            return 0
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    sa.text(
+                        "SELECT COUNT(*) AS n FROM corpus_files "
+                        "WHERE corpus_id = :corpus_id AND storage_path = :sp"
+                    ),
+                    {"corpus_id": corpus_id, "sp": storage_path},
+                )
+                .mappings()
+                .first()
+            )
+        return int(row["n"]) if row else 0
 
     def list_children(self, parent_file_id: str) -> List[Dict[str, Any]]:
         """All child rows extracted from the given archive file, by created_at."""
