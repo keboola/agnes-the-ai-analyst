@@ -141,6 +141,9 @@ __all__ = [
     "agents_repo",
     "llm_usage_repo",
     "idempotency_repo",
+    # Agent webhooks + artifacts (v97, agent-api V1b)
+    "agent_webhooks_repo",
+    "agent_artifacts_repo",
 ]
 
 
@@ -483,6 +486,15 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.idempotency", "IdempotencyRepository"),
         PG: ("src.repositories.idempotency_pg", "IdempotencyPgRepository"),
     },
+    # Agent webhooks + artifacts (v97, agent-api V1b)
+    "agent_webhooks": {
+        DUCKDB: ("src.repositories.agent_webhooks", "AgentWebhooksRepository"),
+        PG: ("src.repositories.agent_webhooks_pg", "AgentWebhooksPgRepository"),
+    },
+    "agent_artifacts": {
+        DUCKDB: ("src.repositories.agent_artifacts", "AgentArtifactsRepository"),
+        PG: ("src.repositories.agent_artifacts_pg", "AgentArtifactsPgRepository"),
+    },
 }
 
 
@@ -770,3 +782,12 @@ def llm_usage_repo() -> Any:
 
 def idempotency_repo() -> Any:
     return _build("idempotency")
+
+
+# Agent webhooks + artifacts (v97, agent-api V1b)
+def agent_webhooks_repo() -> Any:
+    return _build("agent_webhooks")
+
+
+def agent_artifacts_repo() -> Any:
+    return _build("agent_artifacts")
