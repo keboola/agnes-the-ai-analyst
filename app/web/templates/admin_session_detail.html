@@ -11,7 +11,7 @@
 .obs-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
   padding: 12px 0 20px; border-bottom: 1px solid var(--border, #e5e7eb); margin-bottom: 16px; }
 .obs-subtitle { margin: 0 0 10px; color: var(--text-secondary, #6b7280); font-size: 13px; }
-.obs-subtitle a { color: #2563eb; text-decoration: none; }
+.obs-subtitle a { color: var(--ds-primary); text-decoration: none; }
 .obs-subtitle a:hover { text-decoration: underline; }
 /* `.obs-btn` rules deleted — buttons render via `ds.button(variant=
    'secondary', size='sm')` carrying the canonical .btn family. */
@@ -28,12 +28,12 @@
   color: var(--text-secondary, #6b7280); }
 .td-role-chip { padding: 1px 8px; border-radius: 12px; font-size: 11px;
   font-weight: 500; text-transform: lowercase; letter-spacing: 0.2px; }
-.td-role-chip.user      { background: #dbeafe; color: #1e40af; }
-.td-role-chip.assistant { background: #ede9fe; color: #5b21b6; }
-.td-role-chip.tool_use     { background: #fef3c7; color: #92400e; }
-.td-role-chip.tool_result  { background: #d1fae5; color: #065f46; }
-.td-role-chip.tool_result.is-error { background: #fee2e2; color: #991b1b; }
-.td-event.is-error { border-color: #f87171; box-shadow: 0 0 0 2px #fee2e2; }
+.td-role-chip.user      { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+.td-role-chip.assistant { background: var(--ds-kind-agent-soft); color: var(--ds-kind-agent); }
+.td-role-chip.tool_use     { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
+.td-role-chip.tool_result  { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+.td-role-chip.tool_result.is-error { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); }
+.td-event.is-error { border-color: var(--ds-accent-danger-line); box-shadow: 0 0 0 2px var(--ds-accent-danger-bg); }
 .td-ts { margin-left: auto; font-variant-numeric: tabular-nums; font-size: 11px; }
 .td-tool-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px; color: var(--text-primary, #111827); font-weight: 500; }
@@ -41,7 +41,7 @@
 .td-text { white-space: pre-wrap; word-break: break-word; font: 13px/1.5 var(--font-sans, system-ui);
   margin: 0; max-height: 320px; overflow: auto; }
 .td-event.expanded .td-text { max-height: none; }
-.td-toggle { display: block; margin-top: 6px; color: #2563eb; font-size: 12px;
+.td-toggle { display: block; margin-top: 6px; color: var(--ds-primary); font-size: 12px;
   background: none; border: 0; padding: 0; cursor: pointer; }
 .td-toggle:hover { text-decoration: underline; }
 .td-pre { background: var(--border-light, #f3f4f6); border-radius: 6px;

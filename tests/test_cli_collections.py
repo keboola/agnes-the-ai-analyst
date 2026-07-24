@@ -24,7 +24,7 @@ runner = CliRunner()
 def test_collections_help_lists_subcommands():
     r = runner.invoke(collections_app, ["--help"])
     assert r.exit_code == 0, r.output
-    for cmd in ("create", "list", "show", "upload", "rm"):
+    for cmd in ("create", "list", "show", "upload", "rm", "rm-file"):
         assert cmd in r.output, f"missing subcommand {cmd!r} in help"
 
 
@@ -211,6 +211,39 @@ def test_upload_sends_multipart_per_file(monkeypatch, tmp_path):
     assert "pending" in r.output
 
 
+def test_upload_with_path_sends_paths_form_field(monkeypatch, tmp_path):
+    """`--path` is forwarded as the `paths` multipart form field for upsert."""
+    calls: list[dict] = []
+
+    def _fake_post(path, *, files, data=None):
+        calls.append({"path": path, "data": data})
+        return [{"file_id": "cf_new", "filename": "a.md", "processing_status": "pending", "path": "docs/a.md"}]
+
+    f1 = tmp_path / "a.md"
+    f1.write_bytes(b"alpha")
+
+    with patch("cli.commands.collections.api_post_multipart", _fake_post):
+        r = runner.invoke(collections_app, ["upload", "col_1", str(f1), "--path", "docs/a.md"])
+
+    assert r.exit_code == 0, r.output
+    assert len(calls) == 1
+    assert calls[0]["data"] == {"paths": "docs/a.md"}
+
+
+def test_upload_path_with_multiple_files_errors(tmp_path):
+    """`--path` is single-file only — reject an ambiguous multi-file upload."""
+    f1 = tmp_path / "a.md"
+    f1.write_bytes(b"a")
+    f2 = tmp_path / "b.md"
+    f2.write_bytes(b"b")
+
+    called: list = []
+    with patch("cli.commands.collections.api_post_multipart", lambda *a, **k: called.append(1) or []):
+        r = runner.invoke(collections_app, ["upload", "col_1", str(f1), str(f2), "--path", "docs/x.md"])
+    assert r.exit_code != 0
+    assert not called  # never hit the network
+
+
 def test_upload_server_error_exits_nonzero(monkeypatch, tmp_path):
     from cli.v2_client import V2ClientError
 
@@ -268,6 +301,46 @@ def test_rm_server_error_exits_nonzero(monkeypatch):
         side_effect=V2ClientError(status_code=404, body={"detail": "collection_not_found"}),
     ):
         r = runner.invoke(collections_app, ["rm", "col_missing", "--yes"])
+    assert r.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# rm-file
+# ---------------------------------------------------------------------------
+
+
+def test_rm_file_with_yes_flag(monkeypatch):
+    called: list[str] = []
+
+    def _fake_delete(path):
+        called.append(path)
+        return {}
+
+    with patch("cli.commands.collections.api_delete", _fake_delete):
+        r = runner.invoke(collections_app, ["rm-file", "col_1", "cf_1", "--yes"])
+    assert r.exit_code == 0, r.output
+    assert called == ["/api/collections/col_1/files/cf_1"]
+    assert "deleted" in r.output.lower()
+
+
+def test_rm_file_prompts_without_yes(monkeypatch):
+    """Without --yes the command should ask for confirmation."""
+    called: list[str] = []
+
+    with patch("cli.commands.collections.api_delete", lambda p: called.append(p) or {}):
+        runner.invoke(collections_app, ["rm-file", "col_1", "cf_1"], input="n\n")
+    # User said no — nothing deleted
+    assert not called
+
+
+def test_rm_file_server_error_exits_nonzero(monkeypatch):
+    from cli.v2_client import V2ClientError
+
+    with patch(
+        "cli.commands.collections.api_delete",
+        side_effect=V2ClientError(status_code=404, body={"detail": "file_not_found"}),
+    ):
+        r = runner.invoke(collections_app, ["rm-file", "col_1", "cf_missing", "--yes"])
     assert r.exit_code != 0
 
 

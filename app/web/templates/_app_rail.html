@@ -69,7 +69,8 @@
         {# Artefacts — the umbrella for things the caller creates: their private
            collections of files (moved off My Stack) today and, soon, their data
            apps. Work-in-progress, so it carries a WIP badge. #}
-        <a class="rail-i {% if _on_artefacts %}on{% endif %}" href="/artefacts">
+        {# id="nav-artefacts" is the tour step-2 anchor (private uploads live here now). #}
+        <a class="rail-i {% if _on_artefacts %}on{% endif %}" href="/artefacts" id="nav-artefacts">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 3h8l4 4v14H6z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13 3v5h5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
             <span class="rail-i-label">Artefacts</span>
             <span class="rail-badge">WIP</span>
@@ -82,7 +83,9 @@
             <span class="rail-i-label">Agents</span>
             <span class="rail-badge">WIP</span>
         </a>
-        <a class="rail-i {% if _in_catalog %}on{% endif %}" href="/catalog">
+        {# Tour step 3 anchors #nav-catalog to point users at where they add
+           more (now labelled Marketplace; href stays /catalog). #}
+        <a class="rail-i {% if _in_catalog %}on{% endif %}" href="/catalog" id="nav-catalog">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M4 6l1 13a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1l1-13M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
             Marketplace
         </a>

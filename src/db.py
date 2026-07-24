@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 97
+SCHEMA_VERSION = 99
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -1275,7 +1275,11 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     -- Sandbox pause/resume refs (un-indexed — DuckDB 1.5.3 FK+index bug).
     sandbox_id        VARCHAR,
     runner_pid        INTEGER,
-    sandbox_paused_at TIMESTAMP
+    sandbox_paused_at TIMESTAMP,
+    -- Relay protocol version of the runner sandbox_id/runner_pid point at
+    -- (v98, Tier 1 restart-invariant reuse). NULL = unknown/legacy — see
+    -- app.chat.types.RELAY_PROTOCOL_VERSION's docstring.
+    relay_protocol_version INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_user
     ON chat_sessions(user_email, last_message_at);
@@ -1389,11 +1393,19 @@ CREATE TABLE IF NOT EXISTS corpus_files (
     size_bytes BIGINT,
     storage_path VARCHAR,
     parent_file_id VARCHAR,
+    path VARCHAR,
     processing_status VARCHAR NOT NULL DEFAULT 'pending',
     processing_detail VARCHAR,
     created_at TIMESTAMP DEFAULT current_timestamp,
     updated_at TIMESTAMP DEFAULT current_timestamp
 );
+
+-- Enforce the upsert invariant: at most one row per (corpus_id, path). Plain
+-- (not partial) UNIQUE INDEX — DuckDB has no partial indexes, but NULLs are
+-- distinct on both DuckDB and Postgres, so path=NULL (plain-insert files,
+-- bundle children) is exempt while set paths stay unique.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_files_corpus_path
+    ON corpus_files(corpus_id, path);
 
 -- corpus_chunks: prose-document chunks + embedding vector.
 -- embedding FLOAT[384]: fixed-size array for array_cosine_similarity.
@@ -6445,12 +6457,32 @@ def _v95_to_v96(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def _v96_to_v97(conn: duckdb.DuckDBPyConnection) -> None:
-    """v96→v97: ``user_journey_state`` — per-user onboarding "journey"
+    """v96→v97: ``corpus_files.path`` — logical path for upsert-on-upload.
+
+    An optional caller-supplied identity (e.g. a repo-relative path) so
+    re-uploading the same logical file REPLACES the existing row instead of
+    inserting a duplicate (keyed on ``(corpus_id, path)``). NULL on every
+    existing row and on uploads that omit it — behavior is unchanged (plain
+    insert) until a caller opts in. Guarded ALTER so upgrades from a fresh-
+    install schema (which already carries the column) stay idempotent.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('corpus_files')").fetchall()}
+    if "path" not in cols:
+        conn.execute("ALTER TABLE corpus_files ADD COLUMN path VARCHAR")
+    # Enforce at most one row per (corpus_id, path). Existing rows all have
+    # path=NULL (just-added column), so the index build can't collide.
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_files_corpus_path ON corpus_files(corpus_id, path)")
+    conn.execute("UPDATE schema_version SET version = 97")
+
+
+def _v97_to_v98(conn: duckdb.DuckDBPyConnection) -> None:
+    """v97→v98: ``user_journey_state`` — per-user onboarding "journey"
     progress (backend foundation for chat-driven onboarding).
 
-    Renumbered from v92 to v97 after upstream's mcp_sources.connect_hint
-    (v92), glossary_terms (v93), jobs (v94), usage-index-fix (v95), and
-    data_apps (v96) migrations landed first.
+    Stacks on top of corpus_files.path (v97). Renumbered from v92 to v98
+    after upstream's mcp_sources.connect_hint (v92), glossary_terms (v93),
+    jobs (v94), usage-index-fix (v95), data_apps (v96), and
+    corpus_files.path (v97) migrations landed first.
 
     Idempotent CREATE TABLE IF NOT EXISTS; fresh installs already get the
     table from ``_SYSTEM_SCHEMA`` (no-op here).
@@ -6468,7 +6500,32 @@ def _v96_to_v97(conn: duckdb.DuckDBPyConnection) -> None:
             updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp
         )
     """)
-    conn.execute("UPDATE schema_version SET version = 97")
+    conn.execute("UPDATE schema_version SET version = 98")
+
+
+def _v98_to_v99(conn: duckdb.DuckDBPyConnection) -> None:
+    """v98→v99: ``chat_sessions.relay_protocol_version`` — restart-invariant
+    sandbox reuse (Tier 1, chat-over-E2B architecture pass).
+
+    Persists the relay protocol version the runner bound to a session's
+    ``sandbox_id``/``runner_pid`` refs speaks. Previously this fact lived
+    only in the in-process ``ChatManager._known_protocol_sessions`` set,
+    which is always empty right after a restart — forcing every resumable
+    session to be destroyed and fresh-spawned rather than reconnected, even
+    though its paused sandbox and runner were perfectly fine. NULL (every
+    existing row) means unknown/legacy, preserving the exact same
+    conservative fresh-spawn behavior until a session is next spawned/
+    resumed and the column gets stamped by ``set_sandbox_ref``.
+
+    Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
+    Un-indexed, matching the other two sandbox-ref columns (DuckDB 1.5.3
+    FK+index bug — see the ``chat_sessions`` DDL comment in
+    ``_SYSTEM_SCHEMA``).
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('chat_sessions')").fetchall()}
+    if "relay_protocol_version" not in cols:
+        conn.execute("ALTER TABLE chat_sessions ADD COLUMN relay_protocol_version INTEGER")
+    conn.execute("UPDATE schema_version SET version = 99")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -6863,10 +6920,18 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # _SYSTEM_SCHEMA already creates it on fresh installs (no-op
             # CREATE IF NOT EXISTS here).
             _v95_to_v96(conn)
-            # v96→v97: user_journey_state table (chat-driven onboarding
+            # v96→v97: corpus_files.path (upsert-on-upload identity).
+            # _SYSTEM_SCHEMA already declares it on fresh installs (no-op
+            # ALTER here).
+            _v96_to_v97(conn)
+            # v97→v98: user_journey_state table (chat-driven onboarding
             # backend foundation). _SYSTEM_SCHEMA already creates it on
             # fresh installs (no-op CREATE IF NOT EXISTS here).
-            _v96_to_v97(conn)
+            _v97_to_v98(conn)
+            # v98→v99: chat_sessions.relay_protocol_version (Tier 1
+            # restart-invariant sandbox reuse). _SYSTEM_SCHEMA already
+            # declares it on fresh installs (no-op ALTER here).
+            _v98_to_v99(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7114,6 +7179,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v95_to_v96(conn)
             if current < 97:
                 _v96_to_v97(conn)
+            if current < 98:
+                _v97_to_v98(conn)
+            if current < 99:
+                _v98_to_v99(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

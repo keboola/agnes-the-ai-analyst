@@ -55,7 +55,7 @@
        shared resources your colleagues published. #}
     <p class="lede">Discover and add skills, plugins, and shared resources your colleagues published. Data and memory you've already been granted live in <a href="/stack">My Stack</a>, not here.</p>
   </div>
-  <a class="cc-btn" href="/store/new" style="flex-shrink:0">+ Submit a skill or plugin</a>
+  <a class="cc-btn" href="/store/new" id="browse-submit-btn" style="flex-shrink:0">+ Submit a skill or plugin</a>
 </div>
 
 {# ── "Recommended for you" — catalog assets not yet in the caller's stack
@@ -87,7 +87,8 @@
    content to browse. ``default_kind`` (computed server-side) picks the
    first non-empty kind as the initially active tab/view so there's no
    flash of an empty Data grid before JS can react. #}
-<div class="uc-kindtabs" role="tablist" aria-label="Marketplace kinds">
+{# id="browse-catalog-zone" is the tour step-4 anchor (the Catalog listing). #}
+<div class="uc-kindtabs" id="browse-catalog-zone" role="tablist" aria-label="Marketplace kinds">
   <button class="uc-kindtab{{ ' on' if default_kind == 'data' else '' }}" data-kind="data" role="tab" aria-selected="{{ 'true' if default_kind == 'data' else 'false' }}"{% if not data_cards %} hidden{% endif %}><span class="uc-dot uc-dot-data"></span>Data<span class="uc-count">{{ data_cards|length }}</span></button>
   <button class="uc-kindtab{{ ' on' if default_kind == 'plugins' else '' }}" data-kind="plugins" role="tab" aria-selected="{{ 'true' if default_kind == 'plugins' else 'false' }}"><span class="uc-dot uc-dot-plugins"></span>Plugins<span class="uc-count" id="uc-count-plugins">—</span></button>
   <button class="uc-kindtab{{ ' on' if default_kind == 'memory' else '' }}" data-kind="memory" role="tab" aria-selected="{{ 'true' if default_kind == 'memory' else 'false' }}"{% if not memory_cards %} hidden{% endif %}><span class="uc-dot uc-dot-memory"></span>Memory<span class="uc-count">{{ memory_cards|length }}</span></button>

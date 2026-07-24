@@ -912,3 +912,50 @@ def test_v94_db_with_indexes_upgrades_to_v95_and_drops_them(tmp_path):
     row = conn.execute("SELECT username FROM usage_session_summary WHERE session_file='s/keep.jsonl'").fetchone()
     assert row == ("keeper",)
     conn.close()
+
+
+def test_v98_chat_sessions_relay_protocol_version_column(tmp_path):
+    """v98 (Tier 1 restart-invariant sandbox reuse): a fresh install carries
+    ``chat_sessions.relay_protocol_version``, and the migration step is
+    idempotent."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('chat_sessions')").fetchall()}
+    assert "relay_protocol_version" in cols
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    # idempotency — re-running the step must not raise
+    from src.db import _v97_to_v98
+
+    _v97_to_v98(conn)
+    conn.close()
+
+
+def test_v97_db_upgrades_to_v98(tmp_path):
+    """A DB pinned at v97 (a live instance's state before this migration)
+    climbs to v98 via the upgrade-block dispatch, keeping existing rows
+    intact with ``relay_protocol_version`` reading back NULL (unknown/
+    legacy) — DuckDB cannot DROP a column with FK-dependents (chat_messages
+    references chat_sessions), so this exercises the ``current < 98``
+    dispatch + idempotent guarded ALTER directly rather than simulating a
+    column-free table."""
+    db_path = tmp_path / "v97.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    conn.execute("UPDATE schema_version SET version = 97")
+    conn.execute(
+        "INSERT INTO chat_sessions (id, user_email, surface, started_at, last_message_at, message_count, archived) "
+        "VALUES ('chat_keep', 'keeper@example.com', 'web', current_timestamp, NULL, 0, FALSE)"
+    )
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('chat_sessions')").fetchall()}
+    assert "relay_protocol_version" in cols
+    row = conn.execute("SELECT relay_protocol_version FROM chat_sessions WHERE id = 'chat_keep'").fetchone()
+    assert row == (None,)
+    conn.close()

@@ -401,12 +401,30 @@ async def chat_upload(
 
         # --- optional table registration ------------------------------------
         resolved_table_name: Optional[str] = None
+        registration_error: Optional[str] = None
         if register_as_table:
             if table_name:
-                resolved_table_name = _derive_table_name(table_name)
+                candidate_table_name = _derive_table_name(table_name)
             else:
-                resolved_table_name = _derive_table_name(Path(safe_name).stem)
-            _register_workspace_table(uploads_dir, dest, resolved_table_name)
+                candidate_table_name = _derive_table_name(Path(safe_name).stem)
+            try:
+                _register_workspace_table(uploads_dir, dest, candidate_table_name)
+                resolved_table_name = candidate_table_name
+            except HTTPException as exc:
+                # The file uploaded fine; only table registration failed (e.g.
+                # the DuckDB 'excel' extension is unavailable on this server).
+                # Keep the file in the workspace and surface the failure in the
+                # response instead of returning an error for a file that did
+                # land on disk — mirroring the library upload flow, which keeps
+                # the collection and reports the per-file rejection reason
+                # rather than discarding a successful upload.
+                registration_error = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+                logger.warning(
+                    "chat_upload: table registration failed for user=%s file=%s: %s",
+                    email,
+                    safe_name,
+                    registration_error,
+                )
 
         # --- also persist docs/images as a single-file artefact -------------
         # A document/image dropped in chat shouldn't vanish with the session:
@@ -449,6 +467,13 @@ async def chat_upload(
             hint = (
                 f"File registered as table '{resolved_table_name}'. "
                 f'Query it with: agnes query "SELECT * FROM {resolved_table_name} LIMIT 10"'
+            )
+        elif registration_error:
+            hint = (
+                f"File '{safe_name}' was uploaded to your workspace, but "
+                f"registering it as a table failed: {registration_error} "
+                "The file is still available in your next chat sandbox session — "
+                "query it there directly, or re-upload as CSV/Parquet to register it."
             )
         else:
             hint = (

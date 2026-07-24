@@ -1258,6 +1258,15 @@
                                    list="editBqDatasetList" placeholder="e.g. analytics">
                             <datalist id="editBqDatasetList"></datalist>
                         </div>
+                        <div class="form-group bq-edit-access-live" style="display:none;">
+                            <label class="form-label" for="editBqProject">Project <span class="optional">(optional)</span></label>
+                            <input type="text" class="form-input" id="editBqProject" placeholder="defaults to the configured data project">
+                            <div class="form-hint">Live access only — leave blank unless the table lives in a
+                                <strong>different</strong> GCP project than the one configured in server config. Filling
+                                it in (re)composes an explicit <code>project.dataset.table</code> path; clearing it
+                                reverts to the configured project. Not available for synced tables — the scheduled
+                                copy always reads the configured project.</div>
+                        </div>
                         <div class="form-group bq-edit-source-table" style="display:none;">
                             <label class="form-label" for="editBqSourceTable">
                                 Source Table / View
@@ -1994,7 +2003,7 @@
           <div class="form-group" style="display:flex; gap:12px;">
             <div style="flex:1;">
               <label class="form-label">Icon</label>
-              <input id="cdp-icon" type="text" class="form-input" value="📦" maxlength="4">
+              <input id="cdp-icon" type="text" class="form-input" value="" maxlength="4">
             </div>
             <div style="flex:1;">
               <label class="form-label">Color</label>
@@ -2152,7 +2161,7 @@
         document.getElementById('cdp-slug').value =
           (typed || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
         document.getElementById('cdp-desc').value = '';
-        document.getElementById('cdp-icon').value = '📦';
+        document.getElementById('cdp-icon').value = '';
         document.getElementById('cdp-color').value = '#e0f2fe';
         // Reset cover image inputs on every open so a previous typed-and-
         // cancelled value doesn't leak into the new package.
@@ -3581,11 +3590,11 @@
     }
 
     /**
-     * Package icons are stored as a free-text `icon` field. Older packages use
-     * an emoji (e.g. "📦"); packages seeded/imported with a Heroicons-style
-     * name (e.g. "user", "currency-dollar") used to render the raw name as
-     * text. Map the known names to inline SVG; fall back to the raw value
-     * (emoji or whatever was stored) so emoji packages keep working.
+     * Package icons are stored as a free-text `icon` field. Packages that used
+     * a Heroicons-style name (e.g. "user", "currency-dollar") used to render
+     * the raw name as text. Map the known names to inline SVG; fall back to
+     * the raw value so legacy stored values (including any user-entered text
+     * or icon names not in the map) keep displaying.
      * Path data: Heroicons outline (MIT). Add a name → path entry as needed.
      */
     var PACKAGE_ICON_PATHS = {
@@ -4800,6 +4809,29 @@
         if (el) el.checked = true;
     }
 
+    // Recover the project segment from a stored bq_fqn ("project.dataset.
+    // table") for the Edit modal's Project field. parse_bq_fqn (server
+    // side) requires exactly three non-empty, dot-free segments, so the
+    // text before the first dot is always the project.
+    function _projectFromBqFqn(fqn) {
+        if (!fqn) return '';
+        var idx = fqn.indexOf('.');
+        return idx > -1 ? fqn.substring(0, idx) : '';
+    }
+
+    // Recover the dataset segment (middle of 3) from a stored bq_fqn.
+    // `bq_fqn` intentionally decouples the physical BigQuery dataset from
+    // the RBAC/UX `bucket` label (issue #343) — a row can legitimately have
+    // bucket !== bq_fqn's own dataset segment. saveBqTabEdit needs this to
+    // avoid silently overwriting a decoupled row's real dataset with the
+    // bucket label on an unrelated edit (see the Dataset field's prefill,
+    // which shows `bucket`, not this).
+    function _datasetFromBqFqn(fqn) {
+        if (!fqn) return '';
+        var parts = fqn.split('.');
+        return parts.length === 3 ? parts[1] : '';
+    }
+
     // ── Edit-modal architecture (v55 review of #L61) ──────────────────
     // We dispatch by ``table.source_type`` to one of three per-source
     // modals because their inner forms genuinely differ:
@@ -4887,6 +4919,19 @@
         }
         document.getElementById('editBqDataset').value = preDataset;
         document.getElementById('editBqSourceTable').value = preSourceTable;
+        // Cross-project rows (Live access only — see saveBqTabEdit) carry
+        // their project in bq_fqn ("project.dataset.table") rather than a
+        // dedicated column. Surface it so re-saving after a Dataset/Source
+        // Table edit recomposes bq_fqn instead of silently keeping the old
+        // one (exclude_unset on the PUT means an omitted key persists
+        // unchanged).
+        document.getElementById('editBqProject').value = _projectFromBqFqn(table.bq_fqn);
+        // Pristine snapshot for saveBqTabEdit's dataset-unchanged check —
+        // see that function for why bq_fqn's own dataset segment (not the
+        // Dataset field's bucket-label prefill) must be reused when the
+        // admin didn't actually retype Dataset.
+        _editBqOriginalBqFqn = table.bq_fqn || '';
+        _editBqOriginalDataset = preDataset;
         document.getElementById('editBqSourceQuery').value = sq;
         document.getElementById('editBqSyncSchedule').value = table.sync_schedule || '';
         document.getElementById('editBqServerOnly').checked = !!table.server_only;
@@ -4924,6 +4969,12 @@
     var _editGenericOriginalPackageIds = new Set();
     var _editBqOriginalPackageIds = new Set();
     var _editKbOriginalPackageIds = new Set();
+
+    // The row's pristine bq_fqn at modal-open time, so saveBqTabEdit can
+    // tell whether the admin actually retyped the Dataset field or is just
+    // re-saving an unrelated change — see saveBqTabEdit's Live branch.
+    var _editBqOriginalBqFqn = '';
+    var _editBqOriginalDataset = '';
 
     function _openEditGenericModal(table) {
         // Catch-all fallback for source_types that aren't bigquery or keboola
@@ -5040,6 +5091,9 @@
         document.querySelectorAll('.bq-edit-access-synced').forEach(function(el) {
             el.style.display = (accessMode === 'synced') ? '' : 'none';
         });
+        document.querySelectorAll('.bq-edit-access-live').forEach(function(el) {
+            el.style.display = (accessMode === 'live') ? '' : 'none';
+        });
 
         if (accessMode === 'synced') {
             onEditBqSyncModeChange();
@@ -5060,9 +5114,9 @@
         if (_editOriginalQueryMode && newMode !== _editOriginalQueryMode) {
             var msg;
             if (_editOriginalQueryMode === 'materialized' && newMode === 'remote') {
-                msg = '⚠ Switching Synced locally → Live from BigQuery will drop the materialized parquet on the next sync. Analysts who already pulled this table will start getting live BQ queries instead of a local copy; the sync schedule becomes ignored.';
+                msg = 'Warning: Switching Synced locally → Live from BigQuery will drop the materialized parquet on the next sync. Analysts who already pulled this table will start getting live BQ queries instead of a local copy; the sync schedule becomes ignored.';
             } else {
-                msg = '⚠ Switching Live from BigQuery → Synced locally: the next scheduled sync runs a SELECT and writes a parquet. Analysts will start reading the local copy on their next `agnes pull`. Remember to set a sync schedule.';
+                msg = 'Warning: Switching Live from BigQuery → Synced locally: the next scheduled sync runs a SELECT and writes a parquet. Analysts will start reading the local copy on their next `agnes pull`. Remember to set a sync schedule.';
             }
             warn.textContent = msg;
             warn.style.display = '';
@@ -5204,12 +5258,34 @@
             payload.bucket = dataset || null;
             payload.source_table = sourceTable || null;
         } else {
-            // Live.
+            // Live. Recompose bq_fqn from the Project field the same way
+            // _buildBigQueryPayload does at register time — sent explicitly
+            // (not omitted) so a blank Project clears a stale cross-project
+            // bq_fqn instead of the PUT's exclude_unset preserving it
+            // unchanged after a Dataset/Source Table edit.
+            var project = document.getElementById('editBqProject').value.trim();
+            // bq_fqn intentionally decouples the physical BigQuery dataset
+            // from the RBAC/UX `bucket` label the Dataset field shows
+            // (issue #343) — a row can have bucket !== bq_fqn's own dataset
+            // segment. If the admin didn't actually retype Dataset (still
+            // equals its bucket-label prefill), reuse the pristine bq_fqn's
+            // own dataset segment instead of `dataset`, so an unrelated
+            // edit (description, Source Table, …) can't silently overwrite
+            // a decoupled row's real dataset with the bucket label.
+            var datasetForFqn = dataset;
+            if (_editBqOriginalBqFqn && dataset === _editBqOriginalDataset) {
+                var origFqnDataset = _datasetFromBqFqn(_editBqOriginalBqFqn);
+                if (origFqnDataset) datasetForFqn = origFqnDataset;
+            }
+            var bqFqn = (project && datasetForFqn && sourceTable)
+                ? project + '.' + datasetForFqn + '.' + sourceTable
+                : null;
             payload.query_mode = 'remote';
             payload.server_only = false;
             payload.bucket = dataset || null;
             payload.source_table = sourceTable || null;
             payload.source_query = null;
+            payload.bq_fqn = bqFqn;
         }
 
         (async function () {
@@ -5655,7 +5731,7 @@
                     + '</div>';
             } else {
                 pkgsEl.innerHTML = pkgsWithTables.map(function(p) {
-                    var iconRaw = p.icon || '📦';
+                    var iconRaw = p.icon || '';
                     var color = p.color || '#f3f4f6';
                     var name = String(p.name || '');
                     var slug = String(p.slug || '');
@@ -5725,7 +5801,7 @@
                     +          'background:rgba(255,247,205,0.4); border-radius:10px;">'
                     + '  <header style="display:flex; align-items:center; gap:12px; '
                     +                 'padding:12px 16px; border-bottom:1px solid #FCD34D;">'
-                    + '    <span style="font-size:16px;">⚠️</span>'
+                    + '    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="ui-ico"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>'
                     + '    <strong style="flex:1; font-size:14px;">Unpackaged tables '
                     +      '<span style="color:var(--text-secondary); font-weight:500;">'
                     +      '(' + unpackagedNeedsAttention.length + ' — needs packaging)</span></strong>'

@@ -12,6 +12,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 - **Files dropped in chat are saved to your Artefacts**: a **document or image** uploaded through the chat composer's "+" menu is now also persisted as a private **single-file artefact** (indexed + searchable, reachable at `/library/{slug}` and listed in Artefacts) — not just dropped into the ephemeral chat workspace. Previously `POST /api/chat/uploads` wrote only to the per-user workspace `uploads/` dir (for the E2B sandbox), so a dropped file never surfaced in Artefacts and vanished from any "things I brought into Agnes" view. **Data files (CSV/Parquet/XLSX) stay workspace-only** — their job is to become a queryable table, not searchable prose. The persistence is best-effort (a failure never fails the workspace upload) and runs ingestion off the request path via `BackgroundTasks`. New shared helper `app/corpus_ingest.py::create_single_file_artefact` (reuses the existing file-storage + `file_corpora`/`corpus_files` factory repos + `ingest_file` — no new repo methods, so no DuckDB↔Postgres parity surface). `POST /api/chat/uploads` gains an `artefact_slug` response field; the CLI/MCP upload surfaces inherit it unchanged. Guarded by `tests/test_chat_upload_artefacts.py`.
+- **Guided "Stack Tour" onboarding coach-marks**: a non-blocking, config-driven 6-step coach-mark tour (`js/tour.js` + `css/tour.css`) that walks new users through My Stack and the Catalog. Triggered from the "Set up your Stack" and "Explore My Stack" Journey steps; spans two real pages (`/stack` → `/catalog`) via a `sessionStorage` cross-page resume mechanism. Spotlight raises the target above a light non-blocking scrim; popover positions below/above the anchor with viewport clamping and reflows on resize/scroll; Escape ends the tour; final step offers "Finish onboarding" (marks all steps done + navigates `/chat`) and "Connect my AI tools" (`/setup`). Tour-seen state in `localStorage` only — no schema change, no repository work. Also fixed the latent `?tab=browse` → `?kind=browse` bug in the Journey panel's Catalog deep-link, and added a "Finish onboarding" button to the Journey panel that force-marks all five steps done.
 - **Agents surface — build an assistant out of your stack (rail layout, WIP)**: a new **Agents** entry in the left rail (flagged **WIP**) opens `/agents`, where a user assembles a focused agent from the ingredients Agnes already governs — following the issue-#896 prototype's Build Agent module. The builder walks five numbered sections with a live preview aside: **Identity** (name · role · instructions · tone · greeting), **Knowledge** (ground it in the caller's stack — data packages + memory domains, server-rendered from the same RBAC-scoped `StackResolver` reads as `/stack`), **Capabilities** (the caller's subscribed plugins, hydrated from `/api/marketplace/items?tab=my`), **Surfaces** (Web chat · Slack · Telegram · Claude Code/CLI · MCP — where the agent will run once publishing lands), and **Boundaries** (admin-managed guardrails, read-only: model, per-user data-access scoping, sensitive-action confirmation). Agent definitions persist in the browser (per-user localStorage key) for this iteration and the page says so plainly — a server-side registry + publishing is the next step. Rail-layout only; the default topnav chrome is unchanged (guarded by `tests/test_ui_layout_theme.py`).
 - **Artefacts surface — private uploads get their own home (rail layout)**: a new **Artefacts** entry in the left rail (flagged **WIP**) opens `/artefacts`, the caller's personal artefacts space. Private uploads (per-user file collections) **moved here off My Stack** — including the "+ New upload" modal — so My Stack stays a knowledge inventory (Data · Plugins · Memory) and personal files live separately. The page also carries a work-in-progress banner for **data apps**, the second artefact kind still in design. Owner-scoped (a user sees only the uploads they created). Rail-layout only; the default topnav chrome is unchanged (guarded by `tests/test_ui_layout_theme.py`).
 - **My Stack "All" tab — one scrollable overview (#896)**: `/stack` now opens on a new default **All** tab that lists every item in the caller's Stack on a single page, grouped into labelled sections — **Data · Plugins · Memory** — using the same catalog-card component (unchanged). A section is shown only when it has items, so a category with nothing in it is skipped entirely and the page never lands on an empty view. The existing per-kind tabs (Data/Plugins/Memory) still filter to a single type exactly as before — the section heads drop away in single-kind views and their empty states are preserved. Plugins (client-hydrated) fold into the All view once loaded; the All count badge sums all three kinds. Rail-layout only; the default topnav chrome is unchanged (guarded by `tests/test_ui_layout_theme.py`).
@@ -30,8 +31,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **Artefacts present as files or collections — adaptive, one honest noun (rail layout, #896)**: the rail Artefacts surface presented every `file_corpora` **container** as a singular "upload" — the `+ New upload` modal took one file, so a row read as one file, yet its detail page let you keep adding more, and `library_detail.html` even renamed itself ("Ask this upload" vs "Ask this collection") depending on layout. Artefacts is now a legible, heterogeneous space: **Artefacts** stays the nav umbrella (a typed home for what you create — files and collections today, data apps next), and each item's presentation **adapts to how many files it holds** — one file reads AS that file (filename title, single-document glyph, `TYPE · size` meta, "File" label), two-or-more as a **Collection** (name, two-sheet glyph, `N files`, "Collection" label). Adding a second file on the detail page transparently promotes a File into a Collection; the detail hero, noun, and search copy follow the same count-based rule, so a lone file is never called a "collection". The primary action is a single neutral **`+ Upload`** modal (files first, name optional/defaulting to the filename): drop one file → a single-file artefact, drop several or name it → a collection. The `library`-kind glyph (shared macro + `catalog_card.js` / `stack_unified.html` mirrors) changed from a single document to a **two-sheet "files" icon**, and a new **`doc`** glyph draws the single-document icon for one-file artefacts. The `hero` detail macro gained an optional `glyph` override (accent color stays `library`, icon shape adapts). The default topnav `/library` chrome already used "collection" and is unchanged (guarded by `tests/test_ui_layout_theme.py`, `tests/test_web_library.py`).
 - **My Stack kind tabs moved onto the grey head band (rail layout, #896)**: on `/stack` the All/Data/Plugins/Memory kind tabs now render as the trailing row of the grey page head (`page_head`), directly under the stats tray, so the white content band sits flush beneath them and the search box + sort control open the white band below — the exact placement the Marketplace (`/catalog`) page already uses. Achieved by moving the tab strip out of `page_surface` into `page_head` in `stack_unified.html` (base_index's `.idx-head > :last-child` flush rule then applies) and dropping the page-local `.idx-head` bottom-padding override; the toolbar loses its now-redundant top margin. No shared component exists for this region — each page hand-rolls its tabs/toolbar — and the default topnav chrome is unchanged (guarded by `tests/test_ui_layout_theme.py`).
+- **Paper-theme sweep: marketplace item detail (#896)**: tokenized the page-local `<style>` colours on `marketplace_item_detail.html` so status/category surfaces follow the `--ds-*` tokens and flip under `data-theme="paper"` (`--warn-color` → `--ds-accent-warn-ink`, stripped dead `var(--surface-alt, #hex)` fallbacks, JS disabled-button greys → `--ds-surface-sunken`/`--ds-text-muted`/`--ds-border`). Its dark hero and terminal-mock keep their fixed hex by design, matching the sibling `marketplace_plugin_detail` page. The page was already emoji-free, so it is dropped from the `tests/test_no_ui_emoji.py` allowlist — which is now empty: every user-facing template is swept.
+- **Admin emoji sweep — permanent guard coverage**: replaced all pictographic emoji in admin templates (`admin_tables.html`, `admin_corporate_memory.html`, `admin_server_config.html`, `admin_usage.html`, `admin_users.html`) with inline SVGs from the shared `macros/_icon.html` warning/folder paths (in JS innerHTML contexts) or plain-text labels (in `.textContent` assignments). User-editable icon fields (Data Package `icon`, Memory Domain `icon`) default to an empty string instead of a Unicode glyph so the stored value is fully user-controlled. The `tests/test_no_ui_emoji.py` guard now permanently covers all `admin_*` templates — the prior blanket exclusion is removed.
 - **Catalog reshaped around auto-membership — addable-only, admin god-mode removed**: follow-up to auto-membership (every RBAC-granted Data Package / Memory Domain is already in a caller's stack the moment it's granted). `/catalog` and `/corporate-memory` no longer show a caller's own granted packages/domains in the Browse grid (rail layout: the Data/Memory kind tabs) — that content lives in **My Stack** now; Browse/the Data & Memory tabs only list genuinely addable, not-already-in-stack entries, which for governed data is normally nothing, so the rail Catalog's Data/Memory kind tabs hide themselves when empty and the page centers on Plugins/Recipes instead. Admin god-mode (`StackResolver.browse_admin`, "see every package regardless of grant") is removed from both user-facing pages — admins now see the same grant-scoped view as everyone else. The full audit view moved to a new admin-only page, **`/admin/data-packages`** ("All packages", linked from the admin hub's Data Packages card), listing every Data Package and Memory Domain regardless of grant. Hero/empty-state copy on both pages was reworded to point at My Stack instead of implying Browse still holds what the caller already has. The "Recommended for you" row no longer surfaces granted-but-not-yet-downloaded data/memory packages (that download nudge lives on My Stack). Plugins and Recipes behave like an app store: a plugin you've added stays listed and is simply re-badged **"In stack"** (it does not disappear) — only governed Data/Memory are exclusive to My Stack. In the rail layout this page is now titled **Marketplace** (nav item, page heading, and browser title) since, post-reshape, it lists shared skills/plugins/recipes rather than the caller's granted data; the `/catalog` URL and the classic-topnav "Data Packages" page are unchanged. Guarded by `tests/test_web_catalog_reshape.py`, plus updates to `tests/test_web_catalog_unified.py`, `tests/test_web_memory_unified.py`, `tests/test_web_stack_auto_membership.py`, `tests/test_ui_layout_theme.py`.
 - **AI Connector page redesigned as an integration guide (#896)**: `/me/ai-connector` (`me_cowork.html`) is rebuilt from embedded documentation into a calm, scannable developer-integration page in the Stripe/Vercel/Supabase mould — generous whitespace, hairline borders, no shadows, one green accent reserved for the primary action and the selected tab. Deliberately **not** a wizard: no stepper, progress bar, step-nav, or completion styling (Agnes can't know whether a user finished), so the page reads as documentation you can enter at any section. A borderless **hero** puts the Agnes mark at the centre of a hub illustration — company knowledge and the AI tools both connect *to Agnes* — beside three trust benefits (private · access control · works with your tools). Then a **"Copy your connector URL"** card (URL styled as a credential + privacy note) and a **"Configure your AI tool"** card: tool tabs (Claude Code first) over a single top-to-bottom flow of icon-led sections — **Add the server** (terminal command as the primary action) → **Authenticate** (numbered checklist) → **Verify connection**. The final section never claims success the app can't verify: it shows the example prompt *"What tables are available in Agnes?"* with an informational note (*"If you receive data back from Agnes, your connection is working correctly"*) rather than a "Connected" / "You're all set" state. The tool picker is a segmented control (green only on the selected tool, horizontal-scroll on small screens). Blocking gotchas stay surfaced (Claude.ai Team/Enterprise admin-gate with one-click "Copy request for your admin"; Claude Desktop "don't search the directory"; Claude Code mandatory restart). A collapsible **"Having trouble?"** support card (expanded by default) holds the four common issues as individually-expandable cards in a responsive two-column grid, and everything non-essential collapses into a single **"Advanced & reference"** card (collapsed by default) whose plugin-packages / tools / skills groups are compact accordion rows with count badges. Adds `lock`/`shield-check`/`sparkle`/`user`/`chevron` glyphs to the shared icon set. `--ds-*` tokens only (terminal uses the dark `--ds-hero-*` family); guarded by `tests/test_design_system_contract.py`, `tests/test_ui_layout_theme.py`, `tests/test_no_ui_emoji.py`.
+- **Paper-theme sweep: activity center, marketplace plugin detail, memory domain detail (#896)**: tokenized the page-local styles on these three pages so their colours follow the design-system `--ds-*` tokens and flip correctly under `data-theme="paper"` (previously raw hex/`rgba()` status colours stayed blue/purple/amber regardless of theme). Status colours now use the `--ds-accent-{success,warn,danger,info}-*` vocabulary, category/source badges the `--ds-kind-*` palette. The marketplace detail page's dark hero and terminal-mock keep their fixed hex by design (the deliberate "night" moment). `marketplace_plugin_detail.html` dropped from the `tests/test_no_ui_emoji.py` allowlist (already emoji-free); `memory_domain_detail.html` + `activity_center.html` added to the raw-hex sweep guard in `tests/test_design_system_contract.py`. Default blue/topnav rendering unchanged.
+- **Paper-theme sweep: admin pages (#896)**: tokenized the page-local `<style>` colours on 19 admin templates so status badges, category chips, surfaces, text, and borders follow the `--ds-*` tokens and render correctly under `data-theme="paper"` — access/users (`admin_users`, `admin_user_detail`, `admin_groups`, `admin_group_detail`), tokens/credentials/workspace (`admin_tokens`, `admin_datasource_credentials`, `admin_initial_workspace`), MCP (`admin_mcp_sources`, `admin_mcp_source_detail`), store/marketplace/memory (`admin_store_submissions`, `admin_store_submission_detail`, `admin_marketplaces`, `admin_corporate_memory`, `admin_knowledge_digests`), and observability/ops (`admin_sessions`, `admin_session_detail`, `admin_usage`, `admin_sync`, `admin_server_config`). Status → `--ds-accent-{success,warn,danger,info}-*`, category/origin chips → `--ds-kind-*`. Pictographic lock emoji removed from the MCP pages' JS-rendered labels. Intentional darks (toast/terminal backgrounds, dark hero ink, modal scrims) are unchanged, and the default blue/topnav look is byte-for-byte unchanged.
 - **"Recommended for you" moved from My Stack to the Catalog (rail layout, #896)**: the grow-the-stack row — catalog assets not yet in the caller's stack (available data packages, then memory domains, capped at four) — now renders on `/catalog`, as a single side-scrollable card row between the page head and the kind tabs, where discovering new assets belongs. `/stack` is now purely the manage surface ("Everything in your Stack" inventory table); its recommendations section, "View all recommendations" link, and the rec-promotion script are gone. Because a recommended asset also appears in its kind grid below, the shared stack toggle (`catalog_card.js`) now syncs every card of the same resource on a page (keyed by `resource_type`/`resource_id`), so adding from the recommendations row flips the grid twin to "In stack" too. Rail-layout only; topnav pages unchanged (guarded by `tests/test_ui_layout_theme.py`).
 - **Knowledge Layer banner CTAs retargeted to matching pages (#896)**: the chat-dashboard banner's "Connect your tools" now opens `/me/ai-connector` (per-tool connection instructions for Claude Desktop / Claude.ai / Claude Code / Cursor / VS Code / ChatGPT — the same roster the banner card advertises) instead of the CLI-only `/setup` install page, and "Learn how it works" now opens `/home` (the "What happens when you launch Agnes" walkthrough) instead of the AI Connector page. Defaults on the reusable `knowledge_layer_banner()` macro; guarded by `tests/test_ui_layout_theme.py`.
 - **Knowledge Layer banner headline restored on the chat dashboard (#896)**: the rail chat pre-conversation banner now leads with its product-model headline — **"One knowledge layer. Everywhere you work."** + the "Use Kai here, or connect your favorite AI tools…" subcopy — above the three-part diagram, matching the dashboard reference. Previously the chat foot rendered the banner in `compact` mode, which dropped the headline lead. The reusable `knowledge_layer_banner()` macro gains a `show_lead` argument (defaults to `not compact`, so other callers are unchanged) and a `klb--lead` CSS modifier that spans the lead across the top of the compact grid. The rail chat empty state is recomposed as **hero → composer → suggested actions → diagram**: the Knowledge Layer *lead* (headline "One knowledge layer. Everywhere you work." + supporting sentence) is now the flush-left page hero — stating what Agnes is before the input — replacing the time-of-day greeting; the composer and four guided actions follow in the centered narrow column; and the Knowledge Layer *diagram* (the "Ask Kai in Agnes" card · orb hub · "Use your own AI tools" card, no headline) closes the page at the foot. The lead is factored into a reusable `knowledge_layer_lead()` macro shared by the hero and the (optional) in-banner lead, and the foot banner renders `show_lead=False`. Guarded by `tests/test_ui_layout_theme.py`.
@@ -57,6 +62,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **Chat upload no longer reports failure for a file that did upload**: `POST /api/chat/uploads` with `register_as_table=true` ran table registration *after* the file was already moved into the workspace, so if registration raised (e.g. the DuckDB `excel` extension is unavailable → 422) the caller got an error response even though the file had landed on disk. The endpoint now keeps the uploaded file and returns success with `table_name=null` and a hint explaining that registration failed and why — mirroring the library upload flow, which keeps the collection and surfaces the per-file rejection reason rather than discarding a successful upload.
+- **Rail-layout Admin submenu no longer renders as clipped grey pills (#896)**: the collapsible Admin section headers (Activity Center, Users & Access, …) reused the shared `.app-nav-menu-section` class, whose base skin is built for the floating topnav dropdown panel — a grey pill background, a `-6px` horizontal bleed, and rounded top corners. In the narrow rail sidebar those leaked in, so each section rendered as a stacked grey pill that overflowed and clipped on the rail's right edge. The rail scope now resets `background`/`margin`/`border-radius` on those section summaries (and neutralises the base first-section corner rounding), so they render as flat section labels aligned within the rail. Topnav's dropdown panel is unchanged.
 - **`chat.js` now cache-busts on deploy**: the chat page loaded `/static/js/chat.js` with no version query (every other bundle uses `static_url(...)`), so browsers served a stale module across releases. It now resolves through `static_url('js/chat.js')` like the rest. Also fixes the rail composer pinning to its 220px max on load — `autosizeComposer()` read a ballooned `scrollHeight` for the empty textarea in the centered empty-state column; it now keeps the CSS height until there's actual content to grow for.
 - **Index pages (My Stack, Catalog) no longer show a grey gap above the footer**: the global `footer { margin-top: 48px }` rule opened a strip of the app's grey background between the white content band and the footer on the `base_index.html` shell (the band's `flex-grow` stops at the margin). The index footer now sits flush on the white band, so the surface runs unbroken to the foot of the page.
 - **Rail-layout memory drill-down no longer dead-ends on the orphaned `/corporate-memory` page (#896)**: the "← All memory domains" back-link on `/memory/d/<slug>` hardcoded `/corporate-memory`, which the rail IA no longer links from any nav entry — clicking it dropped the user onto an unreachable page rendered in the old memory-browse layout. The back-link is now layout-aware: it returns to the unified Catalog's Memory tab (`/catalog?kind=memory`) under the rail layout and keeps `/corporate-memory` under the classic topnav chrome.
@@ -71,6 +78,223 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 ### Security
+
+## [0.76.28] - 2026-07-24
+
+### Changed
+
+- `/catalog/semantics` metric detail now renders the full **description**
+  (markdown → sanitized HTML via the existing `render_safe` pipeline, same
+  injection contract as marketplace detail pages) plus a
+  **type · unit · grain** meta line and the metric's **dimensions**.
+  Previously the description existed only as the one-line truncated row
+  preview and never appeared in the expanded detail, and type/unit/grain/
+  dimensions were stored but shown nowhere: the page showed the SQL but
+  hid the meaning. The row preview and the client-side filter index now use
+  a plain-text projection of the description (new `render_plain` in
+  `app/markdown_render.py`) so literal markdown markup (`**`, `#`) no
+  longer leaks into previews, and the filter also matches **synonyms**
+  (metrics are routinely searched by their spoken aliases, which were
+  stored but not indexed).
+
+## [0.76.27] - 2026-07-24
+
+### Added
+
+- **Per-instance `upgrade_schedule` override** on `prod_instance` /
+  `dev_instances` in the `customer-instance` Terraform module — the
+  auto-upgrade cron cadence (default `*/5 * * * *`) can now be set per VM,
+  e.g. to move a customer-facing instance to a quiet nightly window without
+  affecting dev iteration speed.
+
+### Changed
+
+### Fixed
+
+- **Maintenance page now actually reaches running VMs.** `static/maintenance.html`
+  was never baked into the Dockerfile's `/opt/agnes-host/` artifact set nor
+  synced by `agnes-auto-upgrade.sh`'s `CONFIG_FILES`, so Caddy's
+  `handle_errors 502 503` fallback had nothing to serve during an
+  auto-upgrade recreate — users saw a raw connection error instead of the
+  friendly auto-refreshing page. Both delivery paths now ship the file.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.26] - 2026-07-24
+
+### Fixed
+
+- Worker lane slots now wake immediately on a fresh Postgres enqueue instead
+  of waiting out their poll interval: `enqueue` emits `NOTIFY agnes_jobs` and
+  the worker `LISTEN`s on it (`app/worker/wakeup.py`). Polling stays the floor
+  — it still covers `run_after`/retry eligibility, the DuckDB backend, and any
+  listener failure — so latency can only improve, never regress or skip a job.
+- The scheduler's per-job `last_run` catch-up state is now persisted to
+  `${DATA_DIR}/state/scheduler_last_run.json` and restored on startup, so a
+  restart/recreate no longer resets every job to "never ran" and re-fires the
+  whole set on the first post-grace tick. Best-effort: a load/persist failure
+  falls back to the previous in-memory behavior. The persisted-file write uses
+  a per-process tmp filename so two scheduler containers sharing `DATA_DIR`
+  can't race on the same tmp path.
+
+## [0.76.25] - 2026-07-24
+
+### Changed
+
+- **Cloud chat reuses a paused sandbox across process restarts instead of
+  respawning fresh.** The resume-vs-respawn decision was gated on an
+  in-process set (`_known_protocol_sessions`) that is empty after any
+  restart/deploy, so every resumable session paid a full cold spawn (~6–8 s)
+  *and* lost conversation context on the first message after a restart. The
+  relay-protocol version a runner speaks is now persisted per session
+  (`chat_sessions.relay_protocol_version`, DuckDB v98 + Alembic `0045`), so a
+  current-protocol sandbox reconnects after a restart while a legacy
+  (pre-broker) runner still force-respawns — preserving the safety invariant
+  the in-process gate provided. A configurable grace window
+  (`chat.idle_grace_seconds`, default 60 s) keeps the sandbox warm through a
+  likely follow-up before it pauses.
+
+## [0.76.23] - 2026-07-24
+
+### Fixed
+
+- **Data Apps**: a manual `deploy`/`stop` and an auto-wake for the same app
+  can no longer race each other into calling the runner sidecar's `up()`
+  concurrently (the sidecar does an unlocked check-then-act container
+  swap). A single `dataapp:op:<slug>` lease, shared by `deploy_data_app`,
+  `stop_data_app`, `delete_data_app`, and the ingress proxy's wake-on-request
+  path, now serializes all four; the scheduler's idle-reap sweep takes the
+  same lease non-blockingly (skip-and-retry-next-tick) per row, and writes
+  its `sleeping` state transition before releasing it so a concurrent
+  deploy/wake can't have its state clobbered by a stale reap write landing
+  after it.
+
+## [0.76.22] - 2026-07-24
+
+### Fixed
+
+- **Corporate Memory no longer accumulates near-duplicate pending items when
+  the same fact is re-stated with different wording**: the
+  `USER_VERIFICATION` ingestion path deduplicated new items by an exact hash
+  of `(title, content)`, so a paraphrase of an already-known fact — restated
+  by a different analyst, or re-extracted from a different session — hashed
+  differently and landed as a second `pending` `knowledge_items` row. A
+  pre-insert fuzzy dedup gate now runs when the exact-hash check misses,
+  merging into the existing item (recording verification evidence there)
+  instead of creating a new row — but only on strong evidence: lexical
+  title+content similarity above a high bar on its own, or entity-tag
+  overlap corroborated by a moderate amount of shared wording. Entity-tag
+  overlap alone no longer merges — two distinct same-domain facts routinely
+  share a couple of generic tags — it still flags an advisory
+  `likely_duplicate` relation for review instead. A `correction` is never
+  merged by the gate: it may be overturning a stored fact rather than
+  restating it (and tends to be a near-verbatim reword of the item it
+  contradicts), so it is routed to the create path where contradiction
+  detection runs, rather than being absorbed as confirming evidence.
+## [0.76.20] - 2026-07-24
+
+### Internal
+
+- **DuckDB↔Postgres parity: hydrate sandbox lifecycle fields in the chat
+  participants repo.** `chat_session_participants_pg._row_to_session` now
+  populates `sandbox_id` / `runner_pid` / `sandbox_paused_at` like the main
+  `chat_sessions_pg` repo, instead of silently defaulting them to None. No
+  current caller of the participant path (`list_sessions_for_participant`,
+  `fork_session_as_co_session`) reads these fields, so behaviour is unchanged
+  today — this closes a latent gap that would have returned sandbox-less
+  sessions on the PG backend and could break pause/resume takeover for
+  co-driven sessions. Guarded by a new field-for-field hydration regression
+  test in `tests/db_pg/`.
+
+## [0.76.18] - 2026-07-23
+
+### Fixed
+
+- **Editing a cross-project BigQuery table's Dataset/Source Table no longer
+  strands the row on its old `bq_fqn`.** The Edit modal's "Live from
+  BigQuery" form gained the same optional **Project** field the Register
+  modal has, pre-filled from the row's existing `bq_fqn`. Saving now
+  recomposes (or clears) `bq_fqn` from Project + Dataset + Source Table
+  instead of silently omitting it from the PUT, which previously left the
+  query/scan paths resolving against the stale project.dataset.table.
+  Also preserves a decoupled row's real `bq_fqn` dataset segment (issue
+  #343) when the Dataset field is unchanged from its original prefill,
+  so an unrelated edit can't silently overwrite it with the `bucket`
+  label.
+
+## [0.76.17] - 2026-07-23
+
+### Added
+
+### Changed
+
+- **`/auth/bootstrap` locks once an admin exists** (or any password-holding
+  user), not only once a user has a password. This closes an unauthenticated
+  admin-creation window on OAuth / magic-link-only deployments, where no user
+  ever gets a `password_hash`. Provision the first admin via `SEED_ADMIN_EMAIL`
+  / `SEED_ADMIN_PASSWORD`; to re-bootstrap after an admin exists (e.g. a
+  destroy-recreate runbook) set `AGNES_BOOTSTRAP_TOKEN` and pass it in the
+  `X-Bootstrap-Token` header.
+- **`POST /api/query` clamps `limit`** to `AGNES_MAX_QUERY_ROWS` (default
+  1,000,000) so a single request can't exhaust worker memory; raise the env var
+  if you need larger local result sets.
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+- **Internal-query isolation (DuckDB backend):** non-admin `/api/query`
+  internal queries now run against an ephemeral in-memory DuckDB holding only
+  the caller's RBAC-filtered `agnes_*` tables (matching the Postgres path), so
+  state tables (`personal_access_tokens`, `users`, `audit_log`, …) cannot be
+  referenced — closing a SQL string-lexer desync (dollar-quoted / `E''`
+  literals) that could otherwise read them.
+- **MCP OAuth consent page** HTML-escapes all interpolated values (client name,
+  scopes, email), fixing a stored-XSS sink fed by unauthenticated RFC 7591
+  dynamic client registration.
+- **Admin source-connection `/test` and `/tables`** gate `token_env` through
+  the remote-attach allowlist (an admin can no longer exfiltrate arbitrary
+  server env vars such as `JWT_SECRET_KEY` via the outbound token header) and
+  validate `stack_url` (https + non-private/reserved host) immediately before
+  the outbound request.
+- **CORS:** `allow_credentials` is force-disabled when `CORS_ORIGINS` contains
+  `*`, preventing an any-origin-with-credentials policy.
+- **App-level security headers** (`X-Content-Type-Options`, `X-Frame-Options:
+  DENY`, `Referrer-Policy`, HSTS on HTTPS, and a non-breaking CSP subset) are
+  now emitted by the application itself, independent of the reverse proxy.
+- **Auth session cookie `Secure`** now derives from the served scheme /
+  resolved public origin (proxy-aware), not only the `DOMAIN` env var — so the
+  cookie is marked `Secure` behind non-Caddy TLS terminators too.
+- **`/api/health/detailed`** returns operator-only detail (GCP project ids,
+  user counts, build fingerprints) to admins only; non-admins get reduced
+  status.
+- **Config-diff redaction** masks additional secret-key shapes (`private`,
+  `credential`, `dsn`, `passwd`).
+- **MCP SSE `?token=` auth** warns (once per process) that the token lands in
+  access logs (CWE-598); prefer the `Authorization` header and configure
+  proxy-side log redaction.
+- **Script runner** documented as admin-authored code execution with the
+  server's privileges (not a security sandbox); import denylist extended with
+  never-legit modules. Real isolation is a tracked follow-up.
+- **Memory-domain grants** documented in the access UI as additive-only — an
+  item's `audience` is the visibility restriction, not domain membership.
+- **Datasource-token persistence** warns when writing to the plaintext overlay
+  while a vault is configured (full vault routing is a tracked follow-up).
+
+## [0.76.16] - 2026-07-23
+
+### Added
+
+- **Upsert-on-upload for collection files.** `POST /api/collections/{id}/files` accepts an optional per-file `paths` form field; re-uploading a file with the same `(corpus_id, path)` replaces it (old blob/chunks/derived tables purged) instead of inserting a duplicate. New `agnes collections upload --path <id>` (single-file) exposes it. Files without a path keep the current plain-insert behavior. Schema: `corpus_files.path` (nullable), DuckDB v97 + Alembic `0044`.
+- **`agnes collections rm-file <collection_id> <file_id> [--yes]`** — CLI command to delete a single file from a collection (previously only the whole-collection `rm` was exposed; per-file removal required a raw API call).
 
 ## [0.76.15] - 2026-07-23
 

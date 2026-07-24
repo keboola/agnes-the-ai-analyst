@@ -21,7 +21,7 @@ from app.chat.persistence import ChatRepository
 from app.chat.profiles import get_profile
 from app.chat.provider import SandboxHandle, SandboxProvider
 from app.chat.replay import append_frame
-from app.chat.types import ChatSession, SessionState, Surface
+from app.chat.types import RELAY_PROTOCOL_VERSION, ChatSession, SessionState, Surface
 from app.chat.workdir import WorkdirManager
 from app.coordination.base import CoordinationUnavailable
 from app.coordination.factory import coordination
@@ -89,16 +89,27 @@ _SESSION_LOCKS_MAX_ENTRIES = 10_000
 _INBOUND_POLL_INTERVAL_SEC = 2.0
 
 # Chat sandbox secret broker (2026-07-14 incident hardening): bumped whenever
-# the ticket_push stdin frame contract changes. ChatManager only ever
-# considers a session's runner "known-current-protocol" after it has itself
-# pushed a ticket to it in this process (see ``_known_protocol_sessions`` /
-# ``_push_ticket_frame``) — a session it has no such record for is treated as
-# potentially legacy (pre-broker runner) and force-respawned rather than
-# resumed (AC-G-resume-legacy). This is deliberately process-lifetime state,
-# not a persisted column: it is always empty right after a restart, so a
-# genuine restart always force-respawns rather than risk reconnecting an old
-# runner that cannot make sense of the ticket_push frame.
-RELAY_PROTOCOL_VERSION = 1
+# the ticket_push stdin frame contract changes (RELAY_PROTOCOL_VERSION,
+# imported from app.chat.types — lives there so lower-level modules can
+# reference it without importing this one). AC-G-resume-legacy: a session
+# whose ``chat_sessions.relay_protocol_version`` is NULL or below this
+# constant is treated as potentially legacy (pre-broker runner, or a row
+# whose sandbox refs were never reconnected) and force-respawned rather than
+# resumed — see ``_is_current_protocol``.
+#
+# Tier 1 restart-invariant reuse (2026-07-23): this used to be tracked ONLY
+# in the process-lifetime ``_known_protocol_sessions`` set, populated by
+# ``_push_ticket_frame`` — always empty right after a restart, so EVERY
+# restart force-respawned every resumable session (destroying a perfectly
+# good paused sandbox and losing its runner) regardless of whether the
+# runner was actually current-protocol. ``set_sandbox_ref`` now also stamps
+# ``chat_sessions.relay_protocol_version`` (cleared by ``clear_sandbox_ref``)
+# so the decision survives a restart: the persisted column is authoritative
+# (``_is_current_protocol`` reads it off the fetched ``ChatSession`` row);
+# ``_known_protocol_sessions`` is kept only as a same-process fast-confirm
+# belt-and-suspenders check — it can only ever turn a decision from
+# "unknown" to "current", never the reverse, so it cannot reintroduce the
+# restart bug.
 
 
 def agnes_server_url() -> str:
@@ -291,8 +302,12 @@ class ChatManager:
         self._session_profiles: dict[str, str] = {}
         # Chat sandbox secret broker: chat_ids this process has itself pushed
         # a current-protocol ticket to (see RELAY_PROTOCOL_VERSION /
-        # _push_ticket_frame). Consulted by the resume paths to decide
-        # respawn vs. reconnect (AC-G-resume-legacy).
+        # _push_ticket_frame). Tier 1 (restart-invariant reuse): the
+        # resume-vs-respawn decision is no longer gated on THIS set alone —
+        # see ``_is_current_protocol`` — it's now a same-process
+        # fast-confirm on top of the authoritative persisted
+        # ``chat_sessions.relay_protocol_version`` column, kept around as
+        # belt-and-suspenders (AC-G-resume-legacy).
         self._known_protocol_sessions: set[str] = set()
         # Per-chat_id session lock (Critical-1 fix, wave-2F task 5
         # hardening) — one per chat_id, created on first use. Guards
@@ -945,7 +960,15 @@ class ChatManager:
             if live.state != SessionState.ACTIVE:
                 return
             await asyncio.sleep(0.05)
-        await asyncio.sleep(self._config.detach_linger_seconds)
+        # Tier 1 grace window (docs/brainstorms/2026-07-23-chat-e2b-architecture-
+        # comparison.md §5): keeps the sandbox warm for idle_grace_seconds after
+        # the last sink detaches so a within-window follow-up (a new attach()
+        # cancelling this task via _cancel_linger, or a message arriving and
+        # seating a sink again) reuses the still-live sandbox instead of paying
+        # a fresh cold spawn. Falls through to the same pause below once the
+        # window elapses — the existing detach-linger/reaper machinery is
+        # unchanged, only the sleep duration's canonical knob is renamed.
+        await asyncio.sleep(self._config.idle_grace_seconds)
         if live.sinks or live.state != SessionState.ACTIVE:
             return  # a sink came back, or state already changed
         await self._pause_live(live)
@@ -986,6 +1009,23 @@ class ChatManager:
         live.handle = None
         self._repo.set_sandbox_paused_at(live.chat_id, datetime.now(timezone.utc))
 
+    def _is_current_protocol(self, session: "ChatSession") -> bool:
+        """True when ``session``'s runner is safe to reconnect via
+        ``provider.resume()`` rather than force-respawned (AC-G-resume-legacy).
+
+        Authoritative source: ``session.relay_protocol_version`` — persisted
+        by ``ChatRepository.set_sandbox_ref`` (Tier 1, restart-invariant
+        reuse) so this decision survives a process restart, when
+        ``_known_protocol_sessions`` (checked first, purely as a
+        same-process fast-confirm) is always empty. NULL/absent or a value
+        below ``RELAY_PROTOCOL_VERSION`` means unknown/legacy — e.g. a
+        pre-migration row, or a session whose sandbox refs were cleared —
+        and is treated as NOT current-protocol so resume is refused.
+        """
+        if session.id in self._known_protocol_sessions:
+            return True
+        return (session.relay_protocol_version or 0) >= RELAY_PROTOCOL_VERSION
+
     async def _resume_live(self, live: "LiveSession") -> None:
         """Resume a PAUSED in-memory session by reconnecting the sandbox.
 
@@ -1012,23 +1052,27 @@ class ChatManager:
         re-enters ``_resume_live``, so the lock is acquired at most once per
         call and never re-acquired while already held.
 
-        AC-G-resume-legacy: a session this process has never itself pushed a
-        current-protocol ticket to (``_known_protocol_sessions``) is never
-        reconnected via resume() — an old runner might not understand the
-        ``ticket_push`` stdin frame — so we force a fresh spawn instead.
+        AC-G-resume-legacy: a session whose persisted
+        ``relay_protocol_version`` (or same-process ``_known_protocol_sessions``
+        record — see ``_is_current_protocol``) doesn't confirm a
+        current-protocol runner is never reconnected via resume() — an old
+        runner might not understand the ``ticket_push`` stdin frame — so we
+        force a fresh spawn instead. Tier 1 (restart-invariant reuse): unlike
+        the process-lifetime set alone, the persisted column means this no
+        longer defaults to "legacy" on every process restart.
         """
         async with live._resume_lock:
             if live.state != SessionState.PAUSED:
                 # Another caller already resumed this session while we were
                 # waiting for the lock — nothing left to do.
                 return
-            if live.chat_id not in self._known_protocol_sessions:
+            session = self._repo.get_session(live.chat_id)
+            if session is None or not self._is_current_protocol(session):
                 # Destroy the old (paused, billable) sandbox BEFORE respawning —
                 # _respawn_fresh overwrites sandbox_id via set_sandbox_ref, so
                 # without this the paused microVM is orphaned and leaks until its
                 # absolute TTL (mirror of the _resume_from_row legacy path; Devin
                 # review on #849).
-                session = self._repo.get_session(live.chat_id)
                 if session is not None:
                     await self._destroy_old_sandbox(session)
                     self._repo.clear_sandbox_ref(live.chat_id)
@@ -1041,8 +1085,7 @@ class ChatManager:
                 ticket_repo().revoke_session(live.chat_id)
                 await self._respawn_fresh(live)
                 return
-            session = self._repo.get_session(live.chat_id)
-            if session is None or session.sandbox_id is None or session.runner_pid is None:
+            if session.sandbox_id is None or session.runner_pid is None:
                 await self._respawn_fresh(live)
                 return
             import time as _t
@@ -1092,15 +1135,20 @@ class ChatManager:
 
         Returns a new LiveSession on success, None on failure (refs cleared).
 
-        AC-G-resume-legacy: ``_known_protocol_sessions`` is always empty right
-        after a process restart, so this branch fires on every genuine
-        restart — deliberately conservative: reconnecting via resume() risks
-        an old runner that predates the ticket_push stdin contract, so we
-        force a fresh spawn (which always starts a current-protocol runner
-        and pushes its own ticket) via the existing _spawn_live path instead
-        of resuming the possibly-legacy process.
+        AC-G-resume-legacy / Tier 1 restart-invariant reuse: this is called
+        on every genuine process restart (no ``LiveSession`` survives one),
+        so before the persisted ``relay_protocol_version`` column existed
+        ``_known_protocol_sessions`` was always empty here and this branch
+        fired on EVERY restart — force-respawning even sessions whose
+        runner was perfectly current-protocol. ``_is_current_protocol`` now
+        reads the persisted column (stamped by ``set_sandbox_ref`` at the
+        runner's last spawn/resume), so a restart-surviving row correctly
+        takes the reconnect-via-``provider.resume()`` path below; only a
+        genuinely unknown/legacy row (NULL column — pre-migration, or refs
+        never reconnected) force-respawns via ``_spawn_live``, which always
+        starts a current-protocol runner and pushes its own ticket.
         """
-        if session.id not in self._known_protocol_sessions:
+        if not self._is_current_protocol(session):
             # Force a fresh spawn rather than resume a possibly-legacy runner.
             # Destroy the old (paused, billable) sandbox BEFORE clearing its
             # ref — clear_sandbox_ref NULLs sandbox_paused_at, after which the
