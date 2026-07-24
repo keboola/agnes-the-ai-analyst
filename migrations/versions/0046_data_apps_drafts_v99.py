@@ -19,8 +19,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0045_data_apps_drafts_v98"
-down_revision: Union[str, None] = "0044_corpus_files_path_v97"
+revision: str = "0046_data_apps_drafts_v99"
+down_revision: Union[str, None] = "0045_chat_relay_proto_v98"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

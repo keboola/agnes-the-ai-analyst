@@ -106,8 +106,68 @@ def _resolve_token(connection_id: str, row: Dict[str, Any]) -> Optional[str]:
     if not token:
         token_env = row.get("token_env") or ""
         if token_env:
-            token = os.environ.get(token_env, "")
+            # SECURITY: only read env vars on the remote-attach allowlist. Without
+            # this, an admin could set token_env=JWT_SECRET_KEY (or DATABASE_URL,
+            # ANTHROPIC_API_KEY, …) and exfiltrate that server-process secret via
+            # the outbound X-StorageApi-Token header in /test and /tables. Enforced
+            # here (validate-at-use) as well as at create/update, so a row written
+            # before this guard existed still cannot leak an off-allowlist env var.
+            from src.orchestrator_security import is_token_env_allowed
+
+            if is_token_env_allowed(token_env):
+                token = os.environ.get(token_env, "")
+            else:
+                logger.warning(
+                    "connection %s: token_env %r is not on the remote-attach "
+                    "allowlist; refusing to read it (add it to "
+                    "AGNES_REMOTE_ATTACH_TOKEN_ENVS or use a vault secret)",
+                    connection_id,
+                    token_env,
+                )
     return token or None
+
+
+def _reject_disallowed_token_env(token_env: Optional[str]) -> None:
+    """Reject a token_env that isn't on the remote-attach allowlist (409-style
+    400). None/empty is allowed — vault-secret connections don't use token_env.
+    Called on create/update so a bad name never lands in the row."""
+    if not token_env:
+        return
+    from src.orchestrator_security import is_token_env_allowed
+
+    if not is_token_env_allowed(token_env):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"token_env {token_env!r} is not allowlisted. Use a Keboola storage-"
+                "token env var (or add the name to AGNES_REMOTE_ATTACH_TOKEN_ENVS), "
+                "or store the token in the vault via PUT .../secret instead."
+            ),
+        )
+
+
+def _validate_stack_url(config: Optional[Dict[str, Any]], *, required: bool) -> None:
+    """SSRF guard for a connection's stack_url. Rejects non-https and
+    private/reserved/link-local hosts (e.g. the cloud metadata endpoint).
+
+    ``required=False`` (create/update): validate only if a stack_url is present,
+    so partial configs from the "add data source" wizard still save.
+    ``required=True`` (test/tables): a stack_url must be present AND is
+    re-validated immediately before the outbound request — validate-at-use
+    closes the DNS-rebind window between store-time and fetch-time.
+    """
+    stack_url = ((config or {}).get("stack_url") or "").rstrip("/")
+    if not stack_url:
+        if required:
+            raise HTTPException(status_code=400, detail="no stack_url in connection config")
+        return
+    if not stack_url.lower().startswith("https://"):
+        raise HTTPException(status_code=400, detail="stack_url must be an https:// URL")
+    # Reuse the shared SSRF validator (honors the operator SSRF-allowed-hosts
+    # opt-out) rather than duplicating the private-range checks.
+    from app.api.admin import _validate_url_not_private
+
+    _validate_url_not_private(stack_url, "stack_url")
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +193,7 @@ async def create_connection(
     repo = source_connections_repo()
     if repo.get_by_name(body.name) is not None:
         raise HTTPException(status_code=409, detail="connection_name_exists")
+    _reject_disallowed_token_env(body.token_env)
     conn_id = str(uuid4())
     repo.create(
         id=conn_id,
@@ -176,6 +237,7 @@ async def update_connection(
         existing = repo.get_by_name(body.name)
         if existing is not None and existing["id"] != connection_id:
             raise HTTPException(status_code=409, detail="connection_name_exists")
+    _reject_disallowed_token_env(body.token_env)
     repo.update(
         connection_id,
         name=body.name,
@@ -269,9 +331,13 @@ async def test_connection(
         raise HTTPException(status_code=404, detail="connection_not_found")
 
     config = row.get("config") or {}
+    try:
+        # Re-validate immediately before the outbound call (validate-at-use)
+        # so a stored-but-now-rebound host is caught, not just at store time.
+        _validate_stack_url(config, required=True)
+    except HTTPException as exc:
+        return {"ok": False, "error": exc.detail if isinstance(exc.detail, str) else "invalid stack_url"}
     stack_url = (config.get("stack_url") or "").rstrip("/")
-    if not stack_url:
-        return {"ok": False, "error": "no stack_url in connection config"}
 
     token = _resolve_token(connection_id, row)
     if not token:
@@ -320,9 +386,9 @@ async def list_connection_tables(
         raise HTTPException(status_code=400, detail="tables_listing_only_supported_for_keboola")
 
     config = row.get("config") or {}
+    # Validate-at-use SSRF guard (also defeats DNS rebinding since store time).
+    _validate_stack_url(config, required=True)
     stack_url = (config.get("stack_url") or "").rstrip("/")
-    if not stack_url:
-        raise HTTPException(status_code=400, detail="no stack_url in connection config")
 
     token = _resolve_token(connection_id, row)
     if not token:

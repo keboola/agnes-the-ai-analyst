@@ -6,7 +6,6 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 from typing import Optional
@@ -21,6 +20,7 @@ from src.repositories import (
     audit_repo,
     notifications_script_repo,
 )
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/scripts", tags=["scripts"])
@@ -44,10 +44,7 @@ class DeployScriptRequest(BaseModel):
         # We do NOT silently normalise whitespace to None; surfacing the
         # caller's mistake at register time beats persisting an unusable value.
         if not is_valid_schedule(v):
-            raise ValueError(
-                f"schedule must be 'every Nm' / 'every Nh' / "
-                f"'daily HH:MM[,HH:MM,...]', got {v!r}"
-            )
+            raise ValueError(f"schedule must be 'every Nm' / 'every Nh' / 'daily HH:MM[,HH:MM,...]', got {v!r}")
         return v
 
 
@@ -98,8 +95,10 @@ async def deploy_script(
         source=request.source,
     )
     return ScriptResponse(
-        id=script_id, name=request.name,
-        schedule=request.schedule, owner=user["id"],
+        id=script_id,
+        name=request.name,
+        schedule=request.schedule,
+        owner=user["id"],
     )
 
 
@@ -238,15 +237,24 @@ def _validate_script_source(source: str) -> None:
     """
     blocked_patterns = [
         # Direct imports of dangerous modules
-        "import subprocess", "from subprocess",
-        "import shutil", "from shutil",
-        "import ctypes", "from ctypes",
-        "import importlib", "from importlib",
-        "import socket", "from socket",
-        "import requests", "from requests",
-        "import httpx", "from httpx",
-        "import urllib", "from urllib",
-        "import http", "from http",
+        "import subprocess",
+        "from subprocess",
+        "import shutil",
+        "from shutil",
+        "import ctypes",
+        "from ctypes",
+        "import importlib",
+        "from importlib",
+        "import socket",
+        "from socket",
+        "import requests",
+        "from requests",
+        "import httpx",
+        "from httpx",
+        "import urllib",
+        "from urllib",
+        "import http",
+        "from http",
         # Dynamic import bypasses
         "__import__",
         "importlib",
@@ -255,9 +263,12 @@ def _validate_script_source(source: str) -> None:
         "eval(",
         "compile(",
         # OS-level access
-        "import os", "from os",
-        "import sys", "from sys",
-        "import signal", "from signal",
+        "import os",
+        "from os",
+        "import sys",
+        "from sys",
+        "import signal",
+        "from signal",
         # File access bypasses
         "open(",
         "pathlib",
@@ -283,11 +294,45 @@ def _validate_script_source(source: str) -> None:
     ]
     import ast
 
-    BLOCKED_MODULES = {"os", "sys", "subprocess", "shutil", "ctypes", "importlib", "socket",
-                       "requests", "httpx", "urllib", "http", "signal", "pathlib", "builtins"}
-    BLOCKED_FUNCTIONS = {"exec", "eval", "compile", "open", "globals", "locals",
-                         "getattr", "setattr", "delattr", "breakpoint", "__import__",
-                         "vars"}
+    BLOCKED_MODULES = {
+        "os",
+        "sys",
+        "subprocess",
+        "shutil",
+        "ctypes",
+        "importlib",
+        "socket",
+        "requests",
+        "httpx",
+        "urllib",
+        "http",
+        "signal",
+        "pathlib",
+        "builtins",
+        # never-legit-in-analytics modules that reach os-level exec/spawn or the
+        # browser. Marginal hardening only — the denylist is bypassable by design
+        # (e.g. `import duckdb`), so real isolation is the actual fix (see the
+        # _execute_script docstring).
+        "posix",
+        "pty",
+        "nt",
+        "multiprocessing",
+        "webbrowser",
+    }
+    BLOCKED_FUNCTIONS = {
+        "exec",
+        "eval",
+        "compile",
+        "open",
+        "globals",
+        "locals",
+        "getattr",
+        "setattr",
+        "delattr",
+        "breakpoint",
+        "__import__",
+        "vars",
+    }
 
     try:
         tree = ast.parse(source)
@@ -316,12 +361,22 @@ def _validate_script_source(source: str) -> None:
 
 
 def _execute_script(source: str, name: str) -> dict:
-    """Execute a Python script in a sandboxed subprocess.
+    """Execute an admin-authored Python script in a subprocess.
 
-    Defense-in-depth: re-runs ``_validate_script_source`` even though the
-    deploy endpoint already validates. A bad script reaching this path would
-    indicate a registry write that bypassed the deploy contract; reject it
-    rather than spawn a subprocess.
+    SECURITY: this runs ADMIN-AUTHORED code with the Agnes server process's own
+    privileges — it is NOT a security sandbox. ``_validate_script_source`` is a
+    bypassable source denylist (defense-in-depth only): ``sys.executable``
+    resolves its venv site-packages from the interpreter location regardless of
+    the scrubbed env below, so any installed package (e.g. ``duckdb``, which
+    alone gives filesystem read/write + network) stays importable, and the child
+    runs as the server uid with no container/seccomp/namespace isolation. The
+    actual control is that every scripts endpoint is ``require_admin``
+    (god-mode) gated. Running deployed scripts inside a real isolation boundary
+    (microVM/container, dropped caps, scrubbed uid) is a tracked follow-up.
+
+    Re-runs ``_validate_script_source`` (the deploy endpoint already validates)
+    so a registry write that bypassed the deploy contract is still rejected
+    before we spawn.
     """
     _validate_script_source(source)
     data_dir = os.environ.get("DATA_DIR", "./data")
@@ -341,8 +396,10 @@ def _execute_script(source: str, name: str) -> dict:
                 "PATH": "/usr/bin:/usr/local/bin",
                 "DATA_DIR": data_dir,
                 "HOME": "/tmp",
-                # Deliberately exclude VIRTUAL_ENV and PYTHONPATH
-                # to prevent access to installed packages
+                # NOTE: excluding VIRTUAL_ENV / PYTHONPATH does NOT isolate the
+                # interpreter — sys.executable locates its site-packages from
+                # pyvenv.cfg, not these vars. Kept only to avoid leaking
+                # unrelated env into the child; it is not a security boundary.
             },
             cwd="/tmp",  # restrict working directory
         )

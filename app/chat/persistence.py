@@ -21,7 +21,14 @@ from typing import Optional
 
 import duckdb
 
-from app.chat.types import ChatMessage, ChatSession, SessionParticipant, Surface, UserWorkdir
+from app.chat.types import (
+    RELAY_PROTOCOL_VERSION,
+    ChatMessage,
+    ChatSession,
+    SessionParticipant,
+    Surface,
+    UserWorkdir,
+)
 
 
 def _gen_id(prefix: str) -> str:
@@ -35,7 +42,7 @@ def _row_to_session(row: tuple) -> ChatSession:
     # 7  last_message_at (derived via LEFT JOIN),
     # 8  message_count   (derived via LEFT JOIN),
     # 9  archived, 10 is_co_session, 11 ephemeral,
-    # 12 sandbox_id, 13 runner_pid, 14 sandbox_paused_at
+    # 12 sandbox_id, 13 runner_pid, 14 sandbox_paused_at, 15 relay_protocol_version
     return ChatSession(
         id=row[0],
         user_email=row[1],
@@ -52,6 +59,7 @@ def _row_to_session(row: tuple) -> ChatSession:
         sandbox_id=row[12],
         runner_pid=int(row[13]) if row[13] is not None else None,
         sandbox_paused_at=row[14],
+        relay_protocol_version=int(row[15]) if row[15] is not None else None,
     )
 
 
@@ -66,14 +74,14 @@ _SESSION_SELECT = (
     "COUNT(m.id) AS message_count, "
     "s.archived, s.is_co_session, s.ephemeral, "
     # Sandbox pause/resume refs — NOT indexed (DuckDB 1.5.3 FK+index bug).
-    "s.sandbox_id, s.runner_pid, s.sandbox_paused_at "
+    "s.sandbox_id, s.runner_pid, s.sandbox_paused_at, s.relay_protocol_version "
     "FROM chat_sessions s "
     "LEFT JOIN chat_messages m ON m.session_id = s.id"
 )
 _SESSION_GROUP = (
     " GROUP BY s.id, s.user_email, s.surface, s.slack_channel_id, s.slack_thread_ts, "
     "s.title, s.started_at, s.archived, s.is_co_session, s.ephemeral, "
-    "s.sandbox_id, s.runner_pid, s.sandbox_paused_at"
+    "s.sandbox_id, s.runner_pid, s.sandbox_paused_at, s.relay_protocol_version"
 )
 
 
@@ -233,22 +241,36 @@ class ChatRepository:
     # chat-session cardinality.
 
     def set_sandbox_ref(self, session_id: str, *, sandbox_id: str, runner_pid: int) -> None:
-        """Record the E2B sandbox id and runner pid; clear paused_at (live)."""
+        """Record the E2B sandbox id and runner pid; clear paused_at (live).
+
+        Also stamps ``relay_protocol_version`` with the current
+        ``RELAY_PROTOCOL_VERSION`` (Tier 1, restart-invariant reuse):
+        ``set_sandbox_ref`` is only ever called right after spawning a
+        fresh runner (or reconnecting one this process itself pushed a
+        ticket to), so the row can safely record "this session's sandbox
+        refs point at a current-protocol runner" — the durable fact
+        ``ChatManager._resume_from_row`` / ``_resume_live`` need to decide
+        resume-vs-respawn after a process restart, when the in-memory
+        ``_known_protocol_sessions`` set is empty.
+        """
         if self._sessions_pg is not None:
             self._sessions_pg.set_sandbox_ref(session_id, sandbox_id=sandbox_id, runner_pid=runner_pid)
             return
         self._conn.execute(
-            "UPDATE chat_sessions SET sandbox_id = ?, runner_pid = ?, sandbox_paused_at = NULL WHERE id = ?",
-            [sandbox_id, runner_pid, session_id],
+            "UPDATE chat_sessions SET sandbox_id = ?, runner_pid = ?, sandbox_paused_at = NULL, "
+            "relay_protocol_version = ? WHERE id = ?",
+            [sandbox_id, runner_pid, RELAY_PROTOCOL_VERSION, session_id],
         )
 
     def clear_sandbox_ref(self, session_id: str) -> None:
-        """Wipe all three sandbox columns — called on real kill/error teardown."""
+        """Wipe all three sandbox columns plus relay_protocol_version —
+        called on real kill/error teardown."""
         if self._sessions_pg is not None:
             self._sessions_pg.clear_sandbox_ref(session_id)
             return
         self._conn.execute(
-            "UPDATE chat_sessions SET sandbox_id = NULL, runner_pid = NULL, sandbox_paused_at = NULL WHERE id = ?",
+            "UPDATE chat_sessions SET sandbox_id = NULL, runner_pid = NULL, sandbox_paused_at = NULL, "
+            "relay_protocol_version = NULL WHERE id = ?",
             [session_id],
         )
 
