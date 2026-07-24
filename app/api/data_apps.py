@@ -41,7 +41,7 @@ import os
 import shutil
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import duckdb
@@ -271,6 +271,9 @@ def _mint_service_token(slug: str, owner: dict) -> tuple[str, str]:
     return token_id, jwt_token
 
 
+_GIT_CREDENTIAL_TTL = timedelta(hours=24)
+
+
 def _mint_git_credential(row: dict) -> str:
     """Mint a PAT scoped `data-app-git:<slug>` for this app's owner and
     return a clone URL with it embedded as `agnes:<jwt>@` basic-auth.
@@ -278,17 +281,24 @@ def _mint_git_credential(row: dict) -> str:
     This is the *agent's* push credential for working on the app's repo —
     independent of (and never stored as) the container's own
     `service_token_id` runtime credential minted by `_mint_service_token`.
+    Unlike that one (deliberately unbounded, mirrors upstream's "unlimited
+    per-app credentials"), this credential is scoped to a single authoring
+    session — it expires after `_GIT_CREDENTIAL_TTL` (24h), stored on both
+    the JWT's `exp` claim (via `expires_delta`) and the DB row's
+    `expires_at`, kept in sync so neither outlives the other.
     """
     owner = users_repo().get_by_id(row["owner_user_id"])
     if not owner:
         raise OwnerNotFoundError(row["owner_user_id"])
     slug = row["slug"]
     token_id = str(uuid.uuid4())
+    expires_at = datetime.now(timezone.utc) + _GIT_CREDENTIAL_TTL
     jwt_token = create_access_token(
         user_id=owner["id"],
         email=owner["email"],
         token_id=token_id,
         typ="pat",
+        expires_delta=_GIT_CREDENTIAL_TTL,
         extra_claims={"scope": f"data-app-git:{slug}"},
     )
     access_token_repo().create(
@@ -297,7 +307,7 @@ def _mint_git_credential(row: dict) -> str:
         name=f"data-app-git:{slug}",
         token_hash=hashlib.sha256(jwt_token.encode()).hexdigest(),
         prefix=token_id.replace("-", "")[:8],
-        expires_at=None,
+        expires_at=expires_at,
     )
     return f"{AGNES_INTERNAL_URL.replace('://', f'://agnes:{jwt_token}@')}/data-apps.git/{slug}"
 

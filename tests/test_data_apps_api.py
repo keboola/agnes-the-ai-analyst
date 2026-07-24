@@ -1051,3 +1051,44 @@ class TestGitCredential:
 
     def test_git_credential_stranger_403(self, client_as_other_user, seeded_repo_with_commit):
         assert client_as_other_user.post("/api/data-apps/sapp/git-credential").status_code == 403
+
+    def test_git_credential_feature_disabled_404s(self, api_env):
+        import app.instance_config as instance_config
+
+        original = instance_config._instance_config
+        instance_config._instance_config = {**(original or {}), "data_apps": {"enabled": False}}
+        try:
+            c = api_env["client"]
+            r = c.post("/api/data-apps/sapp/git-credential", headers=_auth(api_env["owner_pat"]))
+            assert r.status_code == 404
+            assert r.json()["detail"] == "data_apps_disabled"
+        finally:
+            instance_config._instance_config = original
+
+    def test_git_credential_has_24h_ttl(self, client_as_user, seeded_repo_with_commit):
+        """The minted PAT is for an authoring session, not a standing
+        credential — both the JWT `exp` and the DB row's `expires_at` must
+        be set to roughly 24h out (unlike the container's own service
+        token, which is deliberately unbounded)."""
+        r = client_as_user.post("/api/data-apps/sapp/git-credential")
+        assert r.status_code == 200, r.text
+
+        from datetime import datetime, timedelta, timezone
+
+        from src.db import get_system_db
+        from src.repositories.access_tokens import AccessTokenRepository
+
+        conn = get_system_db()
+        try:
+            tokens = AccessTokenRepository(conn).list_for_user("owner1")
+        finally:
+            conn.close()
+        row = next(t for t in tokens if t["name"] == "data-app-git:sapp")
+
+        expires_at = row["expires_at"]
+        assert expires_at is not None
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+        now = datetime.now(timezone.utc)
+        assert now < expires_at <= now + timedelta(hours=24, minutes=1)
