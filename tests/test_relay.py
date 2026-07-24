@@ -217,3 +217,115 @@ def test_relay_outbound_client_has_generous_read_timeout():
     t = captured["timeout"]
     assert isinstance(t, httpx.Timeout)
     assert t.read is not None and t.read >= 60.0, t
+
+
+def test_relay_streams_sse_chunks_incrementally():
+    """The transparent /anthropic leg must forward SSE chunks AS THEY ARRIVE
+    (chunked transfer), not buffer the whole completion — buffering collapsed
+    every token delta into one end-of-turn burst. The fake upstream gates its
+    second chunk on an event: the first chunk MUST reach the loopback client
+    while the gate is still closed (a buffering relay would hang and trip the
+    read timeout)."""
+
+    async def _run():
+        gate = asyncio.Event()
+
+        class _Resp:
+            status_code = 200
+            reason_phrase = "OK"
+            headers = {"content-type": "text/event-stream"}
+
+            async def aiter_bytes(self):
+                yield b"event: first\n\n"
+                await gate.wait()
+                yield b"event: second\n\n"
+
+            async def aread(self):
+                raise AssertionError("SSE body must not be buffered")
+
+            async def aclose(self):
+                return None
+
+        class _Client:
+            def build_request(self, method, url, content=None, headers=None):
+                return (method, url)
+
+            async def send(self, req, stream=False):
+                assert stream is True
+                return _Resp()
+
+            async def aclose(self):
+                return None
+
+        r = Relay(server_url="http://agnes:8000")
+        r.set_tickets(main="TOKMAIN", mcp="TOKMCP")
+        port = await r.start()
+        r._client = _Client()  # replace the real outbound client post-start
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"POST /anthropic/v1/messages HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\n{}")
+            await writer.drain()
+
+            # First chunk must arrive while the gate is CLOSED.
+            head = b""
+            while b"event: first" not in head:
+                head += await asyncio.wait_for(reader.read(1024), timeout=5)
+            assert b"Transfer-Encoding: chunked" in head
+            assert b"Content-Type: text/event-stream" in head
+
+            gate.set()
+            tail = head
+            while b"event: second" not in tail or b"0\r\n\r\n" not in tail:
+                tail += await asyncio.wait_for(reader.read(1024), timeout=5)
+            writer.close()
+        finally:
+            await r.stop()
+
+    asyncio.run(_run())
+
+
+def test_relay_non_sse_anthropic_response_stays_buffered():
+    """Non-stream /anthropic responses (JSON endpoints, upstream errors) keep
+    the legacy buffered Content-Length write — only event streams switch to
+    chunked forwarding."""
+
+    async def _run():
+        class _Resp:
+            status_code = 400
+            reason_phrase = "Bad Request"
+            headers = {"content-type": "application/json"}
+            content = b'{"error":{"message":"nope"}}'
+
+            async def aread(self):
+                return self.content
+
+            async def aclose(self):
+                return None
+
+        class _Client:
+            def build_request(self, method, url, content=None, headers=None):
+                return (method, url)
+
+            async def send(self, req, stream=False):
+                return _Resp()
+
+            async def aclose(self):
+                return None
+
+        r = Relay(server_url="http://agnes:8000")
+        r.set_tickets(main="TOKMAIN", mcp="TOKMCP")
+        port = await r.start()
+        r._client = _Client()
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"POST /anthropic/v1/messages HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\n{}")
+            await writer.drain()
+            data = await asyncio.wait_for(reader.read(4096), timeout=5)
+            assert b"HTTP/1.1 400" in data
+            assert b"Content-Length: 28" in data
+            assert b'{"error":{"message":"nope"}}' in data
+            writer.close()
+        finally:
+            await r.stop()
+
+    asyncio.run(_run())

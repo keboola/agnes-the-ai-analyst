@@ -32,6 +32,7 @@ from urllib.parse import unquote, urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 
 from app.auth.access import mint_co_session_jwt, require_admin
@@ -356,11 +357,7 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
     # dispatcher failure: silently bypassing the cost-routing PoC would
     # corrupt its measurements; the sandbox sees the ordinary upstream error.
     dispatcher_url = os.environ.get("LLM_DISPATCHER_URL", "").strip().rstrip("/")
-    use_dispatcher = (
-        bool(dispatcher_url)
-        and request.method == "POST"
-        and upstream_path == "/v1/messages"
-    )
+    use_dispatcher = bool(dispatcher_url) and request.method == "POST" and upstream_path == "/v1/messages"
 
     # Credential injection is the ONE thing that differs between auth modes; the
     # sandbox never carries either credential (it's added here, server-side).
@@ -420,20 +417,71 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
         headers["x-api-key"] = os.environ.get("ANTHROPIC_API_KEY", "")
 
     upstream_base = dispatcher_url if use_dispatcher else _ANTHROPIC_BASE_URL
-    async with httpx.AsyncClient(timeout=_ANTHROPIC_TIMEOUT) as client:
-        resp = await client.request(
+    # Stream-open the upstream call: status + headers arrive immediately, the
+    # body stays unread. A 2xx SSE completion is then forwarded chunk-by-chunk
+    # (StreamingResponse below) instead of buffered whole — buffering here
+    # collapsed every token delta of the model's answer into one burst at
+    # turn end, so the user stared at silence and then got the entire text
+    # at once. No ``async with``: the client must outlive this handler for
+    # the streaming case; the pass-through iterator's ``finally`` closes it.
+    client = httpx.AsyncClient(timeout=_ANTHROPIC_TIMEOUT)
+    try:
+        upstream_req = client.build_request(
             request.method,
             f"{upstream_base}{upstream_path}",
             content=raw_body,
             headers=headers,
             params=request.query_params,
         )
+        resp = await client.send(upstream_req, stream=True)
+    except BaseException:
+        await client.aclose()
+        raise
     # A 401 in WIF mode means the cached token was revoked before its declared
     # expiry — drop it so the next request re-mints.
     if wif_mode and resp.status_code == 401:
         from app.auth.wif import clear_token_cache
 
         clear_token_cache()
+
+    ctype = resp.headers.get("content-type", "")
+    if 200 <= resp.status_code < 300 and ctype.startswith("text/event-stream"):
+        # A 2xx forward clears any stale credential diagnostic — the health
+        # recorder only reads the status on the success path, so it is safe
+        # to call before the body has been consumed.
+        _record_llm_health(request.app.state, resp)
+
+        # ``aiter_bytes`` (not ``aiter_raw``) so httpx undoes any upstream
+        # ``Content-Encoding`` — that header is not forwarded, so passing
+        # still-compressed raw bytes through would corrupt the stream.
+        # Cleanup lives in a try/finally INSIDE the iterator, not a Starlette
+        # ``background=`` task: the background callback only runs on the
+        # happy path, so a client disconnect or upstream drop mid-stream
+        # (routine for completions running tens of seconds) would leak the
+        # upstream response + per-request client — the finalized/abandoned
+        # generator still runs its ``finally`` (RBAC review on #1020).
+        async def _passthrough():
+            try:
+                async for chunk in resp.aiter_bytes():
+                    yield chunk
+            finally:
+                await resp.aclose()
+                await client.aclose()
+
+        return StreamingResponse(
+            _passthrough(),
+            status_code=resp.status_code,
+            media_type=ctype,
+        )
+
+    # Non-stream responses (JSON endpoints such as count_tokens, upstream
+    # errors): buffer exactly as before — the credential diagnostics below
+    # inspect the (small) body.
+    try:
+        await resp.aread()
+    finally:
+        await resp.aclose()
+        await client.aclose()
 
     # Surface an actionable operator diagnostic for LLM-credential failures.
     # An auth (401/403) or credit-exhaustion (400) response otherwise reaches

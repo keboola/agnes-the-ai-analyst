@@ -22,6 +22,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.29] - 2026-07-24
+
+### Fixed
+
+- **Cloud-chat answers now stream token-by-token.** Both credential hops on
+  the model-call path buffered the LLM's SSE response whole — the broker's
+  Anthropic proxy read the full completion before responding, and the
+  in-sandbox loopback relay did the same again (writing a single
+  Content-Length body) — so every token delta collapsed into one burst at
+  turn end: the user stared at silence for the whole generation, then the
+  entire answer appeared at once. The broker now stream-opens the upstream
+  call and forwards 2xx `text/event-stream` responses chunk-by-chunk
+  (closing the upstream in the background once drained), and the relay
+  forwards event streams with chunked transfer encoding, flushing each
+  chunk to the in-sandbox CLI as it arrives. Non-stream responses (JSON
+  endpoints, upstream errors) keep the exact buffered behavior, including
+  the operator credential diagnostics.
+
+### Removed
+
+### Internal
+
+### Security
+
 ## [0.76.28] - 2026-07-24
 
 ### Changed

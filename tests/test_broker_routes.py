@@ -25,6 +25,48 @@ from src.repositories import chat_session_repo, ticket_repo
 from src.repositories.users import UserRepository
 
 
+def _shim_response(resp):
+    """Give a canned fake response the async surface the broker's stream-open
+    forward now uses (``aread``/``aclose``); a no-op for responses that
+    already have it (the real httpx ones)."""
+    if not hasattr(resp, "aread"):
+
+        async def _aread():
+            return resp.content
+
+        resp.aread = _aread
+    if not hasattr(resp, "aclose"):
+
+        async def _aclose():
+            return None
+
+        resp.aclose = _aclose
+    return resp
+
+
+class _StreamShimMixin:
+    """Bridge the broker's stream-open call shape (``build_request`` +
+    ``send(stream=True)`` + ``aclose``) back onto the fakes' legacy
+    ``request()`` capture methods, so every existing capture/stub keeps
+    working unchanged against the streaming forward."""
+
+    def build_request(self, method, url, *, content=None, headers=None, params=None):
+        return {"method": method, "url": url, "content": content, "headers": headers, "params": params}
+
+    async def send(self, req, stream=False):
+        resp = await self.request(
+            req["method"],
+            req["url"],
+            content=req["content"],
+            headers=req["headers"],
+            params=req["params"],
+        )
+        return _shim_response(resp)
+
+    async def aclose(self):
+        return None
+
+
 @pytest.fixture
 def broker_session(e2e_env):
     """A seeded user + chat session, standing in for a spawned sandbox."""
@@ -177,7 +219,7 @@ def test_anthropic_proxy_uses_generous_read_timeout(broker_app, monkeypatch):
         headers = {"content-type": "application/json"}
         content = b"{}"
 
-    class _FakeClient:
+    class _FakeClient(_StreamShimMixin):
         """Delegates to the real client for the test harness's own
         transport-backed client; fakes only the broker's outbound anthropic
         client (constructed with ``timeout=`` and no transport)."""
@@ -222,7 +264,7 @@ def test_anthropic_proxy_uses_generous_read_timeout(broker_app, monkeypatch):
     assert t.read is not None and t.read >= 60.0, t
 
 
-class _HeaderCapturingClient:
+class _HeaderCapturingClient(_StreamShimMixin):
     """Fake httpx.AsyncClient that delegates the harness's transport-backed
     client to the real one and captures the headers the broker's outbound
     anthropic client sends. Shared by the auth-mode tests below."""
@@ -352,7 +394,7 @@ def test_anthropic_proxy_wif_failure_returns_generic_detail(broker_app, monkeypa
     assert "workload_identity token exchange failed" in body
 
 
-class _StubResponseClient:
+class _StubResponseClient(_StreamShimMixin):
     """Fake httpx.AsyncClient whose outbound forward returns a canned upstream
     response, so we can drive the broker's LLM-credential health signal (#884).
 
@@ -419,7 +461,9 @@ def test_anthropic_proxy_records_credit_diagnostic(broker_app, monkeypatch):
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static")
     _StubResponseClient.status_code = 400
-    _StubResponseClient.body = b'{"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the API."}}'
+    _StubResponseClient.body = (
+        b'{"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the API."}}'
+    )
     monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _StubResponseClient)
     tok = ticket_repo().mint("chat_credit", "main", ttl_seconds=60)
 
@@ -630,9 +674,7 @@ def test_dispatcher_optin_other_subpaths_stay_on_anthropic(broker_app, monkeypat
 
     r = _post_broker_anthropic(broker_app, "/v1/messages/count_tokens", "chat_disp2")
     assert r.status_code == 200
-    assert _UrlCapturingClient._captured_url == (
-        "https://api.anthropic.com/v1/messages/count_tokens"
-    )
+    assert _UrlCapturingClient._captured_url == ("https://api.anthropic.com/v1/messages/count_tokens")
     h = _lower_keys(_UrlCapturingClient._captured)
     assert h.get("x-api-key") == "sk-ant-static-KEY"
 
@@ -696,3 +738,136 @@ def test_dispatcher_optin_empty_key_logs_warning(broker_app, monkeypatch, caplog
     assert r.status_code == 200
     assert _UrlCapturingClient._captured_url == "http://127.0.0.1:8600/v1/messages"
     assert any("LLM_DISPATCHER_API_KEY is empty" in rec.message for rec in caplog.records)
+
+
+def test_anthropic_sse_streams_through_without_buffering(broker_app, monkeypatch):
+    """A 2xx ``text/event-stream`` completion must flow through the broker as
+    a stream: the outbound forward opens with ``stream=True``, the body is
+    NEVER buffered server-side (``aread`` not called — buffering here
+    collapsed every token delta into one end-of-turn burst), the SSE
+    content-type reaches the caller, and the upstream response + client are
+    closed once the stream is consumed."""
+    import app.api.broker as broker_mod
+
+    calls: dict = {}
+    real_cls = httpx.AsyncClient
+
+    class _SSEClient(_StreamShimMixin):
+        def __init__(self, *a, **k):
+            self._real = real_cls(*a, **k) if "transport" in k else None
+
+        async def __aenter__(self):
+            return await self._real.__aenter__() if self._real else self
+
+        async def __aexit__(self, *a):
+            return await self._real.__aexit__(*a) if self._real else False
+
+        async def send(self, req, stream=False):
+            calls["stream"] = stream
+
+            class _R:
+                status_code = 200
+                headers = {"content-type": "text/event-stream"}
+
+                async def aiter_bytes(self):
+                    yield b"event: message_start\n\n"
+                    yield b"event: content_block_delta\n\n"
+
+                async def aread(self):
+                    calls["aread"] = True
+                    return b""
+
+                async def aclose(self):
+                    calls["closed"] = True
+
+            return _R()
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _SSEClient)
+    tok = ticket_repo().mint("chat_sse", "main", ttl_seconds=60)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                "/api/broker/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {tok}"},
+                content=b'{"model":"x","stream":true}',
+            )
+
+    r = asyncio.run(_run())
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/event-stream")
+    assert b"message_start" in r.content and b"content_block_delta" in r.content
+    assert calls["stream"] is True, "outbound forward must open with stream=True"
+    assert "aread" not in calls, "SSE body must not be buffered server-side"
+    assert calls.get("closed") is True, "upstream must be closed after the stream drains"
+
+
+def test_anthropic_sse_upstream_closed_even_when_stream_breaks(broker_app, monkeypatch):
+    """Regression (RBAC review on #1020): Starlette's ``background=`` callback
+    only runs on the happy path — if the SSE body iterator raises mid-stream
+    (upstream drop) or the client walks away, a background-task cleanup never
+    fires and the upstream response + per-request client leak. Cleanup lives
+    in the pass-through iterator's ``finally``, which runs even when the
+    stream breaks."""
+    import app.api.broker as broker_mod
+
+    calls: dict = {}
+    real_cls = httpx.AsyncClient
+
+    class _BreakingSSEClient(_StreamShimMixin):
+        def __init__(self, *a, **k):
+            self._real = real_cls(*a, **k) if "transport" in k else None
+
+        async def __aenter__(self):
+            return await self._real.__aenter__() if self._real else self
+
+        async def __aexit__(self, *a):
+            return await self._real.__aexit__(*a) if self._real else False
+
+        async def send(self, req, stream=False):
+            class _R:
+                status_code = 200
+                headers = {"content-type": "text/event-stream"}
+
+                async def aiter_bytes(self):
+                    yield b"event: message_start\n\n"
+                    raise RuntimeError("simulated upstream drop mid-stream")
+
+                async def aread(self):
+                    return b""
+
+                async def aclose(self):
+                    calls["resp_closed"] = True
+
+            return _R()
+
+        async def aclose(self):
+            calls["client_closed"] = True
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _BreakingSSEClient)
+    tok = ticket_repo().mint("chat_sse_break", "main", ttl_seconds=60)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            try:
+                await c.post(
+                    "/api/broker/anthropic/v1/messages",
+                    headers={"Authorization": f"Bearer {tok}"},
+                    content=b'{"model":"x","stream":true}',
+                )
+            except Exception:
+                # The mid-stream break propagates through the ASGI transport —
+                # expected; the assertion is about cleanup, not the error.
+                pass
+
+    asyncio.run(_run())
+    assert calls.get("resp_closed") is True, "upstream response must close when the stream breaks"
+    assert calls.get("client_closed") is True, "per-request client must close when the stream breaks"
