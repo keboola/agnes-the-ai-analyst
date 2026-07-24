@@ -16,6 +16,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.28] - 2026-07-24
+
+### Fixed
+
 - **Materialized Keboola tables no longer OOM the sync on large results.**
   The typed-parquet retype (the all-VARCHAR fix) loaded the whole
   materialized parquet into one in-memory `pyarrow.Table` before casting —
