@@ -7,6 +7,7 @@ Commands:
   upload    <id> <path...>   (multipart POST per file)
   reingest  <id> <file_id>   (re-run ingestion for one file)
   rm        <id>       [--yes]
+  rm-file   <id> <file_id>   [--yes]
 """
 
 from __future__ import annotations
@@ -185,13 +186,25 @@ def upload_files(
         readable=True,
         help="One or more local file paths to upload",
     ),
+    logical_path: Optional[str] = typer.Option(
+        None,
+        "--path",
+        help="Logical id for upsert (single file only). Re-uploading the same "
+        "--path REPLACES the existing file instead of adding a duplicate.",
+    ),
 ):
     """Upload one or more files into a collection (multipart POST per file).
 
     Each file is sent as a separate request.  The server's extension
     allowlist determines whether a file lands as ``pending`` (tier1/tier2)
     or ``rejected`` (unsupported type).
+
+    Pass ``--path`` to give a single file a stable logical identity so
+    re-uploading it upserts (replaces) rather than duplicates.
     """
+    if logical_path is not None and len(paths) != 1:
+        typer.echo("--path can only be used when uploading a single file", err=True)
+        raise typer.Exit(2)
     any_error = False
     for path in paths:
         fname = path.name
@@ -199,8 +212,11 @@ def upload_files(
         files = {
             "files": (fname, file_bytes, "application/octet-stream"),
         }
+        data = {"paths": logical_path} if logical_path is not None else None
         try:
-            results = api_post_multipart(f"/api/collections/{collection_id}/files", files=files)
+            results = api_post_multipart(
+                f"/api/collections/{collection_id}/files", files=files, data=data
+            )
         except V2ClientError as exc:
             # api_post_multipart raises on ALL 4xx, INCLUDING 422. The upload
             # endpoint returns 422 with the full per-file result list when some
@@ -269,3 +285,27 @@ def remove_collection(
         typer.echo(str(exc), err=True)
         raise typer.Exit(1)
     typer.echo(f"Deleted: {collection_id}")
+
+
+# ---------------------------------------------------------------------------
+# rm-file
+# ---------------------------------------------------------------------------
+
+
+@collections_app.command("rm-file")
+def remove_file(
+    collection_id: str = typer.Argument(..., help="Collection id (col_...)"),
+    file_id: str = typer.Argument(..., help="File id (cf_...) from `collections show`"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Delete one file from a collection (requires access to the collection)."""
+    if not yes:
+        confirmed = typer.confirm(f"Delete file {file_id} from {collection_id}?")
+        if not confirmed:
+            raise typer.Abort()
+    try:
+        api_delete(f"/api/collections/{collection_id}/files/{file_id}")
+    except V2ClientError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Deleted file: {file_id}")

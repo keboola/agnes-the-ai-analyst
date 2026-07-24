@@ -1,0 +1,3 @@
+{"role": "assistant", "content": "So forecasted churn is computed monthly by summing projected cancellations across active subscriptions, divided by the total active subscriptions at the start of the period — is that right?"}
+{"role": "user", "content": "That's right, forecasted churn is computed monthly by summing projected cancellations across active subscriptions, divided by the total active subscriptions at the start of the period."}
+{"role": "assistant", "content": "Great, thanks for confirming."}

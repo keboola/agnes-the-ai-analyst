@@ -280,3 +280,106 @@ def test_set_status_needs_review_roundtrip(repo):
     row = repo.get(fid)
     assert row["processing_status"] == "needs_review"
     assert row["processing_detail"]["reason"] == "extraction produced empty table"
+
+
+def test_path_roundtrips_and_defaults_none(repo):
+    """`path` (v96 upsert identity) persists, and defaults to None when omitted."""
+    with_path = repo.add(
+        corpus_id=CORPUS_ID,
+        filename="storage-api.md",
+        sha256="p1",
+        file_type="md",
+        size_bytes=10,
+        storage_path="/tmp/storage-api.md",
+        path="apis/storage-api.md",
+    )
+    without_path = repo.add(
+        corpus_id=CORPUS_ID,
+        filename="loose.md",
+        sha256="p2",
+        file_type="md",
+        size_bytes=10,
+        storage_path="/tmp/loose.md",
+    )
+    assert repo.get(with_path)["path"] == "apis/storage-api.md"
+    assert repo.get(without_path)["path"] is None
+
+
+def test_get_by_path_finds_row(repo):
+    fid = repo.add(
+        corpus_id=CORPUS_ID,
+        filename="concepts.md",
+        sha256="g1",
+        file_type="md",
+        size_bytes=10,
+        storage_path="/tmp/concepts.md",
+        path="concepts/overview.md",
+    )
+    hit = repo.get_by_path(CORPUS_ID, "concepts/overview.md")
+    assert hit is not None
+    assert hit["id"] == fid
+    # Wrong corpus / missing path / None path all return None.
+    assert repo.get_by_path("col_other", "concepts/overview.md") is None
+    assert repo.get_by_path(CORPUS_ID, "nope.md") is None
+    assert repo.get_by_path(CORPUS_ID, None) is None
+
+
+def test_count_by_storage_path(repo):
+    """Refcount helper: how many rows in a corpus share a storage_path."""
+    repo.add(
+        corpus_id=CORPUS_ID,
+        filename="one.md",
+        sha256="shared",
+        file_type="md",
+        size_bytes=4,
+        storage_path="/blobs/shared.md",
+    )
+    repo.add(
+        corpus_id=CORPUS_ID,
+        filename="two.md",
+        sha256="shared",
+        file_type="md",
+        size_bytes=4,
+        storage_path="/blobs/shared.md",
+    )
+    assert repo.count_by_storage_path(CORPUS_ID, "/blobs/shared.md") == 2
+    assert repo.count_by_storage_path(CORPUS_ID, "/blobs/absent.md") == 0
+    assert repo.count_by_storage_path("col_other", "/blobs/shared.md") == 0
+    assert repo.count_by_storage_path(CORPUS_ID, None) == 0
+
+
+def test_duplicate_path_rejected_by_unique_index(repo):
+    """The (corpus_id, path) unique index forbids a second row on the same path."""
+    repo.add(
+        corpus_id=CORPUS_ID,
+        filename="a.md",
+        sha256="x",
+        file_type="md",
+        size_bytes=1,
+        storage_path="/p/a.md",
+        path="docs/a.md",
+    )
+    with pytest.raises(Exception):
+        repo.add(
+            corpus_id=CORPUS_ID,
+            filename="a-again.md",
+            sha256="y",
+            file_type="md",
+            size_bytes=1,
+            storage_path="/p/a-again.md",
+            path="docs/a.md",
+        )
+
+
+def test_multiple_null_paths_allowed(repo):
+    """path=NULL rows are exempt from the unique index (NULLs distinct)."""
+    for i in range(3):
+        repo.add(
+            corpus_id=CORPUS_ID,
+            filename=f"loose{i}.md",
+            sha256=f"s{i}",
+            file_type="md",
+            size_bytes=1,
+            storage_path=f"/p/loose{i}.md",
+        )
+    assert len(repo.list_for_corpus(CORPUS_ID)) == 3

@@ -1,18 +1,18 @@
-"""User journey state — per-user onboarding progress (DuckDB v97).
+"""User journey state — per-user onboarding progress (DuckDB v98).
 
-Renumbered from v92 to v97 (and re-chained onto 0043_data_apps_v96) after
-upstream's connect_hint/glossary/jobs/usage-fix/data_apps migrations claimed
-v92..v96 first.
+Renumbered from v92 to v98 (and re-chained onto 0044_corpus_files_path_v97)
+after upstream's connect_hint/glossary/jobs/usage-fix/data_apps/corpus_files_path
+migrations claimed v92..v97 first.
 
-Revision ID: 0044_user_journey_state_v97
-Revises: 0043_data_apps_v96
+Revision ID: 0045_user_journey_state_v98
+Revises: 0044_corpus_files_path_v97
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0044_user_journey_state_v97"
-down_revision: str = "0043_data_apps_v96"
+revision: str = "0045_user_journey_state_v98"
+down_revision: str = "0044_corpus_files_path_v97"
 branch_labels = None
 depends_on = None
 
