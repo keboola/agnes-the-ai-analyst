@@ -9,6 +9,7 @@ On Postgres the parent ``chat_sessions`` rollup columns
 DuckDB 1.5.3 FK+index false-violation bug that forced read-time derivation
 does not apply here.
 """
+
 from __future__ import annotations
 
 import json
@@ -101,9 +102,7 @@ class ChatMessagePgRepository:
             created_at=now,
         )
 
-    def list_messages(
-        self, session_id: str, *, after_id: Optional[str] = None, limit: int = 500
-    ) -> list[ChatMessage]:
+    def list_messages(self, session_id: str, *, after_id: Optional[str] = None, limit: int = 500) -> list[ChatMessage]:
         with self._engine.connect() as conn:
             cutoff = None
             if after_id:
@@ -123,6 +122,43 @@ class ChatMessagePgRepository:
             sql += " ORDER BY created_at ASC LIMIT :limit"
             params["limit"] = limit
             rows = conn.execute(sa.text(sql), params).mappings().all()
+        return [
+            ChatMessage(
+                id=r["id"],
+                session_id=r["session_id"],
+                role=r["role"],
+                content=r["content"],
+                tool_calls=_decode_tool_calls(r["tool_calls"]),
+                tokens_in=r["tokens_in"],
+                tokens_out=r["tokens_out"],
+                model=r["model"],
+                sender_email=r["sender_email"],
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
+
+    def list_recent_messages(self, session_id: str, *, limit: int = 500) -> list[ChatMessage]:
+        """Newest-first slice of the conversation — the counterpart to
+        ``list_messages``'s oldest-first ``LIMIT``. A caller that only cares
+        about the tail of a long conversation (redelivering the pending
+        question, building a restore transcript) must use this, not
+        ``list_messages``: that method's ``ORDER BY created_at ASC LIMIT``
+        returns the OLDEST ``limit`` rows, so for a chat past ``limit``
+        messages its last element is nowhere near the actual latest turn."""
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    sa.text(
+                        "SELECT id, session_id, role, content, tool_calls, tokens_in, "
+                        "tokens_out, model, sender_email, created_at FROM chat_messages "
+                        "WHERE session_id = :session_id ORDER BY created_at DESC LIMIT :limit"
+                    ),
+                    {"session_id": session_id, "limit": limit},
+                )
+                .mappings()
+                .all()
+            )
         return [
             ChatMessage(
                 id=r["id"],
