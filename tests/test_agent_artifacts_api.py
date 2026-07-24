@@ -223,6 +223,26 @@ def test_harvest_stops_after_max_files_cap(fake_store, fake_repo):
     assert len(result) == 2
 
 
+def test_harvest_byte_cap_is_cumulative_per_session(fake_store, fake_repo):
+    """max_bytes must bound the SUM of bytes harvested this call, not each
+    file individually — three 4-byte files with max_bytes=10 should stop
+    after two (8 bytes), skipping the third rather than allowing all three
+    (12 bytes total) through just because each is under the cap alone."""
+    from app.chat.artifact_harvest import harvest_session_artifacts
+
+    handle = FakeHandle(
+        outputs={"a.txt": b"aaaa", "b.txt": b"bbbb", "c.txt": b"cccc"},
+    )
+    result = asyncio.run(harvest_session_artifacts("sess-cumulative", None, "owner-1", handle, max_bytes=10))
+
+    assert len(result) == 2
+    total = sum(r["size_bytes"] for r in result)
+    assert total <= 10
+    harvested_names = {r["filename"] for r in result}
+    assert harvested_names.issubset({"a.txt", "b.txt", "c.txt"})
+    assert len(fake_repo.rows) == 2
+
+
 def test_harvest_sanitizes_path_traversal_filename(fake_store, fake_repo):
     from app.chat.artifact_harvest import harvest_session_artifacts
 
@@ -241,6 +261,35 @@ def test_harvest_strips_crlf_from_filename(fake_store, fake_repo):
     assert len(result) == 1
     assert "\r" not in result[0]["filename"]
     assert "\n" not in result[0]["filename"]
+
+
+def test_sanitize_filename_strips_double_quote():
+    """A raw filename containing `"` must not survive into the sanitized
+    basename — otherwise a Content-Disposition header built as
+    `filename="{name}"` breaks out of the quoted string early."""
+    from app.chat.artifact_harvest import sanitize_filename
+
+    assert '"' not in sanitize_filename('a".txt')
+    assert '"' not in sanitize_filename('evil".txt"; x=y')
+
+
+def test_harvest_twice_dedupes_same_object_key(fake_store, fake_repo):
+    """Re-harvesting a session (e.g. once at run completion, once again at
+    DELETE teardown) must not create a second `agent_artifacts` row for a
+    file it already harvested — one row per object_key, not two."""
+    from app.chat.artifact_harvest import harvest_session_artifacts
+
+    handle = FakeHandle(outputs={"report.csv": b"a,b,c\n1,2,3\n"})
+
+    first = asyncio.run(harvest_session_artifacts("sess-dedupe", None, "owner-1", handle))
+    assert len(first) == 1
+
+    second = asyncio.run(harvest_session_artifacts("sess-dedupe", None, "owner-1", handle))
+    assert second == []
+
+    assert len(fake_repo.rows) == 1
+    object_keys = {r["object_key"] for r in fake_repo.rows.values()}
+    assert object_keys == {"agent-artifacts/sess-dedupe/report.csv"}
 
 
 def test_harvest_handle_without_files_api_returns_empty(fake_store, fake_repo):
@@ -458,6 +507,40 @@ def test_download_artifact_sanitizes_filename_in_header(env, monkeypatch):
     assert r.status_code == 200
     assert 'filename="evil"' in r.headers["content-disposition"]
     assert ".." not in r.headers["content-disposition"]
+
+
+def test_download_artifact_quote_in_filename_produces_well_formed_header(env, monkeypatch):
+    """A stored filename containing `"` (e.g. from a pre-fix row, or any
+    path that bypassed sanitize_filename before storage) must not produce
+    a malformed `filename="a".txt"` Content-Disposition header — the quote
+    is stripped so the header's quoted string stays well-formed."""
+    import app.api.agent_sessions as agent_sessions
+
+    session_id = _create_session(env, monkeypatch)
+    store = FakeObjectStore()
+    key = f"agent-artifacts/{session_id}/quoted"
+    store.put_bytes(key, b"data", "abc")
+    monkeypatch.setattr(agent_sessions, "object_store", lambda: store)
+
+    artifact_id = _seed_artifact(
+        session_id,
+        env["agent_id"],
+        filename='a".txt',
+        object_key=key,
+        content_type="text/plain",
+    )
+
+    r = env["client"].get(
+        f"/api/v1/sessions/{session_id}/artifacts/{artifact_id}",
+        headers=_auth(env["owner_token"]),
+    )
+    assert r.status_code == 200
+    header = r.headers["content-disposition"]
+    # Well-formed: exactly two quote characters, the opening/closing pair
+    # around the filename value — a quote embedded in the filename itself
+    # would otherwise close the value early and leave a dangling `.txt"`.
+    assert header.count('"') == 2
+    assert header == 'attachment; filename="a.txt"'
 
 
 def test_download_unknown_artifact_returns_404(env, monkeypatch):

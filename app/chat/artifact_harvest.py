@@ -23,11 +23,13 @@ they are simply not treated as harvestable "artifacts".
 
 **Filenames are attacker-controlled input.** An in-VM filename is chosen by
 whatever the agent's tool calls did — nothing stops a compromised or
-adversarial run from writing a file named ``../../etc/passwd`` or
-``evil\\r\\nX-Injected: true``. Every filename is sanitized to a bare,
-CR/LF-free basename (:func:`sanitize_filename`) before it is used to build
-the object-store key or served back in a ``Content-Disposition`` header —
-this defeats both path-traversal-into-the-key and HTTP header injection.
+adversarial run from writing a file named ``../../etc/passwd``,
+``evil\\r\\nX-Injected: true``, or ``a".txt``. Every filename is sanitized
+to a bare, CR/LF/quote-free basename (:func:`sanitize_filename`) before it
+is used to build the object-store key or served back in a
+``Content-Disposition`` header — this defeats path-traversal-into-the-key,
+HTTP header injection, and quote-breakout of the header's ``filename="..."``
+value.
 
 **Callers, never the runner itself.** This module is invoked from:
 
@@ -85,19 +87,22 @@ OBJECT_KEY_PREFIX = "agent-artifacts"
 def sanitize_filename(raw: str) -> str:
     """Collapse an agent-chosen in-VM filename to a safe, flat basename.
 
-    Two attacks defeated:
+    Three attacks defeated:
     - path traversal into the object-store key / a served download header
       (``../../etc/passwd`` -> ``passwd`` via ``os.path.basename``, which
       also collapses any embedded path separators regardless of depth);
     - HTTP response-header injection via embedded CR/LF (stripped before
       ``os.path.basename`` runs, so a name like ``evil\\r\\nX-Injected:
-      true`` becomes a single flat token, not a header-splitting payload).
+      true`` becomes a single flat token, not a header-splitting payload);
+    - quote-breakout in a ``Content-Disposition: ...; filename="..."``
+      header (``"`` is stripped too, so a name like ``a".txt`` can't close
+      the quoted string early and inject trailing header syntax).
 
     An empty result (``""``, ``"."``, or ``".."`` after stripping) falls
     back to ``"unnamed"`` rather than producing a hidden or root-referring
     object key.
     """
-    cleaned = raw.replace("\r", "").replace("\n", "")
+    cleaned = raw.replace("\r", "").replace("\n", "").replace('"', "")
     name = os.path.basename(cleaned)
     if not name or name in (".", ".."):
         name = "unnamed"
@@ -183,8 +188,18 @@ async def harvest_session_artifacts(
 
     Caps are best-effort guardrails, not a promise of exhaustive capture:
     ``max_files`` stops the scan after that many files are harvested
-    (later entries are never looked at); ``max_bytes`` skips (but does not
-    abort the scan for) any single file over that size.
+    (later entries are never looked at); ``max_bytes`` is a **per-session
+    cumulative** cap — a running total of bytes harvested so far this call
+    — and a file is skipped (but does not abort the scan) once harvesting
+    it would push that running total over the cap, even if the individual
+    file itself is small.
+
+    Already-harvested files (same ``object_key`` already present in
+    ``agent_artifacts_repo().list_for_session(session_id)``) are skipped
+    without re-inserting a row — this function can be called more than
+    once for the same session (one-shot completion, then again at `DELETE
+    /api/v1/sessions/{id}` teardown) and must not create duplicate rows
+    for files it already harvested.
     """
     store = object_store()
     if store is None:
@@ -215,7 +230,17 @@ async def harvest_session_artifacts(
         )
         return []
 
+    try:
+        existing_keys = {row["object_key"] for row in agent_artifacts_repo().list_for_session(session_id)}
+    except Exception:
+        logger.exception(
+            "harvest_session_artifacts: list_for_session failed for session %s — proceeding without dedupe",
+            session_id,
+        )
+        existing_keys = set()
+
     results: list[dict] = []
+    bytes_harvested = 0
     for entry in entries:
         if len(results) >= max_files:
             logger.info(
@@ -231,6 +256,16 @@ async def harvest_session_artifacts(
             continue
 
         safe_name = sanitize_filename(raw_name)
+        object_key = f"{OBJECT_KEY_PREFIX}/{session_id}/{safe_name}"
+
+        if object_key in existing_keys:
+            logger.info(
+                "harvest_session_artifacts: %s already harvested for session %s — skipping",
+                object_key,
+                session_id,
+            )
+            continue
+
         remote_path = f"{outputs_path}/{raw_name}"
         try:
             data = await _read_bytes(files_api, remote_path)
@@ -242,17 +277,19 @@ async def harvest_session_artifacts(
             )
             continue
 
-        if len(data) > max_bytes:
+        if bytes_harvested + len(data) > max_bytes:
             logger.warning(
-                "harvest_session_artifacts: %s (%d bytes) exceeds cap of %d bytes — skipping",
+                "harvest_session_artifacts: %s (%d bytes) would push session %s's cumulative "
+                "harvest past the %d byte cap (already at %d bytes) — skipping",
                 safe_name,
                 len(data),
+                session_id,
                 max_bytes,
+                bytes_harvested,
             )
             continue
 
         md5 = hashlib.md5(data).hexdigest()
-        object_key = f"{OBJECT_KEY_PREFIX}/{session_id}/{safe_name}"
         content_type = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
 
         try:
@@ -287,6 +324,8 @@ async def harvest_session_artifacts(
             )
             continue
 
+        bytes_harvested += len(data)
+        existing_keys.add(object_key)
         results.append(
             {
                 "id": artifact_id,

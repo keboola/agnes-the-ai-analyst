@@ -93,12 +93,15 @@ class ChatConfig:
     # LLM call.
     agent_api_budget_cache_ttl_s: int = 60
     # Per-session artifact harvest caps (V1b Task 5,
-    # ``app.chat.artifact_harvest``): files under the sandbox's ``outputs/``
-    # dir past ``artifact_max_bytes`` are skipped (logged, scan continues);
-    # the scan stops entirely after ``artifact_max_files`` files harvested.
-    # Both are best-effort guardrails against a run that fills the outputs
-    # dir with an unbounded number/size of files, not a retention policy —
-    # retention (GC of already-harvested rows/blobs) is a later task.
+    # ``app.chat.artifact_harvest``): ``agent_api_artifact_max_bytes`` is a
+    # CUMULATIVE cap on the total bytes harvested for a session across all
+    # its files (not a per-file limit) — a file is skipped (logged, scan
+    # continues) once harvesting it would push the running total over the
+    # cap. The scan stops entirely after ``agent_api_artifact_max_files``
+    # files harvested. Both are best-effort guardrails against a run that
+    # fills the outputs dir with an unbounded number/size of files, not a
+    # retention policy — retention (GC of already-harvested rows/blobs) is
+    # a later task.
     agent_api_artifact_max_bytes: int = 25 * 1024 * 1024
     agent_api_artifact_max_files: int = 20
     slack: "SlackConfig" = field(default_factory=SlackConfig)
