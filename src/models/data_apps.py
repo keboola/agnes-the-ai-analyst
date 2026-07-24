@@ -40,7 +40,7 @@ class DataApp(Base):
     idle_timeout_s: Mapped[int | None] = mapped_column(Integer, server_default=text("1800"), nullable=True)
     sleep_mode: Mapped[str | None] = mapped_column(String, server_default=text("'recreate'"), nullable=True)
     service_token_id: Mapped[str | None] = mapped_column(String, server_default=text("''"), nullable=True)
-    # v98: draft model — a draft row points back at its production app via
+    # v99: draft model — a draft row points back at its production app via
     # parent_app_id, is flagged is_draft so list(include_drafts=False)
     # excludes it, and records the git branch it was built from.
     parent_app_id: Mapped[str | None] = mapped_column(String, server_default=text("''"), nullable=True)
