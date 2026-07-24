@@ -9,6 +9,7 @@ carries ON DELETE CASCADE (migration 0016), so participant rows are removed
 automatically when a session is hard-deleted; the explicit DuckDB pre-delete
 makes the same intent visible on the in-process side.
 """
+
 from __future__ import annotations
 
 import secrets
@@ -51,6 +52,9 @@ def _row_to_session(row) -> ChatSession:
         archived=bool(row["archived"]),
         is_co_session=bool(row["is_co_session"]),
         ephemeral=bool(row["ephemeral"]),
+        sandbox_id=row["sandbox_id"],
+        runner_pid=int(row["runner_pid"]) if row["runner_pid"] is not None else None,
+        sandbox_paused_at=row["sandbox_paused_at"],
     )
 
 
@@ -59,7 +63,12 @@ class ChatSessionParticipantPgRepository:
         self._engine = engine
 
     def add_session_participant(
-        self, *, session_id: str, user_email: str, user_id: str, role: str,
+        self,
+        *,
+        session_id: str,
+        user_email: str,
+        user_id: str,
+        role: str,
     ) -> SessionParticipant:
         pid = _gen_id("part")
         now = datetime.now(timezone.utc)
@@ -70,24 +79,32 @@ class ChatSessionParticipantPgRepository:
                     "(id, session_id, user_email, user_id, role, joined_at, left_at) "
                     "VALUES (:id, :sid, :ue, :uid, :role, :joined, NULL)"
                 ),
-                {"id": pid, "sid": session_id, "ue": user_email,
-                 "uid": user_id, "role": role, "joined": now},
+                {"id": pid, "sid": session_id, "ue": user_email, "uid": user_id, "role": role, "joined": now},
             )
         return SessionParticipant(
-            id=pid, session_id=session_id, user_email=user_email,
-            user_id=user_id, role=role, joined_at=now, left_at=None,
+            id=pid,
+            session_id=session_id,
+            user_email=user_email,
+            user_id=user_id,
+            role=role,
+            joined_at=now,
+            left_at=None,
         )
 
     def get_session_participants(self, session_id: str) -> list[SessionParticipant]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    "SELECT * FROM chat_session_participants "
-                    "WHERE session_id = :sid AND left_at IS NULL "
-                    "ORDER BY joined_at ASC"
-                ),
-                {"sid": session_id},
-            ).mappings().all()
+            rows = (
+                conn.execute(
+                    sa.text(
+                        "SELECT * FROM chat_session_participants "
+                        "WHERE session_id = :sid AND left_at IS NULL "
+                        "ORDER BY joined_at ASC"
+                    ),
+                    {"sid": session_id},
+                )
+                .mappings()
+                .all()
+            )
         return [_row_to_participant(r) for r in rows]
 
     def remove_participant(self, session_id: str, user_email: str) -> None:
@@ -112,15 +129,19 @@ class ChatSessionParticipantPgRepository:
 
     def list_sessions_for_participant(self, user_email: str) -> list[ChatSession]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    "SELECT s.* FROM chat_sessions s "
-                    "JOIN chat_session_participants p ON p.session_id = s.id "
-                    "WHERE p.user_email = :ue AND p.left_at IS NULL "
-                    "ORDER BY s.last_message_at DESC NULLS LAST, s.started_at DESC"
-                ),
-                {"ue": user_email},
-            ).mappings().all()
+            rows = (
+                conn.execute(
+                    sa.text(
+                        "SELECT s.* FROM chat_sessions s "
+                        "JOIN chat_session_participants p ON p.session_id = s.id "
+                        "WHERE p.user_email = :ue AND p.left_at IS NULL "
+                        "ORDER BY s.last_message_at DESC NULLS LAST, s.started_at DESC"
+                    ),
+                    {"ue": user_email},
+                )
+                .mappings()
+                .all()
+            )
         return [_row_to_session(r) for r in rows]
 
     def fork_session_as_co_session(
@@ -162,8 +183,7 @@ class ChatSessionParticipantPgRepository:
                         "(id, session_id, user_email, user_id, role, joined_at, left_at) "
                         "VALUES (:id, :sid, :ue, :uid, :role, :now, NULL)"
                     ),
-                    {"id": _gen_id("part"), "sid": chat_id, "ue": email,
-                     "uid": uid, "role": role, "now": now},
+                    {"id": _gen_id("part"), "sid": chat_id, "ue": email, "uid": uid, "role": role, "now": now},
                 )
             if seed_summary:
                 conn.execute(
@@ -172,8 +192,7 @@ class ChatSessionParticipantPgRepository:
                         "(id, session_id, role, content, created_at) "
                         "VALUES (:id, :sid, 'system', :content, :now)"
                     ),
-                    {"id": _gen_id("msg"), "sid": chat_id,
-                     "content": seed_summary, "now": now},
+                    {"id": _gen_id("msg"), "sid": chat_id, "content": seed_summary, "now": now},
                 )
                 # Maintain the parent rollup the same way append_message does,
                 # so message_count / last_message_at are not left stale at 0.
@@ -186,9 +205,9 @@ class ChatSessionParticipantPgRepository:
                     {"now": now, "sid": chat_id},
                 )
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT * FROM chat_sessions WHERE id = :id"), {"id": chat_id}
-            ).mappings().first()
+            row = (
+                conn.execute(sa.text("SELECT * FROM chat_sessions WHERE id = :id"), {"id": chat_id}).mappings().first()
+            )
         assert row is not None
         return _row_to_session(row)
 
@@ -221,6 +240,7 @@ class ChatSessionParticipantPgRepository:
                 {"id": chat_id, "ue": owner_email, "now": now},
             )
             import json
+
             for msg in source_msgs:
                 conn.execute(
                     sa.text(
@@ -246,10 +266,7 @@ class ChatSessionParticipantPgRepository:
             msg_count = len(source_msgs)
             if msg_count > 0:
                 conn.execute(
-                    sa.text(
-                        "UPDATE chat_sessions SET message_count = :n, last_message_at = :now "
-                        "WHERE id = :id"
-                    ),
+                    sa.text("UPDATE chat_sessions SET message_count = :n, last_message_at = :now WHERE id = :id"),
                     {"n": msg_count, "now": now, "id": chat_id},
                 )
         return chat_id

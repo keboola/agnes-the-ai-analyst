@@ -289,6 +289,33 @@ def test_list_sessions_for_participant(sessions, participants):
     assert s.id in {x.id for x in found}
 
 
+def test_participant_session_hydration_matches_main_repo(sessions, participants):
+    """Regression: the participants-repo ``_row_to_session`` must hydrate the
+    sandbox lifecycle columns (sandbox_id / runner_pid / sandbox_paused_at)
+    exactly like ``chat_sessions_pg._row_to_session``.
+
+    A prior gap silently defaulted the three fields to None, so a co-session
+    with a live sandbox looked sandbox-less when reached via the participant
+    path — latent breakage for pause/resume takeover of co-driven sessions.
+    """
+    s = sessions.create_session(user_email="o@x.com", surface=Surface.WEB)
+    participants.add_session_participant(session_id=s.id, user_email="c@x.com", user_id="u-c", role="collaborator")
+    # Give the session a live sandbox ref plus a paused marker.
+    sessions.set_sandbox_ref(s.id, sandbox_id="sbx_co", runner_pid=4242)
+    ts = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+    sessions.set_sandbox_paused_at(s.id, ts)
+
+    via_main = sessions.get_session(s.id)
+    via_participant = next(x for x in participants.list_sessions_for_participant("c@x.com") if x.id == s.id)
+
+    # Field-for-field equality (ChatSession is a dataclass).
+    assert via_participant == via_main
+    # ...and the sandbox fields are actually populated, not trivially both-None.
+    assert via_participant.sandbox_id == "sbx_co"
+    assert via_participant.runner_pid == 4242
+    assert via_participant.sandbox_paused_at is not None
+
+
 def test_fork_session_as_co_session_pg(sessions, participants, messages):
     s0 = sessions.create_session(user_email="o@x.com", surface=Surface.WEB)
     s1 = participants.fork_session_as_co_session(
