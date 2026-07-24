@@ -14,6 +14,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.34] - 2026-07-24
+
+### Added
+
+### Changed
+
 - **BREAKING: `agnes setup bootstrap` no longer takes `--password`.** The
   first-admin password is now read from `AGNES_BOOTSTRAP_PASSWORD` or prompted
   with hidden input via `--set-password`, so it never lands on the process argv
