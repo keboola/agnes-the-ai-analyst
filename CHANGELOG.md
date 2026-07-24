@@ -37,6 +37,28 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   deploy/wake can't have its state clobbered by a stale reap write landing
   after it.
 
+## [0.76.22] - 2026-07-24
+
+### Fixed
+
+- **Corporate Memory no longer accumulates near-duplicate pending items when
+  the same fact is re-stated with different wording**: the
+  `USER_VERIFICATION` ingestion path deduplicated new items by an exact hash
+  of `(title, content)`, so a paraphrase of an already-known fact — restated
+  by a different analyst, or re-extracted from a different session — hashed
+  differently and landed as a second `pending` `knowledge_items` row. A
+  pre-insert fuzzy dedup gate now runs when the exact-hash check misses,
+  merging into the existing item (recording verification evidence there)
+  instead of creating a new row — but only on strong evidence: lexical
+  title+content similarity above a high bar on its own, or entity-tag
+  overlap corroborated by a moderate amount of shared wording. Entity-tag
+  overlap alone no longer merges — two distinct same-domain facts routinely
+  share a couple of generic tags — it still flags an advisory
+  `likely_duplicate` relation for review instead. A `correction` is never
+  merged by the gate: it may be overturning a stored fact rather than
+  restating it (and tends to be a near-verbatim reword of the item it
+  contradicts), so it is routed to the create path where contradiction
+  detection runs, rather than being absorbed as confirming evidence.
 ## [0.76.20] - 2026-07-24
 
 ### Internal
