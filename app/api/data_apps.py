@@ -56,6 +56,7 @@ from typing import Any, Optional
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import exc as sa_exc
 
 from app.auth.access import can_access, is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
@@ -700,7 +701,7 @@ async def create_data_app(
 
         try:
             app_id = repo.create(**kwargs)
-        except duckdb.ConstraintException:
+        except (duckdb.ConstraintException, sa_exc.IntegrityError):
             raise HTTPException(status_code=409, detail="slug_exists")
 
         if payload.repo_mode == "internal":
@@ -726,8 +727,11 @@ async def get_data_app(slug: str, user: dict = Depends(get_current_user)):
     # Drafts are hidden from the list endpoint (`include_drafts=False`);
     # this is where they surface instead — inlined on their PROD parent's
     # detail response. Empty for a draft's own detail (drafts don't have
-    # drafts — `create_draft` rejects `parent_is_draft`).
-    if not row.get("is_draft"):
+    # drafts — `create_draft` rejects `parent_is_draft`). Gated the same as
+    # the draft-mutating endpoints (owner/Admin only, not any grantee that
+    # merely passed `_can_view`) — a read grant on the parent app is not
+    # meant to expose in-progress draft branch/state/URL metadata.
+    if not row.get("is_draft") and (user["id"] == row["owner_user_id"] or is_user_admin(user["id"])):
         out["drafts"] = [
             {
                 "id": d["id"],
@@ -868,7 +872,7 @@ async def create_draft(
             branch=payload.branch,
             owner_user_id=parent["owner_user_id"],
         )
-    except duckdb.ConstraintException:
+    except (duckdb.ConstraintException, sa_exc.IntegrityError):
         raise HTTPException(status_code=409, detail="slug_exists")
 
     from src.data_apps.git_repos import ensure_branch

@@ -529,6 +529,34 @@ class TestDetailRbac:
         r = client_as_other_user.get("/api/data-apps/rbac4")
         assert r.status_code == 200
 
+    def test_granted_group_does_not_see_drafts(self, client_as_user, client_as_other_user, seeded_repo_with_commit):
+        """A read `resource_grants` row on the parent app lets a non-owner
+        view the app itself, but must not expose in-progress draft
+        branch/state/URL metadata (that's owner/Admin-only, same gate as
+        the draft-mutating endpoints) — a grantee response must omit the
+        `drafts` key entirely, not just return it empty."""
+        client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"})
+
+        from src.db import get_system_db
+        from src.repositories.user_groups import UserGroupsRepository
+        from src.repositories.user_group_members import UserGroupMembersRepository
+        from src.repositories.resource_grants import ResourceGrantsRepository
+
+        conn = get_system_db()
+        try:
+            gid = UserGroupsRepository(conn).create(name="Viewers", description="d")["id"]
+            UserGroupMembersRepository(conn).add_member("other1", gid, source="admin")
+            ResourceGrantsRepository(conn).create(group_id=gid, resource_type="data_app", resource_id="sapp")
+        finally:
+            conn.close()
+
+        r_owner = client_as_user.get("/api/data-apps/sapp")
+        assert r_owner.status_code == 200 and len(r_owner.json()["drafts"]) == 1
+
+        r_grantee = client_as_other_user.get("/api/data-apps/sapp")
+        assert r_grantee.status_code == 200
+        assert "drafts" not in r_grantee.json()
+
     def test_missing_app_404s(self, client_as_user):
         r = client_as_user.get("/api/data-apps/does-not-exist")
         assert r.status_code == 404

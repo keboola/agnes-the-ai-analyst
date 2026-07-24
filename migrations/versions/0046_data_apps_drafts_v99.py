@@ -1,13 +1,13 @@
 """data_apps draft model — parent_app_id, is_draft, draft_branch
 
-Mirrors DuckDB ``_v97_to_v98``. Adds the columns that let a data app have
+Mirrors DuckDB ``_v98_to_v99``. Adds the columns that let a data app have
 draft copies: ``parent_app_id`` points a draft row back at its production
 app, ``is_draft`` flags the row as a draft (excluded from ``list()`` when
 ``include_drafts=False``), and ``draft_branch`` records the git branch the
 draft was built from.
 
-Revision ID: 0045_data_apps_drafts_v98
-Revises: 0044_corpus_files_path_v97
+Revision ID: 0046_data_apps_drafts_v99
+Revises: 0045_chat_relay_proto_v98
 Create Date: 2026-07-24
 
 """
