@@ -112,7 +112,7 @@ class TestChatEmptyStatePill:
         # The Knowledge Layer banner — the product-model diagram (the
         # aria-label carries the joined headline; the cards remain).
         assert "One knowledge layer. Everywhere you work." in body
-        assert "Ask Kai in Agnes" in body
+        assert "Use Agnes in Kai" in body
         assert "Use your own AI tools" in body
         assert "Connect your tools" in body
         assert 'id="rdb-actions"' in body
