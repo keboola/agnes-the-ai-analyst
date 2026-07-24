@@ -22,6 +22,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.21] - 2026-07-24
+
+### Changed
+
+- `/catalog/semantics` metric detail now renders the full **description**
+  (markdown → sanitized HTML via the existing `render_safe` pipeline, same
+  injection contract as marketplace detail pages) plus a
+  **type · unit · grain** meta line and the metric's **dimensions**.
+  Previously the description existed only as the one-line truncated row
+  preview and never appeared in the expanded detail, and type/unit/grain/
+  dimensions were stored but shown nowhere: the page showed the SQL but
+  hid the meaning. The row preview and the client-side filter index now use
+  a plain-text projection of the description (new `render_plain` in
+  `app/markdown_render.py`) so literal markdown markup (`**`, `#`) no
+  longer leaks into previews, and the filter also matches **synonyms**
+  (metrics are routinely searched by their spoken aliases, which were
+  stored but not indexed).
+
 ## [0.76.17] - 2026-07-23
 
 ### Added

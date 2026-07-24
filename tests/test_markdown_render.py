@@ -206,3 +206,48 @@ def test_render_safe_adds_noopener_noreferrer_rel():
     markdown."""
     out = render_safe("[a](https://example.com)")
     assert "noopener" in out and "noreferrer" in out
+
+
+# ---------------------------------------------------------------------------
+# render_plain: plain-text projection for previews / filter indexes
+# ---------------------------------------------------------------------------
+
+
+def test_render_plain_strips_markdown_markup():
+    from app.markdown_render import render_plain
+
+    out = render_plain("**Bold** and `code` and *em*.")
+    assert out == "Bold and code and em."
+
+
+def test_render_plain_separates_block_boundaries():
+    """Adjacent blocks must not fuse into one word when tags are stripped."""
+    from app.markdown_render import render_plain
+
+    out = render_plain("## Heading\n\nParagraph one.\n\n- item a\n- item b")
+    assert "Heading Paragraph one." in out
+    assert "item a item b" in out
+
+
+def test_render_plain_unescapes_entities():
+    from app.markdown_render import render_plain
+
+    assert render_plain("a & b < c") == "a & b < c"
+
+
+def test_render_plain_empty_and_none():
+    from app.markdown_render import render_plain
+
+    assert render_plain(None) == ""
+    assert render_plain("") == ""
+
+
+def test_render_plain_emits_no_tags():
+    """Whatever the input (markdown, inline HTML, links), the output is
+    tag-free text; it is injected with normal Jinja escaping, so any
+    surviving `<` would render literally, but none should survive."""
+    from app.markdown_render import render_plain
+
+    out = render_plain("[x](https://example.com)\n\n| a | b |\n|---|---|\n| 1 | 2 |")
+    assert "<" not in out
+    assert "x" in out and "1 2" in out
