@@ -1994,7 +1994,7 @@
           <div class="form-group" style="display:flex; gap:12px;">
             <div style="flex:1;">
               <label class="form-label">Icon</label>
-              <input id="cdp-icon" type="text" class="form-input" value="📦" maxlength="4">
+              <input id="cdp-icon" type="text" class="form-input" value="" maxlength="4">
             </div>
             <div style="flex:1;">
               <label class="form-label">Color</label>
@@ -2152,7 +2152,7 @@
         document.getElementById('cdp-slug').value =
           (typed || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
         document.getElementById('cdp-desc').value = '';
-        document.getElementById('cdp-icon').value = '📦';
+        document.getElementById('cdp-icon').value = '';
         document.getElementById('cdp-color').value = '#e0f2fe';
         // Reset cover image inputs on every open so a previous typed-and-
         // cancelled value doesn't leak into the new package.
@@ -3581,11 +3581,11 @@
     }
 
     /**
-     * Package icons are stored as a free-text `icon` field. Older packages use
-     * an emoji (e.g. "📦"); packages seeded/imported with a Heroicons-style
-     * name (e.g. "user", "currency-dollar") used to render the raw name as
-     * text. Map the known names to inline SVG; fall back to the raw value
-     * (emoji or whatever was stored) so emoji packages keep working.
+     * Package icons are stored as a free-text `icon` field. Packages that used
+     * a Heroicons-style name (e.g. "user", "currency-dollar") used to render
+     * the raw name as text. Map the known names to inline SVG; fall back to
+     * the raw value so legacy stored values (including any user-entered text
+     * or icon names not in the map) keep displaying.
      * Path data: Heroicons outline (MIT). Add a name → path entry as needed.
      */
     var PACKAGE_ICON_PATHS = {
@@ -5060,9 +5060,9 @@
         if (_editOriginalQueryMode && newMode !== _editOriginalQueryMode) {
             var msg;
             if (_editOriginalQueryMode === 'materialized' && newMode === 'remote') {
-                msg = '⚠ Switching Synced locally → Live from BigQuery will drop the materialized parquet on the next sync. Analysts who already pulled this table will start getting live BQ queries instead of a local copy; the sync schedule becomes ignored.';
+                msg = 'Warning: Switching Synced locally → Live from BigQuery will drop the materialized parquet on the next sync. Analysts who already pulled this table will start getting live BQ queries instead of a local copy; the sync schedule becomes ignored.';
             } else {
-                msg = '⚠ Switching Live from BigQuery → Synced locally: the next scheduled sync runs a SELECT and writes a parquet. Analysts will start reading the local copy on their next `agnes pull`. Remember to set a sync schedule.';
+                msg = 'Warning: Switching Live from BigQuery → Synced locally: the next scheduled sync runs a SELECT and writes a parquet. Analysts will start reading the local copy on their next `agnes pull`. Remember to set a sync schedule.';
             }
             warn.textContent = msg;
             warn.style.display = '';
@@ -5655,7 +5655,7 @@
                     + '</div>';
             } else {
                 pkgsEl.innerHTML = pkgsWithTables.map(function(p) {
-                    var iconRaw = p.icon || '📦';
+                    var iconRaw = p.icon || '';
                     var color = p.color || '#f3f4f6';
                     var name = String(p.name || '');
                     var slug = String(p.slug || '');
@@ -5725,7 +5725,7 @@
                     +          'background:rgba(255,247,205,0.4); border-radius:10px;">'
                     + '  <header style="display:flex; align-items:center; gap:12px; '
                     +                 'padding:12px 16px; border-bottom:1px solid #FCD34D;">'
-                    + '    <span style="font-size:16px;">⚠️</span>'
+                    + '    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="ui-ico"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>'
                     + '    <strong style="flex:1; font-size:14px;">Unpackaged tables '
                     +      '<span style="color:var(--text-secondary); font-weight:500;">'
                     +      '(' + unpackagedNeedsAttention.length + ' — needs packaging)</span></strong>'

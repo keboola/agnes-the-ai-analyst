@@ -13,7 +13,7 @@
     background: var(--ds-surface); border: 1px solid var(--ds-border);
     border-radius: 12px; padding: 16px; margin-bottom: 12px; position: relative;
   }
-  .memory-item.is-required { background: #fffbeb; border-color: #f59e0b; }
+  .memory-item.is-required { background: var(--ds-accent-warn-bg); border-color: var(--ds-accent-warn-line); }
   .memory-item__header { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
   .memory-item__title { margin: 0; font-size: 16px; font-weight: 600; flex: 1; }
   .memory-item__badges { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
@@ -22,10 +22,10 @@
     font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px;
     background: color-mix(in srgb, var(--ds-primary) 12%, transparent); color: var(--ds-primary-dark);
   }
-  .badge--category { background: rgba(124, 58, 237, 0.14); color: #6d28d9; }
-  .badge--source   { background: rgba(16, 183, 127, 0.14); color: #0e9b6a; }
-  .badge--required { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
-  .badge--status   { background: rgba(100, 116, 139, 0.18); color: #475569; }
+  .badge--category { background: var(--ds-kind-agent-soft); color: var(--ds-kind-agent); }
+  .badge--source   { background: var(--ds-kind-skill-soft); color: var(--ds-kind-skill); }
+  .badge--required { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); border: 1px solid var(--ds-accent-warn-line); }
+  .badge--status   { background: var(--ds-surface-sunken); color: var(--ds-text-secondary); }
   .memory-item__content { font-size: 14px; line-height: 1.6; color: var(--ds-text-primary); white-space: pre-wrap; }
   .memory-item__footer {
     display: flex; align-items: center; gap: 16px; margin-top: 12px; padding-top: 10px;
@@ -41,7 +41,7 @@
     border-color: var(--ds-primary); color: var(--ds-primary);
     background: color-mix(in srgb, var(--ds-primary) 6%, transparent);
   }
-  .memory-item__votes button[data-vote="down"]:hover { border-color: #b91c1c; color: #b91c1c; background: rgba(185, 28, 28, 0.06); }
+  .memory-item__votes button[data-vote="down"]:hover { border-color: var(--ds-accent-danger-line); color: var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg); }
   .vote-icon { width: 14px; height: 14px; flex-shrink: 0; }
   .vote-count { font-variant-numeric: tabular-nums; }
   .memory-item__contributors { display: inline-flex; gap: 4px; align-items: center; }
