@@ -14,9 +14,10 @@ Scope of the ban (deliberately narrow):
     (→ ← ↗ ↓ …) and the monochrome ✓ / ✗ / ✕ marks. Converting those to
     SVG across every button/link would be a large, low-value churn.
 
-`ALLOWLIST` holds the surfaces not yet swept — the async-hydrated marketplace
-item detail template (folded in with its own redesign pass). The list may only
-shrink: do not add to it.
+`ALLOWLIST` is now drained — every user-facing template, including the admin
+surfaces and the async-hydrated marketplace detail pages, has been swept. The
+list may only shrink: do not add to it. A new template that needs a glyph must
+use the shared line-icon set, not a pictographic emoji.
 """
 
 import re
@@ -26,10 +27,8 @@ TEMPLATES = Path("app/web/templates")
 
 _EMOJI = re.compile("[\U0001f000-\U0001faff\U00002705\U000026a0\U0000fe0f]")
 
-# Not yet swept — tracked for follow-up. Shrink this, never grow it.
-ALLOWLIST = {
-    "marketplace_item_detail.html",  # async-hydrated; own redesign pass
-}
+# Drained — every user-facing template is swept. Shrink only, never grow.
+ALLOWLIST: set[str] = set()
 
 
 def _in_scope(rel: str) -> bool:
