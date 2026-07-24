@@ -106,6 +106,15 @@ async def notify_listener() -> None:
             logger.info("job wakeup: LISTEN %s active", NOTIFY_CHANNEL)
             async for _notify in aconn.notifies():
                 signal()
+            # notifies() ended without raising — the server closed the
+            # connection gracefully. Back off same as the error path below;
+            # otherwise a connection that keeps ending cleanly reconnects in
+            # a tight loop instead of waiting.
+            logger.warning(
+                "job wakeup: LISTEN stream ended; reconnecting in %.0fs (poll-only meanwhile)",
+                _RECONNECT_BACKOFF_S,
+            )
+            await asyncio.sleep(_RECONNECT_BACKOFF_S)
         except asyncio.CancelledError:
             raise
         except Exception:
