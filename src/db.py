@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 97
+SCHEMA_VERSION = 98
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -1275,7 +1275,11 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     -- Sandbox pause/resume refs (un-indexed — DuckDB 1.5.3 FK+index bug).
     sandbox_id        VARCHAR,
     runner_pid        INTEGER,
-    sandbox_paused_at TIMESTAMP
+    sandbox_paused_at TIMESTAMP,
+    -- Relay protocol version of the runner sandbox_id/runner_pid point at
+    -- (v98, Tier 1 restart-invariant reuse). NULL = unknown/legacy — see
+    -- app.chat.types.RELAY_PROTOCOL_VERSION's docstring.
+    relay_protocol_version INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_user
     ON chat_sessions(user_email, last_message_at);
@@ -6455,6 +6459,31 @@ def _v96_to_v97(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 97")
 
 
+def _v97_to_v98(conn: duckdb.DuckDBPyConnection) -> None:
+    """v97→v98: ``chat_sessions.relay_protocol_version`` — restart-invariant
+    sandbox reuse (Tier 1, chat-over-E2B architecture pass).
+
+    Persists the relay protocol version the runner bound to a session's
+    ``sandbox_id``/``runner_pid`` refs speaks. Previously this fact lived
+    only in the in-process ``ChatManager._known_protocol_sessions`` set,
+    which is always empty right after a restart — forcing every resumable
+    session to be destroyed and fresh-spawned rather than reconnected, even
+    though its paused sandbox and runner were perfectly fine. NULL (every
+    existing row) means unknown/legacy, preserving the exact same
+    conservative fresh-spawn behavior until a session is next spawned/
+    resumed and the column gets stamped by ``set_sandbox_ref``.
+
+    Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
+    Un-indexed, matching the other two sandbox-ref columns (DuckDB 1.5.3
+    FK+index bug — see the ``chat_sessions`` DDL comment in
+    ``_SYSTEM_SCHEMA``).
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('chat_sessions')").fetchall()}
+    if "relay_protocol_version" not in cols:
+        conn.execute("ALTER TABLE chat_sessions ADD COLUMN relay_protocol_version INTEGER")
+    conn.execute("UPDATE schema_version SET version = 98")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6851,6 +6880,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # _SYSTEM_SCHEMA already declares it on fresh installs (no-op
             # ALTER here).
             _v96_to_v97(conn)
+            # v97→v98: chat_sessions.relay_protocol_version (Tier 1
+            # restart-invariant sandbox reuse). _SYSTEM_SCHEMA already
+            # declares it on fresh installs (no-op ALTER here).
+            _v97_to_v98(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7098,6 +7131,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v95_to_v96(conn)
             if current < 97:
                 _v96_to_v97(conn)
+            if current < 98:
+                _v97_to_v98(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
