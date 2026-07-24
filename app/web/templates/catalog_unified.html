@@ -50,7 +50,7 @@
     <h1>Catalog</h1>
     <p class="lede">Reuse the skills, plugins, and data your colleagues already built — so you don't start from scratch. Add what your work needs to <a href="/stack">My Stack</a>.</p>
   </div>
-  <a class="cc-btn" href="/store/new" style="flex-shrink:0">+ Submit a skill or plugin</a>
+  <a class="cc-btn" href="/store/new" id="browse-submit-btn" style="flex-shrink:0">+ Submit a skill or plugin</a>
 </div>
 
 {# ── "Recommended for you" — catalog assets not yet in the caller's stack
@@ -73,7 +73,7 @@
 
 {# Search is served globally by the rail's #global-search combobox
    (js/global_search.js) — no page-local search box here. #}
-<div class="uc-kindtabs" role="tablist" aria-label="Catalog kinds">
+<div class="uc-kindtabs" id="browse-catalog-zone" role="tablist" aria-label="Catalog kinds">
   <button class="uc-kindtab on" data-kind="data" role="tab" aria-selected="true"><span class="uc-dot uc-dot-data"></span>Data<span class="uc-count">{{ data_cards|length }}</span></button>
   <button class="uc-kindtab" data-kind="plugins" role="tab" aria-selected="false"><span class="uc-dot uc-dot-plugins"></span>Plugins<span class="uc-count" id="uc-count-plugins">—</span></button>
   <button class="uc-kindtab" data-kind="memory" role="tab" aria-selected="false"><span class="uc-dot uc-dot-memory"></span>Memory<span class="uc-count">{{ memory_cards|length }}</span></button>

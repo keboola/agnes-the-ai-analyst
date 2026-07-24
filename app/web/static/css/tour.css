@@ -1,0 +1,354 @@
+/* tour.css — Coach-mark engine styles for the Stack Tour.
+ *
+ * INERT by default: no selectors fire until .tour-overlay is present in the
+ * DOM (injected by tour.js). Default blue+topnav chrome is byte-identical
+ * before and after this sheet loads.
+ *
+ * Design-system rules:
+ *   - --ds-* tokens only — no raw hex, no var(--primary).
+ *   - Motion via --ds-motion-* / --ds-ease-*; honor prefers-reduced-motion.
+ *   - Scrim is non-blocking (pointer-events:none); only the popover captures.
+ *   - z-index ladder: scrim 9000, spotlight 9010, popover 9020.
+ */
+
+/* ── Scrim ─────────────────────────────────────────────────────────────────
+   Light, non-blocking overlay. pointer-events:none keeps the page interactive
+   so the user can freely dismiss or scroll without clicking the popover. */
+.tour-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  /* Translucent tint using the shadow color family (no raw hex). */
+  background: rgba(15, 27, 58, 0.38);
+  pointer-events: none;
+  /* Fade in */
+  animation: tour-scrim-in var(--ds-motion-med) var(--ds-ease-enter) both;
+}
+
+@keyframes tour-scrim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-overlay { animation: none; }
+}
+
+/* ── Spotlight host ─────────────────────────────────────────────────────────
+   The tour-spotlight class is added to the anchor element while a step is
+   active. It lifts the target above the scrim and gives it a backing plate +
+   an animated gradient ring. */
+.tour-spotlight {
+  position: relative;
+  z-index: 9010 !important;
+  border-radius: var(--ds-radius-pill);
+  /* Backing plate so the element always reads against white, regardless of
+     the page surface behind it. */
+  box-shadow:
+    0 0 0 6px var(--ds-surface),
+    0 0 0 8px var(--ds-primary);
+  outline: none;
+  /* Animated ring — a rotating conic-gradient that traces the border. */
+  --_ring-size: 3px;
+}
+
+.tour-spotlight::after {
+  content: '';
+  position: absolute;
+  inset: calc(-1 * var(--_ring-size) - 6px);
+  border-radius: inherit;
+  background: conic-gradient(
+    from 0deg,
+    var(--ds-primary) 0deg 90deg,
+    transparent 90deg 270deg,
+    var(--ds-primary) 270deg 360deg
+  );
+  z-index: -1;
+  animation: tour-ring-spin 1.6s linear infinite;
+  opacity: 0.55;
+}
+
+@keyframes tour-ring-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-spotlight::after {
+    animation: none;
+    background: var(--ds-primary);
+    opacity: 0.35;
+  }
+}
+
+/* ── Popover ─────────────────────────────────────────────────────────────────
+   role="dialog" aria-modal="false". Sits above scrim + spotlight.
+   pointer-events:auto so only the popover captures interactions. */
+.tour-popover {
+  position: fixed;
+  z-index: 9020;
+  width: min(380px, calc(100vw - 24px));
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: 16px;
+  box-shadow: var(--ds-shadow-lg);
+  pointer-events: auto;
+  /* Slide + fade entrance */
+  animation: tour-pop-in var(--ds-motion-med) var(--ds-ease-enter) both;
+  overflow: hidden;
+}
+
+@keyframes tour-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-popover { animation: none; }
+}
+
+/* Header strip — Agnes orb + label */
+.tour-popover-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--ds-border-light);
+}
+
+.tour-popover-header-orb {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--ds-primary-light);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.tour-popover-header-orb svg {
+  width: 16px;
+  height: 16px;
+  color: var(--ds-primary);
+}
+
+.tour-popover-header-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ds-text-muted);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+/* Body — title + description + bullets */
+.tour-popover-body {
+  padding: 14px 16px 12px;
+}
+
+.tour-popover-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--ds-text-primary);
+  margin: 0 0 8px;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
+
+.tour-popover-desc {
+  font-size: 14px;
+  color: var(--ds-text-secondary);
+  margin: 0 0 10px;
+  line-height: 1.6;
+}
+
+.tour-popover-points {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tour-popover-point {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ds-text-secondary);
+  line-height: 1.5;
+}
+
+.tour-popover-point::before {
+  content: '';
+  flex-shrink: 0;
+  margin-top: 6px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ds-primary);
+}
+
+/* Footer — progress dots (left) + action buttons (right) */
+.tour-popover-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--ds-border-light);
+}
+
+/* Progress dots */
+.tour-dots {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.tour-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ds-border);
+  transition: background var(--ds-motion-fast) var(--ds-ease-standard),
+              transform var(--ds-motion-fast) var(--ds-ease-standard);
+}
+
+.tour-dot.on {
+  background: var(--ds-primary);
+  transform: scale(1.3);
+}
+
+/* Action buttons row */
+.tour-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* Shared base for all tour buttons */
+.tour-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 8px;
+  padding: 6px 12px;
+  transition:
+    background var(--ds-motion-fast) var(--ds-ease-standard),
+    color var(--ds-motion-fast) var(--ds-ease-standard),
+    opacity var(--ds-motion-fast) var(--ds-ease-standard);
+  white-space: nowrap;
+}
+
+.tour-btn:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* "I'll explore on my own" — ghost */
+.tour-btn-end {
+  background: transparent;
+  color: var(--ds-text-muted);
+}
+
+.tour-btn-end:hover {
+  background: var(--ds-surface-dim);
+  color: var(--ds-text-secondary);
+}
+
+/* Back */
+.tour-btn-back {
+  background: var(--ds-surface-dim);
+  color: var(--ds-text-secondary);
+}
+
+.tour-btn-back:hover {
+  background: var(--ds-surface-sunken);
+  color: var(--ds-text-primary);
+}
+
+.tour-btn-back:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+/* Next / Done */
+.tour-btn-next {
+  background: var(--ds-primary);
+  color: var(--ds-text-inverse);
+}
+
+.tour-btn-next:hover {
+  background: var(--ds-primary-dark);
+}
+
+/* Final choice — "Finish onboarding" (primary) */
+.tour-btn-finish {
+  background: var(--ds-primary);
+  color: var(--ds-text-inverse);
+}
+
+.tour-btn-finish:hover {
+  background: var(--ds-primary-dark);
+}
+
+/* Final choice — "Connect my AI tools" (secondary) */
+.tour-btn-connect {
+  background: var(--ds-surface-dim);
+  color: var(--ds-text-primary);
+  border: 1px solid var(--ds-border);
+}
+
+.tour-btn-connect:hover {
+  background: var(--ds-surface-sunken);
+}
+
+/* Final step: footer stacks vertically on small screens */
+.tour-popover--final .tour-popover-footer {
+  flex-direction: column-reverse;
+  align-items: stretch;
+}
+
+.tour-popover--final .tour-actions {
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tour-popover--final .tour-actions .tour-btn {
+  justify-content: center;
+  width: 100%;
+  padding: 8px 14px;
+  font-size: 14px;
+}
+
+.tour-popover--final .tour-dots {
+  justify-content: center;
+  margin-top: 4px;
+}
+
+/* Paper theme — slightly warmer popover shadow + tighter radius */
+[data-theme="paper"] .tour-popover {
+  border-radius: 14px;
+  box-shadow:
+    0 4px 24px rgba(15, 23, 42, 0.10),
+    0 1px 4px rgba(15, 23, 42, 0.06);
+}
+
+[data-theme="paper"] .tour-spotlight {
+  box-shadow:
+    0 0 0 6px var(--ds-surface),
+    0 0 0 8px var(--ds-primary);
+}

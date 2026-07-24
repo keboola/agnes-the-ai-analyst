@@ -106,7 +106,7 @@
     <h1>My Stack</h1>
     <p class="lede">Your personal knowledge space. Everything here is available to {{ instance_brand_short or 'Agnes' }} and your connected AI tools when they answer for you.</p>
   </div>
-  <button type="button" class="cc-btn cc-btn--primary" data-new-upload style="flex-shrink:0">+ New upload</button>
+  <button type="button" class="cc-btn cc-btn--primary" data-new-upload id="new-upload-btn" style="flex-shrink:0">+ New upload</button>
 </div>
 
 {# ── Workspace stats — counts of what's in the stack, not estate telemetry.
@@ -148,7 +148,7 @@
 {# ── Everything in your Stack — the single inventory over all kinds.
      Search + kind tabs + sort over table rows; Plugins hydrate into
      rows client-side. #}
-<section class="stk-section">
+<section class="stk-section" id="stack-explore-zone">
   <div class="stk-section-head">
     <h2>Everything in your Stack</h2>
   </div>
