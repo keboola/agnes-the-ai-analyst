@@ -35,6 +35,74 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.23] - 2026-07-24
+
+### Fixed
+
+- **Data Apps**: a manual `deploy`/`stop` and an auto-wake for the same app
+  can no longer race each other into calling the runner sidecar's `up()`
+  concurrently (the sidecar does an unlocked check-then-act container
+  swap). A single `dataapp:op:<slug>` lease, shared by `deploy_data_app`,
+  `stop_data_app`, `delete_data_app`, and the ingress proxy's wake-on-request
+  path, now serializes all four; the scheduler's idle-reap sweep takes the
+  same lease non-blockingly (skip-and-retry-next-tick) per row, and writes
+  its `sleeping` state transition before releasing it so a concurrent
+  deploy/wake can't have its state clobbered by a stale reap write landing
+  after it.
+
+## [0.76.22] - 2026-07-24
+
+### Fixed
+
+- **Corporate Memory no longer accumulates near-duplicate pending items when
+  the same fact is re-stated with different wording**: the
+  `USER_VERIFICATION` ingestion path deduplicated new items by an exact hash
+  of `(title, content)`, so a paraphrase of an already-known fact — restated
+  by a different analyst, or re-extracted from a different session — hashed
+  differently and landed as a second `pending` `knowledge_items` row. A
+  pre-insert fuzzy dedup gate now runs when the exact-hash check misses,
+  merging into the existing item (recording verification evidence there)
+  instead of creating a new row — but only on strong evidence: lexical
+  title+content similarity above a high bar on its own, or entity-tag
+  overlap corroborated by a moderate amount of shared wording. Entity-tag
+  overlap alone no longer merges — two distinct same-domain facts routinely
+  share a couple of generic tags — it still flags an advisory
+  `likely_duplicate` relation for review instead. A `correction` is never
+  merged by the gate: it may be overturning a stored fact rather than
+  restating it (and tends to be a near-verbatim reword of the item it
+  contradicts), so it is routed to the create path where contradiction
+  detection runs, rather than being absorbed as confirming evidence.
+## [0.76.20] - 2026-07-24
+
+### Internal
+
+- **DuckDB↔Postgres parity: hydrate sandbox lifecycle fields in the chat
+  participants repo.** `chat_session_participants_pg._row_to_session` now
+  populates `sandbox_id` / `runner_pid` / `sandbox_paused_at` like the main
+  `chat_sessions_pg` repo, instead of silently defaulting them to None. No
+  current caller of the participant path (`list_sessions_for_participant`,
+  `fork_session_as_co_session`) reads these fields, so behaviour is unchanged
+  today — this closes a latent gap that would have returned sandbox-less
+  sessions on the PG backend and could break pause/resume takeover for
+  co-driven sessions. Guarded by a new field-for-field hydration regression
+  test in `tests/db_pg/`.
+
+## [0.76.18] - 2026-07-23
+
+### Fixed
+
+- **Editing a cross-project BigQuery table's Dataset/Source Table no longer
+  strands the row on its old `bq_fqn`.** The Edit modal's "Live from
+  BigQuery" form gained the same optional **Project** field the Register
+  modal has, pre-filled from the row's existing `bq_fqn`. Saving now
+  recomposes (or clears) `bq_fqn` from Project + Dataset + Source Table
+  instead of silently omitting it from the PUT, which previously left the
+  query/scan paths resolving against the stale project.dataset.table.
+  Also preserves a decoupled row's real `bq_fqn` dataset segment (issue
+  #343) when the Dataset field is unchanged from its original prefill,
+  so an unrelated edit can't silently overwrite it with the `bucket`
+  label.
+
 ## [0.76.17] - 2026-07-23
 
 ### Added
