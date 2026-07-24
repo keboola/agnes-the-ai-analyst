@@ -22,6 +22,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.31] - 2026-07-24
+
+### Fixed
+
+- **Materialized Keboola tables no longer OOM the sync on large results.**
+  The typed-parquet retype (the all-VARCHAR fix) loaded the whole
+  materialized parquet into one in-memory `pyarrow.Table` before casting —
+  peak memory scaled 2–3× with the result size (pyarrow copy + pandas
+  fallback copies) and OOM-killed syncs of large materialized tables,
+  leaving them stale. The retype now streams through a memory-capped DuckDB
+  `COPY` with per-column `TRY_CAST`, so peak memory is bounded by the
+  consolidation cap regardless of table size. Cast semantics keep the
+  coerce-to-NULL behavior (uncastable values → NULL, now with a
+  footer-stats warning per affected column); DATE columns additionally
+  retype correctly now (previously a single bad value left the whole
+  column VARCHAR), and an already-typed parquet skips the rewrite
+  entirely.
 ## [0.76.30] - 2026-07-24
 
 ### Added
