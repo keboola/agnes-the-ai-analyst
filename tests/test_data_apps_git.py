@@ -100,6 +100,35 @@ class TestBareRepo:
         assert resolve_ref("pinned", "agnes-live") == first_sha
 
 
+def test_ensure_and_delete_branch(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from src.data_apps.git_repos import delete_branch, ensure_branch
+
+    # NOTE: brief used slug "g", but SLUG_RE requires >=2 chars; using "gg"
+    # here to satisfy that pre-existing constraint while keeping the test intent.
+    init_app_repo("gg")
+    # seed main with one commit
+    work = tmp_path / "w"
+    subprocess.run(
+        ["git", "clone", str(tmp_path / "apps" / "git" / "gg.git"), str(work)], check=True, capture_output=True
+    )
+    (work / "f").write_text("x")
+    subprocess.run(["git", "-C", str(work), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(work), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "c"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "-C", str(work), "push", "origin", "HEAD:main"], check=True, capture_output=True)
+    ensure_branch("gg", "init", base="main")
+    assert resolve_ref("gg", "init") == resolve_ref("gg", "main")
+    ensure_branch("gg", "init")  # idempotent, no raise
+    delete_branch("gg", "init")
+    assert resolve_ref("gg", "init") is None
+    with pytest.raises(ValueError):
+        delete_branch("gg", "main")
+
+
 class TestSlugValidation:
     """`repo_path` must reject any slug that doesn't match `SLUG_RE`
     (`src.data_apps.spec`) before it ever touches the filesystem — a
