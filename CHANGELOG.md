@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.30] - 2026-07-24
+
+### Added
+
 - **Data Apps: prod + draft iteration model.** Create a draft on an iteration branch
   (`agnes app draft create`), deploy it in `dev` mode, then promote by merging into
   `main`; drafts share the prod app's git repo and are hidden from the app list.
@@ -23,8 +37,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 - **Data Apps: drafts hidden from the `/apps` web list and admin grant picker.** `GET /api/data-apps`, `agnes app list`, and the MCP `data_apps_list` tool already excluded drafts; the human-facing `/apps` page and `/admin/access`'s data-app grant picker now filter them too.
+- **Data Apps: draft metadata hidden from non-owner grantees.** `GET /{slug}`'s inlined `drafts` list (branch, state, URL of every in-progress draft) was gated on the same broad `_can_view` check as the rest of the app detail response — a group merely holding a read grant on the parent app could see it, even though every draft-mutating endpoint is owner/Admin-only. `drafts` is now omitted entirely unless the caller is the owner or an Admin.
 - **Data Apps: `git-credential` clone URL uses the public base URL.** `POST /{slug}/git-credential` (and `data_app_git_credential`) previously built the returned clone URL from `AGNES_INTERNAL_URL` (the in-cluster hostname), unusable from an analyst laptop, the MCP tool, or a remote sandbox. It now uses `get_public_url()` when configured (falling back to the internal URL otherwise), matching `create_data_app`'s `git_url`. The container-facing clone URL used inside `config.json` is unaffected — it stays on the internal URL.
 - **Data Apps: reject git-invalid draft branch names.** `POST /{slug}/drafts`'s branch validation admitted names `git update-ref` refuses (`a..b`, `a//b`, a trailing `/` or `.`, an `x.lock` suffix), which previously surfaced as an unhandled 500 and left an orphaned draft row (turning a retry into a misleading 409 `slug_exists`). Now rejected up front as 400 `invalid_branch`, with a `subprocess.CalledProcessError` catch around the git call as a second line of defense that also rolls back the draft row.
+- **Data Apps: draft creation no longer 500s on Postgres when the slug races.** The new-app and new-draft endpoints only caught DuckDB's `ConstraintException` on a unique-slug violation; on the Postgres backend the same race raises `sqlalchemy.exc.IntegrityError`, which fell through to an unhandled 500 instead of the intended 409 `slug_exists`. Both endpoints now catch either exception, matching the existing pattern in `knowledge_digests.py`/`marketplaces.py`.
 
 ### Removed
 
