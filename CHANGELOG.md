@@ -131,6 +131,28 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   check would leave open. A webhook auto-disables after
   `agent_api_webhook_max_failures` (default 5) consecutive delivery
   failures.
+- **Structured JSON output, `response_format: {"type": "json_schema", ...}`**
+  (agent-api V1b Task 7). `POST /api/v1/agents/{slug}/responses` accepts an
+  optional `response_format`; when present, a schema directive is appended
+  to the prompt (steering, not constrained decoding — there is no
+  provider-level grammar/sampler hook in this runtime) and the collected
+  answer is validated against the schema server-side (`jsonschema`,
+  tolerating a fenced ` ```json ` block) before the response is built. A
+  matching answer gets a `parsed` field alongside the raw `answer` string; a
+  violating or non-JSON answer returns `422 {"code":
+  "schema_validation_failed", "message", "session_id", "usage",
+  "raw_answer"}` instead — the run already spent tokens, so the structured
+  error carries everything needed to recover the paid-for output, and (like
+  any other terminal response) it's stored under the caller's
+  `Idempotency-Key` so a retry replays the same 422 instead of re-running.
+  Background and sync-timeout-degraded runs (the `agent_response` job kind)
+  validate the same way, failing the job with the identical structured
+  error. `POST /api/v1/sessions/{id}/messages` accepts the same field and
+  applies the prompt-steering directive, but does not yet post-validate the
+  streamed answer — see `SendSessionMessageBody.response_format`'s
+  docstring (`app/api/agent_sessions.py`) for why that's a separate,
+  deferred design question (no HTTP status is left to change once an SSE
+  stream has started).
 
 ### Changed
 

@@ -124,6 +124,7 @@ Lease/retry tuning:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 
@@ -532,6 +533,15 @@ _DEFAULT_AGENT_RESPONSE_JOB_TIMEOUT_S = 1800
 #: module owns the source of truth for it.
 CONCURRENCY_CAP_ERROR_PREFIX = "concurrency_cap: "
 
+#: Prefix marking a `_run_agent_response` failure as a `response_format`
+#: schema-validation failure (V1b Task 7, C13). Duplicated (not imported)
+#: into `app/api/agent_runtime.py::_serialize_error` — same rationale as
+#: `CONCURRENCY_CAP_ERROR_PREFIX` above. Unlike that prefix, the remainder
+#: of the string here is a JSON object (`code`/`message`/`session_id`/
+#: `usage`/`raw_answer`) rather than a plain message, since the caller needs
+#: more than a one-line hint to recover the paid-for answer.
+SCHEMA_VALIDATION_ERROR_PREFIX = "schema_validation_failed: "
+
 
 def _agent_response_job_timeout_seconds() -> int:
     raw = os.environ.get("AGNES_AGENT_RESPONSE_JOB_TIMEOUT_S")
@@ -619,6 +629,42 @@ def _run_agent_response(payload: dict) -> dict:
     from app.chat.agent_usage import usage_for_session
 
     usage = usage_for_session(payload.get("agent_id"), run_result["chat_id"])
+
+    # V1b Task 7 / C13: a background or sync-timeout-degraded run that
+    # requested structured output is validated here too — the sync path
+    # (`app/api/agent_runtime.py`) only validates when it itself produced
+    # the final answer; a run that degraded to this job (or was
+    # `background: true` from the start) never passes back through that
+    # code, so this is the only place its answer is ever checked. On
+    # failure, raise with `SCHEMA_VALIDATION_ERROR_PREFIX` + a JSON body
+    # carrying the same fields the sync path's 422 does (`session_id`,
+    # `usage`, `raw_answer`) — the run already spent tokens, so this must
+    # not be a bare error string with no way to recover the answer.
+    # `retry_in_seconds=None` on this kind means a validation failure
+    # finalizes straight to `'failed'`, matching C13 ("the job goes failed
+    # with the same structured error").
+    response_format = payload.get("response_format")
+    if response_format is not None:
+        from app.chat.structured_output import validate
+
+        ok, parsed, validation_error = validate(run_result["answer"], response_format)
+        if not ok:
+            error_payload = {
+                "code": "schema_validation_failed",
+                "message": validation_error,
+                "session_id": run_result["chat_id"],
+                "usage": usage,
+                "raw_answer": run_result["answer"],
+            }
+            raise RuntimeError(f"{SCHEMA_VALIDATION_ERROR_PREFIX}{json.dumps(error_payload)}")
+        return {
+            "answer": run_result["answer"],
+            "session_id": run_result["chat_id"],
+            "usage": usage,
+            "timed_out": run_result["timed_out"],
+            "parsed": parsed,
+        }
+
     return {
         "answer": run_result["answer"],
         "session_id": run_result["chat_id"],

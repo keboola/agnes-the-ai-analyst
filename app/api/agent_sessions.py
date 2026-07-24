@@ -62,6 +62,7 @@ from app.auth.session_principal import SessionPrincipal
 from app.chat.artifact_harvest import sanitize_filename
 from app.chat.manager import ConcurrencyCapHit, SessionNotFound, get_current_chat_manager
 from app.chat.streaming_sink import StreamingSink
+from app.chat.structured_output import schema_directive
 from app.chat.types import Surface
 from app.coordination.factory import coordination
 from app.logging_config import request_id_var
@@ -97,11 +98,25 @@ class CreateAgentSessionBody(BaseModel):
 
 class SendSessionMessageBody(BaseModel):
     input: str
-    #: Structured-output request. Accepted here so the wire contract is
-    #: stable from V1b Task 4 onward; NOT wired to enforcement yet — full
-    #: support (validating/coercing the model's output against this shape)
-    #: is V1b Task 7. Threading it through unenforced now means Task 7 adds
-    #: behavior, not a breaking request-shape change.
+    #: Structured-output request — `{"type": "json_schema", "schema": {...}}`.
+    #: V1b Task 7 wires PROMPT-STEERING here (`schema_directive()`'s text is
+    #: appended to `input` below, same as the one-shot `/responses` route —
+    #: see `app.chat.structured_output`'s module docstring), but deliberately
+    #: NOT post-hoc validation of the streamed answer.
+    #:
+    #: Task 7 scope decision: `/responses` validates synchronously because it
+    #: already holds the final `answer` string before building its one JSON
+    #: response body, so a schema violation can become a clean `422` in the
+    #: same request/response cycle (C13). This route is fundamentally
+    #: different — `_event_stream` below has already sent a `200` and started
+    #: streaming AG-UI events by the time a terminal frame (and thus the full
+    #: answer) exists; there is no HTTP status left to change to `422`, and
+    #: inventing a new terminal SSE event type (or repurposing `RUN_ERROR`)
+    #: for "the run succeeded but its output didn't match your schema" is a
+    #: real design question (does the client still get the raw answer? does
+    #: `GET /sessions/{id}` need a `schema_valid` flag on the message row?)
+    #: that deserves its own task rather than a rushed fit here. Deferred,
+    #: not forgotten — filed as a natural Task 7 follow-up.
     response_format: Optional[Dict[str, Any]] = None
 
     @field_validator("input")
@@ -272,8 +287,17 @@ async def post_session_message(
         coordination().lease_release(lock_key, lock_holder)
         raise
 
+    # Prompt-steering only (see `SendSessionMessageBody.response_format`'s
+    # docstring for the scope decision): append the schema directive to the
+    # TEXT sent to the model — there is no `send_user_message(response_format
+    # =...)` param, and post-hoc validation of the streamed answer is
+    # deferred.
+    effective_input = body.input
+    if body.response_format is not None:
+        effective_input = f"{body.input}\n\n{schema_directive(body.response_format)}"
+
     try:
-        await manager.send_user_message(session_id, body.input, sender_email=principal.user["email"])
+        await manager.send_user_message(session_id, effective_input, sender_email=principal.user["email"])
     except Exception:
         # Unlike attach() above, the sink IS seated by this point (attach()
         # already returned successfully) — leaving it attached would leak it

@@ -55,6 +55,7 @@ from app.auth.session_principal import SessionPrincipal
 from app.chat.agent_usage import agent_config_hash, usage_for_session
 from app.chat.headless import run_one_shot
 from app.chat.manager import ConcurrencyCapHit, get_current_chat_manager
+from app.chat.structured_output import schema_directive, validate
 from app.logging_config import request_id_var
 from app.resource_types import ResourceType
 from src.repositories import agents_repo, idempotency_repo, jobs_repo
@@ -75,6 +76,12 @@ JOB_KIND = "agent_response"
 #: prefix back off to surface a structured `{"code": "concurrency_cap", ...}`
 #: instead of a raw string for `GET /api/v1/jobs/{id}`.
 _CONCURRENCY_CAP_ERROR_PREFIX = "concurrency_cap: "
+
+#: Duplicated (not imported) from
+#: `app/worker/kinds.py::SCHEMA_VALIDATION_ERROR_PREFIX` — same rationale as
+#: `_CONCURRENCY_CAP_ERROR_PREFIX` above. The remainder of the string (after
+#: this prefix) is a JSON object — see `_serialize_error` below.
+_SCHEMA_VALIDATION_ERROR_PREFIX = "schema_validation_failed: "
 
 _DEFAULT_TIMEOUT_S = 120
 _MIN_TIMEOUT_S = 1
@@ -106,6 +113,14 @@ class AgentResponseRequest(BaseModel):
     background: bool = False
     timeout_s: int = _DEFAULT_TIMEOUT_S
     metadata: Optional[Dict[str, Any]] = None
+    #: Structured-output request — `{"type": "json_schema", "schema": {...}}`.
+    #: When present, `schema_directive()`'s text is appended to `input`
+    #: before the run (prompt-steering, see `app.chat.structured_output`'s
+    #: module docstring), and the collected answer is validated against the
+    #: schema afterward (`validate()`) before the response is built. See
+    #: `create_agent_response` below for the 200-with-`parsed` /
+    #: 422-`schema_validation_failed` split.
+    response_format: Optional[Dict[str, Any]] = None
 
     @field_validator("input")
     @classmethod
@@ -176,9 +191,22 @@ def _serialize_error(raw_error: Optional[str]) -> Any:
     into a structured `{"code": "concurrency_cap", "message": ...}` so a
     caller can branch on `error.code` instead of string-matching; any other
     error string is returned unchanged (plain string), preserving the
-    existing wire shape for every other failure mode."""
+    existing wire shape for every other failure mode.
+
+    A schema-validation failure on a background/degraded run (C13) carries
+    `_SCHEMA_VALIDATION_ERROR_PREFIX` followed by a JSON object (`code`,
+    `message`, `session_id`, `usage`, `raw_answer` — see
+    `app/worker/kinds.py::_run_agent_response`'s own validation branch) —
+    parsed back out the same way. A malformed/truncated JSON body (should be
+    unreachable — it's always this module's own `json.dumps` on the way in)
+    falls back to the raw string rather than raising."""
     if raw_error is not None and raw_error.startswith(_CONCURRENCY_CAP_ERROR_PREFIX):
         return {"code": "concurrency_cap", "message": raw_error[len(_CONCURRENCY_CAP_ERROR_PREFIX) :]}
+    if raw_error is not None and raw_error.startswith(_SCHEMA_VALIDATION_ERROR_PREFIX):
+        try:
+            return json.loads(raw_error[len(_SCHEMA_VALIDATION_ERROR_PREFIX) :])
+        except (ValueError, TypeError):
+            return raw_error
     return raw_error
 
 
@@ -250,6 +278,17 @@ async def create_agent_response(
 
     timeout_s = _clamp_timeout(body.timeout_s)
     metadata = body.metadata or {}
+    response_format = body.response_format
+
+    # Prompt-steering (C12): when a schema is requested, append the
+    # directive to the INPUT actually sent to the model — there is no
+    # `send_user_message(response_format=...)` param on the chat runtime.
+    # `response_format` itself still rides along in job payloads below so
+    # the worker can validate the answer once the run completes; only the
+    # prompt TEXT needs the directive appended, not the schema dict itself.
+    effective_input = body.input
+    if response_format is not None:
+        effective_input = f"{body.input}\n\n{schema_directive(response_format)}"
 
     # NOTE: a reservation made above is deliberately left in place if
     # anything below raises (including a `ConcurrencyCapHit`-derived 429) —
@@ -265,8 +304,9 @@ async def create_agent_response(
                 "owner_user_id": user["id"],
                 "owner_email": user["email"],
                 "agent_id": agent["id"],
-                "prompt": body.input,
+                "prompt": effective_input,
                 "metadata": metadata,
+                "response_format": response_format,
             },
         )
         status_code = 202
@@ -281,7 +321,7 @@ async def create_agent_response(
                 manager,
                 user_email=user["email"],
                 agent_id=agent["id"],
-                prompt=body.input,
+                prompt=effective_input,
                 timeout_s=timeout_s,
                 owner_user_id=user["id"],
             )
@@ -306,6 +346,7 @@ async def create_agent_response(
                     "agent_id": agent["id"],
                     "chat_id": run_result["chat_id"],
                     "metadata": metadata,
+                    "response_format": response_format,
                 },
             )
             status_code = 202
@@ -318,15 +359,37 @@ async def create_agent_response(
             # fired) — serve it now rather than degrading to a background
             # job for an answer already in hand.
             usage_accumulator_flush()
-            result_body = {
-                "answer": run_result["answer"],
-                "session_id": run_result["chat_id"],
-                "response_id": uuid.uuid4().hex,
-                "usage": usage_for_session(agent["id"], run_result["chat_id"]),
-                "agent_config_hash": agent_config_hash(agent),
-                "request_id": request_id,
-            }
-            status_code = 200
+            usage = usage_for_session(agent["id"], run_result["chat_id"])
+
+            # C13: a schema_validation_failed 422 must not orphan a paid run
+            # — the run already spent tokens and has a session_id/usage/raw
+            # answer in hand. Build a structured 422 body (not an
+            # HTTPException) so it flows through the SAME idempotency-store
+            # path below as every other terminal response: a retry under the
+            # same Idempotency-Key replays this 422 verbatim instead of
+            # re-running `run_one_shot`.
+            ok, parsed, validation_error = validate(run_result["answer"], response_format)
+            if response_format is not None and not ok:
+                status_code = 422
+                result_body = {
+                    "code": "schema_validation_failed",
+                    "message": validation_error,
+                    "session_id": run_result["chat_id"],
+                    "usage": usage,
+                    "raw_answer": run_result["answer"],
+                }
+            else:
+                result_body = {
+                    "answer": run_result["answer"],
+                    "session_id": run_result["chat_id"],
+                    "response_id": uuid.uuid4().hex,
+                    "usage": usage,
+                    "agent_config_hash": agent_config_hash(agent),
+                    "request_id": request_id,
+                }
+                if response_format is not None:
+                    result_body["parsed"] = parsed
+                status_code = 200
 
     response.status_code = status_code
 
