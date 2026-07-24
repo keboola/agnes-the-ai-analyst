@@ -160,7 +160,11 @@ function renderJourneyPanel() {
       const cls = s.done ? "done" : unlocked ? "active" : "locked";
       const mark = s.done ? "✓" : unlocked ? "→" : "•";
       const tourAttr = s.launchTour ? ` data-journey-tour="${escapeAttr(s.launchTour)}"` : "";
-      const attrs = s.href ? ` data-journey-go="${s.href}"${tourAttr}` : "";
+      // Carry the step key so the click handler marks the step the user actually
+      // clicked — not one inferred from the (shared) href. "Set up your Stack"
+      // and "Explore My Stack" both point at /stack, so href alone is ambiguous.
+      const keyAttr = ` data-journey-key="${escapeAttr(s.k)}"`;
+      const attrs = s.href ? ` data-journey-go="${s.href}"${tourAttr}${keyAttr}` : "";
       return `<button type="button" class="cloud-chat-journey-step ${cls}"${attrs} title="${escapeAttr(s.why)}">
         <span class="cloud-chat-journey-mark">${mark}</span>
         <span class="cloud-chat-journey-label">${escapeHtml(s.label)}</span>
@@ -197,11 +201,16 @@ function renderJourneyPanel() {
       if (btn.classList.contains("locked")) return;
       const href = btn.getAttribute("data-journey-go");
       const tourId = btn.getAttribute("data-journey-tour");
-      // Mark the step the destination represents so returning shows progress.
-      if (href === "/stack" && tourId) patchJourney({ explored_stack: true });
-      else if (href === "/stack") patchJourney({ explored_stack: true });
-      else if (href === "/catalog") patchJourney({ catalog_discovered: true });
-      else if (href === "/setup") patchJourney({ use_anywhere: true });
+      const key = btn.getAttribute("data-journey-key");
+      // Mark the step the user actually clicked (by its key), so progress is
+      // accurate and never records a different/out-of-order step. Steps that
+      // complete through real activity are intentionally NOT force-marked on a
+      // click: first_asked completes when a question is asked, and
+      // stack_setup_done when a package is actually subscribed (it also gates
+      // the in-chat gap resolver, so marking it early would suppress that help).
+      if (key === "explored_stack") patchJourney({ explored_stack: true });
+      else if (key === "catalog_discovered") patchJourney({ catalog_discovered: true });
+      else if (key === "use_anywhere") patchJourney({ use_anywhere: true });
       // Launch the Stack Tour if requested. Uses window._agTourUrl (stamped
       // by the tour boot script in base_ds.html) with a bare-path fallback.
       if (tourId) {

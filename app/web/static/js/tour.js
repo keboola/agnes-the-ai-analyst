@@ -178,6 +178,10 @@ function pathMatches(page, path) {
 
 function _startTour(id, steps, index) {
   _endTour(false); // clean up any prior run
+  // Wire Escape + resize/scroll reflow for EVERY launch path (direct
+  // launchTour on the current page as well as resumePendingTour). Guarded by
+  // _listenersAttached so it's idempotent.
+  _attachListeners();
 
   const overlay = document.createElement('div');
   overlay.className = 'tour-overlay';
@@ -207,8 +211,10 @@ function _showStep(index) {
   if (!step.centered && step.selector) {
     anchor = document.querySelector(step.selector);
     if (!anchor) {
-      // Resilient: auto-skip this step if the anchor is missing.
-      _showStep(index + 1);
+      // Resilient: the anchor is absent here. Route through _gotoStep so a next
+      // step on another page cross-navigates instead of recursing on the current
+      // page (which would blow through cross-page steps to the final screen).
+      _gotoStep(index + 1);
       return;
     }
     // Scroll target into view (center) before positioning.
@@ -366,26 +372,30 @@ function _buildPopover(step, index, total) {
 
 // ── Step advance (handles cross-page navigation) ────────────────────────────
 
-function _advanceStep() {
+// Go to a specific step index, crossing pages when that step lives on another
+// page. Shared by _advanceStep (Next) and the missing-anchor auto-skip so both
+// handle cross-page steps identically — otherwise a missing anchor would blindly
+// recurse on the current page and blow through every cross-page step to the end.
+function _gotoStep(nextIndex) {
   if (!_active) return;
-  const { id, steps, index } = _active;
-  const nextIndex = index + 1;
+  const { id, steps } = _active;
   if (nextIndex >= steps.length) { _endTour(true); return; }
 
   const nextStep = steps[nextIndex];
-  const currentPath = window.location.pathname;
-
-  if (!pathMatches(nextStep.page, currentPath)) {
-    // Cross-page: stash pending + navigate.
-    markSeen(id); // persist seen before nav so back-nav doesn't re-launch
-    // Actually we only mark "pending" not "seen" — don't mark seen until truly done.
-    // But we need to persist progress across pages:
+  if (!pathMatches(nextStep.page, window.location.pathname)) {
+    // Cross-page: persist progress (as pending, NOT "seen" — the tour isn't
+    // done) + navigate. resumePendingTour resumes it on the destination page.
     stashPending(id, nextIndex);
     window.location.href = nextStep.page;
     return;
   }
 
   _showStep(nextIndex);
+}
+
+function _advanceStep() {
+  if (!_active) return;
+  _gotoStep(_active.index + 1);
 }
 
 // ── End tour ────────────────────────────────────────────────────────────────
@@ -474,12 +484,6 @@ function _removeListeners() {
 }
 
 // ── Auto-resume on page load ────────────────────────────────────────────────
-// Attach listeners once after tour starts:
-const _origStartTour = _startTour;
-function _startTourWrapped(id, steps, index) {
-  _attachListeners();
-  _origStartTour(id, steps, index);
-}
 
 /**
  * Call once per page on DOMContentLoaded (or directly from a module script).
@@ -501,8 +505,7 @@ export function resumePendingTour() {
 
   if (!pathMatches(step.page, window.location.pathname)) return false;
 
-  // Resume — don't clearPending yet; _endTour will.
-  _attachListeners();
+  // Resume — don't clearPending yet; _endTour will. _startTour attaches listeners.
   _startTour(id, steps, index);
   return true;
 }
