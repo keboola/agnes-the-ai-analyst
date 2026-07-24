@@ -1045,12 +1045,21 @@ async def delete_data_app(
     containers behind. Each draft is torn down via the same
     ``_teardown_draft`` helper ``delete_draft`` uses, BEFORE this app's own
     teardown. (Drafts can't themselves have drafts — ``create_draft``
-    rejects ``parent_is_draft`` — so this is a no-op when ``row`` is itself
-    a draft.)
+    rejects ``parent_is_draft`` — so this loop is a no-op when ``row`` is
+    itself a draft — which can't happen anyway, see below.)
+
+    A draft ``slug`` is rejected outright (400 ``use_draft_delete_route``)
+    rather than falling through to this function's own teardown below,
+    which — unlike ``_teardown_draft`` — never deletes the draft's branch
+    on the PARENT's repo; going through here would silently orphan it.
+    ``DELETE /{slug}/drafts/{draft_slug}`` is the only path that tears a
+    draft down correctly.
     """
     _feature_gate()
     row = _get_row_or_404(slug)
     _require_owner_or_admin(user, row)
+    if row.get("is_draft"):
+        raise HTTPException(status_code=400, detail="use_draft_delete_route")
 
     repo = data_apps_repo()
     # Drafts live on the parent's repo and have their own containers/branches;

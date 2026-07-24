@@ -971,6 +971,26 @@ class TestDelete:
         r = client_as_other_user.delete("/api/data-apps/sapp")
         assert r.status_code == 403
 
+    def test_delete_rejects_draft_slug(self, client_as_user, seeded_repo_with_commit):
+        """A draft is a full `data_apps` row, so `DELETE /{slug}` would
+        otherwise happily resolve and delete it — but this route's own
+        teardown never deletes the draft's branch on the PARENT's repo
+        (only `_teardown_draft`, used by the dedicated drafts route and the
+        prod-delete cascade, does). Must reject rather than silently orphan
+        the branch."""
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        r = client_as_user.delete(f"/api/data-apps/{d['slug']}")
+        assert r.status_code == 400 and r.json()["detail"] == "use_draft_delete_route"
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            assert DataAppsRepository(conn).get_by_slug(d["slug"]) is not None
+        finally:
+            conn.close()
+
     def test_delete_removes_config_dir(self, client_as_user, fake_runner, seeded_repo_with_commit, api_env):
         """The leftover `config.json` under `${DATA_DIR}/apps/<slug>` holds a
         now-revoked JWT — best-effort hygiene cleanup on delete, distinct
