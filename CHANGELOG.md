@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.0] - 2026-07-24
+
+### Added
+
 - **Agent profiles.** Named, scoped agents layered over a user's own stack
   (agent-api V1a). `POST/GET /api/v1/agents` (create/list), `GET/PUT/DELETE
   /api/v1/agents/{id}` (detail/update/delete), and `PUT
