@@ -167,7 +167,7 @@ RAW_BASE="https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main"
 CONFIG_FILES=(
   docker-compose.yml docker-compose.prod.yml docker-compose.host-mount.yml
   docker-compose.postgres.yml docker-compose.postgres-host-mount.yml
-  docker-compose.tls.yml Caddyfile
+  docker-compose.tls.yml Caddyfile static/maintenance.html
 )
 hash_config_files() {
   # Sort to keep hash stable across operator add/remove, missing files
@@ -183,6 +183,7 @@ hash_config_files() {
     done ) | sort | sha256sum | awk '{print $1}'
 }
 for f in "${CONFIG_FILES[@]}"; do
+  mkdir -p "/opt/agnes/$(dirname "$f")"
   if curl -fsSL "$RAW_BASE/$f" -o "/opt/agnes/$f.new" 2>/dev/null; then
     mv -f "/opt/agnes/$f.new" "/opt/agnes/$f"
   else

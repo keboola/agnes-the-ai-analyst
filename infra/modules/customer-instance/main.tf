@@ -373,6 +373,7 @@ resource "google_compute_instance" "vm" {
     app_cpus                        = each.value.app_cpus
     scheduler_cpus                  = each.value.scheduler_cpus
     upgrade_mode                    = each.value.upgrade_mode
+    upgrade_schedule                = each.value.upgrade_schedule
     tls_mode                        = each.value.tls_mode
     domain                          = each.value.domain
     acme_email                      = var.acme_email != "" ? var.acme_email : var.seed_admin_email
