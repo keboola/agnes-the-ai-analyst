@@ -1020,6 +1020,7 @@ MCP analogue for create/stop/delete/secrets/reap-idle/git-credential/drafts.
 - /api/data-apps/{slug}
 - /api/data-apps/{slug}/deploy
 - /api/data-apps/{slug}/drafts
+- /api/data-apps/{slug}/drafts/{draft_slug}
 - /api/data-apps/{slug}/git-credential
 - /api/data-apps/{slug}/logs
 - /api/data-apps/{slug}/readiness
@@ -1043,8 +1044,16 @@ draft copy of a prod app on a new git branch — `ensure_branch` creates the
 branch on the *parent's* repo (a draft has no repo of its own, just a
 `data_apps` row with `is_draft=True` and `parent_app_id` set), and the
 returned `git_clone_url` is minted against that same parent repo. Drafts
-are excluded from `GET /api/data-apps`'s default listing and cannot
-themselves be drafted from (400 `parent_is_draft`).
+are excluded from `GET /api/data-apps`'s default listing and instead
+surface inlined as `"drafts": [...]` on the parent's `GET /{slug}` detail
+response (empty/omitted for a draft's own detail — drafts can't themselves
+be drafted from, 400 `parent_is_draft`). `DELETE /{slug}/drafts/{draft_slug}`
+tears one down — owner/Admin of the *parent* — via the same teardown as
+`DELETE /{slug}` (container stop, token revoke, registry row delete) plus
+deleting the draft branch on the parent's repo; 400 `not_a_draft` if
+`draft_slug` isn't a draft of `slug`. Deleting a prod app with `DELETE
+/{slug}` cascades: any live drafts are torn down first, so a parent delete
+never leaves orphaned draft rows/branches/containers behind.
 
 ### `/api/data-packages` — Public data packages
 

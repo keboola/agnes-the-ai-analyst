@@ -11,13 +11,20 @@ Endpoints (see ``docs/superpowers/plans/2026-07-21-data-apps-platform.md``
 Task 7 for the full design rationale):
 
   - ``GET    /api/data-apps``                — list apps the caller can see
+    (drafts excluded — see the ``{slug}`` detail's inlined ``drafts`` field)
   - ``POST   /api/data-apps``                — create (quota + slug checks)
-  - ``GET    /api/data-apps/{slug}``          — detail (RBAC-gated)
+  - ``GET    /api/data-apps/{slug}``          — detail (RBAC-gated); prod
+    apps carry an inlined ``drafts: [...]`` list
   - ``POST   /api/data-apps/{slug}/deploy``   — fast-forward + mint service
     token + build spec + hand to the runner sidecar
   - ``POST   /api/data-apps/{slug}/stop``     — runner stop, state -> stopped
   - ``DELETE /api/data-apps/{slug}``          — runner stop + token revoke +
-    row delete (repo directory intentionally left on disk)
+    row delete (repo directory intentionally left on disk); cascades to any
+    live drafts
+  - ``POST   /api/data-apps/{slug}/drafts``   — create a draft copy on a
+    branch (owner/Admin of the parent)
+  - ``DELETE /api/data-apps/{slug}/drafts/{draft_slug}`` — tear down one
+    draft (owner/Admin of the parent)
   - ``PUT    /api/data-apps/{slug}/secrets``  — encrypt + store secrets
   - ``GET    /api/data-apps/{slug}/logs``     — runner logs (owner/Admin)
   - ``GET    /api/data-apps/{slug}/readiness``— any RBAC-passing caller
@@ -240,6 +247,22 @@ def _revoke_service_token(row: dict) -> None:
         logger.warning("failed to revoke previous service token %s for data app %s", token_id, row["slug"])
 
 
+def _rmtree_config_dir(slug: str) -> None:
+    """Best-effort removal of the RUNTIME config dir (``${DATA_DIR}/apps/<slug>``,
+    holding the ``config.json`` apps-runner wrote — see ``_resolve_host_path``
+    in ``services/apps_runner/api.py``). It carries the now-revoked service
+    JWT in plaintext, so it's removed as hygiene on both a full app delete
+    (``delete_data_app``) and a single draft delete/cascade
+    (``_teardown_draft``). Shared so the two call sites can't drift."""
+    config_dir = os.path.join(os.environ.get("DATA_DIR", "/data"), "apps", slug)
+    try:
+        shutil.rmtree(config_dir, ignore_errors=False)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("failed to remove config dir %s (continuing)", config_dir)
+
+
 def _mint_service_token(slug: str, owner: dict) -> tuple[str, str]:
     """Mint a PAT for this app's owner, store it via `access_token_repo().create`,
     and return the new token id.
@@ -332,6 +355,15 @@ class OwnerNotFoundError(Exception):
     (400) without string-matching the exception message."""
 
 
+class DraftParentMissingError(Exception):
+    """Raised by :func:`redeploy_current` when a draft row's
+    ``parent_app_id`` no longer resolves to a live parent row (the parent
+    app was deleted out from under a still-live draft). Without this
+    check, ``redeploy_current`` would silently fall back to cloning the
+    draft's own (nonexistent) repo slug and the deploy would appear to
+    succeed. ``deploy_data_app`` maps this to HTTP 409 ``parent_not_found``."""
+
+
 def _rollback_new_service_token(repo, app_id: str, new_token_id: str, previous_token_id: str) -> None:
     """Undo a tentatively-minted+stored service token after a deploy step
     following the mint fails (spec build or runner `up`).
@@ -378,16 +410,23 @@ def redeploy_current(row: dict) -> None:
     side effect on success) once the runner has actually accepted the
     deploy.
 
-    Raises `OwnerNotFoundError`, `ValueError`, `RunnerUnavailable`, or
-    `RunnerError` on failure; each already left the row in "error" state
-    (via `_handle_runner_failure`) for the runner-call case, or with an
-    untouched state for the owner/spec-build cases — callers decide how to
-    surface that (HTTP response for `deploy_data_app`, `set_state("error",
-    ...)` for `_trigger_wake`) without this function taking an opinion on
-    HTTP status codes or wake-vs-deploy framing.
+    Raises `OwnerNotFoundError`, `DraftParentMissingError`, `ValueError`,
+    `RunnerUnavailable`, or `RunnerError` on failure; each already left the
+    row in "error" state (via `_handle_runner_failure`) for the runner-call
+    case, or with an untouched state for the owner/parent/spec-build cases —
+    callers decide how to surface that (HTTP response for `deploy_data_app`,
+    `set_state("error", ...)` for `_trigger_wake`) without this function
+    taking an opinion on HTTP status codes or wake-vs-deploy framing.
     """
     slug = row["slug"]
     repo = data_apps_repo()
+
+    # A draft whose parent has since been deleted must fail loudly rather
+    # than silently falling back (below) to cloning the draft's own
+    # (nonexistent) repo slug — checked before any side effect (token mint)
+    # so there's nothing to roll back on this path.
+    if row.get("is_draft") and row.get("parent_app_id") and not repo.get(row["parent_app_id"]):
+        raise DraftParentMissingError(row["parent_app_id"])
 
     owner = users_repo().get_by_id(row["owner_user_id"])
     if not owner:
@@ -484,7 +523,10 @@ def _draft_slug(parent_slug: str, branch: str) -> str:
 async def list_data_apps(user: dict = Depends(get_current_user)):
     _feature_gate()
     cfg = _effective_config()
-    rows = data_apps_repo().list()
+    # Drafts are working copies layered on a parent app, not independent
+    # apps a caller should stumble onto in the human-facing/CLI list —
+    # they're reached via `GET /{slug}`'s inlined `drafts` field instead.
+    rows = data_apps_repo().list(include_drafts=False)
     return [_serialize(r, cfg) for r in rows if _can_view(user, r)]
 
 
@@ -557,7 +599,23 @@ async def get_data_app(slug: str, user: dict = Depends(get_current_user)):
     row = _get_row_or_404(slug)
     if not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
-    return _serialize(row)
+    out = _serialize(row)
+    # Drafts are hidden from the list endpoint (`include_drafts=False`);
+    # this is where they surface instead — inlined on their PROD parent's
+    # detail response. Empty for a draft's own detail (drafts don't have
+    # drafts — `create_draft` rejects `parent_is_draft`).
+    if not row.get("is_draft"):
+        out["drafts"] = [
+            {
+                "id": d["id"],
+                "slug": d["slug"],
+                "branch": d["draft_branch"],
+                "state": d["state"],
+                "url": _app_url(d["slug"], _effective_config()),
+            }
+            for d in data_apps_repo().list_drafts(row["id"])
+        ]
+    return out
 
 
 @router.post("/{slug}/deploy")
@@ -606,6 +664,8 @@ async def deploy_data_app(
         redeploy_current(row)
     except OwnerNotFoundError:
         raise HTTPException(status_code=500, detail="owner_not_found")
+    except DraftParentMissingError:
+        raise HTTPException(status_code=409, detail="parent_not_found")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except (RunnerUnavailable, RunnerError):
@@ -707,6 +767,68 @@ async def create_draft(
     return {"id": draft_id, "slug": draft_slug, "branch": payload.branch, "git_clone_url": git_url}
 
 
+def _teardown_draft(repo, parent_slug: str, draft: dict, conn: duckdb.DuckDBPyConnection, actor_id: str) -> None:
+    """Shared draft-teardown body: best-effort container stop, service-token
+    revoke, draft-branch delete on the PARENT repo, registry row delete,
+    and config-dir cleanup. Used by both ``delete_draft`` (single draft) and
+    ``delete_data_app``'s cascade (all drafts of a deleted parent) so the two
+    call sites can't drift on what "delete a draft" actually tears down.
+    """
+    draft_slug = draft["slug"]
+    try:
+        _runner().stop(draft_slug, mode="recreate")
+    except (RunnerUnavailable, RunnerError):
+        logger.warning("_teardown_draft: runner stop failed for %s (continuing)", draft_slug)
+
+    _revoke_service_token(draft)
+
+    from src.data_apps.git_repos import delete_branch
+
+    try:
+        delete_branch(parent_slug, draft["draft_branch"])
+    except ValueError:
+        pass
+
+    repo.delete(draft["id"])
+    _rmtree_config_dir(draft_slug)
+
+    _audit(
+        conn,
+        actor_id,
+        "data_app.draft_delete",
+        f"data_app:{draft_slug}",
+        {"parent": parent_slug},
+    )
+
+
+@router.delete("/{slug}/drafts/{draft_slug}", status_code=204)
+async def delete_draft(
+    slug: str,
+    draft_slug: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Tear down a single draft: owner/Admin of the PARENT app; 400
+    ``not_a_draft`` if ``draft_slug`` isn't a draft of ``slug`` (including
+    ``draft_slug == slug`` itself); 404 if ``draft_slug`` doesn't exist at
+    all. Mirrors ``delete_data_app``'s teardown via the shared
+    ``_teardown_draft`` helper — container stop, token revoke, branch
+    delete, row delete, config-dir cleanup.
+    """
+    _feature_gate()
+    parent = _get_row_or_404(slug)
+    _require_owner_or_admin(user, parent)
+
+    repo = data_apps_repo()
+    draft = repo.get_by_slug(draft_slug)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="data_app_not_found")
+    if not draft.get("is_draft") or draft.get("parent_app_id") != parent["id"]:
+        raise HTTPException(status_code=400, detail="not_a_draft")
+
+    _teardown_draft(repo, slug, draft, conn, user["id"])
+
+
 @router.post("/{slug}/stop")
 async def stop_data_app(
     slug: str,
@@ -753,10 +875,23 @@ async def delete_data_app(
     ``services/apps_runner/api.py``) is different: it carries the
     now-revoked service JWT in plaintext, so it's removed best-effort as
     hygiene rather than kept like the git repo.
+
+    Cascades to any live drafts: a prod app's drafts share its git repo and
+    reference its id as ``parent_app_id``, so deleting the parent without
+    tearing them down first would leave orphaned draft rows/branches/
+    containers behind. Each draft is torn down via the same
+    ``_teardown_draft`` helper ``delete_draft`` uses, BEFORE this app's own
+    teardown. (Drafts can't themselves have drafts — ``create_draft``
+    rejects ``parent_is_draft`` — so this is a no-op when ``row`` is itself
+    a draft.)
     """
     _feature_gate()
     row = _get_row_or_404(slug)
     _require_owner_or_admin(user, row)
+
+    repo = data_apps_repo()
+    for draft in repo.list_drafts(row["id"]):
+        _teardown_draft(repo, slug, draft, conn, user["id"])
 
     # Best-effort: a dead runner must not block deleting the registry row
     # (there'd otherwise be no way to remove an app whose container host is
@@ -767,15 +902,9 @@ async def delete_data_app(
         logger.warning("delete_data_app: runner stop failed for %s (continuing)", slug)
 
     _revoke_service_token(row)
-    data_apps_repo().delete(row["id"])
+    repo.delete(row["id"])
 
-    config_dir = os.path.join(os.environ.get("DATA_DIR", "/data"), "apps", slug)
-    try:
-        shutil.rmtree(config_dir, ignore_errors=False)
-    except FileNotFoundError:
-        pass
-    except OSError:
-        logger.warning("delete_data_app: failed to remove config dir %s (continuing)", config_dir)
+    _rmtree_config_dir(slug)
 
     _audit(
         conn,

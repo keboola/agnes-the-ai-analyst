@@ -415,6 +415,12 @@ _EXEMPT: dict[str, str] = {
         "analogue planned yet (authoring happens inside the hosted app's "
         "own agent session, not from the analyst's `agnes` CLI)"
     ),
+    "/api/data-apps/{slug}/drafts/{draft_slug}": (
+        "wave 3B AI-authoring flow — tears down a single draft (sibling of "
+        "the create-draft path above); no CLI/MCP analogue planned yet, "
+        "same rationale — draft lifecycle is managed from inside the "
+        "hosted app's own agent session, not the analyst's `agnes` CLI"
+    ),
     # reap-idle is a scheduler-triggered admin maintenance op (Task 9) —
     # mirrors the run-knowledge-digests/run-corporate-memory exemptions
     # regardless of the CLI/MCP question above; no analyst CLI/MCP analogue.

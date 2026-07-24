@@ -1162,3 +1162,137 @@ class TestDrafts:
         r = admin_client.post("/api/data-apps/sapp/drafts", json={"branch": "orphan"})
         assert r.status_code == 500, r.text
         assert r.json()["detail"] == "owner_not_found"
+
+    def test_get_inlines_drafts(self, client_as_user, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        detail = client_as_user.get("/api/data-apps/sapp").json()
+        assert any(x["slug"] == d["slug"] and x["branch"] == "init" for x in detail["drafts"])
+
+    def test_get_draft_detail_omits_drafts_key(self, client_as_user, seeded_repo_with_commit):
+        """A draft's own detail response has no `drafts` key at all — that
+        field is only inlined for prod apps (drafts don't have drafts;
+        `create_draft` rejects `parent_is_draft`)."""
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        detail = client_as_user.get(f"/api/data-apps/{d['slug']}").json()
+        assert "drafts" not in detail
+
+    def test_list_hides_drafts(self, client_as_user, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        slugs = {a["slug"] for a in client_as_user.get("/api/data-apps").json()}
+        assert "sapp" in slugs and d["slug"] not in slugs
+
+    def test_delete_draft(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        r = client_as_user.delete(f"/api/data-apps/sapp/drafts/{d['slug']}")
+        assert r.status_code == 204, r.text
+        assert client_as_user.get(f"/api/data-apps/{d['slug']}").status_code == 404
+        detail = client_as_user.get("/api/data-apps/sapp").json()
+        assert detail["drafts"] == []
+
+    def test_delete_draft_stops_container_and_revokes_token(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        r = client_as_user.post(f"/api/data-apps/{d['slug']}/deploy", json={"mode": "dev"})
+        assert r.status_code == 200, r.text
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            token_id = DataAppsRepository(conn).get_by_slug(d["slug"])["service_token_id"]
+        finally:
+            conn.close()
+        assert token_id
+
+        r = client_as_user.delete(f"/api/data-apps/sapp/drafts/{d['slug']}")
+        assert r.status_code == 204, r.text
+        assert (d["slug"], "recreate") in fake_runner.stop_calls
+
+        conn = get_system_db()
+        try:
+            from src.repositories.access_tokens import AccessTokenRepository
+
+            token_row = AccessTokenRepository(conn).get_by_id(token_id)
+        finally:
+            conn.close()
+        assert token_row["revoked_at"] is not None
+
+    def test_delete_draft_removes_branch(self, client_as_user, seeded_repo_with_commit):
+        from src.data_apps.git_repos import resolve_ref
+
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        assert resolve_ref("sapp", "init") is not None
+
+        r = client_as_user.delete(f"/api/data-apps/sapp/drafts/{d['slug']}")
+        assert r.status_code == 204, r.text
+        assert resolve_ref("sapp", "init") is None
+
+    def test_delete_draft_rejects_non_draft(self, client_as_user, seeded_repo_with_commit):
+        # deleting the prod slug through the draft route is a 400
+        r = client_as_user.delete("/api/data-apps/sapp/drafts/sapp")
+        assert r.status_code == 400 and r.json()["detail"] == "not_a_draft"
+
+    def test_delete_draft_unknown_404s(self, client_as_user, seeded_repo_with_commit):
+        r = client_as_user.delete("/api/data-apps/sapp/drafts/does-not-exist")
+        assert r.status_code == 404
+        assert r.json()["detail"] == "data_app_not_found"
+
+    def test_delete_draft_forbidden_for_stranger(self, client_as_user, client_as_other_user, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        r = client_as_other_user.delete(f"/api/data-apps/sapp/drafts/{d['slug']}")
+        assert r.status_code == 403
+
+    def test_delete_draft_wrong_parent_rejected(self, client_as_user, seeded_repo_with_commit, api_env):
+        """A draft belonging to a DIFFERENT parent can't be deleted through
+        this parent's `/drafts/{draft_slug}` route — same 400 `not_a_draft`
+        as a non-draft slug, since it isn't a draft *of this parent*."""
+        _seed_app_with_commit(api_env["data_dir"], slug="otherapp", owner_id="owner1")
+        d = client_as_user.post("/api/data-apps/otherapp/drafts", json={"branch": "init"}).json()
+        r = client_as_user.delete(f"/api/data-apps/sapp/drafts/{d['slug']}")
+        assert r.status_code == 400 and r.json()["detail"] == "not_a_draft"
+
+    def test_deploy_dev_mode_orphaned_draft_parent_not_found(
+        self, client_as_user, fake_runner, seeded_repo_with_commit
+    ):
+        """Carried-over fix: if the draft's parent app has been deleted out
+        from under it (bypassing the normal cascade — e.g. a direct repo
+        delete), `redeploy_current` must raise loudly rather than silently
+        falling back to cloning the draft's own (nonexistent) repo."""
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            parent = DataAppsRepository(conn).get_by_slug("sapp")
+            DataAppsRepository(conn).delete(parent["id"])
+        finally:
+            conn.close()
+
+        r = client_as_user.post(f"/api/data-apps/{d['slug']}/deploy", json={"mode": "dev"})
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == "parent_not_found"
+        assert not fake_runner.up_calls
+
+    def test_delete_parent_cascades_drafts(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        """Deleting a prod app with live drafts must delete the drafts too
+        (rows + branches + containers) — not leave them orphaned."""
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+
+        from src.data_apps.git_repos import resolve_ref
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        assert resolve_ref("sapp", "init") is not None
+
+        r = client_as_user.delete("/api/data-apps/sapp")
+        assert r.status_code == 204, r.text
+
+        conn = get_system_db()
+        try:
+            assert DataAppsRepository(conn).get_by_slug("sapp") is None
+            assert DataAppsRepository(conn).get_by_slug(d["slug"]) is None
+        finally:
+            conn.close()
+        assert (d["slug"], "recreate") in fake_runner.stop_calls
