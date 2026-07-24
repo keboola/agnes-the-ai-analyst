@@ -92,15 +92,16 @@ def test_me_cowork_shows_oauth_connector_url(seeded_app):
 
 
 def test_me_cowork_has_claude_code_setup_guide(seeded_app):
-    """The setup guide carries a Claude Code tab: the `claude mcp add` CLI
-    one-liner, the restart-before-it-appears note, and the SSE fallback for
-    servers that 404 the streamable endpoint after sign-in.
+    """The AI Connector guide carries a Claude Code panel: the `claude mcp
+    add` CLI one-liner, the restart-before-it-appears note, and the SSE
+    fallback recipe for older servers that don't serve the streamable
+    endpoint.
     """
     c = seeded_app["client"]
     token = seeded_app["analyst_token"]
     body = c.get("/me/ai-connector", headers=_auth(token)).text
-    assert 'data-guide="claude-code"' in body
-    assert "claude mcp add --transport http agnes" in body
+    assert 'data-panel="claude-code"' in body
+    assert "claude mcp add --scope user --transport http agnes" in body
     assert "--transport sse agnes" in body  # SSE fallback recipe
     assert "/api/mcp/sse" in body
-    assert "only appears after a restart" in body
+    assert "only appears after restarting Claude Code" in body
