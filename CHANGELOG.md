@@ -170,36 +170,36 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `/api/v1/agents/{slug}/webhooks` registration API (landed REST-only in
   Task 6). `add` takes `--url` and repeatable `--event`, printing the HMAC
   signing secret exactly once, like `agnes agent token`.
-- **`POST /api/v1/sessions/{id}/memories`** — the "remember" tool
-  (agent-api V1c Task 4), the write side of the per-agent memory notebook
-  (read side: pre-spawn materialization into `.claude/agent-memory.md`,
-  Task 3). `{content: str}` → `201 {id, status}`, honoring the calling
-  agent's `memory_write_mode`: `off` → `403 memory_writes_disabled`;
-  `propose` → creates a `pending` row awaiting owner review; `auto` →
-  creates an already-`active` row. Guarded by a per-write size cap
-  (`agent_memory_max_chars`, default 2000 → `413`), a rolling hourly
-  write-rate cap (`agent_memory_writes_per_hour`, default 20 → `429
-  memory_rate_limited`), and a total-pending backlog cap
-  (`agent_memory_max_pending`, default 100 → `429 memory_pending_full`).
-  Auth binds the write to the CALLING session, never the path `{id}`: when
-  the request carries a broker-minted `chat_session_id` claim (the
-  in-sandbox-agent call path) that differs from the path id, it's `403
-  session_mismatch` — closing a same-owner-different-agent memory-poisoning
-  gap that ownership checks alone would miss. The agent's context skill
-  advertises this tool only when its `memory_write_mode != "off"`.
-- **Agent memory management** — `GET/PATCH/DELETE
-  /api/v1/agents/{id}/memories[/{memory_id}]` (agent-api V1c Task 5), the
-  owner-facing inspect/approve/archive/delete surface over the notebook the
-  "remember" tool writes into. `GET` supports a `?status=` filter and marks
-  every `active` row `in_budget: bool` — the same `select_in_budget` split
-  `materialize_memories` uses at spawn time, so an owner who just approved a
-  memory can see whether it's actually going to land in the next spawn or
-  is shadowed behind newer active content past the ~6000-token materialize
-  budget. `PATCH {action: "approve"|"archive"}` → `200`; unrecognized
-  action → `400 invalid_action`. `DELETE` → `204`. Surfaced on `/agents` as
-  a per-agent Memory panel (status badges, in-effect/shadowed marker,
-  Approve/Delete buttons). REST-only for now — CLI (`agnes agent memory
-  ...`) lands in Task 7.
+- **Per-agent memory** (agent-api V1c). Agents keep a private notebook that
+  persists across runs, materialized pre-spawn into `.claude/agent-memory.md`
+  up to a ~6000-token budget (newest-first; older active memories can be
+  shadowed out — never silently, see below). A sandbox "remember" tool
+  (`POST /api/v1/sessions/{id}/memories`, `{content: str}` → `201 {id,
+  status}`) writes new memories, size-capped (`agent_memory_max_chars`,
+  default 2000 → `413`), rate-limited (`agent_memory_writes_per_hour`,
+  default 20/hr → `429 memory_rate_limited`), and backlog-capped
+  (`agent_memory_max_pending`, default 100 → `429 memory_pending_full`);
+  the write is bound to the CALLING session (never a path `{id}`), closing
+  a same-owner-different-agent memory-poisoning gap. `memory_write_mode`
+  (`off`/`propose`/`auto`, default `propose`) decides whether a write needs
+  owner approval before it re-materializes: `off` rejects with `403
+  memory_writes_disabled`, `propose` lands `pending`, `auto` lands already
+  `active`. Owners inspect/approve/archive/delete via `GET/PATCH/DELETE
+  /api/v1/agents/{id}/memories[/{memory_id}]` — `GET` marks every `active`
+  row `in_budget: bool` so an owner who just approved a memory can tell
+  whether it actually lands in the next spawn or is shadowed behind newer
+  content — the `agnes agent memory list|approve|archive|delete` CLI, and a
+  per-agent Memory panel on `/agents` (status badges, in-effect/shadowed
+  marker, Approve/Delete buttons).
+- **`agnes chat <slug>`** (agent-api V1c) — an interactive, streaming
+  terminal REPL over a composed agent's session API
+  (`POST /api/v1/agents/{slug}/sessions` + SSE
+  `POST /api/v1/sessions/{id}/messages`), plus a scriptable
+  `--once "<prompt>" [--json]` mode. Pure client of the public `/api/v1`
+  surface (session token or agent PAT, no privileged backchannel). Ctrl-C
+  cancels the in-flight turn server-side (a bare disconnect does not — only
+  `/cancel` stops the run and its budget burn); `/exit` best-effort frees
+  the sandbox.
 
 ### Changed
 

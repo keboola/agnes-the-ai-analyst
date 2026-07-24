@@ -663,6 +663,217 @@ class TestWebhooks:
         assert "webhook_not_found" in result.output
 
 
+class TestMemory:
+    """`agnes agent memory list|approve|archive|delete` — CLI surface for the
+    owner-facing memory-management API (`/api/v1/agents/{id}/memories[/{id}]`,
+    agent-api V1c Task 5/7). Every subcommand resolves the slug to an agent
+    id first (one `api_get` round trip on `/api/v1/agents`), same as every
+    other slug-addressed subcommand."""
+
+    _PENDING_ROW = {
+        "id": "mem_1",
+        "agent_id": "ag_1",
+        "content": "The user prefers concise answers.",
+        "status": "pending",
+        "source_session_id": "sess_1",
+        "created_at": "2026-07-20",
+        "activated_at": None,
+        "archived_at": None,
+    }
+    _ACTIVE_IN_BUDGET_ROW = {
+        "id": "mem_2",
+        "agent_id": "ag_1",
+        "content": "The user's timezone is UTC+2.",
+        "status": "active",
+        "source_session_id": "sess_2",
+        "created_at": "2026-07-21",
+        "activated_at": "2026-07-21",
+        "archived_at": None,
+        "in_budget": True,
+    }
+    _ACTIVE_SHADOWED_ROW = {
+        "id": "mem_3",
+        "agent_id": "ag_1",
+        "content": "An old fact that no longer fits the materialize budget.",
+        "status": "active",
+        "source_session_id": "sess_3",
+        "created_at": "2026-06-01",
+        "activated_at": "2026-06-01",
+        "archived_at": None,
+        "in_budget": False,
+    }
+
+    def _agents_resp(self):
+        return _resp(200, {"data": [_AGENT_ROW], "has_more": False, "next_cursor": None})
+
+    # -- list --------------------------------------------------------------
+
+    def test_memory_list_text_shows_status_and_in_budget_marker(self):
+        with patch(
+            "cli.commands.agent.api_get",
+            side_effect=[
+                self._agents_resp(),
+                _resp(
+                    200,
+                    {
+                        "data": [self._PENDING_ROW, self._ACTIVE_IN_BUDGET_ROW, self._ACTIVE_SHADOWED_ROW],
+                        "has_more": False,
+                        "next_cursor": None,
+                    },
+                ),
+            ],
+        ) as m:
+            result = runner.invoke(app, ["agent", "memory", "list", "research"])
+        assert result.exit_code == 0
+        assert m.call_args_list[0].args[0] == "/api/v1/agents"
+        assert m.call_args_list[1].args[0] == "/api/v1/agents/ag_1/memories"
+        assert m.call_args_list[1].kwargs["params"] == {}
+        assert "mem_1" in result.output
+        assert "pending" in result.output
+        assert "mem_2" in result.output
+        assert "in effect" in result.output
+        assert "mem_3" in result.output
+        assert "shadowed" in result.output
+
+    def test_memory_list_json(self):
+        with patch(
+            "cli.commands.agent.api_get",
+            side_effect=[
+                self._agents_resp(),
+                _resp(200, {"data": [self._ACTIVE_IN_BUDGET_ROW], "has_more": False, "next_cursor": None}),
+            ],
+        ):
+            result = runner.invoke(app, ["agent", "memory", "list", "research", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data[0]["id"] == "mem_2"
+        assert data[0]["in_budget"] is True
+
+    def test_memory_list_with_status_filter(self):
+        with patch(
+            "cli.commands.agent.api_get",
+            side_effect=[
+                self._agents_resp(),
+                _resp(200, {"data": [], "has_more": False, "next_cursor": None}),
+            ],
+        ) as m:
+            result = runner.invoke(app, ["agent", "memory", "list", "research", "--status", "pending"])
+        assert result.exit_code == 0
+        assert m.call_args_list[1].kwargs["params"] == {"status": "pending"}
+
+    def test_memory_list_empty(self):
+        with patch(
+            "cli.commands.agent.api_get",
+            side_effect=[
+                self._agents_resp(),
+                _resp(200, {"data": [], "has_more": False, "next_cursor": None}),
+            ],
+        ):
+            result = runner.invoke(app, ["agent", "memory", "list", "research"])
+        assert result.exit_code == 0
+        assert "No memories" in result.output
+
+    def test_memory_list_error_renders_detail_code(self):
+        with patch(
+            "cli.commands.agent.api_get",
+            side_effect=[
+                self._agents_resp(),
+                _resp(404, {"detail": {"code": "agent_not_found"}}),
+            ],
+        ):
+            result = runner.invoke(app, ["agent", "memory", "list", "research"])
+        assert result.exit_code == 1
+        assert "agent_not_found" in result.output
+
+    # -- approve -------------------------------------------------------------
+
+    def test_memory_approve_sends_patch_with_action(self):
+        approved = dict(self._PENDING_ROW)
+        approved["status"] = "active"
+        with (
+            patch("cli.commands.agent.api_get", return_value=self._agents_resp()),
+            patch("cli.commands.agent.api_patch", return_value=_resp(200, approved)) as m,
+        ):
+            result = runner.invoke(app, ["agent", "memory", "approve", "research", "mem_1"])
+        assert result.exit_code == 0
+        assert m.call_args.args[0] == "/api/v1/agents/ag_1/memories/mem_1"
+        assert m.call_args.kwargs["json"] == {"action": "approve"}
+        assert "mem_1" in result.output
+        assert "approved" in result.output.lower()
+
+    def test_memory_approve_error_renders_detail_code(self):
+        with (
+            patch("cli.commands.agent.api_get", return_value=self._agents_resp()),
+            patch(
+                "cli.commands.agent.api_patch",
+                return_value=_resp(404, {"detail": {"code": "memory_not_found"}}),
+            ),
+        ):
+            result = runner.invoke(app, ["agent", "memory", "approve", "research", "mem_nope"])
+        assert result.exit_code == 1
+        assert "memory_not_found" in result.output
+
+    # -- archive ---------------------------------------------------------
+
+    def test_memory_archive_sends_patch_with_action(self):
+        archived = dict(self._ACTIVE_IN_BUDGET_ROW)
+        archived["status"] = "archived"
+        with (
+            patch("cli.commands.agent.api_get", return_value=self._agents_resp()),
+            patch("cli.commands.agent.api_patch", return_value=_resp(200, archived)) as m,
+        ):
+            result = runner.invoke(app, ["agent", "memory", "archive", "research", "mem_2"])
+        assert result.exit_code == 0
+        assert m.call_args.args[0] == "/api/v1/agents/ag_1/memories/mem_2"
+        assert m.call_args.kwargs["json"] == {"action": "archive"}
+        assert "mem_2" in result.output
+        assert "archived" in result.output.lower()
+
+    def test_memory_archive_error_renders_detail_code(self):
+        with (
+            patch("cli.commands.agent.api_get", return_value=self._agents_resp()),
+            patch(
+                "cli.commands.agent.api_patch",
+                return_value=_resp(400, {"detail": {"code": "invalid_action"}}),
+            ),
+        ):
+            result = runner.invoke(app, ["agent", "memory", "archive", "research", "mem_2"])
+        assert result.exit_code == 1
+        assert "invalid_action" in result.output
+
+    # -- delete ------------------------------------------------------------
+
+    def test_memory_delete_requires_confirm_without_yes(self):
+        with (
+            patch("cli.commands.agent.api_get", return_value=self._agents_resp()),
+            patch("cli.commands.agent.api_delete") as m,
+        ):
+            result = runner.invoke(app, ["agent", "memory", "delete", "research", "mem_1"], input="n\n")
+        m.assert_not_called()
+        assert result.exit_code != 0
+
+    def test_memory_delete_with_yes_calls_delete(self):
+        with (
+            patch("cli.commands.agent.api_get", return_value=self._agents_resp()),
+            patch("cli.commands.agent.api_delete", return_value=_resp(204)) as m,
+        ):
+            result = runner.invoke(app, ["agent", "memory", "delete", "research", "mem_1", "--yes"])
+        assert result.exit_code == 0
+        assert m.call_args.args[0] == "/api/v1/agents/ag_1/memories/mem_1"
+
+    def test_memory_delete_not_found_renders_detail_code(self):
+        with (
+            patch("cli.commands.agent.api_get", return_value=self._agents_resp()),
+            patch(
+                "cli.commands.agent.api_delete",
+                return_value=_resp(404, {"detail": {"code": "memory_not_found"}}),
+            ),
+        ):
+            result = runner.invoke(app, ["agent", "memory", "delete", "research", "mem_1", "--yes"])
+        assert result.exit_code == 1
+        assert "memory_not_found" in result.output
+
+
 class TestTimeoutDriftGuard:
     def test_cli_ask_timeout_constants_match_server_defaults(self):
         """The CLI's `_DEFAULT_ASK_TIMEOUT_S`/`_MAX_ASK_TIMEOUT_S` are kept in

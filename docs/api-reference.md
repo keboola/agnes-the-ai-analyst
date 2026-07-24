@@ -1270,7 +1270,7 @@ Owner-facing inspect/approve/archive/delete over an agent's private memory noteb
 
 `DELETE /api/v1/agents/{agent_id}/memories/{memory_id}` — `204`.
 
-CLI (`agnes agent memory list/approve/archive/delete`) is not yet landed — REST-only for now (V1c Task 7); see `tests/test_documentation_api_triple_surface.py`'s `_AGENT_MEMORY_ADMIN_REASON`.
+Mirrored by `agnes agent memory list [--status pending|active|archived] [--json]`, `agnes agent memory approve/archive <slug> <memory_id>`, and `agnes agent memory delete <slug> <memory_id> [--yes]` (V1c Task 7). No MCP analogue, permanently — see `tests/test_documentation_api_triple_surface.py`'s `_AGENT_MEMORY_ADMIN_REASON`.
 
 - /api/v1/agents/{agent_id}/memories
 - /api/v1/agents/{agent_id}/memories/{memory_id}

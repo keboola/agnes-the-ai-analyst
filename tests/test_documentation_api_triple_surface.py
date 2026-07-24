@@ -341,13 +341,15 @@ _AGENT_MEMORY_ADMIN_REASON = (
     "owner-facing memory management (agent-api V1c Task 5) — inspect/"
     "approve/archive/delete over an agent's private memory notebook, the "
     "management-surface counterpart to the 'remember' tool "
-    "(_AGENT_MEMORY_WRITE_REASON above). REST-only for now: `agnes agent "
-    "memory list/approve/archive/delete` (the CLI surface) lands in Task 7, "
-    "at which point this becomes a _COHORT entry, not an _EXEMPT one. No MCP "
-    "analogue: reviewing and approving what an agent is allowed to "
-    "'remember' about itself must stay an interactive, human-witnessed "
-    "action, never something reachable through a tool call — mirrors the "
-    "same posture as _AGENT_SCOPE_REASON and _AGENT_TOKENS_REASON above."
+    "(_AGENT_MEMORY_WRITE_REASON above). Reachable via `agnes agent memory "
+    "list/approve/archive/delete` (Task 7) — a CLI surface, not a _COHORT "
+    "entry: _COHORT requires BOTH a CLI command and an MCP tool, and this "
+    "route deliberately has no MCP analogue, permanently. Reviewing and "
+    "approving what an agent is allowed to 'remember' about itself must "
+    "stay an interactive, human-witnessed action — never something an "
+    "agent's own tool call (or a tool call issued on a human operator's "
+    "behalf against an arbitrary agent) can reach — mirrors the same "
+    "posture as _AGENT_SCOPE_REASON and _AGENT_TOKENS_REASON above."
 )
 
 _EXEMPT: dict[str, str] = {

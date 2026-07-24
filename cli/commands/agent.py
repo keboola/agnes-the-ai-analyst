@@ -39,7 +39,7 @@ from typing import Optional
 
 import typer
 
-from cli.client import api_delete, api_get, api_post, api_put
+from cli.client import api_delete, api_get, api_patch, api_post, api_put
 from cli.error_render import render_error
 
 agent_app = typer.Typer(help="Manage agent profiles, scope, tokens, and one-shot asks")
@@ -47,6 +47,14 @@ scope_app = typer.Typer(help="Manage an agent's resource scope grants")
 agent_app.add_typer(scope_app, name="scope")
 webhooks_app = typer.Typer(help="Manage an agent's outbound job-completion webhooks")
 agent_app.add_typer(webhooks_app, name="webhooks")
+memory_app = typer.Typer(help="Manage an agent's private memory notebook (owner-facing)")
+agent_app.add_typer(memory_app, name="memory")
+
+# Valid `?status=` filter values for `GET /api/v1/agents/{id}/memories` —
+# mirrors `app/api/agents_admin.py`'s memory-row `status` column (the server
+# doesn't validate the value, it just filters; kept here for `--help` text
+# only).
+_MEMORY_STATUS_VALUES = ("pending", "active", "archived")
 
 # Mirrors `app/api/agent_webhooks.py`'s `_DEFAULT_EVENTS` — the CLI's own
 # help text only (the server applies this default when `--event` is
@@ -541,3 +549,128 @@ def webhooks_delete(
     if resp.status_code != 204:
         _fail(resp)
     typer.echo(f"Deleted webhook {webhook_id}")
+
+
+# ---------------------------------------------------------------------------
+# memory — owner-facing inspect/approve/archive/delete over an agent's
+# private memory notebook (V1c Task 5/7). REST: `/api/v1/agents/{id}/
+# memories[/{memory_id}]`. No MCP analogue by design (see
+# `tests/test_documentation_api_triple_surface.py`'s
+# `_AGENT_MEMORY_ADMIN_REASON`) — this is the human-witnessed governance
+# surface over what an agent is allowed to "remember" about itself, not
+# something an agent tool call should ever reach.
+# ---------------------------------------------------------------------------
+
+
+def _memory_in_budget_marker(row: dict) -> str:
+    """`in_budget` is only present on `active` rows (see `_serialize_memory`
+    in `app/api/agents_admin.py`) — C4: an approved memory can still be
+    shadowed behind newer active content past the ~6000-token materialize
+    budget, so "active" alone doesn't mean "in effect"."""
+    if row.get("status") != "active":
+        return "-"
+    return "in effect" if row.get("in_budget") else "shadowed"
+
+
+def _print_memory(row: dict) -> None:
+    typer.echo(f"id:         {row.get('id')}")
+    typer.echo(f"status:     {row.get('status')}")
+    if row.get("status") == "active":
+        typer.echo(f"in_budget:  {_memory_in_budget_marker(row)}")
+    typer.echo(f"content:    {row.get('content')}")
+    typer.echo(f"created_at: {row.get('created_at')}")
+
+
+@memory_app.command("list")
+def memory_list(
+    slug: str = typer.Argument(..., help="Agent slug"),
+    status: Optional[str] = typer.Option(
+        None, "--status", help=f"Filter by status: {'|'.join(_MEMORY_STATUS_VALUES)} (default: all)"
+    ),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """List an agent's private memory notebook.
+
+    Every `active` row is marked "in effect" or "shadowed" — the same
+    newest-first, ~6000-token materialize-budget split the server applies
+    when spawning a fresh session, so an owner who just approved a memory
+    can tell whether it will actually land in the agent's next run.
+    """
+    row = _resolve_agent(slug)
+    params: dict = {}
+    if status is not None:
+        params["status"] = status
+    resp = api_get(f"/api/v1/agents/{row['id']}/memories", params=params)
+    if resp.status_code != 200:
+        _fail(resp)
+    rows = resp.json().get("data", [])
+    if as_json:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    typer.echo(f"Memories: {len(rows)}")
+    if not rows:
+        typer.echo("No memories yet — the agent hasn't written anything to remember.")
+        return
+    for i, r in enumerate(rows):
+        if i:
+            typer.echo("")
+        _print_memory(r)
+
+
+@memory_app.command("approve")
+def memory_approve(
+    slug: str = typer.Argument(..., help="Agent slug"),
+    memory_id: str = typer.Argument(..., help="Memory id (from `agnes agent memory list`)"),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Approve a pending memory, promoting it to active.
+
+    A no-op (still `200`) if the memory isn't currently `pending` — mirrors
+    the server's `agent_memories_repo().approve` semantics.
+    """
+    row = _resolve_agent(slug)
+    resp = api_patch(f"/api/v1/agents/{row['id']}/memories/{memory_id}", json={"action": "approve"})
+    if resp.status_code != 200:
+        _fail(resp)
+    body = resp.json()
+    if as_json:
+        typer.echo(json.dumps(body, indent=2))
+        return
+    typer.echo(f"Memory {memory_id} approved (status={body.get('status')})")
+
+
+@memory_app.command("archive")
+def memory_archive(
+    slug: str = typer.Argument(..., help="Agent slug"),
+    memory_id: str = typer.Argument(..., help="Memory id (from `agnes agent memory list`)"),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Archive a memory (pending or active), removing it from what
+    materializes into future runs."""
+    row = _resolve_agent(slug)
+    resp = api_patch(f"/api/v1/agents/{row['id']}/memories/{memory_id}", json={"action": "archive"})
+    if resp.status_code != 200:
+        _fail(resp)
+    body = resp.json()
+    if as_json:
+        typer.echo(json.dumps(body, indent=2))
+        return
+    typer.echo(f"Memory {memory_id} archived (status={body.get('status')})")
+
+
+@memory_app.command("delete")
+def memory_delete(
+    slug: str = typer.Argument(..., help="Agent slug"),
+    memory_id: str = typer.Argument(..., help="Memory id (from `agnes agent memory list`)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Permanently delete one of an agent's memories."""
+    row = _resolve_agent(slug)
+    if not yes:
+        confirm = typer.confirm(f"Delete memory '{memory_id}' from agent '{slug}'?")
+        if not confirm:
+            raise typer.Abort()
+    resp = api_delete(f"/api/v1/agents/{row['id']}/memories/{memory_id}")
+    if resp.status_code != 204:
+        _fail(resp)
+    typer.echo(f"Deleted memory {memory_id}")
