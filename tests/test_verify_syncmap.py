@@ -300,12 +300,21 @@ def test_changelog_flags_a_reordered_but_unchanged_bullet_set():
 # ---------------------------------------------------------------------------
 
 
+def _cli_source(params: str) -> str:
+    return f"import typer\n\n\ndef cmd(\n{params}\n):\n    pass\n"
+
+
+def _added_for(source: str, path: str = "cli/commands/foo.py") -> dict:
+    """Treat every line of `source` as added (a brand-new command module)."""
+    return {path: list(enumerate(source.splitlines(), start=1))}
+
+
 def test_scope_flags_rejects_a_new_boolean_scope_flag():
-    added = {"cli/commands/foo.py": [(12, '    server: bool = typer.Option(False, "--server", help="run on server"),')]}
-    findings = check_scope_flags(added)
+    src = _cli_source('    server: bool = typer.Option(False, "--server", help="run"),')
+    findings = check_scope_flags(_added_for(src), {"cli/commands/foo.py": src})
     assert len(findings) == 1
     assert findings[0].severity == BLOCKING
-    assert findings[0].line == 12
+    assert findings[0].line == 5
     assert "--scope" in findings[0].message
 
 
@@ -313,31 +322,87 @@ def test_scope_flags_rejects_new_remote_and_local_aliases():
     """`--remote`/`--local` are FROZEN aliases on the two commands that already
     have them — a NEW command may not add one."""
     for flag in ("--remote", "--local"):
-        added = {"cli/commands/new.py": [(3, f'    x: bool = typer.Option(False, "{flag}"),')]}
-        assert len(check_scope_flags(added)) == 1, flag
+        src = _cli_source(f'    x: bool = typer.Option(False, "{flag}"),')
+        assert len(check_scope_flags(_added_for(src), {"cli/commands/foo.py": src})) == 1, flag
+
+
+def test_scope_flags_catches_the_multi_line_typer_style():
+    """The repo's dominant style wraps typer.Option across lines, so the `bool`
+    annotation and the flag literal land on DIFFERENT lines (see
+    cli/commands/search.py:27, cli/commands/snapshot.py:199). A line-by-line
+    substring match passes these silently — the exact shape that must block."""
+    src = _cli_source(
+        "    local: bool = typer.Option(\n"
+        "        False,\n"
+        '        "--local",\n'
+        '        help="Shorthand for --scope local",\n'
+        "    ),"
+    )
+    findings = check_scope_flags(_added_for(src), {"cli/commands/foo.py": src})
+    assert len(findings) == 1
+    assert findings[0].severity == BLOCKING
+    # cites the parameter, not the buried flag literal
+    assert findings[0].line == 5
+
+
+def test_scope_flags_catches_flag_on_a_continuation_line():
+    src = _cli_source('    expired: bool = typer.Option(\n        False, "--server",\n    ),')
+    assert len(check_scope_flags(_added_for(src), {"cli/commands/foo.py": src})) == 1
 
 
 def test_scope_flags_allows_the_scope_option_itself():
-    added = {
-        "cli/commands/foo.py": [(7, '    scope: str = typer.Option("auto", "--scope", help="auto|local|server"),')]
-    }
-    assert check_scope_flags(added) == []
+    src = _cli_source('    scope: str = typer.Option("auto", "--scope", help="auto|local"),')
+    assert check_scope_flags(_added_for(src), {"cli/commands/foo.py": src}) == []
 
 
 def test_scope_flags_allows_a_non_boolean_option_named_remote():
     """The rule bans a boolean *scope* flag, not the substring 'remote'."""
-    added = {
-        "cli/commands/foo.py": [
-            (7, '    remote_url: str = typer.Option(None, "--remote-url"),'),
-            (8, '    limit: int = typer.Option(10, "--limit"),'),
-        ]
-    }
-    assert check_scope_flags(added) == []
+    src = _cli_source(
+        "\n".join(
+            [
+                '    remote_url: str = typer.Option(None, "--remote-url"),',
+                '    limit: int = typer.Option(10, "--limit"),',
+            ]
+        )
+    )
+    assert check_scope_flags(_added_for(src), {"cli/commands/foo.py": src}) == []
+
+
+def test_scope_flags_handles_optional_bool_annotations():
+    src = _cli_source('    remote: bool | None = typer.Option(None, "--remote"),')
+    assert len(check_scope_flags(_added_for(src), {"cli/commands/foo.py": src})) == 1
 
 
 def test_scope_flags_only_inspects_cli_command_modules():
-    added = {"app/api/foo.py": [(1, '    remote: bool = typer.Option(False, "--remote"),')]}
-    assert check_scope_flags(added) == []
+    src = _cli_source('    remote: bool = typer.Option(False, "--remote"),')
+    assert check_scope_flags(_added_for(src, "app/api/foo.py"), {"app/api/foo.py": src}) == []
+
+
+def test_scope_flags_ignores_untouched_parameters():
+    """Diff-scoped: an existing frozen alias must not be re-reported just
+    because some other line in the file changed."""
+    src = _cli_source('    remote: bool = typer.Option(False, "--remote"),')
+    added = {"cli/commands/foo.py": [(7, "    pass")]}
+    assert check_scope_flags(added, {"cli/commands/foo.py": src}) == []
+
+
+def test_scope_flags_ignores_unparseable_sources():
+    added = {"cli/commands/foo.py": [(1, "x")]}
+    assert check_scope_flags(added, {"cli/commands/foo.py": "def (:\n"}) == []
+
+
+def test_scope_flags_live_cli_commands_are_clean():
+    """Frozen aliases already in cli/commands/ must not trip the guard when
+    their lines are not part of the diff."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    for name in ("search.py", "snapshot.py", "query.py", "explore.py"):
+        path = root / "cli" / "commands" / name
+        if not path.is_file():
+            continue
+        rel = f"cli/commands/{name}"
+        assert check_scope_flags({rel: [(1, "import typer")]}, {rel: path.read_text()}) == [], name
 
 
 # ---------------------------------------------------------------------------
