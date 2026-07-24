@@ -14,6 +14,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.21] - 2026-07-24
+
+### Changed
+
 - `/catalog/semantics` metric detail now renders the full **description**
   (markdown → sanitized HTML via the existing `render_safe` pipeline, same
   injection contract as marketplace detail pages) plus a
@@ -27,14 +39,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   longer leaks into previews, and the filter also matches **synonyms**
   (metrics are routinely searched by their spoken aliases, which were
   stored but not indexed).
-
-### Fixed
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.76.17] - 2026-07-23
 
