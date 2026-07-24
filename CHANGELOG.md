@@ -37,6 +37,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   at that instant and often yielded just the status line (~40% failure rate in
   isolation). It now accumulates until the full buffered response arrives — the
   same read-until-complete idiom the streaming test beside it already used.
+- **`agnes chat --help` test no longer asserts on colourised output.**
+  `test_group_help_shows_repl_usage_and_caveats` matched `agnes chat <slug>`
+  against the raw output; rich-click highlights the metavar, so with colour on
+  (off for a non-tty locally, on in CI) the literal is split by ANSI codes and
+  the assertion failed only in CI. It now strips SGR codes first, the same
+  `_clean()` idiom the other CLI test modules use.
 - **Migration-safety tests no longer pin a literal future schema version.**
   Both future-version tests derive it from `SCHEMA_VERSION + 1`; the previous
   hardcoded `99` silently stopped exercising the noop path as the ladder grew,

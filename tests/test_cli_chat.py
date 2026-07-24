@@ -25,6 +25,20 @@ from cli.main import app
 
 runner = CliRunner()
 
+_ANSI_RE = __import__("re").compile(r"\x1b\[[0-9;]*m")
+
+
+def _clean(s: str) -> str:
+    """Strip ANSI SGR codes before asserting on help/table text.
+
+    rich-click highlights metavars, so a literal like ``agnes chat <slug>``
+    renders as ``agnes chat \\x1b[1;33m<slug>\\x1b[0m`` whenever colour is on.
+    Colour is off for a non-tty locally but on under CI, so raw-``output``
+    substring assertions pass locally and fail in CI. Same idiom as the
+    other CLI test modules (e.g. tests/test_cli_admin_activity.py).
+    """
+    return _ANSI_RE.sub("", s)
+
 
 @pytest.fixture(autouse=True)
 def tmp_config(tmp_path, monkeypatch):
@@ -388,12 +402,13 @@ class TestGroupHelpDiscoverability:
     def test_group_help_shows_repl_usage_and_caveats(self):
         result = runner.invoke(app, ["chat", "--help"])
 
+        out = _clean(result.output)
         assert result.exit_code == 0
-        assert "agnes chat <slug>" in result.output
-        assert "--once" in result.output
-        assert "--agent" in result.output
-        assert "disconnect" in result.output.lower() or "does not stop the run" in result.output.lower()
-        assert "paused" in result.output.lower()
+        assert "agnes chat <slug>" in out
+        assert "--once" in out
+        assert "--agent" in out
+        assert "disconnect" in out.lower() or "does not stop the run" in out.lower()
+        assert "paused" in out.lower()
 
 
 class TestAgentEscapeHatch:
