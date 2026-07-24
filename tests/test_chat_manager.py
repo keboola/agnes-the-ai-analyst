@@ -1172,6 +1172,7 @@ def _make_pause_manager(tmp_path, linger_seconds=0):
             concurrency_per_user=5,
             on_detach="pause",
             detach_linger_seconds=linger_seconds,
+            idle_grace_seconds=linger_seconds,
             paused_ttl_seconds=7 * 24 * 3600,
             idle_ttl_seconds=10**9,
         ),
@@ -1193,6 +1194,7 @@ def _make_kill_manager(tmp_path):
             concurrency_per_user=5,
             on_detach="kill",
             detach_linger_seconds=0,
+            idle_grace_seconds=0,
             paused_ttl_seconds=7 * 24 * 3600,
             idle_ttl_seconds=10**9,
         ),
@@ -1872,10 +1874,10 @@ def test_resume_from_row_co_session_uses_ephemeral_dir(manager: ChatManager, mon
     """Cold-start resume of a co-session must rebuild the ephemeral
     grant-intersection workspace (SR-6), not a personal one.
 
-    A cold-start ``_resume_from_row`` call is, by definition, a session this
-    process has no ``_known_protocol_sessions`` record for (nothing spawned
-    or ticket-pushed it in this process) — so per AC-G-resume-legacy it now
-    goes through the fresh-spawn path (``_spawn_live``), not
+    A cold-start ``_resume_from_row`` call whose row's ``relay_protocol_version``
+    is unknown/legacy (NULL — e.g. a pre-Tier-1-migration row, simulated here
+    by nulling the column after ``set_sandbox_ref`` stamps it) goes through
+    the fresh-spawn path (``_spawn_live``) per AC-G-resume-legacy, not
     ``provider.resume()``. That path shares the same co-session ephemeral-dir
     selection this test guards."""
     import app.chat.manager as manager_mod
@@ -1888,6 +1890,9 @@ def test_resume_from_row_co_session_uses_ephemeral_dir(manager: ChatManager, mon
         manager._repo.add_session_participant(session_id=s.id, user_email="owner@x", user_id="u1", role="owner")
         manager._repo.add_session_participant(session_id=s.id, user_email="peer@x", user_id="u2", role="collaborator")
         manager._repo.set_sandbox_ref(s.id, sandbox_id="sbx-co", runner_pid=42)
+        # set_sandbox_ref stamps relay_protocol_version=current (Tier 1) — null
+        # it back out to simulate a genuinely legacy/unknown row for this test.
+        manager._repo._conn.execute("UPDATE chat_sessions SET relay_protocol_version = NULL WHERE id = ?", [s.id])
 
         handle = FakeHandle()
         manager._provider.spawn = AsyncMock(return_value=handle)
@@ -1906,6 +1911,90 @@ def test_resume_from_row_co_session_uses_ephemeral_dir(manager: ChatManager, mon
         eph.assert_called_once()
         personal.assert_not_called()
         assert sorted(live.participant_emails) == ["owner@x", "peer@x"]
+        await manager.kill(s.id, reason="test_done")
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Tier 1: restart-invariant sandbox reuse (relay_protocol_version column)
+# ---------------------------------------------------------------------------
+
+
+def test_resume_from_row_reconnects_after_restart(manager: ChatManager, monkeypatch):
+    """A row whose ``relay_protocol_version`` is current (stamped by
+    ``set_sandbox_ref``) must be reconnected via ``provider.resume()`` —
+    NOT force-respawned — even though this is a brand-new ``ChatManager``
+    with an empty ``_known_protocol_sessions`` (i.e. simulating a genuine
+    process restart). This is the headline Tier 1 fix: before the
+    persisted column existed, EVERY restart force-respawned every
+    resumable session regardless of its runner's actual protocol."""
+    import app.chat.manager as manager_mod
+    from app.chat.types import RELAY_PROTOCOL_VERSION
+
+    fake_tickets = _FakeTicketRepo()
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: fake_tickets)
+
+    async def _run():
+        from datetime import datetime as _dt, timezone as _tz
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        manager._repo.set_sandbox_ref(s.id, sandbox_id="sbx-restart", runner_pid=555)
+        manager._repo.set_sandbox_paused_at(s.id, _dt.now(_tz.utc))
+        row = manager._repo.get_session(s.id)
+        assert row is not None
+        assert row.relay_protocol_version == RELAY_PROTOCOL_VERSION
+        # Precondition: this manager never spawned/ticket-pushed this
+        # session in-process — the fast-confirm set is genuinely empty,
+        # exactly like right after a process restart.
+        assert s.id not in manager._known_protocol_sessions
+
+        handle = FakeHandle()
+        manager._provider.resume = AsyncMock(return_value=handle)
+
+        live = await manager._resume_from_row(row)
+
+        assert live is not None
+        manager._provider.resume.assert_awaited_once_with(sandbox_id="sbx-restart", runner_pid=555, env={})
+        manager._provider.spawn.assert_not_awaited()
+        assert live.state == SessionState.ACTIVE
+        await manager.kill(s.id, reason="test_done")
+
+    asyncio.run(_run())
+
+
+def test_resume_from_row_null_protocol_version_forces_fresh_spawn(manager: ChatManager, monkeypatch):
+    """The inverse of the above: a row whose ``relay_protocol_version`` is
+    NULL (unknown/legacy — e.g. a pre-Tier-1-migration row) must still be
+    force-respawned via ``_spawn_live``, never reconnected via
+    ``provider.resume()`` — the conservative AC-G-resume-legacy behavior
+    this migration preserves for genuinely unknown runners."""
+    import app.chat.manager as manager_mod
+
+    fake_tickets = _FakeTicketRepo()
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: fake_tickets)
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        manager._repo.set_sandbox_ref(s.id, sandbox_id="sbx-legacy", runner_pid=111)
+        # Simulate a genuinely legacy/unknown row: NULL relay_protocol_version.
+        manager._repo._conn.execute("UPDATE chat_sessions SET relay_protocol_version = NULL WHERE id = ?", [s.id])
+        row = manager._repo.get_session(s.id)
+        assert row is not None
+        assert row.relay_protocol_version is None
+
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        manager._provider.resume = AsyncMock(side_effect=AssertionError("resume must not be called"))
+        manager._provider.destroy = AsyncMock()
+
+        live = await manager._resume_from_row(row)
+
+        assert live is not None
+        manager._provider.spawn.assert_awaited_once()
+        manager._provider.resume.assert_not_awaited()
+        manager._provider.destroy.assert_awaited_once_with(sandbox_id="sbx-legacy")
+        assert live.state == SessionState.ACTIVE
         await manager.kill(s.id, reason="test_done")
 
     asyncio.run(_run())
@@ -2220,8 +2309,11 @@ def test_legacy_runner_force_respawned(tmp_path, monkeypatch):
         assert len(provider.spawned) == 1
 
         # Simulate a pre-broker (legacy) runner: this process never recorded
-        # having pushed it a current-protocol ticket.
+        # having pushed it a current-protocol ticket, AND the persisted
+        # relay_protocol_version is unknown (nulled here — set_sandbox_ref
+        # would otherwise have stamped it current at spawn time above).
         mgr._known_protocol_sessions.discard(s.id)
+        mgr._repo._conn.execute("UPDATE chat_sessions SET relay_protocol_version = NULL WHERE id = ?", [s.id])
 
         ws2 = FakeWS()
         attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
@@ -2265,6 +2357,9 @@ def test_legacy_resume_destroys_old_sandbox_before_clearing(tmp_path):
         monkeypatch_workdir(mgr)
         session = mgr._repo.create_session(user_email="leak@test.com", surface=Surface.WEB)
         mgr._repo.set_sandbox_ref(session.id, sandbox_id="old-sbx-123", runner_pid=999)
+        # set_sandbox_ref stamps relay_protocol_version=current (Tier 1) — null
+        # it back out to simulate the legacy/unknown row this test targets.
+        mgr._repo._conn.execute("UPDATE chat_sessions SET relay_protocol_version = NULL WHERE id = ?", [session.id])
         row = mgr._repo.get_session(session.id)
 
         order: list = []
