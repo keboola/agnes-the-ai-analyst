@@ -14,6 +14,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.25] - 2026-07-24
+
+### Changed
+
 - **Cloud chat reuses a paused sandbox across process restarts instead of
   respawning fresh.** The resume-vs-respawn decision was gated on an
   in-process set (`_known_protocol_sessions`) that is empty after any
@@ -26,14 +38,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the in-process gate provided. A configurable grace window
   (`chat.idle_grace_seconds`, default 60 s) keeps the sandbox warm through a
   likely follow-up before it pauses.
-
-### Fixed
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.76.23] - 2026-07-24
 
