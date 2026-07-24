@@ -73,6 +73,24 @@ def test_relay_wraps_agnes_mcp_post_body_into_envelope():
     assert call["headers"]["Authorization"] == "Bearer TOKMCP"  # mcp scope ticket
 
 
+def test_relay_wraps_data_apps_post_body_into_envelope():
+    """The broker's /data-apps route (wave 3B, data_apps scope) follows the
+    same envelope contract as /agnes-api and /agnes-mcp."""
+
+    async def _run():
+        r = Relay(server_url="http://agnes:8000")
+        r.set_tickets(main="TOKMAIN", mcp="TOKMCP", data_apps="TOKDATAAPPS")
+        fake = _CapturingClient()
+        r._client = fake
+        await r._forward("/data-apps/api/data-apps", b"", {}, method="GET")
+        return fake.calls[-1]
+
+    call = asyncio.run(_run())
+    assert call["url"] == "http://agnes:8000/api/broker/data-apps"
+    assert call["json"] == {"method": "GET", "path": "/api/data-apps", "body": None}
+    assert call["headers"]["Authorization"] == "Bearer TOKDATAAPPS"
+
+
 def test_relay_anthropic_stays_transparent_not_enveloped():
     """The /anthropic leg is a transparent external proxy — it must NOT be
     wrapped in an envelope; the raw body + SDK headers pass through to the
@@ -96,14 +114,16 @@ def test_relay_anthropic_stays_transparent_not_enveloped():
 
 def test_relay_holds_tickets_in_memory_only():
     r = Relay(server_url="http://agnes:8000")
-    r.set_tickets(main="TOKMAIN", mcp="TOKMCP")
+    r.set_tickets(main="TOKMAIN", mcp="TOKMCP", data_apps="TOKDATAAPPS")
 
     # the relay must not export tickets to the process environment
     assert "TOKMAIN" not in os.environ.values()
     assert "TOKMCP" not in os.environ.values()
+    assert "TOKDATAAPPS" not in os.environ.values()
     # ...but they must be held in-memory on the instance
     assert r._main_ticket == "TOKMAIN"
     assert r._mcp_ticket == "TOKMCP"
+    assert r._data_apps_ticket == "TOKDATAAPPS"
 
 
 def test_relay_refuses_before_tickets():

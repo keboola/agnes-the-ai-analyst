@@ -2135,9 +2135,9 @@ def test_spawn_pushes_ticket_frame(manager: ChatManager, monkeypatch):
     frames = [json.loads(b) for b in handle._stdin_buf]
     ticket_frames = [f for f in frames if f.get("type") == "ticket_push"]
     assert ticket_frames, f"expected a ticket_push frame on stdin; got {frames}"
-    assert ticket_frames[0]["main"] and ticket_frames[0]["mcp"]
+    assert ticket_frames[0]["main"] and ticket_frames[0]["mcp"] and ticket_frames[0]["data_apps"]
     scopes = {scope for (_sid, scope) in fake_tickets.minted}
-    assert scopes == {"main", "mcp"}
+    assert scopes == {"main", "mcp", "data_apps"}
 
 
 def test_resume_pushes_fresh_ticket_before_messages(tmp_path, monkeypatch):
@@ -2181,7 +2181,7 @@ def test_resume_pushes_fresh_ticket_before_messages(tmp_path, monkeypatch):
             f"expected the FIRST stdin frame after resume to be ticket_push; got {frames}"
         )
         scopes = {scope for (_sid, scope) in fake_tickets.minted}
-        assert scopes == {"main", "mcp"}
+        assert scopes == {"main", "mcp", "data_apps"}
         assert fake_tickets.revoked == [s.id]
 
         await mgr.kill(s.id, reason="test_done")

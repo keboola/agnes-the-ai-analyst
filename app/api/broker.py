@@ -318,6 +318,32 @@ async def agnes_mcp(request: Request, row: Dict[str, Any] = Depends(require_brok
     return _to_response(resp)
 
 
+# Sandboxed data-apps authoring is confined to this prefix — the ticket's
+# `data_apps` scope grants replay access to the data-apps control-plane API
+# only, never the wider `/api/*` surface `agnes-api`/`agnes-mcp` expose.
+_DATA_APPS_PATH_PREFIX = "/api/data-apps"
+
+
+@router.post("/data-apps")
+async def data_apps_broker(request: Request, row: Dict[str, Any] = Depends(require_broker_ticket)) -> Response:
+    """Replay a sandboxed authoring agent's request under the ticket identity,
+    confined to the `/api/data-apps` control-plane surface.
+
+    Twin of `agnes-api`/`agnes-mcp`: same ticket-scope + in-process ASGI
+    replay pattern, gated on the `data_apps` scope. The extra path-prefix
+    check keeps a data_apps-scoped ticket from reaching any other `/api/*`
+    route even though `_replay` itself would happily dispatch there (its own
+    gate only blocks admin-mutation routes).
+    """
+    _require_scope(row, "data_apps")
+    body = await request.json()
+    path = str(body.get("path") or "")
+    if not (path == _DATA_APPS_PATH_PREFIX or path.startswith(_DATA_APPS_PATH_PREFIX + "/")):
+        raise HTTPException(status_code=403, detail="path_not_allowed")
+    resp = await _replay(request, row, body)
+    return _to_response(resp)
+
+
 @router.post("/anthropic", name="anthropic_proxy_bare")
 @router.post("/anthropic/{subpath:path}", name="anthropic_proxy_subpath")
 async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(require_broker_ticket)) -> Response:
@@ -356,11 +382,7 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
     # dispatcher failure: silently bypassing the cost-routing PoC would
     # corrupt its measurements; the sandbox sees the ordinary upstream error.
     dispatcher_url = os.environ.get("LLM_DISPATCHER_URL", "").strip().rstrip("/")
-    use_dispatcher = (
-        bool(dispatcher_url)
-        and request.method == "POST"
-        and upstream_path == "/v1/messages"
-    )
+    use_dispatcher = bool(dispatcher_url) and request.method == "POST" and upstream_path == "/v1/messages"
 
     # Credential injection is the ONE thing that differs between auth modes; the
     # sandbox never carries either credential (it's added here, server-side).

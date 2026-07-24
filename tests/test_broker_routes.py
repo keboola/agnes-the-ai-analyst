@@ -419,7 +419,9 @@ def test_anthropic_proxy_records_credit_diagnostic(broker_app, monkeypatch):
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static")
     _StubResponseClient.status_code = 400
-    _StubResponseClient.body = b'{"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the API."}}'
+    _StubResponseClient.body = (
+        b'{"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the API."}}'
+    )
     monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _StubResponseClient)
     tok = ticket_repo().mint("chat_credit", "main", ttl_seconds=60)
 
@@ -630,9 +632,7 @@ def test_dispatcher_optin_other_subpaths_stay_on_anthropic(broker_app, monkeypat
 
     r = _post_broker_anthropic(broker_app, "/v1/messages/count_tokens", "chat_disp2")
     assert r.status_code == 200
-    assert _UrlCapturingClient._captured_url == (
-        "https://api.anthropic.com/v1/messages/count_tokens"
-    )
+    assert _UrlCapturingClient._captured_url == ("https://api.anthropic.com/v1/messages/count_tokens")
     h = _lower_keys(_UrlCapturingClient._captured)
     assert h.get("x-api-key") == "sk-ant-static-KEY"
 
@@ -696,3 +696,100 @@ def test_dispatcher_optin_empty_key_logs_warning(broker_app, monkeypatch, caplog
     assert r.status_code == 200
     assert _UrlCapturingClient._captured_url == "http://127.0.0.1:8600/v1/messages"
     assert any("LLM_DISPATCHER_API_KEY is empty" in rec.message for rec in caplog.records)
+
+
+# --- POST /api/broker/data-apps (Task 7, wave 3B) ---------------------------
+#
+# Mirrors the `agnes-api`/`agnes-mcp` twin-endpoint pattern: a `data_apps`
+# scoped ticket, minted at chat spawn, lets the sandboxed authoring agent
+# replay `/api/data-apps/*` requests under its resolved identity instead of
+# carrying a raw PAT. The route additionally confines the replayed path to
+# the `/api/data-apps` prefix — every other path (even a non-admin one) is
+# rejected with `path_not_allowed`, on top of (not instead of) the generic
+# `_replay` admin-route gate.
+
+
+@pytest.fixture
+def broker_env(e2e_env, monkeypatch):
+    """A seeded user + chat session with a data_apps-scoped ticket, data_apps
+    feature enabled, and a real TestClient(app) — standing in for the
+    sandboxed authoring agent's broker call."""
+    import yaml
+    from fastapi.testclient import TestClient
+
+    import app.instance_config as instance_config
+    from app.main import create_app
+
+    data_dir = e2e_env["data_dir"]
+    state = data_dir / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "instance.yaml").write_text(yaml.dump({"data_apps": {"enabled": True}}))
+    instance_config._instance_config = None
+
+    conn = get_system_db()
+    UserRepository(conn).create(id="broker_da_user1", email="broker_da@test.com", name="Broker DA User")
+    conn.close()
+
+    session = chat_session_repo().create_session(user_email="broker_da@test.com", surface=Surface.WEB)
+    tok = ticket_repo().mint(session.id, "data_apps")
+
+    client = TestClient(create_app())
+    return client, tok
+
+
+@pytest.fixture
+def broker_env_main_scope(e2e_env, monkeypatch):
+    """Same as `broker_env`, but the ticket is minted with the `main` scope —
+    used to prove a wrong-scope ticket cannot authenticate the data-apps
+    broker route."""
+    import yaml
+    from fastapi.testclient import TestClient
+
+    import app.instance_config as instance_config
+    from app.main import create_app
+
+    data_dir = e2e_env["data_dir"]
+    state = data_dir / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "instance.yaml").write_text(yaml.dump({"data_apps": {"enabled": True}}))
+    instance_config._instance_config = None
+
+    conn = get_system_db()
+    UserRepository(conn).create(id="broker_da_user2", email="broker_da_main@test.com", name="Broker DA Main User")
+    conn.close()
+
+    session = chat_session_repo().create_session(user_email="broker_da_main@test.com", surface=Surface.WEB)
+    tok = ticket_repo().mint(session.id, "main")
+
+    client = TestClient(create_app())
+    return client, tok
+
+
+def test_broker_data_apps_scope(broker_env):
+    client, ticket = broker_env
+    r = client.post(
+        "/api/broker/data-apps",
+        headers={"Authorization": f"Bearer {ticket}"},
+        json={"path": "/api/data-apps", "method": "GET"},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_broker_data_apps_wrong_scope_rejected(broker_env_main_scope):
+    client, ticket = broker_env_main_scope
+    r = client.post(
+        "/api/broker/data-apps",
+        headers={"Authorization": f"Bearer {ticket}"},
+        json={"path": "/api/data-apps", "method": "GET"},
+    )
+    assert r.status_code == 401 and r.json()["detail"] == "ticket_scope_mismatch"
+
+
+def test_broker_data_apps_path_confined(broker_env):
+    client, ticket = broker_env
+    r = client.post(
+        "/api/broker/data-apps",
+        headers={"Authorization": f"Bearer {ticket}"},
+        json={"path": "/api/admin/users", "method": "GET"},
+    )
+    assert r.status_code == 403 and r.json()["detail"] == "path_not_allowed"
