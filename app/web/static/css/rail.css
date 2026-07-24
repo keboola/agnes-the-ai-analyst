@@ -353,6 +353,13 @@ html[data-ui-layout="rail"] .rail-admin-groups {
 }
 
 html[data-ui-layout="rail"] .rail-admin-groups .app-nav-menu-section {
+    /* Reset the topnav dropdown-panel skin that leaks in from the shared base
+       (.app-nav-menu-section in style-custom.css): a grey pill background, a
+       -6px horizontal bleed that clipped on the rail edge, and rounded top
+       corners. In the rail these are plain section labels, not panel headers. */
+    background: none;
+    margin: 0;
+    border-radius: 0;
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.06em;
@@ -360,6 +367,14 @@ html[data-ui-layout="rail"] .rail-admin-groups .app-nav-menu-section {
     color: var(--ds-text-muted);
     padding: 8px 10px 4px;
     cursor: pointer;
+}
+
+/* The base gives the first section a negative top margin + rounded top (panel
+   header treatment). Neutralise it here so the first admin group aligns with
+   the rest — higher specificity than the base first-of-type rule. */
+html[data-ui-layout="rail"] .rail-admin-groups .app-nav-menu-group:first-of-type > summary.app-nav-menu-section {
+    margin-top: 0;
+    border-radius: 0;
 }
 
 html[data-ui-layout="rail"] .rail-admin-groups .app-nav-menu-item {
