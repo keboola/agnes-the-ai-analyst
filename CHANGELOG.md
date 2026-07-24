@@ -22,6 +22,40 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.29] - 2026-07-24
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+- **Verification loop for the sync-map rows CI did not guard.**
+  `scripts/verify_syncmap.py` (stdlib-only, diff-scoped) fails on an
+  unregistered `ResourceType`, a user-visible change with no `## [Unreleased]`
+  CHANGELOG bullet, a new boolean scope flag in a CLI command, and
+  `query_mode='remote'` in a connector that never mentions `_remote_attach`; it
+  warns on a new entity-scoped endpoint carrying authn but no authz. The
+  `verify-agnes-change` skill wraps it into a cheapest-first loop (sync-map →
+  targeted guards → full suite → `/agnes-review`) so mechanical findings stop
+  consuming LLM review. `CONTRIBUTING.md` sync-map now names the new guard per
+  row instead of `NO`.
+- **The test suite no longer wedges the machine when it runs out of disk.** Two
+  consecutive full runs filled a 460 GB disk (218 GB of retained `pytest-of-*`
+  dirs), after which every teardown raised `OSError: [Errno 28]` and buried the
+  real result. A `pytest_sessionstart` guard in `tests/conftest.py` now refuses
+  to start below 5 GB free and warns below 60 GB, naming the cleanup command;
+  bypass with `AGNES_SKIP_DISK_CHECK=1`. Thresholds are set so a CI shard
+  (`--splits 8`) is never aborted. `tmp_path_retention_count` stays at `1` —
+  `pytest.ini` now records why `0` is not an option (it sweeps the current
+  session's dir, so live tests lose their `tmp_path` mid-run).
+
+### Security
+
 ## [0.76.28] - 2026-07-24
 
 ### Changed
