@@ -20,6 +20,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+### Security
+
+## [0.76.20] - 2026-07-24
+
+### Internal
+
 - **DuckDB↔Postgres parity: hydrate sandbox lifecycle fields in the chat
   participants repo.** `chat_session_participants_pg._row_to_session` now
   populates `sandbox_id` / `runner_pid` / `sandbox_paused_at` like the main
@@ -30,8 +36,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   sessions on the PG backend and could break pause/resume takeover for
   co-driven sessions. Guarded by a new field-for-field hydration regression
   test in `tests/db_pg/`.
-
-### Security
 
 ## [0.76.17] - 2026-07-23
 
