@@ -84,6 +84,77 @@ def test_batch_and_month_total(repo):
     assert len(repo.list_for_agent("a1")) == 2
 
 
+def test_usage_breakdown_for_month(repo):
+    repo.insert_batch(
+        [
+            {
+                "id": "r1",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "c1",
+                "model": "claude-sonnet-5",
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_read_tokens": 10,
+                "cache_creation_tokens": 5,
+            },
+            {
+                "id": "r2",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "c1",
+                "model": "claude-haiku-4-5-20251001",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            },
+        ]
+    )
+    ym = datetime.now(timezone.utc).strftime("%Y-%m")
+    breakdown = repo.usage_breakdown_for_month("a1", ym)
+    assert breakdown == {
+        "input_tokens": 110,
+        "output_tokens": 55,
+        "cache_read_tokens": 10,
+        "cache_creation_tokens": 5,
+        # excludes cache_read_tokens — mirrors month_total_tokens.
+        "total_tokens": 110 + 55 + 5,
+    }
+    assert breakdown["total_tokens"] == repo.month_total_tokens("a1", ym)
+
+
+def test_usage_breakdown_for_month_no_rows_returns_zeros(repo):
+    breakdown = repo.usage_breakdown_for_month("a-none", "2020-01")
+    assert breakdown == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "total_tokens": 0,
+    }
+
+
+def test_usage_breakdown_for_month_out_of_range_period_excludes_rows(repo):
+    repo.insert_batch(
+        [
+            {
+                "id": "r1",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "c1",
+                "model": "claude-sonnet-5",
+                "input_tokens": 100,
+                "output_tokens": 100,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            }
+        ]
+    )
+    breakdown = repo.usage_breakdown_for_month("a1", "2019-01")
+    assert breakdown["total_tokens"] == 0
+
+
 def test_empty_batch_noop(repo):
     repo.insert_batch([])
 

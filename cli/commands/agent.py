@@ -45,6 +45,13 @@ from cli.error_render import render_error
 agent_app = typer.Typer(help="Manage agent profiles, scope, tokens, and one-shot asks")
 scope_app = typer.Typer(help="Manage an agent's resource scope grants")
 agent_app.add_typer(scope_app, name="scope")
+webhooks_app = typer.Typer(help="Manage an agent's outbound job-completion webhooks")
+agent_app.add_typer(webhooks_app, name="webhooks")
+
+# Mirrors `app/api/agent_webhooks.py`'s `_DEFAULT_EVENTS` — the CLI's own
+# help text only (the server applies this default when `--event` is
+# omitted; not re-implemented here).
+_DEFAULT_WEBHOOK_EVENTS = ("job.completed", "job.failed")
 
 # Server default (`CreateAgentTokenRequest.expires_in_days = 90`) mirrored
 # here so the CLI's own default matches what omitting the flag would give
@@ -302,6 +309,43 @@ def create_token(
     typer.echo(f"expires: {data.get('expires_at') or 'never'}")
 
 
+@agent_app.command("usage")
+def agent_usage(
+    slug: str = typer.Argument(..., help="Agent slug"),
+    period: Optional[str] = typer.Option(
+        None, "--period", help="Month to report, YYYY-MM (default: current UTC month)"
+    ),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Show one agent's monthly token usage against its budget.
+
+    Maps to `GET /api/v1/agents/{slug}/usage` — callable with either an
+    interactive session token or an agent PAT scoped to this agent (same
+    auth as `agnes agent ask`).
+    """
+    params: dict = {}
+    if period is not None:
+        params["period"] = period
+    resp = api_get(f"/api/v1/agents/{slug}/usage", params=params)
+    if resp.status_code != 200:
+        _fail(resp)
+    body = resp.json()
+    if as_json:
+        typer.echo(json.dumps(body, indent=2))
+        return
+    typer.echo(f"period:              {body.get('period')}")
+    typer.echo(f"agent:               {body.get('agent_slug')}")
+    typer.echo(f"input_tokens:        {body.get('input_tokens')}")
+    typer.echo(f"output_tokens:       {body.get('output_tokens')}")
+    typer.echo(f"cache_read_tokens:   {body.get('cache_read_tokens')}")
+    typer.echo(f"cache_creation_tokens: {body.get('cache_creation_tokens')}")
+    typer.echo(f"total_tokens:        {body.get('total_tokens')}")
+    budget_limit = body.get("budget_limit")
+    budget_remaining = body.get("budget_remaining")
+    typer.echo(f"budget_limit:        {budget_limit if budget_limit is not None else '(unbounded)'}")
+    typer.echo(f"budget_remaining:    {budget_remaining if budget_remaining is not None else '(unbounded)'}")
+
+
 def _render_ask_answer(body: dict, as_json: bool) -> None:
     if as_json:
         typer.echo(json.dumps(body, indent=2))
@@ -403,3 +447,97 @@ def ask(
         _render_job_result(job, as_json)
         return
     _fail(resp)
+
+
+# ---------------------------------------------------------------------------
+# webhooks — outbound job-completion notifications (V1b Task 6/8)
+# ---------------------------------------------------------------------------
+
+
+def _print_webhook(row: dict) -> None:
+    typer.echo(f"id:                  {row.get('id')}")
+    typer.echo(f"url:                 {row.get('url')}")
+    typer.echo(f"events:              {', '.join(row.get('events') or [])}")
+    typer.echo(f"active:              {row.get('active')}")
+    typer.echo(f"consecutive_failures: {row.get('consecutive_failures')}")
+    typer.echo(f"created_at:          {row.get('created_at')}")
+
+
+@webhooks_app.command("list")
+def webhooks_list(
+    slug: str = typer.Argument(..., help="Agent slug"),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """List an agent's outbound webhook registrations. Never includes the
+    signing secret — that is shown once, at `webhooks add` time only."""
+    resp = api_get(f"/api/v1/agents/{slug}/webhooks")
+    if resp.status_code != 200:
+        _fail(resp)
+    rows = resp.json().get("data", [])
+    if as_json:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    typer.echo(f"Webhooks: {len(rows)}")
+    if not rows:
+        typer.echo(f"No webhooks yet. Register one with: agnes agent webhooks add {slug} --url <https-url>")
+        return
+    for i, row in enumerate(rows):
+        if i:
+            typer.echo("")
+        _print_webhook(row)
+
+
+@webhooks_app.command("add")
+def webhooks_add(
+    slug: str = typer.Argument(..., help="Agent slug"),
+    url: str = typer.Option(..., "--url", help="HTTPS callback URL (must resolve to a public address)"),
+    event: list[str] = typer.Option(
+        [],
+        "--event",
+        help=f"Event to subscribe (repeatable); default: {', '.join(_DEFAULT_WEBHOOK_EVENTS)}",
+    ),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Register an outbound webhook for job-completion notifications.
+
+    The delivery payload is a small notification (`{event, job_id,
+    agent_slug, status, ts}`), never the agent's answer — fetch the actual
+    result afterward via `GET /api/v1/jobs/{id}`. The HMAC signing secret
+    is printed exactly ONCE below and cannot be retrieved again; store it
+    to verify the `x-agnes-signature` header on each delivery.
+    """
+    payload: dict = {"url": url}
+    if event:
+        payload["events"] = event
+    resp = api_post(f"/api/v1/agents/{slug}/webhooks", json=payload)
+    if resp.status_code != 201:
+        _fail(resp)
+    data = resp.json()
+    if as_json:
+        typer.echo(json.dumps(data, indent=2))
+        return
+    typer.echo(
+        "Webhook signing secret created — this is shown ONCE and cannot be retrieved again:",
+        err=True,
+    )
+    typer.echo("")
+    typer.echo(f"    {data['secret']}")
+    typer.echo("")
+    _print_webhook(data)
+
+
+@webhooks_app.command("delete")
+def webhooks_delete(
+    slug: str = typer.Argument(..., help="Agent slug"),
+    webhook_id: str = typer.Argument(..., help="Webhook id (from `agnes agent webhooks list`)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Delete one of an agent's outbound webhook registrations."""
+    if not yes:
+        confirm = typer.confirm(f"Delete webhook '{webhook_id}' from agent '{slug}'?")
+        if not confirm:
+            raise typer.Abort()
+    resp = api_delete(f"/api/v1/agents/{slug}/webhooks/{webhook_id}")
+    if resp.status_code != 204:
+        _fail(resp)
+    typer.echo(f"Deleted webhook {webhook_id}")

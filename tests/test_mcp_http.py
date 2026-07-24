@@ -243,6 +243,10 @@ class TestToolRegistration:
             # /api/v1/agents/{slug}/responses + `agnes agent list`/`ask`.
             "agent_list",
             "agent_ask",
+            # Agent-as-API monthly usage (agent-api V1b, Task 8). Triple-
+            # surface with GET /api/v1/agents/{slug}/usage +
+            # `agnes agent usage`.
+            "agent_usage",
         }
 
     def test_no_client_only_tools(self):

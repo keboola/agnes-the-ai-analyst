@@ -54,6 +54,42 @@ class LlmUsageRepository:
         ).fetchone()
         return int(row[0]) if row else 0
 
+    def usage_breakdown_for_month(self, agent_id: str, year_month: str) -> Dict[str, int]:
+        """Per-field token sums for one agent/month (Task 8, `GET
+        /api/v1/agents/{slug}/usage`) — an Anthropic-shaped breakdown, not
+        just the single scalar `month_total_tokens` returns.
+
+        `total_tokens` deliberately mirrors `month_total_tokens`'s own
+        definition (``input + output + cache_creation``, EXCLUDING
+        `cache_read_tokens`) rather than summing all four columns — this is
+        the same quantity `app.api.broker_agent_policy.check_budget` compares
+        against `token_budget_monthly`, so a caller can compute
+        `budget_limit - total_tokens` and get a number that actually matches
+        when `429 budget_exhausted` would fire. `cache_read_tokens` is still
+        reported (informational — cached reads are heavily discounted and
+        excluded from budget accounting), just not folded into the total.
+        """
+        row = self.conn.execute(
+            """SELECT
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(cache_creation_tokens), 0)
+            FROM llm_usage
+            WHERE agent_id = ? AND strftime(created_at, '%Y-%m') = ?""",
+            [agent_id, year_month],
+        ).fetchone()
+        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens = (
+            (int(v) for v in row) if row else (0, 0, 0, 0)
+        )
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_creation_tokens": cache_creation_tokens,
+            "total_tokens": input_tokens + output_tokens + cache_creation_tokens,
+        }
+
     def list_for_agent(self, agent_id: str, limit: int = 100) -> List[Dict[str, Any]]:
         rows = self.conn.execute(
             """SELECT * FROM llm_usage

@@ -22,6 +22,11 @@ session token) or an agent PAT bound to that exact agent — anything else is
 `404`, never `403`, so a non-owner can't distinguish "session exists,
 not yours" from "session doesn't exist".
 
+The exact AG-UI wire format `_event_stream` below produces (event order,
+lifecycle balance, gap-free `id:` sequencing) is a contract — see
+`tests/test_agent_sse_contract.py` for the canned-frame golden test that
+locks it down independent of this router's own FastAPI/manager plumbing.
+
 SSE stream lifecycle: one `StreamingSink` (`app.chat.streaming_sink`) is
 attached per `POST .../messages` call — a fresh attach/detach pair per
 turn, which is also what makes `RUN_STARTED` (emitted once per `attach()`,

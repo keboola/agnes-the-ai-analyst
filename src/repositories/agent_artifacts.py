@@ -70,3 +70,19 @@ class AgentArtifactsRepository:
             [session_id],
         ).fetchall()
         return self._rows_to_dicts(rows)
+
+    def list_for_agent(self, agent_id: str) -> List[Dict[str, Any]]:
+        """Every artifact row across every session of `agent_id` — used by
+        the `DELETE /api/v1/agents/{id}` cascade (C14, V1b Task 8) to find
+        the object-store blobs to delete before dropping the rows."""
+        rows = self.conn.execute(
+            "SELECT * FROM agent_artifacts WHERE agent_id = ? ORDER BY created_at",
+            [agent_id],
+        ).fetchall()
+        return self._rows_to_dicts(rows)
+
+    def delete_for_agent(self, agent_id: str) -> None:
+        """Delete every artifact row for `agent_id`. Blob deletion from the
+        object store is the caller's responsibility (see
+        `list_for_agent`) — this only removes the metadata rows."""
+        self.conn.execute("DELETE FROM agent_artifacts WHERE agent_id = ?", [agent_id])

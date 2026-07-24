@@ -112,6 +112,42 @@ def test_delete(repo):
     assert repo.list_for_agent("a1") == []
 
 
+def test_delete_for_agent(repo):
+    repo.create(
+        id="w1",
+        agent_id="a1",
+        owner_user_id="u1",
+        url="https://h/x",
+        secret="s",
+        events="job.completed",
+    )
+    repo.create(
+        id="w2",
+        agent_id="a1",
+        owner_user_id="u1",
+        url="https://h/y",
+        secret="s",
+        events="job.completed",
+    )
+    repo.create(
+        id="w3",
+        agent_id="a2",
+        owner_user_id="u1",
+        url="https://h/z",
+        secret="s",
+        events="job.completed",
+    )
+    repo.delete_for_agent("a1")
+    assert repo.list_for_agent("a1") == []
+    # a different agent's webhooks are untouched
+    assert len(repo.list_for_agent("a2")) == 1
+
+
+def test_delete_for_agent_with_no_rows_is_a_noop(repo):
+    repo.delete_for_agent("no-such-agent")
+    assert repo.list_for_agent("no-such-agent") == []
+
+
 def test_list_active_for_event_ignores_disabled(repo):
     repo.create(
         id="w1",

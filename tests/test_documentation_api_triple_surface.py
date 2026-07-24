@@ -90,6 +90,9 @@ _COHORT: dict[str, tuple[str, str]] = {
     # tool is sync-only (see its docstring); background mode + job polling
     # has no MCP tool by design.
     "/api/v1/agents/{slug}/responses": ("agent ask", "agent_ask"),
+    # Agent-as-API monthly usage (agent-api V1b, Task 8). CLI
+    # `agnes agent usage` + MCP `agent_usage` both map to this GET.
+    "/api/v1/agents/{slug}/usage": ("agent usage", "agent_usage"),
 }
 
 
@@ -298,12 +301,13 @@ _AGENT_WEBHOOKS_REASON = (
     "secret for job.completed/job.failed notifications), explicitly named in "
     "CONTRIBUTING.md's API-coverage exemption list alongside health checks and "
     "OAuth callbacks ('health checks, webhooks, OAuth callbacks, and internal/"
-    "SSE routes'). No MCP analogue by design: minting a webhook secret and "
-    "pointing this server's outbound network identity at an arbitrary URL is "
-    "an SSRF-sensitive, human-witnessed action, never something an agent tool "
-    "call should be able to trigger on its own registration. CLI is planned "
-    "for Task 8 (`docs/superpowers/specs/"
-    "2026-07-21-agent-profiles-and-agent-api-design.md`), not yet landed."
+    "SSE routes'). Reachable via `agnes agent webhooks list/add/delete` "
+    "(Task 8). No MCP analogue BY DESIGN, permanently: minting a webhook "
+    "secret and pointing this server's outbound network identity at an "
+    "arbitrary URL is an SSRF-sensitive, human-witnessed action, never "
+    "something an agent tool call should be able to trigger on its own "
+    "registration — this is a standing-config exemption, not a landed-later "
+    "gap."
 )
 _AGENT_ARTIFACTS_REASON = (
     "agent-as-API sandbox artifact harvest/download (agent-api V1b Task 5). "

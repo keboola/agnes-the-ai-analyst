@@ -74,3 +74,21 @@ class AgentArtifactsPgRepository:
                 .all()
             )
         return [dict(r) for r in rows]
+
+    def list_for_agent(self, agent_id: str) -> List[Dict[str, Any]]:
+        """See `AgentArtifactsRepository.list_for_agent`'s docstring."""
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    sa.text("SELECT * FROM agent_artifacts WHERE agent_id = :agent_id ORDER BY created_at"),
+                    {"agent_id": agent_id},
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+
+    def delete_for_agent(self, agent_id: str) -> None:
+        """See `AgentArtifactsRepository.delete_for_agent`'s docstring."""
+        with self._engine.begin() as conn:
+            conn.execute(sa.text("DELETE FROM agent_artifacts WHERE agent_id = :agent_id"), {"agent_id": agent_id})

@@ -153,6 +153,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   docstring (`app/api/agent_sessions.py`) for why that's a separate,
   deferred design question (no HTTP status is left to change once an SSE
   stream has started).
+- **`GET /api/v1/agents/{slug}/usage`** (agent-api V1b Task 8) — per-agent
+  monthly token usage against its budget. `?period=YYYY-MM` (default:
+  current UTC month; `400 invalid_period` for anything else) → `{period,
+  agent_slug, input_tokens, output_tokens, cache_read_tokens,
+  cache_creation_tokens, total_tokens, budget_limit, budget_remaining}` —
+  the usage-shaped fields mirror Anthropic's own usage object.
+  `total_tokens` excludes `cache_read_tokens` (informational only), the
+  same quantity the broker's budget check compares against
+  `token_budget_monthly`, so `budget_remaining` (floored at `0`) lines up
+  with when a call against this agent would actually 429 with
+  `budget_exhausted`. Same owner/agent-PAT auth as `/responses`. Surfaced
+  as `agnes agent usage <slug> [--period YYYY-MM] [--json]` and the
+  `agent_usage` MCP foundation tool.
+- **`agnes agent webhooks list|add|delete`** — CLI surface for the
+  `/api/v1/agents/{slug}/webhooks` registration API (landed REST-only in
+  Task 6). `add` takes `--url` and repeatable `--event`, printing the HMAC
+  signing secret exactly once, like `agnes agent token`.
 
 ### Changed
 
@@ -166,6 +183,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   still left its claims (including `agent_id`) readable via
   `agent_id_from_request` for the rest of the request. Task 4 review
   carry-over.
+- **`DELETE /api/v1/agents/{id}` now cascades to webhooks and artifacts,
+  not just PATs.** Previously deleting an agent revoked its tokens but
+  left every `agent_webhooks` row and every `agent_artifacts` row (plus
+  their object-store blobs) behind, orphaned and unreachable through any
+  API surface. The delete now also removes the agent's webhook
+  registrations and harvested-artifact rows, best-effort deleting each
+  artifact's object-store blob first (a single blob-delete failure is
+  logged and skipped, never blocking the agent delete).
 
 ### Removed
 

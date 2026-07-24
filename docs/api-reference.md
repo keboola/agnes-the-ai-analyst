@@ -1251,6 +1251,8 @@ interactive OAuth browser flow. The token is returned once and must be saved by 
 
 ### `/api/v1/agents` — Agent management (owner-scoped CRUD, scope, agent PATs)
 
+`DELETE /api/v1/agents/{agent_id}` cascades: every PAT minted for the agent is revoked, every outbound webhook registration (`/api/v1/agents/{slug}/webhooks`) is removed, and every harvested sandbox artifact row + its object-store blob (`/api/v1/sessions/{id}/artifacts`) is deleted. The object-store blob deletes are best-effort — a single failed delete is logged and skipped rather than blocking the agent delete (an orphaned blob under a deleted agent's `agent-artifacts/` prefix is a cheap, non-sensitive leak).
+
 - /api/v1/agents
 - /api/v1/agents/{agent_id}
 - /api/v1/agents/{agent_id}/scope
@@ -1264,6 +1266,12 @@ interactive OAuth browser flow. The token is returned once and must be saved by 
 
 - /api/v1/agents/{slug}/responses
 - /api/v1/jobs/{job_id}
+
+### `/api/v1/agents/{slug}/usage` — Agent-as-API monthly token usage (V1b Task 8)
+
+`GET /api/v1/agents/{slug}/usage?period=YYYY-MM` — per-agent monthly token usage against its budget. Same owner/agent-PAT auth as `/responses`. `period` defaults to the current UTC month; an explicitly passed value that isn't `YYYY-MM` is `400 {"code": "invalid_period"}`. Returns `{period, agent_slug, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, total_tokens, budget_limit, budget_remaining}` — the usage-shaped fields mirror Anthropic's own usage object. `total_tokens` is `input + output + cache_creation`, deliberately EXCLUDING `cache_read_tokens` (informational only) — the same quantity the broker's `check_budget` compares against `token_budget_monthly`, so `budget_remaining` (floored at `0`) lines up with when a call against this agent would actually start 429ing with `budget_exhausted`. `budget_limit`/`budget_remaining` are `null` for an agent with no configured budget. Mirrors `agnes agent usage` and the `agent_usage` MCP tool.
+
+- /api/v1/agents/{slug}/usage
 
 ### `/api/v1/agents/{slug}/sessions` and `/api/v1/sessions/{id}` — Agent-as-API multi-turn sessions, SSE (V1b Task 4)
 
@@ -1310,6 +1318,8 @@ SSRF-hardened, HMAC-signed outbound notifications: register an HTTPS URL to be P
 `DELETE /api/v1/agents/{slug}/webhooks/{webhook_id}` — `204`. `404` for an unknown id or one belonging to a different agent/owner.
 
 A webhook is auto-disabled (`active: false`) after `agent_api_webhook_max_failures` (default 5, `instance.yaml`'s `chat:` block) consecutive delivery failures — a dead or hostile endpoint stops being retried forever rather than accumulating unbounded `webhook-deliver` job attempts.
+
+CLI: `agnes agent webhooks list|add|delete <slug> ...` (`add` takes `--url` and repeatable `--event`, and prints the signing secret exactly once, like `agnes agent token`). No MCP tool by design — see `tests/test_documentation_api_triple_surface.py`'s `_AGENT_WEBHOOKS_REASON`.
 
 - /api/v1/agents/{slug}/webhooks
 - /api/v1/agents/{slug}/webhooks/{webhook_id}

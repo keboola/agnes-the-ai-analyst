@@ -64,6 +64,36 @@ class LlmUsagePgRepository:
             ).first()
         return int(row[0]) if row else 0
 
+    def usage_breakdown_for_month(self, agent_id: str, year_month: str) -> Dict[str, int]:
+        """See `LlmUsageRepository.usage_breakdown_for_month`'s docstring —
+        `total_tokens` mirrors `month_total_tokens` (excludes
+        `cache_read_tokens`)."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    """
+                    SELECT
+                        COALESCE(SUM(input_tokens), 0),
+                        COALESCE(SUM(output_tokens), 0),
+                        COALESCE(SUM(cache_read_tokens), 0),
+                        COALESCE(SUM(cache_creation_tokens), 0)
+                    FROM llm_usage
+                    WHERE agent_id = :agent_id AND to_char(created_at, 'YYYY-MM') = :ym
+                    """
+                ),
+                {"agent_id": agent_id, "ym": year_month},
+            ).first()
+        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens = (
+            (int(v) for v in row) if row else (0, 0, 0, 0)
+        )
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_creation_tokens": cache_creation_tokens,
+            "total_tokens": input_tokens + output_tokens + cache_creation_tokens,
+        }
+
     def list_for_agent(self, agent_id: str, limit: int = 100) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
             rows = (

@@ -21,6 +21,7 @@ agent) — token issuance requires all four scope modes to be `'selected'`.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -34,7 +35,10 @@ from sqlalchemy import exc as sa_exc
 from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, require_session_token
 from app.auth.jwt import create_access_token
-from src.repositories import access_token_repo, agents_repo, audit_repo
+from src.object_store import object_store
+from src.repositories import access_token_repo, agent_artifacts_repo, agent_webhooks_repo, agents_repo, audit_repo
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 
@@ -336,7 +340,44 @@ async def delete_agent(
     # (`"agent_pat_agent_deleted"`) when it is missing or soft-deleted, so a
     # deleted agent's PAT dies even if this revoke call never runs.
     access_token_repo().revoke_for_agent(agent_id)
+    _cascade_delete_agent_resources(agent_id)
     _audit(user["id"], "agent.delete", agent_id)
+
+
+def _cascade_delete_agent_resources(agent_id: str) -> None:
+    """Delete standing resources owned by a just-deleted agent (C14,
+    agent-api V1b Task 8): outbound webhook registrations and harvested
+    sandbox artifacts (both their `agent_artifacts` rows and their
+    object-store blobs).
+
+    Best-effort on the blob deletes only — a single `delete_object` failure
+    is logged and skipped rather than aborting the cascade (an orphaned
+    blob under a deleted agent's `agent-artifacts/{session_id}/...` prefix
+    is a cheap, non-sensitive leak; leaving the agent half-deleted because
+    one blob's DELETE 5xx'd is worse). The `agent_artifacts` row deletes
+    themselves are NOT best-effort — those are ordinary DB statements on
+    the same connection/transaction discipline as the rest of this route.
+    """
+    webhook_count = len(agent_webhooks_repo().list_for_agent(agent_id))
+    if webhook_count:
+        agent_webhooks_repo().delete_for_agent(agent_id)
+
+    artifact_rows = agent_artifacts_repo().list_for_agent(agent_id)
+    if not artifact_rows:
+        return
+    store = object_store()
+    if store is not None:
+        for row in artifact_rows:
+            try:
+                store.delete_object(row["object_key"])
+            except Exception:
+                logger.exception(
+                    "agent.delete cascade: failed to delete object-store blob %s for agent %s — "
+                    "leaving it orphaned, continuing",
+                    row.get("object_key"),
+                    agent_id,
+                )
+    agent_artifacts_repo().delete_for_agent(agent_id)
 
 
 @router.put("/{agent_id}/scope")

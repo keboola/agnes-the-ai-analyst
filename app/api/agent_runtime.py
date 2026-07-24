@@ -41,7 +41,9 @@ import hashlib
 import json
 import logging
 import os
+import re
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import duckdb
@@ -58,7 +60,7 @@ from app.chat.manager import ConcurrencyCapHit, get_current_chat_manager
 from app.chat.structured_output import schema_directive, validate
 from app.logging_config import request_id_var
 from app.resource_types import ResourceType
-from src.repositories import agents_repo, idempotency_repo, jobs_repo
+from src.repositories import agents_repo, idempotency_repo, jobs_repo, llm_usage_repo
 
 logger = logging.getLogger(__name__)
 
@@ -434,6 +436,70 @@ def usage_accumulator_flush() -> None:
         usage_accumulator.flush()
     except Exception:
         logger.exception("usage_accumulator.flush() failed — usage totals may undercount this response")
+
+
+#: `?period=YYYY-MM` query param format — same shape `llm_usage_repo()`'s
+#: `strftime(created_at, '%Y-%m')` / `to_char(created_at, 'YYYY-MM')`
+#: comparisons expect on both backends.
+_PERIOD_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
+def _current_year_month() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+@router.get("/agents/{slug}/usage")
+async def get_agent_usage(
+    slug: str,
+    period: Optional[str] = None,
+    principal: AgentRuntimePrincipal = Depends(require_agent_runtime_principal),
+) -> dict:
+    """Per-agent monthly token usage against its budget (Task 8, `agnes
+    agent usage` / MCP `agent_usage`).
+
+    `period` defaults to the current UTC month (`YYYY-MM`); an explicitly
+    passed value that doesn't match that shape is `400
+    {"code": "invalid_period"}`. Same owner/agent-PAT auth as every other
+    `/api/v1/agents/{slug}/...` runtime route.
+
+    The usage-shaped fields (`input_tokens`/`output_tokens`/
+    `cache_read_tokens`/`cache_creation_tokens`) mirror Anthropic's own
+    usage object. `total_tokens` is `input + output + cache_creation`
+    (EXCLUDING `cache_read_tokens`, which is informational only) — the
+    exact quantity `app.api.broker_agent_policy.check_budget` compares
+    against `token_budget_monthly`, so `budget_remaining` (`budget_limit -
+    total_tokens`, floored at 0, `None` for an unbounded agent) lines up
+    with when a call against this agent would actually start 429ing with
+    `budget_exhausted`.
+
+    Flushes the broker's batched usage ledger first (best-effort — see
+    `usage_accumulator_flush`) so a just-finished call's rows aren't
+    missing from the sum, same as the `/responses` sync path does before
+    building its own `usage` field.
+    """
+    agent = principal.agent
+
+    year_month = period if period is not None else _current_year_month()
+    if not _PERIOD_RE.match(year_month):
+        raise HTTPException(status_code=400, detail={"code": "invalid_period", "message": "period must be YYYY-MM"})
+
+    usage_accumulator_flush()
+    breakdown = llm_usage_repo().usage_breakdown_for_month(agent["id"], year_month)
+
+    budget_limit = agent.get("token_budget_monthly")
+    budget_remaining = max(0, budget_limit - breakdown["total_tokens"]) if budget_limit is not None else None
+
+    return {
+        "period": year_month,
+        "agent_slug": slug,
+        "input_tokens": breakdown["input_tokens"],
+        "output_tokens": breakdown["output_tokens"],
+        "cache_read_tokens": breakdown["cache_read_tokens"],
+        "cache_creation_tokens": breakdown["cache_creation_tokens"],
+        "total_tokens": breakdown["total_tokens"],
+        "budget_limit": budget_limit,
+        "budget_remaining": budget_remaining,
+    }
 
 
 @router.get("/jobs/{job_id}")

@@ -77,6 +77,13 @@ class AgentWebhooksRepository:
     def delete(self, id: str) -> None:
         self.conn.execute("DELETE FROM agent_webhooks WHERE id = ?", [id])
 
+    def delete_for_agent(self, agent_id: str) -> None:
+        """Delete every webhook registration for `agent_id` — the cascade
+        leg of `DELETE /api/v1/agents/{id}` (C14, agent-api V1b Task 8).
+        No secrets to scrub elsewhere: unlike an artifact, a webhook has no
+        object-store blob."""
+        self.conn.execute("DELETE FROM agent_webhooks WHERE agent_id = ?", [agent_id])
+
     def record_failure(self, id: str) -> int:
         """Increment ``consecutive_failures`` and return the new count.
 

@@ -98,6 +98,54 @@ def test_list_for_session_isolated_by_session(repo):
     assert len(rows) == 1 and rows[0]["id"] == "ar1"
 
 
+def test_list_for_agent_and_delete_for_agent(repo):
+    repo.create(
+        id="ar1",
+        session_id="c1",
+        agent_id="a1",
+        owner_user_id="u1",
+        filename="a.csv",
+        object_key="agent-artifacts/c1/a.csv",
+        size_bytes=1,
+        content_type="text/csv",
+        md5="a",
+    )
+    repo.create(
+        id="ar2",
+        session_id="c2",
+        agent_id="a1",
+        owner_user_id="u1",
+        filename="b.csv",
+        object_key="agent-artifacts/c2/b.csv",
+        size_bytes=2,
+        content_type="text/csv",
+        md5="b",
+    )
+    repo.create(
+        id="ar3",
+        session_id="c3",
+        agent_id="a2",
+        owner_user_id="u1",
+        filename="c.csv",
+        object_key="agent-artifacts/c3/c.csv",
+        size_bytes=3,
+        content_type="text/csv",
+        md5="c",
+    )
+    rows = repo.list_for_agent("a1")
+    assert {r["id"] for r in rows} == {"ar1", "ar2"}
+
+    repo.delete_for_agent("a1")
+    assert repo.list_for_agent("a1") == []
+    # a different agent's artifacts are untouched
+    assert len(repo.list_for_agent("a2")) == 1
+
+
+def test_delete_for_agent_with_no_rows_is_a_noop(repo):
+    repo.delete_for_agent("no-such-agent")
+    assert repo.list_for_agent("no-such-agent") == []
+
+
 def test_create_allows_null_agent_id(repo):
     repo.create(
         id="ar1",

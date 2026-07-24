@@ -488,6 +488,181 @@ class TestPollJobDeadline:
         m_time.sleep.assert_not_called()
 
 
+class TestUsage:
+    _USAGE_BODY = {
+        "period": "2026-07",
+        "agent_slug": "research",
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "cache_read_tokens": 10,
+        "cache_creation_tokens": 5,
+        "total_tokens": 155,
+        "budget_limit": 1000,
+        "budget_remaining": 845,
+    }
+
+    def test_usage_text(self):
+        with patch("cli.commands.agent.api_get", return_value=_resp(200, self._USAGE_BODY)) as m:
+            result = runner.invoke(app, ["agent", "usage", "research"])
+        assert result.exit_code == 0
+        assert m.call_args.args[0] == "/api/v1/agents/research/usage"
+        assert m.call_args.kwargs["params"] == {}
+        assert "155" in result.output
+        assert "2026-07" in result.output
+
+    def test_usage_with_period_flag(self):
+        with patch("cli.commands.agent.api_get", return_value=_resp(200, self._USAGE_BODY)) as m:
+            result = runner.invoke(app, ["agent", "usage", "research", "--period", "2026-06"])
+        assert result.exit_code == 0
+        assert m.call_args.kwargs["params"] == {"period": "2026-06"}
+
+    def test_usage_json(self):
+        with patch("cli.commands.agent.api_get", return_value=_resp(200, self._USAGE_BODY)):
+            result = runner.invoke(app, ["agent", "usage", "research", "--json"])
+        data = json.loads(result.output)
+        assert data["total_tokens"] == 155
+
+    def test_usage_unbounded_agent_renders_unbounded(self):
+        body = dict(self._USAGE_BODY)
+        body["budget_limit"] = None
+        body["budget_remaining"] = None
+        with patch("cli.commands.agent.api_get", return_value=_resp(200, body)):
+            result = runner.invoke(app, ["agent", "usage", "research"])
+        assert result.exit_code == 0
+        assert "(unbounded)" in result.output
+
+    def test_usage_error_renders_detail_code(self):
+        with patch(
+            "cli.commands.agent.api_get",
+            return_value=_resp(404, {"detail": {"code": "agent_not_found"}}),
+        ):
+            result = runner.invoke(app, ["agent", "usage", "nope"])
+        assert result.exit_code == 1
+        assert "agent_not_found" in result.output
+
+
+class TestWebhooks:
+    _WEBHOOK_ROW = {
+        "id": "wh_1",
+        "agent_id": "ag_1",
+        "url": "https://hooks.example.com/incoming",
+        "events": ["job.completed", "job.failed"],
+        "active": True,
+        "consecutive_failures": 0,
+        "created_at": "2026-07-01",
+    }
+
+    def test_webhooks_list_text(self):
+        with patch(
+            "cli.commands.agent.api_get",
+            return_value=_resp(200, {"data": [self._WEBHOOK_ROW], "has_more": False, "next_cursor": None}),
+        ) as m:
+            result = runner.invoke(app, ["agent", "webhooks", "list", "research"])
+        assert result.exit_code == 0
+        assert m.call_args.args[0] == "/api/v1/agents/research/webhooks"
+        assert "wh_1" in result.output
+        assert "hooks.example.com" in result.output
+
+    def test_webhooks_list_json(self):
+        with patch(
+            "cli.commands.agent.api_get",
+            return_value=_resp(200, {"data": [self._WEBHOOK_ROW], "has_more": False, "next_cursor": None}),
+        ):
+            result = runner.invoke(app, ["agent", "webhooks", "list", "research", "--json"])
+        data = json.loads(result.output)
+        assert data[0]["id"] == "wh_1"
+
+    def test_webhooks_list_empty_hints_add(self):
+        with patch(
+            "cli.commands.agent.api_get",
+            return_value=_resp(200, {"data": [], "has_more": False, "next_cursor": None}),
+        ):
+            result = runner.invoke(app, ["agent", "webhooks", "list", "research"])
+        assert result.exit_code == 0
+        assert "agnes agent webhooks add" in result.output
+
+    def test_webhooks_add_sends_url_and_prints_secret_once(self):
+        created = dict(self._WEBHOOK_ROW)
+        created["secret"] = "a" * 64
+        with patch("cli.commands.agent.api_post", return_value=_resp(201, created)) as m:
+            result = runner.invoke(
+                app,
+                ["agent", "webhooks", "add", "research", "--url", "https://hooks.example.com/incoming"],
+            )
+        assert result.exit_code == 0
+        assert m.call_args.args[0] == "/api/v1/agents/research/webhooks"
+        assert m.call_args.kwargs["json"] == {"url": "https://hooks.example.com/incoming"}
+        assert "a" * 64 in result.output
+        assert "ONCE" in result.output
+
+    def test_webhooks_add_with_events(self):
+        created = dict(self._WEBHOOK_ROW)
+        created["secret"] = "s" * 64
+        with patch("cli.commands.agent.api_post", return_value=_resp(201, created)) as m:
+            result = runner.invoke(
+                app,
+                [
+                    "agent",
+                    "webhooks",
+                    "add",
+                    "research",
+                    "--url",
+                    "https://hooks.example.com/incoming",
+                    "--event",
+                    "job.completed",
+                ],
+            )
+        assert result.exit_code == 0
+        assert m.call_args.kwargs["json"] == {
+            "url": "https://hooks.example.com/incoming",
+            "events": ["job.completed"],
+        }
+
+    def test_webhooks_add_json(self):
+        created = dict(self._WEBHOOK_ROW)
+        created["secret"] = "s" * 64
+        with patch("cli.commands.agent.api_post", return_value=_resp(201, created)):
+            result = runner.invoke(
+                app,
+                ["agent", "webhooks", "add", "research", "--url", "https://hooks.example.com/x", "--json"],
+            )
+        data = json.loads(result.output)
+        assert data["secret"] == "s" * 64
+
+    def test_webhooks_add_error_renders_detail_code(self):
+        with patch(
+            "cli.commands.agent.api_post",
+            return_value=_resp(400, {"detail": {"code": "webhook_url_forbidden"}}),
+        ):
+            result = runner.invoke(
+                app,
+                ["agent", "webhooks", "add", "research", "--url", "http://127.0.0.1/x"],
+            )
+        assert result.exit_code == 1
+        assert "webhook_url_forbidden" in result.output
+
+    def test_webhooks_delete_requires_confirm_without_yes(self):
+        with patch("cli.commands.agent.api_delete") as m:
+            result = runner.invoke(app, ["agent", "webhooks", "delete", "research", "wh_1"], input="n\n")
+        m.assert_not_called()
+        assert result.exit_code != 0
+
+    def test_webhooks_delete_with_yes_calls_delete(self):
+        with patch("cli.commands.agent.api_delete", return_value=_resp(204)) as m:
+            result = runner.invoke(app, ["agent", "webhooks", "delete", "research", "wh_1", "--yes"])
+        assert result.exit_code == 0
+        assert m.call_args.args[0] == "/api/v1/agents/research/webhooks/wh_1"
+
+    def test_webhooks_delete_not_found_renders_detail_code(self):
+        with patch(
+            "cli.commands.agent.api_delete",
+            return_value=_resp(404, {"detail": {"code": "webhook_not_found"}}),
+        ):
+            result = runner.invoke(app, ["agent", "webhooks", "delete", "research", "wh_1", "--yes"])
+        assert result.exit_code == 1
+        assert "webhook_not_found" in result.output
+
+
 class TestTimeoutDriftGuard:
     def test_cli_ask_timeout_constants_match_server_defaults(self):
         """The CLI's `_DEFAULT_ASK_TIMEOUT_S`/`_MAX_ASK_TIMEOUT_S` are kept in

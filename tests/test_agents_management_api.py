@@ -325,6 +325,115 @@ def test_delete_agent_revokes_its_pats(mgmt_client, mgmt_env, selected_agent_id)
     assert reason == "pat_revoked"
 
 
+# ---------------------------------------------------------------------------
+# DELETE — cascade to webhooks + artifacts + blobs (C14, V1b Task 8)
+# ---------------------------------------------------------------------------
+
+
+class _FakeObjectStore:
+    def __init__(self, *, raise_on_delete: bool = False) -> None:
+        self.deleted_keys: list[str] = []
+        self._raise_on_delete = raise_on_delete
+
+    def delete_object(self, key: str) -> None:
+        if self._raise_on_delete:
+            raise RuntimeError("boom")
+        self.deleted_keys.append(key)
+
+
+def _seed_cascade_fixtures(agent_id: str) -> None:
+    from src.repositories import agent_artifacts_repo, agent_webhooks_repo
+
+    agent_webhooks_repo().create(
+        id="wh_cascade_1",
+        agent_id=agent_id,
+        owner_user_id="owner1",
+        url="https://hooks.example.com/x",
+        secret="s",
+        events="job.completed",
+    )
+    agent_artifacts_repo().create(
+        id="art_cascade_1",
+        session_id="sess_1",
+        agent_id=agent_id,
+        owner_user_id="owner1",
+        filename="report.csv",
+        object_key="agent-artifacts/sess_1/report.csv",
+        size_bytes=10,
+        content_type="text/csv",
+        md5="abc",
+    )
+    agent_artifacts_repo().create(
+        id="art_cascade_2",
+        session_id="sess_2",
+        agent_id=agent_id,
+        owner_user_id="owner1",
+        filename="notes.txt",
+        object_key="agent-artifacts/sess_2/notes.txt",
+        size_bytes=5,
+        content_type="text/plain",
+        md5="def",
+    )
+
+
+def test_delete_agent_cascades_webhooks_and_artifacts_and_blobs(mgmt_client, selected_agent_id, monkeypatch):
+    from src.repositories import agent_artifacts_repo, agent_webhooks_repo
+
+    _seed_cascade_fixtures(selected_agent_id)
+    fake_store = _FakeObjectStore()
+    monkeypatch.setattr("app.api.agents_admin.object_store", lambda: fake_store)
+
+    r = mgmt_client.delete(f"/api/v1/agents/{selected_agent_id}")
+
+    assert r.status_code == 204
+    assert agent_webhooks_repo().list_for_agent(selected_agent_id) == []
+    assert agent_artifacts_repo().list_for_agent(selected_agent_id) == []
+    assert set(fake_store.deleted_keys) == {
+        "agent-artifacts/sess_1/report.csv",
+        "agent-artifacts/sess_2/notes.txt",
+    }
+
+
+def test_delete_agent_cascade_survives_blob_delete_failure(mgmt_client, selected_agent_id, monkeypatch):
+    """A single object-store DELETE failure must not orphan the agent
+    half-deleted or block the request — best-effort per C14."""
+    from src.repositories import agent_artifacts_repo, agent_webhooks_repo
+
+    _seed_cascade_fixtures(selected_agent_id)
+    monkeypatch.setattr("app.api.agents_admin.object_store", lambda: _FakeObjectStore(raise_on_delete=True))
+
+    r = mgmt_client.delete(f"/api/v1/agents/{selected_agent_id}")
+
+    assert r.status_code == 204
+    assert agent_webhooks_repo().list_for_agent(selected_agent_id) == []
+    assert agent_artifacts_repo().list_for_agent(selected_agent_id) == []
+
+
+def test_delete_agent_cascade_noop_when_object_store_unconfigured(mgmt_client, selected_agent_id, monkeypatch):
+    from src.repositories import agent_artifacts_repo, agent_webhooks_repo
+
+    _seed_cascade_fixtures(selected_agent_id)
+    monkeypatch.setattr("app.api.agents_admin.object_store", lambda: None)
+
+    r = mgmt_client.delete(f"/api/v1/agents/{selected_agent_id}")
+
+    assert r.status_code == 204
+    assert agent_webhooks_repo().list_for_agent(selected_agent_id) == []
+    assert agent_artifacts_repo().list_for_agent(selected_agent_id) == []
+
+
+def test_delete_agent_cascade_noop_with_no_resources(mgmt_client, selected_agent_id, monkeypatch):
+    """An agent with no webhooks/artifacts deletes cleanly — the cascade
+    must not assume at least one row exists."""
+    fake_store = _FakeObjectStore()
+    monkeypatch.setattr("app.api.agents_admin.object_store", lambda: fake_store)
+
+    r = mgmt_client.delete(f"/api/v1/agents/{selected_agent_id}")
+
+    assert r.status_code == 204
+    assert fake_store.deleted_keys == []
+
+
 def test_get_after_delete_is_404(mgmt_client):
     created = mgmt_client.post("/api/v1/agents", json={"name": "A", "slug": "to-delete"}).json()
     d = mgmt_client.delete(f"/api/v1/agents/{created['id']}")

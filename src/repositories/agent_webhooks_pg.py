@@ -95,6 +95,11 @@ class AgentWebhooksPgRepository:
         with self._engine.begin() as conn:
             conn.execute(sa.text("DELETE FROM agent_webhooks WHERE id = :id"), {"id": id})
 
+    def delete_for_agent(self, agent_id: str) -> None:
+        """See `AgentWebhooksRepository.delete_for_agent`'s docstring."""
+        with self._engine.begin() as conn:
+            conn.execute(sa.text("DELETE FROM agent_webhooks WHERE agent_id = :agent_id"), {"agent_id": agent_id})
+
     def record_failure(self, id: str) -> int:
         """Increment ``consecutive_failures`` and return the new count.
 

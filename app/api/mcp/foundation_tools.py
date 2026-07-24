@@ -77,6 +77,9 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     # sync-only here — background mode + job polling has no MCP tool).
     "agent_list",
     "agent_ask",
+    # Agent-as-API monthly usage (agent-api V1b, Task 8) — triple-surface
+    # with GET /api/v1/agents/{slug}/usage + `agnes agent usage`.
+    "agent_usage",
 )
 
 
@@ -1114,6 +1117,37 @@ def register_foundation_tools(
                 json={"input": prompt, "timeout_s": timeout_s},
                 headers=headers_fn(),
                 timeout=timeout_s + 10,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def agent_usage(slug: str, period: str = "") -> dict:
+        """Show one of your agents' monthly token usage against its budget.
+
+        Args:
+            slug:   Agent slug (from ``agent_list``).
+            period: Month to report, ``YYYY-MM``. Empty (default) reports
+                    the current UTC month.
+
+        Returns ``{period, agent_slug, input_tokens, output_tokens,
+        cache_read_tokens, cache_creation_tokens, total_tokens,
+        budget_limit, budget_remaining}`` — the usage-shaped fields mirror
+        Anthropic's own usage object; ``total_tokens`` excludes
+        ``cache_read_tokens`` (informational only, not counted against
+        budget), so ``budget_remaining`` lines up with when a call against
+        this agent would actually start 429ing with ``budget_exhausted``.
+        ``budget_limit``/``budget_remaining`` are ``null`` for an agent
+        with no configured budget. Mirrors
+        ``GET /api/v1/agents/{slug}/usage`` and ``agnes agent usage``.
+        """
+        params: dict[str, Any] = {"period": period} if period else {}
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/v1/agents/{slug}/usage",
+                headers=headers_fn(),
+                params=params,
+                timeout=30,
             )
             r.raise_for_status()
             return r.json()
