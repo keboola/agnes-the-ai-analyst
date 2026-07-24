@@ -1412,12 +1412,14 @@ CREATE TABLE IF NOT EXISTS corpus_files (
     updated_at TIMESTAMP DEFAULT current_timestamp
 );
 
--- Enforce the upsert invariant: at most one row per (corpus_id, path). Plain
--- (not partial) UNIQUE INDEX — DuckDB has no partial indexes, but NULLs are
--- distinct on both DuckDB and Postgres, so path=NULL (plain-insert files,
--- bundle children) is exempt while set paths stay unique.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_files_corpus_path
-    ON corpus_files(corpus_id, path);
+-- NOTE: the (corpus_id, path) UNIQUE INDEX that enforces the upsert invariant
+-- is deliberately NOT declared here. _SYSTEM_SCHEMA runs *before* the migration
+-- ladder (and, on split-brain future-version DBs, instead of it), so it must be
+-- safe against every historical table shape. ``corpus_files`` predates ``path``
+-- (table created v82, column added v97): on a legacy DB the CREATE TABLE above
+-- is a no-op and an index over the not-yet-added ``path`` column raises
+-- BinderException, aborting the whole schema pass before the ALTER can run.
+-- _ensure_corpus_path_index() creates it after the ladder instead.
 
 -- corpus_chunks: prose-document chunks + embedding vector.
 -- embedding FLOAT[384]: fixed-size array for array_cosine_similarity.
@@ -6560,6 +6562,33 @@ def _v95_to_v96(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 96")
 
 
+def _ensure_corpus_path_index(conn: duckdb.DuckDBPyConnection) -> None:
+    """Create the ``corpus_files(corpus_id, path)`` UNIQUE INDEX if possible.
+
+    Enforces the upsert invariant: at most one row per ``(corpus_id, path)``.
+    Plain (not partial) UNIQUE INDEX — DuckDB has no partial indexes, but NULLs
+    are distinct on both DuckDB and Postgres, so ``path=NULL`` (plain-insert
+    files, bundle children) is exempt while set paths stay unique.
+
+    Called unconditionally at the end of ``_ensure_schema`` rather than from
+    ``_SYSTEM_SCHEMA``, because ``_SYSTEM_SCHEMA`` runs *before* the migration
+    ladder: ``corpus_files`` exists since v82 but ``path`` is ALTER-added at
+    v97, so an index declared in ``_SYSTEM_SCHEMA`` raises BinderException on
+    every v82..v96 DB and aborts the schema pass before the ALTER can run.
+
+    Guarded on the column actually existing so the split-brain self-heal path
+    (future-version DB, ladder skipped) degrades to a no-op instead of raising.
+    """
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info('corpus_files')").fetchall()}
+    except Exception:
+        # Table absent entirely (pre-v82 DB shape) — nothing to index.
+        return
+    if "path" not in cols:
+        return
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_files_corpus_path ON corpus_files(corpus_id, path)")
+
+
 def _v96_to_v97(conn: duckdb.DuckDBPyConnection) -> None:
     """v96→v97: ``corpus_files.path`` — logical path for upsert-on-upload.
 
@@ -6744,7 +6773,6 @@ def _v101_to_v102(conn: duckdb.DuckDBPyConnection) -> None:
         )
     """)
     conn.execute("UPDATE schema_version SET version = 102")
-
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -7458,6 +7486,14 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     e,
                     _get_state_dir() / "system.duckdb.pre-migrate",
                 )
+
+    # corpus_files(corpus_id, path) UNIQUE INDEX. Deliberately created here,
+    # after the migration ladder, rather than in _SYSTEM_SCHEMA: the column is
+    # ALTER-added at v97 onto a table that exists since v82, and _SYSTEM_SCHEMA
+    # runs before the ladder, so declaring the index there crashes every upgrade
+    # from a v82..v96 DB. Running it here covers all three paths — fresh install,
+    # incremental upgrade, and the split-brain future-version self-heal.
+    _ensure_corpus_path_index(conn)
 
     # Always run the system-groups seed when the DB is on a version this binary
     # understands — per-connect safety net so a manually-deleted Admin/Everyone

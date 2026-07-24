@@ -1,9 +1,9 @@
-"""agent webhooks + artifacts (DuckDB v97).
+"""agent webhooks + artifacts (DuckDB v101).
 
-Revision ID: 0044_webhooks_artifacts_v97
-Revises: 0043_agents_v96
+Revision ID: 0048_webhooks_artifacts_v101
+Revises: 0047_agents_v100
 
-Mirrors DuckDB's ``_v96_to_v97`` / ``_SYSTEM_SCHEMA`` additions (agent-api
+Mirrors DuckDB's ``_v100_to_v101`` / ``_SYSTEM_SCHEMA`` additions (agent-api
 V1b). Creates the outbound webhook registration table (``agent_webhooks``,
 HMAC-signed POSTs on a comma-joined ``events`` list, secret shown once at
 create like a PAT) and the run-artifact metadata table (``agent_artifacts``,
@@ -22,8 +22,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0044_webhooks_artifacts_v97"
-down_revision: Union[str, None] = "0043_agents_v96"
+revision: str = "0048_webhooks_artifacts_v101"
+down_revision: Union[str, None] = "0047_agents_v100"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

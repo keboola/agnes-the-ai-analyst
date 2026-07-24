@@ -1,9 +1,9 @@
-"""agent profiles + agent-as-API foundation (DuckDB v96).
+"""agent profiles + agent-as-API foundation (DuckDB v100).
 
-Revision ID: 0043_agents_v96
-Revises: 0042_usage_summary_idx_fix_v95
+Revision ID: 0047_agents_v100
+Revises: 0046_data_apps_drafts_v99
 
-Mirrors DuckDB's ``_v95_to_v96`` / ``_SYSTEM_SCHEMA`` additions (spec
+Mirrors DuckDB's ``_v99_to_v100`` / ``_SYSTEM_SCHEMA`` additions (spec
 docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md).
 Creates the agent profile table (``agents``), its scope grants
 (``agent_scope``), per-call token accounting (``llm_usage``), a per-session
@@ -24,8 +24,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0043_agents_v96"
-down_revision: Union[str, None] = "0042_usage_summary_idx_fix_v95"
+revision: str = "0047_agents_v100"
+down_revision: Union[str, None] = "0046_data_apps_drafts_v99"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

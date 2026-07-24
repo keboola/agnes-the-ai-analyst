@@ -1,4 +1,4 @@
-"""v96: agents / agent_scope / llm_usage / agent_scope_snapshots /
+"""v100: agents / agent_scope / llm_usage / agent_scope_snapshots /
 idempotency_keys tables + agent_id columns exist after _ensure_schema."""
 
 from src.db import _ensure_schema
@@ -12,7 +12,7 @@ def _cols(conn, table):
     return {r[1] for r in conn.execute(f"PRAGMA table_info('{table}')").fetchall()}
 
 
-def test_v96_tables_and_columns(tmp_path):
+def test_v100_tables_and_columns(tmp_path):
     conn = _open_duckdb(str(tmp_path / "d.duckdb"))
     _ensure_schema(conn)
     assert {

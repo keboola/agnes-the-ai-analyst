@@ -16,9 +16,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **Schema upgrade crashed on any DB between v82 and v96.** The
+  `corpus_files(corpus_id, path)` UNIQUE INDEX was declared inside
+  `_SYSTEM_SCHEMA`, which executes *before* the migration ladder. Because
+  `corpus_files` is created at v82 but its `path` column is only ALTER-added at
+  v97, the `CREATE TABLE IF NOT EXISTS` was a no-op on those DBs and the index
+  statement then raised `BinderException: Table "corpus_files" does not have a
+  column named "path"` — aborting the whole schema pass before the ALTER could
+  run, so the instance never started. The index is now created by
+  `_ensure_corpus_path_index()` after the ladder, guarded on the column
+  existing, which covers fresh installs, incremental upgrades, and the
+  split-brain future-version self-heal path alike.
+
 ### Removed
 
 ### Internal
+
+- **Flaky relay test de-flaked.** `test_relay_non_sse_anthropic_response_stays_buffered`
+  asserted on a single `reader.read()`, which returns only the bytes available
+  at that instant and often yielded just the status line (~40% failure rate in
+  isolation). It now accumulates until the full buffered response arrives — the
+  same read-until-complete idiom the streaming test beside it already used.
+- **Migration-safety tests no longer pin a literal future schema version.**
+  Both future-version tests derive it from `SCHEMA_VERSION + 1`; the previous
+  hardcoded `99` silently stopped exercising the noop path as the ladder grew,
+  then broke outright once the ladder passed it.
 
 ### Security
 

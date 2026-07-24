@@ -1,18 +1,18 @@
-"""SQLAlchemy models for the agent profiles + agent-as-API cluster (DuckDB v96/v97/v98).
+"""SQLAlchemy models for the agent profiles + agent-as-API cluster (DuckDB v100/v101/v102).
 
 Mirrors:
-  - ``agents``                  (src/db.py, v96)
-  - ``agent_scope``              (src/db.py, v96)
-  - ``llm_usage``                (src/db.py, v96)
-  - ``agent_scope_snapshots``    (src/db.py, v96)
-  - ``idempotency_keys``         (src/db.py, v96)
-  - ``agent_webhooks``           (src/db.py, v97)
-  - ``agent_artifacts``          (src/db.py, v97)
-  - ``agent_memories``           (src/db.py, v98)
+  - ``agents``                  (src/db.py, v100)
+  - ``agent_scope``              (src/db.py, v100)
+  - ``llm_usage``                (src/db.py, v100)
+  - ``agent_scope_snapshots``    (src/db.py, v100)
+  - ``idempotency_keys``         (src/db.py, v100)
+  - ``agent_webhooks``           (src/db.py, v101)
+  - ``agent_artifacts``          (src/db.py, v101)
+  - ``agent_memories``           (src/db.py, v102)
 
-and the Alembic migrations ``migrations/versions/0043_agents_v96.py`` /
-``migrations/versions/0044_agent_webhooks_artifacts_v97.py`` /
-``migrations/versions/0045_agent_memories_v98.py``. This is the schema
+and the Alembic migrations ``migrations/versions/0047_agents_v100.py`` /
+``migrations/versions/0048_agent_webhooks_artifacts_v101.py`` /
+``migrations/versions/0049_agent_memories_v102.py``. This is the schema
 foundation for agent profiles + agent-as-API
 (docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md);
 repos/endpoints land in later tasks of the same wave.
