@@ -144,6 +144,8 @@ __all__ = [
     # Agent webhooks + artifacts (v97, agent-api V1b)
     "agent_webhooks_repo",
     "agent_artifacts_repo",
+    # Agent memories (v98, agent-api V1c)
+    "agent_memories_repo",
 ]
 
 
@@ -495,6 +497,11 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.agent_artifacts", "AgentArtifactsRepository"),
         PG: ("src.repositories.agent_artifacts_pg", "AgentArtifactsPgRepository"),
     },
+    # Agent memories (v98, agent-api V1c)
+    "agent_memories": {
+        DUCKDB: ("src.repositories.agent_memories", "AgentMemoriesRepository"),
+        PG: ("src.repositories.agent_memories_pg", "AgentMemoriesPgRepository"),
+    },
 }
 
 
@@ -791,3 +798,8 @@ def agent_webhooks_repo() -> Any:
 
 def agent_artifacts_repo() -> Any:
     return _build("agent_artifacts")
+
+
+# Agent memories (v98, agent-api V1c)
+def agent_memories_repo() -> Any:
+    return _build("agent_memories")

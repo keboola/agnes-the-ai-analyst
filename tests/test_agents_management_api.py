@@ -342,7 +342,7 @@ class _FakeObjectStore:
 
 
 def _seed_cascade_fixtures(agent_id: str) -> None:
-    from src.repositories import agent_artifacts_repo, agent_webhooks_repo
+    from src.repositories import agent_artifacts_repo, agent_memories_repo, agent_webhooks_repo
 
     agent_webhooks_repo().create(
         id="wh_cascade_1",
@@ -374,10 +374,17 @@ def _seed_cascade_fixtures(agent_id: str) -> None:
         content_type="text/plain",
         md5="def",
     )
+    agent_memories_repo().create(
+        id="mem_cascade_1",
+        agent_id=agent_id,
+        owner_user_id="owner1",
+        content="remembered fact",
+        source_session_id="sess_1",
+    )
 
 
 def test_delete_agent_cascades_webhooks_and_artifacts_and_blobs(mgmt_client, selected_agent_id, monkeypatch):
-    from src.repositories import agent_artifacts_repo, agent_webhooks_repo
+    from src.repositories import agent_artifacts_repo, agent_memories_repo, agent_webhooks_repo
 
     _seed_cascade_fixtures(selected_agent_id)
     fake_store = _FakeObjectStore()
@@ -388,6 +395,7 @@ def test_delete_agent_cascades_webhooks_and_artifacts_and_blobs(mgmt_client, sel
     assert r.status_code == 204
     assert agent_webhooks_repo().list_for_agent(selected_agent_id) == []
     assert agent_artifacts_repo().list_for_agent(selected_agent_id) == []
+    assert agent_memories_repo().list_for_agent(selected_agent_id) == []
     assert set(fake_store.deleted_keys) == {
         "agent-artifacts/sess_1/report.csv",
         "agent-artifacts/sess_2/notes.txt",
@@ -397,7 +405,7 @@ def test_delete_agent_cascades_webhooks_and_artifacts_and_blobs(mgmt_client, sel
 def test_delete_agent_cascade_survives_blob_delete_failure(mgmt_client, selected_agent_id, monkeypatch):
     """A single object-store DELETE failure must not orphan the agent
     half-deleted or block the request — best-effort per C14."""
-    from src.repositories import agent_artifacts_repo, agent_webhooks_repo
+    from src.repositories import agent_artifacts_repo, agent_memories_repo, agent_webhooks_repo
 
     _seed_cascade_fixtures(selected_agent_id)
     monkeypatch.setattr("app.api.agents_admin.object_store", lambda: _FakeObjectStore(raise_on_delete=True))
@@ -407,10 +415,11 @@ def test_delete_agent_cascade_survives_blob_delete_failure(mgmt_client, selected
     assert r.status_code == 204
     assert agent_webhooks_repo().list_for_agent(selected_agent_id) == []
     assert agent_artifacts_repo().list_for_agent(selected_agent_id) == []
+    assert agent_memories_repo().list_for_agent(selected_agent_id) == []
 
 
 def test_delete_agent_cascade_noop_when_object_store_unconfigured(mgmt_client, selected_agent_id, monkeypatch):
-    from src.repositories import agent_artifacts_repo, agent_webhooks_repo
+    from src.repositories import agent_artifacts_repo, agent_memories_repo, agent_webhooks_repo
 
     _seed_cascade_fixtures(selected_agent_id)
     monkeypatch.setattr("app.api.agents_admin.object_store", lambda: None)
@@ -420,6 +429,7 @@ def test_delete_agent_cascade_noop_when_object_store_unconfigured(mgmt_client, s
     assert r.status_code == 204
     assert agent_webhooks_repo().list_for_agent(selected_agent_id) == []
     assert agent_artifacts_repo().list_for_agent(selected_agent_id) == []
+    assert agent_memories_repo().list_for_agent(selected_agent_id) == []
 
 
 def test_delete_agent_cascade_noop_with_no_resources(mgmt_client, selected_agent_id, monkeypatch):
