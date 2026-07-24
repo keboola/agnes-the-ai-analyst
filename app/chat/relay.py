@@ -7,7 +7,7 @@ holds a broker ticket, and it holds it **in memory only** — never in
 disk. CLI subprocesses are pointed at this relay's loopback address with a
 dummy key; the relay attaches the real ticket as the ``Authorization``
 header on the outbound leg to the Agnes server's broker routes
-(``/api/broker/{anthropic,agnes-api,agnes-mcp}``).
+(``/api/broker/{anthropic,agnes-api,agnes-mcp,data-apps}``).
 
 Tickets are pushed over stdin by the runner (see ``app/chat/runner.py``)
 via ``set_tickets`` at spawn and after every resume. Until a fresh ticket
@@ -30,11 +30,15 @@ logger = logging.getLogger(__name__)
 # Maps the inbound loopback path prefix to the ticket scope required to
 # forward it. `/anthropic` and `/agnes-api` ride the `main` ticket;
 # `/agnes-mcp` rides the `mcp` ticket (spawned as a separate subprocess with
-# a narrower scope).
+# a narrower scope); `/data-apps` rides the `data_apps` ticket (2026-07-24
+# wave 3B) — a narrower scope than `main`, confined server-side to the
+# `/api/data-apps` control-plane surface (see `app/api/broker.py`'s
+# `data_apps_broker`).
 _SCOPE_FOR_PREFIX = {
     "/anthropic": "main",
     "/agnes-api": "main",
     "/agnes-mcp": "mcp",
+    "/data-apps": "data_apps",
 }
 
 # Prefixes whose broker route replays a ``{method, path, body}`` envelope
@@ -43,10 +47,10 @@ _SCOPE_FOR_PREFIX = {
 # relay always POSTs to the broker, so the native method + target path must be
 # carried in the envelope — otherwise the call arrives as
 # ``POST /api/broker/agnes-api/<subpath>`` and 405s (the broker only serves the
-# exact ``/agnes-api`` + ``/agnes-mcp`` envelope routes). ``/anthropic`` is NOT
-# here: it is a transparent external proxy that forwards the raw body + SDK
-# headers to the pinned Anthropic host at the native subpath.
-_ENVELOPE_PREFIXES = frozenset({"/agnes-api", "/agnes-mcp"})
+# exact ``/agnes-api``, ``/agnes-mcp`` + ``/data-apps`` envelope routes).
+# ``/anthropic`` is NOT here: it is a transparent external proxy that forwards
+# the raw body + SDK headers to the pinned Anthropic host at the native subpath.
+_ENVELOPE_PREFIXES = frozenset({"/agnes-api", "/agnes-mcp", "/data-apps"})
 
 # The `/anthropic` leg proxies LLM completions that routinely run for tens of
 # seconds to minutes. httpx's 5s default read timeout would abort every real
@@ -69,18 +73,22 @@ class Relay:
         self._server_url = server_url.rstrip("/")
         self._main_ticket: Optional[str] = None
         self._mcp_ticket: Optional[str] = None
+        self._data_apps_ticket: Optional[str] = None
         self._armed = False
         self._server: Optional[asyncio.base_events.Server] = None
         self._client: Optional[httpx.AsyncClient] = None
 
-    def set_tickets(self, main: str, mcp: str) -> None:
+    def set_tickets(self, main: str, mcp: str, data_apps: str = "") -> None:
         """Store fresh tickets in memory only.
 
         Never writes to ``os.environ`` or disk — the only copies of the
-        ticket values live in these two instance attributes.
+        ticket values live in these instance attributes. ``data_apps``
+        defaults to ``""`` so a caller on the old (pre-wave-3B) two-ticket
+        ``ticket_push`` frame shape still works unchanged.
         """
         self._main_ticket = main
         self._mcp_ticket = mcp
+        self._data_apps_ticket = data_apps
         self._armed = True
 
     def disarm(self) -> None:
@@ -99,6 +107,8 @@ class Relay:
             return self._main_ticket
         if scope == "mcp":
             return self._mcp_ticket
+        if scope == "data_apps":
+            return self._data_apps_ticket
         return None
 
     # Headers never forwarded upstream: hop-by-hop framing (recomputed by

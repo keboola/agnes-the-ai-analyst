@@ -57,3 +57,22 @@ def fast_forward_live(slug: str, sha: Optional[str] = None) -> str:
         raise ValueError(f"commit {sha!r} not found in app repo {slug}")
     subprocess.run(["git", "-C", str(repo_path(slug)), "update-ref", LIVE_REF, target], check=True, capture_output=True)
     return target
+
+
+def ensure_branch(slug: str, branch: str, base: str = "main") -> None:
+    p = repo_path(slug)  # validates slug
+    if resolve_ref(slug, branch) is not None:
+        return
+    target = resolve_ref(slug, base)
+    if not target:
+        raise ValueError(f"base ref {base!r} not found in app repo {slug}")
+    subprocess.run(["git", "-C", str(p), "update-ref", f"refs/heads/{branch}", target], check=True, capture_output=True)
+
+
+def delete_branch(slug: str, branch: str) -> None:
+    if branch in ("main", "agnes-live"):
+        raise ValueError(f"refusing to delete protected branch {branch!r}")
+    p = repo_path(slug)  # validates slug
+    if resolve_ref(slug, branch) is None:
+        return
+    subprocess.run(["git", "-C", str(p), "update-ref", "-d", f"refs/heads/{branch}"], check=True, capture_output=True)

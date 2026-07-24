@@ -22,6 +22,38 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.30] - 2026-07-24
+
+### Added
+
+- **Data Apps: prod + draft iteration model.** Create a draft on an iteration branch
+  (`agnes app draft create`), deploy it in `dev` mode, then promote by merging into
+  `main`; drafts share the prod app's git repo and are hidden from the app list.
+  New MCP tools (`data_app_create_draft`, `data_app_delete_draft`, `data_app_git_credential`)
+  and a broker `data_apps` scope let the chat agent author apps end-to-end.
+
+### Changed
+
+### Fixed
+
+- **Data Apps: drafts hidden from the `/apps` web list and admin grant picker.** `GET /api/data-apps`, `agnes app list`, and the MCP `data_apps_list` tool already excluded drafts; the human-facing `/apps` page and `/admin/access`'s data-app grant picker now filter them too.
+- **Data Apps: draft metadata hidden from non-owner grantees.** `GET /{slug}`'s inlined `drafts` list (branch, state, URL of every in-progress draft) was gated on the same broad `_can_view` check as the rest of the app detail response — a group merely holding a read grant on the parent app could see it, even though every draft-mutating endpoint is owner/Admin-only. `drafts` is now omitted entirely unless the caller is the owner or an Admin.
+- **Data Apps: `git-credential` clone URL uses the public base URL.** `POST /{slug}/git-credential` (and `data_app_git_credential`) previously built the returned clone URL from `AGNES_INTERNAL_URL` (the in-cluster hostname), unusable from an analyst laptop, the MCP tool, or a remote sandbox. It now uses `get_public_url()` when configured (falling back to the internal URL otherwise), matching `create_data_app`'s `git_url`. The container-facing clone URL used inside `config.json` is unaffected — it stays on the internal URL.
+- **Data Apps: reject git-invalid draft branch names.** `POST /{slug}/drafts`'s branch validation admitted names `git update-ref` refuses (`a..b`, `a//b`, a trailing `/` or `.`, an `x.lock` suffix), which previously surfaced as an unhandled 500 and left an orphaned draft row (turning a retry into a misleading 409 `slug_exists`). Now rejected up front as 400 `invalid_branch`, with a `subprocess.CalledProcessError` catch around the git call as a second line of defense that also rolls back the draft row.
+- **Data Apps: draft creation no longer 500s on Postgres when the slug races.** The new-app and new-draft endpoints only caught DuckDB's `ConstraintException` on a unique-slug violation; on the Postgres backend the same race raises `sqlalchemy.exc.IntegrityError`, which fell through to an unhandled 500 instead of the intended 409 `slug_exists`. Both endpoints now catch either exception, matching the existing pattern in `knowledge_digests.py`/`marketplaces.py`.
+- **Data Apps: a user's drafts no longer eat their prod-app quota.** The non-admin `max_apps_per_user` check listed apps without excluding drafts, so a user's in-progress drafts counted toward the same limit as their prod apps and could block them from creating a new one. The quota check now excludes drafts, matching every other listing surface.
+- **Data Apps: a failed draft creation cleans up after itself when the owner is gone.** `POST /{slug}/drafts` already rolled back the just-inserted draft row (and avoided leaving a branch behind) when the branch was invalid or the parent had no `main`; the owner-account-missing failure path — hit when minting the push credential — did not, so a retry after that 500 was wrongly refused as `slug_exists`. It now rolls back the same way as the other two failure paths.
+- **Data Apps: draft teardown now serializes with a concurrent wake.** `_teardown_draft` (used by both `DELETE /{slug}/drafts/{draft_slug}` and the cascade in `DELETE /{slug}`) stopped a draft's container without holding its `dataapp:op:{draft_slug}` lease — the same lease every other runner-mutating operation takes to prevent the unlocked check-then-act container swap in the runner sidecar (see 0.76.23). A draft deleted at the same moment someone opens its URL could leave a zombie or clobbered container; teardown now takes the lease first.
+- **Data Apps: deleting a draft through the generic app-delete route no longer orphans its branch.** A draft is a full `data_apps` row, so `DELETE /{slug}` (and `agnes app delete <draft_slug>`) would happily resolve and delete it — but that route's own teardown never deletes the draft's branch on the parent's repo (only `_teardown_draft`, used by the dedicated drafts route, does). Now rejected up front as 400 `use_draft_delete_route`.
+
+### Removed
+
+### Internal
+
+### Security
+
+- **Data Apps: enforce the `data-app-git:<slug>` PAT scope.** The credential minted by `POST /{slug}/git-credential` (and `data_app_git_credential`) now authenticates only the `/data-apps.git/{slug}` surface it was minted for, pinned to that one app's slug — previously the `scope` claim was unenforced, so the credential was a full-privilege user PAT usable against the whole non-admin (and, for an Admin owner, admin) REST/MCP API. Rejected JSON-API calls get 401 `git_scope_token_not_allowed`.
+
 ## [0.76.29] - 2026-07-24
 
 ### Fixed

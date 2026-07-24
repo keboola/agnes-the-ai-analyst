@@ -518,6 +518,18 @@ for the Caddy snippet to append to your reverse proxy.
   own grants are narrower (spec §10). Deactivating the owner revokes the
   app's token until an admin reassigns ownership.
 
+**Draft iteration.** A draft is a registry sibling of a prod app pinned to an
+iteration branch on the *same* git repo (no second repo, no copy) — create one
+with `agnes app draft create <slug> [--branch]`, iterate by pushing to the
+returned `git_clone_url` (or minting a fresh one with `agnes app
+git-credential <slug>`), and deploy the draft on its own branch with `agnes
+app deploy <draft_slug> --mode dev`. Drafts are hidden from `agnes app list`;
+promote one by merging its branch into `main` and deploying the prod app
+normally, then tear the draft down with `agnes app draft delete <slug>
+<draft_slug>`. This is the same lifecycle the AI-authoring flow drives end to
+end via MCP tools and the ai-kit `dataapp-development` skill — see
+[`docs/superpowers/specs/2026-07-23-data-apps-wave3-ai-authoring-design.md`](superpowers/specs/2026-07-23-data-apps-wave3-ai-authoring-design.md).
+
 ### Metrics (Prometheus)
 
 Every role process exposes `GET /metrics` (`app/observability/metrics.py`)

@@ -62,7 +62,7 @@ Only reached when the DB file itself will not open after the WAL is discarded.
    (chmod `0o600`).
 2. `<STATE_DIR>/system.duckdb.pre-migrate` is inspected read-only via
    `_peek_schema_version` to confirm its `schema_version.version` matches the
-   running binary's `SCHEMA_VERSION` (currently `98`, in `src/db.py`).
+   running binary's `SCHEMA_VERSION` (currently `99`, in `src/db.py`).
 3. If the versions match, the snapshot is copied in as the new
    `system.duckdb` and the migration ladder re-runs (idempotent). App starts.
 4. If the versions do **not** match, auto-recovery is refused with:
@@ -96,7 +96,7 @@ docker logs agnes-app-1 2>&1 | grep "WAL replay failed"
 docker exec agnes-app-1 /usr/local/bin/python3 -c \
   "from src.db import get_system_db, get_schema_version; \
    conn = get_system_db(); print('schema_version:', get_schema_version(conn))"
-# Expected: schema_version: 98
+# Expected: schema_version: 99
 ```
 
 Verify row counts are reasonable (see §6).
@@ -212,7 +212,7 @@ cp "${STATE_DIR}/system.duckdb.pre-migrate" "${STATE_DIR}/system.duckdb"
 ```
 
 The app will re-run the migration ladder on the next start (idempotent) and
-land at `SCHEMA_VERSION=98`.
+land at `SCHEMA_VERSION=99`.
 
 #### Option C — restore from a VM or volume snapshot
 
@@ -299,7 +299,7 @@ print('ok' if orphan_members == 0 and orphan_grants == 0 else 'MISMATCH — inve
 
 ```bash
 curl -sf http://localhost:5000/api/health | python3 -m json.tool
-# Expected: {"status": "ok", "db_schema": "ok", "current": 98, "expected": 98, ...}
+# Expected: {"status": "ok", "db_schema": "ok", "current": 99, "expected": 99, ...}
 # (db_schema is a status string — "ok" / "mismatch" / "unreachable";
 #  the numeric schema version is in "current".)
 ```
@@ -315,7 +315,7 @@ curl -sf http://localhost:5000/api/health | python3 -m json.tool
 | `_move_to_broken` | `src/db.py` — moves broken DB + WAL to `.broken.<ts>` |
 | `_peek_schema_version` | `src/db.py` — read-only version probe for the snapshot |
 | `_ensure_schema` | `src/db.py` — takes pre-migrate snapshot; runs post-migration `CHECKPOINT` |
-| `SCHEMA_VERSION` | `src/db.py` line 50 — current target version |
+| `SCHEMA_VERSION` | `src/db.py` line 51 — current target version |
 | `schema_version` table | `src/db.py` `_SYSTEM_SCHEMA` — `version INTEGER`, `applied_at TIMESTAMP` |
 | WAL-recovery tests | `tests/test_db_wal_recovery.py` |
 | State directory layout | `docs/state-dir.md` — A (nested) vs B (flat) mount topologies |

@@ -215,6 +215,152 @@ def test_deploy_not_found():
     assert "agnes app list" in output
 
 
+def test_deploy_with_mode_dev():
+    fake = _mock_response(200, {"state": "running", "deployed_sha": ""})
+    with patch("cli.commands.data_apps.api_post", return_value=fake) as mock_post:
+        result = runner.invoke(app, ["app", "deploy", "sapp--init", "--mode", "dev"])
+    assert result.exit_code == 0
+    assert mock_post.call_args.kwargs["json"] == {"mode": "dev"}
+
+
+def test_deploy_prod_on_draft_friendly_message():
+    fake = _mock_response(400, {"detail": "prod_on_draft"})
+    with patch("cli.commands.data_apps.api_post", return_value=fake):
+        result = runner.invoke(app, ["app", "deploy", "sapp--init"])
+    assert result.exit_code == 1
+    output = result.output + str(result.stderr_bytes or b"")
+    assert "--mode dev" in output
+
+
+def test_deploy_dev_requires_draft_friendly_message():
+    fake = _mock_response(400, {"detail": "dev_requires_draft"})
+    with patch("cli.commands.data_apps.api_post", return_value=fake):
+        result = runner.invoke(app, ["app", "deploy", "sapp", "--mode", "dev"])
+    assert result.exit_code == 1
+    output = result.output + str(result.stderr_bytes or b"")
+    assert "draft" in output.lower()
+
+
+# ---------------------------------------------------------------------------
+# git-credential
+# ---------------------------------------------------------------------------
+
+
+def test_git_credential_prints_url():
+    fake = _mock_response(200, {"git_clone_url": "https://x:tok@example.com/data-apps/sapp.git"})
+    with patch("cli.commands.data_apps.api_post", return_value=fake) as mock_post:
+        result = runner.invoke(app, ["app", "git-credential", "sapp"])
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "https://x:tok@example.com/data-apps/sapp.git"
+    assert mock_post.call_args.args[0] == "/api/data-apps/sapp/git-credential"
+
+
+def test_git_credential_json():
+    fake = _mock_response(200, {"git_clone_url": "https://x:tok@example.com/data-apps/sapp.git"})
+    with patch("cli.commands.data_apps.api_post", return_value=fake):
+        result = runner.invoke(app, ["app", "git-credential", "sapp", "--json"])
+    assert result.exit_code == 0
+    assert '"git_clone_url"' in result.stdout
+
+
+def test_git_credential_not_found():
+    fake = _mock_response(404, {"detail": "data_app_not_found"})
+    with patch("cli.commands.data_apps.api_post", return_value=fake):
+        result = runner.invoke(app, ["app", "git-credential", "nope"])
+    assert result.exit_code == 1
+    output = result.output + str(result.stderr_bytes or b"")
+    assert "agnes app list" in output
+
+
+# ---------------------------------------------------------------------------
+# draft create/delete
+# ---------------------------------------------------------------------------
+
+
+def test_draft_create_default_branch():
+    fake = _mock_response(
+        201,
+        {
+            "id": "app_draft1",
+            "slug": "sapp--init",
+            "branch": "init",
+            "git_clone_url": "https://x:tok@example.com/data-apps/sapp.git",
+        },
+    )
+    with patch("cli.commands.data_apps.api_post", return_value=fake) as mock_post:
+        result = runner.invoke(app, ["app", "draft", "create", "sapp"])
+    assert result.exit_code == 0, result.output
+    assert "sapp--init" in result.stdout
+    assert mock_post.call_args.args[0] == "/api/data-apps/sapp/drafts"
+    assert mock_post.call_args.kwargs["json"] == {"branch": "init"}
+
+
+def test_draft_create_custom_branch():
+    fake = _mock_response(
+        201,
+        {"id": "app_draft2", "slug": "sapp--feature-x", "branch": "feature-x", "git_clone_url": "https://x/y"},
+    )
+    with patch("cli.commands.data_apps.api_post", return_value=fake) as mock_post:
+        result = runner.invoke(app, ["app", "draft", "create", "sapp", "--branch", "feature-x"])
+    assert result.exit_code == 0
+    assert mock_post.call_args.kwargs["json"] == {"branch": "feature-x"}
+
+
+def test_draft_create_json():
+    fake = _mock_response(
+        201, {"id": "app_draft1", "slug": "sapp--init", "branch": "init", "git_clone_url": "https://x/y"}
+    )
+    with patch("cli.commands.data_apps.api_post", return_value=fake):
+        result = runner.invoke(app, ["app", "draft", "create", "sapp", "--json"])
+    assert result.exit_code == 0
+    assert '"slug": "sapp--init"' in result.stdout
+
+
+def test_draft_create_parent_is_draft_friendly_message():
+    fake = _mock_response(400, {"detail": "parent_is_draft"})
+    with patch("cli.commands.data_apps.api_post", return_value=fake):
+        result = runner.invoke(app, ["app", "draft", "create", "sapp--init"])
+    assert result.exit_code == 1
+    output = result.output + str(result.stderr_bytes or b"")
+    assert "draft" in output.lower()
+
+
+def test_draft_create_not_found():
+    fake = _mock_response(404, {"detail": "data_app_not_found"})
+    with patch("cli.commands.data_apps.api_post", return_value=fake):
+        result = runner.invoke(app, ["app", "draft", "create", "nope"])
+    assert result.exit_code == 1
+    output = result.output + str(result.stderr_bytes or b"")
+    assert "agnes app list" in output
+
+
+def test_draft_delete_happy_path():
+    fake = _mock_response(204, None)
+    with patch("cli.commands.data_apps.api_delete", return_value=fake) as mock_delete:
+        result = runner.invoke(app, ["app", "draft", "delete", "sapp", "sapp--init"])
+    assert result.exit_code == 0, result.output
+    assert "sapp--init" in result.stdout
+    assert mock_delete.call_args.args[0] == "/api/data-apps/sapp/drafts/sapp--init"
+
+
+def test_draft_delete_not_a_draft_friendly_message():
+    fake = _mock_response(400, {"detail": "not_a_draft"})
+    with patch("cli.commands.data_apps.api_delete", return_value=fake):
+        result = runner.invoke(app, ["app", "draft", "delete", "sapp", "other-app"])
+    assert result.exit_code == 1
+    output = result.output + str(result.stderr_bytes or b"")
+    assert "draft" in output.lower()
+
+
+def test_draft_delete_not_found():
+    fake = _mock_response(404, {"detail": "data_app_not_found"})
+    with patch("cli.commands.data_apps.api_delete", return_value=fake):
+        result = runner.invoke(app, ["app", "draft", "delete", "sapp", "nope"])
+    assert result.exit_code == 1
+    output = result.output + str(result.stderr_bytes or b"")
+    assert "agnes app list" in output
+
+
 # ---------------------------------------------------------------------------
 # logs
 # ---------------------------------------------------------------------------
