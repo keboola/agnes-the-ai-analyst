@@ -314,7 +314,7 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
 
         return OAuthToken(
             access_token=access_jwt,
-            token_type="bearer",
+            token_type="Bearer",
             expires_in=_ACCESS_TOKEN_TTL,
             refresh_token=refresh_token_str,
             scope=" ".join(authorization_code.scopes) if authorization_code.scopes else None,
@@ -408,7 +408,7 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
 
         return OAuthToken(
             access_token=access_jwt,
-            token_type="bearer",
+            token_type="Bearer",
             expires_in=_ACCESS_TOKEN_TTL,
             refresh_token=new_refresh,
             scope=" ".join(effective_scopes) if effective_scopes else None,
@@ -675,14 +675,27 @@ def _render_consent_page(
     scopes: list[str],
     pending: str,
 ) -> str:
-    """Return the HTML consent page (extends base_ds.html via Jinja in production)."""
-    scope_list = "".join(f"<li>{s}</li>" for s in scopes) if scopes else "<li>read access</li>"
+    """Return the HTML consent page as a self-contained HTML document.
+
+    SECURITY: every interpolated value is HTML-escaped. ``client_name`` comes
+    from RFC 7591 dynamic client registration (unauthenticated on the streamable
+    MCP endpoint), so it is fully attacker-controlled; rendered unescaped it was
+    a stored-XSS sink executing on the Agnes origin in a logged-in victim's
+    session, and there is no app-wide CSP to fall back on — escaping here is the
+    control.
+    """
+    import html
+
+    esc_client = html.escape(client_name or "")
+    esc_email = html.escape(user_email or "")
+    esc_pending = html.escape(pending or "", quote=True)
+    scope_list = "".join(f"<li>{html.escape(s)}</li>" for s in scopes) if scopes else "<li>read access</li>"
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Authorize {client_name} — Agnes</title>
+  <title>Authorize {esc_client} — Agnes</title>
   <style>
     :root {{
       --ds-primary: #6366f1;
@@ -750,20 +763,20 @@ def _render_consent_page(
   <div class="card">
     <h1>Authorize access</h1>
     <p class="sub">
-      <span class="app-name">{client_name}</span>
+      <span class="app-name">{esc_client}</span>
       is requesting permission to access Agnes on your behalf.
     </p>
     <ul class="scope-list">
       {scope_list}
     </ul>
     <form method="post" action="/api/mcp/oauth/consent">
-      <input type="hidden" name="pending" value="{pending}">
+      <input type="hidden" name="pending" value="{esc_pending}">
       <div class="actions">
         <button type="submit" name="action" value="deny" class="btn-deny">Deny</button>
         <button type="submit" name="action" value="allow" class="btn-allow">Allow</button>
       </div>
     </form>
-    <p class="user">Signed in as {user_email}</p>
+    <p class="user">Signed in as {esc_email}</p>
   </div>
 </body>
 </html>"""
