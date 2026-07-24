@@ -92,6 +92,15 @@ class ChatConfig:
     # budget-enforcement freshness for avoiding a ledger table read on every
     # LLM call.
     agent_api_budget_cache_ttl_s: int = 60
+    # Per-session artifact harvest caps (V1b Task 5,
+    # ``app.chat.artifact_harvest``): files under the sandbox's ``outputs/``
+    # dir past ``artifact_max_bytes`` are skipped (logged, scan continues);
+    # the scan stops entirely after ``artifact_max_files`` files harvested.
+    # Both are best-effort guardrails against a run that fills the outputs
+    # dir with an unbounded number/size of files, not a retention policy —
+    # retention (GC of already-harvested rows/blobs) is a later task.
+    agent_api_artifact_max_bytes: int = 25 * 1024 * 1024
+    agent_api_artifact_max_files: int = 20
     slack: "SlackConfig" = field(default_factory=SlackConfig)
 
 
@@ -151,5 +160,7 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         llm_auth=str((raw.get("llm") or {}).get("auth", "api_key")).strip().lower() or "api_key",
         agent_api_utility_models=list(raw.get("agent_api_utility_models") or []),
         agent_api_budget_cache_ttl_s=int(raw.get("agent_api_budget_cache_ttl_s", 60)),
+        agent_api_artifact_max_bytes=int(raw.get("agent_api_artifact_max_bytes", 25 * 1024 * 1024)),
+        agent_api_artifact_max_files=int(raw.get("agent_api_artifact_max_files", 20)),
         slack=_parse_slack_config(raw),
     )

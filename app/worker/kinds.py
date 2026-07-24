@@ -562,7 +562,13 @@ def _run_agent_response(payload: dict) -> dict:
     timeout_s = _agent_response_job_timeout_seconds()
     mode = payload.get("mode", "fresh")
     if mode == "continue":
-        coro = await_completion(manager, chat_id=payload["chat_id"], timeout_s=timeout_s)
+        coro = await_completion(
+            manager,
+            chat_id=payload["chat_id"],
+            timeout_s=timeout_s,
+            agent_id=payload.get("agent_id"),
+            owner_user_id=payload.get("owner_user_id"),
+        )
     else:
         coro = run_one_shot(
             manager,
@@ -570,6 +576,7 @@ def _run_agent_response(payload: dict) -> dict:
             agent_id=payload.get("agent_id"),
             prompt=payload["prompt"],
             timeout_s=timeout_s,
+            owner_user_id=payload.get("owner_user_id"),
         )
     # `run_coroutine_threadsafe` schedules onto the loop the live
     # ChatManager actually runs on (this handler itself executes in a

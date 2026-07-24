@@ -95,7 +95,7 @@ def _register_agent_pat_row(owner_id: str, agent_id: str, token: str, token_id: 
 
 
 def _patch_run_one_shot(monkeypatch, *, chat_id="chat-1", answer="hi there", timed_out=False, calls=None):
-    async def _fake_run_one_shot(manager, *, user_email, agent_id, prompt, timeout_s):
+    async def _fake_run_one_shot(manager, *, user_email, agent_id, prompt, timeout_s, **_kwargs):
         if calls is not None:
             calls.append({"user_email": user_email, "agent_id": agent_id, "prompt": prompt, "timeout_s": timeout_s})
         return {"chat_id": chat_id, "answer": answer, "timed_out": timed_out}
@@ -282,7 +282,7 @@ def test_sync_concurrency_cap_hit_returns_429(env, monkeypatch):
     letting it escape as an unhandled 500."""
     from app.chat.manager import ConcurrencyCapHit
 
-    async def _boom(manager, *, user_email, agent_id, prompt, timeout_s):
+    async def _boom(manager, *, user_email, agent_id, prompt, timeout_s, **_kwargs):
         raise ConcurrencyCapHit("user owner@test.com has 3 active sessions; cap = 3")
 
     import app.api.agent_runtime as agent_runtime
@@ -335,7 +335,7 @@ def test_background_job_completed_via_worker_handler(env, monkeypatch):
     .run_one_shot` — is the correct seam here)."""
     import app.chat.headless as headless
 
-    async def _fake_run_one_shot(manager, *, user_email, agent_id, prompt, timeout_s):
+    async def _fake_run_one_shot(manager, *, user_email, agent_id, prompt, timeout_s, **_kwargs):
         return {"chat_id": "chat-bg-1", "answer": "background answer", "timed_out": False}
 
     monkeypatch.setattr(headless, "run_one_shot", _fake_run_one_shot)
@@ -409,7 +409,7 @@ def test_worker_handler_concurrency_cap_hit_raises_with_recognizable_prefix(env,
     import app.chat.headless as headless
     from app.chat.manager import ConcurrencyCapHit
 
-    async def _boom(manager, *, user_email, agent_id, prompt, timeout_s):
+    async def _boom(manager, *, user_email, agent_id, prompt, timeout_s, **_kwargs):
         raise ConcurrencyCapHit("user owner@test.com has 3 active sessions; cap = 3")
 
     monkeypatch.setattr(headless, "run_one_shot", _boom)
@@ -447,7 +447,7 @@ def test_worker_handler_flushes_usage_accumulator_before_summing(env, monkeypatc
     in-memory accumulator."""
     import app.chat.headless as headless
 
-    async def _fake_run_one_shot(manager, *, user_email, agent_id, prompt, timeout_s):
+    async def _fake_run_one_shot(manager, *, user_email, agent_id, prompt, timeout_s, **_kwargs):
         return {"chat_id": "chat-flush-1", "answer": "flushed answer", "timed_out": False}
 
     monkeypatch.setattr(headless, "run_one_shot", _fake_run_one_shot)

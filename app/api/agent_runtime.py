@@ -283,6 +283,7 @@ async def create_agent_response(
                 agent_id=agent["id"],
                 prompt=body.input,
                 timeout_s=timeout_s,
+                owner_user_id=user["id"],
             )
         except ConcurrencyCapHit as exc:
             # Mirrors `app/api/chat.py::create_session`'s 429 for the same

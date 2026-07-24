@@ -67,7 +67,56 @@ class HeadlessSink:
         self.done_event.set()
 
 
-async def _wait_for_sink(manager, chat_id: str, sink: "HeadlessSink", timeout_s: int) -> bool:
+async def _harvest_after_turn(
+    manager,
+    chat_id: str,
+    agent_id: Optional[str],
+    owner_user_id: Optional[str],
+) -> None:
+    """Best-effort artifact harvest for a one-shot turn that just completed
+    (C4, V1b Task 5) — fired from :func:`_wait_for_sink` right after the
+    ``"done"`` frame lands, BEFORE the sink detaches (so the sandbox handle
+    is guaranteed still live; detach only starts the pause/linger countdown,
+    it doesn't tear anything down synchronously, but harvesting before it
+    rather than after removes any race with that countdown entirely).
+
+    No-ops when ``owner_user_id`` is unknown (older/other call sites that
+    don't thread it through) or when the manager has no live handle for
+    this session (already torn down, or never spawned — e.g. the sink's
+    ``close()`` fired ``done_event`` without a real run). Never raises —
+    a harvest failure must not turn a successful chat turn into a 500.
+    """
+    if owner_user_id is None:
+        return
+    list_live = getattr(manager, "list_live", None)
+    if list_live is None:
+        return
+    try:
+        live = next((entry for entry in list_live() if entry.chat_id == chat_id), None)
+        if live is None or live.handle is None:
+            return
+        from app.chat.artifact_harvest import caps_from_manager, harvest_session_artifacts
+
+        await harvest_session_artifacts(
+            chat_id,
+            agent_id,
+            owner_user_id,
+            live.handle,
+            **caps_from_manager(manager),
+        )
+    except Exception:
+        logger.exception("headless: artifact harvest failed for %s — continuing", chat_id)
+
+
+async def _wait_for_sink(
+    manager,
+    chat_id: str,
+    sink: "HeadlessSink",
+    timeout_s: int,
+    *,
+    agent_id: Optional[str] = None,
+    owner_user_id: Optional[str] = None,
+) -> bool:
     """Await ``sink.done_event`` up to ``timeout_s``, always detaching the
     sink afterward. Returns ``True`` if the wait timed out.
 
@@ -78,10 +127,17 @@ async def _wait_for_sink(manager, chat_id: str, sink: "HeadlessSink", timeout_s:
     a later re-``attach()`` (the sync-timeout-degrades-to-background-job
     path in ``app.api.agent_runtime``) cancels that countdown the same way
     a reconnecting WS client would.
+
+    On a genuine (non-timeout) completion, harvests any artifacts the turn
+    produced (:func:`_harvest_after_turn`) before detaching — a timed-out
+    wait does NOT harvest, since the turn isn't actually done yet (the
+    caller either degrades to a background job that resumes waiting on the
+    same session, or gives up; either way there is nothing to harvest yet).
     """
     timed_out = False
     try:
         await asyncio.wait_for(sink.done_event.wait(), timeout=timeout_s)
+        await _harvest_after_turn(manager, chat_id, agent_id, owner_user_id)
     except asyncio.TimeoutError:
         timed_out = True
     finally:
@@ -99,6 +155,7 @@ async def run_one_shot(
     agent_id: Optional[str],
     prompt: str,
     timeout_s: int,
+    owner_user_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create a FRESH session, send ``prompt``, and wait up to
     ``timeout_s`` seconds for the turn to complete.
@@ -111,6 +168,12 @@ async def run_one_shot(
     ``app.api.agent_runtime`` for how the caller degrades a sync timeout
     into a background job that resumes waiting on the same ``chat_id``
     (via :func:`await_completion`) instead of re-sending the prompt.
+
+    ``owner_user_id`` (optional, keyword-only) — when provided, threaded
+    through to :func:`_wait_for_sink` so a genuine (non-timeout) completion
+    triggers an artifact harvest (V1b Task 5, C4) scoped to that owner.
+    Callers that don't pass it simply get no harvest, same as before this
+    parameter existed.
     """
     session = await manager.create_session(
         user_email=user_email,
@@ -121,7 +184,14 @@ async def run_one_shot(
     sink = HeadlessSink()
     await manager.attach(chat_id, sink, is_primary=True)
     await manager.send_user_message(chat_id, prompt, sender_email=user_email)
-    timed_out = await _wait_for_sink(manager, chat_id, sink, timeout_s)
+    timed_out = await _wait_for_sink(
+        manager,
+        chat_id,
+        sink,
+        timeout_s,
+        agent_id=agent_id,
+        owner_user_id=owner_user_id,
+    )
     return {"chat_id": chat_id, "answer": sink.answer, "timed_out": timed_out}
 
 
@@ -158,6 +228,8 @@ async def await_completion(
     *,
     chat_id: str,
     timeout_s: int,
+    agent_id: Optional[str] = None,
+    owner_user_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Resume waiting on an ALREADY-RUNNING (or paused) session — no
     ``send_user_message`` call, so the original prompt is never resent.
@@ -192,10 +264,22 @@ async def await_completion(
     if live is not None and not live.turn_in_flight and not sink.frames:
         answer = _last_assistant_message(manager, chat_id)
         if answer is not None:
+            # The turn already finished before this sink attached (no "done"
+            # frame is coming for it to see) — harvest here since
+            # _wait_for_sink's own harvest hook is never reached on this
+            # early-return path.
+            await _harvest_after_turn(manager, chat_id, agent_id, owner_user_id)
             await manager.detach_sink(chat_id, sink)
             return {"chat_id": chat_id, "answer": answer, "timed_out": False}
 
-    timed_out = await _wait_for_sink(manager, chat_id, sink, timeout_s)
+    timed_out = await _wait_for_sink(
+        manager,
+        chat_id,
+        sink,
+        timeout_s,
+        agent_id=agent_id,
+        owner_user_id=owner_user_id,
+    )
     if timed_out and not sink.answer:
         fallback = _last_assistant_message(manager, chat_id)
         if fallback:

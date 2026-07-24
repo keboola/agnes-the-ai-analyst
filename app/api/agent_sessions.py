@@ -49,8 +49,8 @@ import uuid
 from typing import Any, AsyncIterator, Dict, Optional
 
 import duckdb
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from app.api.agent_runtime import AgentRuntimePrincipal, require_agent_runtime_principal
@@ -59,13 +59,15 @@ from app.auth.access import can_access
 from app.auth.dependencies import _get_db, get_current_user
 from app.auth.pat_resolver import agent_id_from_request
 from app.auth.session_principal import SessionPrincipal
+from app.chat.artifact_harvest import sanitize_filename
 from app.chat.manager import ConcurrencyCapHit, SessionNotFound, get_current_chat_manager
 from app.chat.streaming_sink import StreamingSink
 from app.chat.types import Surface
 from app.coordination.factory import coordination
 from app.logging_config import request_id_var
 from app.resource_types import ResourceType
-from src.repositories import agents_repo, chat_message_repo, chat_session_repo
+from src.object_store import object_store
+from src.repositories import agent_artifacts_repo, agents_repo, chat_message_repo, chat_session_repo
 
 logger = logging.getLogger(__name__)
 
@@ -326,6 +328,36 @@ async def cancel_session(
     return {}
 
 
+async def _harvest_before_kill(manager: Any, session_id: str, agent: dict) -> None:
+    """Best-effort artifact harvest on `DELETE /api/v1/sessions/{id}` (V1b
+    Task 5, C4) — runs BEFORE `manager.kill()` tears the sandbox down,
+    since the handle is only reachable while the session is still live.
+
+    No-ops (never raises) when the manager has no live handle for this
+    session — already torn down, paused with no active handle, or the
+    session never actually spawned a sandbox (e.g. a session created but
+    never sent a message).
+    """
+    list_live = getattr(manager, "list_live", None)
+    if list_live is None:
+        return
+    try:
+        live = next((entry for entry in list_live() if entry.chat_id == session_id), None)
+        if live is None or live.handle is None:
+            return
+        from app.chat.artifact_harvest import caps_from_manager, harvest_session_artifacts
+
+        await harvest_session_artifacts(
+            session_id,
+            agent["id"],
+            agent["owner_user_id"],
+            live.handle,
+            **caps_from_manager(manager),
+        )
+    except Exception:
+        logger.exception("delete_session: artifact harvest failed for %s", session_id)
+
+
 @router.delete("/sessions/{session_id}", status_code=204)
 async def delete_session(
     session_id: str,
@@ -333,8 +365,98 @@ async def delete_session(
 ) -> None:
     manager = get_current_chat_manager()
     if manager is not None:
+        await _harvest_before_kill(manager, session_id, principal.agent)
         try:
             await manager.kill(session_id, reason="agent_api_delete")
         except Exception:
             logger.exception("kill on agent-session delete failed for %s", session_id)
     chat_session_repo().archive_session(session_id)
+
+
+#: Presigned-GET TTL cap for the opt-in `?redirect=1` download path (C5) —
+#: short-lived by design (the tradeoff: a leaked URL is usable for this
+#: window without re-authenticating against Agnes at all). The default
+#: (non-redirect) download path streams through this authenticated endpoint
+#: instead and carries no such exposure.
+_ARTIFACT_PRESIGN_TTL_S = 120
+
+
+@router.get("/sessions/{session_id}/artifacts")
+async def list_session_artifacts(
+    principal: SessionRuntimePrincipal = Depends(require_session_principal),
+) -> dict:
+    """Cursor-envelope listing of every artifact harvested for this session.
+
+    Not actually paginated today — a session's artifact count is bounded by
+    `agent_api_artifact_max_files` (20 by default, C3) per harvest call, so
+    a single page always covers it — but the response shape matches the
+    project's standard cursor envelope (`command-ux.md`) so a future caller
+    doesn't have to special-case this endpoint if/when true pagination is
+    added.
+    """
+    rows = agent_artifacts_repo().list_for_session(principal.session.id)
+    return {
+        "data": [
+            {
+                "id": r["id"],
+                "filename": r["filename"],
+                "size_bytes": r["size_bytes"],
+                "content_type": r["content_type"],
+                "created_at": r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else r["created_at"],
+            }
+            for r in rows
+        ],
+        "has_more": False,
+        "next_cursor": None,
+    }
+
+
+@router.get("/sessions/{session_id}/artifacts/{artifact_id}")
+async def download_session_artifact(
+    artifact_id: str,
+    redirect: bool = Query(
+        False,
+        description=(
+            "Opt-in: 307-redirect to a short-TTL presigned object-store URL instead of "
+            "streaming through this authenticated endpoint. Tradeoff: the presigned URL "
+            "is usable by anyone who obtains it (e.g. via a proxy log or browser history) "
+            "for up to the TTL, with no further Agnes auth check. Default (false) streams "
+            "the bytes through this endpoint's own auth instead."
+        ),
+    ),
+    principal: SessionRuntimePrincipal = Depends(require_session_principal),
+) -> Response:
+    """Download one artifact. `404` for both an unknown id and an id that
+    belongs to a different session — same non-leaking posture
+    `require_session_principal` already applies at the session level (a
+    cross-agent PAT never even resolves a `principal` to get this far)."""
+    row = agent_artifacts_repo().get(artifact_id)
+    if row is None or row.get("session_id") != principal.session.id:
+        raise HTTPException(status_code=404, detail={"code": "artifact_not_found"})
+
+    store = object_store()
+    if store is None:
+        raise HTTPException(status_code=503, detail={"code": "object_store_unavailable"})
+
+    safe_filename = sanitize_filename(row["filename"] or "")
+    content_type = row.get("content_type") or "application/octet-stream"
+
+    if redirect and hasattr(store, "presign_get"):
+        try:
+            url = store.presign_get(row["object_key"], ttl_s=_ARTIFACT_PRESIGN_TTL_S)
+        except Exception:
+            logger.exception(
+                "download_session_artifact: presign_get failed for %s — falling back to stream", artifact_id
+            )
+        else:
+            return RedirectResponse(url=url, status_code=307)
+
+    data = store.get_bytes(row["object_key"])
+    if data is None:
+        raise HTTPException(status_code=404, detail={"code": "artifact_not_found"})
+
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"content-disposition": f'attachment; filename="{safe_filename}"'},
+    )

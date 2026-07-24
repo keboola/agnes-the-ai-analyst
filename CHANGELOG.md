@@ -76,6 +76,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   releasing the turn lock, instead of leaking it in `live.sinks`. Create-session
   maps a config-level `chat.enabled=false` to `503 {"code": "chat_disabled"}`
   rather than an unhandled 500.
+- **Agent-as-API sandbox artifact harvest + download** (agent-api V1b Task
+  5). Files an agent writes under `/work/outputs` inside its E2B sandbox are
+  now harvested into the object store + `agent_artifacts` registry when a
+  one-shot `/responses`/`/jobs` turn completes and when `DELETE
+  /api/v1/sessions/{id}` tears the sandbox down — best-effort, never fails
+  the run/delete it piggybacks on. Filenames are agent-chosen input and are
+  sanitized to a flat, CR/LF-free basename before use as the object key
+  (`agent-artifacts/{session_id}/{filename}`) or in a download response's
+  `Content-Disposition` header. Per-session caps (`agent_api_artifact_max_bytes`,
+  25 MiB default; `agent_api_artifact_max_files`, 20 default) bound a single
+  run's harvest. `GET /api/v1/sessions/{id}/artifacts` lists harvested
+  artifacts (cursor envelope); `GET /api/v1/sessions/{id}/artifacts/{id}`
+  streams the bytes (default, through this endpoint's own auth) or, with
+  `?redirect=true`, 307-redirects to a short-TTL (≤120s) presigned
+  object-store URL. Same owner/agent-PAT auth as the rest of
+  `/api/v1/sessions/{id}/*`.
 - **LLM broker: per-agent model policy, batched `llm_usage` ledger, monthly
   token budgets.** The secret broker's `anthropic_proxy` chokepoint (applies
   to every upstream credential mode — static key, workload identity, LLM

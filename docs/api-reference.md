@@ -1277,12 +1277,23 @@ Multi-turn counterpart to the one-shot runtime above: create a session bound to 
 
 `POST /api/v1/sessions/{id}/cancel` — `202 {}` — cancels the in-flight turn (if any); the session itself is preserved (contrast `DELETE`, which archives it).
 
-`DELETE /api/v1/sessions/{id}` — `204` — kills the live runner (if any) and archives the session.
+`DELETE /api/v1/sessions/{id}` — `204` — kills the live runner (if any) and archives the session. Before killing, best-effort harvests any artifacts the session's sandbox produced (see below) — the handle is only reachable while the sandbox is still live, so this must happen first.
 
 - /api/v1/agents/{slug}/sessions
 - /api/v1/sessions/{session_id}
 - /api/v1/sessions/{session_id}/messages
 - /api/v1/sessions/{session_id}/cancel
+
+### `/api/v1/sessions/{id}/artifacts` — sandbox artifact harvest + download (V1b Task 5)
+
+The chat sandbox is a remote E2B microVM; files an agent writes under `/work/outputs` inside it are harvested into the object store + `agent_artifacts` registry at two points: when a one-shot `/responses` (or `/jobs`) turn completes, and when `DELETE /api/v1/sessions/{id}` tears the sandbox down. Harvest is best-effort — a store that isn't configured, a missing `outputs/` dir, or a single file's read/write failure are all logged and skipped, never surfaced as an error on the run/delete path they piggyback on. Filenames are agent-chosen (an injection surface) and are sanitized to a flat, CR/LF-free basename before use — both as the object-store key (`agent-artifacts/{session_id}/{safe_filename}`) and in the download response's `Content-Disposition` header. Per-session caps (`agent_api_artifact_max_bytes`, default 25 MiB per file; `agent_api_artifact_max_files`, default 20 per harvest call) bound how much a single run can push into the store. Auth on both routes is the same `require_session_principal` every `/api/v1/sessions/{id}/*` route uses (owner or an agent PAT bound to this exact session's agent; any mismatch is `404`, never `403`).
+
+`GET /api/v1/sessions/{id}/artifacts` — `200 {data: [{id, filename, size_bytes, content_type, created_at}], has_more, next_cursor}` — every artifact harvested for this session so far.
+
+`GET /api/v1/sessions/{id}/artifacts/{artifact_id}` — `200` streams the artifact's bytes (default; authenticated via this endpoint's own auth, `content-type` + `content-disposition: attachment; filename="..."`), or with `?redirect=true` a `307` redirect to a short-TTL (≤120s) presigned object-store URL when the configured store supports presigning. The redirect path is opt-in only — the presigned URL is usable by anyone who obtains it (proxy log, browser history) for the TTL window with no further Agnes auth check, so the default streams through this endpoint instead. `404` for both an unknown artifact id and one belonging to a different session.
+
+- /api/v1/sessions/{session_id}/artifacts
+- /api/v1/sessions/{session_id}/artifacts/{artifact_id}
 
 ### `/api/v2` — v2 catalog and query APIs
 

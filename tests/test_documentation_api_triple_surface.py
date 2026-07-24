@@ -292,6 +292,15 @@ _AGENT_SESSION_REASON = (
     "ask`) and MCP (`agent_ask`) surface because it fits the request/"
     "response shape both need."
 )
+_AGENT_ARTIFACTS_REASON = (
+    "agent-as-API sandbox artifact harvest/download (agent-api V1b Task 5). "
+    "No MCP analogue by design: the download route is a binary byte-stream "
+    "response (arbitrary file content + Content-Disposition), not a "
+    "JSON-shaped tool result an MCP client can consume — mirrors the "
+    "existing `/api/knowledge/artifacts/{corpus_id}/download` exemption. No "
+    "CLI subcommand either — same external-caller-only posture as the rest "
+    "of the `/api/v1/sessions/{id}/*` surface (_AGENT_SESSION_REASON)."
+)
 
 _EXEMPT: dict[str, str] = {
     "/api/v1/agents/{agent_id}": _AGENT_DETAIL_REASON,
@@ -302,6 +311,8 @@ _EXEMPT: dict[str, str] = {
     "/api/v1/sessions/{session_id}": _AGENT_SESSION_REASON,
     "/api/v1/sessions/{session_id}/messages": _AGENT_SESSION_REASON,
     "/api/v1/sessions/{session_id}/cancel": _AGENT_SESSION_REASON,
+    "/api/v1/sessions/{session_id}/artifacts": _AGENT_ARTIFACTS_REASON,
+    "/api/v1/sessions/{session_id}/artifacts/{artifact_id}": _AGENT_ARTIFACTS_REASON,
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "
         "(companion to register-table's defer_rebuild for bulk onboarding); no "
