@@ -3222,3 +3222,34 @@ class TestRestoreContext:
             assert "earlier answer" in str(writes[SANDBOX_CONTEXT_RESTORE])
 
         asyncio.run(_run())
+
+    def test_sr11_departed_participant_turns_omitted(self, manager: ChatManager):
+        """SR-11: a departed co-session participant's user turns must not be
+        restored into the fresh runner's context; assistant turns stay (they
+        were already visible to every remaining participant)."""
+
+        async def _run():
+            s = await manager.create_session(user_email="owner@x", surface=Surface.WEB)
+            # Co-session flag lives on the row; participants carry membership.
+            manager._repo._conn.execute(
+                "UPDATE chat_sessions SET is_co_session = TRUE WHERE id = ?", [s.id]
+            )
+            manager._repo.add_session_participant(session_id=s.id, user_email="owner@x", user_id="u1", role="owner")
+            manager._repo.add_session_participant(session_id=s.id, user_email="guest@x", user_id="u2", role="member")
+            manager._repo.append_message(
+                session_id=s.id, role="user", content="owner question", sender_email="owner@x"
+            )
+            manager._repo.append_message(
+                session_id=s.id, role="user", content="guest secret question", sender_email="guest@x"
+            )
+            manager._repo.append_message(session_id=s.id, role="assistant", content="shared answer")
+            manager._repo.remove_participant(s.id, "guest@x")
+
+            sess = manager._repo.get_session(s.id)
+            ctx = manager._build_restore_context(sess)
+            assert ctx is not None
+            assert "owner question" in ctx
+            assert "guest secret question" not in ctx, "departed participant's turn leaked into restored context"
+            assert "shared answer" in ctx
+
+        asyncio.run(_run())
