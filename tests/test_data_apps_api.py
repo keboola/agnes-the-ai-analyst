@@ -1111,6 +1111,38 @@ class TestGitCredential:
         now = datetime.now(timezone.utc)
         assert now < expires_at <= now + timedelta(hours=24, minutes=1)
 
+    def test_git_credential_uses_public_url_when_configured(self, client_as_user, seeded_repo_with_commit, monkeypatch):
+        """The credential must be usable from an analyst laptop, the MCP
+        tool, or a remote sandbox -- none of which can resolve
+        AGNES_INTERNAL_URL (http://app:8000, the in-cluster hostname).
+        Mirrors create_data_app's use of get_public_url() for its own
+        git_url, keeping the embedded agnes:<jwt>@ basic-auth."""
+        monkeypatch.setenv("PUBLIC_URL", "https://analyst.example.com")
+        r = client_as_user.post("/api/data-apps/sapp/git-credential")
+        assert r.status_code == 200, r.text
+        url = r.json()["git_clone_url"]
+        assert url.startswith("https://agnes:"), url
+        assert "@analyst.example.com/data-apps.git/sapp" in url
+
+    def test_git_credential_falls_back_to_internal_url_when_public_unset(self, client_as_user, seeded_repo_with_commit):
+        r = client_as_user.post("/api/data-apps/sapp/git-credential")
+        assert r.status_code == 200, r.text
+        url = r.json()["git_clone_url"]
+        assert url.startswith("http://agnes:"), url
+        assert "@app:8000/data-apps.git/sapp" in url
+
+    def test_deploy_config_json_still_uses_internal_url(
+        self, client_as_user, fake_runner, seeded_repo_with_commit, monkeypatch
+    ):
+        """The container-facing clone_url built by redeploy_current must
+        stay on AGNES_INTERNAL_URL regardless of PUBLIC_URL -- only the
+        credential handed back to a human/agent caller should change."""
+        monkeypatch.setenv("PUBLIC_URL", "https://analyst.example.com")
+        r = client_as_user.post("/api/data-apps/sapp/deploy", json={})
+        assert r.status_code == 200, r.text
+        _, _, config_json = fake_runner.up_calls[0]
+        assert config_json["dataApp"]["git"]["repository"].startswith("http://app:8000/data-apps.git/")
+
 
 def _extract_jwt_from_clone_url(url: str) -> str:
     """Pull the JWT out of a `.../agnes:<jwt>@host/...` git clone URL."""

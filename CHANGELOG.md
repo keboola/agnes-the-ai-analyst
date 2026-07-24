@@ -23,6 +23,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 - **Data Apps: drafts hidden from the `/apps` web list and admin grant picker.** `GET /api/data-apps`, `agnes app list`, and the MCP `data_apps_list` tool already excluded drafts; the human-facing `/apps` page and `/admin/access`'s data-app grant picker now filter them too.
+- **Data Apps: `git-credential` clone URL uses the public base URL.** `POST /{slug}/git-credential` (and `data_app_git_credential`) previously built the returned clone URL from `AGNES_INTERNAL_URL` (the in-cluster hostname), unusable from an analyst laptop, the MCP tool, or a remote sandbox. It now uses `get_public_url()` when configured (falling back to the internal URL otherwise), matching `create_data_app`'s `git_url`. The container-facing clone URL used inside `config.json` is unaffected — it stays on the internal URL.
 
 ### Removed
 

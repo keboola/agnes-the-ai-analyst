@@ -316,6 +316,19 @@ def _mint_git_credential(row: dict) -> str:
     session — it expires after `_GIT_CREDENTIAL_TTL` (24h), stored on both
     the JWT's `exp` claim (via `expires_delta`) and the DB row's
     `expires_at`, kept in sync so neither outlives the other.
+
+    The base URL is `get_public_url()` (same helper `create_data_app` uses
+    for its own `git_url`) so the clone URL works from an analyst laptop,
+    the MCP tool, or a remote sandbox — none of which can resolve
+    `AGNES_INTERNAL_URL` (the in-cluster hostname). Unlike `create_data_app`,
+    which falls back to a root-relative path when no public URL is
+    configured, this credential must embed `agnes:<jwt>@` into an absolute
+    URL with a scheme+host to put the basic-auth in, so an unconfigured
+    public URL falls back to `AGNES_INTERNAL_URL` instead (the previous,
+    always-internal behavior) rather than a schemeless path. This is
+    unrelated to `redeploy_current`'s own `clone_url`, which stays on
+    `AGNES_INTERNAL_URL` unconditionally — that one is used *inside* the
+    container's config.json, which only ever runs in-cluster.
     """
     owner = users_repo().get_by_id(row["owner_user_id"])
     if not owner:
@@ -339,7 +352,8 @@ def _mint_git_credential(row: dict) -> str:
         prefix=token_id.replace("-", "")[:8],
         expires_at=expires_at,
     )
-    return f"{AGNES_INTERNAL_URL.replace('://', f'://agnes:{jwt_token}@')}/data-apps.git/{slug}"
+    base = get_public_url() or AGNES_INTERNAL_URL
+    return f"{base.replace('://', f'://agnes:{jwt_token}@')}/data-apps.git/{slug}"
 
 
 def _handle_runner_failure(repo, app_id: str, exc: Exception) -> None:
