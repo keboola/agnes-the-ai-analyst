@@ -53,6 +53,14 @@
         {% if can_studio %}
         <a class="app-nav-link {% if _path.startswith('/admin/studio') %}is-active{% endif %}" href="/admin/studio" data-tour="nav-studio">Studio</a>
         {% endif %}
+        {# Apps — hosted data-apps list (/apps, see app/web/router.py's
+           apps_web_router). Gated on `data_apps.enabled`, computed via the
+           `data_apps_enabled()` Jinja global so it renders consistently
+           whether the current page uses `_build_context` or `_chrome_ctx`
+           (see app/web/router.py's `_data_apps_nav_enabled` docstring). #}
+        {% if data_apps_enabled() %}
+        <a class="app-nav-link {% if _path == '/apps' or _path.startswith('/apps/detail') %}is-active{% endif %}" href="/apps" data-tour="nav-apps">Apps</a>
+        {% endif %}
 
         {# Overflow menu — populated by the priority-plus logic in app.js when
            the nav can't fit on one line. Hidden while empty; lowest-priority

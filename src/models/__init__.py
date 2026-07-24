@@ -15,6 +15,7 @@ from src.models.chat_broker_tickets import ChatBrokerTicket
 from src.models.collections import CorpusChunk, CorpusFile, FileCorpus
 from src.models.config import GlossaryTerm, InstanceTemplate, MetricDefinition, PersonalAccessToken
 from src.models.connections import ConnectionSecret, SourceConnection
+from src.models.data_apps import DataApp
 from src.models.data_packages import DataPackage, DataPackageTable, DataPackageTool
 from src.models.knowledge import (
     KnowledgeContradiction,
@@ -96,6 +97,7 @@ __all__ = [
     "CorpusChunk",
     "CorpusFile",
     "FileCorpus",
+    "DataApp",
     "DataPackage",
     "GlossaryTerm",
     "DataPackageTable",
