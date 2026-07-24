@@ -12,16 +12,19 @@ from typing import Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from jinja2 import Environment, StrictUndefined, TemplateError
+from jinja2 import TemplateError
+
+from src.prompt_render import make_prompt_env
 from pydantic import BaseModel, Field
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.welcome_template import build_context, compute_default_agent_prompt, render_agent_prompt_banner
+from src.welcome_template import build_context, compute_default_agent_prompt
 
 from src.repositories import (
     welcome_template_repo,
 )
+
 logger = logging.getLogger(__name__)
 
 
@@ -153,7 +156,7 @@ async def admin_put_template(
     # (/setup page, preview endpoint, render_agent_prompt_banner). The
     # outer template applies escaping where needed via `| e`. StrictUndefined
     # is kept so unknown placeholders are caught at save time.
-    env = Environment(undefined=StrictUndefined, autoescape=False)
+    env = make_prompt_env()  # F4: sandboxed — admin-authored content
     try:
         template = env.from_string(payload.content)
         # Pass 1 — render with an authenticated user stub so undefined
@@ -218,12 +221,10 @@ async def admin_preview_template(
     Preview button so admins can see their edits before saving."""
     # autoescape=False to match /setup rendering — the outer Jinja2 template
     # applies escaping where needed.
-    env = Environment(undefined=StrictUndefined, autoescape=False)
+    env = make_prompt_env()  # F4: sandboxed — admin-authored content
     try:
         template = env.from_string(payload.content)
-        ctx = build_context(
-            user=user, server_url=str(request.base_url).rstrip("/")
-        )
+        ctx = build_context(user=user, server_url=str(request.base_url).rstrip("/"))
         rendered = template.render(**ctx)
     except TemplateError as e:
         raise HTTPException(status_code=400, detail=f"Template invalid: {e}")

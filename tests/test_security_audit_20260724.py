@@ -7,6 +7,7 @@ by their own surfaces and are noted here for traceability but not unit-tested.
 
 from __future__ import annotations
 
+import re
 import time
 
 import pytest
@@ -296,15 +297,40 @@ def test_f15_photo_base_dirs_default_and_override(monkeypatch):
 # --- F4: install-prompt override is rendered in a Jinja2 sandbox ------------
 
 
-def test_f4_sandboxed_env_blocks_ssti_payload():
-    """The install-prompt override path must use SandboxedEnvironment so an
-    app-Admin's SSTI payload raises instead of executing arbitrary Python."""
-    from jinja2 import StrictUndefined
+def test_f4_shared_prompt_env_blocks_ssti_payload():
+    """The shared prompt-render factory every admin-authored render routes
+    through must be a sandbox that raises on an SSTI payload."""
     from jinja2.exceptions import SecurityError
-    from jinja2.sandbox import SandboxedEnvironment
 
-    env = SandboxedEnvironment(undefined=StrictUndefined, autoescape=False)
+    from src.prompt_render import make_prompt_env
+
+    env = make_prompt_env()
     payload = "{{ cycler.__init__.__globals__['os'].popen('id').read() }}"
     template = env.from_string(payload)
     with pytest.raises(SecurityError):
         template.render()
+
+
+def test_f4_no_unsandboxed_prompt_render_sites():
+    """Guard against F4 regressing one path at a time: the modules that render
+    admin/user-authored prompt content must not construct a bare
+    ``jinja2.Environment`` — every render goes through ``make_prompt_env`` so a
+    new call site can't silently reopen the SSTI sink."""
+    import pathlib
+
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    prompt_render_modules = [
+        "src/welcome_template.py",
+        "app/api/welcome.py",
+        "app/api/prompts.py",
+        "src/initial_workspace.py",
+        "app/web/router.py",
+    ]
+    offenders = []
+    for rel in prompt_render_modules:
+        text = (repo / rel).read_text(encoding="utf-8")
+        # A bare `Environment(` (not `SandboxedEnvironment(`) constructing a
+        # renderer for prompt content is the sink this guards against.
+        for m in re.finditer(r"(?<!Sandboxed)\bEnvironment\s*\(", text):
+            offenders.append(f"{rel}: ...{text[max(0, m.start() - 20) : m.start() + 20]}...")
+    assert not offenders, "unsandboxed jinja2.Environment in a prompt-render module (F4):\n" + "\n".join(offenders)

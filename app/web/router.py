@@ -2488,8 +2488,9 @@ async def setup_page(
     setup_instructions.resolve_lines() is used.
     """
     from src.welcome_template import compute_default_agent_prompt, _sanitize_banner_html
-    from jinja2 import StrictUndefined, TemplateError
-    from jinja2.sandbox import SandboxedEnvironment  # noqa: F401 — used below in this fn
+    from jinja2 import TemplateError
+
+    from src.prompt_render import make_prompt_env
 
     base_url = str(request.base_url).rstrip("/")
 
@@ -2510,10 +2511,13 @@ async def setup_page(
 
             # Security audit F4: a non-sandboxed Environment lets an app-Admin's
             # install-prompt override execute arbitrary Python at render time
-            # (SSTI → RCE on the FastAPI host). SandboxedEnvironment blocks
-            # access to unsafe attributes/builtins so a payload like
-            # {{ cycler.__init__.__globals__[...] }} raises instead of running.
-            env = SandboxedEnvironment(undefined=StrictUndefined, autoescape=False)
+            # (SSTI → RCE on the FastAPI host). make_prompt_env() returns a
+            # SandboxedEnvironment that blocks unsafe attribute/builtin access so
+            # a payload like {{ cycler.__init__.__globals__[...] }} raises. The
+            # SAME override is rendered by src/welcome_template.py and the
+            # welcome/prompts preview endpoints — all route through the shared
+            # factory so no sibling path is left unsandboxed.
+            env = make_prompt_env()
             template = env.from_string(override_content)
             ctx_vars = _build_banner_ctx(user=user, server_url=base_url)
             setup_script_text = _sanitize_banner_html(template.render(**ctx_vars))

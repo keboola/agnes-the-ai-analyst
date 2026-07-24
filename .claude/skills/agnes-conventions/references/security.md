@@ -54,10 +54,15 @@ untrusted string) to `innerHTML` directly.
 
 ## 4. Admin-authored templates — sandbox them (F4)
 
-Any admin/user-authored string rendered through Jinja2 is SSTI → RCE. Use
-`jinja2.sandbox.SandboxedEnvironment` (keep `StrictUndefined`); never a plain
-`Environment`. Output sanitizers run *after* render and cannot stop render-time
-code execution.
+Any admin/user-authored string rendered through Jinja2 is SSTI → RCE. Route
+**every** render of prompt content through `src.prompt_render.make_prompt_env`
+(a `SandboxedEnvironment` with `StrictUndefined`); never construct a bare
+`jinja2.Environment` for it. Output sanitizers run *after* render and cannot
+stop render-time code execution. Watch for **sibling render paths**: the
+original F4 fix sandboxed only `/setup` and left `welcome_template`,
+`initial_workspace`, and the welcome/prompts preview endpoints rendering the
+same override unsandboxed — fix *all* call sites at once (a guard test scans
+those modules for a bare `Environment(`).
 
 ## 5. Regexes over untrusted input must be linear-time (F5)
 

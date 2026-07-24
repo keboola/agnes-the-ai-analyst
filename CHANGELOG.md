@@ -52,9 +52,14 @@ Remediation of the 2026-07-24 whole-repo security audit
   which parses into an inert `<template>` and strips dangerous
   elements/attributes and unsafe URL schemes; tool-call metadata is built via
   `textContent`.
-- **F4 (MEDIUM) — SSTI in the admin install-prompt override.** The override
-  was rendered with a non-sandboxed Jinja2 `Environment`; it now uses
-  `SandboxedEnvironment`.
+- **F4 (MEDIUM) — SSTI in the admin install-prompt override.** The
+  admin-authored install/workspace-prompt override was rendered with a
+  non-sandboxed Jinja2 `Environment` — an SSTI → RCE sink. Every server-side
+  render of that content (the `/setup` page, the dashboard clipboard banner in
+  `src/welcome_template.py`, the workspace overlay in `src/initial_workspace.py`,
+  and the welcome/prompts preview endpoints) now routes through a single
+  sandboxed factory `src.prompt_render.make_prompt_env` (`SandboxedEnvironment`),
+  so no render path is left unsandboxed.
 - **F5 (MEDIUM) — ReDoS in the internal-query SQL sanitizer.** The `E''`
   string-literal regex had an ambiguous alternation that backtracked
   exponentially on a backslash run, freezing the worker. Rewritten with
