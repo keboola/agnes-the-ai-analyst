@@ -75,22 +75,50 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.76.25] - 2026-07-24
+## [0.76.28] - 2026-07-24
 
 ### Changed
 
-- **Cloud chat reuses a paused sandbox across process restarts instead of
-  respawning fresh.** The resume-vs-respawn decision was gated on an
-  in-process set (`_known_protocol_sessions`) that is empty after any
-  restart/deploy, so every resumable session paid a full cold spawn (~6–8 s)
-  *and* lost conversation context on the first message after a restart. The
-  relay-protocol version a runner speaks is now persisted per session
-  (`chat_sessions.relay_protocol_version`, DuckDB v98 + Alembic `0045`), so a
-  current-protocol sandbox reconnects after a restart while a legacy
-  (pre-broker) runner still force-respawns — preserving the safety invariant
-  the in-process gate provided. A configurable grace window
-  (`chat.idle_grace_seconds`, default 60 s) keeps the sandbox warm through a
-  likely follow-up before it pauses.
+- `/catalog/semantics` metric detail now renders the full **description**
+  (markdown → sanitized HTML via the existing `render_safe` pipeline, same
+  injection contract as marketplace detail pages) plus a
+  **type · unit · grain** meta line and the metric's **dimensions**.
+  Previously the description existed only as the one-line truncated row
+  preview and never appeared in the expanded detail, and type/unit/grain/
+  dimensions were stored but shown nowhere: the page showed the SQL but
+  hid the meaning. The row preview and the client-side filter index now use
+  a plain-text projection of the description (new `render_plain` in
+  `app/markdown_render.py`) so literal markdown markup (`**`, `#`) no
+  longer leaks into previews, and the filter also matches **synonyms**
+  (metrics are routinely searched by their spoken aliases, which were
+  stored but not indexed).
+
+## [0.76.27] - 2026-07-24
+
+### Added
+
+- **Per-instance `upgrade_schedule` override** on `prod_instance` /
+  `dev_instances` in the `customer-instance` Terraform module — the
+  auto-upgrade cron cadence (default `*/5 * * * *`) can now be set per VM,
+  e.g. to move a customer-facing instance to a quiet nightly window without
+  affecting dev iteration speed.
+
+### Changed
+
+### Fixed
+
+- **Maintenance page now actually reaches running VMs.** `static/maintenance.html`
+  was never baked into the Dockerfile's `/opt/agnes-host/` artifact set nor
+  synced by `agnes-auto-upgrade.sh`'s `CONFIG_FILES`, so Caddy's
+  `handle_errors 502 503` fallback had nothing to serve during an
+  auto-upgrade recreate — users saw a raw connection error instead of the
+  friendly auto-refreshing page. Both delivery paths now ship the file.
+
+### Removed
+
+### Internal
+
+### Security
 
 ## [0.76.26] - 2026-07-24
 
@@ -108,6 +136,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   falls back to the previous in-memory behavior. The persisted-file write uses
   a per-process tmp filename so two scheduler containers sharing `DATA_DIR`
   can't race on the same tmp path.
+
+## [0.76.25] - 2026-07-24
+
+### Changed
+
+- **Cloud chat reuses a paused sandbox across process restarts instead of
+  respawning fresh.** The resume-vs-respawn decision was gated on an
+  in-process set (`_known_protocol_sessions`) that is empty after any
+  restart/deploy, so every resumable session paid a full cold spawn (~6–8 s)
+  *and* lost conversation context on the first message after a restart. The
+  relay-protocol version a runner speaks is now persisted per session
+  (`chat_sessions.relay_protocol_version`, DuckDB v98 + Alembic `0045`), so a
+  current-protocol sandbox reconnects after a restart while a legacy
+  (pre-broker) runner still force-respawns — preserving the safety invariant
+  the in-process gate provided. A configurable grace window
+  (`chat.idle_grace_seconds`, default 60 s) keeps the sandbox warm through a
+  likely follow-up before it pauses.
 
 ## [0.76.23] - 2026-07-24
 
