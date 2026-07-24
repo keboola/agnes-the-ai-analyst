@@ -24,11 +24,10 @@
 <style>
   /* Page chrome only — cards live in catalog_card.css, the table rides the
      shared .data-table primitive (style-custom.css). */
-  /* base_index zeroes the last head child's margin-bottom so a tab strip sits
-     flush with the band; this head ends in the stats tray, so give the head
-     its own bottom padding for breathing room above the band line. (Page-local:
-     this stylesheet only loads on /stack.) */
-  .idx-head { padding-bottom: 20px; }
+  /* This head ends in the kind-tab strip, so base_index's
+     `.idx-head > :last-child { margin-bottom: 0 }` drops the tabs' bottom
+     margin and the white band sits flush beneath them (same as Catalog).
+     (Page-local: this stylesheet only loads on /stack.) */
   .uc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 12px; }
   .uc-head h1 { font-size: 24px; margin: 0 0 8px; }
   .uc-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 64ch; }
@@ -57,12 +56,12 @@
   .stk-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 14px; }
   .stk-section-head h2 { font-size: 17px; font-weight: 600; margin: 0; color: var(--ds-text-primary); }
   /* ── Inventory toolbar: search stretches, sort hugs the right ── */
-  .stk-toolbar { display: flex; align-items: center; gap: 10px; margin: 0 0 4px; flex-wrap: wrap; }
+  .stk-toolbar { display: flex; align-items: center; gap: 10px; margin: 0; flex-wrap: wrap; }
   .stk-search { flex: 1 1 260px; min-width: 200px; padding: 9px 12px; border: 1px solid var(--ds-border); border-radius: 10px; font: inherit; font-size: 14px; background: var(--ds-surface); color: var(--ds-text-primary); }
   .stk-search:focus { outline: 2px solid var(--ds-primary-light); border-color: var(--ds-primary); }
   .stk-sort { flex: 0 0 auto; margin-left: auto; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ds-text-secondary); }
   .stk-sort select { padding: 8px 10px; border: 1px solid var(--ds-border); border-radius: 10px; font: inherit; font-size: 13.5px; background: var(--ds-surface); color: var(--ds-text-primary); cursor: pointer; }
-  .uc-kindtabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--ds-border); margin: 10px 0 0; }
+  .uc-kindtabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--ds-border); margin: 0; }
   .uc-kindtab { display: flex; align-items: center; gap: 7px; border: none; background: none; cursor: pointer; padding: 9px 14px; font-size: 14px; font-weight: 500; font-family: inherit; color: var(--ds-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -1px; }
   .uc-kindtab:hover { color: var(--ds-text-primary); }
   .uc-kindtab.on { color: var(--ds-text-primary); font-weight: 600; border-bottom-color: var(--ds-primary); }
@@ -127,6 +126,17 @@
     </span>
   </div>
 </div>
+
+{# ── Kind tabs — the last row of the grey head, so the white content band
+     sits flush beneath them (same placement as Catalog/Marketplace, which
+     also render their tabs as the trailing element of page_head). The
+     search + sort toolbar lives in the white band below. #}
+<div class="uc-kindtabs" role="tablist" aria-label="Stack kinds">
+  <button class="uc-kindtab on" data-kind="all" role="tab" aria-selected="true">All<span class="uc-count" id="stk-count-all">{{ stk_base_count }}</span></button>
+  <button class="uc-kindtab" data-kind="data" role="tab" aria-selected="false">Data<span class="uc-count" id="stk-count-data">{{ data_cards|length }}</span></button>
+  <button class="uc-kindtab" data-kind="plugins" role="tab" aria-selected="false">Plugins<span class="uc-count" id="stk-count-plugins">—</span></button>
+  <button class="uc-kindtab" data-kind="memory" role="tab" aria-selected="false">Memory<span class="uc-count" id="stk-count-memory">{{ memory_cards|length }}</span></button>
+</div>
 {% endblock %}
 
 {% block page_surface %}
@@ -143,12 +153,6 @@
         <option value="type">Type</option>
       </select>
     </label>
-  </div>
-  <div class="uc-kindtabs" role="tablist" aria-label="Stack kinds">
-    <button class="uc-kindtab on" data-kind="all" role="tab" aria-selected="true">All<span class="uc-count" id="stk-count-all">{{ stk_base_count }}</span></button>
-    <button class="uc-kindtab" data-kind="data" role="tab" aria-selected="false">Data<span class="uc-count" id="stk-count-data">{{ data_cards|length }}</span></button>
-    <button class="uc-kindtab" data-kind="plugins" role="tab" aria-selected="false">Plugins<span class="uc-count" id="stk-count-plugins">—</span></button>
-    <button class="uc-kindtab" data-kind="memory" role="tab" aria-selected="false">Memory<span class="uc-count" id="stk-count-memory">{{ memory_cards|length }}</span></button>
   </div>
 
   {% macro stack_row(c, row_kind) %}
