@@ -320,7 +320,7 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
             # Persist the outcome before recording it in metrics — if `.fail()`
             # itself raises, this propagates without ever having reported an
             # outcome that was never actually persisted.
-            await asyncio.to_thread(
+            finalized = await asyncio.to_thread(
                 _jobs_repo().fail,
                 job["id"],
                 worker_id,
@@ -330,21 +330,32 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
             )
             obs_metrics.record_job_duration(job["kind"], "failed", time.monotonic() - started_at)
             obs_metrics.record_job_failure(job["kind"], type(exc).__name__)
-            if kind.retry_in_seconds is None:
-                # `retry_in_seconds is None` means `.fail()` above finalized
-                # straight to `'failed'` rather than requeuing for another
-                # attempt — see `_notify_agent_response_webhooks`'s
-                # docstring; a requeued attempt must not fire a premature
-                # `job.failed` webhook for a job that may still succeed.
+            if finalized:
+                # `fail()` returns `True` only when THIS call actually
+                # finalized the row to `'failed'` — `False` covers both a
+                # successful requeue (job isn't terminal yet; a kind
+                # configured to retry must not fire a premature
+                # `job.failed` webhook for a job that may still succeed)
+                # AND a stale-lease no-op (this claim was already reclaimed
+                # by another worker/slot, whose own finalize — not this
+                # one — owns the real outcome). Gating on the kind's static
+                # `retry_in_seconds` config here would miss the case where
+                # a *retrying* kind's attempts are actually exhausted — see
+                # `JobsRepository.fail`'s docstring.
                 _notify_agent_response_webhooks(job, "failed")
         else:
             # Same ordering rationale as the failure branch above.
             # `handler_result` is the handler's return value — `None` for
             # every kind except `agent_response` (Task 9), which returns a
             # result dict `complete()` merges into `payload_json["result"]`.
-            await asyncio.to_thread(_jobs_repo().complete, job["id"], worker_id, lease_token, handler_result)
+            mutated = await asyncio.to_thread(_jobs_repo().complete, job["id"], worker_id, lease_token, handler_result)
             obs_metrics.record_job_duration(job["kind"], "done", time.monotonic() - started_at)
-            _notify_agent_response_webhooks(job, "completed")
+            if mutated:
+                # `complete()` returns `False` for the same stale-lease
+                # no-op as `fail()` above — a reclaimed claim's late
+                # `complete()` must not fire a notification for an outcome
+                # another slot already owns.
+                _notify_agent_response_webhooks(job, "completed")
         finally:
             if not handed_off:
                 obs_metrics.end_job_running(job["kind"], kind.lane)
@@ -445,12 +456,23 @@ async def _lane_slot(
 
 async def _reap_loop(poll_interval_s: float) -> None:
     """Sweep ``reap_exhausted()`` once per ``poll_interval_s`` tick,
-    independent of lane activity (see module docstring)."""
+    independent of lane activity (see module docstring).
+
+    A reaped job reaches ``'failed'`` without ever going through
+    ``fail()`` (its owning worker crashed before it could call anything),
+    so this is the ONLY place its terminal-state webhook notify can fire
+    from (MEDIUM 2a) — without it a receiver waits forever for a
+    `job.failed` that never comes after a worker crash on a job's last
+    attempt. Mirrors ``_notify_agent_response_webhooks``'s no-op-for-other-
+    kinds behavior; a non-``agent_response`` reaped job is a silent no-op.
+    """
     while True:
         try:
             reaped = await asyncio.to_thread(_jobs_repo().reap_exhausted)
             if reaped:
-                logger.info("worker: reaped %d stuck job(s) (lease expired at max attempts)", reaped)
+                logger.info("worker: reaped %d stuck job(s) (lease expired at max attempts)", len(reaped))
+                for job in reaped:
+                    _notify_agent_response_webhooks(job, "failed")
         except Exception:
             logger.exception("worker: reap_exhausted sweep failed (non-fatal)")
         await asyncio.sleep(poll_interval_s)
@@ -542,7 +564,7 @@ async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -
                         entry.kind_name,
                         exc_info=exc,
                     )
-                    await asyncio.to_thread(
+                    finalized = await asyncio.to_thread(
                         _jobs_repo().fail,
                         job_id,
                         entry.worker_id,
@@ -552,15 +574,18 @@ async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -
                     )
                     obs_metrics.record_job_duration(entry.kind_name, "failed", duration)
                     obs_metrics.record_job_failure(entry.kind_name, type(exc).__name__)
-                    if entry.kind_name == "agent_response" and entry.retry_in_seconds is None:
+                    # `finalized` (not `entry.retry_in_seconds is None`) is
+                    # the terminal-state signal — see `_run_one`'s matching
+                    # comment / `JobsRepository.fail`'s docstring.
+                    if entry.kind_name == "agent_response" and finalized:
                         await _notify_in_flight_agent_response(job_id, "failed")
                 else:
                     handler_result = fut.result()
-                    await asyncio.to_thread(
+                    mutated = await asyncio.to_thread(
                         _jobs_repo().complete, job_id, entry.worker_id, entry.lease_token, handler_result
                     )
                     obs_metrics.record_job_duration(entry.kind_name, "done", duration)
-                    if entry.kind_name == "agent_response":
+                    if entry.kind_name == "agent_response" and mutated:
                         await _notify_in_flight_agent_response(job_id, "completed")
             except asyncio.CancelledError:
                 raise

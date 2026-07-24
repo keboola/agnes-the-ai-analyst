@@ -129,7 +129,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   (a new `webhook-deliver` worker job kind) re-resolves and pins the target
   IP fresh on every send, closing the DNS-rebinding window a create-time-only
   check would leave open. A webhook auto-disables after
-  `agent_api.webhook_max_failures` (default 5) consecutive delivery
+  `agent_api_webhook_max_failures` (default 5) consecutive delivery
   failures.
 
 ### Changed

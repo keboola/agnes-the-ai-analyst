@@ -96,7 +96,12 @@ class AgentWebhooksPgRepository:
             conn.execute(sa.text("DELETE FROM agent_webhooks WHERE id = :id"), {"id": id})
 
     def record_failure(self, id: str) -> int:
-        """Increment ``consecutive_failures`` and return the new count."""
+        """Increment ``consecutive_failures`` and return the new count.
+
+        Returns ``0`` (sentinel) if ``id`` no longer exists — see
+        ``AgentWebhooksRepository.record_failure`` for why (the webhook can
+        be deleted between a delivery job's claim and this call landing).
+        """
         with self._engine.begin() as conn:
             row = (
                 conn.execute(
@@ -113,7 +118,7 @@ class AgentWebhooksPgRepository:
                 .mappings()
                 .first()
             )
-        return int(row["consecutive_failures"])
+        return int(row["consecutive_failures"]) if row is not None else 0
 
     def record_success(self, id: str) -> None:
         with self._engine.begin() as conn:

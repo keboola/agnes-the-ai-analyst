@@ -88,6 +88,18 @@ def test_rejects_cgnat_ipv4_literal():
         validate_and_resolve("https://100.64.0.1/hook")
 
 
+def test_rejects_6to4_encoded_address():
+    """6to4 (`2002::/16`, RFC 3056) encodes an arbitrary IPv4 address in
+    the address itself and Python's stdlib `ipaddress` reports it
+    `is_global` regardless of what's encoded — so a 6to4-wrapped private
+    target (`2002:0a00:0001::` embeds `10.0.0.1`) would otherwise slip
+    past every other check. The whole block is denied outright."""
+    from app.chat.webhook_delivery import validate_and_resolve
+
+    with pytest.raises(ValueError, match="forbidden"):
+        validate_and_resolve("https://[2002:0a00:0001::]/hook")
+
+
 def test_rejects_if_any_resolved_address_is_forbidden(monkeypatch):
     """A hostname resolving to BOTH a public decoy and a private target must
     be denied — not accepted because "at least one" address is public."""
@@ -174,22 +186,42 @@ def _make_webhook(agent_id="agent-1", owner_id="owner-1", url="https://hooks.exa
     return agent_webhooks_repo().get(webhook_id)
 
 
-class _FakeResponse:
-    def __init__(self, status_code: int) -> None:
+class _FakeStreamResponse:
+    """Fakes the `with client.stream(...) as resp:` context manager
+    `_post_to_pinned_ip` uses. `chunks` defaults to a single empty chunk
+    (nothing to read, mirrors a typical small response); pass an iterable
+    (or infinite generator, for the slow-drip deadline test) to control
+    what `iter_bytes()` yields."""
+
+    def __init__(self, status_code: int, chunks=None) -> None:
         self.status_code = status_code
+        self._chunks = chunks if chunks is not None else [b""]
+
+    def __enter__(self) -> "_FakeStreamResponse":
+        return self
+
+    def __exit__(self, *args) -> bool:
+        return False
+
+    def iter_bytes(self):
+        yield from self._chunks
 
 
 class _FakeHTTPXClient:
-    """Fakes `httpx.Client` at the `with ... as client: client.post(...)`
-    seam `deliver`/`_post_to_pinned_ip` uses. Records every `.post()` call
-    so tests can assert on the URL/headers/extensions actually sent."""
+    """Fakes `httpx.Client` at the `with ... as client: client.stream(...)`
+    seam `deliver`/`_post_to_pinned_ip` uses. Records every `.stream()` call
+    so tests can assert on the URL/headers/extensions actually sent, plus
+    every kwarg the real `httpx.Client(...)` constructor was called with
+    (e.g. `trust_env`)."""
 
     calls: list[dict] = []
+    init_kwargs: list[dict] = []
     response_status: int = 200
+    response_chunks: list[bytes] | None = None
     raise_on_post: Exception | None = None
 
     def __init__(self, *args, **kwargs) -> None:
-        pass
+        type(self).init_kwargs.append(kwargs)
 
     def __enter__(self) -> "_FakeHTTPXClient":
         return self
@@ -197,17 +229,19 @@ class _FakeHTTPXClient:
     def __exit__(self, *args) -> bool:
         return False
 
-    def post(self, url, **kwargs):
-        type(self).calls.append({"url": url, **kwargs})
+    def stream(self, method, url, **kwargs):
+        type(self).calls.append({"method": method, "url": url, **kwargs})
         if type(self).raise_on_post is not None:
             raise type(self).raise_on_post
-        return _FakeResponse(type(self).response_status)
+        return _FakeStreamResponse(type(self).response_status, type(self).response_chunks)
 
 
 @pytest.fixture(autouse=True)
 def _reset_fake_client():
     _FakeHTTPXClient.calls = []
+    _FakeHTTPXClient.init_kwargs = []
     _FakeHTTPXClient.response_status = 200
+    _FakeHTTPXClient.response_chunks = None
     _FakeHTTPXClient.raise_on_post = None
     yield
 
@@ -338,7 +372,9 @@ def test_deliver_connects_to_pinned_ip_with_original_host_header(db, monkeypatch
     assert call["url"].startswith("https://203.0.113.9:8443/incoming")
     assert "hooks.example.com" not in call["url"]
     # ...but the Host header and TLS SNI still carry the ORIGINAL hostname.
-    assert call["headers"]["Host"] == "hooks.example.com"
+    # The Host header must also carry the non-default port (RFC 9110 §7.2) —
+    # `hooks.example.com` alone would imply the https default of :443.
+    assert call["headers"]["Host"] == "hooks.example.com:8443"
     assert call["extensions"] == {"sni_hostname": "hooks.example.com"}
     assert call["follow_redirects"] is False
 
@@ -356,3 +392,83 @@ def test_deliver_signs_body_with_webhook_secret(db, monkeypatch):
     call = _FakeHTTPXClient.calls[0]
     body = call["content"]
     assert call["headers"]["x-agnes-signature"] == sign(webhook["secret"], body)
+
+
+def test_deliver_disables_trust_env_on_the_httpx_client(db, monkeypatch):
+    """An ambient `HTTPS_PROXY` would otherwise make httpcore's CONNECT-
+    tunnel path hardcode TLS `server_hostname` to the pinned IP, ignoring
+    `sni_hostname` and breaking certificate validation on every delivery —
+    see `_post_to_pinned_ip`'s docstring."""
+    webhook = _make_webhook()
+    _patch_pinned_ip(monkeypatch, "203.0.113.9")
+    _patch_httpx_client(monkeypatch)
+
+    from app.chat.webhook_delivery import deliver
+
+    deliver(webhook, {"event": "job.completed"})
+
+    assert _FakeHTTPXClient.init_kwargs
+    assert _FakeHTTPXClient.init_kwargs[-1]["trust_env"] is False
+
+
+def test_post_aborts_slow_drip_response_via_total_deadline(db, monkeypatch):
+    """MEDIUM 3: a response that trickles bytes forever — each chunk
+    arriving well within httpx's own per-chunk read timeout — must still
+    be aborted by an explicit TOTAL wall-clock deadline, or a slow-drip
+    endpoint pins this worker slot indefinitely. Deterministic without a
+    real sleep: `time.monotonic()` is faked to advance 2s per call against
+    a 1s configured delivery timeout, so the very first post-chunk
+    deadline check already trips."""
+    import itertools
+
+    import app.chat.webhook_delivery as webhook_delivery
+    from src.repositories import agent_webhooks_repo
+
+    webhook = _make_webhook()
+    _patch_pinned_ip(monkeypatch, "203.0.113.9")
+    _patch_httpx_client(monkeypatch)
+    monkeypatch.setenv("AGNES_WEBHOOK_DELIVERY_TIMEOUT_S", "1")
+
+    # Infinite generator (never terminates on its own) — only the deadline
+    # (not exhausting the response, not the 8 KiB read cap) can stop this.
+    _FakeHTTPXClient.response_chunks = itertools.repeat(b"x")
+
+    ticks = itertools.count()
+    monkeypatch.setattr(webhook_delivery.time, "monotonic", lambda: next(ticks) * 2.0)
+
+    from app.chat.webhook_delivery import deliver
+
+    ok = deliver(webhook, {"event": "job.completed"})
+
+    assert ok is False
+    assert agent_webhooks_repo().get(webhook["id"])["consecutive_failures"] == 1
+
+
+def test_post_reads_at_most_the_response_byte_cap(db, monkeypatch):
+    """A fast, non-slow-drip but oversized response must still be capped
+    at `_MAX_RESPONSE_BYTES_READ` rather than read to exhaustion — bounds
+    memory/time even when the deadline alone wouldn't trip."""
+    import app.chat.webhook_delivery as webhook_delivery
+
+    webhook = _make_webhook()
+    _patch_pinned_ip(monkeypatch, "203.0.113.9")
+    _patch_httpx_client(monkeypatch)
+
+    read_chunks: list[bytes] = []
+
+    def _chunks():
+        for _ in range(1_000_000):
+            chunk = b"x" * 1024
+            read_chunks.append(chunk)
+            yield chunk
+
+    _FakeHTTPXClient.response_chunks = _chunks()
+
+    from app.chat.webhook_delivery import deliver
+
+    ok = deliver(webhook, {"event": "job.completed"})
+
+    assert ok is True  # status was 2xx before the cap kicked in
+    total_read = sum(len(c) for c in read_chunks)
+    assert total_read < 1_000_000 * 1024, "must stop well short of reading the full response"
+    assert total_read >= webhook_delivery._MAX_RESPONSE_BYTES_READ

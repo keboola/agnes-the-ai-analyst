@@ -78,7 +78,14 @@ class AgentWebhooksRepository:
         self.conn.execute("DELETE FROM agent_webhooks WHERE id = ?", [id])
 
     def record_failure(self, id: str) -> int:
-        """Increment ``consecutive_failures`` and return the new count."""
+        """Increment ``consecutive_failures`` and return the new count.
+
+        Returns ``0`` (sentinel) if ``id`` no longer exists — the webhook
+        can be deleted by its owner between a delivery job's claim and
+        this call landing, and the UPDATE then matches zero rows. Callers
+        (``app.chat.webhook_delivery.deliver``) treat ``0`` as "webhook
+        vanished, stop" rather than crashing into a retry loop.
+        """
         row = self.conn.execute(
             """UPDATE agent_webhooks
             SET consecutive_failures = consecutive_failures + 1, updated_at = ?
@@ -86,7 +93,7 @@ class AgentWebhooksRepository:
             RETURNING consecutive_failures""",
             [datetime.now(timezone.utc), id],
         ).fetchone()
-        return int(row[0])
+        return int(row[0]) if row is not None else 0
 
     def record_success(self, id: str) -> None:
         self.conn.execute(

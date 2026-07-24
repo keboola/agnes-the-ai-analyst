@@ -1309,7 +1309,7 @@ SSRF-hardened, HMAC-signed outbound notifications: register an HTTPS URL to be P
 
 `DELETE /api/v1/agents/{slug}/webhooks/{webhook_id}` — `204`. `404` for an unknown id or one belonging to a different agent/owner.
 
-A webhook is auto-disabled (`active: false`) after `agent_api.webhook_max_failures` (default 5, `instance.yaml`'s `chat:` block) consecutive delivery failures — a dead or hostile endpoint stops being retried forever rather than accumulating unbounded `webhook-deliver` job attempts.
+A webhook is auto-disabled (`active: false`) after `agent_api_webhook_max_failures` (default 5, `instance.yaml`'s `chat:` block) consecutive delivery failures — a dead or hostile endpoint stops being retried forever rather than accumulating unbounded `webhook-deliver` job attempts.
 
 - /api/v1/agents/{slug}/webhooks
 - /api/v1/agents/{slug}/webhooks/{webhook_id}

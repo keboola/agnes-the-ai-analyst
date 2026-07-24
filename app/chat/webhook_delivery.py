@@ -45,6 +45,7 @@ import json
 import logging
 import os
 import socket
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
@@ -81,22 +82,36 @@ _ULA_NET = ipaddress.ip_network("fd00::/8")
 #: internal-only space this guard exists to keep unreachable.
 _CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
 
+#: 6to4 (RFC 3056) — encodes an arbitrary IPv4 address in bits 16-47 of a
+#: `2002::/16` address. Python's `ipaddress` reports these as `is_global`
+#: (the `2002::/16` prefix itself isn't private), so a 6to4-encoded private
+#: target (e.g. `2002:0a00:0001::` embedding `10.0.0.1`) would otherwise
+#: slip past every other check here. Denying the whole block is simpler and
+#: safer than decoding the embedded address and re-checking it.
+_SIXTOFOUR_NET = ipaddress.ip_network("2002::/16")
+
 _DEFAULT_DELIVERY_TIMEOUT_S = 10.0
 _DEFAULT_MAX_FAILURES = 5
+
+#: Cap on how much of a webhook response body we bother reading — enough to
+#: notice a malformed/oversized response, small enough that a slow or
+#: malicious endpoint streaming megabytes can't pin a worker slot buffering
+#: it. Only the status code is ever used; the body is discarded either way.
+_MAX_RESPONSE_BYTES_READ = 8 * 1024
 
 
 def _is_forbidden_ip(ip: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> bool:
     """True if ``ip`` must never be connected to on this server's behalf —
     private/loopback/link-local/reserved/multicast/unspecified ranges, the
-    cloud metadata address, IPv6 ULA space, and CGNAT space. An IPv4-mapped
-    IPv6 address (``::ffff:10.0.0.1``) is unwrapped first so it can't
-    smuggle a forbidden IPv4 target past an IPv6-only check.
+    cloud metadata address, IPv6 ULA space, 6to4 space, and CGNAT space. An
+    IPv4-mapped IPv6 address (``::ffff:10.0.0.1``) is unwrapped first so it
+    can't smuggle a forbidden IPv4 target past an IPv6-only check.
     """
     if isinstance(ip, ipaddress.IPv6Address):
         mapped = ip.ipv4_mapped
         if mapped is not None:
             ip = mapped
-        elif ip in _ULA_NET:
+        elif ip in _ULA_NET or ip in _SIXTOFOUR_NET:
             return True
     if isinstance(ip, ipaddress.IPv4Address) and ip in _CGNAT_NET:
         return True
@@ -231,21 +246,58 @@ def _pinned_url(original_url: str, pinned_ip: str) -> str:
     return urlunparse((parsed.scheme, netloc, parsed.path or "/", parsed.params, parsed.query, ""))
 
 
+def _host_header(parsed) -> str:
+    """``Host`` header value for a parsed URL — includes the port when it
+    isn't the scheme's default. RFC 9110 §7.2 requires the port whenever
+    it's given and non-default; every webhook URL here is ``https`` (see
+    ``validate_and_resolve``), so the default is 443 and e.g.
+    ``hooks.example.com:8443`` must carry the ``:8443`` explicitly or a
+    receiver doing vhost/port-based routing sees the wrong target."""
+    host = parsed.hostname or ""
+    port = parsed.port
+    if port is not None and port != 443:
+        return f"{host}:{port}"
+    return host
+
+
 def _post_to_pinned_ip(url: str, secret: str, pinned_ip: str, payload: dict) -> bool:
     """Connect to ``pinned_ip`` directly (never the hostname — see the
     module docstring's C10) with the original ``Host`` header and TLS SNI,
     HMAC-signed body, no redirect following, short timeout. Returns whether
-    the response was 2xx."""
+    the response was 2xx.
+
+    Streams the response (``httpx.Client.stream``, not ``.post``) instead
+    of eagerly buffering the whole body, and reads at most
+    ``_MAX_RESPONSE_BYTES_READ`` bytes of it under an explicit TOTAL
+    wall-clock deadline — not just ``httpx``'s per-chunk read timeout. A
+    slow-drip endpoint that sends a trickle of bytes each just under the
+    per-chunk timeout, forever, never trips any single operation's timeout
+    on its own; without a cumulative deadline it would pin this worker
+    slot indefinitely. Only the status code is used — the body is
+    discarded either way.
+    """
     parsed = urlparse(url)
     body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     headers = {
-        "Host": parsed.hostname or "",
+        "Host": _host_header(parsed),
         "Content-Type": "application/json",
         "x-agnes-signature": sign(secret, body),
     }
     target_url = _pinned_url(url, pinned_ip)
-    with httpx.Client(timeout=_delivery_timeout_s()) as client:
-        resp = client.post(
+    timeout_s = _delivery_timeout_s()
+    deadline = time.monotonic() + timeout_s
+    # `trust_env=False`: by default httpx/httpcore reads proxy config
+    # (`HTTPS_PROXY`/`NO_PROXY`/...) from the environment. When a proxy IS
+    # configured, httpcore's CONNECT-tunnel path hardcodes the TLS
+    # `server_hostname` it validates against to the pinned IP we connect
+    # to and ignores the `sni_hostname` extension set below — silently
+    # breaking certificate validation (wrong SNI) on every delivery from a
+    # proxied deployment. This module always connects to an explicitly
+    # resolved/pinned IP itself (module docstring C10) and has no
+    # legitimate use for an ambient proxy, so disable it outright.
+    with httpx.Client(timeout=timeout_s, trust_env=False) as client:
+        with client.stream(
+            "POST",
             target_url,
             content=body,
             headers=headers,
@@ -254,8 +306,16 @@ def _post_to_pinned_ip(url: str, secret: str, pinned_ip: str, payload: dict) -> 
             # module docstring. Supported by httpx's httpcore transport.
             extensions={"sni_hostname": parsed.hostname},
             follow_redirects=False,
-        )
-    return 200 <= resp.status_code < 300
+        ) as resp:
+            ok = 200 <= resp.status_code < 300
+            read = 0
+            for chunk in resp.iter_bytes():
+                read += len(chunk)
+                if read >= _MAX_RESPONSE_BYTES_READ:
+                    break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"webhook response body exceeded the {timeout_s:.1f}s delivery deadline")
+    return ok
 
 
 def deliver(webhook_row: dict, payload: dict) -> bool:
@@ -299,6 +359,11 @@ def deliver(webhook_row: dict, payload: dict) -> bool:
     if ok:
         repo.record_success(webhook_row["id"])
     else:
+        # `record_failure` returns `0` if the webhook was deleted between
+        # this job's claim and this call landing — that's below any
+        # configured `webhook_max_failures()` (always >= 1), so the `>=`
+        # check below is naturally a no-op ("webhook vanished, stop")
+        # rather than trying to `disable()` a row that no longer exists.
         failures = repo.record_failure(webhook_row["id"])
         if failures >= webhook_max_failures():
             repo.disable(webhook_row["id"])

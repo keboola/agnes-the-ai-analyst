@@ -752,6 +752,93 @@ def test_agent_response_missing_agent_id_does_not_notify(worker_db, monkeypatch)
     assert calls == []
 
 
+def test_stale_lease_complete_does_not_notify_webhooks(worker_db, monkeypatch):
+    """MEDIUM 1: `complete()`/`fail()` are documented raise-free NO-OPS
+    once the lease token no longer matches (the job was reclaimed by
+    another worker/slot while this handler was still running) — the
+    webhook notify must be gated on the finalize call actually having
+    mutated the row, not fired unconditionally just because the handler
+    itself ran to completion under a now-stale claim."""
+    import app.worker.runtime as runtime_mod
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    real_repo = jobs_repo()
+    calls = _patch_webhook_notify(monkeypatch)
+
+    class StaleOnCompleteRepo:
+        def __getattr__(self, name):
+            return getattr(real_repo, name)
+
+        def complete(self, job_id, worker_id, lease_token, result=None):
+            # Simulate a reclaim landing between the handler finishing and
+            # this finalize call: another (fake) claimant now owns the
+            # row under a different lease_token, so this call's token is
+            # stale — exactly the no-op path `complete()`'s docstring
+            # describes.
+            real_repo.conn.execute(
+                "UPDATE jobs SET lease_token = 'someone-elses-token' WHERE id = ?",
+                [job_id],
+            )
+            return real_repo.complete(job_id, worker_id, lease_token, result)
+
+    monkeypatch.setattr(runtime_mod, "_jobs_repo", lambda: StaleOnCompleteRepo())
+
+    register_kind(JobKind(name="agent_response", handler=lambda payload: {"answer": "hi"}, lane=LIGHT_LANE))
+    job = real_repo.enqueue("agent_response", {"agent_id": "agent-1"})
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.4))
+
+    row = real_repo.get(job["id"])
+    assert row["status"] == "running", "stale complete() call must not have flipped the row to done"
+    assert calls == [], "no webhook should fire for a complete() call that was a stale no-op"
+
+
+def test_reap_exhausted_notifies_failed_webhook(worker_db, monkeypatch):
+    """MEDIUM 2a: a job whose worker crashed on its LAST attempt is
+    finalized to 'failed' by the reap sweep (`reap_exhausted()`), not by a
+    live `fail()` call — the terminal `job.failed` webhook must still
+    fire from that path, or a receiver waits forever after a worker
+    crash."""
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    calls = _patch_webhook_notify(monkeypatch)
+    repo = jobs_repo()
+    job = repo.enqueue("agent_response", {"agent_id": "agent-1"}, max_attempts=1)
+    claimed = repo.claim_next(kinds=["agent_response"], worker_id="dead-worker", lease_seconds=-5)
+    assert claimed is not None
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.3))
+
+    row = repo.get(job["id"])
+    assert row["status"] == "failed"
+    assert calls == [("agent-1", job["id"], "failed")]
+
+
+def test_agent_response_fail_notifies_despite_retry_config_when_attempts_exhausted(worker_db, monkeypatch):
+    """MEDIUM 2b: `fail()` finalizes to 'failed' whenever attempts are
+    exhausted, REGARDLESS of the kind's static `retry_in_seconds` config —
+    gating the notify on `kind.retry_in_seconds is None` (the old code)
+    would wrongly skip it here, since this kind IS configured to retry."""
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    def boom(payload: dict) -> None:
+        raise RuntimeError("boom")
+
+    calls = _patch_webhook_notify(monkeypatch)
+    register_kind(JobKind(name="agent_response", handler=boom, lane=LIGHT_LANE, retry_in_seconds=300))
+    job = jobs_repo().enqueue("agent_response", {"agent_id": "agent-1"}, max_attempts=1)
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.4))
+
+    assert jobs_repo().get(job["id"])["status"] == "failed"
+    assert calls == [("agent-1", job["id"], "failed")]
+
+
 def test_worker_loop_lane_active_reflects_busy_heavy_lane(worker_db):
     """agnes_worker_lane_active{lane="heavy"} must go up while a heavy job's
     handler is actually running, and come back down once it finishes."""
