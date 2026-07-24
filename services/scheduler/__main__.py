@@ -26,6 +26,7 @@ full per-row classification.
 Usage: python -m services.scheduler
 """
 
+import json
 import logging
 import os
 import signal
@@ -33,6 +34,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -42,6 +44,59 @@ from src.scheduler import is_table_due
 
 setup_logging(__name__)
 logger = logging.getLogger(__name__)
+
+# Durable last-run state (three-plane spec §3.3: "per-job catch-up replaces
+# in-memory last_run"). The scheduler is a DB-less HTTP cron clock, so its
+# catch-up state can't live in the jobs table — it persists here, on the
+# same /data volume the app + scheduler share, surviving container restart
+# and recreate. Without it, every restart resets last_run to None → every
+# job re-fires on the first post-grace tick (is_table_due(None) is always
+# True); harmless for the idempotency-keyed enqueue jobs, but a burst of
+# duplicate fires + audit noise on the HTTP jobs. Best-effort throughout: a
+# load or persist failure logs and falls back to the old in-memory behavior,
+# never crashing the scheduler.
+_LAST_RUN_PATH = Path(os.environ.get("DATA_DIR", "/data")) / "state" / "scheduler_last_run.json"
+_last_run_lock = threading.Lock()
+
+
+def _load_last_run(job_names: set[str]) -> dict[str, "str | None"]:
+    """Seed last_run from the durable file, keyed to the current job set.
+
+    Only keys still present in ``job_names`` are carried over (a renamed or
+    removed job's stale entry is dropped); jobs with no persisted entry start
+    at ``None`` (== "never ran, due now"), preserving first-boot behavior.
+    """
+    seeded: dict[str, str | None] = {name: None for name in job_names}
+    try:
+        if _LAST_RUN_PATH.exists():
+            stored = json.loads(_LAST_RUN_PATH.read_text())
+            for name, ts in stored.items():
+                if name in seeded and isinstance(ts, str):
+                    seeded[name] = ts
+            logger.info(
+                "scheduler: restored last_run for %d/%d jobs from %s",
+                sum(1 for v in seeded.values() if v is not None),
+                len(seeded),
+                _LAST_RUN_PATH,
+            )
+    except Exception:
+        logger.warning("scheduler: could not read %s; starting from empty last_run", _LAST_RUN_PATH, exc_info=True)
+    return seeded
+
+
+def _persist_last_run(last_run: dict[str, "str | None"]) -> None:
+    """Atomically write last_run to the durable file. Best-effort — a write
+    failure (read-only mount, disk full) is logged once and swallowed so the
+    scheduler keeps running on its in-memory copy."""
+    try:
+        with _last_run_lock:
+            _LAST_RUN_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp = _LAST_RUN_PATH.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(last_run))
+            os.replace(tmp, _LAST_RUN_PATH)
+    except Exception:
+        logger.warning("scheduler: could not persist last_run to %s (non-fatal)", _LAST_RUN_PATH, exc_info=True)
+
 
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
 SCHEDULER_API_TOKEN = os.environ.get("SCHEDULER_API_TOKEN", "")
@@ -691,7 +746,7 @@ def run():
         logger.info("Scheduler shutdown during startup grace; exiting.")
         return
 
-    last_run: dict[str, str | None] = {name: None for name, *_ in jobs}
+    last_run: dict[str, str | None] = _load_last_run({name for name, *_ in jobs})
 
     # Suppress the first ``bq-metadata-refresh`` fire by pretending the
     # job ran ``bqmeta_offset`` seconds ago at startup. ``is_table_due``
@@ -699,7 +754,11 @@ def run():
     # firing for the first time. Two scheduler containers that came up
     # within seconds of each other will pick different offsets and stop
     # synchronising their refresh ticks against one another.
-    if bqmeta_offset > 0:
+    # Only synthesize the offset when there's no DURABLE last_run for this
+    # job — a restored real timestamp already provides the anti-synchronize
+    # suppression, and overwriting it would discard the persisted catch-up
+    # state this fix exists to preserve.
+    if bqmeta_offset > 0 and last_run.get("bq-metadata-refresh") is None:
         from datetime import timedelta as _td
 
         offset_ago = (datetime.now(timezone.utc) - _td(seconds=bqmeta_offset)).isoformat()
@@ -779,6 +838,10 @@ def _run_job(
         _call_api(endpoint, method, timeout, json_body=json_body)
     finally:
         last_run[name] = now_iso
+        # Persist so this run survives a scheduler restart/recreate (see
+        # _LAST_RUN_PATH). Best-effort — never blocks the tick loop's
+        # bookkeeping on a disk error.
+        _persist_last_run(last_run)
         with in_flight_lock:
             in_flight.discard(name)
 

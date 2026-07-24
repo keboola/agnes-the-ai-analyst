@@ -93,6 +93,7 @@ import time
 
 from app.job_correlation import bind_request_id, unbind_request_id
 from app.observability import metrics as obs_metrics
+from app.worker import wakeup
 from app.worker.registry import HEAVY_LANE, JOB_KINDS, LIGHT_LANE, JobKind
 
 logger = logging.getLogger(__name__)
@@ -355,7 +356,11 @@ async def _lane_slot(
                 lease_seconds=max_lease,
             )
             if job is None:
-                await asyncio.sleep(poll_interval_s)
+                # Idle: sleep up to poll_interval, but wake early on a
+                # NOTIFY-driven signal (app.worker.wakeup). Degrades to a
+                # plain poll_interval sleep when nothing signals (DuckDB
+                # backend / listener down), so never worse than poll-only.
+                await wakeup.idle_wait(poll_interval_s)
                 continue
 
             # Counted here, not inside _run_one — a claim_next() success is
@@ -517,6 +522,10 @@ async def worker_loop(*, worker_id: str, poll_interval_s: float = 5.0) -> None:
     """
     in_flight: dict[str, _InFlightJob] = {}
     tasks = [asyncio.create_task(_reap_loop(poll_interval_s), name="worker-reaper")]
+    # Best-effort PG LISTEN loop that wakes idle lane slots on a fresh
+    # enqueue (see app.worker.wakeup). A clean no-op on DuckDB / if it can't
+    # connect — the lane slots keep polling regardless.
+    tasks.append(asyncio.create_task(wakeup.notify_listener(), name="worker-notify-listener"))
     tasks += [
         asyncio.create_task(_lane_slot(HEAVY_LANE, worker_id, poll_interval_s, in_flight), name=f"worker-heavy-{i}")
         for i in range(_HEAVY_CONCURRENCY)

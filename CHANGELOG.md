@@ -16,6 +16,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Worker lane slots now wake immediately on a fresh Postgres enqueue instead
+  of waiting out their poll interval: `enqueue` emits `NOTIFY agnes_jobs` and
+  the worker `LISTEN`s on it (`app/worker/wakeup.py`). Polling stays the floor
+  — it still covers `run_after`/retry eligibility, the DuckDB backend, and any
+  listener failure — so latency can only improve, never regress or skip a job.
+- The scheduler's per-job `last_run` catch-up state is now persisted to
+  `${DATA_DIR}/state/scheduler_last_run.json` and restored on startup, so a
+  restart/recreate no longer resets every job to "never ran" and re-fires the
+  whole set on the first post-grace tick. Best-effort: a load/persist failure
+  falls back to the previous in-memory behavior.
+
 ### Removed
 
 ### Internal
