@@ -500,6 +500,9 @@ html[data-ui-layout="rail"] body.detail-page footer {
 .klb-tools { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .klb-tool { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--ds-text-primary); }
 .klb-tool img, .klb-tool svg { width: 20px; height: 20px; object-fit: contain; flex-shrink: 0; color: var(--ds-text-secondary); }
+/* "Connect your tools" CTA moved into the tools card — full-width pill under
+   the roster (reuses the .klb-cta-primary look). */
+.klb-card-cta { margin-top: 16px; width: 100%; justify-content: center; }
 
 /* Center hub: orb in a dashed halo, connecting lines out to both cards
    (green toward the Agnes card, shifting toward blue on the tools side). */
@@ -536,8 +539,8 @@ html[data-ui-layout="rail"] body.detail-page footer {
 }
 .klb-lock { width: 13px; height: 13px; flex-shrink: 0; }
 
-/* CTAs — primary pill dominates, secondary is a quiet outline. */
-.klb-ctas { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 20px; flex-wrap: wrap; }
+/* CTA — the "Connect your tools" primary pill, now hosted at the foot of
+   the tools card (see .klb-card-cta above). */
 .klb-cta-primary {
     display: inline-flex; align-items: center; gap: 8px;
     background: var(--ds-primary); color: var(--ds-text-inverse);
@@ -549,6 +552,10 @@ html[data-ui-layout="rail"] body.detail-page footer {
 .klb-cta-primary:hover { background: var(--ds-primary-dark); }
 .klb-cta-primary:active { transform: translateY(1px); }
 .klb-cta-primary svg { width: 15px; height: 15px; }
+
+/* Full-banner CTA row — primary pill + a quiet outline secondary, centered
+   below the diagram. */
+.klb-ctas { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 22px; flex-wrap: wrap; }
 .klb-cta-secondary {
     display: inline-flex; align-items: center; gap: 7px;
     padding: 11px 20px; border-radius: var(--ds-radius-pill, 999px);
@@ -560,6 +567,24 @@ html[data-ui-layout="rail"] body.detail-page footer {
 .klb-cta-secondary:hover { border-color: var(--ds-primary); }
 .klb-cta-secondary svg { width: 15px; height: 15px; }
 
+/* Compact variant — no headline/subcopy lead, so the three parts sit on one
+   row as a pure product diagram. Tighter box + gaps keep it a docked band
+   (~280px) rather than a tall hero. Used by the rail chat dashboard. */
+.klb--compact { padding: 20px 24px; }
+.klb--compact .klb-grid {
+    grid-template-areas: "left hub right";
+    grid-template-columns: minmax(0, 1fr) minmax(190px, 240px) minmax(0, 1fr);
+    grid-template-rows: auto;
+    column-gap: 20px;
+    align-items: center;
+}
+/* Cards hug their own content (no equal-height stretch); the orb hub and both
+   cards are vertically centered in the row. */
+.klb--compact .klb-slot--left,
+.klb--compact .klb-slot--right,
+.klb--compact .klb-slot--hub { align-self: center; }
+.klb--compact .klb-card { height: auto; }
+
 @media (max-width: 980px) {
     /* Stack: lead copy first, then the orb (the hub of the story), then
        the two usage cards. Connectors are meaningless vertically. */
@@ -570,12 +595,16 @@ html[data-ui-layout="rail"] body.detail-page footer {
     }
     .klb-sub { max-width: none; }
     .klb-hub-line { display: none; }
+    /* Compact banner stacks below tablet width too (left card → orb → right). */
+    .klb--compact .klb-grid {
+        grid-template-areas: "left" "hub" "right";
+        grid-template-columns: minmax(0, 1fr);
+        row-gap: 16px;
+    }
 }
 @media (max-width: 680px) {
     .klb { padding: 24px 18px 20px; border-radius: 18px; }
     .klb-headline { font-size: 23px; }
-    .klb-ctas { flex-direction: column; align-items: stretch; }
-    .klb-cta-primary, .klb-cta-secondary { justify-content: center; }
 }
 
 /* Dashboard */

@@ -367,7 +367,7 @@ Current schema version: **96** (auto-migrated from any earlier version on startu
 | `data_package_tables` | M:N junction between `data_packages` and `table_registry`. |
 | `memory_domains` | First-class memory domain rows (id, slug, name, icon, color). Replaces the scalar `knowledge_items.domain` column dropped in v49. |
 | `knowledge_item_domains` | M:N junction between `knowledge_items` and `memory_domains`. One item can live in multiple domains. |
-| `user_stack_subscriptions` | Per-user opt-in for available-tier Data Packages + Memory Domains (`(user_id, resource_type, resource_id)`). Marketplace plugins keep their legacy `user_plugin_optouts` table. |
+| `user_stack_subscriptions` | Per-user LOCAL DOWNLOAD opt-in for available-tier Data Packages + Memory Domains (`(user_id, resource_type, resource_id)`) — auto-membership means both tiers are already in the stack/authorized without a row here; a row only additionally flags "keep a local copy" (`agnes pull` fetches it). Marketplace plugins keep their legacy `user_plugin_optouts` table. |
 
 Connections: `get_system_db()` returns a cursor on a **single shared connection** per
 `DATA_DIR` (protected by `threading.Lock`). Callers `close()` the cursor, not the

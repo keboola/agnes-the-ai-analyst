@@ -37,8 +37,13 @@ def _make_pkg(slug: str = "sales-bundle", name: str = "Sales bundle"):
     return pkg_id
 
 
-def _grant(group_name: str, resource_type: str, resource_id: str,
-           requirement: str = "available", users: list[str] | None = None):
+def _grant(
+    group_name: str,
+    resource_type: str,
+    resource_id: str,
+    requirement: str = "available",
+    users: list[str] | None = None,
+):
     """Add a resource_grants row for the named user-group.
 
     Also ensure ``users`` (typically the test's analyst id) are members of
@@ -52,9 +57,7 @@ def _grant(group_name: str, resource_type: str, resource_id: str,
 
     conn = get_system_db()
     try:
-        gid = conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [group_name]
-        ).fetchone()
+        gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [group_name]).fetchone()
         if not gid:
             return
         group_id = gid[0]
@@ -78,7 +81,9 @@ def _grant(group_name: str, resource_type: str, resource_id: str,
 class TestCatalogUnifiedPage:
     def test_admin_sees_hero_and_tabs(self, seeded_app):
         """Hero + tab strip (Browse / My Stack) + filter chips + grid container
-        all render for admin (who sees every package via god-mode)."""
+        all render for admin — same grant-scoped view as any other user
+        (god-mode Browse was removed; see /admin/data-packages for the
+        full-audit view)."""
         _make_pkg("admin-test-pkg-1", "Sales bundle")
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -100,8 +105,7 @@ class TestCatalogUnifiedPage:
         """Required grant for the analyst's Everyone group surfaces the
         package on Browse with the Required badge."""
         pkg_id = _make_pkg("eng-bundle", "Engineering bundle")
-        _grant("Everyone", "data_package", pkg_id, requirement="required",
-               users=["analyst1"])
+        _grant("Everyone", "data_package", pkg_id, requirement="required", users=["analyst1"])
         c = seeded_app["client"]
         token = seeded_app["analyst_token"]
         resp = c.get("/catalog", headers=_auth(token))
@@ -125,8 +129,7 @@ class TestCatalogUnifiedPage:
     def test_card_buttons_carry_data_action_attrs(self, seeded_app):
         """JS wiring for Add/Remove rides on data-action attributes."""
         pkg_id = _make_pkg("avail-pkg", "Available pkg")
-        _grant("Everyone", "data_package", pkg_id, requirement="available",
-               users=["analyst1"])
+        _grant("Everyone", "data_package", pkg_id, requirement="available", users=["analyst1"])
         c = seeded_app["client"]
         token = seeded_app["analyst_token"]
         resp = c.get("/catalog", headers=_auth(token))
@@ -136,41 +139,41 @@ class TestCatalogUnifiedPage:
         assert 'data-action="add"' in body
 
     def test_required_packages_render_before_available_ones(self, seeded_app):
-        """Browse grid groups Required cards first (first-demo feedback).
+        """My Stack groups Required cards first (first-demo feedback).
 
         Three packages: two available + one required. The required card
         must come BEFORE the available ones in the rendered HTML so it
         clusters at the top of the grid instead of being interleaved by
         creation order.
+
+        Catalog reshape note: every granted package (required or
+        available) is auto-membership in_stack=True, so none of these
+        three render in the Browse/Data grid anymore — they all render
+        under My Stack instead, which is why the ordering assertion now
+        targets that grid (the sort itself moved with the content, see
+        /catalog route's ``_req_first_key``).
         """
         # Seed in deliberately-wrong order (available first) so the sort
         # has something to undo.
         avail_pkg = _make_pkg("a-avail", "AAA Available")
         req_pkg = _make_pkg("z-req", "ZZZ Required")
         avail_pkg_2 = _make_pkg("m-avail", "MMM Available")
-        _grant("Everyone", "data_package", avail_pkg,
-               requirement="available", users=["analyst1"])
-        _grant("Everyone", "data_package", req_pkg,
-               requirement="required", users=["analyst1"])
-        _grant("Everyone", "data_package", avail_pkg_2,
-               requirement="available", users=["analyst1"])
+        _grant("Everyone", "data_package", avail_pkg, requirement="available", users=["analyst1"])
+        _grant("Everyone", "data_package", req_pkg, requirement="required", users=["analyst1"])
+        _grant("Everyone", "data_package", avail_pkg_2, requirement="available", users=["analyst1"])
 
         resp = seeded_app["client"].get(
-            "/catalog", headers=_auth(seeded_app["analyst_token"]),
+            "/catalog",
+            headers=_auth(seeded_app["analyst_token"]),
         )
         body = resp.text
+        my_stack_section = body.split('data-view="my"', 1)[1]
         # The required-grant card must appear earlier in the document
         # than either available card — independent of creation order or
         # alphabetical name ordering.
-        i_req = body.find('data-id="' + req_pkg + '"')
-        i_a1 = body.find('data-id="' + avail_pkg + '"')
-        i_a2 = body.find('data-id="' + avail_pkg_2 + '"')
+        i_req = my_stack_section.find('data-id="' + req_pkg + '"')
+        i_a1 = my_stack_section.find('data-id="' + avail_pkg + '"')
+        i_a2 = my_stack_section.find('data-id="' + avail_pkg_2 + '"')
         assert i_req != -1 and i_a1 != -1 and i_a2 != -1
-        assert i_req < i_a1, (
-            "Required card must render before available card 'AAA' "
-            f"(req@{i_req}, avail@{i_a1})"
-        )
-        assert i_req < i_a2, (
-            "Required card must render before available card 'MMM' "
-            f"(req@{i_req}, avail@{i_a2})"
-        )
+        assert i_req < i_a1, f"Required card must render before available card 'AAA' (req@{i_req}, avail@{i_a1})"
+        assert i_req < i_a2, f"Required card must render before available card 'MMM' (req@{i_req}, avail@{i_a2})"

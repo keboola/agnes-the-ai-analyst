@@ -30,41 +30,34 @@
     {% set _path = request.url.path %}
     {% set _home = home_route or '/dashboard' %}
     {% set _on_stack = _path == '/stack' %}
+    {% set _on_artefacts = _path == '/artefacts' %}
+    {% set _on_agents = _path == '/agents' %}
     {% set _in_catalog = _path.startswith('/catalog') or _path.startswith('/marketplace') or _path.startswith('/library') or _path == '/corporate-memory' %}
 
     <div class="rail-nav">
-        {# Dashboard — the rail landing surface, first in the nav. It IS
-           Chat's pre-conversation state (chat.html's rail empty state), so
-           /dashboard 302s to /chat and this item reads active exactly when
-           that dashboard is showing: on /chat with no session deep link
-           (server-side here; chat.js keeps it in sync across in-page
-           open-session / new-chat transitions via #rail-dashboard-item).
-           Gated on can_chat exactly like the route: without a chat grant
-           /dashboard 302s to /stack, so showing the item would be a link
-           that bounces. The rail logo above also lands here (its href is
-           home_route, which defaults to /dashboard). #}
-        {% if can_chat %}
-        <a class="rail-i {% if _path == '/chat' and not request.query_params.get('session') %}on{% endif %}"
-           id="rail-dashboard-item" href="/dashboard">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4 10.5 8-6.5 8 6.5V20a1 1 0 0 1-1 1h-4.5v-6h-5v6H5a1 1 0 0 1-1-1v-9.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            Dashboard
-        </a>
-        {% endif %}
         {# Chat is a surface only when it actually works: enabled + the caller
            holds a chat grant (`can_chat`). The retired /ask hero used to fill
            this slot for non-chat users (#896) — but it just forwarded to /chat
            (a dead end without the grant), so the slot now simply renders
            nothing when chat is unavailable. Those users land on /stack.
 
-           "New chat" is the single chat entry point — the standalone +New chat
-           button above the nav was retired and folded into this item. It ALWAYS
-           starts a fresh conversation: on every page but /chat the href
-           navigates to a clean /chat empty state; on /chat itself chat.js
-           intercepts the click (id="new-chat") and resets in place. It carries
-           no persistent active (`on`) state — the conversation you're viewing is
-           highlighted in the Chats history list below instead. #}
+           "New chat" is the single chat entry point AND the rail landing item —
+           there is no separate Dashboard nav item, since /dashboard is just
+           Chat's pre-conversation state (chat.html's rail empty state) and the
+           two links pointed at the same surface. It ALWAYS starts a fresh
+           conversation: on every page but /chat the href navigates to a clean
+           /chat empty state; on /chat itself chat.js intercepts the click
+           (id="new-chat") and resets in place. It reads active (`on`) exactly
+           while that pre-conversation state is showing — on /chat with no
+           session deep link (server-side here; chat.js keeps it in sync across
+           in-page open-session / new-chat transitions via #new-chat). While
+           you're inside a conversation the item drops its highlight and the
+           conversation you're viewing is highlighted in the Chats history list
+           below instead. The rail logo above lands on the same surface (its
+           href is home_route, which defaults to /dashboard → /chat). #}
         {% if can_chat %}
-        <a class="rail-i rail-newchat-item" id="new-chat" href="/chat">
+        <a class="rail-i rail-newchat-item {% if _path == '/chat' and not request.query_params.get('session') %}on{% endif %}"
+           id="new-chat" href="/chat">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
             New chat
         </a>
@@ -73,9 +66,27 @@
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 8.5 12 4l9 4.5-9 4.5-9-4.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
             My Stack
         </a>
+        {# Artefacts — the caller's private uploads (moved off My Stack) and,
+           soon, their data apps. Work-in-progress, so it carries a WIP badge. #}
+        {# id="nav-artefacts" is the tour step-2 anchor (private uploads live here now). #}
+        <a class="rail-i {% if _on_artefacts %}on{% endif %}" href="/artefacts" id="nav-artefacts">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 3h8l4 4v14H6z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13 3v5h5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            <span class="rail-i-label">Artefacts</span>
+            <span class="rail-badge">WIP</span>
+        </a>
+        {# Agents — build a focused assistant out of the caller's stack
+           (knowledge + plugins). Work-in-progress, so it carries a WIP
+           badge like Artefacts. #}
+        <a class="rail-i {% if _on_agents %}on{% endif %}" href="/agents">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 4.2v3.8M8.5 20v1.5M15.5 20v1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.3" cy="13.5" r="1.1" fill="currentColor"/><circle cx="14.7" cy="13.5" r="1.1" fill="currentColor"/></svg>
+            <span class="rail-i-label">Agents</span>
+            <span class="rail-badge">WIP</span>
+        </a>
+        {# Tour step 3 anchors #nav-catalog to point users at where they add
+           more (now labelled Marketplace; href stays /catalog). #}
         <a class="rail-i {% if _in_catalog %}on{% endif %}" href="/catalog" id="nav-catalog">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M4 6l1 13a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1l1-13M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            Catalog
+            Marketplace
         </a>
     </div>
 
@@ -238,7 +249,7 @@
                     {% endif %}
                 </div>
                 <a class="app-user-menu-item {% if _path == '/me/profile' %}is-active{% endif %}" role="menuitem" href="/me/profile">Profile</a>
-                <a class="app-user-menu-item {% if _path.startswith('/me/ai-connector') or _path.startswith('/me/cowork') or _path.startswith('/me/mcp') %}is-active{% endif %}" role="menuitem" href="/me/ai-connector">AI Connector</a>
+                <a class="app-user-menu-item {% if _path == '/home' %}is-active{% endif %}" role="menuitem" href="/home">Learn how it works</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>
                 <div class="app-user-menu-sep" role="separator"></div>

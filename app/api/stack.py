@@ -1,19 +1,24 @@
-"""User stack API — subscribe / unsubscribe / list (v49 unified stack).
+"""User stack API — subscribe / unsubscribe / list (auto-membership model).
 
-Section 6 of the design spec covers the three user-facing endpoints under
-``/api/stack``:
+Three user-facing endpoints under ``/api/stack``:
 
-  - ``GET    /api/stack?type=data_package|memory_domain`` — user's effective stack
-  - ``POST   /api/stack/subscribe``                       — opt-in to an available grant
-  - ``DELETE /api/stack/subscription/{type}/{id}``        — opt-out
+  - ``GET    /api/stack?type=data_package|memory_domain`` — user's effective
+    stack (auto: every grant on the caller's groups, required or available)
+  - ``POST   /api/stack/subscribe``                       — download a local
+    copy of an ``available`` resource already in the stack
+  - ``DELETE /api/stack/subscription/{type}/{id}``        — remove the local
+    copy (the resource stays in the stack, still queryable server-side)
 
 Stack resolution is delegated to ``app/services/stack_resolver.py``. Required
-grants beat available + subscription; the resolver raises HTTPException
-directly for the two business-rule errors (``already_required`` on subscribe,
-``cannot_remove_required`` on unsubscribe).
+grants are always both in-stack and materialized (downloaded); available
+grants are auto-in-stack but only materialized once subscribed. The resolver
+raises HTTPException directly for the two business-rule errors
+(``already_required`` on subscribe, ``cannot_remove_required`` on
+unsubscribe) — required resources are always downloaded, so there's nothing
+to opt in/out of.
 
-Server-side telemetry (Section 9.2) — ``stack.subscribe`` / ``stack.unsubscribe``
-events land in ``usage_events`` via ``UsageRepository.emit_server_event``.
+Server-side telemetry — ``stack.subscribe`` / ``stack.unsubscribe`` events
+land in ``usage_events`` via ``UsageRepository.emit_server_event``.
 """
 
 from __future__ import annotations
@@ -86,6 +91,7 @@ def _emit_event(
     """Fire-and-forget — telemetry must never break the user's action."""
     try:
         from src.repositories import usage_repo
+
         usage_repo().emit_server_event(
             event_type=event_type,
             user_id=user["id"],
@@ -108,9 +114,11 @@ async def list_stack(
 ):
     """Return the user's effective stack for the given resource type.
 
-    Effective stack = required ∪ (subscribed ∩ available). Required entries
-    always count as in_stack; available entries only if the user has a
-    subscription row.
+    Auto-membership: effective stack = required ∪ available — every grant on
+    the caller's groups, no subscription needed. Every item is
+    ``in_stack: true``; ``materialized`` additionally flags whether it's ALSO
+    kept as a local copy (`agnes pull` downloads it) — always true for
+    required, true for available only once subscribed.
     """
     _reject_co_session(user)
     rt = _validate_type(type)
@@ -124,6 +132,7 @@ async def list_stack(
             "color": e.color,
             "requirement": e.requirement,
             "in_stack": e.in_stack,
+            "materialized": e.materialized,
         }
         for e in resolver.stack(user["id"], rt)
     ]
@@ -135,13 +144,14 @@ async def browse_stack(
     type: str,
     user: dict = Depends(get_current_user),
 ):
-    """List every resource of ``type`` the caller could add to their stack.
+    """List every resource of ``type`` the caller could see (RBAC-granted).
 
-    Unlike ``GET /api/stack`` (effective stack only), this returns the full
-    RBAC-granted candidate set — required + available — each annotated with
-    an ``in_stack`` flag so an analyst's Claude can tell what is already
-    subscribed and what is still available to add. This is the
-    "what could I add" discovery surface (issue #621).
+    Auto-membership means this is now equivalent in scope to ``GET
+    /api/stack`` (required + available, no separate opt-in tier) — it's kept
+    as a discovery surface so callers who want the full candidate set (issue
+    #621) don't have to reason about the difference. Each item carries
+    ``in_stack: true`` and a ``materialized`` flag so an analyst's Claude can
+    tell what is already downloaded locally vs. only server-side queryable.
 
     Scoped per-user by ``StackResolver.browse`` (group grants only), so the
     only authorization gate is authentication — no extra RBAC dependency.
@@ -158,6 +168,7 @@ async def browse_stack(
             "color": e.color,
             "requirement": e.requirement,
             "in_stack": e.in_stack,
+            "materialized": e.materialized,
         }
         for e in resolver.browse(user["id"], rt)
     ]
@@ -169,8 +180,9 @@ async def subscribe(
     payload: SubscribeRequest,
     user: dict = Depends(get_current_user),
 ):
-    """Opt in to an ``available`` grant. Refuses to subscribe if the resource
-    is required (it's already in the stack — clients shouldn't bother)."""
+    """Download a local copy of an ``available`` resource already in the
+    stack. Refuses to subscribe if the resource is required (it's always
+    downloaded automatically — clients shouldn't bother)."""
     _reject_co_session(user)
     rt = _validate_type(payload.resource_type)
     # The user must have *some* grant on the resource — otherwise this is a
@@ -200,13 +212,16 @@ async def unsubscribe(
     resource_id: str,
     user: dict = Depends(get_current_user),
 ):
-    """Opt out of an ``available`` grant. Returns 400 ``cannot_remove_required``
-    when the resource is required for any of the user's groups.
+    """Remove the local copy of an ``available`` resource — the resource
+    stays in the stack (still queryable server-side), only the download is
+    dropped. Returns 400 ``cannot_remove_required`` when the resource is
+    required for any of the user's groups (required is always downloaded,
+    no opt-out).
 
     Returns 204 No Content on success — DELETE idempotency convention
     enforced by the API design rules test. Callers should treat 204 as
-    "removed", 400 + ``cannot_remove_required`` as "still subscribed
-    because Required tier blocks opt-out".
+    "local copy removed", 400 + ``cannot_remove_required`` as "still
+    downloaded because Required tier blocks opt-out".
     """
     _reject_co_session(user)
     rt = _validate_type(resource_type)

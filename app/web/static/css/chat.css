@@ -1522,60 +1522,56 @@ html[data-ui-layout="rail"] .cloud-chat-capabilities {
   align-items: center;
   padding: 34px 20px 6px;
 }
-/* Empty-state layout order: greeting → composer → extras → footer, so the
-   composer sits under the greeting with the rest of the dashboard (context
-   line, activity panels, task starters, banner) below it. Fixed orders work
-   in both states: in an active conversation greeting + extras + footer are
-   hidden and messages(order 0) precedes the composer(order 2), pinning it
-   to the bottom. */
+/* Empty-state layout order: banner (very top) → greeting → composer →
+   suggestions → Keboola credit (very bottom). The greeting/composer/suggestions
+   group centers in the free space between the banner and the credit (auto
+   margins below). Fixed orders work in both states: in an active conversation
+   banner + greeting + extras + credit are hidden and messages (order 0)
+   precedes the composer (order 2), pinning it to the bottom. */
 html[data-ui-layout="rail"] .cloud-chat-main > #chat-capabilities { order: 1; }
-html[data-ui-layout="rail"] .cloud-chat-main > #chat-form { order: 2; }
-html[data-ui-layout="rail"] .cloud-chat-main > #chat-empty-extras { order: 3; }
-html[data-ui-layout="rail"] .cloud-chat-main > .cloud-chat-empty-foot { order: 4; }
-/* The dashboard empty state is top-anchored (it's a full content page, not
-   a short hero) and scrolls as one column; the footer pins to the bottom of
-   the card when the content is short. Widget styles live in
-   chat_dashboard.css — only the slot layout is owned here.
-
-   HERO: the greeting/diagram/CTAs (#chat-capabilities), the composer
-   (#chat-form), and the Stack context line (extras' .rdb-context) sit
-   FLAT on the page surface — no enclosing box — as one content column.
-   Every section — and the Suggested-actions list below — sizes itself
-   with the ONE shared --rdb-col definition declared here, so the page
-   has a single content grid by construction. NB: the base
-   .cloud-chat-capabilities rule caps the panel at --chat-reading-width
-   (880px) for the classic empty state; the dashboard must lift that cap
-   or the hero renders narrower than the composer row. */
+html[data-ui-layout="rail"] .cloud-chat-main > #chat-empty-banner { order: 2; }
+html[data-ui-layout="rail"] .cloud-chat-main > #chat-form { order: 3; }
+html[data-ui-layout="rail"] .cloud-chat-main > #chat-empty-extras { order: 4; }
+html[data-ui-layout="rail"] .cloud-chat-main > .cloud-chat-empty-foot { order: 5; }
+/* The dashboard is ONE centered content column (~1280px): greeting, composer,
+   Stack status line, the five suggested-action cards, and the banner all share
+   the SAME --rdb-col width so the page reads as a single deliberate column.
+   Compact vertical spacing keeps all sections visible at once on a standard
+   laptop viewport; the surface still scrolls on genuinely short screens. Widget
+   styles live in chat_dashboard.css — only the slot layout is owned here. NB:
+   the base .cloud-chat-capabilities rule caps the panel at --chat-reading-width
+   (880px) for the classic empty state; the dashboard lifts that cap. */
 html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) {
   overflow-y: auto;
-  --rdb-col: min(100% - 64px, 1200px);
-  /* Narrow column for the composer, Stack context line, and the
-     Suggested-actions list — ~60% of the container, centered under the
-     full-width hero. Collapses to the full column on small screens. */
-  --rdb-col-narrow: min(60%, 1200px);
+  /* Wide column — the greeting and the (full-width) banner diagram. */
+  --rdb-col: min(100% - 48px, 1280px);
+  /* Narrow column (≤60%) — the composer, Stack status line, and the
+     suggested-action list are capped to a comfortable reading width, centered
+     under the wide banner. */
+  --rdb-col-narrow: min(60%, 1280px);
 }
 html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-capabilities {
   align-self: center;
   align-items: stretch;
+  /* Greeting is the centered heading at the very top, above the banner. */
   width: var(--rdb-col);
   max-width: none;
-  margin-top: 16px;
-  padding: 22px 0 6px;
+  margin-top: 20px;
+  padding: 0 0 2px;
 }
 html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-empty-extras {
   padding: 0;
 }
-html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > .cloud-chat-empty-foot { margin-top: auto; }
 @media (max-width: 680px) {
   html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) {
-    --rdb-col: min(100% - 36px, 1200px);
-    --rdb-col-narrow: var(--rdb-col);
+    --rdb-col: min(100% - 32px, 1280px);
   }
-  html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-capabilities { padding: 18px 0 4px; }
-  html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) .cloud-chat-form { padding: 10px 0 8px; }
+  html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-capabilities { margin-top: 14px; }
+  html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) .cloud-chat-form { padding: 8px 0; }
 }
-/* Extras (context line + panels + task starters + banner) + footer follow
-   the composer and hide with the greeting panel once a conversation starts. */
+/* Banner + extras + credit hide with the greeting panel once a conversation
+   starts (all placed after #chat-capabilities in the DOM). */
+html[data-ui-layout="rail"] #chat-capabilities[hidden] ~ #chat-empty-banner,
 html[data-ui-layout="rail"] #chat-capabilities[hidden] ~ #chat-empty-extras,
 html[data-ui-layout="rail"] #chat-capabilities[hidden] ~ .cloud-chat-empty-foot { display: none; }
 html[data-ui-layout="rail"] .cloud-chat-empty-extras {
@@ -1583,17 +1579,25 @@ html[data-ui-layout="rail"] .cloud-chat-empty-extras {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 0 20px 6px;
+  padding: 0 24px;
 }
 
-/* Footer inside the empty-state card — spans the card width with a top
-   border (like /ask's .ask-foot), so it narrows with the card when history
-   opens and disappears once a conversation starts. */
+/* Banner — under the greeting (order 2), above the composer. The bare diagram
+   sits flat on the page; centered wide column. */
+html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-empty-banner {
+  align-self: center;
+  width: var(--rdb-col);
+  max-width: none;
+  flex: 0 0 auto;
+  margin: 8px 0 24px;
+}
+
+/* Keboola credit — pinned to the very bottom (margin-top:auto). No divider. */
 html[data-ui-layout="rail"] .cloud-chat-empty-foot {
   flex: 0 0 auto;
-  margin-top: 10px;
-  padding: 16px 24px;
-  border-top: 1px solid var(--ds-border);
+  margin-top: auto;
+  padding: 12px 24px;
+  border-top: none;
   text-align: center;
   color: var(--ds-text-muted);
   font-size: 12.5px;
@@ -1601,16 +1605,24 @@ html[data-ui-layout="rail"] .cloud-chat-empty-foot {
 html[data-ui-layout="rail"] .cloud-chat-empty-foot .footer-copy { margin: 0; color: var(--ds-text-muted); }
 html[data-ui-layout="rail"] .cloud-chat-empty-foot b { color: var(--ds-text-secondary); }
 
-/* Composer row in the empty state: same column as the hero above and the
-   Stack context line below, flat on the surface — the pill itself is the
-   inner .cloud-chat-composer. Overrides the base ``margin: auto`` so it
-   isn't shoved to the bottom. */
+/* Composer row in the empty state: the narrow (≤60%) column, centered under
+   the wide banner — the pill itself is the inner .cloud-chat-composer.
+   Overrides the base ``margin: auto`` so it isn't shoved to the bottom. */
 html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) .cloud-chat-form {
   align-self: center;
   margin: 0;
   width: var(--rdb-col-narrow);
   max-width: none;
-  padding: 14px 0 10px;
+  padding: 6px 0 4px;
+}
+/* Primary Kai input — a slim fully-rounded pill (height 56, radius = 56/2 = 28).
+   The 44px circular send button sits concentric with the rounded ends: the 6px
+   inset padding = pill radius (28) − button radius (22), so the button aligns
+   perfectly inside the rounded corner. */
+html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) .cloud-chat-composer {
+  min-height: 56px;
+  border-radius: 28px;
+  padding: 6px 6px 6px 22px;
 }
 
 /* Composer → paper pill + circular send button. Under rail the pill

@@ -145,10 +145,12 @@ class TestResolveUserMarketplace:
         assert result == []
 
     def test_required_grant_served_without_subscription(self, db_conn):
-        """v49 ``requirement='required'`` is the always-in-stack tier —
+        """``requirement='required'`` is the always-served tier —
         a required marketplace_plugin grant enters the served set with
-        NO explicit subscription, mirroring the StackResolver's
-        ``required ∪ subscribed`` union for data packages."""
+        NO explicit subscription. Marketplace plugins keep their own
+        opt-out resolver (unaffected by the StackResolver's auto-membership
+        model for data packages/memory domains), but the required-tier
+        precedence is the same idea."""
         from src.marketplace_filter import resolve_user_marketplace
 
         _seed_user_with_grant(db_conn, marketplace="mkt", plugin="p1", requirement="required")

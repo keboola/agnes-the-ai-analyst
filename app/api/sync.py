@@ -1278,12 +1278,23 @@ def _table_manifest_entry(state: dict, reg: dict) -> dict:
     }
 
 
-def _build_data_packages_section(conn, user, registry_by_name: dict, states_by_table_id: dict) -> tuple[list, set]:
+def _build_data_packages_section(conn, user, registry_by_name: dict, states_by_table_id: dict) -> tuple[list, set, set]:
     """Build the ``data_packages`` array per Section 5.1 of the design.
 
-    Returns the list plus a set of ``table_registry.id`` values that were
-    surfaced via at least one package — used to subtract from
-    ``direct_tables`` so a table belonging to a package doesn't double-render.
+    Returns ``(data_packages, packaged_table_ids, non_download_table_names)``:
+
+    * ``packaged_table_ids`` — ``table_registry.id`` values surfaced via at
+      least one package — used to subtract from ``direct_tables`` so a
+      table belonging to a package doesn't double-render.
+    * ``non_download_table_names`` — ``table_registry.name`` values (the key
+      the flat ``tables`` manifest dict uses) belonging to a package that is
+      granted-but-not-materialized for this user (auto-membership: the
+      package is visible/authorized, per :meth:`StackResolver.stack`, but
+      the user never subscribed to a local copy). The caller ORs this into
+      the flat dict's ``server_only`` flag so ``agnes pull`` lists the table
+      as authorized+queryable without fetching its parquet — the same
+      listed-but-not-downloaded treatment ``server_only`` already gets
+      (#607), reused here rather than inventing a second flag.
     """
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
@@ -1293,9 +1304,10 @@ def _build_data_packages_section(conn, user, registry_by_name: dict, states_by_t
     stack_subject = user if isinstance(user, SessionPrincipal) else user["id"]
     pkg_entries = resolver.stack(stack_subject, ResourceType.DATA_PACKAGE)
     if not pkg_entries:
-        return [], set()
+        return [], set(), set()
     repo = data_packages_repo()
     packaged_table_ids: set = set()
+    non_download_table_names: set = set()
     out: list = []
     for entry in pkg_entries:
         pkg = repo.get(entry.id)
@@ -1311,6 +1323,11 @@ def _build_data_packages_section(conn, user, registry_by_name: dict, states_by_t
             reg = registry_by_name.get(t["name"]) or {}
             state = states_by_table_id.get(t["name"]) or states_by_table_id.get(t["id"]) or {}
             entry_obj = _table_manifest_entry(state, reg or {"id": t["id"]})
+            if not entry.materialized:
+                # Auto-membership: authorized + listed, but not downloaded
+                # until the user subscribes (mirrors server_only semantics).
+                entry_obj["server_only"] = True
+                non_download_table_names.add(t["name"])
             tables_payload.append(entry_obj)
             total_size_bytes += int(entry_obj.get("size_bytes") or 0)
         out.append(
@@ -1326,7 +1343,7 @@ def _build_data_packages_section(conn, user, registry_by_name: dict, states_by_t
                 "total_size_bytes": total_size_bytes,
             }
         )
-    return out, packaged_table_ids
+    return out, packaged_table_ids, non_download_table_names
 
 
 def _build_knowledge_artifacts_section(user) -> list:
@@ -1568,6 +1585,25 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     all_states = [s for s in all_states if _allowed is None or _id_for(s) in _allowed]
 
     data_dir = _get_data_dir()
+
+    # v-next (auto-membership): resolve which of the accessible tables belong
+    # to a granted-but-not-materialized data package BEFORE building the flat
+    # `tables` dict, so the per-user download-skip flag can be OR'd into each
+    # entry's `server_only` below. Built early (states_by_table_id only needs
+    # the already-filtered `all_states`) rather than in its historical spot
+    # after the flat loop, purely to make that OR possible in one pass.
+    states_by_table_id = {s["table_id"]: s for s in all_states}
+    try:
+        data_packages, packaged_ids, non_download_table_names = _build_data_packages_section(
+            conn,
+            user,
+            registry_by_name,
+            states_by_table_id,
+        )
+    except Exception:
+        logger.exception("manifest data_packages section build failed")
+        data_packages, packaged_ids, non_download_table_names = [], set(), set()
+
     # WF-2 (signed-URL distribution) — resolved ONCE per manifest build, not
     # per-table. See `_resolve_signed_url_context`'s docstring for the
     # perf/fail-open rationale. `signed_url`/`signed_url_expires_at` are
@@ -1584,7 +1620,10 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
         table_id = state["table_id"]
         reg = registry_by_name.get(table_id, {})
         query_mode = reg.get("query_mode") or "local"
-        server_only = bool(reg.get("server_only"))
+        # #607 registry-level flag OR'd with the v-next per-user
+        # auto-membership flag: authorized+listed but not downloaded until
+        # the user subscribes to a local copy of the owning data package.
+        server_only = bool(reg.get("server_only")) or table_id in non_download_table_names
         entry = {
             "hash": state.get("hash", ""),
             "updated": state.get("last_sync").isoformat() if state.get("last_sync") else None,
@@ -1626,18 +1665,9 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     # v49 unified-stack manifest extensions (Section 5.1).
     # DEPRECATED v49: ``tables`` dict above is kept paralel for one release —
     # older CLIs depend on it; new clients prefer ``direct_tables`` +
-    # ``data_packages[].tables``.
-    states_by_table_id = {s["table_id"]: s for s in all_states}
-    try:
-        data_packages, packaged_ids = _build_data_packages_section(
-            conn,
-            user,
-            registry_by_name,
-            states_by_table_id,
-        )
-    except Exception:
-        logger.exception("manifest data_packages section build failed")
-        data_packages, packaged_ids = [], set()
+    # ``data_packages[].tables``. ``data_packages``/``packaged_ids`` were
+    # already resolved above (needed early for the flat-dict download-skip
+    # overlay); only the remaining sections build here.
     try:
         memory_domains = _build_memory_domains_section(conn, user)
     except Exception:

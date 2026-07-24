@@ -1008,7 +1008,10 @@ class TestGrantUpdateRequirementParity:
         conn.close()
         return gid, pkg_id, grant_id
 
-    def test_downgrade_parity_materializes_subscriptions(self, parity_env):
+    def test_downgrade_parity_no_subscription_fan_out(self, parity_env):
+        """Auto-membership: a required → available downgrade no longer
+        writes user_stack_subscriptions rows on EITHER path — available is
+        already automatically in every granted user's stack."""
         gid, pkg_id, grant_id = self._setup_with_grant("required")
 
         # API path
@@ -1031,15 +1034,11 @@ class TestGrantUpdateRequirementParity:
         )
         conn.close()
 
-        # Reset to required, drop the eager subs, re-run CLI
+        # Reset to required, re-run CLI
         conn = get_system_db()
         conn.execute(
             "UPDATE resource_grants SET requirement = 'required' WHERE id = ?",
             [grant_id],
-        )
-        conn.execute(
-            "DELETE FROM user_stack_subscriptions WHERE resource_id = ?",
-            [pkg_id],
         )
         conn.close()
 
@@ -1062,9 +1061,8 @@ class TestGrantUpdateRequirementParity:
         conn.close()
 
         assert api_grants == cli_grants
-        # Soft-downgrade materialized subscription for analyst1 on BOTH paths.
-        assert api_subs == cli_subs
-        assert ("analyst1", "data_package", pkg_id) in api_subs
+        # Neither path writes a subscription row anymore.
+        assert api_subs == cli_subs == []
 
 
 # ---------------------------------------------------------------------------

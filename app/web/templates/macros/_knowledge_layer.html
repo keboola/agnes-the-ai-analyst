@@ -4,8 +4,8 @@
    Cursor, VS Code, CLI). The composition matches the dashboard reference:
    headline + one supporting sentence in the top-left, the "Ask Kai in
    Agnes" card beneath them, the Agnes orb hub in the middle with thin
-   connectors to both sides, the "Use your own AI tools" card on the right,
-   and the CTA row centered below.
+   connectors to both sides, and the "Use your own AI tools" card on the
+   right (which carries the "Connect your tools" CTA at its foot).
 
    Deliberately NOT setup-step messaging (no "add knowledge / configure /
    build your Stack") — it communicates the access model, not onboarding.
@@ -79,7 +79,9 @@
 
 {% macro connected_tools_card(title='Use your own AI tools',
                               copy='Connect your tools and work with the same company knowledge&mdash;without switching.',
-                              tools=None) %}
+                              tools=None,
+                              cta_label=None,
+                              cta_href='/me/ai-connector') %}
 <div class="klb-card klb-card--tools">
   <div class="klb-card-head">
     <span class="klb-card-icon klb-card-icon--tools" aria-hidden="true">
@@ -100,9 +102,21 @@
     </li>
     {% endfor %}
   </ul>
+  {% if cta_label %}
+  <a class="klb-cta-primary klb-card-cta" href="{{ cta_href }}">
+    {{ cta_label }}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 7V3.5M15 7V3.5M7 7h10v4a5 5 0 0 1-10 0V7ZM12 16v4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </a>
+  {% endif %}
 </div>
 {% endmacro %}
 
+{# The full product-model banner: headline/subcopy lead, the three-part
+   diagram (Agnes card · orb hub · tools card), and a centered CTA row below
+   with the primary "Connect your tools" and a secondary "Learn how it works".
+   `compact=True` drops the headline lead and the CTA row and instead hosts the
+   primary CTA at the foot of the tools card — a tight docked diagram. The rail
+   chat dashboard uses the default (full) banner. #}
 {% macro knowledge_layer_banner(headline_1='One knowledge layer.',
                                 headline_2='Everywhere you work.',
                                 subcopy='Use Kai here, or connect your favorite AI tools to work with the same company knowledge.',
@@ -111,26 +125,22 @@
                                 secondary_label='Learn how it works',
                                 secondary_href='/home',
                                 tools=None,
-                                bare=False) %}
-<section class="klb{% if bare %} klb--bare{% endif %}" aria-label="{{ headline_1 }} {{ headline_2 }}">
+                                bare=False,
+                                compact=False) %}
+<section class="klb{% if bare %} klb--bare{% endif %}{% if compact %} klb--compact{% endif %}"
+         aria-label="{{ headline_1 }} {{ headline_2 }}">
   <div class="klb-grid">
+    {% if not compact %}
     <div class="klb-lead">
       <h2 class="klb-headline">{{ headline_1 }}<br>{{ headline_2 }}</h2>
       <p class="klb-sub">{{ subcopy }}</p>
     </div>
+    {% endif %}
     <div class="klb-slot klb-slot--left">{{ agnes_usage_card() }}</div>
     <div class="klb-slot klb-slot--hub">{{ knowledge_hub() }}</div>
-    <div class="klb-slot klb-slot--right">{{ connected_tools_card(tools=tools) }}</div>
-  </div>
-  <div class="klb-ctas">
-    <a class="klb-cta-primary" href="{{ primary_href }}">
-      {{ primary_label }}
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 7V3.5M15 7V3.5M7 7h10v4a5 5 0 0 1-10 0V7ZM12 16v4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </a>
-    <a class="klb-cta-secondary" href="{{ secondary_href }}">
-      {{ secondary_label }}
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h13M12 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </a>
+    <div class="klb-slot klb-slot--right">
+      {{ connected_tools_card(tools=tools, cta_label=primary_label, cta_href=primary_href) }}
+    </div>
   </div>
 </section>
 {% endmacro %}

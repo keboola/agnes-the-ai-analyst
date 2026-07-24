@@ -49,8 +49,12 @@ def _create_package(slug: str = "p", name: str = "P") -> str:
 
     conn = get_system_db()
     pkg_id = DataPackagesRepository(conn).create(
-        name=name, slug=slug, description=None,
-        icon=None, color=None, created_by="test",
+        name=name,
+        slug=slug,
+        description=None,
+        icon=None,
+        color=None,
+        created_by="test",
     )
     conn.close()
     return pkg_id
@@ -66,10 +70,8 @@ def _telemetry_for(event_type: str, user_id: str) -> list[dict]:
     ).fetchall()
     conn.close()
     import json
-    return [
-        {"event_type": e, "props": json.loads(f) if f else None}
-        for e, f in rows
-    ]
+
+    return [{"event_type": e, "props": json.loads(f) if f else None} for e, f in rows]
 
 
 # -------- list ------------------------------------------------------------
@@ -145,8 +147,10 @@ class TestStackBrowse:
         assert resp.status_code == 400
 
     def test_browse_lists_required_and_available(self, seeded_app):
-        """Required → in_stack True even without a subscription; available →
-        in_stack False until subscribed."""
+        """Auto-membership: both required AND available grants are
+        in_stack immediately, no subscription needed. ``materialized``
+        (local-download state) is what actually distinguishes them:
+        required is always materialized, available only once subscribed."""
         gid = _create_group_with_analyst("BrowseSales")
         req_id = _create_package("browse-req", "BrowseReq")
         avail_id = _create_package("browse-avail", "BrowseAvail")
@@ -160,8 +164,10 @@ class TestStackBrowse:
         by_id = {it["id"]: it for it in resp.json()["items"]}
         assert by_id[req_id]["in_stack"] is True
         assert by_id[req_id]["requirement"] == "required"
-        assert by_id[avail_id]["in_stack"] is False
+        assert by_id[req_id]["materialized"] is True
+        assert by_id[avail_id]["in_stack"] is True
         assert by_id[avail_id]["requirement"] == "available"
+        assert by_id[avail_id]["materialized"] is False
 
     def test_browse_denies_session_principal(self, seeded_app):
         """A co-session token (SessionPrincipal) cannot manage the stack."""
@@ -181,29 +187,35 @@ class TestStackBrowse:
             asyncio.run(browse_stack(type="data_package", user=principal))
         assert exc.value.status_code == 403
 
-    def test_browse_flips_in_stack_after_subscribe(self, seeded_app):
+    def test_browse_flips_materialized_after_subscribe(self, seeded_app):
+        """``in_stack`` is already True pre-subscribe (auto-membership);
+        subscribing flips ``materialized`` from False to True."""
         gid = _create_group_with_analyst("BrowseFlip")
         pkg_id = _create_package("browse-flip", "BrowseFlip")
         _grant(gid, "data_package", pkg_id, "available")
         c = seeded_app["client"]
-        # before: available, not in stack
+        # before: available, already in stack, not yet materialized
         before = c.get(
             "/api/stack/browse?type=data_package",
             headers=_auth(seeded_app["analyst_token"]),
         ).json()["items"]
-        assert next(it for it in before if it["id"] == pkg_id)["in_stack"] is False
+        before_item = next(it for it in before if it["id"] == pkg_id)
+        assert before_item["in_stack"] is True
+        assert before_item["materialized"] is False
         # subscribe
         c.post(
             "/api/stack/subscribe",
             json={"resource_type": "data_package", "resource_id": pkg_id},
             headers=_auth(seeded_app["analyst_token"]),
         )
-        # after: in stack
+        # after: materialized
         after = c.get(
             "/api/stack/browse?type=data_package",
             headers=_auth(seeded_app["analyst_token"]),
         ).json()["items"]
-        assert next(it for it in after if it["id"] == pkg_id)["in_stack"] is True
+        after_item = next(it for it in after if it["id"] == pkg_id)
+        assert after_item["in_stack"] is True
+        assert after_item["materialized"] is True
 
 
 # -------- subscribe -------------------------------------------------------
@@ -318,9 +330,5 @@ class TestStackUnsubscribe:
             intersection={},
         )
         with pytest.raises(HTTPException) as exc:
-            asyncio.run(
-                unsubscribe(
-                    resource_type="data_package", resource_id="p1", user=principal
-                )
-            )
+            asyncio.run(unsubscribe(resource_type="data_package", resource_id="p1", user=principal))
         assert exc.value.status_code == 403

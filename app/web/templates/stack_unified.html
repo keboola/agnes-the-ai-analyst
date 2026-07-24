@@ -3,15 +3,19 @@
 {% from "macros/_catalog_card.html" import kind_glyph %}
 {% import "macros/_icon.html" as ico %}
 {# Unified My Stack — the personal workspace: "Everything in your Stack",
-   ONE inventory table across kinds (Data · Plugins · Memory · Uploads):
-   search + sort + kind tabs over rows, not a card grid. Data + Memory +
-   Uploads render server-side; Plugins hydrate from
-   /api/marketplace/items?tab=my. Growing the stack happens on /catalog,
-   which carries the "Recommended for you" row.
+   ONE inventory table across knowledge kinds (Data · Plugins · Memory):
+   search + sort + kind tabs over rows, not a card grid. Data + Memory
+   render server-side; Plugins hydrate from /api/marketplace/items?tab=my.
+   Growing the stack happens on /catalog, which carries the "Recommended
+   for you" row.
+
+   Private uploads (and, soon, data apps) are personal artefacts, not stack
+   knowledge — they live on /artefacts (see artefacts.html), reached from the
+   rail's "Artefacts" entry.
 
    The workspace stat strip on top counts what's IN the stack (items /
-   plugins / memories / uploads), and the connect banner closes the page
-   with the "use it everywhere" value prop. #}
+   plugins / memories), and the connect banner closes the page with the
+   "use it everywhere" value prop. #}
 {% block title %}My Stack — {{ config.INSTANCE_NAME }}{% endblock %}
 {% block container_modifier %}container--wide{% endblock %}
 
@@ -20,14 +24,19 @@
 <style>
   /* Page chrome only — cards live in catalog_card.css, the table rides the
      shared .data-table primitive (style-custom.css). */
+  /* base_index zeroes the last head child's margin-bottom so a tab strip sits
+     flush with the band; this head ends in the stats tray, so give the head
+     its own bottom padding for breathing room above the band line. (Page-local:
+     this stylesheet only loads on /stack.) */
+  .idx-head { padding-bottom: 20px; }
   .uc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 12px; }
   .uc-head h1 { font-size: 24px; margin: 0 0 8px; }
   .uc-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 64ch; }
   /* ── Workspace stat strip — one flat sunken tray between the head and the
-     page body. Four equal-width metrics counting the stack itself (items /
-     plugins / memories / uploads); values update client-side as plugins
-     hydrate and rows are removed. #stk-stat-plugins starts as an em-dash
-     until the marketplace call lands. */
+     page body. Three equal-width metrics counting the stack itself (items /
+     plugins / memories); values update client-side as plugins hydrate and
+     rows are removed. #stk-stat-plugins starts as an em-dash until the
+     marketplace call lands. */
   .stk-stats { display: flex; align-items: center; gap: 24px; flex-wrap: nowrap; margin: 22px 0 20px; padding: 16px 26px; background: var(--ds-surface-sunken); border-radius: 16px; }
   .stk-stat { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 16px; }
   .stk-stat__icon { flex-shrink: 0; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--ds-primary-light); color: var(--ds-primary); }
@@ -81,22 +90,6 @@
   /* The "same knowledge, everywhere" banner is the shared connect-banner
      component (macros/_connect_banner.html, `.cbn-*` in style-custom.css). */
   .stk-connect { margin-top: 30px; }
-  /* New-upload modal */
-  .stk-modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
-  .stk-modal[hidden] { display: none; }
-  .stk-modal-backdrop { position: absolute; inset: 0; background: rgba(15, 23, 42, .45); }
-  .stk-modal-card { position: relative; z-index: 1; width: min(440px, calc(100vw - 32px)); background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; box-shadow: var(--ds-shadow-md); padding: 20px 22px 22px; }
-  .stk-modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-  .stk-modal-head h2 { font-size: 18px; margin: 0; }
-  .stk-modal-x { border: none; background: none; font-size: 22px; line-height: 1; cursor: pointer; color: var(--ds-text-muted); padding: 0 4px; font-family: inherit; }
-  .stk-field { display: block; margin-bottom: 14px; }
-  .stk-field > span { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--ds-text-primary); }
-  .stk-field > span em { font-weight: 400; color: var(--ds-text-muted); font-style: normal; }
-  .stk-field input[type=text] { width: 100%; padding: 9px 12px; border: 1px solid var(--ds-border); border-radius: 9px; font: inherit; background: var(--ds-surface); color: var(--ds-text-primary); }
-  .stk-field input[type=file] { width: 100%; font: inherit; font-size: 13px; color: var(--ds-text-secondary); }
-  .stk-modal-hint { font-size: 12.5px; color: var(--ds-text-secondary); margin: 0 0 14px; }
-  .stk-modal-err { font-size: 13px; color: var(--ds-warn-ink); background: var(--ds-warn-bg); border: 1px solid var(--ds-warn-line); border-radius: 9px; padding: 8px 12px; margin-bottom: 12px; }
-  .stk-modal-foot { display: flex; justify-content: flex-end; gap: 10px; }
 </style>
 {% endblock %}
 
@@ -106,12 +99,11 @@
     <h1>My Stack</h1>
     <p class="lede">Your personal knowledge space. Everything here is available to {{ instance_brand_short or 'Agnes' }} and your connected AI tools when they answer for you.</p>
   </div>
-  <button type="button" class="cc-btn cc-btn--primary" data-new-upload id="new-upload-btn" style="flex-shrink:0">+ New upload</button>
 </div>
 
 {# ── Workspace stats — counts of what's in the stack, not estate telemetry.
      Items + Plugins update client-side once the marketplace call resolves. #}
-{% set stk_base_count = (data_cards|length) + (memory_cards|length) + (upload_cards|length) %}
+{% set stk_base_count = (data_cards|length) + (memory_cards|length) %}
 <div class="stk-stats" aria-label="Your stack at a glance">
   <div class="stk-stat">
     <span class="stk-stat__icon">{{ ico.icon('package', 20) }}</span>
@@ -134,13 +126,6 @@
       <span class="stk-stat__label">Memories</span>
     </span>
   </div>
-  <div class="stk-stat">
-    <span class="stk-stat__icon">{{ ico.icon('doc', 20) }}</span>
-    <span class="stk-stat__body">
-      <span class="stk-stat__value" id="stk-stat-uploads">{{ upload_cards|length }}</span>
-      <span class="stk-stat__label">Uploads</span>
-    </span>
-  </div>
 </div>
 {% endblock %}
 
@@ -148,10 +133,8 @@
 {# ── Everything in your Stack — the single inventory over all kinds.
      Search + kind tabs + sort over table rows; Plugins hydrate into
      rows client-side. #}
+{# id="stack-explore-zone" is the tour step-1 anchor (the tabs + inventory). #}
 <section class="stk-section" id="stack-explore-zone">
-  <div class="stk-section-head">
-    <h2>Everything in your Stack</h2>
-  </div>
   <div class="stk-toolbar">
     <input type="search" class="stk-search" id="stk-search" placeholder="Search in your stack…" autocomplete="off" aria-label="Search in your stack">
     <label class="stk-sort">Sort:
@@ -166,7 +149,6 @@
     <button class="uc-kindtab on" data-kind="all" role="tab" aria-selected="true">All<span class="uc-count" id="stk-count-all">{{ stk_base_count }}</span></button>
     <button class="uc-kindtab" data-kind="data" role="tab" aria-selected="false">Data<span class="uc-count" id="stk-count-data">{{ data_cards|length }}</span></button>
     <button class="uc-kindtab" data-kind="plugins" role="tab" aria-selected="false">Plugins<span class="uc-count" id="stk-count-plugins">—</span></button>
-    <button class="uc-kindtab" data-kind="upload" role="tab" aria-selected="false">Uploads<span class="uc-count" id="stk-count-upload">{{ upload_cards|length }}</span></button>
     <button class="uc-kindtab" data-kind="memory" role="tab" aria-selected="false">Memory<span class="uc-count" id="stk-count-memory">{{ memory_cards|length }}</span></button>
   </div>
 
@@ -192,12 +174,18 @@
       {% set a = c.action or {} %}
       {% if a.mode == 'required' %}
         <span class="cc-required"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width:14px;height:14px"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.7"/></svg>Required</span>
-      {% elif a.mode == 'stack' %}
-        <button type="button" class="cc-btn cc-btn--instack" data-stack-toggle data-state="in"
+      {% elif a.mode == 'stack' or a.mode == 'download' %}
+        {% set is_dl = a.mode == 'download' %}
+        <button type="button" class="cc-btn {{ 'cc-btn--instack' if a.state == 'in' else 'cc-btn--primary' }}"
+                data-stack-toggle data-state="{{ a.state }}" {% if is_dl %}data-toggle-kind="download"{% endif %}
                 data-add-url="{{ a.add_url }}" data-remove-url="{{ a.remove_url }}"
                 {% if a.rt %}data-rt="{{ a.rt }}" data-rid="{{ a.rid }}"{% endif %}>
-          <span class="cc-btn-instack"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> In stack</span>
-          <span class="cc-btn-remove"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> Remove</span>
+          {% if a.state == 'in' %}
+          <span class="cc-btn-instack"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> {{ 'Downloaded' if is_dl else 'In stack' }}</span>
+          <span class="cc-btn-remove"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> {{ 'Remove local copy' if is_dl else 'Remove' }}</span>
+          {% else %}
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> {{ 'Download locally' if is_dl else 'Add to stack' }}
+          {% endif %}
         </button>
       {% else %}
         <a class="cc-btn" href="{{ a.href or c.href }}">{{ a.label or 'Open' }}
@@ -222,12 +210,11 @@
       </thead>
       <tbody id="stk-tbody" data-remove-hides>
         {% for c in data_cards %}{{ stack_row(c, 'data') }}{% endfor %}
-        {% for c in upload_cards %}{{ stack_row(c, 'upload') }}{% endfor %}
         {% for c in memory_cards %}{{ stack_row(c, 'memory') }}{% endfor %}
         <tr class="stk-empty-row" id="stk-empty" hidden>
           <td colspan="6">
             <h3>Nothing here yet</h3>
-            <p>Browse the <a href="/catalog">Catalog</a> and click <b>+ Add to stack</b>, or add a private file with <b>+ New upload</b>.</p>
+            <p>Browse the <a href="/catalog">Catalog</a> and click <b>+ Add to stack</b>. Private files live on <a href="/artefacts">Artefacts</a>.</p>
           </td>
         </tr>
       </tbody>
@@ -238,35 +225,6 @@
 <div class="stk-connect">
   {{ connect_banner('orbit', cta_href='/me/ai-connector') }}
 </div>
-
-{# ── New-upload modal (creates a private upload owned by the caller,
-     then uploads the chosen file into it) ── #}
-<div class="stk-modal" id="uploadModal" hidden>
-  <div class="stk-modal-backdrop" data-close-upload></div>
-  <div class="stk-modal-card" role="dialog" aria-modal="true" aria-labelledby="uploadModalTitle">
-    <div class="stk-modal-head">
-      <h2 id="uploadModalTitle">New upload</h2>
-      <button type="button" class="stk-modal-x" data-close-upload aria-label="Close">&times;</button>
-    </div>
-    <form id="uploadForm">
-      <label class="stk-field">
-        <span>Name <em>(optional)</em></span>
-        <input type="text" id="uploadName" placeholder="e.g. Q3 board deck" autocomplete="off">
-      </label>
-      <label class="stk-field">
-        <span>File</span>
-        <input type="file" id="uploadFile" required>
-      </label>
-      <p class="stk-modal-hint">Your upload stays private to you. {{ instance_brand_short or 'Agnes' }} indexes it so your agents can search across it.</p>
-      <div class="stk-modal-err" id="uploadErr" hidden></div>
-      <div class="stk-modal-foot">
-        <button type="button" class="cc-btn" data-close-upload>Cancel</button>
-        <button type="submit" class="cc-btn cc-btn--primary" id="uploadSubmit">Upload</button>
-      </div>
-    </form>
-  </div>
-</div>
-
 {% endblock %}
 
 {% block scripts %}
@@ -322,18 +280,16 @@
   // ── Counts: tab badges + the workspace stats derive from the DOM, so
   //    plugin hydration and row removal both flow through one place.
   function recount() {
-    const byKind = { data: 0, plugins: 0, upload: 0, memory: 0 };
+    const byKind = { data: 0, plugins: 0, memory: 0 };
     rows().forEach(r => { byKind[r.dataset.kind] = (byKind[r.dataset.kind] || 0) + 1; });
-    const nonPlugin = byKind.data + byKind.upload + byKind.memory;
+    const nonPlugin = byKind.data + byKind.memory;
     const total = nonPlugin + (pluginCount === null ? 0 : byKind.plugins);
     const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = String(v); };
     set('stk-count-all', total);
     set('stk-count-data', byKind.data);
-    set('stk-count-upload', byKind.upload);
     set('stk-count-memory', byKind.memory);
     set('stk-stat-items', total);
     set('stk-stat-memory', byKind.memory);
-    set('stk-stat-uploads', byKind.upload);
     if (pluginCount !== null) {
       set('stk-count-plugins', byKind.plugins);
       set('stk-stat-plugins', byKind.plugins);
@@ -463,78 +419,9 @@
     }
   }
 
-  // ── New-upload modal: create a private upload, then upload the file ──
-  const uploadModal = document.getElementById('uploadModal');
-  const uploadForm = document.getElementById('uploadForm');
-  const uploadErr = document.getElementById('uploadErr');
-  const uploadName = document.getElementById('uploadName');
-  const uploadFile = document.getElementById('uploadFile');
-  const uploadSubmit = document.getElementById('uploadSubmit');
-  function openUpload() {
-    if (!uploadModal) return;
-    uploadModal.hidden = false;
-    uploadErr.hidden = true;
-    setTimeout(() => uploadName && uploadName.focus(), 30);
-  }
-  function closeUpload() { if (uploadModal) uploadModal.hidden = true; }
-  function uploadShowErr(msg) { uploadErr.textContent = msg; uploadErr.hidden = false; }
-  document.querySelectorAll('[data-new-upload]').forEach(b => b.addEventListener('click', openUpload));
-  document.querySelectorAll('[data-close-upload]').forEach(b => b.addEventListener('click', closeUpload));
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && uploadModal && !uploadModal.hidden) closeUpload();
-  });
-  if (uploadForm) uploadForm.addEventListener('submit', async e => {
-    e.preventDefault();
-    const file = uploadFile.files && uploadFile.files[0];
-    if (!file) { uploadShowErr('Choose a file to upload.'); return; }
-    let name = (uploadName.value || '').trim();
-    if (!name) name = file.name.replace(/\.[^.]+$/, '') || file.name;
-    uploadSubmit.disabled = true;
-    uploadSubmit.textContent = 'Uploading…';
-    uploadErr.hidden = true;
-    try {
-      const cResp = await fetch('/api/collections', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ name }),
-      });
-      if (cResp.status === 409) throw new Error('you already have an upload with that name — try another');
-      if (!cResp.ok) throw new Error('create failed (' + cResp.status + ')');
-      const col = await cResp.json();
-      const fd = new FormData();
-      fd.append('files', file);
-      const fResp = await fetch('/api/collections/' + encodeURIComponent(col.id) + '/files', {
-        method: 'POST',
-        credentials: 'same-origin',
-        body: fd,
-      });
-      if (!fResp.ok && fResp.status !== 422) throw new Error('upload failed (' + fResp.status + ')');
-      // Where to land after the upload depends on the chrome layout:
-      //  • topnav — go to the collection's detail page (library_detail.html).
-      //    On 422 the file was rejected (e.g. unsupported type) but the
-      //    collection exists; the detail page shows each file's status
-      //    (rejected with reason + a re-ingest action), so the user always
-      //    sees what happened instead of a silent reload onto /stack.
-      //  • rail — there is no Library surface; uploads *are* the "Uploads" tab
-      //    on My Stack. Reload back onto that tab so the user stays in their
-      //    stack instead of being kicked to /library/{slug}. The ?kind=upload
-      //    param re-activates the Uploads tab on load (see below).
-      {% if (ui_layout | default('topnav')) == 'rail' %}
-      window.location.href = '/stack?kind=upload';
-      {% else %}
-      window.location.href = '/library/' + encodeURIComponent(col.slug || col.id);
-      {% endif %}
-    } catch (err) {
-      uploadSubmit.disabled = false;
-      uploadSubmit.textContent = 'Upload';
-      uploadShowErr('Could not upload: ' + (err && err.message ? err.message : err));
-    }
-  });
-
   // ── Boot: honor ?kind=… deep links, then hydrate plugins.
   const urlKind = new URLSearchParams(window.location.search).get('kind');
-  const validKinds = ['all', 'data', 'plugins', 'memory', 'upload'];
+  const validKinds = ['all', 'data', 'plugins', 'memory'];
   if (validKinds.includes(urlKind) && urlKind !== 'all') {
     const tab = document.querySelector('.uc-kindtab[data-kind="' + urlKind + '"]');
     if (tab) tab.click();

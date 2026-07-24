@@ -737,25 +737,20 @@ async def update_grant_requirement(
 ):
     """Update the ``requirement`` enum on an existing grant.
 
-    v49 — Section 4.5 of the unified-stack design (soft downgrade): when
-    transitioning ``required → available`` we eagerly materialize a
-    ``user_stack_subscriptions`` row for every user currently in the
-    granted group, so the resource stays in their stack instead of
-    silently disappearing on the next refresh. ``marketplace_plugin``
-    grants fan out into ``user_plugin_optouts`` instead — that is the
-    subscription table ``resolve_user_marketplace`` reads.
+    Auto-membership stack model: ``data_package``/``memory_domain`` grants no
+    longer need a soft-downgrade fan-out. Both ``required`` and ``available``
+    are automatically in every granted user's stack (``StackResolver.stack``),
+    so flipping ``required → available`` never drops the resource from
+    anyone's stack — it only lifts the "always downloaded locally" guarantee
+    down to "downloaded once the user subscribes". No ``user_stack_
+    subscriptions`` row needs to be eagerly written to preserve visibility.
 
-    Both writes route through the ``src.repositories`` factory so they hit
-    the active backend (Postgres when configured) — the old raw
-    ``INSERT ... SELECT`` on a DuckDB ``_get_db`` connection wrote the
-    frozen DuckDB system file on PG instances (#518), so the subscriptions
-    never materialized and the "single transaction" guarantee was already
-    void across backends.
-
-    Going the other direction (``available → required``) is a no-op for
-    subscriptions — required is the always-in-stack tier and the
-    StackResolver treats required ids as in_stack regardless of any
-    subscription row.
+    ``marketplace_plugin`` grants are the one remaining exception: plugin
+    visibility is resolved by ``resolve_user_marketplace`` off
+    ``user_plugin_optouts``, a separate (opt-out, not opt-in) mechanism
+    outside the StackResolver's auto-membership — so a ``required →
+    available`` downgrade there still fans out eagerly to keep every group
+    member's served set from silently shrinking.
     """
     if payload.requirement not in ("available", "required"):
         raise HTTPException(
@@ -768,31 +763,24 @@ async def update_grant_requirement(
         raise HTTPException(status_code=404, detail="Grant not found")
 
     prior = grants.update_requirement(grant_id, payload.requirement)
-    # Soft-downgrade: required → available eagerly subscribes every current
-    # group member to preserve continuity. Idempotent (ON CONFLICT DO NOTHING).
-    if prior == "required" and payload.requirement == "available":
-        if existing["resource_type"] == "marketplace_plugin":
-            # Plugin subscriptions live in ``user_plugin_optouts`` (read by
-            # ``resolve_user_marketplace``), not ``user_stack_subscriptions``
-            # — fanning out to the stack table would let every group
-            # member's served set silently shrink on downgrade.
-            # resource_id format is ``<marketplace_slug>/<plugin_name>``.
-            from src.repositories import user_curated_subscriptions_repo
+    # marketplace_plugin soft-downgrade: required → available still needs the
+    # eager opt-out fan-out (see docstring) — data_package/memory_domain do
+    # not, since auto-membership already keeps them in every granted user's
+    # stack regardless of requirement tier.
+    if prior == "required" and payload.requirement == "available" and existing["resource_type"] == "marketplace_plugin":
+        # Plugin subscriptions live in ``user_plugin_optouts`` (read by
+        # ``resolve_user_marketplace``), not ``user_stack_subscriptions``
+        # — fanning out to the stack table would let every group
+        # member's served set silently shrink on downgrade.
+        # resource_id format is ``<marketplace_slug>/<plugin_name>``.
+        from src.repositories import user_curated_subscriptions_repo
 
-            slug, _, plugin_name = existing["resource_id"].partition("/")
-            if plugin_name:
-                user_curated_subscriptions_repo().subscribe_group_members(
-                    existing["group_id"],
-                    slug,
-                    plugin_name,
-                )
-        else:
-            from src.repositories import user_stack_subscriptions_repo
-
-            user_stack_subscriptions_repo().subscribe_group_members(
+        slug, _, plugin_name = existing["resource_id"].partition("/")
+        if plugin_name:
+            user_curated_subscriptions_repo().subscribe_group_members(
                 existing["group_id"],
-                existing["resource_type"],
-                existing["resource_id"],
+                slug,
+                plugin_name,
             )
 
     _audit(

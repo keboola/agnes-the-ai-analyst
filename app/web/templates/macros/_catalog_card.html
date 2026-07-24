@@ -24,6 +24,15 @@
                         state 'add'|'in'
                         add_url, remove_url  (required for stack)
                         add_body (dict|None) — JSON body for the add POST
+                        Used by Marketplace-sourced kinds (plugins) —
+                        install/uninstall, unrelated to the RBAC stack.
+                   mode 'download'  → Download-locally / local-copy toggle
+                        state 'add'|'in'
+                        add_url, remove_url  (required for download)
+                        Used by Data/Memory kinds: the resource is ALWAYS
+                        already in the caller's stack (auto-membership —
+                        RBAC-granted), this toggle only controls whether
+                        `agnes pull` ALSO keeps a local copy on disk.
                    mode 'required'  → locked 'Required' pill
                    mode 'link'      → styled link
                         href, label
@@ -96,19 +105,21 @@
     {% set a = c.action or {} %}
     {% if a.mode == 'required' %}
       <span class="cc-required"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.7"/></svg>Required</span>
-    {% elif a.mode == 'stack' %}
+    {% elif a.mode == 'stack' or a.mode == 'download' %}
+      {% set is_dl = a.mode == 'download' %}
       <button type="button"
               class="cc-btn {{ 'cc-btn--instack' if a.state == 'in' else 'cc-btn--primary' }}"
               data-stack-toggle
               data-state="{{ a.state }}"
+              {% if is_dl %}data-toggle-kind="download"{% endif %}
               data-add-url="{{ a.add_url }}"
               data-remove-url="{{ a.remove_url }}"
               {% if a.rt %}data-rt="{{ a.rt }}" data-rid="{{ a.rid }}"{% endif %}>
         {% if a.state == 'in' %}
-          <span class="cc-btn-instack"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> In stack</span>
-          <span class="cc-btn-remove"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> Remove</span>
+          <span class="cc-btn-instack"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> {{ 'Downloaded' if is_dl else 'In stack' }}</span>
+          <span class="cc-btn-remove"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> {{ 'Remove local copy' if is_dl else 'Remove' }}</span>
         {% else %}
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> Add to stack
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> {{ 'Download locally' if is_dl else 'Add to stack' }}
         {% endif %}
       </button>
     {% else %}

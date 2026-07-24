@@ -33,13 +33,24 @@
   };
   const ARROW = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
+  // Two wordings share the same toggle mechanics (POST/DELETE add_url/
+  // remove_url, flip in↔add): 'stack' is Marketplace install/uninstall
+  // (plugins — untouched by the RBAC auto-membership stack model);
+  // 'download' is Data/Memory local-copy state (the resource is ALWAYS
+  // already in the caller's stack once granted — this only controls
+  // whether `agnes pull` also keeps a local copy on disk).
+  const TOGGLE_LABELS = {
+    stack: { in: 'In stack', remove: 'Remove', add: 'Add to stack' },
+    download: { in: 'Downloaded', remove: 'Remove local copy', add: 'Download locally' },
+  };
   function stackBtnClass(state) { return 'cc-btn ' + (state === 'in' ? 'cc-btn--instack' : 'cc-btn--primary'); }
-  function stackBtnInner(state) {
+  function stackBtnInner(state, kind) {
+    const labels = TOGGLE_LABELS[kind] || TOGGLE_LABELS.stack;
     if (state === 'in') {
-      return '<span class="cc-btn-instack"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> In stack</span>' +
-             '<span class="cc-btn-remove"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> Remove</span>';
+      return '<span class="cc-btn-instack"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> ' + labels.in + '</span>' +
+             '<span class="cc-btn-remove"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> ' + labels.remove + '</span>';
     }
-    return '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> Add to stack';
+    return '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> ' + labels.add;
   }
 
   function footerAction(a) {
@@ -47,11 +58,13 @@
     if (a.mode === 'required') {
       return '<span class="cc-required"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.7"/></svg>Required</span>';
     }
-    if (a.mode === 'stack') {
+    if (a.mode === 'stack' || a.mode === 'download') {
+      const kind = a.mode === 'download' ? 'download' : 'stack';
       return '<button type="button" class="' + stackBtnClass(a.state) + '" data-stack-toggle data-state="' + esc(a.state) +
-        '" data-add-url="' + esc(a.add_url) + '" data-remove-url="' + esc(a.remove_url) + '"' +
+        '" data-toggle-kind="' + kind + '"' +
+        ' data-add-url="' + esc(a.add_url) + '" data-remove-url="' + esc(a.remove_url) + '"' +
         (a.rt ? ' data-rt="' + esc(a.rt) + '" data-rid="' + esc(a.rid) + '"' : '') + '>' +
-        stackBtnInner(a.state) + '</button>';
+        stackBtnInner(a.state, kind) + '</button>';
     }
     return '<a class="cc-btn" href="' + esc(a.href) + '">' + esc(a.label || 'Open') + ARROW + '</a>';
   }
@@ -89,6 +102,7 @@
     ev.preventDefault();
     if (btn.disabled) return;
     const adding = btn.dataset.state !== 'in';
+    const kind = btn.dataset.toggleKind === 'download' ? 'download' : 'stack';
     btn.disabled = true;
     try {
       let resp;
@@ -104,8 +118,12 @@
       }
       if (!(resp.ok || resp.status === 204)) throw new Error('HTTP ' + resp.status);
       // On My Stack, removal drops the card (grid) or row (inventory
-      // table); elsewhere it flips to "Add".
-      if (!adding && btn.closest('[data-remove-hides]')) {
+      // table) for a 'stack' toggle (Marketplace uninstall — the resource
+      // is genuinely gone); elsewhere it flips to "Add". A 'download'
+      // toggle NEVER hides the row: removing the local copy doesn't drop
+      // the resource from the stack (auto-membership keeps it visible),
+      // it only reverts to "not yet downloaded".
+      if (!adding && kind !== 'download' && btn.closest('[data-remove-hides]')) {
         const card = btn.closest('.cc-card, [data-stack-row]');
         if (card) { card.remove(); return; }
       }
@@ -122,7 +140,7 @@
       targets.forEach(b => {
         b.dataset.state = next;
         b.className = stackBtnClass(next);
-        b.innerHTML = stackBtnInner(next);
+        b.innerHTML = stackBtnInner(next, kind);
       });
     } catch (e) {
       console.error('stack toggle failed', e);

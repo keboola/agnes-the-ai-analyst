@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
 
 from src.db import get_system_db
 
@@ -53,8 +52,12 @@ def _create_package(slug: str, name: str) -> str:
 
     conn = get_system_db()
     pkg_id = DataPackagesRepository(conn).create(
-        name=name, slug=slug, description=None,
-        icon="📦", color="#abc", created_by="test",
+        name=name,
+        slug=slug,
+        description=None,
+        icon="📦",
+        color="#abc",
+        created_by="test",
     )
     conn.close()
     return pkg_id
@@ -65,8 +68,12 @@ def _create_memory_domain(slug: str, name: str) -> str:
 
     conn = get_system_db()
     did = MemoryDomainsRepository(conn).create(
-        name=name, slug=slug, description=None,
-        icon="🎯", color="#dcfce7", created_by="test",
+        name=name,
+        slug=slug,
+        description=None,
+        icon="🎯",
+        color="#dcfce7",
+        created_by="test",
     )
     conn.close()
     return did
@@ -92,8 +99,7 @@ def _register_table(name: str) -> str:
 def _telemetry_count(event_type: str, user_id: str) -> int:
     conn = get_system_db()
     n = conn.execute(
-        "SELECT COUNT(*) FROM usage_events "
-        "WHERE event_type = ? AND user_id = ? AND source = 'server'",
+        "SELECT COUNT(*) FROM usage_events WHERE event_type = ? AND user_id = ? AND source = 'server'",
         [event_type, user_id],
     ).fetchone()[0]
     conn.close()
@@ -125,10 +131,14 @@ class TestManifestExtensions:
             json={"resource_type": "data_package", "resource_id": pkg_id},
             headers=_auth(seeded_app["analyst_token"]),
         )
-        body = seeded_app["client"].get(
-            "/api/sync/manifest",
-            headers=_auth(seeded_app["analyst_token"]),
-        ).json()
+        body = (
+            seeded_app["client"]
+            .get(
+                "/api/sync/manifest",
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            .json()
+        )
         slugs = [p["slug"] for p in body["data_packages"]]
         assert "manifest-pkg" in slugs
 
@@ -136,10 +146,14 @@ class TestManifestExtensions:
         gid = _create_group_with_analyst("MDom")
         did = _create_memory_domain("manifest-dom", "ManifestDom")
         _grant(gid, "memory_domain", did, "required")
-        body = seeded_app["client"].get(
-            "/api/sync/manifest",
-            headers=_auth(seeded_app["analyst_token"]),
-        ).json()
+        body = (
+            seeded_app["client"]
+            .get(
+                "/api/sync/manifest",
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            .json()
+        )
         slugs = [d["slug"] for d in body["memory_domains"]]
         assert "manifest-dom" in slugs
         dom = next(d for d in body["memory_domains"] if d["slug"] == "manifest-dom")
@@ -155,6 +169,88 @@ class TestManifestExtensions:
         after = _telemetry_count("sync.pull_started", "analyst1")
         assert after == before + 1
 
+    def test_manifest_download_skip_for_available_package_not_materialized(self, seeded_app):
+        """Auto-membership: a granted-but-not-subscribed ``available``
+        package's table is authorized+listed (both in the typed
+        ``data_packages[]`` section and the flat ``tables`` dict) but
+        flagged ``server_only`` so `agnes pull` does not fetch its parquet
+        — the download-skip is per-user, reusing the existing #607
+        listed-but-not-downloaded mechanism."""
+        gid = _create_group_with_analyst("DLSkip")
+        pkg_id = _create_package("dl-skip-pkg", "DlSkipPkg")
+        table_id = _register_table("dl_skip_table")
+        conn = get_system_db()
+        from src.repositories.data_packages import DataPackagesRepository
+        from src.repositories.sync_state import SyncStateRepository
+
+        DataPackagesRepository(conn).add_table(pkg_id, table_id, added_by="test")
+        SyncStateRepository(conn).update_sync(table_id="dl_skip_table", rows=10, file_size_bytes=100, hash="h1")
+        conn.close()
+        _grant(gid, "data_package", pkg_id, "available")
+
+        body = (
+            seeded_app["client"]
+            .get(
+                "/api/sync/manifest",
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            .json()
+        )
+
+        # Authorized + listed in the typed section, flagged server_only.
+        pkg = next(p for p in body["data_packages"] if p["slug"] == "dl-skip-pkg")
+        t = next(x for x in pkg["tables"] if x["id"] == table_id)
+        assert t["server_only"] is True
+
+        # Also authorized + listed in the flat legacy dict, same flag —
+        # this is what `cli/lib/pull.py`'s download loop actually reads.
+        flat = body["tables"]["dl_skip_table"]
+        assert flat["server_only"] is True
+
+        # Subscribing (= "download locally") clears the flag.
+        r = seeded_app["client"].post(
+            "/api/stack/subscribe",
+            json={"resource_type": "data_package", "resource_id": pkg_id},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert r.status_code == 200, r.text
+        body = (
+            seeded_app["client"]
+            .get(
+                "/api/sync/manifest",
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            .json()
+        )
+        flat = body["tables"]["dl_skip_table"]
+        assert flat["server_only"] is False
+
+    def test_manifest_required_package_table_always_downloadable(self, seeded_app):
+        """A ``required`` package's table is never flagged server_only by
+        the auto-membership overlay — required is always materialized."""
+        gid = _create_group_with_analyst("DLReq")
+        pkg_id = _create_package("dl-req-pkg", "DlReqPkg")
+        table_id = _register_table("dl_req_table")
+        conn = get_system_db()
+        from src.repositories.data_packages import DataPackagesRepository
+        from src.repositories.sync_state import SyncStateRepository
+
+        DataPackagesRepository(conn).add_table(pkg_id, table_id, added_by="test")
+        SyncStateRepository(conn).update_sync(table_id="dl_req_table", rows=10, file_size_bytes=100, hash="h1")
+        conn.close()
+        _grant(gid, "data_package", pkg_id, "required")
+
+        body = (
+            seeded_app["client"]
+            .get(
+                "/api/sync/manifest",
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            .json()
+        )
+        flat = body["tables"]["dl_req_table"]
+        assert flat["server_only"] is False
+
     def test_manifest_direct_tables_dedupes_packaged(self, seeded_app):
         """A table granted both directly and via a package shouldn't appear
         twice — it stays under the package and is filtered out of
@@ -164,15 +260,20 @@ class TestManifestExtensions:
         table_id = _register_table("orders_manifest")
         # Attach table to package
         from src.repositories.data_packages import DataPackagesRepository
+
         conn = get_system_db()
         DataPackagesRepository(conn).add_table(pkg_id, table_id, added_by="test")
         conn.close()
         _grant(gid, "data_package", pkg_id, "required")  # required → in stack auto
         _grant(gid, "table", table_id, "available")
-        body = seeded_app["client"].get(
-            "/api/sync/manifest",
-            headers=_auth(seeded_app["analyst_token"]),
-        ).json()
+        body = (
+            seeded_app["client"]
+            .get(
+                "/api/sync/manifest",
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            .json()
+        )
         direct_ids = [t["id"] for t in body["direct_tables"]]
         assert table_id not in direct_ids
         # But it still appears under the package

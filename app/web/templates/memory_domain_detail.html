@@ -72,12 +72,15 @@
      kind='memory', name=domain.name, color=domain.color, icon=domain.icon,
      description=domain.description, meta=_meta,
      back_href=_back, back_label='All memory domains') %}
+  {# Auto-membership: this domain is already in the caller's stack (any
+     grant, required or available); the toggle only controls the local-
+     download state — see catalog_package_detail.html for the same note. #}
   {% if effective_requirement == 'required' %}
-    <button class="btn btn-required" disabled>In stack (required)</button>
+    <button class="btn btn-required" disabled>Always downloaded (required)</button>
   {% elif in_stack %}
-    {{ ds.button('Remove from stack', variant='danger', type='button', id='dom-remove-btn') }}
+    {{ ds.button('Remove local copy', variant='danger', type='button', id='dom-remove-btn') }}
   {% else %}
-    {{ ds.button('+ Add to stack', variant='primary', type='button', id='dom-add-btn') }}
+    {{ ds.button('Download locally', variant='primary', type='button', id='dom-add-btn') }}
   {% endif %}
   {{ detail.ask_kai('Tell me what you know about ' ~ domain.name ~ ' from our corporate memory.') }}
 {% endcall %}

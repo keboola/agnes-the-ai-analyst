@@ -32,12 +32,12 @@ export const TOURS = {
         'Locked cards were set up by your admin — I use them automatically, and you can\'t remove them.',
       ],
     },
-    // Step 1: /stack — the New upload button
+    // Step 1: /stack — the Artefacts nav (private uploads live under Artefacts).
     {
       page: '/stack',
-      selector: '#new-upload-btn',
+      selector: '#nav-artefacts',
       title: 'Add your own files',
-      desc: 'Upload a document only you need — a pricing deck, a spec, meeting notes — and I\'ll search it and cite it in my answers. No admin needed.',
+      desc: 'Your private files live under Artefacts — upload a document only you need (a pricing deck, a spec, meeting notes) and I\'ll search it and cite it in my answers. No admin needed.',
       points: [
         'Works with PDF, Markdown, TXT, and more.',
         'Private to you unless you choose to share it.',
@@ -88,6 +88,11 @@ export const TOURS = {
 // ── Persistence helpers ─────────────────────────────────────────────────────
 
 const PENDING_KEY = 'agnes.tour.pending';
+// Only auto-resume a pending record written within this window. A cross-page
+// tour hop stashes then navigates and the destination loads within seconds; a
+// stale record (the user abandoned the tour via a normal link) must not re-pop
+// the tour on later /stack or /catalog visits.
+const RESUME_FRESH_MS = 12000;
 
 function seenKey(id) {
   return `agnes.tour.${id}.seen`;
@@ -109,7 +114,7 @@ function markSeen(id) {
 
 function stashPending(id, index) {
   try {
-    sessionStorage.setItem(PENDING_KEY, JSON.stringify({ id, index }));
+    sessionStorage.setItem(PENDING_KEY, JSON.stringify({ id, index, ts: Date.now() }));
   } catch (_) { /* storage unavailable — non-fatal */ }
 }
 
@@ -222,6 +227,12 @@ function _showStep(index) {
     anchor.classList.add('tour-spotlight');
     _active.spotlight = anchor;
   }
+
+  // Keep the resume record in sync with the step actually on screen (not just
+  // cross-page hops), so a reload mid-tour resumes here — and re-stamp its
+  // freshness. Combined with the RESUME_FRESH_MS window, an abandoned tour
+  // stops re-popping once the record goes stale.
+  stashPending(_active.id, index);
 
   // Build popover.
   const popover = _buildPopover(step, index, steps.length);
@@ -421,11 +432,18 @@ const VIEWPORT_PAD = 12;
 
 function _positionPopover(popover, anchor, centered) {
   if (centered || !anchor) {
-    // Center in viewport.
+    // Center in the viewport WITHOUT a transform. The popover carries a
+    // fill:both entrance animation whose end keyframe sets `transform`
+    // (translateY(0) scale(1)); a CSS animation outranks an inline style, so an
+    // inline translate(-50%,-50%) would be clobbered and the card would settle
+    // off-centre (down/right). Compute absolute top/left from the measured size
+    // instead — the animation's identity end-transform is then harmless.
+    const popW = popover.offsetWidth || 380;
+    const popH = popover.offsetHeight || 260;
     popover.style.position = 'fixed';
-    popover.style.top = '50%';
-    popover.style.left = '50%';
-    popover.style.transform = 'translate(-50%, -50%)';
+    popover.style.transform = '';
+    popover.style.left = `${Math.max(VIEWPORT_PAD, (window.innerWidth - popW) / 2)}px`;
+    popover.style.top = `${Math.max(VIEWPORT_PAD, (window.innerHeight - popH) / 2)}px`;
     return;
   }
 
@@ -495,6 +513,13 @@ function _removeListeners() {
 export function resumePendingTour() {
   const pending = getPending();
   if (!pending) return false;
+
+  // Only resume a fresh record — a stale one means the user abandoned the tour
+  // via ordinary navigation; don't re-pop it uninvited.
+  if (!pending.ts || Date.now() - pending.ts > RESUME_FRESH_MS) {
+    clearPending();
+    return false;
+  }
 
   const { id, index } = pending;
   const steps = TOURS[id];
