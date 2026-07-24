@@ -1,6 +1,6 @@
 """v97: agent_webhooks + agent_artifacts tables exist after _ensure_schema."""
 
-from src.db import _ensure_schema
+from src.db import SCHEMA_VERSION, _ensure_schema
 from src.duckdb_conn import _open_duckdb
 
 
@@ -36,5 +36,9 @@ def test_v97_tables(tmp_path):
         "md5",
         "created_at",
     } <= _cols(conn, "agent_artifacts")
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 97
+    # This test's job is "the v97 tables exist" — the exact current ladder
+    # version is tests/test_db_schema_version.py's job, so only assert we're
+    # at least at v97 (using the live SCHEMA_VERSION constant, not a pin).
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] >= 97
+    assert SCHEMA_VERSION >= 97
     conn.close()

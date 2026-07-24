@@ -119,8 +119,9 @@ class TestRegistration:
         """Regression guard for the wave-2B `register_all_kinds` test
         (`tests/test_worker_kinds.py`), which asserts the exact registered
         set — this proves `ducklake-maintenance` (and wave-2G Task 6's
-        `analytics-migrate`, and wave-2H Task WF-3's `distribution-mirror`)
-        coexist without disturbing the others.
+        `analytics-migrate`, wave-2H Task WF-3's `distribution-mirror`, and
+        V1b Task 6's `webhook-deliver`) coexist without disturbing the
+        others.
 
         `agent_response` is deliberately excluded from this set — this
         fixture's `clean_job_kinds_registry` resets the chat-manager
@@ -142,6 +143,7 @@ class TestRegistration:
             "ducklake-maintenance",
             "analytics-migrate",
             "distribution-mirror",
+            "webhook-deliver",
         }
 
 

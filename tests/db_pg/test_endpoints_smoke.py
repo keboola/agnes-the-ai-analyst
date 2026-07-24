@@ -2166,6 +2166,34 @@ KNOWN_UNTESTED = {
     "GET /api/v1/sessions/{session_id}",
     "POST /api/v1/sessions/{session_id}/cancel",
     "DELETE /api/v1/sessions/{session_id}",
+    # Agent usage (V1a Task 9 follow-up) — token-budget usage summary for an
+    # owner-scoped agent. Behaviour covered by tests/test_agent_usage_api.py;
+    # not duplicated in this PG smoke sweep.
+    "GET /api/v1/agents/{slug}/usage",
+    # Agent-as-API outbound webhooks (V1b Task 6) — CRUD for owner-scoped
+    # webhook subscriptions (SSRF-hardened URL validation, HMAC secret
+    # issuance, active-events set). Behaviour covered by
+    # tests/test_agent_webhooks_api.py; not duplicated in this PG smoke sweep.
+    "GET /api/v1/agents/{slug}/webhooks",
+    "POST /api/v1/agents/{slug}/webhooks",
+    "DELETE /api/v1/agents/{slug}/webhooks/{webhook_id}",
+    # Agent memory admin (V1b) — owner-scoped list/approve-or-edit/reject of
+    # an agent's candidate memories. Behaviour covered by
+    # tests/test_agent_memory_admin_api.py; not duplicated in this PG smoke
+    # sweep.
+    "GET /api/v1/agents/{agent_id}/memories",
+    "PATCH /api/v1/agents/{agent_id}/memories/{memory_id}",
+    "DELETE /api/v1/agents/{agent_id}/memories/{memory_id}",
+    # Agent memory write (V1b) — session-scoped "remember" tool write path.
+    # Behaviour covered by tests/test_agent_memory_write_api.py; not
+    # duplicated in this PG smoke sweep.
+    "POST /api/v1/sessions/{session_id}/memories",
+    # Agent session artifacts (V1c) — sandbox-harvested artifact listing/
+    # download for a multi-turn agent session. Behaviour covered by
+    # tests/test_agent_artifacts_api.py; not duplicated in this PG smoke
+    # sweep.
+    "GET /api/v1/sessions/{session_id}/artifacts",
+    "GET /api/v1/sessions/{session_id}/artifacts/{artifact_id}",
 }
 
 
