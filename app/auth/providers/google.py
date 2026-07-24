@@ -176,10 +176,12 @@ async def google_callback(request: Request):
         # home route (AGNES_HOME_ROUTE / instance.home_route / /dashboard).
         target = safe_next_path(request.session.pop("login_next", None))
 
-        # Redirect to target with token in cookie. Match password/email providers:
-        # Secure only when DOMAIN is set (production with TLS), so the cookie is
-        # actually sent over plain HTTP in dev.
-        use_secure = os.environ.get("DOMAIN", "") != ""
+        # Redirect to target with token in cookie. Secure whenever served over
+        # HTTPS (proxy-aware via request scheme + resolved public origin), not
+        # only when DOMAIN is set — see app.auth.public_url.cookie_secure.
+        from app.auth.public_url import cookie_secure
+
+        use_secure = cookie_secure(request)
         response = RedirectResponse(url=target, status_code=302)
         from app.instance_config import session_cookie_domain
 
