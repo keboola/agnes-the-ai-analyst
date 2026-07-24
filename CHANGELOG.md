@@ -14,6 +14,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.33] - 2026-07-24
+
+### Changed
+
 - **Cloud-chat conversations survive a sandbox respawn with FULL context.**
   A fresh sandbox for a chat with history (crash respawn, post-restart
   spawn, cross-gateway takeover) previously replayed only the last 3 raw
