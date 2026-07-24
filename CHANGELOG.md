@@ -22,6 +22,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **Data Apps: drafts hidden from the `/apps` web list and admin grant picker.** `GET /api/data-apps`, `agnes app list`, and the MCP `data_apps_list` tool already excluded drafts; the human-facing `/apps` page and `/admin/access`'s data-app grant picker now filter them too.
+
 ### Removed
 
 ### Internal
