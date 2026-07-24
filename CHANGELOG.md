@@ -39,6 +39,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   (`chat.idle_grace_seconds`, default 60 s) keeps the sandbox warm through a
   likely follow-up before it pauses.
 
+## [0.76.26] - 2026-07-24
+
+### Fixed
+
+- Worker lane slots now wake immediately on a fresh Postgres enqueue instead
+  of waiting out their poll interval: `enqueue` emits `NOTIFY agnes_jobs` and
+  the worker `LISTEN`s on it (`app/worker/wakeup.py`). Polling stays the floor
+  — it still covers `run_after`/retry eligibility, the DuckDB backend, and any
+  listener failure — so latency can only improve, never regress or skip a job.
+- The scheduler's per-job `last_run` catch-up state is now persisted to
+  `${DATA_DIR}/state/scheduler_last_run.json` and restored on startup, so a
+  restart/recreate no longer resets every job to "never ran" and re-fires the
+  whole set on the first post-grace tick. Best-effort: a load/persist failure
+  falls back to the previous in-memory behavior. The persisted-file write uses
+  a per-process tmp filename so two scheduler containers sharing `DATA_DIR`
+  can't race on the same tmp path.
+
 ## [0.76.23] - 2026-07-24
 
 ### Fixed
