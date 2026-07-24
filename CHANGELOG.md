@@ -12,6 +12,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- **Data Apps: prod + draft iteration model.** Create a draft on an iteration branch
+  (`agnes app draft create`), deploy it in `dev` mode, then promote by merging into
+  `main`; drafts share the prod app's git repo and are hidden from the app list.
+  New MCP tools (`data_app_create_draft`, `data_app_delete_draft`, `data_app_git_credential`)
+  and a broker `data_apps` scope let the chat agent author apps end-to-end.
+
 ### Changed
 
 ### Fixed

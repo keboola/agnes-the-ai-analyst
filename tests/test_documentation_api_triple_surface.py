@@ -104,6 +104,13 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/data-apps/{slug}": ("app show", "data_app_get"),
     "/api/data-apps/{slug}/deploy": ("app deploy", "data_app_deploy"),
     "/api/data-apps/{slug}/logs": ("app logs", "data_app_logs"),
+    # Wave 3B draft-iteration model (Task 8) — CLI (`agnes app draft
+    # create/delete`, `agnes app git-credential`) and MCP tools
+    # (`data_app_create_draft`/`data_app_delete_draft`/`data_app_git_credential`)
+    # landed together; all three surfaces now agree.
+    "/api/data-apps/{slug}/drafts": ("app draft create", "data_app_create_draft"),
+    "/api/data-apps/{slug}/drafts/{draft_slug}": ("app draft delete", "data_app_delete_draft"),
+    "/api/data-apps/{slug}/git-credential": ("app git-credential", "data_app_git_credential"),
 }
 
 
@@ -403,23 +410,16 @@ _EXEMPT: dict[str, str] = {
     "/api/data-apps/{slug}/stop": _DATA_APPS_REASON,
     "/api/data-apps/{slug}/secrets": _DATA_APPS_SECRETS_REASON,
     "/api/data-apps/{slug}/readiness": _DATA_APPS_READINESS_REASON,
-    "/api/data-apps/{slug}/git-credential": (
-        "wave 3B AI-authoring flow — mints a 24h-scoped git push PAT for an "
-        "authoring agent session (`_mint_git_credential`); no CLI/MCP "
-        "analogue yet — `agnes app git-credential` (CLI) and "
-        "`data_app_git_credential` (MCP) land in wave 3B Task 8"
-    ),
-    "/api/data-apps/{slug}/drafts": (
-        "wave 3B AI-authoring flow — creates a draft branch+row of a prod "
-        "app for the dataapp-developer skill to iterate on; no CLI/MCP "
-        "analogue planned yet (authoring happens inside the hosted app's "
-        "own agent session, not from the analyst's `agnes` CLI)"
-    ),
-    "/api/data-apps/{slug}/drafts/{draft_slug}": (
-        "wave 3B AI-authoring flow — tears down a single draft (sibling of "
-        "the create-draft path above); no CLI/MCP analogue planned yet, "
-        "same rationale — draft lifecycle is managed from inside the "
-        "hosted app's own agent session, not the analyst's `agnes` CLI"
+    # git-credential/drafts got their CLI + MCP surfaces in wave 3B Task 8 —
+    # see the /api/data-apps/{slug}/drafts* and /git-credential entries in
+    # _COHORT above.
+    "/api/broker/data-apps": (
+        "broker replay surface for the sandboxed authoring agent; not a "
+        "user-facing API — internal sandbox->server route confined to the "
+        "/api/data-apps control-plane prefix, ticket-gated (not user auth) "
+        "like the other /api/broker/* routes. No analyst CLI/MCP analogue: "
+        "the agent calls the real /api/data-apps* endpoints through this "
+        "relay, which already carry their own triple-surface contract."
     ),
     # reap-idle is a scheduler-triggered admin maintenance op (Task 9) —
     # mirrors the run-knowledge-digests/run-corporate-memory exemptions

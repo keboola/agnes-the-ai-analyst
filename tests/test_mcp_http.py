@@ -255,6 +255,14 @@ class TestToolRegistration:
             "data_app_get",
             "data_app_deploy",
             "data_app_logs",
+            # Wave 3B draft-iteration model (Task 8) — create/delete a draft
+            # copy of a prod app on an iteration branch, and mint a fresh git
+            # push credential. Triple-surface with /api/data-apps/{slug}/drafts*
+            # and /git-credential + `agnes app draft create/delete` +
+            # `agnes app git-credential`.
+            "data_app_create_draft",
+            "data_app_delete_draft",
+            "data_app_git_credential",
         }
 
     def test_no_client_only_tools(self):

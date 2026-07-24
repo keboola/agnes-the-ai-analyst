@@ -48,3 +48,11 @@ def test_data_apps_tools_are_foundation_tools():
 
     for name in ("data_apps_list", "data_app_get", "data_app_deploy", "data_app_logs"):
         assert name in FOUNDATION_TOOL_NAMES
+
+
+def test_data_apps_draft_tools_are_foundation_tools():
+    """Wave 3B draft/credential MCP tools (Task 8)."""
+    from app.api.mcp.foundation_tools import FOUNDATION_TOOL_NAMES
+
+    for name in ("data_app_create_draft", "data_app_delete_draft", "data_app_git_credential"):
+        assert name in FOUNDATION_TOOL_NAMES
