@@ -61,19 +61,29 @@
 </div>
 {% endmacro %}
 
+{# The hub's label — product name + trust caption with the lock glyph. Split
+   out so a host can render it OUTSIDE the diagram (the rail chat dashboard
+   drops it from the orb and re-hosts it atop the headline lead). #}
+{% macro knowledge_hub_label(title='Agnes Knowledge Layer',
+                             caption='Secure. Private. Always in sync.',
+                             show_title=True) %}
+{% if show_title %}<div class="klb-hub-title">{{ title }}</div>{% endif %}
+<div class="klb-hub-caption">
+  <svg class="klb-lock" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9.5" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.7"/></svg>
+  {{ caption }}
+</div>
+{% endmacro %}
+
 {% macro knowledge_hub(title='Agnes Knowledge Layer',
-                       caption='Secure. Private. Always in sync.') %}
-<div class="klb-hub">
+                       caption='Secure. Private. Always in sync.',
+                       show_label=True) %}
+<div class="klb-hub{% if not show_label %} klb-hub--orb-only{% endif %}">
   <span class="klb-hub-line klb-hub-line--left" aria-hidden="true"></span>
   <span class="klb-hub-line klb-hub-line--right" aria-hidden="true"></span>
   <div class="klb-hub-orb-ring" aria-hidden="true">
     {{ _klb_orb.orb(css_class='klb-hub-orb', size=92) }}
   </div>
-  <div class="klb-hub-title">{{ title }}</div>
-  <div class="klb-hub-caption">
-    <svg class="klb-lock" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9.5" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.7"/></svg>
-    {{ caption }}
-  </div>
+  {% if show_label %}{{ knowledge_hub_label(title, caption) }}{% endif %}
 </div>
 {% endmacro %}
 
@@ -141,7 +151,8 @@
                                 tools=None,
                                 bare=False,
                                 compact=False,
-                                show_lead=None) %}
+                                show_lead=None,
+                                hub_label=True) %}
 {# show_lead: force the headline/subcopy lead on or off independently of
    `compact`. Defaults to `not compact` (full banner leads, compact one omits
    it), but a compact banner can opt the lead back in (the rail chat foot does
@@ -158,7 +169,7 @@
     <div class="klb-slot klb-slot--left">
       {{ connected_tools_card(tools=tools, cta_label=primary_label, cta_href=primary_href) }}
     </div>
-    <div class="klb-slot klb-slot--hub">{{ knowledge_hub() }}</div>
+    <div class="klb-slot klb-slot--hub">{{ knowledge_hub(show_label=hub_label) }}</div>
     <div class="klb-slot klb-slot--right">{{ agnes_usage_card() }}</div>
   </div>
 </section>

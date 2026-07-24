@@ -1,6 +1,6 @@
 {% extends 'base_ds.html' %}
 {% import "macros/_icon.html" as ico %}
-{% from "macros/_knowledge_layer.html" import knowledge_layer_banner, knowledge_layer_lead %}
+{% from "macros/_knowledge_layer.html" import knowledge_layer_banner, knowledge_layer_lead, knowledge_hub_label %}
 
 {# Cloud chat page. Extends the canonical Agnes design-system base so
    the Agnes top nav, footer, and shared design tokens (colors, type,
@@ -191,6 +191,12 @@
        Blocks share the one --rdb-col column (see the "HERO" section of
        chat.css). #}
     <aside id="chat-capabilities" class="cloud-chat-capabilities">
+      {# The Knowledge Layer trust caption is lifted OUT of the diagram's orb
+         (banner rendered with hub_label=False below) and re-hosted here as a
+         small eyebrow directly above the headline lead — the "Agnes Knowledge
+         Layer" title is dropped, leaving just "Secure. Private. Always in
+         sync." tucked against the heading so they read as one text block. #}
+      <div class="klb-hub-label klb-hub-label--lead">{{ knowledge_hub_label(show_title=False) }}</div>
       {{ knowledge_layer_lead() }}
     </aside>
     {% else %}
@@ -508,7 +514,7 @@
        are placed after #chat-capabilities in the DOM so the empty-state hide
        rule (#chat-capabilities[hidden] ~ …) still catches them. #}
     <div id="chat-empty-banner" class="cloud-chat-empty-banner">
-      {{ knowledge_layer_banner(bare=True, compact=True, show_lead=False) }}
+      {{ knowledge_layer_banner(bare=True, compact=True, show_lead=False, hub_label=False) }}
     </div>
 
     {# Keboola credit — pinned to the very bottom of the page. #}

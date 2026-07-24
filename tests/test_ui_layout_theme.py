@@ -394,7 +394,12 @@ class TestRailDashboard:
             'class="klb klb--bare klb--compact"',
             "Use Agnes in Kai",  # banner RIGHT card (Kai card, swapped to the right)
             "Use your own AI tools",  # banner LEFT card (tools card, swapped to the left)
-            "Agnes Knowledge Layer",  # banner CENTER hub
+            # The banner CENTER hub is orb-only (hub_label=False): its "Agnes
+            # Knowledge Layer" title is dropped and the trust caption is lifted
+            # out into the headline lead as a small eyebrow (klb-hub-label--lead).
+            "klb-hub--orb-only",
+            "klb-hub-label--lead",  # the relocated caption eyebrow
+            "Secure. Private. Always in sync.",  # caption text, now above the headline
             'class="klb-cta-primary klb-card-cta" href="/me/ai-connector"',  # "Connect your tools" CTA now lives in the tools card
             'id="rdb-actions"',  # the one personalized section (heading retired)
             'id="rdb-actions-list"',  # suggested-actions list
@@ -416,6 +421,9 @@ class TestRailDashboard:
         assert "dashboard_rail" not in text
         # The retired ask-hero brand block is gone too.
         assert "Ask anything." not in text
+        # The "Agnes Knowledge Layer" hub title was dropped as redundant with the
+        # "One knowledge layer." headline — it must not render anywhere.
+        assert "Agnes Knowledge Layer" not in text
 
     def test_rail_dashboard_actions_section(self, web_client, admin_cookie, monkeypatch):
         """One Suggested-next-actions section below the composer: list +

@@ -1559,8 +1559,11 @@ html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden]
      clear breathing room before the input. */
   width: var(--rdb-col);
   max-width: none;
-  margin-top: 4px;
-  padding: 0 0 20px;
+  /* Sits just below the diagram (the trust caption + headline lead moved out
+     of the orb into this block); tight enough that the hero fits the viewport
+     without scrolling, with balanced breathing room before the composer. */
+  margin-top: 12px;
+  padding: 0 0 14px;
   text-align: center;
 }
 /* Hero prominence for the lead — scoped to the chat hero so the foot banner
@@ -1622,7 +1625,40 @@ html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden]
   flex: 0 0 auto;
   /* Banner leads the page (order 0); keep a little room above it and let the
      heading group sit right beneath it (no bottom gap of its own). */
-  margin: 16px 0 0;
+  margin: 10px 0 0;
+}
+/* Tighten the docked diagram's own padding so the whole hero (diagram → caption
+   → headline → composer → suggested actions) fits a standard laptop viewport
+   without scrolling, while keeping the composition balanced. */
+html[data-ui-layout="rail"] #chat-empty-banner .klb--compact {
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+/* The Knowledge Layer trust caption ("Secure. Private. Always in sync.") is
+   lifted OUT of the diagram's orb (banner rendered with hub_label=False) and
+   re-hosted as a small eyebrow directly above the headline lead. Centre it and
+   tuck it tight against the heading so the two read as one block. */
+html[data-ui-layout="rail"] #chat-capabilities .klb-hub-label--lead {
+  margin: 0;
+}
+html[data-ui-layout="rail"] #chat-capabilities .klb-hub-label--lead .klb-hub-caption {
+  justify-content: center;
+}
+/* Pull the headline lead up tight under the caption (cancels the big font's
+   line-box leading) so caption + headline read as one grouped block. */
+html[data-ui-layout="rail"] #chat-capabilities .klb-lead {
+  margin-top: -8px;
+}
+/* On wide screens (3-column diagram) lift the whole hero text block up into the
+   diagram's empty centre band so it sits higher on the page; the footer keeps
+   its margin-top:auto and stays pinned to the bottom (the freed space becomes a
+   balanced gap above it). The flanking cards sit at the column edges, clear of
+   the centred caption/headline. Narrow (stacked) layouts have no band, so they
+   keep the base positive margin. */
+@media (min-width: 981px) {
+  html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-capabilities {
+    margin-top: -28px;
+  }
 }
 
 /* Keboola credit — pinned to the very bottom (margin-top:auto). No divider. */
