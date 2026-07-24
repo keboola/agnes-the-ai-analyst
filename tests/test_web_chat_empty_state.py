@@ -95,10 +95,10 @@ def _enable_rail_chat(seeded_app, monkeypatch) -> None:
 
 class TestChatEmptyStatePill:
     def test_renders_dashboard_and_context_line(self, seeded_app, monkeypatch):
-        """Rail ``/chat`` empty state renders the Dashboard — greeting,
-        activity panels, guided task starters — and the Stack context
-        line (a package granted to the admin's group puts it in their
-        Stack, so the knowledge-source count is non-zero)."""
+        """Rail ``/chat`` empty state renders the Dashboard — the Knowledge
+        Layer lead as the page hero, activity panels, guided task starters —
+        and the Stack context line (a package granted to the admin's group
+        puts it in their Stack, so the knowledge-source count is non-zero)."""
         _enable_rail_chat(seeded_app, monkeypatch)
         pkg_id = _make_pkg("dash-ctx-pkg", "Dash ctx pkg")
         _grant("Admin", "data_package", pkg_id)
@@ -106,9 +106,11 @@ class TestChatEmptyStatePill:
         resp = c.get("/chat", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 200, resp.text
         body = resp.text
-        assert 'id="rdb-greeting-tod"' in body
-        # The Knowledge Layer banner — the product-model hero (compact mode
-        # drops the headline lead; the aria-label + cards remain).
+        # The Knowledge Layer lead (headline + subcopy) is the page hero —
+        # it replaced the time-of-day greeting.
+        assert '<div class="klb-lead">' in body
+        # The Knowledge Layer banner — the product-model diagram (the
+        # aria-label carries the joined headline; the cards remain).
         assert "One knowledge layer. Everywhere you work." in body
         assert "Ask Kai in Agnes" in body
         assert "Use your own AI tools" in body

@@ -26,17 +26,6 @@ html[data-ui-layout="rail"] .rdb {
     font-family: var(--ds-font);
 }
 
-/* ── Greeting (compact, top-left of the hero) ────────────────────── */
-
-.rdb-greet {
-    margin: 0 0 12px;
-    font-size: 24px;
-    font-weight: 700;
-    letter-spacing: -0.015em;
-    color: var(--ds-text-primary);
-    text-align: center;
-}
-
 /* ── Stack context line — flat on the surface, under the composer ── */
 
 html[data-ui-layout="rail"] .rdb-context {

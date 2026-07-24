@@ -117,6 +117,20 @@
    `compact=True` drops the headline lead and the CTA row and instead hosts the
    primary CTA at the foot of the tools card — a tight docked diagram. The rail
    chat dashboard uses the default (full) banner. #}
+{# The headline + supporting sentence, on their own. Rendered inside the banner
+   grid (top-left cell) when the banner carries its own lead, OR standalone as a
+   page hero above a separate diagram-only banner — the rail chat dashboard does
+   the latter (lead leads the page, diagram closes it). Same `.klb-lead` markup
+   either way so the copy + styles stay in one place. #}
+{% macro knowledge_layer_lead(headline_1='One knowledge layer.',
+                              headline_2='Everywhere you work.',
+                              subcopy='Use Kai here, or connect your favorite AI tools to work with the same company knowledge.') %}
+<div class="klb-lead">
+  <h2 class="klb-headline">{{ headline_1 }}<br>{{ headline_2 }}</h2>
+  <p class="klb-sub">{{ subcopy }}</p>
+</div>
+{% endmacro %}
+
 {% macro knowledge_layer_banner(headline_1='One knowledge layer.',
                                 headline_2='Everywhere you work.',
                                 subcopy='Use Kai here, or connect your favorite AI tools to work with the same company knowledge.',
@@ -126,15 +140,18 @@
                                 secondary_href='/home',
                                 tools=None,
                                 bare=False,
-                                compact=False) %}
-<section class="klb{% if bare %} klb--bare{% endif %}{% if compact %} klb--compact{% endif %}"
+                                compact=False,
+                                show_lead=None) %}
+{# show_lead: force the headline/subcopy lead on or off independently of
+   `compact`. Defaults to `not compact` (full banner leads, compact one omits
+   it), but a compact banner can opt the lead back in (the rail chat foot does
+   this) — CSS spans it across the top row via the `klb--lead` modifier. #}
+{% set _show_lead = (not compact) if show_lead is none else show_lead %}
+<section class="klb{% if bare %} klb--bare{% endif %}{% if compact %} klb--compact{% endif %}{% if _show_lead %} klb--lead{% endif %}"
          aria-label="{{ headline_1 }} {{ headline_2 }}">
   <div class="klb-grid">
-    {% if not compact %}
-    <div class="klb-lead">
-      <h2 class="klb-headline">{{ headline_1 }}<br>{{ headline_2 }}</h2>
-      <p class="klb-sub">{{ subcopy }}</p>
-    </div>
+    {% if _show_lead %}
+    {{ knowledge_layer_lead(headline_1, headline_2, subcopy) }}
     {% endif %}
     <div class="klb-slot klb-slot--left">{{ agnes_usage_card() }}</div>
     <div class="klb-slot klb-slot--hub">{{ knowledge_hub() }}</div>

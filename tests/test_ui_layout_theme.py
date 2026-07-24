@@ -383,9 +383,14 @@ class TestRailDashboard:
         text = resp.text
         assert 'data-ui-layout="rail"' in text
         for anchor in (
-            'id="rdb-greeting-tod"',  # greeting
-            'class="klb klb--bare klb--compact"',  # Knowledge Layer banner fused into the hero box (compact variant)
-            "One knowledge layer. Everywhere you work.",  # banner headline
+            # The Knowledge Layer lead is the page HERO (top), not inside the
+            # banner — headline + subcopy render in #chat-capabilities.
+            '<div class="klb-lead">',  # hero lead block
+            "One knowledge layer.",  # hero headline
+            "Everywhere you work.",
+            '<p class="klb-sub">',  # the supporting sentence renders
+            # The foot banner is now diagram-only (show_lead=False → no klb--lead).
+            'class="klb klb--bare klb--compact"',
             "Ask Kai in Agnes",  # banner LEFT card
             "Use your own AI tools",  # banner RIGHT card
             "Agnes Knowledge Layer",  # banner CENTER hub

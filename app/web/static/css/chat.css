@@ -1522,16 +1522,17 @@ html[data-ui-layout="rail"] .cloud-chat-capabilities {
   align-items: center;
   padding: 34px 20px 6px;
 }
-/* Empty-state layout order: banner (very top) → greeting → composer →
-   suggestions → Keboola credit (very bottom). The greeting/composer/suggestions
-   group centers in the free space between the banner and the credit (auto
-   margins below). Fixed orders work in both states: in an active conversation
-   banner + greeting + extras + credit are hidden and messages (order 0)
-   precedes the composer (order 2), pinning it to the bottom. */
+/* Empty-state layout order: greeting → composer → suggestions → banner →
+   Keboola credit (very bottom). The primary entry point (greeting + composer)
+   leads the page; the Knowledge Layer banner sits below the suggested actions,
+   and the credit pins to the very bottom (its own auto top-margin). Fixed
+   orders work in both states: in an active conversation the greeting + extras +
+   banner + credit are hidden and messages (order 0) precede the composer
+   (order 2), pinning it to the bottom. */
 html[data-ui-layout="rail"] .cloud-chat-main > #chat-capabilities { order: 1; }
-html[data-ui-layout="rail"] .cloud-chat-main > #chat-empty-banner { order: 2; }
-html[data-ui-layout="rail"] .cloud-chat-main > #chat-form { order: 3; }
-html[data-ui-layout="rail"] .cloud-chat-main > #chat-empty-extras { order: 4; }
+html[data-ui-layout="rail"] .cloud-chat-main > #chat-form { order: 2; }
+html[data-ui-layout="rail"] .cloud-chat-main > #chat-empty-extras { order: 3; }
+html[data-ui-layout="rail"] .cloud-chat-main > #chat-empty-banner { order: 4; }
 html[data-ui-layout="rail"] .cloud-chat-main > .cloud-chat-empty-foot { order: 5; }
 /* The dashboard is ONE centered content column (~1280px): greeting, composer,
    Stack status line, the five suggested-action cards, and the banner all share
@@ -1553,11 +1554,39 @@ html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden]
 html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-capabilities {
   align-self: center;
   align-items: stretch;
-  /* Greeting is the centered heading at the very top, above the banner. */
+  /* The Knowledge Layer lead (headline + subcopy) is the page hero: centered
+     in the wide column, stating what Agnes is before the composer below, with
+     clear breathing room before the input. */
   width: var(--rdb-col);
   max-width: none;
-  margin-top: 20px;
-  padding: 0 0 2px;
+  margin-top: 40px;
+  padding: 0 0 28px;
+  text-align: center;
+}
+/* Hero prominence for the lead — scoped to the chat hero so the foot banner
+   and other pages that embed the lead are unaffected. The base `.klb-lead`
+   carries `align-self: start` for the banner grid; in the flex-column hero that
+   would pin it left and shrink-wrap it, so stretch it full-width and let the
+   centered text sit on the page's centre line. */
+html[data-ui-layout="rail"] #chat-capabilities .klb-lead {
+  align-self: stretch;
+}
+html[data-ui-layout="rail"] #chat-capabilities .klb-headline {
+  font-size: clamp(25px, 2.2vw, 32px);
+  line-height: 1.16;
+}
+html[data-ui-layout="rail"] #chat-capabilities .klb-sub {
+  margin: 12px auto 0;   /* auto side-margins center the capped-width sentence */
+  max-width: 460px;
+  font-size: 15px;
+}
+/* The composer is the primary entry point — it should sit high, right under
+   the hero, not float in the vertical center. Cancel the base
+   ``margin-top: auto`` (which centers it in an active conversation) for the
+   empty state so banner → greeting → composer flow from the top; the footer's
+   own ``margin-top: auto`` still pins the credit to the bottom. */
+html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-form {
+  margin-top: 6px;
 }
 html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-empty-extras {
   padding: 0;
@@ -1582,14 +1611,18 @@ html[data-ui-layout="rail"] .cloud-chat-empty-extras {
   padding: 0 24px;
 }
 
-/* Banner — under the greeting (order 2), above the composer. The bare diagram
-   sits flat on the page; centered wide column. */
+/* Banner — below the suggested actions (order 4), above the credit. The bare
+   diagram sits flat on the page; centered wide column. */
 html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-empty-banner {
   align-self: center;
   width: var(--rdb-col);
-  max-width: none;
+  /* Cap the diagram so it stays a tidy composition on wide displays instead of
+     stretching the full --rdb-col (up to 1280px). */
+  max-width: 1040px;
   flex: 0 0 auto;
-  margin: 8px 0 24px;
+  /* Sits under the entry group: a modest gap above to separate it from the
+     suggested actions, a small gap below before the credit. */
+  margin: 20px 0 8px;
 }
 
 /* Keboola credit — pinned to the very bottom (margin-top:auto). No divider. */
@@ -1791,9 +1824,23 @@ html[data-ui-layout="rail"] .cloud-chat-plus-btn:hover {
   margin: 0;
   animation: cloudchat-menu-in 100ms var(--ds-ease-enter, ease) both;
 }
+/* In the pre-conversation dashboard the composer sits high on the page, so the
+   default upward-opening menu clips off the top of the viewport. Flip it to
+   open downward there. (In an active conversation the composer is pinned to the
+   bottom, where opening upward is correct.) */
+html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) .cloud-chat-plus-menu {
+  top: calc(100% + var(--space-2));
+  bottom: auto;
+  animation-name: cloudchat-menu-in-down;
+}
 .cloud-chat-plus-menu[hidden] { display: none; }
 @keyframes cloudchat-menu-in {
   from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+/* Downward-opening variant (dashboard composer) — enters from above. */
+@keyframes cloudchat-menu-in-down {
+  from { opacity: 0; transform: translateY(-4px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 @media (prefers-reduced-motion: reduce) {

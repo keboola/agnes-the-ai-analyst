@@ -120,15 +120,6 @@ const TASKS = [
     opener:
       "Help me compare revenue trends. Ask me the metric, whether to break it down by product, region, or time, and the time range — then run the numbers from our data and show the breakdown with sources.",
   },
-  {
-    id: "search-knowledge",
-    title: "Search internal knowledge",
-    description: "Find policies, docs, and insights across your Stack",
-    icon: ICONS.search,
-    available: true,
-    opener:
-      "Help me search our internal knowledge. Ask me what I'm looking for, then search across the documents, memory, and data in my Stack and summarize what you find with citations.",
-  },
 ];
 
 // ---- Suggested next actions — the personalization boundary -----------------
@@ -153,7 +144,7 @@ const TASKS = [
 //   available    false → disabled card with an unavailable hint
 //   task         the TASKS entry to run
 
-/** Build the caller's suggested-action list — the five guided
+/** Build the caller's suggested-action list — the four guided
  *  conversation-starter cards. `sessions` is accepted for signature
  *  compatibility with chat.js but no longer consumed: the dashboard row is a
  *  fixed set of guided tasks, and resuming a past conversation lives in the

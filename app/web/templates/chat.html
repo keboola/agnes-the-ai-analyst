@@ -1,6 +1,6 @@
 {% extends 'base_ds.html' %}
 {% import "macros/_icon.html" as ico %}
-{% from "macros/_knowledge_layer.html" import knowledge_layer_banner %}
+{% from "macros/_knowledge_layer.html" import knowledge_layer_banner, knowledge_layer_lead %}
 
 {# Cloud chat page. Extends the canonical Agnes design-system base so
    the Agnes top nav, footer, and shared design tokens (colors, type,
@@ -183,17 +183,15 @@
        follows the composer in the DOM and auto-hides with
        #chat-capabilities (sibling rule) the moment a conversation starts —
        so "New chat" simply returns here. #}
-    {# Dashboard landing (issue #896): greeting → Kai composer → suggested
-       actions → the Knowledge Layer banner docked at the FOOT. The greeting
-       alone is the hero so the composer + its suggestions lead; the banner
-       (moved to #chat-empty-dock below) closes the page. Blocks share the one
-       centered --rdb-col column (see the "HERO" section of chat.css). #}
+    {# Dashboard landing (issue #896): the Knowledge Layer lead (headline +
+       supporting sentence) is the page hero → Kai composer → suggested actions
+       → the diagram-only Knowledge Layer banner docked at the FOOT. Leading
+       with the product value proposition (not a greeting) states what Agnes is
+       before the input; the diagram at the foot shows the two ways to use it.
+       Blocks share the one --rdb-col column (see the "HERO" section of
+       chat.css). #}
     <aside id="chat-capabilities" class="cloud-chat-capabilities">
-      {% set _first_name = ((current_user.name or '').split(' ') | first) or '' %}
-      <h1 class="rdb-greet">
-        <span id="rdb-greeting-tod">{{ greeting }}</span>{% if _first_name %}, {{ _first_name }}{% endif %}
-        <span aria-hidden="true">&#x1F44B;</span>
-      </h1>
+      {{ knowledge_layer_lead() }}
     </aside>
     {% else %}
     <aside id="chat-capabilities" class="cloud-chat-capabilities">
@@ -510,7 +508,7 @@
        are placed after #chat-capabilities in the DOM so the empty-state hide
        rule (#chat-capabilities[hidden] ~ …) still catches them. #}
     <div id="chat-empty-banner" class="cloud-chat-empty-banner">
-      {{ knowledge_layer_banner(bare=True, compact=True) }}
+      {{ knowledge_layer_banner(bare=True, compact=True, show_lead=False) }}
     </div>
 
     {# Keboola credit — pinned to the very bottom of the page. #}
