@@ -44,14 +44,10 @@ ResolutionReason = Literal[
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
-    """See app/auth/dependencies._client_ip — same trust model (Caddy-fronted)."""
-    if request is None:
-        return None
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",", 1)[0].strip() or None
-    client = getattr(request, "client", None)
-    return getattr(client, "host", None) if client else None
+    """See app/auth/dependencies._client_ip — same trusted-hop model (F9)."""
+    from app.auth.client_ip import trusted_client_ip
+
+    return trusted_client_ip(request)
 
 
 def resolve_token_to_user(
@@ -91,9 +87,8 @@ def resolve_token_to_user(
         if typ == "co_session":
             from src.grant_intersection import compute_grant_intersection
             from app.auth.session_principal import SessionPrincipal
-            participants = chat_session_participants_repo().get_session_participants(
-                co_session_id
-            )
+
+            participants = chat_session_participants_repo().get_session_participants(co_session_id)
             if not participants:
                 return None, "invalid_token"  # no live participants -> deny
             emails = [p.user_email for p in participants]
@@ -113,6 +108,7 @@ def resolve_token_to_user(
             return None, "invalid_token"  # FAIL CLOSED
 
     from src.repositories import users_repo, access_token_repo
+
     user = users_repo().get_by_id(payload.get("sub", ""))
     if not user:
         return None, "user_not_found"
@@ -156,6 +152,7 @@ def resolve_token_to_user(
     if already_used and current_ip and current_ip != previous_ip:
         try:
             from src.repositories import audit_repo
+
             audit_repo().log(
                 user_id=user["id"],
                 action="token.first_use_new_ip",

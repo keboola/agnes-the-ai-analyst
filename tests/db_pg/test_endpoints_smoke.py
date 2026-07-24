@@ -2152,6 +2152,10 @@ KNOWN_UNTESTED = {
     "POST /api/v2/metadata-cache/refresh",
     # Jira webhooks / slack bind
     "GET /slack/bind",
+    # POST /slack/bind redeems a bind code and needs a matching double-submit
+    # CSRF cookie + form (security audit F2), so it can't be a parameter-free
+    # smoke hit — behaviour is covered in tests/test_slack_magic_link_bind.py.
+    "POST /slack/bind",
     "POST /api/slack/bind",
     "POST /api/slack/commands",
     "POST /api/slack/interactivity",

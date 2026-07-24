@@ -21,24 +21,36 @@ logger = logging.getLogger(__name__)
 # tell the install path whether to issue `INSTALL ... FROM community` or
 # only `LOAD`.
 _BUILTIN_EXTENSIONS: frozenset[str] = frozenset()  # none in current OSS
-_COMMUNITY_EXTENSIONS: frozenset[str] = frozenset({
-    "keboola",
-    "bigquery",
-})
+_COMMUNITY_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        "keboola",
+        "bigquery",
+    }
+)
 
 # Env vars whose values may be passed as the auth `TOKEN` in `ATTACH`. The
 # default is intentionally tight — every name in the runtime env that is not
 # on this list cannot be exfiltrated to a connector-controlled URL.
 # Operators add deployment-specific names via AGNES_REMOTE_ATTACH_TOKEN_ENVS.
-_DEFAULT_TOKEN_ENVS: frozenset[str] = frozenset({
-    "KBC_TOKEN",
-    "KBC_STORAGE_TOKEN",
-    "KEBOOLA_STORAGE_TOKEN",
-    "GOOGLE_APPLICATION_CREDENTIALS",  # path, not a secret value
-})
+_DEFAULT_TOKEN_ENVS: frozenset[str] = frozenset(
+    {
+        "KBC_TOKEN",
+        "KBC_STORAGE_TOKEN",
+        "KEBOOLA_STORAGE_TOKEN",
+        "GOOGLE_APPLICATION_CREDENTIALS",  # path, not a secret value
+    }
+)
 
 # Names must additionally match this regex (defense against weird input).
 _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+
+# Security audit F10/F11: the `url` in a connector-written `_remote_attach` row
+# is untrusted. The extension + token_env allowlists constrain WHICH secret is
+# sent but not WHERE — a malicious connector can point `url` at
+# `https://attacker.example` and the orchestrator would ship the allowlisted
+# credential there via `ATTACH ... TOKEN '<real token>'`. Operators pin the set
+# of hosts a credential may be sent to via this env var (CSV of host[:port]).
+_ATTACH_HOST_ALLOWLIST_ENV = "AGNES_REMOTE_ATTACH_HOST_ALLOWLIST"
 
 
 def _parse_csv_env(name: str) -> set[str]:
@@ -115,6 +127,46 @@ def log_effective_policy() -> None:
         sorted(envs),
         has_env_override,
     )
+
+
+def attach_host_allowlist_configured() -> bool:
+    """True iff an operator has configured the ATTACH host allowlist."""
+    return bool(_parse_csv_env(_ATTACH_HOST_ALLOWLIST_ENV))
+
+
+def _url_host(url: str) -> str:
+    """Return the lowercase host[:port] of ``url``, or "" if unparseable."""
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url if "://" in url else f"//{url}", scheme="")
+    except Exception:
+        return ""
+    if not parsed.hostname:
+        return ""
+    host = parsed.hostname.lower()
+    return f"{host}:{parsed.port}" if parsed.port else host
+
+
+def is_attach_host_allowed(url: str) -> bool:
+    """Return True if a credential may be paired into an ``ATTACH`` for ``url``.
+
+    Security audit F10/F11. When ``AGNES_REMOTE_ATTACH_HOST_ALLOWLIST`` is set,
+    the URL's host (with or without an explicit ``:port``) must be a member —
+    otherwise the orchestrator refuses to send the secret, closing the
+    credential-exfiltration-to-attacker-host hole. When the env var is UNSET the
+    function returns True for backward compatibility, but callers log a warning
+    (the risk is visible and operators are steered to configure the allowlist).
+    """
+    allow = {h.lower() for h in _parse_csv_env(_ATTACH_HOST_ALLOWLIST_ENV)}
+    if not allow:
+        return True
+    host = _url_host(url)
+    if not host:
+        return False
+    # Accept a bare-host allowlist entry matching a host[:port] url and vice versa.
+    bare = host.split(":", 1)[0]
+    return host in allow or bare in allow
 
 
 def escape_sql_string_literal(value: str) -> str:

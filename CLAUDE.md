@@ -408,6 +408,24 @@ Design rationale: `docs/superpowers/specs/2026-05-15-agnes-agents-design.md`,
 
 ## Project conventions
 
+### Security invariants (untrusted input)
+Any code touching untrusted input — HTTP requests, uploaded files, a connector's
+`extract.duckdb`, a curated-marketplace repo, Slack/Telegram messages, or URLs —
+must follow the security playbook: `.claude/skills/agnes-conventions/references/security.md`.
+Read it before writing or reviewing such code. The non-negotiables, each a real
+prior finding: escape SQL identifiers (`quote_ident`, never bare `f'"{name}"'`);
+no file paths in `FROM`/`JOIN` on `/api/query`; sanitize before `innerHTML`
+(`renderMarkdownSafe`, never raw `marked.parse`); render authored templates with
+Jinja2 `SandboxedEnvironment`; keep regexes over untrusted text linear-time;
+validate **and** realpath-contain filesystem paths built from untrusted names;
+never put secrets on argv or in URL query strings (git credential helper +
+hidden prompts + `Authorization: Bearer`); gate credential egress with a host
+allowlist (`is_attach_host_allowed`); derive client IP from trusted proxy hops
+(`app.auth.client_ip.trusted_client_ip`), never leftmost XFF; require a CSRF
+token on state-changing web POSTs and never mutate on GET; scope infra exposure
+per-instance, never fleet-wide. `agnes-reviewer-rules` runs the reviewer
+quick-scan from that playbook on every PR.
+
 ### Vendor-agnostic public repo — no customer-specific content
 This repo is the public source-available distribution. **Nothing customer-specific belongs in code, config defaults, comments, docs, commit messages, or PR titles/bodies** — no specific deployments or brands, cloud project IDs, internal hostnames, runbook paths, internal SA emails, or cross-references to private repos. Frame motivations abstractly ("behind a TLS-terminating reverse proxy"); use placeholders in examples (`example.com`, `<your-host>`, `<install-dir>`). Customer-specific automation lives in the private infra repos that *consume* this repo. Before opening a PR, scan the diff and PR body for customer-specific tokens.
 

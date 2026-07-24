@@ -63,19 +63,20 @@ from app.coordination.factory import resolve_backend_name, resolve_redis_url
 
 
 def _client_ip_key(request: Request) -> str:
-    """IP key, preferring leftmost X-Forwarded-For hop.
+    """Per-IP rate-limit bucket key (security audit F9).
 
-    Mirrors ``app.auth.dependencies._client_ip`` — same Caddy-in-front
-    trust model. If the app is ever exposed directly to the internet
-    without a proxy, the XFF header becomes client-settable and an
-    attacker can rotate the per-IP bucket trivially. Document that
-    deployment shape in the runbook before flipping it on.
+    Uses ``app.auth.client_ip.trusted_client_ip``, which trusts only the
+    ``AGNES_TRUSTED_PROXY_HOPS`` rightmost X-Forwarded-For hops instead of the
+    fully client-controllable leftmost hop. Keying on the leftmost hop let an
+    attacker rotate a fresh bucket per request and defeat the auth throttles
+    (the exact threat this module exists to stop). Falls back to the connection
+    peer when there is no XFF.
     """
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        ip = xff.split(",", 1)[0].strip()
-        if ip:
-            return ip
+    from app.auth.client_ip import trusted_client_ip
+
+    ip = trusted_client_ip(request)
+    if ip:
+        return ip
     return get_remote_address(request)
 
 

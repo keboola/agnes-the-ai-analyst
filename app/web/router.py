@@ -5,6 +5,7 @@ Replicates all Flask webapp routes with DuckDB-backed data.
 
 import logging
 import os
+import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -2487,7 +2488,8 @@ async def setup_page(
     setup_instructions.resolve_lines() is used.
     """
     from src.welcome_template import compute_default_agent_prompt, _sanitize_banner_html
-    from jinja2 import Environment, StrictUndefined, TemplateError
+    from jinja2 import StrictUndefined, TemplateError
+    from jinja2.sandbox import SandboxedEnvironment  # noqa: F401 — used below in this fn
 
     base_url = str(request.base_url).rstrip("/")
 
@@ -2506,7 +2508,12 @@ async def setup_page(
         try:
             from src.welcome_template import build_context as _build_banner_ctx
 
-            env = Environment(undefined=StrictUndefined, autoescape=False)
+            # Security audit F4: a non-sandboxed Environment lets an app-Admin's
+            # install-prompt override execute arbitrary Python at render time
+            # (SSTI → RCE on the FastAPI host). SandboxedEnvironment blocks
+            # access to unsafe attributes/builtins so a payload like
+            # {{ cycler.__init__.__globals__[...] }} raises instead of running.
+            env = SandboxedEnvironment(undefined=StrictUndefined, autoescape=False)
             template = env.from_string(override_content)
             ctx_vars = _build_banner_ctx(user=user, server_url=base_url)
             setup_script_text = _sanitize_banner_html(template.render(**ctx_vars))
@@ -2542,6 +2549,9 @@ async def setup_page(
     return templates.TemplateResponse(request, "install.html", ctx)
 
 
+_SLACK_BIND_CSRF_COOKIE = "slack_bind_csrf"
+
+
 @router.get("/slack/bind", response_class=HTMLResponse)
 async def slack_bind(
     request: Request,
@@ -2549,38 +2559,95 @@ async def slack_bind(
     user: Optional[dict] = Depends(get_optional_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """One-click Slack identity binding — the magic-link Agnes DMs an unbound
-    user. Opening ``/slack/bind?code=<code>`` while signed in to Agnes redeems
-    the code server-side and stamps ``users.slack_user_id`` (no copy-paste).
+    """Render the Slack-identity binding CONFIRMATION page (no state change).
 
-    The code in the URL is inert on its own: this route is auth-gated, so the
-    bind only completes for the signed-in Agnes account — proving the same
-    person controls both the Slack identity (the code was DM'd to them) and the
-    Agnes account (they're logged in). An unauthenticated visitor is bounced to
-    sign-in and lands back here afterwards (``next=``).
+    Security audit F2: the actual bind used to happen on this GET, gated only by
+    a ``SameSite=Lax`` auth cookie — a classic CSRF sink. An attacker who owns a
+    Slack identity could DM the bot for a code, then send a logged-in victim
+    ``/slack/bind?code=<attacker_code>``; the top-level GET rode the victim's
+    cookie and bound the ATTACKER's Slack to the VICTIM's Agnes account
+    (cross-user impersonation). This GET now only shows a confirm button that
+    POSTs back with a per-request double-submit CSRF token; the redeem lives in
+    :func:`slack_bind_confirm`.
+
+    An unauthenticated visitor is bounced to sign-in and lands back here (``next=``).
     """
     if user is None:
         nxt = quote(f"/slack/bind?code={code}", safe="")
         return RedirectResponse(url=f"/login?next={nxt}", status_code=302)
 
-    status = "missing"
-    if code:
-        from services.slack_bot.binding import (
-            BindingThrottled,
-            redeem_verification_code,
-        )
+    if not code:
+        ctx = _build_context(request, user=user, conn=conn, bind_status="missing")
+        return templates.TemplateResponse(request, "slack_bind.html", ctx)
 
-        try:
-            ok = redeem_verification_code(conn, user_email=user["email"], code=code.strip())
-            status = "ok" if ok else "invalid"
-        except BindingThrottled:
-            status = "throttled"
-        except Exception:
-            logger.exception("slack bind redeem failed")
-            status = "error"
+    # Mint a double-submit CSRF token: same value in a cookie and the form. A
+    # cross-site attacker cannot read the cookie, so cannot forge a matching
+    # form field. The cookie is short-lived + SameSite=Strict.
+    csrf_token = secrets.token_urlsafe(32)
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        bind_status="confirm",
+        bind_code=code.strip(),
+        csrf_token=csrf_token,
+    )
+    response = templates.TemplateResponse(request, "slack_bind.html", ctx)
+    response.set_cookie(
+        _SLACK_BIND_CSRF_COOKIE,
+        csrf_token,
+        max_age=600,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+        path="/slack/bind",
+    )
+    return response
+
+
+@router.post("/slack/bind", response_class=HTMLResponse)
+async def slack_bind_confirm(
+    request: Request,
+    code: str = Form(""),
+    csrf_token: str = Form(""),
+    user: Optional[dict] = Depends(get_optional_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Redeem a Slack binding code — the only state-changing bind path (F2).
+
+    Requires a valid double-submit CSRF token (form field must equal the
+    ``slack_bind_csrf`` cookie set by the GET confirmation page). Auth-gated so
+    the bind completes only for the signed-in Agnes account.
+    """
+    if user is None:
+        return RedirectResponse(url="/login", status_code=302)
+
+    cookie_token = request.cookies.get(_SLACK_BIND_CSRF_COOKIE, "")
+    if not code or not csrf_token or not cookie_token or not secrets.compare_digest(csrf_token, cookie_token):
+        ctx = _build_context(request, user=user, conn=conn, bind_status="csrf")
+        resp = templates.TemplateResponse(request, "slack_bind.html", ctx, status_code=400)
+        resp.delete_cookie(_SLACK_BIND_CSRF_COOKIE, path="/slack/bind")
+        return resp
+
+    from services.slack_bot.binding import (
+        BindingThrottled,
+        redeem_verification_code,
+    )
+
+    status = "missing"
+    try:
+        ok = redeem_verification_code(conn, user_email=user["email"], code=code.strip())
+        status = "ok" if ok else "invalid"
+    except BindingThrottled:
+        status = "throttled"
+    except Exception:
+        logger.exception("slack bind redeem failed")
+        status = "error"
 
     ctx = _build_context(request, user=user, conn=conn, bind_status=status)
-    return templates.TemplateResponse(request, "slack_bind.html", ctx)
+    resp = templates.TemplateResponse(request, "slack_bind.html", ctx)
+    resp.delete_cookie(_SLACK_BIND_CSRF_COOKIE, path="/slack/bind")
+    return resp
 
 
 @router.get("/install", response_class=HTMLResponse)

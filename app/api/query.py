@@ -556,12 +556,37 @@ _BLOCKED_SQL_TOKENS = [
 ]
 
 
+# Security audit F8: DuckDB resolves a quoted string in table position as a
+# file to scan (a "replacement scan"), so ``SELECT * FROM 'data/extracts/…'``
+# reads a file with NO ``read_parquet()`` call and slips past the function
+# denylist above. The existing ``'/`` / ``'../`` tokens only catch absolute or
+# dot-dot paths — a bare relative path like ``'data/…parquet'`` has neither.
+# Reject a single-quoted string literal that appears immediately after
+# ``FROM`` / ``JOIN`` (optionally wrapped in parens) — the direct replacement
+# scan. Legitimate string literals sit after ``SELECT`` / ``WHERE`` /
+# operators, never in table position, so this does not touch valid queries.
+_FROM_STRING_LITERAL_RE = re.compile(r"\b(?:from|join)\s*\(*\s*'")
+# Also reject ANY quoted literal that names a data file by extension, which
+# catches the comma-separated FROM-list form (``FROM v, 'evil.parquet'``) and
+# glob forms the position-based check above would miss. No legitimate analytics
+# SELECT selects a string literal ending in one of these, so false-positive
+# risk is negligible. The external-access boundary on the analytics connection
+# stays ON because local views need ``read_parquet`` — these parse-level guards
+# are the file-access boundary.
+_FILE_EXT_LITERAL_RE = re.compile(r"""['"][^'"]*\.(?:parquet|parq|csv|tsv|json|ndjson|arrow|duckdb|xlsx)['"]""")
+
+
 def _assert_select_only(sql_lower: str) -> None:
     """Raise HTTPException(400) unless ``sql_lower`` is a single SELECT/WITH
     query free of the blocked keywords/functions. ``sql_lower`` MUST already
     be ``.strip().lower()``-ed by the caller."""
     if any(keyword in sql_lower for keyword in _BLOCKED_SQL_TOKENS):
         raise HTTPException(status_code=400, detail="Only single SELECT queries are allowed")
+    if _FROM_STRING_LITERAL_RE.search(sql_lower) or _FILE_EXT_LITERAL_RE.search(sql_lower):
+        raise HTTPException(
+            status_code=400,
+            detail="File-path table sources are not allowed; query registered views by name",
+        )
     # Accept any whitespace (newline, tab, space) after the keyword so
     # multi-line SQL doesn't 400 on `SELECT\n  col, ...`. Strip leading `--`
     # / `/* */` comments first so a query whose stored SQL opens with a header
