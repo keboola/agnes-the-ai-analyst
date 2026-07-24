@@ -75,6 +75,9 @@
        inert with zero visual change. #}
     <link rel="stylesheet" href="{{ static_url('css/rail.css') }}">
     <link rel="stylesheet" href="{{ static_url('css/paper-skin.css') }}">
+    {# Coach-mark tour engine — inert until a .tour-overlay is injected.
+       Loads after design-tokens.css so --ds-* tokens resolve in tour.css. #}
+    <link rel="stylesheet" href="{{ static_url('css/tour.css') }}">
 
     {% block head_extra %}{% endblock %}
     {% include '_theme.html' ignore missing %}
@@ -151,6 +154,26 @@
        pages migrated from base.html → base_ds.html keep parity with
        zero behaviour drift. #}
     {% include "_app_scripts.html" %}
+    {# Tour engine boot — lazy: only import tour.js when a pending tour resume
+       is possible for the current page, or when on a tour-launching page
+       (/stack, /catalog). Keeps idle pages cost-free.
+       Also stamps window._agTourUrl so chat_onboarding.js can dynamic-import
+       tour.js at the versioned URL without a Jinja context. #}
+    <script type="module">
+      (function () {
+        const tourUrl = "{{ static_url('js/tour.js') }}";
+        window._agTourUrl = tourUrl;
+        const path = window.location.pathname;
+        const tourPages = ['/stack', '/catalog'];
+        let pending = null;
+        try { pending = JSON.parse(sessionStorage.getItem('agnes.tour.pending') || 'null'); } catch (_) {}
+        const shouldLoad = !!pending || tourPages.includes(path);
+        if (!shouldLoad) return;
+        import(tourUrl)
+          .then((mod) => mod.resumePendingTour())
+          .catch(() => { /* tour is additive — never block the page */ });
+      })();
+    </script>
     {% block scripts %}{% endblock %}
     {# Operator-injected scripts (placement=body_end) — for vendors that
        explicitly want bottom placement. Admin-only, see

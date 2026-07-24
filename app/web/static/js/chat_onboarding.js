@@ -42,16 +42,19 @@ const STEP_META = {
   stack_setup_done: {
     label: "Set up your Stack",
     why: "Agnes needs the right company knowledge in your Stack to answer usefully.",
+    href: "/stack",
+    launchTour: "stack",
   },
   explored_stack: {
     label: "Explore My Stack",
     why: "My Stack shows what Agnes can already use and what you added.",
     href: "/stack",
+    launchTour: "stack",
   },
   catalog_discovered: {
     label: "Discover more knowledge",
     why: "The Catalog is where you add optional packages for new questions.",
-    href: "/stack?tab=browse",
+    href: "/catalog",
   },
   use_anywhere: {
     label: "Use Agnes from other AI tools",
@@ -156,7 +159,12 @@ function renderJourneyPanel() {
       const unlocked = complete || i <= nextIdx;
       const cls = s.done ? "done" : unlocked ? "active" : "locked";
       const mark = s.done ? "✓" : unlocked ? "→" : "•";
-      const attrs = s.href ? ` data-journey-go="${s.href}"` : "";
+      const tourAttr = s.launchTour ? ` data-journey-tour="${escapeAttr(s.launchTour)}"` : "";
+      // Carry the step key so the click handler marks the step the user actually
+      // clicked — not one inferred from the (shared) href. "Set up your Stack"
+      // and "Explore My Stack" both point at /stack, so href alone is ambiguous.
+      const keyAttr = ` data-journey-key="${escapeAttr(s.k)}"`;
+      const attrs = s.href ? ` data-journey-go="${s.href}"${tourAttr}${keyAttr}` : "";
       return `<button type="button" class="cloud-chat-journey-step ${cls}"${attrs} title="${escapeAttr(s.why)}">
         <span class="cloud-chat-journey-mark">${mark}</span>
         <span class="cloud-chat-journey-label">${escapeHtml(s.label)}</span>
@@ -176,7 +184,15 @@ function renderJourneyPanel() {
       }
     </div>
     <p class="cloud-chat-journey-sub">Learn what Agnes is and make it yours.</p>
-    <div class="cloud-chat-journey-list">${rows}</div>`;
+    <div class="cloud-chat-journey-list">${rows}</div>
+    ${
+      !complete
+        ? `<button type="button" class="cloud-chat-journey-finish" data-journey-finish-all
+            style="margin-top:10px;width:100%;padding:7px 12px;border:1px solid var(--ds-border);border-radius:8px;background:var(--ds-surface-dim);color:var(--ds-text-muted);font:inherit;font-size:12.5px;cursor:pointer;">
+            Finish onboarding
+          </button>`
+        : ""
+    }`;
 
   el.querySelectorAll("[data-journey-go]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -184,13 +200,54 @@ function renderJourneyPanel() {
       // clicking one would jump ahead and mark it done out of order.
       if (btn.classList.contains("locked")) return;
       const href = btn.getAttribute("data-journey-go");
-      // Mark the step the destination represents so returning shows progress.
-      if (href === "/stack") patchJourney({ explored_stack: true });
-      else if (href.startsWith("/stack?tab=browse")) patchJourney({ catalog_discovered: true });
-      else if (href === "/setup") patchJourney({ use_anywhere: true });
+      const tourId = btn.getAttribute("data-journey-tour");
+      const key = btn.getAttribute("data-journey-key");
+      // Mark the step the user actually clicked (by its key), so progress is
+      // accurate and never records a different/out-of-order step. Steps that
+      // complete through real activity are intentionally NOT force-marked on a
+      // click: first_asked completes when a question is asked, and
+      // stack_setup_done when a package is actually subscribed (it also gates
+      // the in-chat gap resolver, so marking it early would suppress that help).
+      if (key === "explored_stack") patchJourney({ explored_stack: true });
+      else if (key === "catalog_discovered") patchJourney({ catalog_discovered: true });
+      else if (key === "use_anywhere") patchJourney({ use_anywhere: true });
+      // Launch the Stack Tour if requested. Uses window._agTourUrl (stamped
+      // by the tour boot script in base_ds.html) with a bare-path fallback.
+      if (tourId) {
+        const tourUrl = window._agTourUrl || "/static/js/tour.js";
+        import(tourUrl)
+          .then((mod) => {
+            mod.launchTour(tourId, 0);
+          })
+          .catch(() => {
+            window.location.href = href;
+          });
+        return;
+      }
       window.location.href = href;
     });
   });
+
+  const finishAllBtn = el.querySelector("[data-journey-finish-all]");
+  if (finishAllBtn) {
+    finishAllBtn.addEventListener("click", async () => {
+      await patchJourney({
+        first_asked: true,
+        stack_setup_done: true,
+        explored_stack: true,
+        catalog_discovered: true,
+        use_anywhere: true,
+      });
+      // Toast feedback — use the global undo-toast if available, else alert.
+      if (window.showToast) {
+        window.showToast("Onboarding marked complete", { type: "success" });
+      } else {
+        // Soft fallback — non-blocking status message in the panel.
+        finishAllBtn.textContent = "Onboarding marked complete ✓";
+        finishAllBtn.disabled = true;
+      }
+    });
+  }
 
   const restartBtn = el.querySelector("[data-journey-restart]");
   if (restartBtn) restartBtn.addEventListener("click", restartOnboarding);
@@ -357,7 +414,7 @@ async function maybeHandleAddCommand(text) {
     .sort((a, b) => b.s - a.s);
   if (!scored.length) {
     hooks.renderAssistant(
-      `I couldn't find anything called "**${escapeHtml(m[1])}**" to add. Open the [Catalog](/stack?tab=browse) to see what's available.`,
+      `I couldn't find anything called "**${escapeHtml(m[1])}**" to add. Open the [Catalog](/catalog) to see what's available.`,
     );
     return true;
   }
@@ -366,7 +423,7 @@ async function maybeHandleAddCommand(text) {
     await subscribe(target.resource_type, target.id);
   } catch (_) {
     hooks.renderAssistant(
-      `I couldn't add **${escapeHtml(target.name || target.id)}** — you may not have access. Ask your admin, or pick another from the [Catalog](/stack?tab=browse).`,
+      `I couldn't add **${escapeHtml(target.name || target.id)}** — you may not have access. Ask your admin, or pick another from the [Catalog](/catalog).`,
     );
     return true;
   }
