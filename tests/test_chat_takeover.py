@@ -345,7 +345,10 @@ def test_takeover_claims_lease_destroys_old_spawns_fresh_restores_context(two_ga
         assert ctx, f"expected a restore-context upload; writes: {[p for p, _ in context_writes]}"
         assert "hello before takeover" in str(ctx[0])
         assert "Restored conversation context" in str(ctx[0])
-        assert "hello before takeover" not in _stdin_texts(handle_b)
+        # The message is also the TRAILING UNANSWERED user turn, so it is
+        # re-delivered exactly once as a live turn (pending-question
+        # redelivery) — not blindly replayed like the old 3-turn path.
+        assert _stdin_texts(handle_b).count("hello before takeover") == 1
 
         await mgr_b.kill(chat_id, reason="test_done")
 
@@ -907,11 +910,11 @@ def test_takeover_seeds_inbound_cursor_skips_retained_entries(two_gateways, monk
         # ...and the retained "m1" was NOT re-delivered from the stream —
         # it reaches B's fresh runner exactly once, via _respawn_fresh's
         # persisted-history replay.
-        # With the stdin history replay gone (continuity now travels as the
-        # restored-context transcript), a correctly seeded cursor means the
-        # retained stream entry is never delivered at all — a count of 1
-        # here would mean the stale "m1" leaked through.
-        assert _stdin_texts(handle_b).count("m1") == 0, f"retained stream entry re-delivered: {_stdin_texts(handle_b)}"
+        # "m1" is the trailing unanswered user turn, so the takeover
+        # re-delivers it exactly once as a live turn. A correctly seeded
+        # cursor means the RETAINED STREAM copy is never delivered on top —
+        # a count of 2 here would mean the stale stream entry leaked through.
+        assert _stdin_texts(handle_b).count("m1") == 1, f"retained stream entry re-delivered: {_stdin_texts(handle_b)}"
 
         # A message published AFTER the takeover IS delivered.
         await inbound_mod.publish_inbound(chat_id, "after-takeover")
