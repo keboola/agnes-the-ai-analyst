@@ -1,13 +1,14 @@
 {% extends "base_index.html" %}
 {% from "macros/_catalog_card.html" import kind_glyph %}
 {% import "macros/_icon.html" as ico %}
-{# Artefacts — the caller's private artefacts: uploads today, data apps soon.
-   Uploads (per-user file collections) moved here off My Stack so the stack
-   stays a knowledge inventory (data · plugins · memory) while personal
-   artefacts get their own home. Uploads render server-side; the "+ New upload"
-   modal creates a private collection then uploads the file into it (same flow
-   the My Stack modal used). Data apps are the second artefact kind, still in
-   design — a work-in-progress banner stands in for them. #}
+{# Artefacts — the caller's private artefacts: collections today, data apps
+   soon. "Artefacts" is the umbrella (a typed home for things you create);
+   each item under it is a Collection — a private container of uploaded files.
+   Collections moved here off My Stack so the stack stays a knowledge inventory
+   (data · plugins · memory) while personal artefacts get their own home. They
+   render server-side; the "+ New collection" modal creates a private collection
+   then uploads the chosen file(s) into it. Data apps are the second artefact
+   kind, still in design — a work-in-progress banner stands in for them. #}
 {% block title %}Artefacts — {{ config.INSTANCE_NAME }}{% endblock %}
 {% block container_modifier %}container--wide{% endblock %}
 
@@ -77,16 +78,16 @@
 <div class="af-head">
   <div>
     <h1>Artefacts <span class="af-wip">WIP</span></h1>
-    <p class="lede">Your private artefacts — uploaded files today, data apps soon. Uploads stay private to you; {{ instance_brand_short or 'Agnes' }} indexes them so your agents can search across them.</p>
+    <p class="lede">Your private artefacts — files and collections today, data apps soon. Upload a single file to keep it on its own, or group several into a collection. Everything stays private to you, and {{ instance_brand_short or 'Agnes' }} indexes it so your agents can search across it.</p>
   </div>
-  <button type="button" class="cc-btn cc-btn--primary" data-new-upload style="flex-shrink:0">+ New upload</button>
+  <button type="button" class="cc-btn cc-btn--primary" data-new-upload style="flex-shrink:0">+ Upload</button>
 </div>
 {% endblock %}
 
 {% block page_surface %}
 <section class="af-section">
   <div class="af-section-head">
-    <span class="af-count" id="af-upload-count">{{ upload_cards|length }} upload{{ '' if upload_cards|length == 1 else 's' }}</span>
+    <span class="af-count" id="af-upload-count">{{ upload_cards|length }} artefact{{ '' if upload_cards|length == 1 else 's' }}</span>
   </div>
 
   {% if upload_cards %}
@@ -105,7 +106,7 @@
         <tr>
           <td>
             <a class="af-name" href="{{ c.href }}">
-              <span class="cc-icon cc-icon--{{ c.kind }}">{{ kind_glyph(c.kind) }}</span>
+              <span class="cc-icon cc-icon--{{ c.kind }}">{{ kind_glyph(c.glyph or c.kind) }}</span>
               <span class="af-name-text">
                 <span class="af-name-title">{{ c.title }}</span>
                 <span class="af-name-desc">{{ c.description }}</span>
@@ -126,8 +127,8 @@
   </div>
   {% else %}
   <div class="af-empty">
-    <h3>No uploads yet</h3>
-    <p>Add a private file with <b>+ New upload</b> — {{ instance_brand_short or 'Agnes' }} indexes it so your agents can search across it.</p>
+    <h3>No artefacts yet</h3>
+    <p>Upload a file with <b>+ Upload</b> — keep it on its own, or group several into a collection. {{ instance_brand_short or 'Agnes' }} indexes them so your agents can search across them.</p>
   </div>
   {% endif %}
 </section>
@@ -142,25 +143,28 @@
   </div>
 </div>
 
-{# ── New-upload modal (creates a private upload owned by the caller,
-     then uploads the chosen file into it) ── #}
+{# ── Upload modal — the single entry point for both artefact shapes. It
+     creates a private collection owned by the caller, then uploads the chosen
+     file(s) into it. Drop ONE file and it lists as that file; drop SEVERAL
+     (or name it) and it lists as a collection. Either way you can add more
+     later on the detail page, which promotes a file into a collection. ── #}
 <div class="af-modal" id="uploadModal" hidden>
   <div class="af-modal-backdrop" data-close-upload></div>
   <div class="af-modal-card" role="dialog" aria-modal="true" aria-labelledby="uploadModalTitle">
     <div class="af-modal-head">
-      <h2 id="uploadModalTitle">New upload</h2>
+      <h2 id="uploadModalTitle">Upload</h2>
       <button type="button" class="af-modal-x" data-close-upload aria-label="Close">&times;</button>
     </div>
     <form id="uploadForm">
       <label class="af-field">
-        <span>Name <em>(optional)</em></span>
-        <input type="text" id="uploadName" placeholder="e.g. Q3 board deck" autocomplete="off">
+        <span>Files</span>
+        <input type="file" id="uploadFile" multiple required>
       </label>
       <label class="af-field">
-        <span>File</span>
-        <input type="file" id="uploadFile" required>
+        <span>Name <em>(optional — defaults to the file name)</em></span>
+        <input type="text" id="uploadName" placeholder="e.g. Q3 board deck" autocomplete="off">
       </label>
-      <p class="af-modal-hint">Your upload stays private to you. {{ instance_brand_short or 'Agnes' }} indexes it so your agents can search across it.</p>
+      <p class="af-modal-hint">Upload one file to keep it on its own, or several to group them as a collection. Private to you; {{ instance_brand_short or 'Agnes' }} indexes them so your agents can search across them.</p>
       <div class="af-modal-err" id="uploadErr" hidden></div>
       <div class="af-modal-foot">
         <button type="button" class="cc-btn" data-close-upload>Cancel</button>
@@ -186,7 +190,7 @@
   }
   document.addEventListener('DOMContentLoaded', relativizeTimes);
 
-  // ── New-upload modal: create a private upload, then upload the file ──
+  // ── New-collection modal: create a private collection, then upload files ──
   const uploadModal = document.getElementById('uploadModal');
   const uploadForm = document.getElementById('uploadForm');
   const uploadErr = document.getElementById('uploadErr');
@@ -208,10 +212,15 @@
   });
   if (uploadForm) uploadForm.addEventListener('submit', async e => {
     e.preventDefault();
-    const file = uploadFile.files && uploadFile.files[0];
-    if (!file) { uploadShowErr('Choose a file to upload.'); return; }
+    const files = uploadFile.files ? Array.from(uploadFile.files) : [];
+    if (!files.length) { uploadShowErr('Choose at least one file.'); return; }
     let name = (uploadName.value || '').trim();
-    if (!name) name = file.name.replace(/\.[^.]+$/, '') || file.name;
+    // Default the collection name from the first file (or the count when many).
+    if (!name) {
+      name = files.length === 1
+        ? (files[0].name.replace(/\.[^.]+$/, '') || files[0].name)
+        : (files[0].name.replace(/\.[^.]+$/, '') + ' + ' + (files.length - 1) + ' more');
+    }
     uploadSubmit.disabled = true;
     uploadSubmit.textContent = 'Uploading…';
     uploadErr.hidden = true;
@@ -222,21 +231,21 @@
         credentials: 'same-origin',
         body: JSON.stringify({ name }),
       });
-      if (cResp.status === 409) throw new Error('you already have an upload with that name — try another');
+      if (cResp.status === 409) throw new Error('you already have a collection with that name — try another');
       if (!cResp.ok) throw new Error('create failed (' + cResp.status + ')');
       const col = await cResp.json();
       const fd = new FormData();
-      fd.append('files', file);
+      files.forEach(f => fd.append('files', f));
       const fResp = await fetch('/api/collections/' + encodeURIComponent(col.id) + '/files', {
         method: 'POST',
         credentials: 'same-origin',
         body: fd,
       });
       if (!fResp.ok && fResp.status !== 422) throw new Error('upload failed (' + fResp.status + ')');
-      // Land on the collection's detail page (library_detail.html): on 422 the
-      // file was rejected (e.g. unsupported type) but the collection exists, and
-      // the detail page shows each file's status + a re-ingest action, so the
-      // user always sees what happened rather than a silent reload.
+      // Land on the collection's detail page (library_detail.html): on 422 one or
+      // more files were rejected (e.g. unsupported type) but the collection
+      // exists, and the detail page shows each file's status + a re-ingest
+      // action, so the user always sees what happened rather than a silent reload.
       window.location.href = '/library/' + encodeURIComponent(col.slug || col.id);
     } catch (err) {
       uploadSubmit.disabled = false;

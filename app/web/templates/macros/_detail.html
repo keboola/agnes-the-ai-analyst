@@ -95,7 +95,11 @@
 {% macro hero(kind='data', name='', color=None, cover_image_url=None, icon=None,
               eyebrow=None, badges=None, owner_name=None, owner_team=None,
               description=None, tags=None, meta=None,
-              back_href='/catalog', back_label='Back', panel='') %}
+              back_href='/catalog', back_label='Back', panel='', glyph=None) %}
+{# `kind` sets the accent color + data-kind; `glyph` optionally overrides just
+   the icon shape (e.g. a one-file artefact keeps the library color but draws
+   the single-document glyph). Defaults to kind, so existing callers are
+   unaffected. #}
 <div class="detail" data-kind="{{ kind }}"
      style="--kind: var(--ds-kind-{{ kind }}); --kind-soft: var(--ds-kind-{{ kind }}-soft);">
 <a class="detail-back" href="{{ back_href }}">{{ ico('back') }}{{ back_label }}</a>
@@ -110,7 +114,7 @@
        section accent color, so it reads clearly and aligns with the
        per-kind sections below. A cover image, when set, overlays the
        glyph and removes itself on load error to reveal it. #}
-    {{ cards.kind_glyph(kind) }}
+    {{ cards.kind_glyph(glyph or kind) }}
     {% if cover_image_url %}<img src="{{ cover_image_url }}" alt="" onerror="this.parentElement.classList.remove('detail-hero__icon--cover'); this.remove();">{% endif %}
   </div>
   <div class="detail-hero__body">

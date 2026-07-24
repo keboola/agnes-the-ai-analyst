@@ -1,6 +1,6 @@
 {% extends "base_ds.html" %}
 
-{% block title %}{{ collection.name }} — {{ 'Upload' if (ui_layout | default('topnav')) == 'rail' else 'Library' }} — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
+{% block title %}{{ collection.name }} — {{ 'Artefacts' if (ui_layout | default('topnav')) == 'rail' else 'Library' }} — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
 
 {% block body_attrs %}class="detail-page"{% endblock %}
 
@@ -89,25 +89,37 @@
    which has no library tab. #}
 {% set _back = '/artefacts' if _rail else '/library' %}
 {% set _back_label = 'Artefacts' if _rail else 'All library collections' %}
-{# In the rail IA this surface is a private "upload", not a shared library
-   "collection" — swap the user-facing noun so the copy matches the tab the
-   user came from. Topnav keeps the "collection" wording. #}
-{% set _noun = 'upload' if _rail else 'collection' %}
-{% set _desc = collection.description or ('Search across your uploaded files, or add more.' if _rail else 'Search across the files in this collection, or add more.') %}
+{# Presentation adapts to file count: a one-file artefact reads AS the file
+   (single-document glyph, filename title, TYPE · size), two-or-more (or zero)
+   as a collection (two-sheet glyph, N files). Adding a second file promotes a
+   file into a collection. The noun follows the same rule so the copy never
+   calls a lone file a "collection" — this is what fixes the one-file illusion,
+   in both IAs (topnav already used "collection"; single-file is count-based). #}
 {% set _n = (files or [])|length %}
-{% set _meta = [{'icon': 'file', 'text': (_n|string) ~ ' file' ~ ('s' if _n != 1 else '')}] %}
+{% set _single = _n == 1 %}
+{% set _f0 = files[0] if _single else none %}
+{% set _noun = 'file' if _single else 'collection' %}
+{% set _title = _f0.filename if _single else collection.name %}
+{% set _hero_glyph = 'doc' if _single else 'library' %}
+{% if _single %}
+  {% set _ext = (_f0.file_type or '')|upper %}
+  {% set _meta = [{'icon': 'file', 'text': (_ext ~ ' · ' if _ext else '') ~ ((_f0.size_bytes or 0)|humanbytes(1))}] %}
+{% else %}
+  {% set _meta = [{'icon': 'file', 'text': (_n|string) ~ ' file' ~ ('s' if _n != 1 else '')}] %}
+{% endif %}
+{% set _desc = collection.description or ('Search this file, or add more to build a collection.' if _single else 'Search across the files in this collection, or add more.') %}
 
 {% call detail.hero(
-     kind='library', name=collection.name,
+     kind='library', glyph=_hero_glyph, name=_title,
      description=_desc,
      meta=_meta, back_href=_back, back_label=_back_label) %}
-  {{ detail.ask_kai('Search the ' ~ collection.name ~ ' ' ~ _noun ~ ' and answer from its files.') }}
+  {{ detail.ask_kai('Search the ' ~ _title ~ ' ' ~ _noun ~ ' and answer from its files.') }}
 {% endcall %}
 
 {{ detail.section_open('Ask this ' ~ _noun, icon='search') }}
   <div class="ask">
     <svg class="ask__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-    <input id="lib-q" type="search" placeholder="Search across files in this {{ _noun }}…" aria-label="Search">
+    <input id="lib-q" type="search" placeholder="Search this {{ _noun }}…" aria-label="Search">
     {{ ds.button("Search", variant="primary", attrs='id="lib-search-btn" type="button"') }}
   </div>
   <p class="ask__note">

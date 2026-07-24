@@ -184,8 +184,8 @@ class TestRailOptIn:
         assert "Everything in your Stack" not in resp.text
 
     def test_artefacts_page_hosts_uploads(self, web_client, admin_cookie, monkeypatch):
-        """Uploads live on /artefacts (moved off My Stack): the page carries
-        the uploads section, the "+ New upload" affordance, and a
+        """Collections live on /artefacts (moved off My Stack): the page carries
+        the collections section, the "+ New collection" affordance, and a
         work-in-progress banner for the not-yet-built data apps."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/artefacts", cookies=admin_cookie)

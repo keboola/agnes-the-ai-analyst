@@ -54,6 +54,12 @@
   {%- elif kind == 'recipes' -%}
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 3h9l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 3v4h4M8.5 12h7M8.5 16h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
   {%- elif kind == 'library' -%}
+    {# A Collection is a CONTAINER of files — draw two overlapping sheets, not a
+       single document, so it never reads as one file (see #896 Artefacts). #}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 7h6l4 4v9a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M15 7v4h4" stroke="currentColor" stroke-width="1.6"/><path d="M6 16H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h6l1 1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  {%- elif kind == 'doc' -%}
+    {# Single document — a one-file artefact presented AS the file (see the
+       adaptive `_catalog_card_upload`); distinct from the two-sheet library. #}
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4h7l4 4v12H7z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M13 4v4h4" stroke="currentColor" stroke-width="1.6"/></svg>
   {%- elif kind == 'skill' -%}
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
@@ -80,7 +86,7 @@
 {% set _tags = c.tags or [] %}
 <article class="cc-card" data-search="{{ (c.title ~ ' ' ~ (c.description or '')) | lower }}">
   <div class="cc-head">
-    <span class="cc-icon cc-icon--{{ c.kind }}">{{ kind_glyph(c.kind) }}</span>
+    <span class="cc-icon cc-icon--{{ c.kind }}">{{ kind_glyph(c.glyph or c.kind) }}</span>
     <div class="cc-titlewrap">
       <h3 class="cc-title"><a href="{{ c.href }}">{{ c.title }}</a></h3>
       <div class="cc-eyebrow">

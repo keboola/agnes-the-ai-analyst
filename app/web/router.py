@@ -1426,17 +1426,46 @@ def _catalog_card_memory(d: dict) -> dict:
 
 
 def _catalog_card_upload(c: dict) -> dict:
-    """Private upload (file collection) → catalog_card `c`. Uploads aren't
-    stack-toggled (they're owned files); the action opens the collection."""
+    """Private artefact → catalog_card `c`. An artefact is a `file_corpora`
+    container, but its presentation ADAPTS to how many files it holds:
+
+    - exactly one file → it reads as **that file** (title = filename, single-
+      document glyph, ``TYPE · size`` meta, label "File"). A lone dropped file
+      never looks like "a collection with 1 file".
+    - two or more → it reads as a **Collection** (title = name, two-sheet glyph,
+      ``N files`` meta, label "Collection").
+
+    Artefacts aren't stack-toggled (they're owned files); the action opens the
+    detail page, where adding a second file promotes a File into a Collection."""
     n = c.get("file_count", 0) or 0
+    ff = c.get("first_file") or None
+    if n == 1 and ff:
+        ext = (ff.get("file_type") or "").upper()
+        size = _human_size(ff.get("size_bytes") or 0)
+        meta = f"{ext} · {size}" if ext else size
+        return {
+            "kind": "library",
+            "glyph": "doc",  # single-document glyph — see kind_glyph()
+            "kind_label": "File",
+            "title": ff.get("filename") or c["name"],
+            "href": f"/library/{c['slug']}",
+            "curator": None,
+            "category": None,
+            "description": c.get("description") or "A private file — searchable by your agents.",
+            "tags": [],
+            "meta_icon": "doc",
+            "meta_text": meta,
+            "action": {"mode": "link", "href": f"/library/{c['slug']}", "label": "Open"},
+        }
     return {
         "kind": "library",
-        "kind_label": "Upload",
+        "glyph": "library",  # two-sheet "collection of files" glyph
+        "kind_label": "Collection",
         "title": c["name"],
         "href": f"/library/{c['slug']}",
         "curator": None,
         "category": None,
-        "description": c.get("description") or "Your uploaded files — searchable by your agents.",
+        "description": c.get("description") or "A private collection of files — searchable by your agents.",
         "tags": [],
         "meta_icon": "doc",
         "meta_text": f"{n} file{'s' if n != 1 else ''}",
@@ -1702,9 +1731,21 @@ def _unified_upload_cards(user: dict) -> list:
             if col.get("created_by") != uid:
                 continue
             try:
-                file_count = len(cf_repo.list_for_corpus(col["id"]))
+                files = cf_repo.list_for_corpus(col["id"])
             except Exception:
-                file_count = 0
+                files = []
+            file_count = len(files)
+            # A one-file artefact is presented AS the file (not "a collection
+            # with 1 file"), so carry the lone file's name/type/size for the
+            # card + detail. Two or more → it reads as a collection.
+            first_file = None
+            if file_count == 1:
+                f0 = files[0]
+                first_file = {
+                    "filename": f0.get("filename"),
+                    "file_type": f0.get("file_type"),
+                    "size_bytes": f0.get("size_bytes"),
+                }
             cards.append(
                 {
                     "id": col["id"],
@@ -1712,6 +1753,7 @@ def _unified_upload_cards(user: dict) -> list:
                     "description": col.get("description") or "",
                     "slug": col.get("slug"),
                     "file_count": file_count,
+                    "first_file": first_file,
                     "created_at": col.get("created_at"),
                 }
             )
