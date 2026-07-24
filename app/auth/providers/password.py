@@ -74,12 +74,17 @@ def _has_email_transport() -> bool:
     return bool(os.environ.get("SMTP_HOST") or os.environ.get("SENDGRID_API_KEY"))
 
 
-def _cookie_secure() -> bool:
-    # Secure cookie only over HTTPS (DOMAIN env set = production with TLS)
-    return os.environ.get("DOMAIN", "") != ""
+def _cookie_secure(request: Request | None = None) -> bool:
+    # Set Secure whenever the deployment is served over HTTPS. Delegates to the
+    # shared resolver (previously keyed only on DOMAIN, which left the 30-day
+    # session cookie non-Secure behind a non-Caddy TLS terminator that didn't
+    # set DOMAIN — a cleartext-exposure gap).
+    from app.auth.public_url import cookie_secure
+
+    return cookie_secure(request)
 
 
-def _set_login_cookie(response, user_id: str, email: str) -> None:
+def _set_login_cookie(response, user_id: str, email: str, request: Request | None = None) -> None:
     from app.instance_config import session_cookie_domain
 
     token = create_access_token(user_id, email)
@@ -89,7 +94,7 @@ def _set_login_cookie(response, user_id: str, email: str) -> None:
         httponly=True,
         max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
         samesite="lax",
-        secure=_cookie_secure(),
+        secure=_cookie_secure(request),
         domain=session_cookie_domain(),
     )
 
@@ -298,7 +303,7 @@ async def password_login_web(
 
         target = get_home_route()
     response = RedirectResponse(url=target, status_code=302)
-    _set_login_cookie(response, user["id"], user["email"])
+    _set_login_cookie(response, user["id"], user["email"], request)
     return response
 
 
@@ -471,7 +476,7 @@ async def reset_confirm(
     )
 
     response = RedirectResponse(url="/login/password?msg=password_reset", status_code=302)
-    _set_login_cookie(response, user["id"], user["email"])
+    _set_login_cookie(response, user["id"], user["email"], request)
     return response
 
 
@@ -589,5 +594,5 @@ async def setup_confirm(
     from app.instance_config import get_home_route
 
     response = RedirectResponse(url=get_home_route(), status_code=302)
-    _set_login_cookie(response, user["id"], user["email"])
+    _set_login_cookie(response, user["id"], user["email"], request)
     return response
