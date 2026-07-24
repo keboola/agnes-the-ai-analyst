@@ -12,9 +12,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- **Per-instance `upgrade_schedule` override** on `prod_instance` /
+  `dev_instances` in the `customer-instance` Terraform module — the
+  auto-upgrade cron cadence (default `*/5 * * * *`) can now be set per VM,
+  e.g. to move a customer-facing instance to a quiet nightly window without
+  affecting dev iteration speed.
+
 ### Changed
 
 ### Fixed
+
+- **Maintenance page now actually reaches running VMs.** `static/maintenance.html`
+  was never baked into the Dockerfile's `/opt/agnes-host/` artifact set nor
+  synced by `agnes-auto-upgrade.sh`'s `CONFIG_FILES`, so Caddy's
+  `handle_errors 502 503` fallback had nothing to serve during an
+  auto-upgrade recreate — users saw a raw connection error instead of the
+  friendly auto-refreshing page. Both delivery paths now ship the file.
 
 ### Removed
 
