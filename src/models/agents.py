@@ -1,4 +1,4 @@
-"""SQLAlchemy models for the agent profiles + agent-as-API cluster (DuckDB v96/v97).
+"""SQLAlchemy models for the agent profiles + agent-as-API cluster (DuckDB v96/v97/v98).
 
 Mirrors:
   - ``agents``                  (src/db.py, v96)
@@ -8,10 +8,12 @@ Mirrors:
   - ``idempotency_keys``         (src/db.py, v96)
   - ``agent_webhooks``           (src/db.py, v97)
   - ``agent_artifacts``          (src/db.py, v97)
+  - ``agent_memories``           (src/db.py, v98)
 
 and the Alembic migrations ``migrations/versions/0043_agents_v96.py`` /
-``migrations/versions/0044_agent_webhooks_artifacts_v97.py``. This is the
-schema foundation for agent profiles + agent-as-API
+``migrations/versions/0044_agent_webhooks_artifacts_v97.py`` /
+``migrations/versions/0045_agent_memories_v98.py``. This is the schema
+foundation for agent profiles + agent-as-API
 (docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md);
 repos/endpoints land in later tasks of the same wave.
 
@@ -187,3 +189,23 @@ class AgentArtifact(Base):
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=True
     )
+
+
+class AgentMemory(Base):
+    """Per-agent private memory notebook entry (agent-api V1c). ``status``
+    lifecycle is ``pending -> active -> archived``; ``owner_user_id`` is
+    denormalized off ``agent_id`` for cheap owner-scoped listing."""
+
+    __tablename__ = "agent_memories"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String, nullable=False)
+    owner_user_id: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    source_session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, server_default=text("'pending'"), nullable=False)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=True
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

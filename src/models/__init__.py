@@ -12,6 +12,7 @@ from __future__ import annotations
 from src.models.agents import (
     Agent,
     AgentArtifact,
+    AgentMemory,
     AgentScope,
     AgentScopeSnapshot,
     AgentWebhook,
@@ -97,6 +98,7 @@ from src.models.vault import SystemSecret
 __all__ = [
     "Agent",
     "AgentArtifact",
+    "AgentMemory",
     "AgentScope",
     "AgentScopeSnapshot",
     "AgentWebhook",

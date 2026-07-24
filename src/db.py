@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 97
+SCHEMA_VERSION = 98
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1634,6 +1634,20 @@ CREATE TABLE IF NOT EXISTS agent_artifacts (
     content_type  VARCHAR,
     md5           VARCHAR,
     created_at    TIMESTAMP DEFAULT current_timestamp
+);
+
+-- v98: per-agent private memory notebook (agent-api V1c). No secondary
+-- indexes (ART-index incident — see _v94_to_v95).
+CREATE TABLE IF NOT EXISTS agent_memories (
+    id                VARCHAR PRIMARY KEY,
+    agent_id          VARCHAR NOT NULL,
+    owner_user_id     VARCHAR NOT NULL,
+    content           TEXT NOT NULL,
+    source_session_id VARCHAR,
+    status            VARCHAR NOT NULL DEFAULT 'pending',
+    created_at        TIMESTAMP DEFAULT current_timestamp,
+    activated_at      TIMESTAMP,
+    archived_at       TIMESTAMP
 );
 """
 
@@ -6596,6 +6610,25 @@ def _v96_to_v97(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 97")
 
 
+def _v97_to_v98(conn: duckdb.DuckDBPyConnection) -> None:
+    """v97→v98: per-agent private memory notebook (agent-api V1c). No
+    secondary indexes (ART incident — see _v94_to_v95)."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_memories (
+            id                VARCHAR PRIMARY KEY,
+            agent_id          VARCHAR NOT NULL,
+            owner_user_id     VARCHAR NOT NULL,
+            content           TEXT NOT NULL,
+            source_session_id VARCHAR,
+            status            VARCHAR NOT NULL DEFAULT 'pending',
+            created_at        TIMESTAMP DEFAULT current_timestamp,
+            activated_at      TIMESTAMP,
+            archived_at       TIMESTAMP
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 98")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6994,6 +7027,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # V1b). _SYSTEM_SCHEMA already creates them on fresh installs
             # (no-op CREATE IF NOT EXISTS here).
             _v96_to_v97(conn)
+            # v97→v98: agent_memories table (agent-api V1c). _SYSTEM_SCHEMA
+            # already creates it on fresh installs (no-op CREATE IF NOT
+            # EXISTS here).
+            _v97_to_v98(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7241,6 +7278,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v95_to_v96(conn)
             if current < 97:
                 _v96_to_v97(conn)
+            if current < 98:
+                _v97_to_v98(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
