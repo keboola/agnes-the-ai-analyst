@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.27] - 2026-07-24
+
+### Added
+
 - **Per-instance `upgrade_schedule` override** on `prod_instance` /
   `dev_instances` in the `customer-instance` Terraform module — the
   auto-upgrade cron cadence (default `*/5 * * * *`) can now be set per VM,
@@ -35,23 +49,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.76.25] - 2026-07-24
-
-### Changed
-
-- **Cloud chat reuses a paused sandbox across process restarts instead of
-  respawning fresh.** The resume-vs-respawn decision was gated on an
-  in-process set (`_known_protocol_sessions`) that is empty after any
-  restart/deploy, so every resumable session paid a full cold spawn (~6–8 s)
-  *and* lost conversation context on the first message after a restart. The
-  relay-protocol version a runner speaks is now persisted per session
-  (`chat_sessions.relay_protocol_version`, DuckDB v98 + Alembic `0045`), so a
-  current-protocol sandbox reconnects after a restart while a legacy
-  (pre-broker) runner still force-respawns — preserving the safety invariant
-  the in-process gate provided. A configurable grace window
-  (`chat.idle_grace_seconds`, default 60 s) keeps the sandbox warm through a
-  likely follow-up before it pauses.
-
 ## [0.76.26] - 2026-07-24
 
 ### Fixed
@@ -68,6 +65,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   falls back to the previous in-memory behavior. The persisted-file write uses
   a per-process tmp filename so two scheduler containers sharing `DATA_DIR`
   can't race on the same tmp path.
+
+## [0.76.25] - 2026-07-24
+
+### Changed
+
+- **Cloud chat reuses a paused sandbox across process restarts instead of
+  respawning fresh.** The resume-vs-respawn decision was gated on an
+  in-process set (`_known_protocol_sessions`) that is empty after any
+  restart/deploy, so every resumable session paid a full cold spawn (~6–8 s)
+  *and* lost conversation context on the first message after a restart. The
+  relay-protocol version a runner speaks is now persisted per session
+  (`chat_sessions.relay_protocol_version`, DuckDB v98 + Alembic `0045`), so a
+  current-protocol sandbox reconnects after a restart while a legacy
+  (pre-broker) runner still force-respawns — preserving the safety invariant
+  the in-process gate provided. A configurable grace window
+  (`chat.idle_grace_seconds`, default 60 s) keeps the sandbox warm through a
+  likely follow-up before it pauses.
 
 ## [0.76.23] - 2026-07-24
 
