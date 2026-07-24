@@ -191,6 +191,14 @@ def _retype_parquet_streaming(tmp_parquet: Path, target_schema) -> None:
     try:
         conn = _open_consolidation_conn()
         try:
+            # Override the consolidation default: the materialized parquet's
+            # MD5 is the change-detection key for `agnes pull`, so the retype
+            # must be byte-stable for identical input — with
+            # preserve_insertion_order=false DuckDB reorders rows across row
+            # groups (empirically, ~10 groups suffice). Unlike the CSV
+            # consolidation path that motivated the false default, this
+            # parquet→parquet projection streams fine with order preserved.
+            conn.execute("SET preserve_insertion_order=true")
             try:
                 # Naive strings cast to TIMESTAMPTZ should be read as UTC
                 # (the old pandas path's `utc=True`). Best-effort: named-zone

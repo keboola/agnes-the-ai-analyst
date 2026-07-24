@@ -1015,3 +1015,26 @@ def test_materialize_typed_retype_handles_dates_timestamps_and_empties(tmp_path,
         None,
     ]
     assert table.column("d").to_pylist() == [datetime.date(2026, 1, 2), None]
+
+
+def test_retype_preserves_row_order_across_row_groups(tmp_path):
+    """The materialized parquet's MD5 is the change-detection key for
+    `agnes pull` — the retype must preserve input row order (byte-stable
+    output for identical input), even across many row groups where
+    `preserve_insertion_order=false` could legally reorder."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    src = tmp_path / "ordered.parquet"
+    n = 5000
+    pq.write_table(
+        pa.table({"id": pa.array([str(i) for i in range(n)], type=pa.string())}),
+        src,
+        row_group_size=500,
+    )
+
+    kbe._retype_parquet_streaming(src, pa.schema([pa.field("id", pa.int64())]))
+
+    table = pq.read_table(src)
+    assert table.schema.field("id").type == pa.int64()
+    assert table.column("id").to_pylist() == list(range(n))
