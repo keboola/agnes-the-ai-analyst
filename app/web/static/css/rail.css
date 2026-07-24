@@ -35,7 +35,11 @@ html[data-ui-layout="rail"] .rail {
     gap: 2px;
     padding: 16px 12px;
     z-index: 40;
-    overflow-y: auto;
+    /* `visible` (not `auto`) so hover flyouts — the Studio dropdown card —
+       can escape the rail's right edge instead of being clipped. The Chats
+       region scrolls internally (.rail-history-body), so the rail itself
+       does not need its own scrollbar in normal use. */
+    overflow: visible;
     font-family: var(--ds-font);
 }
 
@@ -54,19 +58,45 @@ html[data-ui-layout="rail"] .rail-logo svg {
     width: auto;
 }
 
-html[data-ui-layout="rail"] .rail-orb {
-    width: 30px;
-    height: 30px;
+/* Small Agnes orb sitting inline before the platform name in the
+   "powered by ◍ Agnes" sub-label — the brand mark next to the brand name. */
+html[data-ui-layout="rail"] .rail-brand-orb {
+    width: 13px;
+    height: 13px;
+    vertical-align: -2px;
+    margin: 0 0 0 5px;
     flex-shrink: 0;
-    display: block;
-    filter: drop-shadow(0 2px 6px rgba(109, 40, 217, 0.22));
 }
 
-html[data-ui-layout="rail"] .rail-logo-txt {
-    font-size: 18px;
-    font-weight: 650;
-    letter-spacing: -0.01em;
-    line-height: 1;
+/* Two-line brand lockup: "Kai" as the hero wordmark, a quiet
+   "powered by <platform>" sub-label beneath. */
+html[data-ui-layout="rail"] .rail-brand {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 1px;
+    min-width: 0;
+}
+
+html[data-ui-layout="rail"] .rail-brand-name {
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+    color: var(--ds-text-primary);
+}
+
+html[data-ui-layout="rail"] .rail-brand-sub {
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    line-height: 1.2;
+    color: var(--ds-text-muted);
+}
+
+html[data-ui-layout="rail"] .rail-brand-sub b {
+    font-weight: 600;
+    color: var(--ds-text-secondary);
 }
 
 html[data-ui-layout="rail"] .rail-nav {
@@ -100,6 +130,11 @@ html[data-ui-layout="rail"] .rail-i {
     border-radius: 9px;
     cursor: pointer;
     color: var(--ds-text-secondary);
+    /* .rail-i is applied to both <a> and <button> (Studio/Chats/Admin
+       triggers). Buttons don't inherit the page font by default, so pin it
+       here or the chevron items render in the UA font, out of step with the
+       plain nav links. */
+    font-family: inherit;
     font-weight: 500;
     font-size: 14px;
     /* Explicit line-height so the label's line-box never exceeds the icon:
@@ -158,6 +193,101 @@ html[data-ui-layout="rail"] .rail-badge {
     line-height: 1.5;
 }
 
+/* ── Studio — nav group with an inline hover dropdown ──────────────────
+   A right-side flyout would be clipped by the rail's overflow-y:auto, so the
+   dropdown expands inline beneath the trigger (grid-rows 0fr→1fr) on hover or
+   keyboard focus. Agents lives here; the two "Maybe?" items are exploratory
+   concepts rendered as non-interactive labels. */
+html[data-ui-layout="rail"] .rail-studio {
+    position: relative;
+}
+
+/* Caret points right — toward the flyout card that opens on the right. */
+html[data-ui-layout="rail"] .rail-studio-trigger .rail-studio-caret {
+    margin-left: auto;
+    width: 15px;
+    height: 15px;
+    color: var(--ds-text-muted);
+}
+
+/* Floating dropdown card, revealed on hover / keyboard focus — flies out to
+   the RIGHT of the Studio item, overlaying the main content. The rail's
+   `overflow: visible` lets it escape the right edge. */
+html[data-ui-layout="rail"] .rail-studio-menu {
+    position: absolute;
+    top: 0;
+    left: 100%;
+    width: 232px;
+    z-index: 60;
+    display: none;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 12px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.14);
+    padding: 6px;
+}
+html[data-ui-layout="rail"] .rail-studio:hover .rail-studio-menu,
+html[data-ui-layout="rail"] .rail-studio:focus-within .rail-studio-menu {
+    display: block;
+}
+html[data-ui-layout="rail"] .rail-studio-menu-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+html[data-ui-layout="rail"] .rail-studio-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 11px;
+    border-radius: 9px;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.2;
+    color: var(--ds-text-secondary);
+    text-decoration: none;
+    cursor: pointer;
+}
+html[data-ui-layout="rail"] .rail-studio-item svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    color: var(--ds-text-muted);
+}
+html[data-ui-layout="rail"] .rail-studio-item-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    line-height: 1.25;
+}
+html[data-ui-layout="rail"] a.rail-studio-item:hover {
+    background: var(--ds-surface-dim);
+    color: var(--ds-text-primary);
+}
+html[data-ui-layout="rail"] a.rail-studio-item:hover svg {
+    color: var(--ds-text-secondary);
+}
+html[data-ui-layout="rail"] .rail-studio-item.on {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    font-weight: 600;
+}
+html[data-ui-layout="rail"] .rail-studio-item.on svg {
+    color: var(--ds-primary-dark);
+}
+/* Exploratory "Maybe?" concepts — shown but not yet actionable. */
+html[data-ui-layout="rail"] .rail-studio-item.is-maybe {
+    cursor: default;
+    color: var(--ds-text-muted);
+}
+html[data-ui-layout="rail"] .rail-badge--maybe {
+    color: var(--ds-text-muted);
+    background: transparent;
+    border: 1px dashed var(--ds-border);
+    text-transform: none;
+    letter-spacing: 0.01em;
+}
+
 /* ── Chat history ──────────────────────────────────────────────────────
    Collapsible section under the primary destinations. Expanded, it is the
    rail's flex-grow region: its body scrolls independently while the nav above
@@ -204,12 +334,13 @@ html[data-ui-layout="rail"] .rail-history .rail-history-caret {
     height: 16px;
     flex-shrink: 0;
     color: var(--ds-text-muted);
+    /* Rests pointing right; rotates to down when the section is open (not
+       collapsed) or on hover. */
     transition: transform 0.18s var(--ds-ease-standard, ease);
-    transform: rotate(180deg);
 }
-
-html[data-ui-layout="rail"] .rail-history.is-collapsed .rail-history-caret {
-    transform: rotate(0deg);
+html[data-ui-layout="rail"] .rail-history:not(.is-collapsed) .rail-history-caret,
+html[data-ui-layout="rail"] .rail-history .rail-history-summary:hover .rail-history-caret {
+    transform: rotate(90deg);
 }
 
 /* Scroll region — hidden when collapsed.
@@ -523,7 +654,8 @@ html[data-ui-layout="rail"] .rail-getstarted-btn:hover {
     color: var(--ds-primary-dark);
 }
 
-html[data-ui-layout="rail"] .rail-getstarted .is-open,
+html[data-ui-layout="rail"] .rail-getstarted:hover .rail-getstarted-btn,
+html[data-ui-layout="rail"] .rail-getstarted:focus-within .rail-getstarted-btn,
 html[data-ui-layout="rail"] .rail-getstarted.is-open .rail-getstarted-btn {
     background: var(--ds-primary-light);
 }
@@ -562,10 +694,20 @@ html[data-ui-layout="rail"] .rail-getstarted.is-complete .rail-getstarted-check 
     display: block;
 }
 
-/* The popover — opens UP from the launcher, like the user menu. */
+/* Dropdown card — opens UP from the launcher on hover / focus, and stays
+   pinned when clicked open (.is-open). */
+html[data-ui-layout="rail"] .rail-getstarted:hover .rail-getstarted-panel,
+html[data-ui-layout="rail"] .rail-getstarted:focus-within .rail-getstarted-panel,
+html[data-ui-layout="rail"] .rail-getstarted.is-open .rail-getstarted-panel {
+    display: block;
+}
 html[data-ui-layout="rail"] .rail-getstarted-panel {
+    /* Hidden by default via CSS (the `hidden` attribute was dropped so the
+       hover / .is-open rules above can reveal it — a `[hidden]` reset was
+       winning otherwise). */
+    display: none;
     position: absolute;
-    bottom: calc(100% + 8px);
+    bottom: 100%;
     left: 0;
     right: 0;
     background: var(--ds-surface);
@@ -616,15 +758,21 @@ html[data-ui-layout="rail"] .cloud-chat-journey-badge {
     padding: 1px 8px;
 }
 
-html[data-ui-layout="rail"] .cloud-chat-journey-restart {
+html[data-ui-layout="rail"] .cloud-chat-journey-actions {
     margin-left: auto;
     display: inline-flex;
     align-items: center;
+    gap: 4px;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-iconbtn {
+    display: inline-flex;
+    align-items: center;
     justify-content: center;
-    width: 18px;
-    height: 18px;
+    width: 20px;
+    height: 20px;
     padding: 0;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     line-height: 1;
     color: var(--ds-text-muted);
@@ -634,7 +782,7 @@ html[data-ui-layout="rail"] .cloud-chat-journey-restart {
     cursor: pointer;
 }
 
-html[data-ui-layout="rail"] .cloud-chat-journey-restart:hover {
+html[data-ui-layout="rail"] .cloud-chat-journey-iconbtn:hover {
     color: var(--ds-text-primary);
     border-color: var(--ds-text-muted);
 }

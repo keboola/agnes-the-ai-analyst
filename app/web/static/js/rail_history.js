@@ -44,29 +44,27 @@
     });
   }
 
-  // ---- "Get started" journey popover (runs on EVERY rail page) --------
-  // A pinned foot button opens the "Your Journey" onboarding card as a popover
-  // (chat_onboarding.js fills #chat-journey inside it). Toggle open/close,
-  // close on Escape or an outside click. Wired before the /chat bail so it
-  // works there too.
+  // ---- "Get started" journey card ------------------------------------
+  // Reveals on hover via CSS, but ALSO opens on click and stays pinned (the
+  // `.is-open` class forces it visible) so click users aren't left with a
+  // dead button. Outside-click / Escape closes it. chat_onboarding.js fills
+  // #chat-journey inside it. Wired before the /chat bail so it works there too.
   const gsToggle = document.getElementById("rail-getstarted-toggle");
-  const gsPanel = document.getElementById("rail-getstarted-panel");
   const gsWrap = document.getElementById("railGetStarted");
-  if (gsToggle && gsPanel && gsWrap) {
+  if (gsToggle && gsWrap) {
     const setOpen = (open) => {
-      gsPanel.hidden = !open;
-      gsToggle.setAttribute("aria-expanded", open ? "true" : "false");
       gsWrap.classList.toggle("is-open", open);
+      gsToggle.setAttribute("aria-expanded", open ? "true" : "false");
     };
     gsToggle.addEventListener("click", (e) => {
       e.stopPropagation();
-      setOpen(gsPanel.hidden);
+      setOpen(!gsWrap.classList.contains("is-open"));
     });
     document.addEventListener("click", (e) => {
-      if (!gsPanel.hidden && !gsWrap.contains(e.target)) setOpen(false);
+      if (gsWrap.classList.contains("is-open") && !gsWrap.contains(e.target)) setOpen(false);
     });
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && !gsPanel.hidden) {
+      if (e.key === "Escape" && gsWrap.classList.contains("is-open")) {
         setOpen(false);
         gsToggle.focus();
       }
