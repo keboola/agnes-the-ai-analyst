@@ -41,6 +41,7 @@ seam the whole feature's tests rely on.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -682,7 +683,7 @@ async def create_data_app(
     try:
         if not is_admin:
             max_apps = cfg["max_apps_per_user"]
-            existing = data_apps_repo().list(owner_user_id=user["id"])
+            existing = data_apps_repo().list(owner_user_id=user["id"], include_drafts=False)
             if len(existing) >= max_apps:
                 raise HTTPException(status_code=403, detail="app_quota_exceeded")
 
@@ -875,7 +876,7 @@ async def create_draft(
     except (duckdb.ConstraintException, sa_exc.IntegrityError):
         raise HTTPException(status_code=409, detail="slug_exists")
 
-    from src.data_apps.git_repos import ensure_branch
+    from src.data_apps.git_repos import delete_branch, ensure_branch
 
     try:
         ensure_branch(slug, payload.branch, base="main")
@@ -895,6 +896,12 @@ async def create_draft(
     try:
         git_url = _mint_git_credential(parent)  # push credential is against the PROD repo
     except OwnerNotFoundError:
+        # Same rollback contract as the two failure paths above — a failed
+        # create-draft call must never leave the row or the branch behind,
+        # or a retry gets a misleading 409 `slug_exists`.
+        repo.delete(draft_id)
+        with contextlib.suppress(ValueError):
+            delete_branch(slug, payload.branch)
         raise HTTPException(status_code=500, detail="owner_not_found")
 
     _audit(
@@ -913,12 +920,24 @@ def _teardown_draft(repo, parent_slug: str, draft: dict, conn: duckdb.DuckDBPyCo
     and config-dir cleanup. Used by both ``delete_draft`` (single draft) and
     ``delete_data_app``'s cascade (all drafts of a deleted parent) so the two
     call sites can't drift on what "delete a draft" actually tears down.
+
+    A deployed draft has its own slug and container reachable via
+    ``/apps/<draft_slug>/``, so the container-stop step takes the SAME
+    ``dataapp:op:{draft_slug}`` lease every other runner-mutating operation
+    serializes on (``deploy_data_app``/``stop_data_app``/``delete_data_app``/
+    the ingress proxy's wake path) — without it, a concurrent wake-on-request
+    for the draft could race ``runner.up()`` against this teardown's
+    ``runner.stop()``, the exact unlocked check-then-act corruption the
+    lease exists to prevent (see CHANGELOG 0.76.23).
     """
     draft_slug = draft["slug"]
+    holder = require_op_lease(draft_slug)
     try:
         _runner().stop(draft_slug, mode="recreate")
     except (RunnerUnavailable, RunnerError):
         logger.warning("_teardown_draft: runner stop failed for %s (continuing)", draft_slug)
+    finally:
+        release_op_lease(draft_slug, holder)
 
     _revoke_service_token(draft)
 

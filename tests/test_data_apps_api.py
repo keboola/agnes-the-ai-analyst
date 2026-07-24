@@ -1493,6 +1493,29 @@ class TestDrafts:
             conn.close()
         assert token_row["revoked_at"] is not None
 
+    def test_delete_draft_409s_when_draft_op_lease_held_elsewhere(
+        self, client_as_user, fake_runner, seeded_repo_with_commit
+    ):
+        """A deployed draft has its own `dataapp:op:{draft_slug}` lease,
+        distinct from the parent's — the same lease `deploy_data_app`/
+        `stop_data_app` take on the draft's own slug when it's addressed
+        directly. Teardown must take it too, or a concurrent wake-on-request
+        for the draft can race `runner.up()` against this delete's
+        `runner.stop()`."""
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+
+        from app.api.data_apps import release_op_lease, try_acquire_op_lease
+
+        acquired, holder = try_acquire_op_lease(d["slug"])
+        assert acquired
+        try:
+            r = client_as_user.delete(f"/api/data-apps/sapp/drafts/{d['slug']}")
+            assert r.status_code == 409
+            assert r.json()["detail"] == "operation_in_progress"
+            assert not fake_runner.stop_calls
+        finally:
+            release_op_lease(d["slug"], holder)
+
     def test_delete_draft_removes_branch(self, client_as_user, seeded_repo_with_commit):
         from src.data_apps.git_repos import resolve_ref
 
