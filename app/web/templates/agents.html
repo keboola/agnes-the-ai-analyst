@@ -1,0 +1,506 @@
+{% extends "base_index.html" %}
+{% import "macros/_icon.html" as ico %}
+{# Agents — build a focused assistant out of the caller's own stack (#draft
+   prototype: evviku.github.io/agnes-the-ai-analyst, Build Agent module).
+
+   Two in-page views, no extra routes:
+     - LIST     — the caller's agents as cards + a "New agent" affordance.
+     - BUILDER  — numbered sections (Identity · Knowledge · Capabilities ·
+                  Surfaces · Boundaries) with a live preview aside.
+
+   The ingredient lists are REAL and RBAC-scoped: Knowledge renders the data
+   packages + memory domains resolved from the caller's stack (server-side,
+   same reads as /stack); Capabilities hydrate from
+   /api/marketplace/items?tab=my (the caller's subscribed plugins). Agent
+   definitions persist in localStorage (per-user key) for now — a server
+   registry is the next iteration, and the page says so plainly instead of
+   pretending drafts are shared. #}
+{% block title %}Agents — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block container_modifier %}container--wide{% endblock %}
+
+{% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
+<style>
+  /* Page chrome only — all colors ride --ds-* tokens. The agent's own
+     identity (avatar chip, preview greeting) uses the --ds-agnes assistant
+     accent; actions stay on --ds-primary; entity-kind tags keep the
+     categorical --ds-kind-* palette. */
+  .ag-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 0; padding-bottom: 24px; }
+  .ag-head h1 { font-size: 24px; margin: 0 0 8px; display: flex; align-items: center; gap: 10px; }
+  .ag-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 64ch; }
+  .ag-wip { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ds-warn-ink); background: var(--ds-warn-bg); border: 1px solid var(--ds-warn-line); border-radius: var(--ds-radius-pill); padding: 2px 9px; }
+
+  /* ── List view ── */
+  .ag-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+  .ag-card { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; cursor: pointer; transition: border-color var(--ds-motion-fast) var(--ds-ease-standard), box-shadow var(--ds-motion-fast) var(--ds-ease-standard); }
+  .ag-card:hover { border-color: var(--ds-border); box-shadow: var(--ds-shadow-md); }
+  .ag-card-top { display: flex; align-items: center; gap: 11px; }
+  .ag-ava { width: 38px; height: 38px; border-radius: 10px; background: var(--ds-agnes-soft); color: var(--ds-agnes); display: grid; place-items: center; flex-shrink: 0; }
+  .ag-ava svg { width: 21px; height: 21px; }
+  .ag-card h3 { font-size: 15px; margin: 0; line-height: 1.25; }
+  .ag-card-role { font-size: 13px; color: var(--ds-text-secondary); line-height: 1.5; min-height: 39px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ag-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--ds-border); padding-top: 11px; margin-top: auto; }
+  .ag-card-count { font-size: 12.5px; color: var(--ds-text-muted); font-weight: 500; }
+  .ag-del { border: none; background: none; color: var(--ds-text-muted); cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 8px; font-family: inherit; }
+  .ag-del:hover { color: var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg); }
+  .ag-new { border: 1.5px dashed var(--ds-border); background: var(--ds-surface-sunken); color: var(--ds-text-secondary); border-radius: 14px; padding: 16px 18px; display: flex; align-items: center; justify-content: center; gap: 9px; font-size: 14px; font-weight: 600; cursor: pointer; min-height: 158px; font-family: inherit; transition: color var(--ds-motion-fast) var(--ds-ease-standard), border-color var(--ds-motion-fast) var(--ds-ease-standard); }
+  .ag-new:hover { border-color: var(--ds-primary); color: var(--ds-primary); background: var(--ds-primary-light); }
+  .ag-empty { text-align: center; padding: 48px 20px; border: 1px dashed var(--ds-border); border-radius: 14px; }
+  .ag-empty .ag-ava { margin: 0 auto 12px; width: 46px; height: 46px; }
+  .ag-empty h3 { margin: 0 0 6px; font-size: 16px; color: var(--ds-text-primary); }
+  .ag-empty p { margin: 0 0 16px; color: var(--ds-text-secondary); font-size: 14px; }
+  .ag-localnote { margin: 18px 0 0; font-size: 12.5px; color: var(--ds-text-muted); }
+
+  /* Status pill — draft vs ready. */
+  .ag-status { font-size: 12px; font-weight: 600; border-radius: var(--ds-radius-pill); padding: 2px 10px; flex-shrink: 0; white-space: nowrap; }
+  .ag-status--draft { color: var(--ds-text-secondary); background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); }
+  .ag-status--ready { color: var(--ds-accent-success-ink); background: var(--ds-accent-success-bg); border: 1px solid var(--ds-accent-success-line); }
+
+  /* ── Builder ── */
+  .ag-back { border: none; background: none; color: var(--ds-text-secondary); font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer; padding: 4px 8px 4px 0; margin-bottom: 6px; }
+  .ag-back:hover { color: var(--ds-primary); }
+  .ag-build-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 2px 0 18px; }
+  .ag-build-kicker { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ds-agnes); }
+  .ag-build-head h2 { font-size: 24px; margin: 2px 0 0; }
+  .ag-build-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; margin-top: 4px; }
+  .ag-bgrid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 22px; align-items: start; }
+  @media (max-width: 980px) { .ag-bgrid { grid-template-columns: 1fr; } }
+
+  /* Numbered collapsible sections. */
+  .ag-sec { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; margin-bottom: 14px; overflow: hidden; }
+  .ag-sec-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px; cursor: pointer; user-select: none; }
+  .ag-sec-no { width: 26px; height: 26px; border-radius: 50%; background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); color: var(--ds-text-secondary); font-size: 12.5px; font-weight: 700; display: grid; place-items: center; flex-shrink: 0; }
+  .ag-sec-head h3 { font-size: 15px; margin: 0; }
+  .ag-sec-head h3 .ag-sec-note { font-weight: 400; color: var(--ds-text-muted); font-size: 13px; margin-left: 4px; }
+  .ag-sec-sub { margin: 2px 0 0; font-size: 12.5px; color: var(--ds-text-secondary); }
+  .ag-sec-grow { flex: 1; min-width: 0; }
+  .ag-sec-sum { font-size: 12.5px; color: var(--ds-text-muted); white-space: nowrap; }
+  .ag-sec-chev { color: var(--ds-text-muted); transition: transform var(--ds-motion-fast) var(--ds-ease-standard); }
+  .ag-sec-chev svg { width: 16px; height: 16px; display: block; }
+  .ag-sec.collapsed .ag-sec-chev { transform: rotate(-90deg); }
+  .ag-sec-body { padding: 4px 18px 18px; border-top: 1px solid var(--ds-border); }
+  .ag-sec.collapsed .ag-sec-body { display: none; }
+  .ag-sec.collapsed .ag-sec-head { padding-bottom: 14px; }
+
+  /* Fields. */
+  .ag-field { display: block; margin: 14px 0 0; }
+  .ag-field > span { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--ds-text-primary); }
+  .ag-field > span em { font-weight: 400; color: var(--ds-text-muted); font-style: normal; }
+  .ag-field input[type=text], .ag-field textarea { width: 100%; padding: 9px 12px; border: 1px solid var(--ds-border); border-radius: 9px; font: inherit; font-size: 14px; background: var(--ds-surface); color: var(--ds-text-primary); resize: vertical; }
+  .ag-field input:focus, .ag-field textarea:focus { outline: 2px solid var(--ds-primary); outline-offset: -1px; }
+  .ag-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ag-chip { font-size: 13px; font-weight: 500; padding: 5px 13px; border-radius: var(--ds-radius-pill); border: 1px solid var(--ds-border); background: var(--ds-surface); color: var(--ds-text-secondary); cursor: pointer; font-family: inherit; }
+  .ag-chip.on { border-color: var(--ds-primary); color: var(--ds-primary); background: var(--ds-primary-light); font-weight: 600; }
+
+  /* Ingredient rows (knowledge / capabilities / surfaces). */
+  .ag-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--ds-border); }
+  .ag-row:last-child { border-bottom: none; padding-bottom: 2px; }
+  .ag-row-body { flex: 1; min-width: 0; }
+  .ag-row-name { font-size: 14px; font-weight: 600; color: var(--ds-text-primary); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ag-row-desc { font-size: 12.5px; color: var(--ds-text-secondary); margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ag-row-meta { font-size: 12px; color: var(--ds-text-muted); margin-left: 4px; }
+  .ag-kind { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; border-radius: var(--ds-radius-pill); padding: 1px 8px; }
+  .ag-kind--data { background: var(--ds-kind-data-soft); color: var(--ds-kind-data); }
+  .ag-kind--memory { background: var(--ds-kind-memory-soft); color: var(--ds-kind-memory); }
+  .ag-kind--plugin { background: var(--ds-kind-plugin-soft); color: var(--ds-kind-plugin); }
+  .ag-kind--skill { background: var(--ds-kind-skill-soft); color: var(--ds-kind-skill); }
+  .ag-kind--agent { background: var(--ds-kind-agent-soft); color: var(--ds-kind-agent); }
+  .ag-tglbtn { flex-shrink: 0; font: inherit; font-size: 12.5px; font-weight: 600; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--ds-border); background: var(--ds-surface); color: var(--ds-text-secondary); cursor: pointer; }
+  .ag-tglbtn.on { border-color: var(--ds-primary); color: var(--ds-primary); background: var(--ds-primary-light); }
+  .ag-note { font-size: 12.5px; color: var(--ds-text-secondary); background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); border-radius: 9px; padding: 8px 12px; margin: 12px 0 0; }
+  .ag-note a { color: var(--ds-primary); }
+
+  /* Boundaries (read-only, admin-managed). */
+  .ag-bnd { margin-top: 12px; border: 1px solid var(--ds-border); border-radius: 10px; overflow: hidden; }
+  .ag-bnd-row { display: flex; justify-content: space-between; gap: 12px; padding: 9px 13px; font-size: 13px; border-bottom: 1px solid var(--ds-border); }
+  .ag-bnd-row:last-child { border-bottom: none; }
+  .ag-bnd-k { color: var(--ds-text-secondary); }
+  .ag-bnd-v { color: var(--ds-text-primary); font-weight: 550; text-align: right; }
+
+  /* Preview aside. */
+  .ag-preview { position: sticky; top: 18px; }
+  .ag-preview h3 { font-size: 14px; margin: 0 0 10px; }
+  .ag-pv-card { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; box-shadow: var(--ds-shadow-md); overflow: hidden; }
+  .ag-pv-hd { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--ds-border); }
+  .ag-pv-hd .ag-ava { width: 32px; height: 32px; border-radius: 9px; }
+  .ag-pv-name { font-size: 14px; font-weight: 650; color: var(--ds-text-primary); }
+  .ag-pv-role { font-size: 12px; color: var(--ds-text-muted); display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+  .ag-pv-body { padding: 14px; }
+  .ag-pv-bubble { background: var(--ds-agnes-soft); border: 1px solid var(--ds-agnes-line); color: var(--ds-text-primary); border-radius: 12px 12px 12px 4px; padding: 10px 13px; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; }
+  .ag-pv-input { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-pill); padding: 8px 8px 8px 14px; color: var(--ds-text-muted); font-size: 13px; }
+  .ag-pv-send { width: 26px; height: 26px; border-radius: 50%; background: var(--ds-primary); color: var(--ds-text-inverse); display: grid; place-items: center; font-size: 14px; flex-shrink: 0; }
+  .ag-pv-meta { margin-top: 12px; border: 1px solid var(--ds-border); border-radius: 10px; overflow: hidden; }
+  .ag-pv-row { display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; font-size: 12.5px; border-bottom: 1px solid var(--ds-border); }
+  .ag-pv-row:last-child { border-bottom: none; }
+  .ag-pv-k { color: var(--ds-text-secondary); }
+  .ag-pv-v { color: var(--ds-text-primary); font-weight: 550; }
+</style>
+{% endblock %}
+
+{% block page_head %}
+<div class="ag-head">
+  <div>
+    <h1>Agents <span class="ag-wip">WIP</span></h1>
+    <p class="lede">Build a focused assistant out of your stack — grounded in the data and memory you already have access to, with the plugins you choose. Everything here respects your existing permissions.</p>
+  </div>
+  <button type="button" class="cc-btn cc-btn--primary" id="ag-new-btn" style="flex-shrink:0">+ Build an agent</button>
+</div>
+{% endblock %}
+
+{% block page_surface %}
+{# Server-rendered, RBAC-scoped ingredients for the builder. #}
+<script type="application/json" id="ag-knowledge-data">{{ knowledge_sources | tojson }}</script>
+
+<div id="ag-list-view"></div>
+<div id="ag-builder-view" hidden></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+
+  /* ── State ─────────────────────────────────────────────────────────────
+     Agents persist in localStorage under a per-user key for now (the page
+     labels this honestly). A server registry replaces this in the next
+     iteration; the shape below is deliberately API-ready. */
+  var STORE_KEY = 'agnes_agents_v1_{{ session.user.id }}';
+  var KNOWLEDGE = JSON.parse(document.getElementById('ag-knowledge-data').textContent || '[]');
+  var SURFACE_DEFS = [
+    { id: 'web',      name: 'Web chat',       hint: 'The chat on this site', base: true },
+    { id: 'slack',    name: 'Slack',          hint: 'As a Slack app in your workspace' },
+    { id: 'telegram', name: 'Telegram',       hint: 'As a Telegram bot' },
+    { id: 'cli',      name: 'Claude Code / CLI', hint: 'In analyst workspaces via agnes' },
+    { id: 'mcp',      name: 'MCP',            hint: 'As a tool server for other AI clients' }
+  ];
+  var TONES = [['concise', 'Concise'], ['friendly', 'Friendly'], ['formal', 'Formal'], ['playful', 'Playful']];
+
+  var agents = [];
+  try { agents = JSON.parse(localStorage.getItem(STORE_KEY) || '[]'); } catch (e) { agents = []; }
+  var currentId = null;
+  var collapsed = {};           // sectionKey -> bool, per open agent
+  var plugins = null;           // hydrated from /api/marketplace/items?tab=my
+  var pluginsErr = false;
+
+  function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(agents)); } catch (e) { /* quota — soft state */ } }
+  function current() { return agents.find(function (a) { return a.id === currentId; }) || null; }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function makeAgent() {
+    return {
+      id: 'agent-' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36),
+      name: '', role: '', instructions: '', tone: 'concise',
+      greeting: "Hi! How can I help?",
+      knowledge: [], plugins: [],
+      surfaces: { web: true, slack: false, telegram: false, cli: false, mcp: false },
+      status: 'draft',
+      updated: new Date().toISOString()
+    };
+  }
+
+  /* ── Plugins (capabilities) — the caller's subscribed stack ── */
+  function loadPlugins() {
+    if (plugins !== null) return Promise.resolve();
+    return fetch('/api/marketplace/items?tab=my&page_size=100', { credentials: 'same-origin' })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (data) { plugins = data.items || []; })
+      .catch(function () { plugins = []; pluginsErr = true; });
+  }
+
+  /* ── List view ── */
+  var listView = document.getElementById('ag-list-view');
+  var builderView = document.getElementById('ag-builder-view');
+
+  function agentCounts(a) {
+    var sn = Object.keys(a.surfaces).filter(function (k) { return a.surfaces[k]; }).length;
+    return a.knowledge.length + ' knowledge · ' + a.plugins.length + ' plugin' + (a.plugins.length === 1 ? '' : 's') + ' · ' + sn + ' surface' + (sn === 1 ? '' : 's');
+  }
+
+  var AVA_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 4.2v3.8M8.5 20v1.5M15.5 20v1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.3" cy="13.5" r="1.1" fill="currentColor"/><circle cx="14.7" cy="13.5" r="1.1" fill="currentColor"/></svg>';
+
+  function statusPill(a) {
+    return a.status === 'ready'
+      ? '<span class="ag-status ag-status--ready">● Ready</span>'
+      : '<span class="ag-status ag-status--draft">○ Draft</span>';
+  }
+
+  function renderList() {
+    builderView.hidden = true;
+    listView.hidden = false;
+    if (!agents.length) {
+      listView.innerHTML =
+        '<div class="ag-empty">' +
+          '<span class="ag-ava">' + AVA_SVG + '</span>' +
+          '<h3>No agents yet</h3>' +
+          '<p>Build your first agent — pick what it knows from your stack, what it can do from your plugins, and where it runs.</p>' +
+          '<button type="button" class="cc-btn cc-btn--primary" data-ag-new>+ Build an agent</button>' +
+        '</div>' + localNote();
+    } else {
+      var cards = agents.map(function (a) {
+        return '<div class="ag-card" data-ag-open="' + esc(a.id) + '" role="button" tabindex="0">' +
+          '<div class="ag-card-top">' +
+            '<span class="ag-ava">' + AVA_SVG + '</span>' +
+            '<div style="min-width:0;flex:1"><h3>' + (esc(a.name) || 'Untitled') + '</h3></div>' +
+            statusPill(a) +
+          '</div>' +
+          '<div class="ag-card-role">' + (esc(a.role) || '<span style="color:var(--ds-text-muted)">No role yet — open to configure.</span>') + '</div>' +
+          '<div class="ag-card-foot">' +
+            '<span class="ag-card-count">' + agentCounts(a) + '</span>' +
+            '<button type="button" class="ag-del" data-ag-del="' + esc(a.id) + '">Delete</button>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+      listView.innerHTML = '<div class="ag-grid">' + cards +
+        '<button type="button" class="ag-new" data-ag-new><span style="font-size:18px">+</span> New agent</button></div>' + localNote();
+    }
+  }
+
+  function localNote() {
+    return '<p class="ag-localnote">Work in progress — agents are saved in this browser for now. Publishing them to your workspace (and running them on the surfaces below) is the next step.</p>';
+  }
+
+  /* ── Builder view ── */
+  var SECTION_KEYS = ['identity', 'knowledge', 'capabilities', 'surfaces', 'boundaries'];
+
+  function openBuilder(id) {
+    currentId = id;
+    collapsed = { identity: false, knowledge: true, capabilities: true, surfaces: true, boundaries: true };
+    loadPlugins().then(renderBuilder);
+    renderBuilder();
+    window.scrollTo(0, 0);
+  }
+  function closeBuilder() { currentId = null; renderList(); window.scrollTo(0, 0); }
+
+  function section(key, no, title, note, sub, summary, body) {
+    var isC = !!collapsed[key];
+    return '<div class="ag-sec' + (isC ? ' collapsed' : '') + '" data-sec="' + key + '">' +
+      '<div class="ag-sec-head" data-ag-toggle-sec="' + key + '" role="button" tabindex="0" aria-expanded="' + (!isC) + '">' +
+        '<span class="ag-sec-no">' + no + '</span>' +
+        '<div class="ag-sec-grow"><h3>' + title + (note ? ' <span class="ag-sec-note">' + note + '</span>' : '') + '</h3>' +
+          (sub ? '<p class="ag-sec-sub">' + sub + '</p>' : '') + '</div>' +
+        '<span class="ag-sec-sum">' + (summary || '') + '</span>' +
+        '<span class="ag-sec-chev"><svg viewBox="0 0 24 24" fill="none"><path d="M5 8.5l7 7 7-7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>' +
+      '</div>' +
+      '<div class="ag-sec-body">' + body + '</div>' +
+    '</div>';
+  }
+
+  function identityBody(a) {
+    return '<label class="ag-field"><span>Name</span>' +
+        '<input type="text" data-ag-field="name" value="' + esc(a.name) + '" placeholder="e.g. Revenue Analyst" maxlength="40" autocomplete="off"></label>' +
+      '<label class="ag-field"><span>Role <em>— one line</em></span>' +
+        '<input type="text" data-ag-field="role" value="' + esc(a.role) + '" placeholder="e.g. Answers revenue questions from our governed metrics." maxlength="90" autocomplete="off"></label>' +
+      '<label class="ag-field"><span>Instructions <em>— what it should do, and what it should avoid</em></span>' +
+        '<textarea rows="4" data-ag-field="instructions" placeholder="e.g. Always use canonical metric definitions. Cite the table you queried. Never invent numbers.">' + esc(a.instructions) + '</textarea></label>' +
+      '<div class="ag-field"><span>Tone</span><div class="ag-chips">' +
+        TONES.map(function (t) {
+          return '<button type="button" class="ag-chip' + (a.tone === t[0] ? ' on' : '') + '" data-ag-tone="' + t[0] + '">' + t[1] + '</button>';
+        }).join('') + '</div></div>' +
+      '<label class="ag-field"><span>Greeting</span>' +
+        '<textarea rows="2" data-ag-field="greeting" placeholder="Hi, I&#39;m …">' + esc(a.greeting) + '</textarea></label>';
+  }
+
+  function knowledgeBody(a) {
+    var rows = KNOWLEDGE.map(function (k) {
+      var on = a.knowledge.indexOf(k.id) >= 0;
+      return '<div class="ag-row">' +
+        '<div class="ag-row-body">' +
+          '<div class="ag-row-name">' + esc(k.name) +
+            '<span class="ag-kind ag-kind--' + esc(k.kind) + '">' + (k.kind === 'data' ? 'Data' : 'Memory') + '</span>' +
+            (k.meta ? '<span class="ag-row-meta">' + esc(k.meta) + '</span>' : '') + '</div>' +
+          '<div class="ag-row-desc">' + esc(k.description) + '</div>' +
+        '</div>' +
+        '<button type="button" class="ag-tglbtn' + (on ? ' on' : '') + '" data-ag-kn="' + esc(k.id) + '">' + (on ? '✓ Grounded' : '+ Ground') + '</button>' +
+      '</div>';
+    }).join('');
+    return (rows || '<p class="ag-row-desc" style="padding:12px 0">Nothing in your stack yet.</p>') +
+      '<div class="ag-note">Drawn from your stack — the same governed data and memory you already have access to. Add more from the <a href="/catalog">Catalog</a>.</div>';
+  }
+
+  function capabilitiesBody(a) {
+    if (plugins === null) return '<p class="ag-row-desc" style="padding:12px 0">Loading your plugins…</p>';
+    var rows = plugins.map(function (p) {
+      var on = a.plugins.indexOf(p.id) >= 0;
+      return '<div class="ag-row">' +
+        '<div class="ag-row-body">' +
+          '<div class="ag-row-name">' + esc(p.name) +
+            '<span class="ag-kind ag-kind--' + esc(p.type || 'plugin') + '">' + esc(p.type || 'plugin') + '</span>' +
+            (p.category ? '<span class="ag-row-meta">' + esc(p.category) + '</span>' : '') + '</div>' +
+          '<div class="ag-row-desc">' + esc(p.description || '') + '</div>' +
+        '</div>' +
+        '<button type="button" class="ag-tglbtn' + (on ? ' on' : '') + '" data-ag-cap="' + esc(p.id) + '">' + (on ? '✓ Enabled' : '+ Enable') + '</button>' +
+      '</div>';
+    }).join('');
+    var note = pluginsErr
+      ? '<div class="ag-note">Could not load your plugins right now — try reloading the page.</div>'
+      : '<div class="ag-note">Your subscribed plugins. Find more in the <a href="/catalog?kind=plugins">Catalog</a>.</div>';
+    return (rows || '<p class="ag-row-desc" style="padding:12px 0">No plugins in your stack yet.</p>') + note;
+  }
+
+  function surfacesBody(a) {
+    return SURFACE_DEFS.map(function (d) {
+      var on = !!a.surfaces[d.id];
+      return '<div class="ag-row">' +
+        '<div class="ag-row-body">' +
+          '<div class="ag-row-name">' + d.name + (d.base ? ' <span class="ag-kind ag-kind--data">base</span>' : '') + '</div>' +
+          '<div class="ag-row-desc">' + d.hint + '</div>' +
+        '</div>' +
+        '<button type="button" class="ag-tglbtn' + (on ? ' on' : '') + '"' + (d.base ? ' disabled' : '') + ' data-ag-surf="' + d.id + '">' + (on ? '✓ On' : '+ Enable') + '</button>' +
+      '</div>';
+    }).join('') +
+    '<div class="ag-note">Where the agent will be reachable once publishing lands. Web chat is the base surface.</div>';
+  }
+
+  function boundariesBody() {
+    return '<div class="ag-bnd">' +
+        '<div class="ag-bnd-row"><span class="ag-bnd-k">Model</span><span class="ag-bnd-v">Workspace default</span></div>' +
+        '<div class="ag-bnd-row"><span class="ag-bnd-k">Data access</span><span class="ag-bnd-v">Scoped to each user’s permissions</span></div>' +
+        '<div class="ag-bnd-row"><span class="ag-bnd-k">Sensitive actions</span><span class="ag-bnd-v">Require confirmation</span></div>' +
+      '</div>' +
+      '<div class="ag-note">Inherited from the workspace — you build within them. Ask an admin to change a boundary.</div>';
+  }
+
+  function previewHtml(a) {
+    var kn = a.knowledge.length, cp = a.plugins.length;
+    var sn = Object.keys(a.surfaces).filter(function (k) { return a.surfaces[k]; }).length;
+    return '<h3>Preview</h3>' +
+      '<div class="ag-pv-card">' +
+        '<div class="ag-pv-hd">' +
+          '<span class="ag-ava">' + AVA_SVG + '</span>' +
+          '<div style="min-width:0"><div class="ag-pv-name" id="ag-pv-name">' + (esc(a.name) || 'Your agent') + '</div>' +
+          '<div class="ag-pv-role" id="ag-pv-role">' + (esc(a.role) || '—') + '</div></div>' +
+        '</div>' +
+        '<div class="ag-pv-body">' +
+          '<div class="ag-pv-bubble" id="ag-pv-greeting">' + (esc(a.greeting) || '…') + '</div>' +
+          '<div class="ag-pv-input"><span id="ag-pv-ph">Ask ' + (esc(a.name) || 'your agent') + '…</span><span class="ag-pv-send">↑</span></div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="ag-pv-meta">' +
+        '<div class="ag-pv-row"><span class="ag-pv-k">Grounded in</span><span class="ag-pv-v">' + kn + ' source' + (kn === 1 ? '' : 's') + '</span></div>' +
+        '<div class="ag-pv-row"><span class="ag-pv-k">Can use</span><span class="ag-pv-v">' + cp + ' plugin' + (cp === 1 ? '' : 's') + '</span></div>' +
+        '<div class="ag-pv-row"><span class="ag-pv-k">Tone</span><span class="ag-pv-v" style="text-transform:capitalize">' + esc(a.tone) + '</span></div>' +
+        '<div class="ag-pv-row"><span class="ag-pv-k">Surfaces</span><span class="ag-pv-v">' + sn + '</span></div>' +
+      '</div>';
+  }
+
+  function renderBuilder() {
+    var a = current();
+    if (!a) { renderList(); return; }
+    listView.hidden = true;
+    builderView.hidden = false;
+    var sn = Object.keys(a.surfaces).filter(function (k) { return a.surfaces[k]; }).length;
+    builderView.innerHTML =
+      '<button type="button" class="ag-back" data-ag-back>← All agents</button>' +
+      '<div class="ag-build-head">' +
+        '<div style="min-width:0">' +
+          '<div class="ag-build-kicker">Configuring agent</div>' +
+          '<h2 id="ag-build-title">' + (esc(a.name) || 'Untitled') + '</h2>' +
+        '</div>' +
+        '<div class="ag-build-actions">' + statusPill(a) +
+          '<button type="button" class="cc-btn' + (a.status === 'ready' ? '' : ' cc-btn--primary') + '" data-ag-status>' +
+            (a.status === 'ready' ? 'Back to draft' : 'Mark ready') + '</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="ag-bgrid">' +
+        '<div>' +
+          section('identity', 1, 'Identity', '', 'Who it is and how it behaves.',
+            (esc(a.name) || 'Unnamed') + ' · ' + a.tone, identityBody(a)) +
+          section('knowledge', 2, 'Knowledge', 'what it knows',
+            'Ground it in your stack — the governed data and memory that make it <i>yours</i>.',
+            a.knowledge.length + ' source' + (a.knowledge.length === 1 ? '' : 's'), knowledgeBody(a)) +
+          section('capabilities', 3, 'Capabilities', 'what it can do',
+            'Plugins from your stack the agent may use.',
+            a.plugins.length + ' enabled', capabilitiesBody(a)) +
+          section('surfaces', 4, 'Surfaces', 'where it runs',
+            'The same agent, reachable where your team already works.',
+            'On ' + sn, surfacesBody(a)) +
+          section('boundaries', 5, 'Boundaries', 'set by admin',
+            'Guardrails managed by your workspace admin — you build within them.',
+            'Admin-managed', boundariesBody()) +
+        '</div>' +
+        '<aside class="ag-preview" id="ag-preview">' + previewHtml(a) + '</aside>' +
+      '</div>' + localNote();
+  }
+
+  /* Light-touch preview sync while typing (no re-render → keeps focus). */
+  function syncPreview() {
+    var a = current(); if (!a) return;
+    var el;
+    if ((el = document.getElementById('ag-pv-name'))) el.textContent = a.name || 'Your agent';
+    if ((el = document.getElementById('ag-pv-role'))) el.textContent = a.role || '—';
+    if ((el = document.getElementById('ag-pv-greeting'))) el.textContent = a.greeting || '…';
+    if ((el = document.getElementById('ag-pv-ph'))) el.textContent = 'Ask ' + (a.name || 'your agent') + '…';
+    if ((el = document.getElementById('ag-build-title'))) el.textContent = a.name || 'Untitled';
+    if ((el = document.querySelector('[data-sec="identity"] .ag-sec-sum'))) el.textContent = (a.name || 'Unnamed') + ' · ' + a.tone;
+  }
+
+  /* ── Event delegation ── */
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest('[data-ag-new],[data-ag-open],[data-ag-del],[data-ag-back],[data-ag-status],[data-ag-toggle-sec],[data-ag-tone],[data-ag-kn],[data-ag-cap],[data-ag-surf]');
+    if (!t) return;
+    var a = current();
+    if (t.hasAttribute('data-ag-new')) {
+      var na = makeAgent(); agents.push(na); save(); openBuilder(na.id);
+    } else if (t.hasAttribute('data-ag-del')) {
+      e.stopPropagation();
+      var id = t.getAttribute('data-ag-del');
+      agents = agents.filter(function (x) { return x.id !== id; });
+      if (currentId === id) currentId = null;
+      save(); renderList();
+    } else if (t.hasAttribute('data-ag-open')) {
+      openBuilder(t.getAttribute('data-ag-open'));
+    } else if (t.hasAttribute('data-ag-back')) {
+      closeBuilder();
+    } else if (t.hasAttribute('data-ag-status') && a) {
+      a.status = a.status === 'ready' ? 'draft' : 'ready';
+      a.updated = new Date().toISOString(); save(); renderBuilder();
+    } else if (t.hasAttribute('data-ag-toggle-sec')) {
+      var key = t.getAttribute('data-ag-toggle-sec');
+      collapsed[key] = !collapsed[key]; renderBuilder();
+    } else if (t.hasAttribute('data-ag-tone') && a) {
+      a.tone = t.getAttribute('data-ag-tone'); save(); renderBuilder();
+    } else if (t.hasAttribute('data-ag-kn') && a) {
+      var kid = t.getAttribute('data-ag-kn');
+      var ki = a.knowledge.indexOf(kid);
+      ki >= 0 ? a.knowledge.splice(ki, 1) : a.knowledge.push(kid);
+      save(); renderBuilder();
+    } else if (t.hasAttribute('data-ag-cap') && a) {
+      var pid = t.getAttribute('data-ag-cap');
+      var pi = a.plugins.indexOf(pid);
+      pi >= 0 ? a.plugins.splice(pi, 1) : a.plugins.push(pid);
+      save(); renderBuilder();
+    } else if (t.hasAttribute('data-ag-surf') && a) {
+      var sid = t.getAttribute('data-ag-surf');
+      var def = SURFACE_DEFS.find(function (d) { return d.id === sid; });
+      if (def && !def.base) { a.surfaces[sid] = !a.surfaces[sid]; save(); renderBuilder(); }
+    }
+  });
+
+  document.addEventListener('input', function (e) {
+    var f = e.target.getAttribute && e.target.getAttribute('data-ag-field');
+    if (!f) return;
+    var a = current(); if (!a) return;
+    a[f] = e.target.value;
+    a.updated = new Date().toISOString();
+    save(); syncPreview();
+  });
+
+  /* Keyboard access for the div-based cards/section headers. */
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var t = e.target.closest && e.target.closest('[data-ag-open],[data-ag-toggle-sec]');
+    if (t) { e.preventDefault(); t.click(); }
+  });
+
+  document.getElementById('ag-new-btn').addEventListener('click', function () {
+    var na = makeAgent(); agents.push(na); save(); openBuilder(na.id);
+  });
+
+  renderList();
+})();
+</script>
+{% endblock %}

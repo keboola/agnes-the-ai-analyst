@@ -63,8 +63,9 @@ def can_access_table(
       2. Admin god-mode — members of the Admin system group see every
          registered table (dict users only; SessionPrincipal is never admin).
       3. **Stack-gated**: the table must belong to at least one data
-         package in the user's stack (required ∪ subscribed). Per-table
-         resource_grants alone NO LONGER grant analyst visibility — the
+         package in the user's stack — auto-membership: required ∪
+         available, no subscription needed (``StackResolver.stack``).
+         Per-table resource_grants alone NO LONGER grant analyst visibility — the
          unified-stack design routes all analyst access through data
          packages. Admins manage access by adding tables to a package +
          granting the package; ad-hoc per-table grants in
@@ -189,8 +190,13 @@ def get_accessible_tables(
 
     Stack-gated for analysts: the set is the union of
       * internal tables (row-level RBAC at query time), and
-      * tables belonging to data packages in the user's stack
-        (required ∪ subscribed).
+      * tables belonging to data packages in the user's stack — auto-
+        membership: required ∪ available, every grant on the caller's
+        groups, regardless of whether the user subscribed to a local copy
+        (``StackResolver.stack``). This is the query-authorization boundary;
+        a local parquet copy is a separate, narrower concern handled by the
+        manifest's per-table ``server_only`` overlay (`agnes pull` skip),
+        not by this function.
     Per-table ``resource_grants(group, 'table', …)`` rows are NO LONGER
     consulted for analyst visibility — see :func:`can_access_table`.
 

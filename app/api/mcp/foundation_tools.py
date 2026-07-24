@@ -410,19 +410,21 @@ def register_foundation_tools(
 
     @mcp.tool()
     async def stack_browse(resource_type: str) -> dict:
-        """List resources you could add to your stack (RBAC-granted candidates).
+        """List every data package or memory domain your groups are granted.
 
-        Unlike ``catalog`` (which lists tables already in your stack), this is the
-        discovery surface: every data package or memory domain your groups are
-        granted, each annotated with an ``in_stack`` flag so you can tell what is
-        already subscribed and what is still available to add.
+        Every granted resource is automatically in your stack (auto-
+        membership — no subscribe step needed to see or query it); each item
+        is annotated ``in_stack: true`` plus a ``materialized`` flag telling
+        you whether it's ALSO downloaded locally (`agnes pull` fetches it)
+        vs. only queryable server-side. ``catalog`` lists what's actually
+        synced to this workspace; this is the broader discovery surface.
 
         Args:
             resource_type: ``data_package`` or ``memory_domain``.
 
         Returns ``{"items": [{"id", "name", "description", "requirement",
-        "in_stack", ...}]}``. Subscribe to an available item with
-        ``stack_subscribe``.
+        "in_stack", "materialized", ...}]}``. Download a local copy of a
+        not-yet-materialized item with ``stack_subscribe``.
         """
         async with httpx.AsyncClient() as c:
             r = await c.get(
@@ -436,19 +438,22 @@ def register_foundation_tools(
 
     @mcp.tool()
     async def stack_subscribe(resource_type: str, resource_id: str) -> dict:
-        """Subscribe to an available data package or memory domain.
+        """Download a local copy of a data package or memory domain already
+        granted to you.
 
-        Adds the resource to your persistent stack — the same effect as clicking
-        "Add to stack" in the web UI; it applies to all future sessions. Use
-        ``stack_browse`` first to find the ``resource_id`` of an available
-        (``in_stack: false``) item.
+        The resource is already in your stack and server-side queryable the
+        moment it's granted (auto-membership) — this only controls whether
+        `agnes pull` ALSO keeps a local copy on disk, the same effect as
+        clicking "Download locally" in the web UI; it applies to all future
+        sessions. Use ``stack_browse`` first to find the ``resource_id`` of a
+        not-yet-materialized (``materialized: false``) item.
 
         Args:
             resource_type: ``data_package`` or ``memory_domain``.
             resource_id:   The resource id from ``stack_browse``.
 
         Returns ``{"subscribed": true, "next_step": "..."}`` — ``next_step`` tells
-        you what to run so the new resource becomes usable in this conversation.
+        you what to run so the local copy is fetched.
         """
         async with httpx.AsyncClient() as c:
             r = await c.post(
@@ -468,15 +473,19 @@ def register_foundation_tools(
 
     @mcp.tool()
     async def stack_unsubscribe(resource_type: str, resource_id: str) -> dict:
-        """Unsubscribe from a data package or memory domain in your stack.
+        """Remove the local copy of a data package or memory domain.
 
-        Removes a previously-subscribed resource. Required resources cannot be
-        removed (the server returns an error) — only ``available`` ones you opted
-        into. The local copy persists until the next ``agnes pull`` prunes it.
+        The resource STAYS in your stack (still server-side queryable via
+        ``agnes query --scope auto`` falling back to remote execution) — this
+        only stops `agnes pull` from downloading its parquet/bundle going
+        forward. Required resources cannot be removed this way (the server
+        returns an error) — they're always downloaded, no opt-out. The
+        already-downloaded local copy persists on disk until the next
+        ``agnes pull`` prunes it.
 
         Args:
             resource_type: ``data_package`` or ``memory_domain``.
-            resource_id:   The resource id to unsubscribe from.
+            resource_id:   The resource id to remove the local copy of.
 
         Returns ``{"unsubscribed": true}`` on success.
         """

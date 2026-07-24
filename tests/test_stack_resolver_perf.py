@@ -20,7 +20,6 @@ import os
 import time
 import uuid
 
-import pytest
 
 from src.db import get_system_db
 
@@ -54,6 +53,7 @@ def _seed_resolver_fixture(
     """Seed users, groups, memberships, data_packages, grants. Returns the
     id of a "representative" user with several group memberships."""
     import random
+
     rng = random.Random(0)
 
     # Users
@@ -67,8 +67,7 @@ def _seed_resolver_fixture(
     for i in range(n_groups):
         gid = f"g{i}"
         conn.execute(
-            "INSERT INTO user_groups(id, name, description, created_by) "
-            "VALUES (?, ?, '', 'test')",
+            "INSERT INTO user_groups(id, name, description, created_by) VALUES (?, ?, '', 'test')",
             [gid, f"perf_g{i}"],
         )
         group_ids.append(gid)
@@ -76,8 +75,7 @@ def _seed_resolver_fixture(
     for i in range(n_users):
         for gid in rng.sample(group_ids, k=min(3, n_groups)):
             conn.execute(
-                "INSERT INTO user_group_members(user_id, group_id, source) "
-                "VALUES (?, ?, 'test')",
+                "INSERT INTO user_group_members(user_id, group_id, source) VALUES (?, ?, 'test')",
                 [f"u{i}", gid],
             )
     # Packages
@@ -159,14 +157,8 @@ def _seed_manifest_fixture(
     # Single user in a single group; admin god-mode would short-circuit so
     # we use a regular user.
     conn.execute("INSERT INTO users(id, email) VALUES ('perf_u', 'perf@x.test')")
-    conn.execute(
-        "INSERT INTO user_groups(id, name, description, created_by) "
-        "VALUES ('perf_g', 'perf_g', '', 'test')"
-    )
-    conn.execute(
-        "INSERT INTO user_group_members(user_id, group_id, source) "
-        "VALUES ('perf_u', 'perf_g', 'test')"
-    )
+    conn.execute("INSERT INTO user_groups(id, name, description, created_by) VALUES ('perf_g', 'perf_g', '', 'test')")
+    conn.execute("INSERT INTO user_group_members(user_id, group_id, source) VALUES ('perf_u', 'perf_g', 'test')")
     pkg_ids = []
     for i in range(n_packages):
         pid = f"mpkg_{i:04d}"
@@ -188,8 +180,7 @@ def _seed_manifest_fixture(
                 [tid, tid, tid],
             )
             conn.execute(
-                "INSERT INTO data_package_tables(package_id, table_id, added_by) "
-                "VALUES (?, ?, 'test')",
+                "INSERT INTO data_package_tables(package_id, table_id, added_by) VALUES (?, ?, 'test')",
                 [pid, tid],
             )
         # Grant the user's group access (required to short-circuit subscribe).
@@ -220,6 +211,7 @@ def test_manifest_generation_perf_smoke(seeded_app):
     # cares about. We don't run the full builder because it touches the
     # filesystem (`_get_data_dir`) which is irrelevant to the v49 pieces.
     from src.repositories.table_registry import TableRegistryRepository
+
     registry_by_name = {t["name"]: t for t in TableRegistryRepository(conn).list_all()}
     states_by_table_id: dict = {}
 
@@ -227,22 +219,26 @@ def test_manifest_generation_perf_smoke(seeded_app):
     _build_data_packages_section(conn, user, registry_by_name, states_by_table_id)
 
     t0 = time.perf_counter()
-    pkgs, packaged_ids = _build_data_packages_section(
-        conn, user, registry_by_name, states_by_table_id,
+    pkgs, packaged_ids, _non_download_names = _build_data_packages_section(
+        conn,
+        user,
+        registry_by_name,
+        states_by_table_id,
     )
-    domains = _build_memory_domains_section(conn, user)
-    direct = _build_direct_tables_section(
-        conn, user, registry_by_name, states_by_table_id, packaged_ids,
+    _domains = _build_memory_domains_section(conn, user)
+    _direct = _build_direct_tables_section(
+        conn,
+        user,
+        registry_by_name,
+        states_by_table_id,
+        packaged_ids,
     )
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     conn.close()
 
-    print(f"\nmanifest build (data_packages + memory_domains + direct_tables): "
-          f"{elapsed_ms:.2f} ms")
+    print(f"\nmanifest build (data_packages + memory_domains + direct_tables): {elapsed_ms:.2f} ms")
     assert len(pkgs) == 100, f"expected 100 packages in manifest, got {len(pkgs)}"
-    assert all(len(p["tables"]) == 20 for p in pkgs), (
-        "every package should carry 20 tables in the manifest"
-    )
+    assert all(len(p["tables"]) == 20 for p in pkgs), "every package should carry 20 tables in the manifest"
     assert elapsed_ms < MANIFEST_TARGET_MS, (
         f"manifest build {elapsed_ms:.2f}ms exceeds target {MANIFEST_TARGET_MS}ms. "
         f"Threshold is a guidance target — document the actual time and tune "

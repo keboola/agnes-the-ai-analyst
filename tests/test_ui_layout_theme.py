@@ -126,10 +126,19 @@ class TestRailOptIn:
             # prototype IA: My Stack page + Catalog parent
             'href="/stack"',
             'href="/catalog"',
+            # Artefacts — private uploads (moved off My Stack) + future data
+            # apps; flagged work-in-progress with a WIP badge.
+            'href="/artefacts"',
+            # Agents — build an assistant out of the caller's stack;
+            # work-in-progress with a WIP badge.
+            'href="/agents"',
             # default brand lockup: the orb + wordmark
             'class="rail-orb"',
         ):
             assert anchor in text, f"rail chrome is missing {anchor}"
+        # The Artefacts entry carries a WIP badge.
+        assert 'class="rail-badge"' in text
+        assert ">WIP<" in text
         # Catalog is a single flat destination — no nested subcategory tree.
         assert 'class="rail-sub"' not in text
         # The retired /ask hero (#896) is gone: no rail nav item points at it,
@@ -162,15 +171,63 @@ class TestRailOptIn:
         assert resp.status_code == 200
         assert "My Stack" in resp.text
         assert 'data-kind="plugins"' in resp.text
-        # The Uploads tab moved here from the Catalog.
-        assert 'data-kind="upload"' in resp.text
+        # Uploads moved OFF My Stack onto /artefacts — the stack is now a
+        # knowledge inventory (data · plugins · memory) only.
+        assert 'data-kind="upload"' not in resp.text
         # An "All" tab is the default view over the inventory table, so the
         # page never lands empty.
         assert 'data-kind="all"' in resp.text
         assert 'class="uc-kindtab on" data-kind="all"' in resp.text
-        # The manage zone is ONE inventory table (not another card grid).
+        # The manage zone is ONE inventory table (not another card grid),
+        # with no section heading above it.
         assert 'id="stk-table"' in resp.text
-        assert "Everything in your Stack" in resp.text
+        assert "Everything in your Stack" not in resp.text
+
+    def test_artefacts_page_hosts_uploads(self, web_client, admin_cookie, monkeypatch):
+        """Uploads live on /artefacts (moved off My Stack): the page carries
+        the uploads section, the "+ New upload" affordance, and a
+        work-in-progress banner for the not-yet-built data apps."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/artefacts", cookies=admin_cookie)
+        assert resp.status_code == 200
+        text = resp.text
+        assert "Artefacts" in text
+        # Uploads section (no heading — the count stands alone) + the
+        # create-upload modal trigger.
+        assert ">Uploads<" not in text
+        assert 'id="af-upload-count"' in text
+        assert "data-new-upload" in text
+        assert 'id="uploadModal"' in text
+        # Data apps are still in design — a WIP banner stands in for them.
+        assert "Data apps" in text
+        assert "af-apps" in text
+
+    def test_agents_page_renders_builder(self, web_client, admin_cookie, monkeypatch):
+        """/agents hosts the agent builder (WIP): list + builder views, the
+        server-rendered RBAC-scoped knowledge ingredients, and the
+        capabilities hydration off the caller's subscribed plugins. Agent
+        definitions persist client-side for now — the page must say so
+        rather than pretend drafts are shared."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/agents", cookies=admin_cookie)
+        assert resp.status_code == 200
+        text = resp.text
+        assert "Agents" in text
+        # Both in-page views + the create affordance.
+        assert 'id="ag-list-view"' in text
+        assert 'id="ag-builder-view"' in text
+        assert 'id="ag-new-btn"' in text
+        # Real stack ingredients: server-embedded knowledge JSON +
+        # client-side plugins hydration from the caller's stack.
+        assert 'id="ag-knowledge-data"' in text
+        assert "/api/marketplace/items?tab=my" in text
+        # Honest WIP persistence note (localStorage, not shared yet).
+        assert "saved in this browser" in text
+
+    def test_agents_page_requires_auth(self, web_client, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/agents", follow_redirects=False)
+        assert resp.status_code in (302, 303, 307, 401, 403)
 
     def test_topnav_catalog_keeps_classic_page(self, web_client, admin_cookie, monkeypatch):
         """Default layout must keep the classic catalog.html — the
@@ -428,20 +485,21 @@ class TestProfileNotifications:
 
 class TestStackWorkspace:
     """My Stack is the manage surface: "Everything in your Stack" — one
-    inventory table across kinds. The stat strip counts the stack itself
-    (items / plugins / memories / uploads), not estate telemetry. Growing
-    the stack happens on /catalog, which carries the "Recommended for
-    you" row (see TestCatalogRecommendations)."""
+    inventory table across knowledge kinds. The stat strip counts the stack
+    itself (items / plugins / memories), not estate telemetry. Uploads moved
+    off to /artefacts. Growing the stack happens on /catalog, which carries
+    the "Recommended for you" row (see TestCatalogRecommendations)."""
 
     def test_stack_strip_shows_workspace_stats(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
-        # The strip's stat labels are exactly the four workspace counters —
+        # The strip's stat labels are exactly the three workspace counters —
         # the retired capability metrics (Questions this week / Data
-        # sources / Skills / Memory facts) are gone.
+        # sources / Skills / Memory facts) are gone, and Uploads moved to
+        # /artefacts.
         labels = re.findall(r'class="stk-stat__label">([^<]+)<', resp.text)
-        assert labels == ["Items in your stack", "Plugins", "Memories", "Uploads"]
+        assert labels == ["Items in your stack", "Plugins", "Memories"]
 
     def test_stack_inventory_is_a_table_with_toolbar(self, web_client, admin_cookie, monkeypatch):
         """The page is one table (search above, sort control, kind tabs) —
@@ -462,16 +520,22 @@ class TestStackWorkspace:
 
 
 class TestCatalogRecommendations:
-    """ "Recommended for you" lives on /catalog (moved from /stack): a
-    single side-scrollable card row above the kind tabs, listing catalog
-    assets NOT yet in the caller's stack, rendered with the same
-    catalog_card component as the grids below."""
+    """Catalog reshape: the Catalog surfaces ONLY resources the caller does
+    not already have. Auto-membership puts every granted package in the
+    caller's stack the moment it's granted, so a granted package appears
+    ONLY on My Stack — never on /catalog (not in the addable grids, and not
+    in the "Recommended for you" row, which stays empty for granted
+    content). The download-a-local-copy action for a granted-but-not-yet-
+    materialized package lives on My Stack, not here."""
 
-    def test_recommendations_exclude_stack_items(self, web_client, admin_cookie, monkeypatch):
-        """A package NOT in the stack shows under "Recommended for you";
-        once subscribed it leaves the recommendations (but stays in the
-        browse grid below)."""
+    def test_granted_package_absent_from_catalog_present_on_my_stack(self, web_client, admin_cookie, monkeypatch):
+        """A granted-but-not-yet-downloaded package must not appear anywhere
+        on /catalog. It lives on My Stack. Materializing (subscribing) it
+        must not pull it back into the Catalog — it still shows only on My
+        Stack."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        import uuid
+
         from src.db import get_system_db
         from src.repositories.data_packages import DataPackagesRepository
 
@@ -484,23 +548,26 @@ class TestCatalogRecommendations:
             color=None,
             created_by="test",
         )
+        admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = 'Admin'").fetchone()[0]
+        conn.execute(
+            "INSERT INTO resource_grants(id, group_id, resource_type, resource_id, "
+            "requirement, assigned_at, assigned_by) "
+            "VALUES (?, ?, 'data_package', ?, 'available', CURRENT_TIMESTAMP, 'test')",
+            [str(uuid.uuid4()), admin_gid, pkg_id],
+        )
         conn.close()
 
-        def zones(text: str) -> tuple[str, str]:
-            """(recommendations row, everything below it) — the recs section
-            renders above the kind tabs."""
-            head, _, tail = text.partition('class="uc-kindtabs"')
-            return head, tail
-
+        # Granted → auto-membership in_stack=True → absent from the entire
+        # Catalog page (Recommended row + addable grids alike).
         resp = web_client.get("/catalog", cookies=admin_cookie)
         assert resp.status_code == 200
-        head, tail = zones(resp.text)
-        assert "Recommended for you" in head
-        assert "Unstacked Package XYZ" in head, "unstacked package must be recommended"
-        # Recommendations reuse the SAME card component as the grids below.
-        assert 'class="uc-recs-grid"' in head and 'class="cc-card"' in head
-        assert "Unstacked Package XYZ" in tail, "package must still browse in its kind grid"
+        assert "Unstacked Package XYZ" not in resp.text, "granted package must not appear anywhere on the Catalog"
 
+        # ...but it IS on My Stack, where the caller's holdings live.
+        resp = web_client.get("/stack", cookies=admin_cookie)
+        assert "Unstacked Package XYZ" in resp.text
+
+        # Materializing (subscribing) it must not pull it back into the Catalog.
         from src.repositories.user_stack_subscriptions import UserStackSubscriptionsRepository
 
         conn = get_system_db()
@@ -508,9 +575,9 @@ class TestCatalogRecommendations:
         conn.close()
 
         resp = web_client.get("/catalog", cookies=admin_cookie)
-        head, tail = zones(resp.text)
-        assert "Unstacked Package XYZ" not in head, "stacked item must leave recommendations"
-        assert "Unstacked Package XYZ" in tail, "stacked item must stay browsable in the grid"
+        assert "Unstacked Package XYZ" not in resp.text
+        resp = web_client.get("/stack", cookies=admin_cookie)
+        assert "Unstacked Package XYZ" in resp.text
 
 
 class TestPaperThemeAssets:

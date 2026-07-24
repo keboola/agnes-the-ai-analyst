@@ -83,12 +83,12 @@
 {% import "macros/_detail.html" as detail %}
 
 {% set _rail = (ui_layout | default('topnav')) == 'rail' %}
-{# Under the rail layout uploads live on My Stack's Upload tab — there is no
-   Library index to return to (that surface is topnav-only), so send "back"
-   to the Uploads tab instead of the dead-end /catalog?kind=library, which
-   has no library tab. #}
-{% set _back = '/stack?kind=upload' if _rail else '/library' %}
-{% set _back_label = 'Uploads' if _rail else 'All library collections' %}
+{# Under the rail layout uploads live on the Artefacts surface (/artefacts) —
+   there is no Library index to return to (that surface is topnav-only), so
+   send "back" to Artefacts instead of the dead-end /catalog?kind=library,
+   which has no library tab. #}
+{% set _back = '/artefacts' if _rail else '/library' %}
+{% set _back_label = 'Artefacts' if _rail else 'All library collections' %}
 {# In the rail IA this surface is a private "upload", not a shared library
    "collection" — swap the user-facing noun so the copy matches the tab the
    user came from. Topnav keeps the "collection" wording. #}

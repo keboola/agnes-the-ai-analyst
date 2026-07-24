@@ -10,7 +10,7 @@
    (Plugins/Recipes) — is the SAME component: the catalog_card() macro
    (static/css/catalog_card.css) and its JS twin renderCatalogCard()
    below emit identical DOM. Deep link: ?kind=data|plugins|memory|recipes. #}
-{% block title %}Catalog — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block title %}Marketplace — {{ config.INSTANCE_NAME }}{% endblock %}
 {% block container_modifier %}container--wide{% endblock %}
 
 {% block head_extra %}
@@ -47,8 +47,13 @@
 {% block page_head %}
 <div class="uc-head">
   <div>
-    <h1>Catalog</h1>
-    <p class="lede">Reuse the skills, plugins, and data your colleagues already built — so you don't start from scratch. Add what your work needs to <a href="/stack">My Stack</a>.</p>
+    <h1>Marketplace</h1>
+    {# Data Packages / Memory Domains you've been granted are already in
+       your stack the moment they're granted (auto-membership) — see
+       <a href="/stack">My Stack</a>. This page is for discovering and
+       adding things you DON'T already have: skills, plugins, and other
+       shared resources your colleagues published. #}
+    <p class="lede">Discover and add skills, plugins, and shared resources your colleagues published. Data and memory you've already been granted live in <a href="/stack">My Stack</a>, not here.</p>
   </div>
   <a class="cc-btn" href="/store/new" style="flex-shrink:0">+ Submit a skill or plugin</a>
 </div>
@@ -73,17 +78,26 @@
 
 {# Search is served globally by the rail's #global-search combobox
    (js/global_search.js) — no page-local search box here. #}
-<div class="uc-kindtabs" role="tablist" aria-label="Catalog kinds">
-  <button class="uc-kindtab on" data-kind="data" role="tab" aria-selected="true"><span class="uc-dot uc-dot-data"></span>Data<span class="uc-count">{{ data_cards|length }}</span></button>
-  <button class="uc-kindtab" data-kind="plugins" role="tab" aria-selected="false"><span class="uc-dot uc-dot-plugins"></span>Plugins<span class="uc-count" id="uc-count-plugins">—</span></button>
-  <button class="uc-kindtab" data-kind="memory" role="tab" aria-selected="false"><span class="uc-dot uc-dot-memory"></span>Memory<span class="uc-count">{{ memory_cards|length }}</span></button>
-  <button class="uc-kindtab" data-kind="recipes" role="tab" aria-selected="false"><span class="uc-dot uc-dot-recipes"></span>Recipes<span class="uc-count" id="uc-count-recipes">—</span></button>
+{# Data/Memory tabs are hidden entirely when there is nothing addable —
+   auto-membership means every granted package/domain is already in the
+   caller's stack, so these two tabs are normally empty for a regular
+   user (see /catalog route: ``addable_entries``/``addable_mem_entries``).
+   A "0" tab with an empty grid reads as broken; hiding it lets the
+   Catalog naturally center on Plugins/Recipes, the kinds that still have
+   content to browse. ``default_kind`` (computed server-side) picks the
+   first non-empty kind as the initially active tab/view so there's no
+   flash of an empty Data grid before JS can react. #}
+<div class="uc-kindtabs" role="tablist" aria-label="Marketplace kinds">
+  <button class="uc-kindtab{{ ' on' if default_kind == 'data' else '' }}" data-kind="data" role="tab" aria-selected="{{ 'true' if default_kind == 'data' else 'false' }}"{% if not data_cards %} hidden{% endif %}><span class="uc-dot uc-dot-data"></span>Data<span class="uc-count">{{ data_cards|length }}</span></button>
+  <button class="uc-kindtab{{ ' on' if default_kind == 'plugins' else '' }}" data-kind="plugins" role="tab" aria-selected="{{ 'true' if default_kind == 'plugins' else 'false' }}"><span class="uc-dot uc-dot-plugins"></span>Plugins<span class="uc-count" id="uc-count-plugins">—</span></button>
+  <button class="uc-kindtab{{ ' on' if default_kind == 'memory' else '' }}" data-kind="memory" role="tab" aria-selected="{{ 'true' if default_kind == 'memory' else 'false' }}"{% if not memory_cards %} hidden{% endif %}><span class="uc-dot uc-dot-memory"></span>Memory<span class="uc-count">{{ memory_cards|length }}</span></button>
+  <button class="uc-kindtab{{ ' on' if default_kind == 'recipes' else '' }}" data-kind="recipes" role="tab" aria-selected="{{ 'true' if default_kind == 'recipes' else 'false' }}"><span class="uc-dot uc-dot-recipes"></span>Recipes<span class="uc-count" id="uc-count-recipes">—</span></button>
 </div>
 {% endblock %}
 
 {% block page_surface %}
 {# ── Data packages (server-rendered) ── #}
-<div class="uc-grid" data-kind-view="data">
+<div class="uc-grid" data-kind-view="data"{% if default_kind != 'data' %} hidden{% endif %}>
   {% for c in data_cards %}
     {{ catalog_card(c) }}
   {% else %}
@@ -92,12 +106,12 @@
 </div>
 
 {# ── Plugins (client-hydrated from /api/marketplace/items) ── #}
-<div class="uc-grid" data-kind-view="plugins" hidden>
+<div class="uc-grid" data-kind-view="plugins"{% if default_kind != 'plugins' %} hidden{% endif %}>
   <div class="uc-empty" data-loading><h3>Loading plugins…</h3></div>
 </div>
 
 {# ── Memory domains (server-rendered) ── #}
-<div class="uc-grid" data-kind-view="memory" hidden>
+<div class="uc-grid" data-kind-view="memory"{% if default_kind != 'memory' %} hidden{% endif %}>
   {% for c in memory_cards %}
     {{ catalog_card(c) }}
   {% else %}
@@ -106,7 +120,7 @@
 </div>
 
 {# ── Recipes (client-hydrated from /api/recipes) ── #}
-<div class="uc-grid" data-kind-view="recipes" hidden>
+<div class="uc-grid" data-kind-view="recipes"{% if default_kind != 'recipes' %} hidden{% endif %}>
   <div class="uc-empty" data-loading><h3>Loading recipes…</h3></div>
 </div>
 {% endblock %}
@@ -114,6 +128,7 @@
 {% block scripts %}
 <script src="{{ static_url('js/catalog_card.js') }}"></script>
 <script>
+window.CATALOG_DEFAULT_KIND = {{ default_kind|tojson }};
 (function () {
   'use strict';
 
@@ -176,6 +191,10 @@
         fetch('/api/marketplace/items?tab=curated&page_size=100', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : { items: [] }),
         fetch('/api/marketplace/items?tab=flea&page_size=100', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : { items: [] }),
       ]);
+      // Marketplace lists ALL shared plugins — unlike governed Data/Memory
+      // (which live in My Stack once granted), a plugin you've added stays
+      // listed here and is simply badged "In stack" via pluginAction(i),
+      // the way an app store shows installed apps.
       const items = [].concat(cur.items || [], flea.items || []);
       document.getElementById('uc-count-plugins').textContent = String(items.length);
       if (!items.length) {
@@ -234,8 +253,12 @@
   }
 
   // ── Boot ────────────────────────────────────────────────────────────
+  // Default kind is computed server-side (first non-empty of
+  // data/memory/plugins) so the initial render never flashes an empty
+  // Data grid — see window.CATALOG_DEFAULT_KIND above.
+  const defaultKind = window.CATALOG_DEFAULT_KIND || 'data';
   const urlKind = new URLSearchParams(window.location.search).get('kind');
-  if (urlKind && urlKind !== 'data') activate(urlKind, false);
+  if (urlKind && urlKind !== defaultKind) activate(urlKind, false);
   loadPlugins();
   loadRecipes();
 })();

@@ -30,6 +30,8 @@
     {% set _path = request.url.path %}
     {% set _home = home_route or '/dashboard' %}
     {% set _on_stack = _path == '/stack' %}
+    {% set _on_artefacts = _path == '/artefacts' %}
+    {% set _on_agents = _path == '/agents' %}
     {% set _in_catalog = _path.startswith('/catalog') or _path.startswith('/marketplace') or _path.startswith('/library') or _path == '/corporate-memory' %}
 
     <div class="rail-nav">
@@ -73,9 +75,24 @@
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 8.5 12 4l9 4.5-9 4.5-9-4.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
             My Stack
         </a>
+        {# Artefacts — the caller's private uploads (moved off My Stack) and,
+           soon, their data apps. Work-in-progress, so it carries a WIP badge. #}
+        <a class="rail-i {% if _on_artefacts %}on{% endif %}" href="/artefacts">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 3h8l4 4v14H6z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13 3v5h5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            <span class="rail-i-label">Artefacts</span>
+            <span class="rail-badge">WIP</span>
+        </a>
+        {# Agents — build a focused assistant out of the caller's stack
+           (knowledge + plugins). Work-in-progress, so it carries a WIP
+           badge like Artefacts. #}
+        <a class="rail-i {% if _on_agents %}on{% endif %}" href="/agents">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 4.2v3.8M8.5 20v1.5M15.5 20v1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.3" cy="13.5" r="1.1" fill="currentColor"/><circle cx="14.7" cy="13.5" r="1.1" fill="currentColor"/></svg>
+            <span class="rail-i-label">Agents</span>
+            <span class="rail-badge">WIP</span>
+        </a>
         <a class="rail-i {% if _in_catalog %}on{% endif %}" href="/catalog">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M4 6l1 13a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1l1-13M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            Catalog
+            Marketplace
         </a>
     </div>
 

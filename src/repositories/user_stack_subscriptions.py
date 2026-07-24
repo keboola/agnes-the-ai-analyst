@@ -1,13 +1,19 @@
-"""Repository for ``user_stack_subscriptions`` (v49).
+"""Repository for ``user_stack_subscriptions``.
 
-Generic per-user opt-in for resource_grants flagged ``requirement='available'``.
-Currently scoped to ``data_package`` + ``memory_domain`` resource types —
-Marketplace pluginy stay on the existing ``user_plugin_optouts`` shape per D1.
+Generic per-user LOCAL-DOWNLOAD opt-in for resource_grants flagged
+``requirement='available'``. Under the auto-membership stack model an
+``available`` grant is already visible/authorized without a row here — a
+row additionally flags "keep a local copy" (``agnes pull`` fetches its
+parquet/bundle). ``required`` resources are always materialized with no
+row needed. Currently scoped to ``data_package`` + ``memory_domain``
+resource types — Marketplace plugins stay on the existing
+``user_plugin_optouts`` shape per D1.
 
 Mirrors ``src/repositories/user_curated_subscriptions.py`` but generic over
 ``resource_type`` (the marketplace one is hardcoded to plugins). The
 ``StackResolver`` service composes this with ``resource_grants`` to compute
-the user's effective stack — see ``app/services/stack_resolver.py``.
+the user's effective stack + materialization — see
+``app/services/stack_resolver.py``.
 """
 
 from __future__ import annotations

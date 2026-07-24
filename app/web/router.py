@@ -1296,10 +1296,17 @@ def _data_package_entry_dict(
     the meta line becomes an inline link to ``/admin/tables?assign_to=<id>``
     so admins can jump straight into the bulk-assign flow without first
     having to discover the chip-input hidden in each table's edit modal.
+
+    Auto-membership: every entry reaching this adapter is already granted
+    (in the caller's stack), so the dict's ``in_stack`` key is sourced from
+    ``entry.materialized`` rather than ``entry.in_stack`` (always True post
+    auto-membership) — this keeps the legacy ``_stack_card`` macro's
+    Add/Remove toggle meaningful: it now drives the LOCAL DOWNLOAD state
+    (subscribe = keep a local copy), not stack membership.
     """
     description = entry.description or (
         f"Bundle of {table_count} table{'s' if table_count != 1 else ''}. "
-        f"Add to your stack so `agnes pull` syncs the data locally."
+        f"Download locally so `agnes pull` syncs the data to your workspace."
     )
     out = {
         "id": entry.id,
@@ -1317,7 +1324,7 @@ def _data_package_entry_dict(
         "status": getattr(entry, "status", None) or "prod",
         "category": getattr(entry, "category", None),
         "requirement": entry.requirement,
-        "in_stack": entry.in_stack,
+        "in_stack": getattr(entry, "materialized", False),
         "meta": f"{table_count} table{'s' if table_count != 1 else ''}",
         # v56: source-type pills (auto-derived) come first per the spec
         # convention; admin-authored category tags follow. Concatenated
@@ -1349,15 +1356,19 @@ def _data_package_entry_dict(
 
 
 def _catalog_card_data(e: dict) -> dict:
-    """Data package → catalog_card `c`. Required packages render a locked
-    'Required' pill; everything else gets the Add/Remove stack toggle wired
-    to the generic /api/stack endpoints."""
+    """Data package → catalog_card `c`. Every package reaching this
+    normalizer is already in the caller's stack (auto-membership) —
+    required packages render a locked 'Required' pill (always downloaded);
+    everything else gets the Download-locally/Remove-local-copy toggle
+    (``mode: 'download'``) wired to the generic /api/stack endpoints. The
+    dict's ``in_stack`` key (set by ``_data_package_entry_dict``) actually
+    carries the local-download state, not raw stack membership."""
     if e.get("requirement") == "required":
         action = {"mode": "required"}
     else:
         rid = e["id"]
         action = {
-            "mode": "stack",
+            "mode": "download",
             "state": "in" if e.get("in_stack") else "add",
             "add_url": "/api/stack/subscribe",
             "remove_url": f"/api/stack/subscription/data_package/{rid}",
@@ -1381,7 +1392,9 @@ def _catalog_card_data(e: dict) -> dict:
 
 
 def _catalog_card_memory(d: dict) -> dict:
-    """Memory domain → catalog_card `c`. Stack toggle wired to the generic
+    """Memory domain → catalog_card `c`. Every domain reaching this
+    normalizer is already in the caller's stack (auto-membership) —
+    download-locally toggle (``mode: 'download'``) wired to the generic
     /api/stack endpoints (resource_type=memory_domain); required domains
     render the locked pill instead."""
     rid = d["id"]
@@ -1390,7 +1403,7 @@ def _catalog_card_memory(d: dict) -> dict:
         action = {"mode": "required"}
     else:
         action = {
-            "mode": "stack",
+            "mode": "download",
             "state": "in" if d.get("in_stack") else "add",
             "add_url": "/api/stack/subscribe",
             "remove_url": f"/api/stack/subscription/memory_domain/{rid}",
@@ -1460,30 +1473,34 @@ async def catalog(
         logger.warning("could not enumerate data_packages: %s", e)
 
     is_admin_view = is_user_admin(user["id"], conn)
-    if is_admin_view:
-        # Admin god-mode for BROWSE only: surface every package regardless
-        # of group grants so admins can audit the full set. ``browse_admin``
-        # runs the same v51/v56 enrichment pass as ``browse`` (status,
-        # category, owner_name, tags, derived badges) — re-implementing
-        # it inline silently dropped those fields, leaving admin cards
-        # empty of v56 chrome. For MY STACK we still call the resolver —
-        # admins legitimately subscribe to packages and expect to see them
-        # in their stack tab.
-        browse_entries = resolver.browse_admin(user["id"], ResourceType.DATA_PACKAGE)
-        stack_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
-    else:
-        browse_entries = resolver.browse(user["id"], ResourceType.DATA_PACKAGE)
-        stack_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
+    # Admin god-mode removed from the user-facing Catalog (#XXXX follow-up
+    # to auto-membership): every visitor — admin included — browses through
+    # the same grant-scoped ``browse()``. Auditing every package regardless
+    # of grant now lives at /admin/data-packages (``browse_admin`` still
+    # backs that route).
+    all_granted_entries = resolver.browse(user["id"], ResourceType.DATA_PACKAGE)
+    stack_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
 
     # Group ``required`` packages first so they cluster together at the
-    # top of the Browse grid instead of being scattered by creation
-    # order — first-demo feedback (2026-05-19): "bylo by dobre ty
-    # required mit vzdy nekde seskupene spolu na jedne strane".
-    # Secondary order falls back to the resolver's name-ordered output.
-    browse_entries = sorted(
-        browse_entries,
-        key=lambda e: (0 if e.requirement == "required" else 1, e.name or ""),
-    )
+    # top of the grid instead of being scattered by creation order —
+    # first-demo feedback (2026-05-19): "bylo by dobre ty required mit
+    # vzdy nekde seskupene spolu na jedne strane". Secondary order falls
+    # back to the resolver's name-ordered output. Applied to BOTH the
+    # (now addable-only) Browse grid and the My Stack grid — since
+    # auto-membership means most packages a caller sees now render on My
+    # Stack rather than Browse, the required-first grouping needs to
+    # follow them there to keep the feature meaningful.
+    _req_first_key = lambda e: (0 if e.requirement == "required" else 1, e.name or "")  # noqa: E731
+    all_granted_entries = sorted(all_granted_entries, key=_req_first_key)
+    stack_entries = sorted(stack_entries, key=_req_first_key)
+
+    # Catalog reshape: every granted package is already auto-membership
+    # in_stack=True (``browse()`` sets this unconditionally), so the
+    # Catalog's Data grid — whose whole purpose is now "things you can
+    # ADD" — only ever shows entries that are NOT already in the caller's
+    # stack. For governed data this is normally empty; what the caller
+    # already has lives on My Stack (/stack) or the My Stack tab here.
+    addable_entries = [e for e in all_granted_entries if not e.in_stack]
 
     def _adapt(e):
         slug = None
@@ -1502,7 +1519,7 @@ async def catalog(
             is_admin_view=is_admin_view,
         )
 
-    entries = [_adapt(e) for e in browse_entries]
+    entries = [_adapt(e) for e in addable_entries]
     stack_entries_adapted = [_adapt(e) for e in stack_entries]
 
     # Aggregate distinct source types across the user's visible packages —
@@ -1536,40 +1553,39 @@ async def catalog(
     # (see /stack), not in the shared Catalog. Topnav instances keep the
     # classic catalog.html unchanged.
     if get_ui_layout() == "rail":
-        memory_cards = _unified_memory_cards()
-        # Flag which domains the caller already has in their stack so the
-        # unified card can render the Add/Remove toggle in the right state.
-        try:
-            mem_stack_ids = {e.id for e in resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)}
-        except Exception:
-            mem_stack_ids = set()
-        for d in memory_cards:
-            d["in_stack"] = d["id"] in mem_stack_ids
+        # Memory kind-tab: mirrors the Data grid's addable-only contract —
+        # grant-scoped via ``browse()`` (fixes a pre-existing gap where this
+        # tab enumerated every memory domain with no RBAC check at all),
+        # filtered to entries NOT already in the caller's stack.
+        all_mem_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
+        addable_mem_entries = [e for e in all_mem_entries if not e.in_stack]
+        memory_cards = _unified_memory_cards(addable_mem_entries)
         # Normalize both server-rendered kinds into the single catalog_card
         # `c` contract (Plugins + Recipes normalize client-side in the JS twin).
         data_cards = [_catalog_card_data(e) for e in entries]
         memory_card_models = [_catalog_card_memory(d) for d in memory_cards]
-        # ── "Recommended for you" — grow-the-stack row (moved here from
-        #    /stack): assets the caller can add but hasn't — available
-        #    (non-required) data packages not in the stack, then memory
-        #    domains not in the stack, capped at four. Reuses the card
-        #    models already built for the grids below. (Signal-based
-        #    ranking — teammates, department, uploads, recent activity —
-        #    is future work; today the order is the browse order.)
+        # ── "Recommended for you" — intentionally empty for granted data /
+        #    memory. The Catalog only surfaces resources the caller does NOT
+        #    already have; under auto-membership every granted package is
+        #    already in My Stack, so recommending one here (even as a "not
+        #    yet downloaded" nudge) re-introduces exactly the already-yours
+        #    clutter this reshape removes. The "download a local copy" action
+        #    for granted-but-not-materialized packages lives on My Stack,
+        #    where those cards carry the Download button. A future revision
+        #    may repopulate this row with genuinely not-yet-added shared
+        #    assets (uninstalled plugins / fleamarket), which are not-yours
+        #    by definition.
         recommended_cards: list = []
-        for entry, card in zip(browse_entries, data_cards):
-            if entry.in_stack or entry.requirement == "required":
-                continue
-            recommended_cards.append(card)
-            if len(recommended_cards) >= 4:
-                break
-        if len(recommended_cards) < 4:
-            for dom, card in zip(memory_cards, memory_card_models):
-                if dom.get("in_stack"):
-                    continue
-                recommended_cards.append(card)
-                if len(recommended_cards) >= 4:
-                    break
+        # Default active kind tab: Data first (if it has addable content),
+        # else Memory, else Plugins — Data/Memory are normally empty post
+        # auto-membership (everything granted is already in My Stack), so
+        # the Catalog naturally centers on Plugins/Recipes.
+        if data_cards:
+            default_kind = "data"
+        elif memory_card_models:
+            default_kind = "memory"
+        else:
+            default_kind = "plugins"
         ctx = _build_context(
             request,
             user=user,
@@ -1581,6 +1597,7 @@ async def catalog(
             total_registered_tables=total_registered_tables,
             memory_cards=memory_card_models,
             recommended_cards=recommended_cards,
+            default_kind=default_kind,
         )
         return templates.TemplateResponse(request, "catalog_unified.html", ctx)
 
@@ -1595,25 +1612,43 @@ async def catalog(
     return templates.TemplateResponse(request, "catalog.html", ctx)
 
 
-def _unified_memory_cards() -> list:
-    """Memory domains adapted for the unified catalog grid (light:
-    name/slug/description/items_count — the per-item richness stays on
-    /memory/d/<slug>). Mirrors the /corporate-memory browse data."""
+def _unified_memory_cards(entries: list) -> list:
+    """Adapt memory-domain ``ResourceEntry`` rows for the unified catalog
+    grid (light: name/slug/description/items_count — the per-item richness
+    stays on /memory/d/<slug>).
+
+    ``entries`` must already be RBAC-scoped (``StackResolver.browse()`` /
+    ``.stack()`` output) — this function does no grant filtering of its
+    own. It used to enumerate every memory domain unconditionally (a
+    pre-existing gap: the Memory kind-tab on /catalog ignored RBAC
+    entirely); callers now pass the resolver's grant-scoped entries so the
+    tab honors the same privacy invariant as the Data grid. ``in_stack`` on
+    the returned dict carries ``entry.materialized`` (local-download
+    state), matching ``_data_package_entry_dict``'s convention.
+    """
     cards: list = []
     try:
         domains_repo = memory_domains_repo()
-        for d in domains_repo.list(limit=10000):
+        for e in entries:
             try:
-                items = domains_repo.list_items_of_domain(d["id"], limit=10000)
+                d = domains_repo.get(e.id)
+            except Exception:
+                d = None
+            if not d:
+                continue
+            try:
+                items = domains_repo.list_items_of_domain(e.id, limit=10000)
             except Exception:
                 items = []
             cards.append(
                 {
-                    "id": d["id"],
-                    "name": d.get("name") or d.get("slug"),
-                    "description": d.get("description") or "",
+                    "id": e.id,
+                    "name": e.name or d.get("name") or d.get("slug"),
+                    "description": e.description or d.get("description") or "",
                     "slug": d.get("slug"),
                     "items_count": len(items),
+                    "requirement": e.requirement,
+                    "in_stack": e.materialized,
                 }
             )
     except Exception as e:
@@ -1808,10 +1843,106 @@ async def my_stack_page(
         data_cards=data_cards,
         memory_entries=memory_entries,
         memory_cards=memory_card_models,
+    )
+    return templates.TemplateResponse(request, "stack_unified.html", ctx)
+
+
+@router.get("/artefacts", response_class=HTMLResponse)
+async def artefacts_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Artefacts — the caller's private uploads, and (soon) their data
+    apps. Uploads (per-user file collections) moved here off My Stack so the
+    stack stays a knowledge inventory (data · plugins · memory) and personal
+    artefacts get their own home. Owner-scoped: a user sees only the uploads
+    they created (created_by), never group-shared ones (that's /library).
+
+    Data apps are the second artefact kind, still in design — the page carries
+    a work-in-progress banner for them rather than a live list."""
+    upload_entries = _unified_upload_cards(user)
+
+    upload_card_models = []
+    for col in upload_entries:
+        c = _catalog_card_upload(col)
+        created = col.get("created_at")
+        c["added_iso"] = created.isoformat() if created is not None else None
+        upload_card_models.append(c)
+
+    ctx = _build_context(
+        request,
+        user=user,
         upload_entries=upload_entries,
         upload_cards=upload_card_models,
     )
-    return templates.TemplateResponse(request, "stack_unified.html", ctx)
+    return templates.TemplateResponse(request, "artefacts.html", ctx)
+
+
+@router.get("/agents", response_class=HTMLResponse)
+async def agents_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Agents — build a focused assistant out of the caller's own stack.
+
+    Work-in-progress surface (rail item carries a WIP badge). The builder's
+    ingredient lists are REAL and RBAC-scoped: knowledge sources are the data
+    packages + memory domains resolved from the caller's stack (same
+    ``StackResolver`` reads as /stack), and capabilities hydrate client-side
+    from ``/api/marketplace/items?tab=my`` (the caller's subscribed plugins).
+    Agent definitions themselves persist in the browser for now — a server
+    registry is the next iteration, so the page states that plainly rather
+    than pretending drafts are shared."""
+    from app.services.stack_resolver import StackResolver
+    from app.resource_types import ResourceType
+
+    resolver = StackResolver()
+    knowledge_sources: list = []
+    try:
+        pkg_repo = data_packages_repo()
+        for e in resolver.stack(user["id"], ResourceType.DATA_PACKAGE):
+            tables = 0
+            try:
+                tables = len(pkg_repo.list_tables(e.id))
+            except Exception:
+                tables = 0
+            knowledge_sources.append(
+                {
+                    "id": e.id,
+                    "kind": "data",
+                    "name": e.name,
+                    "description": e.description or "",
+                    "meta": f"{tables} table{'' if tables == 1 else 's'}",
+                }
+            )
+    except Exception as e:
+        logger.warning("/agents: could not resolve data stack: %s", e)
+    try:
+        domains_repo = memory_domains_repo()
+        for e in resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN):
+            items_count = 0
+            try:
+                items_count = len(domains_repo.list_items_of_domain(e.id, limit=10000))
+            except Exception:
+                items_count = 0
+            knowledge_sources.append(
+                {
+                    "id": e.id,
+                    "kind": "memory",
+                    "name": e.name,
+                    "description": e.description or "",
+                    "meta": f"{items_count} item{'' if items_count == 1 else 's'}",
+                }
+            )
+    except Exception as e:
+        logger.warning("/agents: could not resolve memory stack: %s", e)
+
+    ctx = _build_context(
+        request,
+        user=user,
+        knowledge_sources=knowledge_sources,
+    )
+    return templates.TemplateResponse(request, "agents.html", ctx)
 
 
 @router.get("/catalog/semantics", response_class=HTMLResponse)
@@ -2241,13 +2372,15 @@ def _memory_domain_entry_dict(entry, drilldown_url: str, items_count: int = 0, r
     Always renders a meta line (`N items · K required` — even `0 items`)
     and a description fallback so seeded canonical domains without an
     admin-authored description don't render as half-empty cards.
+
+    Auto-membership: see ``_data_package_entry_dict``'s docstring — this
+    dict's ``in_stack`` key mirrors ``entry.materialized`` (local-download
+    state), not raw stack membership (always True post auto-membership).
     """
     meta = f"{items_count} item{'s' if items_count != 1 else ''}"
     if required_count:
         meta += f" · {required_count} required"
-    description = entry.description or (
-        f"Curated knowledge for the {entry.name} domain. Add to your stack to include items in agnes pull."
-    )
+    description = entry.description or (f"Curated knowledge for the {entry.name} domain.")
     return {
         "id": entry.id,
         "name": entry.name,
@@ -2261,7 +2394,7 @@ def _memory_domain_entry_dict(entry, drilldown_url: str, items_count: int = 0, r
         "status": getattr(entry, "status", None) or "prod",
         "category": None,
         "requirement": entry.requirement,
-        "in_stack": entry.in_stack,
+        "in_stack": getattr(entry, "materialized", False),
         "meta": meta,
         "tags": [],
         "drilldown_url": drilldown_url,
@@ -2313,24 +2446,30 @@ async def corporate_memory(
 
     is_admin_view = is_user_admin(user["id"], conn)
 
-    # Admin god-mode for BROWSE only: surface every domain regardless of
-    # group grants so admins can audit the full set. ``browse_admin`` runs
-    # the v51 enrichment pass (status) plus v56 derived badges so admin
-    # cards stay visually consistent with non-admin browse. For MY STACK
-    # we still call the resolver — admins who POST /api/stack/subscribe
-    # expect to see those subscriptions in their stack tab.
-    if is_admin_view:
-        browse_entries = resolver.browse_admin(user["id"], ResourceType.MEMORY_DOMAIN)
-        stack_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
-    else:
-        browse_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
-        stack_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
+    # Admin god-mode removed from the user-facing Catalog (follow-up to
+    # auto-membership): every visitor — admin included — browses through
+    # the same grant-scoped ``browse()``. Auditing every domain regardless
+    # of grant now lives at /admin/data-packages (``browse_admin`` still
+    # backs that route). For MY STACK we still call the resolver — admins
+    # who POST /api/stack/subscribe expect to see those subscriptions in
+    # their stack tab.
+    browse_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
+    stack_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
 
-    # Required-first grouping mirrors /catalog (first-demo feedback).
-    browse_entries = sorted(
-        browse_entries,
-        key=lambda e: (0 if e.requirement == "required" else 1, e.name or ""),
-    )
+    # Required-first grouping mirrors /catalog (first-demo feedback),
+    # applied to BOTH grids — see /catalog's ``_req_first_key`` comment for
+    # why My Stack needs it too post auto-membership.
+    _req_first_key = lambda e: (0 if e.requirement == "required" else 1, e.name or "")  # noqa: E731
+    browse_entries = sorted(browse_entries, key=_req_first_key)
+    stack_entries = sorted(stack_entries, key=_req_first_key)
+
+    # Catalog reshape: every granted domain is already auto-membership
+    # in_stack=True (``browse()`` sets this unconditionally), so the
+    # Browse grid — whose purpose is now "things you can ADD" — only
+    # shows entries NOT already in the caller's stack. For governed memory
+    # this is normally empty; what the caller already has lives in the My
+    # Stack tab here (or on /stack).
+    addable_entries = [e for e in browse_entries if not e.in_stack]
 
     def _adapt(e):
         meta = dom_meta.get(e.id, {})
@@ -2351,7 +2490,7 @@ async def corporate_memory(
         meta = dom_meta.get(e.id, {})
         return meta.get("items_count", 0) > 0 or e.requirement == "required"
 
-    entries = [_adapt(e) for e in browse_entries if _has_content(e)]
+    entries = [_adapt(e) for e in addable_entries if _has_content(e)]
     stack_entries_adapted = [_adapt(e) for e in stack_entries if _has_content(e)]
 
     # Pending banner contract (issue #176) — admin-only, counts items in
@@ -3542,6 +3681,99 @@ async def admin_hub(
     route (each still enforces require_admin independently)."""
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_hub.html", ctx)
+
+
+@router.get("/admin/data-packages", response_class=HTMLResponse)
+async def admin_data_packages(
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Admin audit view — every Data Package + Memory Domain, regardless of
+    grant.
+
+    The Catalog reshape (follow-up to auto-membership) removed
+    ``browse_admin`` god-mode from the user-facing /catalog and
+    /corporate-memory pages — both now show the same grant-scoped,
+    addable-only view for every visitor. This page is where the old
+    "see everything" audit affordance moved to: admins still need a full
+    inventory (which packages/domains exist, how many tables they bundle,
+    whether an empty package needs table assignment) independent of their
+    own group grants.
+    """
+    from app.services.stack_resolver import StackResolver
+    from app.resource_types import ResourceType
+
+    resolver = StackResolver(conn)
+    pkg_repo = data_packages_repo()
+    domains_repo = memory_domains_repo()
+
+    pkg_meta: dict[str, dict] = {}
+    try:
+        for pkg in pkg_repo.list():
+            tables = pkg_repo.list_tables(pkg["id"])
+            source_types = sorted({(t.get("source_type") or "") for t in tables if t.get("source_type")})
+            pkg_meta[pkg["id"]] = {
+                "table_count": len(tables),
+                "source_types": source_types,
+            }
+    except Exception as e:
+        logger.warning("admin data-packages: could not enumerate data_packages: %s", e)
+
+    def _adapt_pkg(e):
+        slug = None
+        try:
+            full = pkg_repo.get(e.id)
+            if full:
+                slug = full.get("slug")
+        except Exception:
+            slug = None
+        meta = pkg_meta.get(e.id, {})
+        return _data_package_entry_dict(
+            e,
+            drilldown_url=f"/catalog/p/{slug}" if slug else f"/catalog#{e.id}",
+            table_count=meta.get("table_count", 0),
+            source_types=meta.get("source_types", []),
+            is_admin_view=True,
+        )
+
+    pkg_entries = resolver.browse_admin(user["id"], ResourceType.DATA_PACKAGE)
+    pkg_entries = sorted(pkg_entries, key=lambda e: e.name or "")
+    package_cards = [_adapt_pkg(e) for e in pkg_entries]
+
+    dom_meta: dict[str, dict] = {}
+    try:
+        for d in domains_repo.list(limit=10000):
+            summaries = domains_repo.list_items_of_domain(d["id"], limit=10000)
+            dom_meta[d["id"]] = {
+                "items_count": len(summaries),
+                "required_count": sum(1 for s in summaries if s.get("is_required")),
+                "slug": d["slug"],
+            }
+    except Exception as e:
+        logger.warning("admin data-packages: could not enumerate memory_domains: %s", e)
+
+    def _adapt_domain(e):
+        meta = dom_meta.get(e.id, {})
+        slug = meta.get("slug")
+        return _memory_domain_entry_dict(
+            e,
+            drilldown_url=f"/memory/d/{slug}" if slug else f"/corporate-memory#{e.id}",
+            items_count=meta.get("items_count", 0),
+            required_count=meta.get("required_count", 0),
+        )
+
+    domain_entries = resolver.browse_admin(user["id"], ResourceType.MEMORY_DOMAIN)
+    domain_entries = sorted(domain_entries, key=lambda e: e.name or "")
+    domain_cards = [_adapt_domain(e) for e in domain_entries]
+
+    ctx = _build_context(
+        request,
+        user=user,
+        package_cards=package_cards,
+        domain_cards=domain_cards,
+    )
+    return templates.TemplateResponse(request, "admin_data_packages.html", ctx)
 
 
 @router.get("/admin/tables", response_class=HTMLResponse)

@@ -69,15 +69,9 @@ class TestStackList:
         assert "empty" in result.output.lower()
 
     def test_list_json_output(self):
-        body = {
-            "items": [
-                {"id": "pkg_a", "name": "A", "requirement": "required", "in_stack": True}
-            ]
-        }
+        body = {"items": [{"id": "pkg_a", "name": "A", "requirement": "required", "in_stack": True}]}
         with patch("cli.commands.stack.api_get", return_value=_resp(200, body)):
-            result = runner.invoke(
-                app, ["stack", "list", "--type", "data_package", "--json"]
-            )
+            result = runner.invoke(app, ["stack", "list", "--type", "data_package", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data[0]["id"] == "pkg_a"
@@ -137,15 +131,9 @@ class TestStackBrowse:
         assert types_called == ["data_package", "memory_domain"]
 
     def test_browse_json_output(self):
-        body = {
-            "items": [
-                {"id": "pkg_a", "name": "A", "requirement": "available", "in_stack": False}
-            ]
-        }
+        body = {"items": [{"id": "pkg_a", "name": "A", "requirement": "available", "in_stack": False}]}
         with patch("cli.commands.stack.api_get", return_value=_resp(200, body)):
-            result = runner.invoke(
-                app, ["stack", "browse", "--type", "data_package", "--json"]
-            )
+            result = runner.invoke(app, ["stack", "browse", "--type", "data_package", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data[0]["id"] == "pkg_a"
@@ -160,12 +148,8 @@ class TestStackBrowse:
 
 class TestStackAdd:
     def test_add_calls_subscribe_endpoint(self):
-        with patch(
-            "cli.commands.stack.api_post", return_value=_resp(200, {"subscribed": True})
-        ) as m:
-            result = runner.invoke(
-                app, ["stack", "add", "data_package", "pkg_sales"]
-            )
+        with patch("cli.commands.stack.api_post", return_value=_resp(200, {"subscribed": True})) as m:
+            result = runner.invoke(app, ["stack", "add", "data_package", "pkg_sales"])
         assert result.exit_code == 0
         args, kwargs = m.call_args
         assert args[0] == "/api/stack/subscribe"
@@ -173,15 +157,13 @@ class TestStackAdd:
             "resource_type": "data_package",
             "resource_id": "pkg_sales",
         }
-        assert "Added" in result.output
+        # Auto-membership: the resource was already in the stack the moment
+        # it was granted — this call only requests a local download.
+        assert "Downloading a local copy" in result.output
 
     def test_add_memory_domain(self):
-        with patch(
-            "cli.commands.stack.api_post", return_value=_resp(200, {"subscribed": True})
-        ) as m:
-            result = runner.invoke(
-                app, ["stack", "add", "memory_domain", "dom_x"]
-            )
+        with patch("cli.commands.stack.api_post", return_value=_resp(200, {"subscribed": True})) as m:
+            result = runner.invoke(app, ["stack", "add", "memory_domain", "dom_x"])
         assert result.exit_code == 0
         assert m.call_args.kwargs["json"]["resource_type"] == "memory_domain"
 
@@ -190,9 +172,7 @@ class TestStackAdd:
             "cli.commands.stack.api_post",
             return_value=_resp(400, {"detail": "already_required"}),
         ):
-            result = runner.invoke(
-                app, ["stack", "add", "data_package", "pkg_sales"]
-            )
+            result = runner.invoke(app, ["stack", "add", "data_package", "pkg_sales"])
         # Already required = no-op, exit 0, message on stderr.
         assert result.exit_code == 0
         assert "already required" in result.output.lower()
@@ -202,9 +182,7 @@ class TestStackAdd:
             "cli.commands.stack.api_post",
             return_value=_resp(403, {"detail": "no_grant"}),
         ):
-            result = runner.invoke(
-                app, ["stack", "add", "data_package", "pkg_sales"]
-            )
+            result = runner.invoke(app, ["stack", "add", "data_package", "pkg_sales"])
         assert result.exit_code == 1
         assert "Access denied" in result.output
         assert "admin" in result.output.lower()
@@ -224,9 +202,7 @@ class TestStackRemove:
             "cli.commands.stack.api_delete",
             return_value=_resp(200, {"subscribed": False}),
         ) as m:
-            result = runner.invoke(
-                app, ["stack", "remove", "data_package", "pkg_sales"]
-            )
+            result = runner.invoke(app, ["stack", "remove", "data_package", "pkg_sales"])
         assert result.exit_code == 0
         args, _ = m.call_args
         assert args[0] == "/api/stack/subscription/data_package/pkg_sales"
@@ -237,9 +213,7 @@ class TestStackRemove:
             "cli.commands.stack.api_delete",
             return_value=_resp(400, {"detail": "cannot_remove_required"}),
         ):
-            result = runner.invoke(
-                app, ["stack", "remove", "data_package", "pkg_sales"]
-            )
+            result = runner.invoke(app, ["stack", "remove", "data_package", "pkg_sales"])
         assert result.exit_code == 1
         assert "required" in result.output.lower()
         assert "admin" in result.output.lower()

@@ -1779,6 +1779,15 @@ KNOWN_UNTESTED = {
     "GET /admin/workspace-prompt",
     # HTML web pages — covered by separate UI test suite
     "GET /activity-center",
+    # Admin audit view over all Data Packages / Memory Domains (catalog
+    # reshape) — rendering covered by tests/test_web_catalog_reshape.py.
+    "GET /admin/data-packages",
+    # Agent builder (rail-layout WIP surface) — rendering covered by
+    # tests/test_ui_layout_theme.py::TestRailOptIn.
+    "GET /agents",
+    # Personal artefacts page (rail-layout IA) — rendering covered by
+    # tests/test_ui_layout_theme.py::TestRailOptIn.
+    "GET /artefacts",
     # Knowledge-search chat landing (#896) — rendering covered by
     # tests/test_web_ask_landing.py.
     "GET /ask",

@@ -13,7 +13,7 @@
 {# ── Hero content — set here so operators can override without touching markup. #}
 {% set catalog_hero_eyebrow     = "Data" %}
 {% set catalog_hero_title       = "What data are you looking for?" %}
-{% set catalog_hero_subtitle    = "Browse curated data packages your team has approved. Add the ones you need to your stack — required packages are added automatically." %}
+{% set catalog_hero_subtitle    = "Everything you've been granted is already in your My Stack tab. Browse here for anything new your admin publishes." %}
 {% set catalog_hero_placeholder = "Search Data Packages by name or description…" %}
 {# Hero — gradient banner mirroring marketplace.html .mp-hero so /catalog
    and /marketplace read as one product. Eyebrow + h1 + sub layered on
@@ -154,14 +154,21 @@
       {% endfor %}
     </div>
     {% else %}
-    {# Empty state — friendly + actionable. Admins get a concrete CTA
-       (open /admin/tables with the N-registered-tables hint so they
-       know there IS data to package). Non-admins get a different copy
-       because the admin path is gated. #}
+    {# Empty state — friendly + actionable. Auto-membership means every
+       granted package is already in My Stack, so Browse is empty for the
+       common case of "you have access to everything that exists" — that
+       gets its own copy, distinct from "nothing exists/is granted yet".
+       Admins get a concrete CTA (open /admin/tables with the
+       N-registered-tables hint so they know there IS data to package).
+       Non-admins with zero grants get a different copy because the admin
+       path is gated. #}
     <div class="stack-empty">
       <span class="icon">{{ ico.icon('package', 40) }}</span>
+      {% if stack_entries %}
+      <h3>You already have everything available</h3>
+      <p>Every Data Package you've been granted is already in your <strong>My Stack</strong> tab above — Browse only lists ones you don't have yet. Check back once your admin publishes something new.</p>
+      {% elif user.is_admin %}
       <h3>No Data Packages yet</h3>
-      {% if user.is_admin %}
         {% if total_registered_tables and total_registered_tables > 0 %}
         <p>You have <strong>{{ total_registered_tables }}</strong>
            table{{ 's' if total_registered_tables != 1 else '' }} registered
@@ -177,6 +184,7 @@
         <a href="/admin/tables">Open /admin/tables →</a>
       </div>
       {% else %}
+      <h3>No Data Packages yet</h3>
       <p>Ask your admin to create a Data Package or grant your group
          access to an existing one, then refresh this page.</p>
       {% endif %}

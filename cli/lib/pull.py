@@ -601,6 +601,15 @@ def run_pull(
             # listed-but-not-downloaded behavior, except remote rows aren't
             # even counted (no server parquet exists at all); a server_only
             # row HAS a server parquet, we just don't ship it.
+            #
+            # This flag is now ALSO set per-user (not just via the registry's
+            # global admin flag) by the auto-membership stack model: a table
+            # in a granted-but-not-subscribed ``available`` data package is
+            # authorized (listed in `authorized_names` above) but not yet
+            # materialized, so the server OR's `server_only` into its flat
+            # manifest entry for this caller (`app/api/sync.py:
+            # _build_data_packages_section`). Subscribing (`agnes stack add`)
+            # clears it on the next manifest fetch.
             if info.get("server_only"):
                 continue
             local_hash = local_tables.get(tid, {}).get("hash", "")
@@ -1258,9 +1267,7 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path) -> None:
                     ).fetchall()
                     for (t_name,) in up_tables:
                         try:
-                            conn.execute(
-                                f'CREATE OR REPLACE TABLE "{t_name}" AS SELECT * FROM _uploads."{t_name}"'
-                            )
+                            conn.execute(f'CREATE OR REPLACE TABLE "{t_name}" AS SELECT * FROM _uploads."{t_name}"')
                         except duckdb.Error:
                             continue
                 finally:
