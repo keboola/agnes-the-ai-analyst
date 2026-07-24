@@ -34,6 +34,7 @@ class FakeManager:
     def __init__(self, *, stall_after_ready: bool = False):
         self.attached: list[str] = []
         self.detached: list[str] = []
+        self.detached_sinks: list[object] = []
         self.sent_messages: list[tuple[str, str, str | None]] = []
         self.cancelled: list[str] = []
         self.killed: list[tuple[str, str]] = []
@@ -75,6 +76,7 @@ class FakeManager:
 
     async def detach_sink(self, chat_id, sink) -> None:
         self.detached.append(chat_id)
+        self.detached_sinks.append(sink)
 
     async def cancel(self, chat_id) -> None:
         self.cancelled.append(chat_id)
@@ -177,6 +179,28 @@ def test_create_session_returns_201_with_session_id(env, monkeypatch):
     assert r.json()["session_id"]
 
 
+def test_create_session_chat_disabled_returns_503(env, monkeypatch):
+    """L2: `ChatManager.create_session` raises `RuntimeError("chat.enabled
+    is false")` when the config-level chat.enabled flag is off — this must
+    map to `503 chat_disabled` (matching the `manager is None` branch just
+    above it and app/api/chat.py's `_get_manager`), not fall through to the
+    catch-all 500 handler."""
+
+    class DisabledManager(FakeManager):
+        async def create_session(self, *, user_email, surface, agent_id=None, **kwargs):
+            raise RuntimeError("chat.enabled is false")
+
+    manager = DisabledManager()
+    _patch_manager(monkeypatch, manager)
+    r = env["client"].post(
+        "/api/v1/agents/support-bot/sessions",
+        json={},
+        headers=_auth(env["owner_token"]),
+    )
+    assert r.status_code == 503
+    assert r.json()["detail"]["code"] == "chat_disabled"
+
+
 def test_create_session_unknown_slug_returns_404(env, monkeypatch):
     manager = FakeManager()
     _patch_manager(monkeypatch, manager)
@@ -270,6 +294,78 @@ def test_post_message_idle_timeout_emits_run_error_and_releases_lock(env, monkey
     assert r2.status_code == 200
 
 
+def test_post_message_send_failure_after_attach_detaches_sink_and_releases_lock(env, monkeypatch):
+    """M1: if `attach()` seats the sink but `send_user_message` then raises,
+    the sink must still be detached — otherwise it lingers in `live.sinks`
+    forever (undrained queue, skewed linger/pause lifecycle) — and the turn
+    lock must still be released so a follow-up call isn't wedged too."""
+    from fastapi.testclient import TestClient
+
+    from app.chat.streaming_sink import StreamingSink
+
+    session_id = _create_session(env, monkeypatch)
+    manager = FakeManager()
+    manager.send_raises = RuntimeError("boom")
+    _patch_manager(monkeypatch, manager)
+
+    # The default TestClient re-raises unhandled server exceptions in-test
+    # (see tests/test_request_id_middleware.py for the same pattern) — use a
+    # non-raising client wrapping the SAME app so we can assert on the
+    # response status instead of catching the RuntimeError ourselves.
+    non_raising_client = TestClient(env["client"].app, raise_server_exceptions=False)
+    r = non_raising_client.post(
+        f"/api/v1/sessions/{session_id}/messages",
+        json={"input": "hi"},
+        headers=_auth(env["owner_token"]),
+    )
+    assert r.status_code == 500
+
+    assert manager.attached == [session_id]
+    assert manager.detached == [session_id]
+    assert len(manager.detached_sinks) == 1
+    assert isinstance(manager.detached_sinks[0], StreamingSink)
+
+    from app.coordination.factory import coordination
+
+    lock_key = f"agent-session-turn:{session_id}"
+    # Lock released -> a follow-up call on the same session succeeds rather
+    # than 409ing.
+    manager2 = FakeManager()
+    _patch_manager(monkeypatch, manager2)
+    r2 = env["client"].post(
+        f"/api/v1/sessions/{session_id}/messages",
+        json={"input": "hi again"},
+        headers=_auth(env["owner_token"]),
+    )
+    assert r2.status_code == 200
+    # Sanity: the lock really was free before the second call (not just
+    # incidentally re-acquirable) — acquiring/releasing it directly confirms
+    # no leftover holder from the first request.
+    assert coordination().lease_acquire(lock_key, "probe", ttl_s=1)
+    coordination().lease_release(lock_key, "probe")
+
+
+def test_post_message_attach_session_not_found_does_not_call_detach(env, monkeypatch):
+    """Counterpart to the regression above: when `attach()` itself raises
+    `SessionNotFound` (before seating a sink), there is nothing to detach —
+    `detach_sink` must not be called."""
+    from app.chat.manager import SessionNotFound
+
+    session_id = _create_session(env, monkeypatch)
+    manager = FakeManager()
+    manager.attach_raises = SessionNotFound(session_id)
+    _patch_manager(monkeypatch, manager)
+
+    r = env["client"].post(
+        f"/api/v1/sessions/{session_id}/messages",
+        json={"input": "hi"},
+        headers=_auth(env["owner_token"]),
+    )
+    assert r.status_code == 404
+    assert manager.detached == []
+    assert manager.detached_sinks == []
+
+
 def test_post_message_accepts_response_format_without_error(env, monkeypatch):
     session_id = _create_session(env, monkeypatch)
     manager = FakeManager()
@@ -307,6 +403,43 @@ def test_post_message_cross_owner_returns_404(env, monkeypatch):
         headers=_auth(env["other_token"]),
     )
     assert r.status_code == 404
+
+
+def test_post_message_revoked_chat_grant_returns_403(env, monkeypatch):
+    """L1: `require_session_principal` re-checks the `ResourceType.CHAT`
+    grant AFTER the owner match, matching `require_agent_runtime_principal`
+    (`/responses` + create-session). A session outlives the grant that let
+    its owner create it — a caller whose CHAT grant is later revoked must
+    not keep driving `/messages` on an existing session. `403
+    chat_access_denied` mirrors `/responses`'s `test_missing_chat_grant_returns_403`.
+    """
+    session_id = _create_session(env, monkeypatch)
+    manager = FakeManager()
+    _patch_manager(monkeypatch, manager)
+
+    from src.repositories import resource_grants_repo
+
+    resource_grants_repo().delete_by_resource("chat", "chat")
+
+    r = env["client"].post(
+        f"/api/v1/sessions/{session_id}/messages",
+        json={"input": "hi"},
+        headers=_auth(env["owner_token"]),
+    )
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "chat_access_denied"
+
+
+def test_get_session_revoked_chat_grant_returns_403(env, monkeypatch):
+    session_id = _create_session(env, monkeypatch)
+
+    from src.repositories import resource_grants_repo
+
+    resource_grants_repo().delete_by_resource("chat", "chat")
+
+    r = env["client"].get(f"/api/v1/sessions/{session_id}", headers=_auth(env["owner_token"]))
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "chat_access_denied"
 
 
 def test_post_message_wrong_agent_pat_returns_404(env, monkeypatch):

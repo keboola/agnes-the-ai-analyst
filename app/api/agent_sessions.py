@@ -48,13 +48,15 @@ import logging
 import uuid
 from typing import Any, AsyncIterator, Dict, Optional
 
+import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from app.api.agent_runtime import AgentRuntimePrincipal, require_agent_runtime_principal
 from app.api.agent_sse import SSE_TERMINAL_TYPES, frame_to_agui, sse_bytes
-from app.auth.dependencies import get_current_user
+from app.auth.access import can_access
+from app.auth.dependencies import _get_db, get_current_user
 from app.auth.pat_resolver import agent_id_from_request
 from app.auth.session_principal import SessionPrincipal
 from app.chat.manager import ConcurrencyCapHit, SessionNotFound, get_current_chat_manager
@@ -62,6 +64,7 @@ from app.chat.streaming_sink import StreamingSink
 from app.chat.types import Surface
 from app.coordination.factory import coordination
 from app.logging_config import request_id_var
+from app.resource_types import ResourceType
 from src.repositories import agents_repo, chat_message_repo, chat_session_repo
 
 logger = logging.getLogger(__name__)
@@ -120,6 +123,7 @@ def require_session_principal(
     session_id: str,
     request: Request,
     user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ) -> SessionRuntimePrincipal:
     """Auth dependency for every `/api/v1/sessions/{id}/...` route.
 
@@ -130,6 +134,16 @@ def require_session_principal(
     DIFFERENT agent than this session's) collapses to the SAME `404` —
     never `403` — so a non-owner request can't distinguish "no such
     session" from "not yours".
+
+    Once ownership is established, re-check the `ResourceType.CHAT` grant —
+    the same check `require_agent_runtime_principal` applies for
+    `/agents/{slug}/sessions` and `/responses` (`can_access(..., "chat")`).
+    Sessions can outlive the grant that let their owner create them (a
+    revoked group membership doesn't retroactively delete existing
+    sessions), so without this re-check a caller whose CHAT grant was
+    pulled after session creation could keep driving `/messages` forever.
+    `403 chat_access_denied` here matches what `/responses` returns for the
+    same condition.
     """
     if isinstance(user, SessionPrincipal):
         raise HTTPException(status_code=404, detail={"code": "session_not_found"})
@@ -148,6 +162,9 @@ def require_session_principal(
             raise HTTPException(status_code=404, detail={"code": "session_not_found"})
     elif agent["owner_user_id"] != user["id"]:
         raise HTTPException(status_code=404, detail={"code": "session_not_found"})
+
+    if not can_access(user["id"], ResourceType.CHAT.value, "chat", conn):
+        raise HTTPException(status_code=403, detail={"code": "chat_access_denied"})
 
     return SessionRuntimePrincipal(user=user, agent=agent, session=session)
 
@@ -170,6 +187,17 @@ async def create_agent_session(
         )
     except ConcurrencyCapHit as exc:
         raise HTTPException(status_code=429, detail={"code": "concurrency_cap", "hint": str(exc)}) from exc
+    except RuntimeError as exc:
+        # `ChatManager.create_session` raises this specific message when
+        # `chat.enabled` is false at the config level — normally unreachable
+        # since `get_current_chat_manager()` is already None in that case
+        # (app/main.py only starts the manager when chat.enabled=true), but
+        # guard it defensively rather than let it fall through to the
+        # catch-all 500 handler. Same `503 chat_disabled` the `manager is
+        # None` branch above (and app/api/chat.py's `_get_manager`) returns.
+        if str(exc) != "chat.enabled is false":
+            raise
+        raise HTTPException(status_code=503, detail={"code": "chat_disabled"}) from exc
     return {"session_id": session.id}
 
 
@@ -232,12 +260,27 @@ async def post_session_message(
     sink = StreamingSink()
     try:
         await manager.attach(session_id, sink)
-        await manager.send_user_message(session_id, body.input, sender_email=principal.user["email"])
     except SessionNotFound:
+        # attach() raised before seating the sink (see its docstring: every
+        # branch that seats the sink returns immediately after) — nothing to
+        # detach.
         coordination().lease_release(lock_key, lock_holder)
         raise HTTPException(status_code=404, detail={"code": "session_not_found"})
     except Exception:
         coordination().lease_release(lock_key, lock_holder)
+        raise
+
+    try:
+        await manager.send_user_message(session_id, body.input, sender_email=principal.user["email"])
+    except Exception:
+        # Unlike attach() above, the sink IS seated by this point (attach()
+        # already returned successfully) — leaving it attached would leak it
+        # in `live.sinks` forever (undrained queue, skewed linger/pause
+        # lifecycle). Detach before releasing the lock and re-raising.
+        try:
+            await manager.detach_sink(session_id, sink)
+        finally:
+            coordination().lease_release(lock_key, lock_holder)
         raise
 
     request_id = request_id_var.get() or uuid.uuid4().hex

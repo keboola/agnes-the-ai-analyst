@@ -68,7 +68,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   /api/v1/sessions/{id}` archives it. Same owner/agent-PAT auth model as
   `/responses`, collapsed to a uniform `404` on any mismatch (wrong owner,
   or an agent PAT bound to a different agent) so a non-owner can never
-  distinguish "no such session" from "not yours".
+  distinguish "no such session" from "not yours" — and, after ownership
+  passes, the same `ResourceType.CHAT` grant `/responses` requires is
+  re-checked too (`403 {"code": "chat_access_denied"}`), since a session
+  outlives the grant that let its owner create it. A `send_user_message`
+  failure right after a successful `attach()` now detaches the sink before
+  releasing the turn lock, instead of leaking it in `live.sinks`. Create-session
+  maps a config-level `chat.enabled=false` to `503 {"code": "chat_disabled"}`
+  rather than an unhandled 500.
 - **LLM broker: per-agent model policy, batched `llm_usage` ledger, monthly
   token budgets.** The secret broker's `anthropic_proxy` chokepoint (applies
   to every upstream credential mode — static key, workload identity, LLM
