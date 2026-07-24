@@ -26,7 +26,8 @@ AGNES_INTERNAL_URL = "http://app:8000"
 
 def build_config_json(app_row: dict, *, secrets: dict[str, str], clone_url: str, clone_token: str) -> dict:
     if app_row["repo_mode"] == "internal":
-        git = {"repository": clone_url, "branch": LIVE_BRANCH, "username": "agnes", "#password": clone_token}
+        branch = app_row["draft_branch"] if app_row.get("is_draft") else LIVE_BRANCH
+        git = {"repository": clone_url, "branch": branch, "username": "agnes", "#password": clone_token}
     else:
         git = {"repository": app_row["repo_url"], "branch": app_row["repo_branch"] or "main"}
     out_secrets = {f"#{k}": v for k, v in secrets.items()}

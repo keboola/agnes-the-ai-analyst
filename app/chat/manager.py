@@ -1748,8 +1748,9 @@ class ChatManager:
         return handle
 
     async def _push_ticket_frame(self, live: "LiveSession") -> None:
-        """Mint fresh main+mcp broker tickets and push them to the sandbox's
-        in-process relay over stdin (chat sandbox secret broker, 2026-07-14).
+        """Mint fresh main+mcp+data_apps broker tickets and push them to the
+        sandbox's in-process relay over stdin (chat sandbox secret broker,
+        2026-07-14; ``data_apps`` scope added wave 3B 2026-07-24).
 
         Every runner process — freshly spawned or reconnected via
         ``provider.resume`` — starts with no ticket in its relay's memory, so
@@ -1761,7 +1762,13 @@ class ChatManager:
         assert live.handle is not None
         main = ticket_repo().mint(live.chat_id, "main")
         mcp = ticket_repo().mint(live.chat_id, "mcp")
-        payload = json.dumps({"type": "ticket_push", "main": main, "mcp": mcp}) + "\n"
+        # Minted unconditionally even when data_apps.enabled=false — harmless:
+        # the broker's /api/broker/data-apps route confines replay to
+        # /api/data-apps/*, and every handler under that prefix 404s via its
+        # own _feature_gate() when the feature is off, so an unused ticket
+        # never reaches a live route.
+        data_apps = ticket_repo().mint(live.chat_id, "data_apps")
+        payload = json.dumps({"type": "ticket_push", "main": main, "mcp": mcp, "data_apps": data_apps}) + "\n"
         async with live._stdin_lock:
             live.handle.stdin.write(payload.encode("utf-8"))
             await live.handle.stdin.drain()

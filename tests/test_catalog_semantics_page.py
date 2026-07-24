@@ -277,3 +277,77 @@ class TestCatalogSemanticsLinkFromCatalog:
         resp = c.get("/catalog", headers=_auth(token))
         assert resp.status_code == 200
         assert "/catalog/semantics" in resp.text
+
+
+class TestCatalogSemanticsDetailRendering:
+    """The expanded detail renders the full definition (description as
+    sanitized markdown, a type/unit/grain meta line, and dimensions), and
+    the row preview / filter index are plain-text projections (no literal
+    markdown markup, synonyms searchable)."""
+
+    def _page(self, seeded_app) -> str:
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+        resp = c.get("/catalog/semantics", headers=_auth(token))
+        assert resp.status_code == 200
+        return resp.text
+
+    def test_description_markdown_rendered_in_detail(self, seeded_app):
+        _make_metric(
+            description="**Bold definition** with `inline_code` term.",
+        )
+        body = self._page(seeded_app)
+        assert "<strong>Bold definition</strong>" in body
+        assert "<code>inline_code</code>" in body
+        # Raw markdown markup must not appear anywhere (preview or detail).
+        assert "**Bold definition**" not in body
+
+    def test_preview_is_plain_text_with_block_boundaries(self, seeded_app):
+        import re
+
+        _make_metric(
+            description="## Heading Alpha\n\nFirst paragraph beta.",
+        )
+        body = self._page(seeded_app)
+        m = re.search(r'<div class="sl-row__desc">([^<]*)</div>', body)
+        assert m, "plain-text preview div missing"
+        preview = m.group(1)
+        assert "Heading Alpha" in preview
+        assert "First paragraph beta." in preview
+        # Adjacent blocks must not fuse into "AlphaFirst".
+        assert "AlphaFirst" not in preview
+        assert "#" not in preview
+
+    def test_description_is_sanitized(self, seeded_app):
+        _make_metric(
+            description="[click](javascript:alert(1)) <script>alert(2)</script>",
+        )
+        body = self._page(seeded_app)
+        assert 'href="javascript:' not in body
+        assert "<script>alert(2)</script>" not in body
+
+    def test_meta_line_shows_type_unit_grain_and_dimensions(self, seeded_app):
+        _make_metric(
+            type="ratio",
+            unit="percentage",
+            grain="session-week",
+            dimensions=["Country", "Traffic Source"],
+        )
+        body = self._page(seeded_app)
+        assert "ratio" in body
+        assert "percentage" in body
+        assert "session-week" in body
+        assert "Country, Traffic Source" in body
+
+    def test_filter_index_includes_synonyms(self, seeded_app):
+        import re
+
+        _make_metric(
+            synonyms=["average order value", "AOV"],
+        )
+        body = self._page(seeded_app)
+        m = re.search(r'data-filter-text="([^"]*)"', body)
+        assert m, "filter index attribute missing"
+        idx = m.group(1)
+        assert "average order value" in idx
+        assert "aov" in idx

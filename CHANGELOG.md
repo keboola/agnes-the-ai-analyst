@@ -33,6 +33,131 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.32] - 2026-07-24
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+- **Verification loop for the sync-map rows CI did not guard.**
+  `scripts/verify_syncmap.py` (stdlib-only, diff-scoped) fails on an
+  unregistered `ResourceType`, a user-visible change with no `## [Unreleased]`
+  CHANGELOG bullet, a new boolean scope flag in a CLI command, and
+  `query_mode='remote'` in a connector that never mentions `_remote_attach`; it
+  warns on a new entity-scoped endpoint carrying authn but no authz. The
+  `verify-agnes-change` skill wraps it into a cheapest-first loop (sync-map →
+  targeted guards → full suite → `/agnes-review`) so mechanical findings stop
+  consuming LLM review. `CONTRIBUTING.md` sync-map now names the new guard per
+  row instead of `NO`.
+- **The test suite no longer wedges the machine when it runs out of disk.** Two
+  consecutive full runs filled a 460 GB disk (218 GB of retained `pytest-of-*`
+  dirs), after which every teardown raised `OSError: [Errno 28]` and buried the
+  real result. A `pytest_sessionstart` guard in `tests/conftest.py` now refuses
+  to start below 5 GB free and warns below 60 GB, naming the cleanup command;
+  bypass with `AGNES_SKIP_DISK_CHECK=1`. Thresholds are set so a CI shard
+  (`--splits 8`) is never aborted. `tmp_path_retention_count` stays at `1` —
+  `pytest.ini` now records why `0` is not an option (it sweeps the current
+  session's dir, so live tests lose their `tmp_path` mid-run).
+
+### Security
+
+## [0.76.31] - 2026-07-24
+
+### Fixed
+
+- **Materialized Keboola tables no longer OOM the sync on large results.**
+  The typed-parquet retype (the all-VARCHAR fix) loaded the whole
+  materialized parquet into one in-memory `pyarrow.Table` before casting —
+  peak memory scaled 2–3× with the result size (pyarrow copy + pandas
+  fallback copies) and OOM-killed syncs of large materialized tables,
+  leaving them stale. The retype now streams through a memory-capped DuckDB
+  `COPY` with per-column `TRY_CAST`, so peak memory is bounded by the
+  consolidation cap regardless of table size. Cast semantics keep the
+  coerce-to-NULL behavior (uncastable values → NULL, now with a
+  footer-stats warning per affected column); DATE columns additionally
+  retype correctly now (previously a single bad value left the whole
+  column VARCHAR), and an already-typed parquet skips the rewrite
+  entirely.
+## [0.76.30] - 2026-07-24
+
+### Added
+
+- **Data Apps: prod + draft iteration model.** Create a draft on an iteration branch
+  (`agnes app draft create`), deploy it in `dev` mode, then promote by merging into
+  `main`; drafts share the prod app's git repo and are hidden from the app list.
+  New MCP tools (`data_app_create_draft`, `data_app_delete_draft`, `data_app_git_credential`)
+  and a broker `data_apps` scope let the chat agent author apps end-to-end.
+
+### Changed
+
+### Fixed
+
+- **Data Apps: drafts hidden from the `/apps` web list and admin grant picker.** `GET /api/data-apps`, `agnes app list`, and the MCP `data_apps_list` tool already excluded drafts; the human-facing `/apps` page and `/admin/access`'s data-app grant picker now filter them too.
+- **Data Apps: draft metadata hidden from non-owner grantees.** `GET /{slug}`'s inlined `drafts` list (branch, state, URL of every in-progress draft) was gated on the same broad `_can_view` check as the rest of the app detail response — a group merely holding a read grant on the parent app could see it, even though every draft-mutating endpoint is owner/Admin-only. `drafts` is now omitted entirely unless the caller is the owner or an Admin.
+- **Data Apps: `git-credential` clone URL uses the public base URL.** `POST /{slug}/git-credential` (and `data_app_git_credential`) previously built the returned clone URL from `AGNES_INTERNAL_URL` (the in-cluster hostname), unusable from an analyst laptop, the MCP tool, or a remote sandbox. It now uses `get_public_url()` when configured (falling back to the internal URL otherwise), matching `create_data_app`'s `git_url`. The container-facing clone URL used inside `config.json` is unaffected — it stays on the internal URL.
+- **Data Apps: reject git-invalid draft branch names.** `POST /{slug}/drafts`'s branch validation admitted names `git update-ref` refuses (`a..b`, `a//b`, a trailing `/` or `.`, an `x.lock` suffix), which previously surfaced as an unhandled 500 and left an orphaned draft row (turning a retry into a misleading 409 `slug_exists`). Now rejected up front as 400 `invalid_branch`, with a `subprocess.CalledProcessError` catch around the git call as a second line of defense that also rolls back the draft row.
+- **Data Apps: draft creation no longer 500s on Postgres when the slug races.** The new-app and new-draft endpoints only caught DuckDB's `ConstraintException` on a unique-slug violation; on the Postgres backend the same race raises `sqlalchemy.exc.IntegrityError`, which fell through to an unhandled 500 instead of the intended 409 `slug_exists`. Both endpoints now catch either exception, matching the existing pattern in `knowledge_digests.py`/`marketplaces.py`.
+- **Data Apps: a user's drafts no longer eat their prod-app quota.** The non-admin `max_apps_per_user` check listed apps without excluding drafts, so a user's in-progress drafts counted toward the same limit as their prod apps and could block them from creating a new one. The quota check now excludes drafts, matching every other listing surface.
+- **Data Apps: a failed draft creation cleans up after itself when the owner is gone.** `POST /{slug}/drafts` already rolled back the just-inserted draft row (and avoided leaving a branch behind) when the branch was invalid or the parent had no `main`; the owner-account-missing failure path — hit when minting the push credential — did not, so a retry after that 500 was wrongly refused as `slug_exists`. It now rolls back the same way as the other two failure paths.
+- **Data Apps: draft teardown now serializes with a concurrent wake.** `_teardown_draft` (used by both `DELETE /{slug}/drafts/{draft_slug}` and the cascade in `DELETE /{slug}`) stopped a draft's container without holding its `dataapp:op:{draft_slug}` lease — the same lease every other runner-mutating operation takes to prevent the unlocked check-then-act container swap in the runner sidecar (see 0.76.23). A draft deleted at the same moment someone opens its URL could leave a zombie or clobbered container; teardown now takes the lease first.
+- **Data Apps: deleting a draft through the generic app-delete route no longer orphans its branch.** A draft is a full `data_apps` row, so `DELETE /{slug}` (and `agnes app delete <draft_slug>`) would happily resolve and delete it — but that route's own teardown never deletes the draft's branch on the parent's repo (only `_teardown_draft`, used by the dedicated drafts route, does). Now rejected up front as 400 `use_draft_delete_route`.
+
+### Removed
+
+### Internal
+
+### Security
+
+- **Data Apps: enforce the `data-app-git:<slug>` PAT scope.** The credential minted by `POST /{slug}/git-credential` (and `data_app_git_credential`) now authenticates only the `/data-apps.git/{slug}` surface it was minted for, pinned to that one app's slug — previously the `scope` claim was unenforced, so the credential was a full-privilege user PAT usable against the whole non-admin (and, for an Admin owner, admin) REST/MCP API. Rejected JSON-API calls get 401 `git_scope_token_not_allowed`.
+
+## [0.76.29] - 2026-07-24
+
+### Fixed
+
+- **Cloud-chat answers now stream token-by-token.** Both credential hops on
+  the model-call path buffered the LLM's SSE response whole — the broker's
+  Anthropic proxy read the full completion before responding, and the
+  in-sandbox loopback relay did the same again (writing a single
+  Content-Length body) — so every token delta collapsed into one burst at
+  turn end: the user stared at silence for the whole generation, then the
+  entire answer appeared at once. The broker now stream-opens the upstream
+  call and forwards 2xx `text/event-stream` responses chunk-by-chunk
+  (closing the upstream in the background once drained), and the relay
+  forwards event streams with chunked transfer encoding, flushing each
+  chunk to the in-sandbox CLI as it arrives. Non-stream responses (JSON
+  endpoints, upstream errors) keep the exact buffered behavior, including
+  the operator credential diagnostics.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.28] - 2026-07-24
+
+### Changed
+
+- `/catalog/semantics` metric detail now renders the full **description**
+  (markdown → sanitized HTML via the existing `render_safe` pipeline, same
+  injection contract as marketplace detail pages) plus a
+  **type · unit · grain** meta line and the metric's **dimensions**.
+  Previously the description existed only as the one-line truncated row
+  preview and never appeared in the expanded detail, and type/unit/grain/
+  dimensions were stored but shown nowhere: the page showed the SQL but
+  hid the meaning. The row preview and the client-side filter index now use
+  a plain-text projection of the description (new `render_plain` in
+  `app/markdown_render.py`) so literal markdown markup (`**`, `#`) no
+  longer leaks into previews, and the filter also matches **synonyms**
+  (metrics are routinely searched by their spoken aliases, which were
+  stored but not indexed).
+
 ## [0.76.27] - 2026-07-24
 
 ### Added

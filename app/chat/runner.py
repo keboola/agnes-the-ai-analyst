@@ -302,14 +302,14 @@ async def _dispatch_frame(frame: dict, queue: "asyncio.Queue[dict]") -> None:
     """Route one parsed inbound stdin frame.
 
     ``ticket_push`` frames (``{"type": "ticket_push", "main": ..., "mcp":
-    ...}``) update the module-level relay's in-memory tickets and are never
-    enqueued for the agent loop — the agent must never see a ticket. Every
-    other frame type (``user_msg``, ``cancel``, ``_eof``) is queued
-    unchanged, exactly as it always has been.
+    ..., "data_apps": ...}``) update the module-level relay's in-memory
+    tickets and are never enqueued for the agent loop — the agent must never
+    see a ticket. Every other frame type (``user_msg``, ``cancel``, ``_eof``)
+    is queued unchanged, exactly as it always has been.
     """
     if frame.get("type") == "ticket_push":
         if _relay is not None:
-            _relay.set_tickets(frame.get("main", ""), frame.get("mcp", ""))
+            _relay.set_tickets(frame.get("main", ""), frame.get("mcp", ""), frame.get("data_apps", ""))
         return
     await queue.put(frame)
 

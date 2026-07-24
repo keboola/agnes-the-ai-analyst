@@ -3,6 +3,7 @@
 import contextlib as _contextlib
 import hashlib as _hashlib
 import os
+import shutil as _shutil
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -53,6 +54,75 @@ _GUARDED_SHELL_CONFIGS = (
 # The launcher install dir (`~/.local/bin`) is watched by *name listing* only:
 # a leaking test drops a new script named after its tmp workspace there.
 _REAL_LOCAL_BIN = _REAL_HOME / ".local" / "bin"
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight disk guard
+# ---------------------------------------------------------------------------
+# A full local run writes tens of GB of DuckDB/parquet/pgserver fixtures into
+# pytest's basetemp (see the retention note in pytest.ini). When the disk runs
+# out mid-run the suite does not fail cleanly: every teardown raises
+# `OSError: [Errno 28]`, burying the real result under thousands of errors, and
+# the machine is left wedged at 100% full.
+#
+# Thresholds are tuned so the abort floor only catches runs that are already
+# doomed. CI shards the suite eight ways (`--splits 8`) and runs far leaner than
+# a single local invocation — a local-sized threshold must never abort a shard.
+DISK_WARN_GB = 60
+DISK_ABORT_GB = 5
+
+
+def disk_guard_verdict(*, free_bytes: int) -> tuple[str, str]:
+    """Classify free space as ``ok`` / ``warn`` / ``abort`` plus a message.
+
+    Pure so it can be tested without a real filesystem; the caller supplies
+    ``free_bytes``. Set ``AGNES_SKIP_DISK_CHECK=1`` to bypass entirely.
+    """
+    if os.environ.get("AGNES_SKIP_DISK_CHECK", "").strip().lower() not in ("", "0", "false"):
+        return "ok", ""
+
+    free_gb = free_bytes / (1024**3)
+
+    if free_gb < DISK_ABORT_GB:
+        return "abort", (
+            f"Only {free_gb:.1f} GB free on the pytest basetemp filesystem "
+            f"({_tf.gettempdir()}). A full run needs ~{DISK_WARN_GB} GB and will "
+            f"fill the disk, producing thousands of Errno 28 teardown errors "
+            f"instead of a usable result.\n"
+            f"  Free space, then re-run. Stale fixtures from previous runs:\n"
+            f"    rm -rf {os.path.join(_tf.gettempdir(), 'pytest-of-*')}\n"
+            f"  Override with AGNES_SKIP_DISK_CHECK=1 if you know better."
+        )
+
+    if free_gb < DISK_WARN_GB:
+        return "warn", (
+            f"Low disk: {free_gb:.1f} GB free, a full run wants ~{DISK_WARN_GB} GB "
+            f"of basetemp scratch. Consider running a subset, or clean up with "
+            f"`rm -rf {os.path.join(_tf.gettempdir(), 'pytest-of-*')}`."
+        )
+
+    return "ok", ""
+
+
+def pytest_sessionstart(session):
+    """Check headroom once, in the controller, before any test runs."""
+    # xdist workers inherit the controller's verdict — checking per worker would
+    # print the same warning N times and abort mid-fan-out.
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return
+
+    try:
+        usage = _shutil.disk_usage(_tf.gettempdir())
+    except OSError:
+        return  # never let the guard itself break a run
+
+    verdict, message = disk_guard_verdict(free_bytes=usage.free)
+    if verdict == "abort":
+        pytest.exit(f"\ndisk guard: {message}", returncode=1)
+    if verdict == "warn":
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter is not None:
+            reporter.write_line(f"disk guard: {message}", yellow=True)
 
 
 def _shell_config_fingerprints() -> dict:

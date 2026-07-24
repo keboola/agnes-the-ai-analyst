@@ -100,6 +100,35 @@ class TestBareRepo:
         assert resolve_ref("pinned", "agnes-live") == first_sha
 
 
+def test_ensure_and_delete_branch(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from src.data_apps.git_repos import delete_branch, ensure_branch
+
+    # NOTE: brief used slug "g", but SLUG_RE requires >=2 chars; using "gg"
+    # here to satisfy that pre-existing constraint while keeping the test intent.
+    init_app_repo("gg")
+    # seed main with one commit
+    work = tmp_path / "w"
+    subprocess.run(
+        ["git", "clone", str(tmp_path / "apps" / "git" / "gg.git"), str(work)], check=True, capture_output=True
+    )
+    (work / "f").write_text("x")
+    subprocess.run(["git", "-C", str(work), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(work), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "c"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "-C", str(work), "push", "origin", "HEAD:main"], check=True, capture_output=True)
+    ensure_branch("gg", "init", base="main")
+    assert resolve_ref("gg", "init") == resolve_ref("gg", "main")
+    ensure_branch("gg", "init")  # idempotent, no raise
+    delete_branch("gg", "init")
+    assert resolve_ref("gg", "init") is None
+    with pytest.raises(ValueError):
+        delete_branch("gg", "main")
+
+
 class TestSlugValidation:
     """`repo_path` must reject any slug that doesn't match `SLUG_RE`
     (`src.data_apps.spec`) before it ever touches the filesystem — a
@@ -192,6 +221,26 @@ def data_apps_git_env(e2e_env, monkeypatch):
             )
             pats[uid] = jwt
         _ = t
+
+        # A `data-app-git:sales` scoped credential, minted the same way
+        # `app.api.data_apps._mint_git_credential` does — used to assert
+        # this router (and only this router) accepts it.
+        git_tid = str(uuid.uuid4())
+        git_jwt = create_access_token(
+            "owner1",
+            "owner@test.local",
+            token_id=git_tid,
+            typ="pat",
+            extra_claims={"scope": "data-app-git:sales"},
+        )
+        token_repo.create(
+            id=git_tid,
+            user_id="owner1",
+            name="data-app-git:sales",
+            token_hash=hashlib.sha256(git_jwt.encode()).hexdigest(),
+            prefix=git_tid.replace("-", "")[:8],
+            expires_at=None,
+        )
     finally:
         conn.close()
 
@@ -207,6 +256,7 @@ def data_apps_git_env(e2e_env, monkeypatch):
         "owner_pat": pats["owner1"],
         "other_pat": pats["other1"],
         "admin_pat": pats["admin1"],
+        "git_scoped_pat": git_jwt,
         "data_dir": data_dir,
     }
 
@@ -328,3 +378,48 @@ class TestDataAppsGitHttp:
             assert r.json()["detail"] == "data_apps_disabled"
         finally:
             instance_config._instance_config = original
+
+
+class TestDataAppsGitScopedCredential:
+    """A `data-app-git:<slug>` credential (as minted by
+    `_mint_git_credential`) must work here — this is the one surface it's
+    meant for — but nowhere else (see `TestGitScopeRejectedOnJsonApi` in
+    tests/test_data_apps_api.py)."""
+
+    def test_git_scoped_pat_allowed_for_read(self, data_apps_git_env):
+        c = data_apps_git_env["client"]
+        r = c.get(
+            "/data-apps.git/sales/info/refs?service=git-upload-pack",
+            headers={"Authorization": _basic("x", data_apps_git_env["git_scoped_pat"])},
+        )
+        assert r.status_code == 200
+        assert "git-upload-pack" in r.headers["content-type"]
+
+    def test_git_scoped_pat_allowed_for_push(self, data_apps_git_env):
+        c = data_apps_git_env["client"]
+        r = c.get(
+            "/data-apps.git/sales/info/refs?service=git-receive-pack",
+            headers={"Authorization": _basic("x", data_apps_git_env["git_scoped_pat"])},
+        )
+        assert r.status_code == 200
+
+    def test_git_scoped_pat_pinned_to_its_own_slug(self, data_apps_git_env):
+        """A `data-app-git:sales` token must not authenticate against a
+        differently-named repo, even one the same user owns."""
+        from src.data_apps.git_repos import init_app_repo
+        from src.repositories.data_apps import DataAppsRepository
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            DataAppsRepository(conn).create(slug="other", name="Other App", owner_user_id="owner1")
+        finally:
+            conn.close()
+        init_app_repo("other")
+
+        c = data_apps_git_env["client"]
+        r = c.get(
+            "/data-apps.git/other/info/refs?service=git-upload-pack",
+            headers={"Authorization": _basic("x", data_apps_git_env["git_scoped_pat"])},
+        )
+        assert r.status_code == 403
