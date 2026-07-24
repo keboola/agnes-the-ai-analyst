@@ -47,6 +47,7 @@ import logging
 import os
 import re as _re
 import shutil
+import subprocess
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -74,8 +75,28 @@ router = APIRouter(prefix="/api/data-apps", tags=["data-apps"])
 # Branch names accepted by `POST /{slug}/drafts` — a conservative git
 # ref-component charset (lowercase alnum + `.` `_` `/` `-`), not the full
 # git-check-ref-format grammar; good enough to reject shell/path-hostile
-# input before it reaches `ensure_branch`'s `update-ref` call.
+# input before it reaches `ensure_branch`'s `update-ref` call. This charset
+# check alone still admits several forms `git-check-ref-format` refuses
+# (`a..b`, `a//b`, a trailing `/` or `.`, an `x.lock` suffix) — those are
+# rejected by `_is_git_valid_branch` below, checked alongside this regex.
 _BRANCH_RE = _re.compile(r"^[a-z0-9][a-z0-9._/-]{0,60}$")
+
+
+def _is_git_valid_branch(branch: str) -> bool:
+    """Reject branch names `_BRANCH_RE`'s charset check lets through but
+    `git update-ref` itself refuses (``man git-check-ref-format``, abridged
+    to the rules a lowercase-alnum-`.`-`_`-`/`-`-` charset can still hit):
+    a ``..`` component separator, a ``//`` empty path component, a
+    trailing ``/`` or ``.``, and an ``x.lock`` suffix (reserved for git's
+    own lockfiles). Checked *before* `ensure_branch` runs so a git-invalid
+    name never reaches `subprocess.run(..., check=True)` and surfaces as an
+    unhandled `CalledProcessError` (belt-and-braces: `create_draft` also
+    catches that exception, in case some other git-invalid form slips past
+    this check)."""
+    return not (
+        ".." in branch or "//" in branch or branch.endswith("/") or branch.endswith(".") or branch.endswith(".lock")
+    )
+
 
 # idle_timeout_s clamp — 5 minutes .. 24 hours. Prevents an accidental 0/huge
 # value from either reaping an app instantly or never reaping it at all.
@@ -743,7 +764,7 @@ async def create_draft(
     _require_owner_or_admin(user, parent)
     if parent.get("is_draft"):
         raise HTTPException(status_code=400, detail="parent_is_draft")
-    if not _BRANCH_RE.match(payload.branch):
+    if not _BRANCH_RE.match(payload.branch) or not _is_git_valid_branch(payload.branch):
         raise HTTPException(status_code=400, detail="invalid_branch")
     draft_slug = _draft_slug(slug, payload.branch)
 
@@ -765,6 +786,15 @@ async def create_draft(
     except ValueError:
         repo.delete(draft_id)
         raise HTTPException(status_code=409, detail="parent_has_no_main")
+    except subprocess.CalledProcessError:
+        # Belt-and-braces: `_is_git_valid_branch` should already reject
+        # everything `git update-ref` refuses, but if some other
+        # git-invalid form ever slips past it, fail the same way (400
+        # `invalid_branch`, draft row rolled back) rather than surfacing an
+        # unhandled 500 and leaving an orphaned draft row that would turn a
+        # retry into a misleading 409 `slug_exists`.
+        repo.delete(draft_id)
+        raise HTTPException(status_code=400, detail="invalid_branch")
 
     try:
         git_url = _mint_git_credential(parent)  # push credential is against the PROD repo

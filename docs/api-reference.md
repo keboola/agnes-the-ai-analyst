@@ -1010,10 +1010,13 @@ runtime container and put to sleep after an idle timeout. RBAC: owner,
 Admin, or a group holding a `resource_grants` row on `(data_app, <slug>)`
 may view; only owner or Admin may mutate. Gated behind
 `data_apps.enabled` in `instance.yaml` (404 `data_apps_disabled` when off).
-CLI: `agnes app list/show/create/deploy/stop/delete/logs`. MCP tools (list/
-show/deploy/logs, matching the view-vs-mutate RBAC split above):
-`data_apps_list`, `data_app_get`, `data_app_deploy`, `data_app_logs` — no
-MCP analogue for create/stop/delete/secrets/reap-idle/git-credential/drafts.
+CLI: `agnes app list/show/create/deploy/stop/delete/logs/git-credential`
+plus `agnes app draft create/delete`. MCP tools (list/show/deploy/logs plus
+the wave 3B AI-authoring flow, matching the view-vs-mutate RBAC split
+above): `data_apps_list`, `data_app_get`, `data_app_deploy`,
+`data_app_logs`, `data_app_create_draft`, `data_app_delete_draft`,
+`data_app_git_credential` — no MCP analogue for
+create/stop/delete/secrets/reap-idle.
 
 - /api/data-apps
 - /api/data-apps/reap-idle

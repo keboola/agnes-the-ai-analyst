@@ -1210,6 +1210,36 @@ class TestDrafts:
         assert r.status_code == 400, r.text
         assert r.json()["detail"] == "invalid_branch"
 
+    @pytest.mark.parametrize(
+        "branch",
+        [
+            "a..b",  # double-dot: git rejects as a revision-range-like ref
+            "a//b",  # double slash
+            "a/",  # trailing slash
+            "a.",  # trailing dot
+            "x.lock",  # .lock suffix: reserved for git's own lockfiles
+        ],
+    )
+    def test_create_draft_git_invalid_branch_rejected(self, client_as_user, seeded_repo_with_commit, branch):
+        """These all pass `_BRANCH_RE`'s charset check but are refused by
+        `git update-ref` itself (`ensure_branch` -> `CalledProcessError`).
+        Must surface as 400 `invalid_branch`, not an unhandled 500 -- and
+        must not leave the just-inserted draft row behind (a retry would
+        otherwise hit a misleading 409 `slug_exists`)."""
+        r = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": branch})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == "invalid_branch"
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            rows = DataAppsRepository(conn).list_drafts(DataAppsRepository(conn).get_by_slug("sapp")["id"])
+        finally:
+            conn.close()
+        assert rows == []
+
     def test_create_draft_owner_not_found_500(self, admin_client, seeded_repo_with_commit):
         """If the parent app's owner row is gone by the time the git
         credential is minted, `_mint_git_credential` raises
