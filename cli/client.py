@@ -434,11 +434,25 @@ def api_post_sse(path: str, json: Optional[dict] = None) -> Iterator[dict]:
     """POST ``path`` and yield each Server-Sent Event on the
     ``text/event-stream`` response as a parsed dict.
 
-    Only ``data:`` lines are parsed (the wire format this CLI talks to —
-    ``app.api.agent_sse.sse_bytes`` — always puts the full JSON-encoded
-    event on a single ``data:`` line; ``id:``/``event:`` lines are
-    metadata the event's own ``"type"`` key already carries, so they're
-    skipped rather than reconstructed).
+    Only ``data:`` field lines contribute to the payload; ``id:``/
+    ``event:``/comment lines are metadata the event's own ``"type"`` key
+    already carries, so they're skipped rather than reconstructed. Per the
+    SSE spec, consecutive ``data:`` lines belonging to one record are
+    buffered and joined with ``"\\n"``, and the record is only dispatched
+    (JSON-parsed + yielded) on the blank line that terminates it. Coupling
+    note: today's sole producer, ``app.api.agent_sse.sse_bytes``, always
+    emits exactly one ``data:`` line per record — this buffering exists for
+    spec-correctness (and any future producer that wraps long payloads)
+    rather than because the current server needs it. A record left
+    unterminated by a final blank line (stream cut off mid-record) is
+    dropped rather than force-parsed — that's indistinguishable from any
+    other truncated-stream case and is handled by the caller checking for a
+    terminal event (see ``cli/commands/chat.py::_send_turn``).
+
+    Malformed ``data:`` payloads (fails to parse as JSON) are counted and,
+    if any occurred, a one-line warning is written to stderr when the
+    stream ends — silently dropping them would otherwise leave no trace
+    that events were lost.
 
     Raises:
         ApiSseError: the response status was >= 400 — read entirely before
@@ -456,6 +470,7 @@ def api_post_sse(path: str, json: Optional[dict] = None) -> Iterator[dict]:
     triggers ``GeneratorExit`` inside this function, unwinding the ``with
     client.stream(...)`` block and closing the connection.
     """
+    malformed_count = 0
     try:
         with get_client(
             timeout=httpx.Timeout(
@@ -473,23 +488,42 @@ def api_post_sse(path: str, json: Optional[dict] = None) -> Iterator[dict]:
                     except Exception:
                         body = response.text
                     raise ApiSseError(response.status_code, body)
+                data_lines: list[str] = []
                 for line in response.iter_lines():
-                    if not line or not line.startswith("data:"):
+                    if line == "":
+                        # Blank line: record boundary. Dispatch only if we
+                        # actually buffered a data field since the last
+                        # dispatch — a stray blank line (or one between
+                        # comment/event/id-only lines) is a no-op.
+                        if data_lines:
+                            payload = "\n".join(data_lines)
+                            data_lines = []
+                            try:
+                                event = _json.loads(payload)
+                            except ValueError:
+                                malformed_count += 1
+                                continue
+                            yield event
                         continue
-                    data = line[len("data:") :].strip()
-                    if not data:
+                    if not line.startswith("data:"):
+                        # event:/id:/retry:/comment lines — metadata we
+                        # don't need to reconstruct.
                         continue
-                    try:
-                        event = _json.loads(data)
-                    except ValueError:
-                        continue
-                    yield event
+                    value = line[len("data:") :]
+                    if value.startswith(" "):
+                        value = value[1:]
+                    data_lines.append(value)
     except httpx.HTTPError as exc:
         raise _translate_transport_error(
             exc,
             context=f"POST {path} (stream)",
             timeout_s=_SSE_READ_TIMEOUT_S,
         ) from exc
+    finally:
+        if malformed_count:
+            sys.stderr.write(
+                f"warning: skipped {malformed_count} malformed SSE data record(s) that failed to parse as JSON\n"
+            )
 
 
 def _is_transient(exc: Exception) -> bool:

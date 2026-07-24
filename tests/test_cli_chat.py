@@ -20,6 +20,7 @@ import pytest
 from typer.testing import CliRunner
 
 import cli.commands.chat as chat_mod
+from cli.client import AgnesTransportError
 from cli.main import app
 
 runner = CliRunner()
@@ -238,3 +239,185 @@ class TestSkillsRegression:
         assert result.exit_code == 0
         assert mock_get.call_args.args[0] == "/api/chat/skills"
         assert "No skills or commands available." in result.output
+
+
+EVENTS_TRUNCATED_AFTER_CONTENT = [
+    {"type": "RUN_STARTED"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": "partial answer"},
+    # Stream ends here — no RUN_FINISHED / RUN_ERROR. Simulates
+    # `_event_stream` breaking on `StopAsyncIteration` (sandbox died) or a
+    # mid-stream connection drop; the two are indistinguishable on the wire.
+]
+
+EVENTS_TRUNCATED_NO_CONTENT = [
+    {"type": "RUN_STARTED"},
+    # Stream ends immediately — no content ever arrived, no terminal event.
+]
+
+
+class TestTruncatedStream:
+    """HIGH 1: a stream that ends without RUN_FINISHED/RUN_ERROR must never
+    be reported as a successful turn, whether or not partial content
+    streamed first."""
+
+    def test_once_truncated_after_content_exits_nonzero_and_reports_it(self):
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_TRUNCATED_AFTER_CONTENT)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent", "--once", "hi"])
+
+        assert result.exit_code != 0
+        # The partial answer that did stream is still shown...
+        assert "partial answer" in result.output
+        # ...but it must not read as a clean, successful turn.
+        assert "(no answer)" not in result.output
+        assert "stream ended without a terminal event" in result.output
+
+    def test_once_truncated_with_no_content_exits_nonzero_not_no_answer(self):
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_TRUNCATED_NO_CONTENT)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent", "--once", "hi"])
+
+        # This is the exact regression the reviewer reproduced: an empty,
+        # truncated turn must not silently exit 0 as "(no answer)".
+        assert result.exit_code != 0
+        assert "(no answer)" not in result.output
+        assert "stream ended without a terminal event" in result.output
+
+    def test_interactive_truncated_turn_renders_error_and_keeps_repl_alive(self):
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})) as mock_post,
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_TRUNCATED_AFTER_CONTENT)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)) as mock_delete,
+        ):
+            result = runner.invoke(app, ["chat", "myagent"], input="hello\n/exit\n")
+
+        assert result.exit_code == 0
+        assert "stream ended without a terminal event" in result.output
+        assert "(no answer)" not in result.output
+        # The session is only cleaned up on the deliberate /exit, not
+        # mid-loop because of the truncated turn.
+        assert mock_post.call_args_list[0].args[0] == "/api/v1/agents/myagent/sessions"
+        assert mock_delete.call_args.args[0] == "/api/v1/sessions/sess-1"
+
+
+class TestTransportErrorSurvival:
+    """MEDIUM 2: a transient transport error must not kill the interactive
+    REPL or delete the session mid-conversation; `--once` still exits
+    non-zero since there's no next prompt to preserve."""
+
+    def test_interactive_transport_error_keeps_session_and_prompt_alive(self):
+        call_count = {"n": 0}
+
+        def fake_sse(path, json=None):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise AgnesTransportError("Server didn't respond within the read timeout (30s).")
+            yield from EVENTS_HI
+
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})) as mock_post,
+            patch("cli.commands.chat.api_post_sse", side_effect=fake_sse),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)) as mock_delete,
+        ):
+            result = runner.invoke(app, ["chat", "myagent"], input="first\nsecond\n/exit\n")
+
+        # The whole process must exit cleanly via /exit, not crash out of
+        # the transport error.
+        assert result.exit_code == 0
+        assert "read timeout" in result.output
+        assert "Hello world" in result.output  # second turn still went through
+        assert call_count["n"] == 2
+        # Session created once and only deleted on the deliberate /exit —
+        # not torn down by the mid-conversation transport blip.
+        assert mock_post.call_args_list[0].args[0] == "/api/v1/agents/myagent/sessions"
+        assert mock_delete.call_args.args[0] == "/api/v1/sessions/sess-1"
+
+    def test_once_transport_error_exits_nonzero(self):
+        def fake_sse(path, json=None):
+            raise AgnesTransportError("Can't reach the agnes server.")
+            yield  # pragma: no cover - unreachable, makes this a generator
+
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", side_effect=fake_sse),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)) as mock_delete,
+        ):
+            result = runner.invoke(app, ["chat", "myagent", "--once", "hi"])
+
+        assert result.exit_code != 0
+        assert "Can't reach the agnes server" in result.output
+        assert mock_delete.call_args.args[0] == "/api/v1/sessions/sess-1"
+
+
+class TestDoubleCtrlC:
+    """LOW 8: a second Ctrl-C landing on the best-effort `/cancel` POST
+    (during the handler for the first one) must not escape and crash the
+    REPL — it's swallowed the same as the first."""
+
+    def test_second_keyboard_interrupt_during_cancel_does_not_escape(self):
+        def fake_sse(path, json=None):
+            yield {"type": "TEXT_MESSAGE_CONTENT", "delta": "partial"}
+            raise KeyboardInterrupt()
+
+        def fake_post(path, **kwargs):
+            # Simulates the second Ctrl-C landing while `_best_effort_cancel`'s
+            # own POST is in flight.
+            raise KeyboardInterrupt()
+
+        with (
+            patch("cli.commands.chat.api_post_sse", side_effect=fake_sse),
+            patch("cli.commands.chat.api_post", side_effect=fake_post),
+        ):
+            result = chat_mod._send_turn("sess-1", "hi", live_render=False)
+
+        assert result.cancelled is True
+        assert result.answer == "partial"
+
+
+class TestGroupHelpDiscoverability:
+    """MEDIUM 3: `agnes chat --help` must surface the REPL usage line and
+    the disconnect-≠-cancel / paused-TTL caveats without the caller
+    already knowing to dig into the hidden `_repl` command's own help."""
+
+    def test_group_help_shows_repl_usage_and_caveats(self):
+        result = runner.invoke(app, ["chat", "--help"])
+
+        assert result.exit_code == 0
+        assert "agnes chat <slug>" in result.output
+        assert "--once" in result.output
+        assert "--agent" in result.output
+        assert "disconnect" in result.output.lower() or "does not stop the run" in result.output.lower()
+        assert "paused" in result.output.lower()
+
+
+class TestAgentEscapeHatch:
+    """LOW 5: `agnes chat --agent <slug>` always addresses an agent, even
+    when <slug> collides with a real subcommand name (`skills`)."""
+
+    def test_agent_flag_routes_to_repl_even_for_a_slug_named_skills(self):
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})) as mock_post,
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_HI)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "--agent", "skills", "--once", "hi"])
+
+        assert result.exit_code == 0
+        assert mock_post.call_args_list[0].args[0] == "/api/v1/agents/skills/sessions"
+
+    def test_agent_flag_equals_form_also_works(self):
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})) as mock_post,
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_HI)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "--agent=myagent", "--once", "hi"])
+
+        assert result.exit_code == 0
+        assert mock_post.call_args_list[0].args[0] == "/api/v1/agents/myagent/sessions"

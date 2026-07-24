@@ -23,9 +23,12 @@ swallow the literal token "skills" before subcommand resolution ever runs).
 `_ChatGroup` below resolves this the way `click-default-group` does: the
 REPL lives in a hidden `_repl` command, and `_ChatGroup.parse_args`
 transparently redirects any first token that ISN'T a registered subcommand
-name to it. The one sharp edge this creates: an agent literally named
-`skills` is shadowed by `agnes chat skills` (the catalog command wins) —
-called out in `_repl`'s help text.
+name to it. The sharp edge this creates: an agent literally named `skills`
+is shadowed by `agnes chat skills` (the catalog command wins) — and by any
+future subcommand this group grows. The escape hatch is `agnes chat
+--agent <slug>`, handled in `_ChatGroup.parse_args` before subcommand
+resolution so it can never be shadowed; called out in both the group's
+`--help` epilog and `_repl`'s own help text.
 """
 
 from __future__ import annotations
@@ -38,7 +41,7 @@ from typing import Any, Optional
 import typer
 from typer.core import TyperGroup
 
-from cli.client import ApiSseError, api_delete, api_get, api_post, api_post_sse
+from cli.client import AgnesTransportError, ApiSseError, api_delete, api_get, api_post, api_post_sse
 from cli.error_render import render_error
 
 
@@ -50,15 +53,47 @@ class _ChatGroup(TyperGroup):
     `agnes chat _repl research-bot --once hi` under the hood. A leading
     option (e.g. `agnes chat --help`) is left alone so group-level help
     still works.
+
+    Escape hatch: `agnes chat --agent <slug>` (or `--agent=<slug>`) always
+    addresses an agent regardless of name collisions with a real
+    subcommand (e.g. an agent literally named `skills`) or any future
+    subcommand this group grows — it's handled here, before subcommand
+    resolution, so it can never be shadowed.
     """
 
     def parse_args(self, ctx: typer.Context, args: list[str]) -> list[str]:
+        if args and (args[0] == "--agent" or args[0].startswith("--agent=")):
+            if args[0] == "--agent":
+                if len(args) < 2:
+                    typer.echo("Error: --agent requires an agent slug.", err=True)
+                    raise typer.Exit(2)
+                slug, rest = args[1], args[2:]
+            else:
+                slug, rest = args[0][len("--agent=") :], args[1:]
+            return super().parse_args(ctx, ["_repl", slug, *rest])
         if args and args[0] not in self.commands and not args[0].startswith("-"):
             args = ["_repl", *args]
         return super().parse_args(ctx, args)
 
 
-chat_app = typer.Typer(cls=_ChatGroup, help="Cloud chat — skills/commands catalog + streaming agent REPL")
+chat_app = typer.Typer(
+    cls=_ChatGroup,
+    help="Streaming terminal chat with a composed agent, plus the skills/commands catalog.",
+    epilog=(
+        'Usage: agnes chat <slug> [--once "<prompt>" [--json]]\n\n'
+        "Starts an interactive REPL against agent <slug> over its streaming "
+        "session API; --once sends one prompt non-interactively (scriptable) "
+        "and exits. If <slug> collides with a subcommand name (e.g. an agent "
+        "named 'skills'), use `agnes chat --agent <slug>` instead — it always "
+        "addresses the agent.\n\n"
+        "Disconnecting (killing this process, a network drop) does NOT stop "
+        "the run or refund budget — only Ctrl-C (which cancels the turn) or "
+        "/exit does. A gap between messages longer than the server's "
+        "paused-sandbox TTL (operator-configured, default 7 days) gets the "
+        "idle sandbox reclaimed in the background; the next message still "
+        "works but loses any in-sandbox state."
+    ),
+)
 
 
 def _fail(resp) -> None:
@@ -124,12 +159,28 @@ def _dim(text: str) -> str:
     return f"\033[2m{text}\033[0m"
 
 
+#: Message set on `.error` when the SSE stream ends (generator exhausted,
+#: connection closed cleanly by the server) without ever emitting a
+#: `RUN_FINISHED` or `RUN_ERROR` terminal event. The server's own
+#: `_event_stream` (`app/api/agent_sessions.py`) breaks out on
+#: `StopAsyncIteration` — sandbox died, manager detached — with no terminal
+#: event of its own, and that looks identical on the wire to an ordinary
+#: mid-stream connection drop. Either way, the caller must not treat this
+#: as a successful turn.
+TRUNCATED_STREAM_MESSAGE = (
+    "stream ended without a terminal event — the run may still be in progress or the sandbox ended"
+)
+
+
 @dataclass
 class TurnResult:
     """Outcome of consuming one turn's SSE stream.
 
-    Exactly one of ``http_error`` / ``cancelled`` / ``error`` is set on a
-    non-clean turn; all are ``None``/``False`` on a plain `RUN_FINISHED`.
+    Exactly one of ``http_error`` / ``cancelled`` / ``error`` /
+    ``transport_error`` is set on a non-clean turn; all are
+    ``None``/``False`` on a plain `RUN_FINISHED`. ``error`` is also set
+    (to ``TRUNCATED_STREAM_MESSAGE``) when the stream ends without either
+    terminal event — see that constant's docstring.
     """
 
     events: list[dict] = field(default_factory=list)
@@ -137,16 +188,28 @@ class TurnResult:
     error: Optional[str] = None
     http_error: Optional[tuple[int, Any]] = None
     cancelled: bool = False
+    transport_error: Optional[AgnesTransportError] = None
 
 
 def _best_effort_cancel(session_id: str) -> None:
     """C7/C8: on Ctrl-C, tell the server to actually stop the run — a mere
     client-side disconnect does NOT stop it or refund budget (only
     `/cancel` does). Best-effort: a failure here must not crash the REPL;
-    the reaper is the fallback."""
+    the reaper is the fallback.
+
+    Catches `BaseException`, not `Exception`, by design: this runs from
+    inside `_send_turn`'s `except KeyboardInterrupt:` handler, so a SECOND
+    Ctrl-C landing on this blocking POST would otherwise raise a fresh
+    `KeyboardInterrupt` right here, escape the handler mid-cleanup, and
+    crash the whole REPL with a raw traceback instead of the one clean
+    "Cancelled." line. There is deliberately no distinct "force quit"
+    gesture on double Ctrl-C — it's equivalent to a single Ctrl-C (one
+    best-effort cancel attempt, then back to the prompt). `/exit` or
+    Ctrl-D is the intentional way to leave the REPL.
+    """
     try:
         api_post(f"/api/v1/sessions/{session_id}/cancel", timeout=10.0)
-    except Exception:
+    except BaseException:
         pass
 
 
@@ -182,10 +245,27 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
     this turn). On catch: stop consuming immediately, best-effort POST
     `/cancel`, and return a `cancelled` result so the REPL loop can redraw
     its prompt — never a half-read stream or a wedged terminal.
+
+    Truncated streams: a `RUN_FINISHED`/`RUN_ERROR` terminal event is the
+    only signal that the run actually completed. If the underlying
+    generator is exhausted (server closed the connection, or the sandbox
+    died mid-run — `app/api/agent_sessions.py`'s `_event_stream` breaks on
+    `StopAsyncIteration` with no terminal event of its own) without one
+    ever arriving, that is indistinguishable on the wire from a clean
+    finish except for the missing terminal event — so it is reported as an
+    error (`TRUNCATED_STREAM_MESSAGE`), never as a quiet success.
+
+    Transport errors: `api_post_sse` raises `AgnesTransportError` for
+    httpx-level failures (connect refused, read timeout, connection reset).
+    Caught here (rather than left to propagate) so a single flaky turn
+    doesn't unwind the interactive REPL's loop — see `_run_interactive`,
+    which renders `.transport_error` and keeps the session and prompt,
+    mirroring how it handles Ctrl-C.
     """
     events: list[dict] = []
     answer_parts: list[str] = []
     error_message: Optional[str] = None
+    terminal_seen = False
     gen = api_post_sse(f"/api/v1/sessions/{session_id}/messages", json={"input": text})
     try:
         for event in gen:
@@ -203,12 +283,16 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
                     sys.stdout.write(f"\n{_dim(f'⚙ {name}')}\n")
                     sys.stdout.flush()
             elif etype == "RUN_FINISHED":
+                terminal_seen = True
                 break
             elif etype == "RUN_ERROR":
+                terminal_seen = True
                 error_message = event.get("message") or "run error"
                 break
     except ApiSseError as exc:
         return TurnResult(events=events, answer="".join(answer_parts), http_error=(exc.status_code, exc.body))
+    except AgnesTransportError as exc:
+        return TurnResult(events=events, answer="".join(answer_parts), transport_error=exc)
     except KeyboardInterrupt:
         _best_effort_cancel(session_id)
         return TurnResult(events=events, answer="".join(answer_parts), cancelled=True)
@@ -216,6 +300,8 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
         close = getattr(gen, "close", None)
         if callable(close):
             close()
+    if not terminal_seen:
+        error_message = TRUNCATED_STREAM_MESSAGE
     return TurnResult(events=events, answer="".join(answer_parts), error=error_message)
 
 
@@ -231,6 +317,11 @@ def _render_turn_error(result: TurnResult) -> None:
         typer.echo(msg, err=True)
     elif result.cancelled:
         typer.echo("Cancelled.", err=True)
+    elif result.transport_error is not None:
+        exc = result.transport_error
+        typer.echo(f"Error: {exc.user_message}", err=True)
+        if exc.hint:
+            typer.echo(exc.hint, err=True)
     elif result.error is not None:
         typer.echo(f"Error: {result.error}", err=True)
 
@@ -258,7 +349,18 @@ def _run_interactive(session_id: str, slug: str) -> None:
                 break
             result = _send_turn(session_id, stripped, live_render=True)
             typer.echo("")  # newline after streamed text (or nothing, if none arrived)
-            if result.http_error is not None or result.cancelled or result.error is not None:
+            # M2: a transient transport error (`.transport_error`) is
+            # rendered and swallowed right here — same as `.cancelled` —
+            # so the loop keeps going and the session survives. Only
+            # falling out of this `while` (`/exit`, EOF, or an
+            # unhandled exception) reaches the `finally` below and frees
+            # the session; a single flaky read timeout must not do that.
+            if (
+                result.http_error is not None
+                or result.cancelled
+                or result.error is not None
+                or result.transport_error is not None
+            ):
                 _render_turn_error(result)
             elif not result.answer:
                 typer.echo("(no answer)")
@@ -276,7 +378,8 @@ def _repl(
         ...,
         help=(
             "Agent slug to chat with (see `agnes agent list`). Note: an agent "
-            "literally named 'skills' is shadowed by `agnes chat skills`."
+            "literally named 'skills' is shadowed by `agnes chat skills`; use "
+            "`agnes chat --agent <slug>` to address it unambiguously."
         ),
     ),
     once: Optional[str] = typer.Option(
@@ -340,6 +443,14 @@ def _repl(
         elif result.cancelled:
             _render_turn_error(result)
             exit_code = 130
+        elif result.transport_error is not None:
+            # M2: --once still exits non-zero on a transport error (unlike
+            # the interactive REPL, there's no next prompt to keep alive
+            # for) — rendered only outside --json so it can't corrupt the
+            # JSON dumped above.
+            if not as_json:
+                _render_turn_error(result)
+            exit_code = 1
         elif result.error is not None:
             if not as_json:
                 _render_turn_error(result)
