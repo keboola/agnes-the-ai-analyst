@@ -219,6 +219,28 @@ class TestDataAppResourceType:
         assert block["items"][0]["description"] == "A test app"
         assert block["items"][0]["slug"] == "my-app"
 
+    def test_data_app_blocks_excludes_drafts(self, system_conn):
+        """Drafts are working copies layered on a parent app, not
+        independently grantable resources -- they must not clutter the
+        admin grant picker (mirrors the `include_drafts=False` filter on
+        every other data-apps listing surface)."""
+        from app.resource_types import _data_app_blocks
+
+        system_conn.execute(
+            "INSERT INTO data_apps(id, slug, name, description, owner_user_id) "
+            "VALUES ('app_test1', 'my-app', 'My App', 'A test app', 'u_owner')"
+        )
+        system_conn.execute(
+            "INSERT INTO data_apps(id, slug, name, description, owner_user_id,"
+            " parent_app_id, is_draft, draft_branch) "
+            "VALUES ('app_test2', 'my-app--init', 'My App (draft)', '', 'u_owner',"
+            " 'app_test1', TRUE, 'init')"
+        )
+        blocks = _data_app_blocks()
+        assert len(blocks) == 1
+        slugs = [item["resource_id"] for item in blocks[0]["items"]]
+        assert slugs == ["my-app"]
+
 
 class TestAccessOverviewIncludesTables:
     """v19+ — TABLE is unconditionally enabled (no env-gate)."""

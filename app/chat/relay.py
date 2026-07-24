@@ -7,7 +7,7 @@ holds a broker ticket, and it holds it **in memory only** — never in
 disk. CLI subprocesses are pointed at this relay's loopback address with a
 dummy key; the relay attaches the real ticket as the ``Authorization``
 header on the outbound leg to the Agnes server's broker routes
-(``/api/broker/{anthropic,agnes-api,agnes-mcp}``).
+(``/api/broker/{anthropic,agnes-api,agnes-mcp,data-apps}``).
 
 Tickets are pushed over stdin by the runner (see ``app/chat/runner.py``)
 via ``set_tickets`` at spawn and after every resume. Until a fresh ticket
@@ -30,11 +30,15 @@ logger = logging.getLogger(__name__)
 # Maps the inbound loopback path prefix to the ticket scope required to
 # forward it. `/anthropic` and `/agnes-api` ride the `main` ticket;
 # `/agnes-mcp` rides the `mcp` ticket (spawned as a separate subprocess with
-# a narrower scope).
+# a narrower scope); `/data-apps` rides the `data_apps` ticket (2026-07-24
+# wave 3B) — a narrower scope than `main`, confined server-side to the
+# `/api/data-apps` control-plane surface (see `app/api/broker.py`'s
+# `data_apps_broker`).
 _SCOPE_FOR_PREFIX = {
     "/anthropic": "main",
     "/agnes-api": "main",
     "/agnes-mcp": "mcp",
+    "/data-apps": "data_apps",
 }
 
 # Prefixes whose broker route replays a ``{method, path, body}`` envelope
@@ -43,10 +47,10 @@ _SCOPE_FOR_PREFIX = {
 # relay always POSTs to the broker, so the native method + target path must be
 # carried in the envelope — otherwise the call arrives as
 # ``POST /api/broker/agnes-api/<subpath>`` and 405s (the broker only serves the
-# exact ``/agnes-api`` + ``/agnes-mcp`` envelope routes). ``/anthropic`` is NOT
-# here: it is a transparent external proxy that forwards the raw body + SDK
-# headers to the pinned Anthropic host at the native subpath.
-_ENVELOPE_PREFIXES = frozenset({"/agnes-api", "/agnes-mcp"})
+# exact ``/agnes-api``, ``/agnes-mcp`` + ``/data-apps`` envelope routes).
+# ``/anthropic`` is NOT here: it is a transparent external proxy that forwards
+# the raw body + SDK headers to the pinned Anthropic host at the native subpath.
+_ENVELOPE_PREFIXES = frozenset({"/agnes-api", "/agnes-mcp", "/data-apps"})
 
 # The `/anthropic` leg proxies LLM completions that routinely run for tens of
 # seconds to minutes. httpx's 5s default read timeout would abort every real
@@ -69,18 +73,22 @@ class Relay:
         self._server_url = server_url.rstrip("/")
         self._main_ticket: Optional[str] = None
         self._mcp_ticket: Optional[str] = None
+        self._data_apps_ticket: Optional[str] = None
         self._armed = False
         self._server: Optional[asyncio.base_events.Server] = None
         self._client: Optional[httpx.AsyncClient] = None
 
-    def set_tickets(self, main: str, mcp: str) -> None:
+    def set_tickets(self, main: str, mcp: str, data_apps: str = "") -> None:
         """Store fresh tickets in memory only.
 
         Never writes to ``os.environ`` or disk — the only copies of the
-        ticket values live in these two instance attributes.
+        ticket values live in these instance attributes. ``data_apps``
+        defaults to ``""`` so a caller on the old (pre-wave-3B) two-ticket
+        ``ticket_push`` frame shape still works unchanged.
         """
         self._main_ticket = main
         self._mcp_ticket = mcp
+        self._data_apps_ticket = data_apps
         self._armed = True
 
     def disarm(self) -> None:
@@ -99,6 +107,8 @@ class Relay:
             return self._main_ticket
         if scope == "mcp":
             return self._mcp_ticket
+        if scope == "data_apps":
+            return self._data_apps_ticket
         return None
 
     # Headers never forwarded upstream: hop-by-hop framing (recomputed by
@@ -109,6 +119,27 @@ class Relay:
     _DROP_INBOUND_HEADERS = frozenset(
         {"host", "content-length", "connection", "transfer-encoding", "authorization", "x-api-key"}
     )
+
+    def _transparent_request(
+        self,
+        path: str,
+        inbound_headers: Optional[dict[str, str]],
+    ) -> tuple[str, dict[str, str]]:
+        """URL + outbound headers for the transparent (``/anthropic``) leg.
+
+        Shared by the buffered ``_forward`` branch and the streaming path in
+        ``_handle_connection`` so the header-drop/credential-swap policy can
+        never drift between the two. Raises ``RuntimeError`` when the relay
+        is not armed or holds no ticket for the path's scope.
+        """
+        if not self._armed:
+            raise RuntimeError("relay not armed: no tickets pushed since last resume")
+        ticket = self._ticket_for_path(path)
+        if not ticket:
+            raise RuntimeError(f"relay has no ticket for the scope of path {path!r}")
+        headers = {k: v for k, v in (inbound_headers or {}).items() if k.lower() not in self._DROP_INBOUND_HEADERS}
+        headers["Authorization"] = f"Bearer {ticket}"
+        return f"{self._server_url}/api/broker{path}", headers
 
     async def _forward(
         self,
@@ -159,9 +190,7 @@ class Relay:
                 return await client.post(url, json=envelope, headers=headers)
 
             # Transparent proxy (``/anthropic``): raw body + SDK headers.
-            headers = {k: v for k, v in (inbound_headers or {}).items() if k.lower() not in self._DROP_INBOUND_HEADERS}
-            headers["Authorization"] = f"Bearer {ticket}"
-            url = f"{self._server_url}/api/broker{path}"
+            url, headers = self._transparent_request(path, inbound_headers)
             return await client.post(url, content=body, headers=headers)
         finally:
             if owns_client:
@@ -213,8 +242,34 @@ class Relay:
         length = int(headers.get("content-length", "0") or "0")
         body = await reader.readexactly(length) if length else b""
 
+        prefix = "/" + path.lstrip("/").split("/", 1)[0]
         try:
-            resp = await self._forward(path, body, headers, method=method)
+            if prefix == "/anthropic" and self._client is not None:
+                # Streaming-capable transparent leg: the model's completion
+                # arrives as SSE, and buffering it here (the old
+                # ``client.post`` + Content-Length write) collapsed every
+                # token delta into one burst at turn end — the user stared
+                # at silence, then the whole answer appeared at once. Open
+                # the upstream response WITHOUT reading the body; if it is
+                # an event stream, forward chunks as they arrive.
+                url, out_headers = self._transparent_request(path, headers)
+                req = self._client.build_request("POST", url, content=body, headers=out_headers)
+                resp = await self._client.send(req, stream=True)
+                ctype = resp.headers.get("content-type", "")
+                if 200 <= resp.status_code < 300 and ctype.startswith("text/event-stream"):
+                    try:
+                        await self._stream_response(writer, resp, ctype)
+                    finally:
+                        await resp.aclose()
+                    return
+                # Non-stream (errors, count_tokens JSON, …): fall through to
+                # the buffered write below with identical legacy behavior.
+                try:
+                    await resp.aread()
+                finally:
+                    await resp.aclose()
+            else:
+                resp = await self._forward(path, body, headers, method=method)
         except RuntimeError as exc:
             payload = str(exc).encode()
             writer.write(f"HTTP/1.1 503 Service Unavailable\r\nContent-Length: {len(payload)}\r\n\r\n".encode())
@@ -234,6 +289,38 @@ class Relay:
             writer.write(f"Content-Type: {ctype}\r\n".encode())
         writer.write(f"Content-Length: {len(content)}\r\n\r\n".encode())
         writer.write(content)
+        await writer.drain()
+
+    async def _stream_response(
+        self,
+        writer: asyncio.StreamWriter,
+        resp: httpx.Response,
+        ctype: str,
+    ) -> None:
+        """Forward an SSE upstream response chunk-by-chunk as it arrives.
+
+        HTTP/1.1 chunked transfer encoding on the raw loopback socket — the
+        in-sandbox CLI's HTTP client consumes chunked bodies natively, and
+        the terminating ``0\\r\\n\\r\\n`` marks end-of-stream without a
+        Content-Length (unknowable up front). ``aiter_bytes`` (not
+        ``aiter_raw``) so httpx undoes any upstream ``Content-Encoding``
+        first — we do not forward that header, so forwarding still-compressed
+        raw bytes would corrupt the body. ``drain()`` after every chunk is
+        the whole point: it pushes each token delta to the CLI immediately.
+        """
+        writer.write(
+            f"HTTP/1.1 {resp.status_code} {resp.reason_phrase}\r\n"
+            f"Content-Type: {ctype}\r\n"
+            "Transfer-Encoding: chunked\r\n"
+            "Connection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        async for chunk in resp.aiter_bytes():
+            if not chunk:
+                continue
+            writer.write(f"{len(chunk):X}\r\n".encode() + chunk + b"\r\n")
+            await writer.drain()
+        writer.write(b"0\r\n\r\n")
         await writer.drain()
 
     async def stop(self) -> None:

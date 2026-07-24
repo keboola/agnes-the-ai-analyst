@@ -40,6 +40,24 @@ def test_config_json_internal_repo_embeds_token():
     assert "input" not in cfg  # Data Loader never configured on this platform
 
 
+def test_config_json_draft_uses_pinned_branch():
+    from src.data_apps.spec import build_config_json
+
+    row = {"repo_mode": "internal", "is_draft": True, "draft_branch": "init", "slug": "d--init"}
+    cfg = build_config_json(row, secrets={}, clone_url="http://app:8000/data-apps.git/d", clone_token="PAT")
+    assert cfg["dataApp"]["git"]["branch"] == "init"
+    assert cfg["dataApp"]["git"]["repository"].endswith("/data-apps.git/d")
+    assert cfg["dataApp"]["git"]["#password"] == "PAT"
+
+
+def test_config_json_prod_still_agnes_live():
+    from src.data_apps.spec import build_config_json
+
+    row = {"repo_mode": "internal", "slug": "d"}
+    cfg = build_config_json(row, secrets={}, clone_url="http://x/data-apps.git/d", clone_token="PAT")
+    assert cfg["dataApp"]["git"]["branch"] == "agnes-live"
+
+
 def test_container_spec_defaults_and_overrides():
     spec = build_container_spec(APP, defaults=DEFAULTS, data_dir="/data")
     assert spec["name"] == "agnes-dataapp-sales"

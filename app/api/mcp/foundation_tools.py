@@ -103,6 +103,13 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "data_app_get",
     "data_app_deploy",
     "data_app_logs",
+    # Wave 3B draft-iteration model (Task 8) — create/delete a draft copy of
+    # a prod app on an iteration branch, and mint a fresh git push credential.
+    # Triple-surface with /api/data-apps/{slug}/drafts* + /git-credential and
+    # `agnes app draft create/delete` + `agnes app git-credential`.
+    "data_app_create_draft",
+    "data_app_delete_draft",
+    "data_app_git_credential",
 )
 
 
@@ -1313,28 +1320,114 @@ def register_foundation_tools(
             return r.json()
 
     @mcp.tool()
-    async def data_app_deploy(slug: str, sha: str = "") -> dict:
+    async def data_app_deploy(slug: str, sha: str = "", mode: str = "") -> dict:
         """Deploy (or redeploy) a hosted data app — app owner or Admin only.
 
         Fast-forwards the app's ``agnes-live`` ref (to ``sha`` if given,
         otherwise the tracked branch's latest), mints a fresh service token,
-        and hands the build off to the runner sidecar.
+        and hands the build off to the runner sidecar. ``mode="dev"`` deploys
+        a draft app on its pinned iteration branch instead — a draft has no
+        ``agnes-live`` ref to fast-forward, so ``sha`` is ignored in that mode.
 
         Args:
-            slug: The app's slug.
+            slug: The app's slug (a prod app's slug, or a draft's own slug
+                  when ``mode="dev"``).
             sha:  Optional commit sha to deploy. Empty (default) fast-forwards
-                  to the tracked branch's latest commit.
+                  to the tracked branch's latest commit. Ignored for draft
+                  deploys.
+            mode: ``"dev"`` deploys a draft's branch; empty (default) deploys
+                  prod. A draft app rejects anything but ``mode="dev"``.
 
         Returns ``{"state": "running", "deployed_sha": "..."}``. Mirrors
         ``POST /api/data-apps/{slug}/deploy`` and ``agnes app deploy``.
         """
-        payload: dict = {"sha": sha} if sha else {}
+        payload: dict = {}
+        if sha:
+            payload["sha"] = sha
+        if mode:
+            payload["mode"] = mode
         async with httpx.AsyncClient() as c:
             r = await c.post(
                 f"{base_url}/api/data-apps/{slug}/deploy",
                 json=payload,
                 headers=headers_fn(),
                 timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_create_draft(slug: str, branch: str = "init") -> dict:
+        """Create a draft of a prod data app on an iteration branch — app owner or Admin only.
+
+        The draft shares the prod app's git repo (no second repo, no copy):
+        it is a registry sibling row pinned to ``branch`` on the parent's
+        repo, deployable with ``data_app_deploy(draft_slug, mode="dev")``.
+        Drafts are hidden from ``data_apps_list`` — reach them via the
+        parent's ``drafts`` field in ``data_app_get``.
+
+        Args:
+            slug:   The PROD app's slug (must not itself be a draft).
+            branch: Iteration branch name (default ``"init"``).
+
+        Returns ``{"id", "slug", "branch", "git_clone_url"}`` — the draft's
+        slug and a git push credential embedded in the clone URL. Mirrors
+        ``POST /api/data-apps/{slug}/drafts`` and ``agnes app draft create``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/data-apps/{slug}/drafts",
+                headers=headers_fn(),
+                json={"branch": branch},
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_delete_draft(slug: str, draft_slug: str) -> dict:
+        """Tear down a draft of a prod data app — app owner or Admin only.
+
+        Stops the draft's container, revokes its service token, deletes the
+        iteration branch on the parent's repo, and removes the draft's
+        registry row.
+
+        Args:
+            slug:       The PROD app's slug (the draft's parent).
+            draft_slug: The draft's own slug (from ``data_app_create_draft``
+                        or the parent's ``drafts`` field).
+
+        Returns ``{"status": "deleted"}``. Mirrors
+        ``DELETE /api/data-apps/{slug}/drafts/{draft_slug}`` and
+        ``agnes app draft delete``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.request(
+                "DELETE",
+                f"{base_url}/api/data-apps/{slug}/drafts/{draft_slug}",
+                headers=headers_fn(),
+                timeout=60,
+            )
+            r.raise_for_status()
+            return {"status": "deleted"}
+
+    @mcp.tool()
+    async def data_app_git_credential(slug: str) -> dict:
+        """Mint a fresh git push credential for a data app — app owner or Admin only.
+
+        Args:
+            slug: The app's slug (a prod app; drafts push through the same
+                  parent-repo credential minted here or at draft-create time).
+
+        Returns ``{"git_clone_url": "..."}`` with an embedded, time-scoped
+        push credential. Mirrors ``POST /api/data-apps/{slug}/git-credential``
+        and ``agnes app git-credential``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/data-apps/{slug}/git-credential",
+                headers=headers_fn(),
+                timeout=30,
             )
             r.raise_for_status()
             return r.json()

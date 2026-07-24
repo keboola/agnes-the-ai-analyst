@@ -35,7 +35,8 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
 from app.auth.access import can_access, is_user_admin
-from app.auth.pat_resolver import resolve_token_to_user
+from app.auth.jwt import verify_token
+from app.auth.pat_resolver import DATA_APP_GIT_SCOPE_PREFIX, resolve_token_to_user
 from app.instance_config import get_data_apps_config
 from app.marketplace_server.git_router import (
     _build_cgi_env,
@@ -114,14 +115,31 @@ async def _data_apps_git(slug: str, path: str, request: Request):
         `data_apps_repo()`, `is_user_admin`, and `can_access` each resolve
         the active backend themselves). Run via `run_in_threadpool` so this
         never lands on the shared event loop, same rationale as
-        `_marketplace_git._resolve_and_build_repo`."""
-        user, _reason = resolve_token_to_user(None, token)
+        `_marketplace_git._resolve_and_build_repo`.
+
+        `allow_data_app_git_scope=True` is what makes this the one surface a
+        `data-app-git:<slug>` credential (minted by
+        `app.api.data_apps._mint_git_credential`) can authenticate — every
+        other caller of `resolve_token_to_user` defaults to rejecting it.
+        Pinned further below: the scope's `<slug>` must match the repo being
+        requested, so a credential minted for one app can't be replayed
+        against another app's repo."""
+        user, _reason = resolve_token_to_user(None, token, allow_data_app_git_scope=True)
         if not user:
             return None, None, None
 
         app_row = data_apps_repo().get_by_slug(slug)
         if not app_row:
             return user, None, None
+
+        payload = verify_token(token) or {}
+        scope = payload.get("scope") or ""
+        if scope.startswith(DATA_APP_GIT_SCOPE_PREFIX) and scope[len(DATA_APP_GIT_SCOPE_PREFIX) :] != slug:
+            # Pin the credential to the app it was minted for — a
+            # `data-app-git:other-app` token must not authenticate against
+            # this app's repo even though it otherwise resolved to a valid
+            # user.
+            return user, app_row, False
 
         is_owner = user.get("id") == app_row.get("owner_user_id")
         admin = is_user_admin(user["id"])

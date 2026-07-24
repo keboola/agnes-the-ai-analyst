@@ -33,6 +33,26 @@ class TestCreateAndRead:
         assert repo.get_by_slug("nope") is None
 
 
+class TestDrafts:
+    def test_create_draft_and_list(self, repo):
+        parent = repo.create(slug="dash", name="Dash", owner_user_id="u1")
+        did = repo.create_draft(parent_app_id=parent, slug="dash--init", branch="init", owner_user_id="u1")
+        assert did.startswith("app_")
+        d = repo.get(did)
+        assert d["is_draft"] is True
+        assert d["parent_app_id"] == parent
+        assert d["draft_branch"] == "init"
+        assert [r["id"] for r in repo.list_drafts(parent)] == [did]
+
+    def test_list_excludes_drafts_when_asked(self, repo):
+        p = repo.create(slug="p", name="P", owner_user_id="u1")
+        repo.create_draft(parent_app_id=p, slug="p--x", branch="x", owner_user_id="u1")
+        slugs_all = {r["slug"] for r in repo.list()}
+        slugs_prod = {r["slug"] for r in repo.list(include_drafts=False)}
+        assert "p--x" in slugs_all and "p--x" not in slugs_prod
+        assert "p" in slugs_prod
+
+
 class TestLifecycle:
     def test_state_and_deploy(self, repo):
         aid = repo.create(slug="s", name="S", owner_user_id="u1")
