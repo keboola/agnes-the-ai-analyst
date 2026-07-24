@@ -1013,12 +1013,14 @@ may view; only owner or Admin may mutate. Gated behind
 CLI: `agnes app list/show/create/deploy/stop/delete/logs`. MCP tools (list/
 show/deploy/logs, matching the view-vs-mutate RBAC split above):
 `data_apps_list`, `data_app_get`, `data_app_deploy`, `data_app_logs` — no
-MCP analogue for create/stop/delete/secrets/reap-idle.
+MCP analogue for create/stop/delete/secrets/reap-idle/git-credential/drafts.
 
 - /api/data-apps
 - /api/data-apps/reap-idle
 - /api/data-apps/{slug}
 - /api/data-apps/{slug}/deploy
+- /api/data-apps/{slug}/drafts
+- /api/data-apps/{slug}/git-credential
 - /api/data-apps/{slug}/logs
 - /api/data-apps/{slug}/readiness
 - /api/data-apps/{slug}/secrets
@@ -1032,6 +1034,17 @@ A dead/erroring sidecar sets the app's state to `error` and returns 502
 `runner_unavailable`. `POST /reap-idle` is `require_admin`-gated (the
 scheduler's shared-secret token resolves to a synthetic Admin user) and
 stops any `running` app idle longer than its own `idle_timeout_s`.
+
+`POST /{slug}/git-credential` mints a 24h-scoped PAT (`data-app-git:<slug>`)
+for an AI-authoring session and returns it embedded in a `git+https` clone
+URL, so an agent can push to the app's internal repo without a standing
+credential. `POST /{slug}/drafts` (wave 3B AI-authoring flow) creates a
+draft copy of a prod app on a new git branch — `ensure_branch` creates the
+branch on the *parent's* repo (a draft has no repo of its own, just a
+`data_apps` row with `is_draft=True` and `parent_app_id` set), and the
+returned `git_clone_url` is minted against that same parent repo. Drafts
+are excluded from `GET /api/data-apps`'s default listing and cannot
+themselves be drafted from (400 `parent_is_draft`).
 
 ### `/api/data-packages` — Public data packages
 

@@ -1092,3 +1092,18 @@ class TestGitCredential:
 
         now = datetime.now(timezone.utc)
         assert now < expires_at <= now + timedelta(hours=24, minutes=1)
+
+
+class TestDrafts:
+    def test_create_draft(self, client_as_user, seeded_repo_with_commit):
+        r = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"})
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["branch"] == "init"
+        assert body["slug"].startswith("sapp--")
+        assert "/data-apps.git/sapp" in body["git_clone_url"]
+
+    def test_draft_of_draft_rejected(self, client_as_user, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "a"}).json()
+        r = client_as_user.post(f"/api/data-apps/{d['slug']}/drafts", json={"branch": "b"})
+        assert r.status_code == 400 and r.json()["detail"] == "parent_is_draft"

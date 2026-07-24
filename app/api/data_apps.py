@@ -38,6 +38,7 @@ import hashlib
 import json
 import logging
 import os
+import re as _re
 import shutil
 import time
 import uuid
@@ -62,6 +63,12 @@ from src.repositories import access_token_repo, audit_repo, data_apps_repo, user
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/data-apps", tags=["data-apps"])
+
+# Branch names accepted by `POST /{slug}/drafts` — a conservative git
+# ref-component charset (lowercase alnum + `.` `_` `/` `-`), not the full
+# git-check-ref-format grammar; good enough to reject shell/path-hostile
+# input before it reaches `ensure_branch`'s `update-ref` call.
+_BRANCH_RE = _re.compile(r"^[a-z0-9][a-z0-9._/-]{0,60}$")
 
 # idle_timeout_s clamp — 5 minutes .. 24 hours. Prevents an accidental 0/huge
 # value from either reaping an app instantly or never reaping it at all.
@@ -439,6 +446,23 @@ class SecretsRequest(BaseModel):
     secrets: dict[str, str] = {}
 
 
+class CreateDraftRequest(BaseModel):
+    branch: str = "init"
+
+
+def _draft_slug(parent_slug: str, branch: str) -> str:
+    """Derive the draft's own slug from its parent + branch:
+    ``<parent>--<branch>``, lowercased, non-``SLUG_RE`` characters folded to
+    ``-``, truncated to 40 chars. Raises 400 ``invalid_slug`` if the result
+    still fails ``SLUG_RE`` (e.g. an all-symbol branch name collapsing to
+    nothing usable, or a leading/trailing ``-`` after truncation)."""
+    raw = f"{parent_slug}--{branch}".lower()
+    cleaned = _re.sub(r"[^a-z0-9-]", "-", raw)[:40].strip("-")
+    if not SLUG_RE.match(cleaned):
+        raise HTTPException(status_code=400, detail="invalid_slug")
+    return cleaned
+
+
 @router.get("")
 async def list_data_apps(user: dict = Depends(get_current_user)):
     _feature_gate()
@@ -579,6 +603,63 @@ async def mint_git_credential(
         raise HTTPException(status_code=500, detail="owner_not_found")
     _audit(conn, user["id"], "data_app.git_credential", f"data_app:{slug}", {})
     return {"git_clone_url": url}
+
+
+@router.post("/{slug}/drafts", status_code=201)
+async def create_draft(
+    slug: str,
+    payload: CreateDraftRequest,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Create a draft copy of the prod app ``slug`` on ``payload.branch``.
+
+    The draft row (Task 1's ``create_draft``) is a full ``data_apps`` row
+    with ``is_draft=True`` and ``parent_app_id`` pointing at the prod app —
+    it is deployed/stopped/deleted like any other app, just excluded from
+    the default list (Task 6). ``ensure_branch`` (Task 2) creates the
+    branch on the *prod* app's git repo (drafts don't get their own repo —
+    they're a ref + a registry row layered on top of the parent's); the
+    git credential handed back is likewise minted against the parent
+    (``_mint_git_credential(parent)``), since that's the repo the branch —
+    and thus any push — actually lives in.
+    """
+    _feature_gate()
+    parent = _get_row_or_404(slug)
+    _require_owner_or_admin(user, parent)
+    if parent.get("is_draft"):
+        raise HTTPException(status_code=400, detail="parent_is_draft")
+    if not _BRANCH_RE.match(payload.branch):
+        raise HTTPException(status_code=400, detail="invalid_branch")
+    draft_slug = _draft_slug(slug, payload.branch)
+
+    from src.data_apps.git_repos import ensure_branch
+
+    try:
+        ensure_branch(slug, payload.branch, base="main")
+    except ValueError:
+        raise HTTPException(status_code=409, detail="parent_has_no_main")
+
+    repo = data_apps_repo()
+    try:
+        draft_id = repo.create_draft(
+            parent_app_id=parent["id"],
+            slug=draft_slug,
+            branch=payload.branch,
+            owner_user_id=parent["owner_user_id"],
+        )
+    except duckdb.ConstraintException:
+        raise HTTPException(status_code=409, detail="slug_exists")
+
+    git_url = _mint_git_credential(parent)  # push credential is against the PROD repo
+    _audit(
+        conn,
+        user["id"],
+        "data_app.draft_create",
+        f"data_app:{draft_slug}",
+        {"parent": slug, "branch": payload.branch},
+    )
+    return {"id": draft_id, "slug": draft_slug, "branch": payload.branch, "git_clone_url": git_url}
 
 
 @router.post("/{slug}/stop")

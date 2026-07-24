@@ -403,6 +403,18 @@ _EXEMPT: dict[str, str] = {
     "/api/data-apps/{slug}/stop": _DATA_APPS_REASON,
     "/api/data-apps/{slug}/secrets": _DATA_APPS_SECRETS_REASON,
     "/api/data-apps/{slug}/readiness": _DATA_APPS_READINESS_REASON,
+    "/api/data-apps/{slug}/git-credential": (
+        "wave 3B AI-authoring flow — mints a 24h-scoped git push PAT for an "
+        "authoring agent session (`_mint_git_credential`); no CLI/MCP "
+        "analogue (an interactive `agnes` user already has git access via "
+        "the internal repo clone, this is for the in-container agent)"
+    ),
+    "/api/data-apps/{slug}/drafts": (
+        "wave 3B AI-authoring flow — creates a draft branch+row of a prod "
+        "app for the dataapp-developer skill to iterate on; no CLI/MCP "
+        "analogue planned yet (authoring happens inside the hosted app's "
+        "own agent session, not from the analyst's `agnes` CLI)"
+    ),
     # reap-idle is a scheduler-triggered admin maintenance op (Task 9) —
     # mirrors the run-knowledge-digests/run-corporate-memory exemptions
     # regardless of the CLI/MCP question above; no analyst CLI/MCP analogue.
