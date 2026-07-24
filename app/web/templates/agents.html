@@ -138,7 +138,7 @@
 {% endblock %}
 
 {% block page_head %}
-<div class="ag-head">
+<div class="ag-head" id="ag-page-head">
   <div>
     <h1>Agents <span class="ag-wip">WIP</span></h1>
     <p class="lede">Build a focused assistant out of your stack — grounded in the data and memory you already have access to, with the plugins you choose. Everything here respects your existing permissions.</p>
@@ -228,7 +228,17 @@
       : '<span class="ag-status ag-status--draft">○ Draft</span>';
   }
 
+  var pageHead = document.getElementById('ag-page-head');
+  // Collapse the whole .idx-head band (not just its content) so the builder
+  // view doesn't leave an empty grey strip above the white surface band.
+  var pageHeadBand = pageHead ? pageHead.closest('.idx-head') : null;
+  function setPageHead(show) {
+    if (pageHead) pageHead.hidden = !show;
+    if (pageHeadBand) pageHeadBand.hidden = !show;
+  }
+
   function renderList() {
+    setPageHead(true);
     builderView.hidden = true;
     listView.hidden = false;
     if (!agents.length) {
@@ -390,6 +400,7 @@
   function renderBuilder() {
     var a = current();
     if (!a) { renderList(); return; }
+    setPageHead(false);
     listView.hidden = true;
     builderView.hidden = false;
     var sn = Object.keys(a.surfaces).filter(function (k) { return a.surfaces[k]; }).length;
