@@ -2166,7 +2166,7 @@ async def data_apps_list_page(
     apps: list[dict] = []
     if enabled:
         u_repo = users_repo()
-        rows = [r for r in data_apps_repo().list() if _can_view(user, r)]
+        rows = [r for r in data_apps_repo().list(include_drafts=False) if _can_view(user, r)]
         for row in rows:
             serialized = _serialize(row, cfg)
             owner = u_repo.get_by_id(row["owner_user_id"])

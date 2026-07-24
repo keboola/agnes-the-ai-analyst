@@ -3,17 +3,25 @@
 Consumes the control-plane REST surface documented in
 ``app/api/data_apps.py`` (Task 7 of the data-apps platform plan):
 
-  - ``list``           GET    /api/data-apps
-  - ``show <slug>``    GET    /api/data-apps/{slug}
-  - ``create``         POST   /api/data-apps
-  - ``deploy <slug>``  POST   /api/data-apps/{slug}/deploy
-  - ``logs <slug>``    GET    /api/data-apps/{slug}/logs
-  - ``open <slug>``    GET    /api/data-apps/{slug}          (prints url only)
-  - ``stop <slug>``    POST   /api/data-apps/{slug}/stop
-  - ``delete <slug>``  DELETE /api/data-apps/{slug}
+  - ``list``                          GET    /api/data-apps
+  - ``show <slug>``                   GET    /api/data-apps/{slug}
+  - ``create``                        POST   /api/data-apps
+  - ``deploy <slug> [--mode dev]``    POST   /api/data-apps/{slug}/deploy
+  - ``git-credential <slug>``         POST   /api/data-apps/{slug}/git-credential
+  - ``draft create <slug>``           POST   /api/data-apps/{slug}/drafts
+  - ``draft delete <slug> <draft>``   DELETE /api/data-apps/{slug}/drafts/{draft_slug}
+  - ``logs <slug>``                   GET    /api/data-apps/{slug}/logs
+  - ``open <slug>``                   GET    /api/data-apps/{slug}          (prints url only)
+  - ``stop <slug>``                   POST   /api/data-apps/{slug}/stop
+  - ``delete <slug>``                 DELETE /api/data-apps/{slug}
 
 ``open`` is deliberately print-only — no browser launch — so headless
 environments (CI, remote shells) behave identically to a desktop one.
+
+``draft create``/``draft delete``/``git-credential`` are wave 3B's
+draft-iteration surface (Task 8) — a draft shares its prod parent's git
+repo (a registry sibling row pinned to an iteration branch, not a copy);
+deploy it with ``agnes app deploy <draft_slug> --mode dev``.
 
 Secrets management (``PUT /api/data-apps/{slug}/secrets``) and the
 admin/scheduler-only ``POST /api/data-apps/reap-idle`` have no CLI command;
@@ -52,6 +60,15 @@ _ERROR_MESSAGES = {
     "forbidden": "You don't have access to this data app.",
     "data_app_not_found": "Data app not found.",
     "owner_not_found": "The app's owner account no longer exists on the server.",
+    # Wave 3B draft-iteration model (Task 8).
+    "parent_is_draft": "This app is itself a draft — drafts can't have their own drafts. Create the draft from the prod app instead.",
+    "invalid_branch": "Invalid branch name — use lowercase letters, numbers, dots, underscores, and hyphens only.",
+    "dev_requires_draft": "--mode dev only deploys draft apps. Deploy the prod app without --mode, or target the draft's own slug.",
+    "prod_on_draft": "This app is a draft — deploy it with --mode dev (drafts have no prod ref to fast-forward).",
+    "not_a_draft": "That slug isn't a draft of this app.",
+    "parent_has_no_main": "This app's repo has no `main` branch yet — push something before creating a draft.",
+    "parent_not_found": "This draft's parent app no longer exists on the server.",
+    "path_not_allowed": "That path isn't reachable from here.",
 }
 
 
@@ -189,12 +206,22 @@ def deploy_app(
     sha: Optional[str] = typer.Option(
         None, "--sha", help="Deploy this commit sha (default: fast-forward to the tracked branch's latest)"
     ),
+    mode: Optional[str] = typer.Option(
+        None, "--mode", help="'dev' deploys a draft's pinned branch (default: deploy prod)"
+    ),
     json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
 ):
-    """Deploy (or redeploy) an app — fast-forwards ``agnes-live`` and hands off to the runner."""
+    """Deploy (or redeploy) an app — fast-forwards ``agnes-live`` and hands off to the runner.
+
+    ``--mode dev`` deploys a draft app on its pinned iteration branch instead
+    (no ``agnes-live`` ref to fast-forward, so ``--sha`` is ignored for a
+    draft's own slug).
+    """
     payload: dict = {}
     if sha:
         payload["sha"] = sha
+    if mode:
+        payload["mode"] = mode
 
     resp = api_post(f"/api/data-apps/{slug}/deploy", json=payload)
     if resp.status_code == 404:
@@ -208,6 +235,80 @@ def deploy_app(
         return
 
     typer.echo(f"State: {body.get('state', '')}  deployed_sha={body.get('deployed_sha', '')}")
+
+
+# ---------------------------------------------------------------------------
+# git-credential
+# ---------------------------------------------------------------------------
+
+
+@data_apps_app.command("git-credential")
+def git_credential(
+    slug: str = typer.Argument(..., help="App slug"),
+    json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
+):
+    """Mint a fresh git push credential (clone URL) for an app (owner/Admin)."""
+    resp = api_post(f"/api/data-apps/{slug}/git-credential")
+    if resp.status_code == 404:
+        _not_found(slug)
+    if resp.status_code != 200:
+        _fail(resp)
+
+    body = resp.json()
+    if json:
+        typer.echo(json_lib.dumps(body, indent=2, default=str))
+        return
+
+    typer.echo(body.get("git_clone_url", ""))
+
+
+# ---------------------------------------------------------------------------
+# draft (sub-group)
+# ---------------------------------------------------------------------------
+
+draft_app = typer.Typer(help="Manage data-app drafts")
+data_apps_app.add_typer(draft_app, name="draft")
+
+
+@draft_app.command("create")
+def draft_create(
+    slug: str = typer.Argument(..., help="PROD app slug"),
+    branch: str = typer.Option("init", "--branch", help="Iteration branch name"),
+    json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
+):
+    """Create a draft of a prod app on an iteration branch (owner/Admin).
+
+    The draft shares the prod app's git repo — no second repo, no copy.
+    Deploy it with ``agnes app deploy <draft_slug> --mode dev``.
+    """
+    resp = api_post(f"/api/data-apps/{slug}/drafts", json={"branch": branch})
+    if resp.status_code == 404:
+        _not_found(slug)
+    if resp.status_code != 201:
+        _fail(resp)
+
+    body = resp.json()
+    if json:
+        typer.echo(json_lib.dumps(body, indent=2, default=str))
+        return
+
+    typer.echo(f"Created draft: slug={body.get('slug', '')}  branch={body.get('branch', branch)}")
+    typer.echo(f"Git URL: {body.get('git_clone_url', '')}")
+
+
+@draft_app.command("delete")
+def draft_delete(
+    slug: str = typer.Argument(..., help="PROD app slug (the draft's parent)"),
+    draft_slug: str = typer.Argument(..., help="Draft's own slug"),
+):
+    """Tear down a draft of a prod app (owner/Admin)."""
+    resp = api_delete(f"/api/data-apps/{slug}/drafts/{draft_slug}")
+    if resp.status_code == 404:
+        _not_found(draft_slug)
+    if resp.status_code != 204:
+        _fail(resp)
+
+    typer.echo(f"Deleted draft {draft_slug}")
 
 
 # ---------------------------------------------------------------------------

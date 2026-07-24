@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 98
+SCHEMA_VERSION = 99
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -75,6 +75,9 @@ CREATE TABLE IF NOT EXISTS data_apps (
     idle_timeout_s  INTEGER DEFAULT 1800,
     sleep_mode      VARCHAR DEFAULT 'recreate',
     service_token_id VARCHAR DEFAULT '',
+    parent_app_id   VARCHAR DEFAULT '',
+    is_draft        BOOLEAN DEFAULT FALSE,
+    draft_branch    VARCHAR DEFAULT '',
     last_request_at TIMESTAMP,
     last_deploy_at  TIMESTAMP,
     created_at      TIMESTAMP DEFAULT current_timestamp,
@@ -6507,6 +6510,18 @@ def _v97_to_v98(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 98")
 
 
+def _v98_to_v99(conn: duckdb.DuckDBPyConnection) -> None:
+    """v98→v99: data_apps draft model — parent_app_id, is_draft, draft_branch."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('data_apps')").fetchall()}
+    if "parent_app_id" not in cols:
+        conn.execute("ALTER TABLE data_apps ADD COLUMN parent_app_id VARCHAR DEFAULT ''")
+    if "is_draft" not in cols:
+        conn.execute("ALTER TABLE data_apps ADD COLUMN is_draft BOOLEAN DEFAULT FALSE")
+    if "draft_branch" not in cols:
+        conn.execute("ALTER TABLE data_apps ADD COLUMN draft_branch VARCHAR DEFAULT ''")
+    conn.execute("UPDATE schema_version SET version = 99")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6907,6 +6922,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # restart-invariant sandbox reuse). _SYSTEM_SCHEMA already
             # declares it on fresh installs (no-op ALTER here).
             _v97_to_v98(conn)
+            # v98→v99: data_apps draft model (parent_app_id, is_draft,
+            # draft_branch). _SYSTEM_SCHEMA already declares the columns on
+            # fresh installs (no-op ALTER here).
+            _v98_to_v99(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7156,6 +7175,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v96_to_v97(conn)
             if current < 98:
                 _v97_to_v98(conn)
+            if current < 99:
+                _v98_to_v99(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

@@ -119,7 +119,12 @@ class DataAppsPgRepository:
         return dict(row) if row else None
 
     def list(
-        self, *, owner_user_id: Optional[str] = None, state: Optional[str] = None, limit: int = 1000
+        self,
+        *,
+        owner_user_id: Optional[str] = None,
+        state: Optional[str] = None,
+        include_drafts: bool = True,
+        limit: int = 1000,
     ) -> List[Dict[str, Any]]:
         clauses: List[str] = []
         params: Dict[str, Any] = {"limit": limit}
@@ -129,12 +134,69 @@ class DataAppsPgRepository:
         if state is not None:
             clauses.append("state = :state")
             params["state"] = state
+        if not include_drafts:
+            clauses.append("is_draft = false")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         with self._engine.connect() as conn:
             rows = (
                 conn.execute(
                     sa.text(f"SELECT * FROM data_apps {where} ORDER BY created_at DESC LIMIT :limit"),
                     params,
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+
+    def create_draft(
+        self,
+        *,
+        parent_app_id: str,
+        slug: str,
+        branch: str,
+        owner_user_id: str,
+        idle_timeout_s: int = 1800,
+        sleep_mode: str = "recreate",
+    ) -> str:
+        """Insert a draft copy of ``parent_app_id``; returns the new app id.
+
+        Mirrors ``DataAppsRepository.create_draft``.
+        """
+        app_id = "app_" + uuid4().hex[:12]
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    """
+                    INSERT INTO data_apps
+                      (id, slug, name, owner_user_id, repo_mode, parent_app_id, is_draft,
+                       draft_branch, idle_timeout_s, sleep_mode)
+                    VALUES
+                      (:id, :slug, :name, :owner_user_id, 'internal', :parent_app_id, true,
+                       :draft_branch, :idle_timeout_s, :sleep_mode)
+                    """
+                ),
+                {
+                    "id": app_id,
+                    "slug": slug,
+                    "name": f"{slug} (draft)",
+                    "owner_user_id": owner_user_id,
+                    "parent_app_id": parent_app_id,
+                    "draft_branch": branch,
+                    "idle_timeout_s": idle_timeout_s,
+                    "sleep_mode": sleep_mode,
+                },
+            )
+        return app_id
+
+    def list_drafts(self, parent_app_id: str) -> List[Dict[str, Any]]:
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    sa.text(
+                        "SELECT * FROM data_apps WHERE parent_app_id = :parent_app_id "
+                        "AND is_draft = true ORDER BY created_at DESC"
+                    ),
+                    {"parent_app_id": parent_app_id},
                 )
                 .mappings()
                 .all()
