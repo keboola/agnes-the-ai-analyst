@@ -246,13 +246,38 @@ def _stdin_texts(handle: FakeHandle) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_takeover_claims_lease_destroys_old_spawns_fresh_replays_context(two_gateways, monkeypatch):
+def test_takeover_claims_lease_destroys_old_spawns_fresh_restores_context(two_gateways, monkeypatch):
     """Session owned by gateway A (lease held, in A's _live); a connect
     lands on gateway B → B claims the lease, destroys A's old sandbox,
-    spawns exactly one fresh runner, and replays recent turn context."""
+    spawns exactly one fresh runner, and uploads the restored-conversation
+    transcript for it (full history via system prompt — the old
+    replay-3-user-turns-over-stdin path is gone)."""
     mgr_a, mgr_b, provider = two_gateways
     fake_tickets = _FakeTicketRepo()
     monkeypatch.setattr(manager_mod, "ticket_repo", lambda: fake_tickets)
+
+    # Capture the takeover spawn's context upload: attach a fake E2B sandbox
+    # to every handle B spawns so _spawn_runner's sync branch runs.
+    from unittest.mock import AsyncMock, MagicMock
+
+    context_writes: list[tuple[str, object]] = []
+    orig_spawn_b = mgr_b._provider.spawn
+
+    async def _spawn_with_sandbox(**kw):
+        handle = await orig_spawn_b(**kw)
+        sb = MagicMock()
+        sb.files = MagicMock()
+
+        async def _write(path, data):
+            context_writes.append((path, data))
+
+        sb.files.write = AsyncMock(side_effect=_write)
+        sb.commands = MagicMock()
+        sb.commands.run = AsyncMock()
+        handle._sandbox = sb
+        return handle
+
+    mgr_b._provider.spawn = _spawn_with_sandbox
 
     # Spy on provider.resume — the runner-protocol ticket guard means a
     # foreign takeover must NEVER attempt to reconnect the old runner.
@@ -311,8 +336,16 @@ def test_takeover_claims_lease_destroys_old_spawns_fresh_replays_context(two_gat
         assert chat_id in fake_tickets.revoked
         assert len(fake_tickets.minted) > tickets_before_takeover
 
-        # Recent turn context was replayed onto B's fresh runner's stdin.
-        assert "hello before takeover" in _stdin_texts(handle_b)
+        # Continuity travels as the restored-context transcript uploaded to
+        # the fresh sandbox — NOT as raw user_msg frames on stdin (each of
+        # which ran a full LLM turn and dropped all assistant context).
+        from app.chat.e2b_workspace_sync import SANDBOX_CONTEXT_RESTORE
+
+        ctx = [d for p, d in context_writes if p == SANDBOX_CONTEXT_RESTORE]
+        assert ctx, f"expected a restore-context upload; writes: {[p for p, _ in context_writes]}"
+        assert "hello before takeover" in str(ctx[0])
+        assert "Restored conversation context" in str(ctx[0])
+        assert "hello before takeover" not in _stdin_texts(handle_b)
 
         await mgr_b.kill(chat_id, reason="test_done")
 
@@ -874,7 +907,11 @@ def test_takeover_seeds_inbound_cursor_skips_retained_entries(two_gateways, monk
         # ...and the retained "m1" was NOT re-delivered from the stream —
         # it reaches B's fresh runner exactly once, via _respawn_fresh's
         # persisted-history replay.
-        assert _stdin_texts(handle_b).count("m1") == 1, f"retained stream entry re-delivered: {_stdin_texts(handle_b)}"
+        # With the stdin history replay gone (continuity now travels as the
+        # restored-context transcript), a correctly seeded cursor means the
+        # retained stream entry is never delivered at all — a count of 1
+        # here would mean the stale "m1" leaked through.
+        assert _stdin_texts(handle_b).count("m1") == 0, f"retained stream entry re-delivered: {_stdin_texts(handle_b)}"
 
         # A message published AFTER the takeover IS delivered.
         await inbound_mod.publish_inbound(chat_id, "after-takeover")

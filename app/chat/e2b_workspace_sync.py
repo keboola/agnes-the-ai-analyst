@@ -102,6 +102,16 @@ def _sandbox_path_for(local_path: Path, local_root: Path) -> str:
 # the host at session end.
 SANDBOX_WORKSPACE_TARBALL = "/tmp/agnes-workspace.tar.gz"
 
+# Restored-conversation transcript for a FRESH sandbox of a chat that already
+# has history (crash respawn, post-restart resume-legacy, cross-gateway
+# takeover). The manager builds it from persisted chat_messages and uploads
+# it before the workspace push; the runner appends it to the agent's system
+# prompt at boot. Outside /work so it never syncs back into the user's
+# workspace. Replaces the old replay-3-raw-user-turns-over-stdin approach,
+# which dropped all assistant/tool context AND burned one LLM turn per
+# replayed message.
+SANDBOX_CONTEXT_RESTORE = "/tmp/agnes-context.md"
+
 # Sentinel written after the workspace tree is fully in place under /work.
 # The runner process starts BEFORE the workspace upload finishes (provider
 # .spawn launches it), so it waits on this sentinel before spawning the agent

@@ -14,6 +14,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- **Cloud-chat conversations survive a sandbox respawn with FULL context.**
+  A fresh sandbox for a chat with history (crash respawn, post-restart
+  spawn, cross-gateway takeover) previously replayed only the last 3 raw
+  user messages over stdin — dropping every assistant answer and tool
+  result (the agent lost the thread of its own analysis) and burning one
+  full LLM turn per replayed message. The manager now uploads a bounded
+  restored-conversation transcript (user + assistant turns, newest-first
+  under a character budget; departed co-session participants' turns still
+  omitted per SR-11) and the runner appends it to the agent's system
+  prompt at boot.
+
 ### Fixed
 
 ### Removed

@@ -1266,19 +1266,12 @@ class ChatManager:
         self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
         await self._push_ticket_frame(live)
         await self._broadcast(live, {"type": "ready"})
-        # Replay last 3 user turns.
-        history = self._repo.list_messages(live.chat_id)[-3:]
-        live_emails = set(live.participant_emails) or {live.user_email}
-        for msg in history:
-            if msg.role != "user":
-                continue
-            author = getattr(msg, "sender_email", None) or live.user_email
-            if live.participant_emails and author not in live_emails:
-                continue
-            payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
-            async with live._stdin_lock:
-                new_handle.stdin.write(payload.encode("utf-8"))
-                await new_handle.stdin.drain()
+        # Conversation continuity for the fresh runner now travels as a
+        # restored-context transcript uploaded in _spawn_runner (see
+        # _build_restore_context) — full user+assistant history appended
+        # to the agent's system prompt, instead of replaying the last 3
+        # raw user messages over stdin (which dropped assistant/tool
+        # context and ran one full LLM turn per replayed message).
         old_pump = live.current_pump
         if old_pump is not None and not old_pump.done():
             old_pump.cancel()
@@ -1512,6 +1505,71 @@ class ChatManager:
         # entirely — left unstamped, per the additive/back-compat contract.
         await sink.send_json(stamp_frame(chat_id, {"type": "ready"}))
 
+    # Per-message and total character budgets for the restored-conversation
+    # transcript. Generous enough to carry a real working session, bounded so
+    # a long chat cannot blow the agent's context window before the first new
+    # message. Newest messages win when the budget bites.
+    _RESTORE_MSG_CHAR_CAP = 4000
+    _RESTORE_TOTAL_CHAR_CAP = 24000
+
+    def _build_restore_context(self, session: "ChatSession") -> Optional[str]:
+        """Markdown transcript of the persisted conversation for a FRESH sandbox.
+
+        Uploaded at spawn (``_spawn_runner``) and appended to the agent's
+        system prompt by the runner, so a crash respawn / post-restart spawn /
+        takeover keeps the conversation coherent — including ASSISTANT turns,
+        which the old replay-3-user-messages-over-stdin approach dropped
+        entirely (an answer that depended on an earlier tool result silently
+        lost its grounding).
+
+        SR-11: user turns authored by a departed co-session participant are
+        omitted, mirroring the old replay filter. Assistant turns stay — they
+        were already visible to every remaining participant.
+
+        Returns ``None`` when there is nothing to restore (fresh session).
+        """
+        msgs = self._repo.list_messages(session.id)
+        if not msgs:
+            return None
+        allowed: Optional[set[str]] = None
+        if session.is_co_session:
+            parts = self._repo.get_session_participants(session.id)
+            allowed = {p.user_email for p in parts if p.left_at is None}
+        blocks: list[str] = []
+        total = 0
+        # Accumulate newest-first under the budget, then restore order.
+        for msg in reversed(msgs):
+            if msg.role == "user":
+                author = getattr(msg, "sender_email", None) or session.user_email
+                if allowed is not None and author not in allowed:
+                    continue  # SR-11: departed participant's turn
+                label = f"User ({author})" if session.is_co_session else "User"
+            elif msg.role == "assistant":
+                label = "Assistant"
+            else:
+                continue
+            content = (msg.content or "").strip()
+            if not content:
+                continue
+            if len(content) > self._RESTORE_MSG_CHAR_CAP:
+                content = content[: self._RESTORE_MSG_CHAR_CAP] + "\n…[truncated]"
+            block = f"**{label}:**\n{content}"
+            if total + len(block) > self._RESTORE_TOTAL_CHAR_CAP and blocks:
+                break
+            total += len(block)
+            blocks.append(block)
+        if not blocks:
+            return None
+        blocks.reverse()
+        header = (
+            "## Restored conversation context\n\n"
+            "The sandbox for this chat was restarted; the transcript below is "
+            "the persisted history of this conversation, restored for "
+            "continuity. Treat it strictly as prior context — do NOT re-answer "
+            "or re-execute anything in it; respond only to new messages.\n\n"
+        )
+        return header + "\n\n".join(blocks) + "\n"
+
     async def _spawn_runner(self, session: ChatSession, session_dir: Path):
         from app.auth.access import mint_session_jwt, mint_co_session_jwt
         from app.chat.e2b_workspace_sync import SANDBOX_WORKSPACE_READY
@@ -1603,6 +1661,7 @@ class ChatManager:
         # locally and push it after spawn — Q1's full-push strategy.
         if not getattr(self._provider, "syncs_workspace", False):
             from app.chat.e2b_workspace_sync import (
+                SANDBOX_CONTEXT_RESTORE,
                 WorkspaceTooLarge,
                 upload_agnes_wheel,
                 upload_workspace,
@@ -1623,6 +1682,25 @@ class ChatManager:
                 except Exception:
                     logger.exception(
                         "agnes wheel upload failed; `agnes` CLI will be absent in sandbox for session %s",
+                        session.id,
+                    )
+                # Restored-conversation transcript for a fresh sandbox of a
+                # chat that already has history (crash respawn, post-restart
+                # spawn, takeover): the runner appends it to the agent's
+                # system prompt at boot, restoring FULL context — user AND
+                # assistant turns — where the old stdin replay carried only
+                # the last 3 user messages (and ran one LLM turn per message).
+                # Best-effort: a failed upload degrades to a context-free
+                # fresh session, never a blocked spawn. Must land before the
+                # workspace push so the workspace-ready sentinel (which gates
+                # the agent-CLI boot) also guarantees this file.
+                try:
+                    context_md = self._build_restore_context(session)
+                    if context_md:
+                        await sandbox.files.write(SANDBOX_CONTEXT_RESTORE, context_md)
+                except Exception:
+                    logger.exception(
+                        "restore-context upload failed for %s — respawned runner starts without prior context",
                         session.id,
                     )
                 try:
@@ -1876,23 +1954,12 @@ class ChatManager:
             self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
             await self._push_ticket_frame(live)
             await self._broadcast(live, {"type": "ready"})
-            # Replay last 3 user turns into the new subprocess.
-            # SR-11: for co-sessions, skip turns authored by a departed
-            # participant and carry sender_email so the runner sees
-            # who sent each message.
-            history = self._repo.list_messages(live.chat_id)[-3:]
-            live_emails = set(live.participant_emails) or {live.user_email}
-            for msg in history:
-                if msg.role != "user":
-                    continue
-                author = getattr(msg, "sender_email", None) or live.user_email
-                # SR-11: do not replay a departed participant's turn
-                if live.participant_emails and author not in live_emails:
-                    continue
-                payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
-                async with live._stdin_lock:
-                    new_handle.stdin.write(payload.encode("utf-8"))
-                    await new_handle.stdin.drain()
+            # Conversation continuity for the fresh runner now travels as a
+            # restored-context transcript uploaded in _spawn_runner (see
+            # _build_restore_context) — full user+assistant history appended
+            # to the agent's system prompt, instead of replaying the last 3
+            # raw user messages over stdin (which dropped assistant/tool
+            # context and ran one full LLM turn per replayed message).
             # Replace (not append) the per-session pump task so the task
             # list does not grow unboundedly across crash respawns.  The old
             # pump returned on EOF; cancel it for hygiene, then drop it from
@@ -2374,19 +2441,12 @@ class ChatManager:
         self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
         await self._push_ticket_frame(live)
         await self._broadcast(live, {"type": "ready"})
-        # Replay last 3 user turns skipping departed participants (SR-11).
-        history = self._repo.list_messages(live.chat_id)[-3:]
-        live_emails = set(live.participant_emails) or {live.user_email}
-        for msg in history:
-            if msg.role != "user":
-                continue
-            author = getattr(msg, "sender_email", None) or live.user_email
-            if author not in live_emails:
-                continue  # SR-11: do not replay a departed participant's turn
-            payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
-            async with live._stdin_lock:
-                new_handle.stdin.write(payload.encode("utf-8"))
-                await new_handle.stdin.drain()
+        # Conversation continuity for the fresh runner now travels as a
+        # restored-context transcript uploaded in _spawn_runner (see
+        # _build_restore_context) — full user+assistant history appended
+        # to the agent's system prompt, instead of replaying the last 3
+        # raw user messages over stdin (which dropped assistant/tool
+        # context and ran one full LLM turn per replayed message).
         old_pump = live.current_pump
         if old_pump is not None and not old_pump.done():
             old_pump.cancel()
