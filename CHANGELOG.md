@@ -16,6 +16,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.22] - 2026-07-24
+
+### Fixed
+
 - **Corporate Memory no longer accumulates near-duplicate pending items when
   the same fact is re-stated with different wording**: the
   `USER_VERIFICATION` ingestion path deduplicated new items by an exact hash
@@ -34,12 +44,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   restating it (and tends to be a near-verbatim reword of the item it
   contradicts), so it is routed to the create path where contradiction
   detection runs, rather than being absorbed as confirming evidence.
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.76.17] - 2026-07-23
 
