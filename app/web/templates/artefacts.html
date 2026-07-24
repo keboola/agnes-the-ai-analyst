@@ -48,13 +48,13 @@
   .af-cell-status .cc-btn { font-size: 12.5px; }
   .af-empty { text-align: center; padding: 40px 20px; color: var(--ds-text-secondary); border: 1px dashed var(--ds-border); border-radius: 14px; }
   .af-empty h3 { margin: 0 0 6px; color: var(--ds-text-primary); font-size: 15px; }
-  /* ── Data-apps work-in-progress banner ── */
-  .af-apps { margin: 30px 0 0; display: flex; align-items: flex-start; gap: 16px; padding: 20px 22px; background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); border-radius: 16px; }
-  .af-apps__icon { flex-shrink: 0; width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; background: var(--ds-primary-light); color: var(--ds-primary); }
+  /* ── Data-apps work-in-progress banner — warning message, above the table ── */
+  .af-apps { margin: 0 0 22px; display: flex; align-items: flex-start; gap: 14px; padding: 14px 18px; background: var(--ds-warn-bg); border: 1px solid var(--ds-warn-line); border-radius: 12px; }
+  .af-apps__icon { flex-shrink: 0; width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: color-mix(in srgb, var(--ds-warn-ink) 14%, transparent); color: var(--ds-warn-ink); }
   .af-apps__body { min-width: 0; }
-  .af-apps__title { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; font-size: 16px; font-weight: 650; color: var(--ds-text-primary); }
+  .af-apps__title { display: flex; align-items: center; gap: 10px; margin: 0 0 4px; font-size: 15px; font-weight: 650; color: var(--ds-warn-ink); }
   .af-apps__title .af-wip { flex-shrink: 0; }
-  .af-apps__text { margin: 0; font-size: 14px; color: var(--ds-text-secondary); max-width: 68ch; }
+  .af-apps__text { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--ds-text-secondary); max-width: 72ch; }
   /* ── New-upload modal (identical structure to the old My Stack modal) ── */
   .af-modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
   .af-modal[hidden] { display: none; }
@@ -85,6 +85,16 @@
 {% endblock %}
 
 {% block page_surface %}
+{# ── Data apps — the second artefact kind, still in design. A warning-styled
+     banner stands in for the live list, sitting above the artefacts table. ── #}
+<div class="af-apps" role="note" aria-label="Data apps — coming soon">
+  <span class="af-apps__icon">{{ ico.icon('warning', 22) }}</span>
+  <div class="af-apps__body">
+    <p class="af-apps__title">Data apps <span class="af-wip">WIP</span></p>
+    <p class="af-apps__text">Hosted apps that run next to your data will live here too. This is still in the works — you'll be able to build them with {{ instance_brand_short or 'Agnes' }} or link an existing one. Nothing to do yet.</p>
+  </div>
+</div>
+
 <section class="af-section">
   <div class="af-section-head">
     <span class="af-count" id="af-upload-count">{{ upload_cards|length }} artefact{{ '' if upload_cards|length == 1 else 's' }}</span>
@@ -132,16 +142,6 @@
   </div>
   {% endif %}
 </section>
-
-{# ── Data apps — the second artefact kind, still in design. A
-     work-in-progress banner stands in for the live list. ── #}
-<div class="af-apps" role="note" aria-label="Data apps — coming soon">
-  <span class="af-apps__icon">{{ ico.icon('sparkle', 22) }}</span>
-  <div class="af-apps__body">
-    <p class="af-apps__title">Data apps <span class="af-wip">WIP</span></p>
-    <p class="af-apps__text">Hosted apps that run next to your data will live here too. This is still in the works — you'll be able to build them with {{ instance_brand_short or 'Agnes' }} or link an existing one. Nothing to do yet.</p>
-  </div>
-</div>
 
 {# ── Upload modal — the single entry point for both artefact shapes. It
      creates a private collection owned by the caller, then uploads the chosen

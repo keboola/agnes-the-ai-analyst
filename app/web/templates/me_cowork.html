@@ -251,6 +251,7 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
         <button type="button" class="aic-tab" role="tab" aria-selected="false" data-tab="cursor"><img src="{{ static_url('img/tools/cursor.ico') }}" alt="" width="18" height="18"> Cursor</button>
         <button type="button" class="aic-tab" role="tab" aria-selected="false" data-tab="vscode"><img src="{{ static_url('img/tools/vscode.ico') }}" alt="" width="18" height="18"> VS Code</button>
         <button type="button" class="aic-tab" role="tab" aria-selected="false" data-tab="chatgpt">ChatGPT</button>
+        <button type="button" class="aic-tab" role="tab" aria-selected="false" data-tab="cli">CLI</button>
       </div>
 
       {# ---------- Claude Code ---------- #}
@@ -482,6 +483,30 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
             <p class="aic-sub-desc">Try asking the assistant:</p>
             <div class="aic-prompt">"What tables are available in {{ instance_brand }}?"</div>
             <div class="aic-callout">{{ ico.icon('check-circle', 16) }}<span>If you receive data back from {{ instance_brand }}, your connection is working correctly.</span></div>
+          </div>
+        </div>
+      </div>
+
+      {# ---------- CLI / Terminal ---------- #}
+      <div class="aic-panel" data-panel="cli" role="tabpanel">
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('link', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Install the CLI</h3>
+            <p class="aic-sub-desc">The <span class="aic-code">agnes</span> CLI runs {{ instance_brand }} from your terminal — query data with <span class="aic-code">agnes query</span>, sync parquets with <span class="aic-code">agnes pull</span>, and drive the local Claude Code data agent.</p>
+            <div class="aic-callout">{{ ico.icon('link', 16) }}<span><a href="/setup">Open the install page</a> — one click generates a personal access token and assembles the complete command (install · save token · verify). Copy it once and paste into your terminal.</span></div>
+          </div>
+        </div>
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('sparkle', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Verify connection</h3>
+            <p class="aic-sub-desc">Once it's installed, run:</p>
+            <div class="aic-term">
+              <div class="aic-term-head"><span class="aic-term-file">terminal</span><button type="button" class="aic-term-copy" data-copy="#cli-verify">{{ ico.icon('doc', 13) }} Copy</button></div>
+              <pre class="aic-term-body" id="cli-verify">agnes catalog</pre>
+            </div>
+            <div class="aic-callout">{{ ico.icon('check-circle', 16) }}<span>If your tables list, the CLI is connected to {{ instance_brand }}. One setup also covers the Claude Code app — they share config.</span></div>
           </div>
         </div>
       </div>

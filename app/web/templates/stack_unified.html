@@ -36,7 +36,11 @@
      plugins / memories); values update client-side as plugins hydrate and
      rows are removed. #stk-stat-plugins starts as an em-dash until the
      marketplace call lands. */
-  .stk-stats { display: flex; align-items: center; gap: 24px; flex-wrap: nowrap; margin: 22px 0 20px; padding: 16px 26px; background: var(--ds-surface-sunken); border-radius: 16px; }
+  .stk-stats { position: relative; display: flex; align-items: center; gap: 24px; flex-wrap: nowrap; margin: 22px 0 20px; padding: 16px 26px; background: var(--ds-surface-sunken); border-radius: 16px; }
+  /* WIP tag straddling the tray's top-right corner (placeholder while real
+     numbers are still being decided). */
+  .stk-stats-wip { position: absolute; top: -10px; right: 16px; display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 500; color: var(--ds-warn-ink); background: var(--ds-warn-bg); border: 1px solid var(--ds-warn-line); border-radius: var(--ds-radius-pill, 999px); padding: 3px 11px; }
+  .stk-stats-wip b { font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
   .stk-stat { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 16px; }
   .stk-stat__icon { flex-shrink: 0; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--ds-primary-light); color: var(--ds-primary); }
   .stk-stat__icon .ui-ico { display: block; }
@@ -87,8 +91,10 @@
   .stk-empty-row td { text-align: center; padding: 40px 20px; color: var(--ds-text-secondary); }
   .stk-empty-row h3 { margin: 0 0 6px; color: var(--ds-text-primary); font-size: 15px; }
   /* The "same knowledge, everywhere" banner is the shared connect-banner
-     component (macros/_connect_banner.html, `.cbn-*` in style-custom.css). */
-  .stk-connect { margin-top: 30px; }
+     component (macros/_connect_banner.html, `.cbn-*` in style-custom.css).
+     It now leads the grey head — compact margins + a slightly smaller orbit
+     so the head stays tidy. */
+  .stk-connect--head { margin: 6px 0 18px; }
 </style>
 {% endblock %}
 
@@ -96,35 +102,17 @@
 <div class="uc-head">
   <div>
     <h1>My Stack</h1>
-    <p class="lede">Your personal knowledge space. Everything here is available to {{ instance_brand_short or 'Agnes' }} and your connected AI tools when they answer for you.</p>
+    <p class="lede">Your personal knowledge space.</p>
   </div>
 </div>
 
-{# ── Workspace stats — counts of what's in the stack, not estate telemetry.
-     Items + Plugins update client-side once the marketplace call resolves. #}
 {% set stk_base_count = (data_cards|length) + (memory_cards|length) %}
-<div class="stk-stats" aria-label="Your stack at a glance">
-  <div class="stk-stat">
-    <span class="stk-stat__icon">{{ ico.icon('package', 20) }}</span>
-    <span class="stk-stat__body">
-      <span class="stk-stat__value" id="stk-stat-items" data-base="{{ stk_base_count }}">{{ stk_base_count }}</span>
-      <span class="stk-stat__label">Items in your stack</span>
-    </span>
-  </div>
-  <div class="stk-stat">
-    <span class="stk-stat__icon">{{ ico.icon('puzzle', 20) }}</span>
-    <span class="stk-stat__body">
-      <span class="stk-stat__value" id="stk-stat-plugins">—</span>
-      <span class="stk-stat__label">Plugins</span>
-    </span>
-  </div>
-  <div class="stk-stat">
-    <span class="stk-stat__icon">{{ ico.icon('brain', 20) }}</span>
-    <span class="stk-stat__body">
-      <span class="stk-stat__value" id="stk-stat-memory">{{ memory_cards|length }}</span>
-      <span class="stk-stat__label">Memories</span>
-    </span>
-  </div>
+{# ── "Same knowledge, everywhere" connect banner leads the grey head
+     (shared connect-banner component; the workspace stats moved down to the
+     white content band below). #}
+<div class="stk-connect stk-connect--head">
+  {{ connect_banner('bar', cta_href='/me/ai-connector',
+       copy='Kai already uses your Stack. Connect your AI tools to give them access to the same knowledge.') }}
 </div>
 
 {# ── Kind tabs — the last row of the grey head, so the white content band
@@ -226,8 +214,32 @@
   </div>
 </section>
 
-<div class="stk-connect">
-  {{ connect_banner('orbit', cta_href='/me/ai-connector') }}
+{# ── Workspace stats — counts of what's in the stack, on the white content
+     band (moved down from the head; the connect banner leads the head now).
+     Items + Plugins update client-side once the marketplace call resolves. #}
+<div class="stk-stats" aria-label="Your stack at a glance">
+  <div class="stk-stat">
+    <span class="stk-stat__icon">{{ ico.icon('package', 20) }}</span>
+    <span class="stk-stat__body">
+      <span class="stk-stat__value" id="stk-stat-items" data-base="{{ stk_base_count }}">{{ stk_base_count }}</span>
+      <span class="stk-stat__label">Items in your stack</span>
+    </span>
+  </div>
+  <div class="stk-stat">
+    <span class="stk-stat__icon">{{ ico.icon('puzzle', 20) }}</span>
+    <span class="stk-stat__body">
+      <span class="stk-stat__value" id="stk-stat-plugins">—</span>
+      <span class="stk-stat__label">Plugins</span>
+    </span>
+  </div>
+  <div class="stk-stat">
+    <span class="stk-stat__icon">{{ ico.icon('brain', 20) }}</span>
+    <span class="stk-stat__body">
+      <span class="stk-stat__value" id="stk-stat-memory">{{ memory_cards|length }}</span>
+      <span class="stk-stat__label">Memories</span>
+    </span>
+  </div>
+  <span class="stk-stats-wip"><b>WIP</b> we'll add some useful numbers here</span>
 </div>
 {% endblock %}
 
