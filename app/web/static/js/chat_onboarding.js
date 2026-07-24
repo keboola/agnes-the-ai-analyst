@@ -37,17 +37,17 @@ const DEFAULT_JOURNEY = {
 const STEP_META = {
   first_asked: {
     label: "Ask your first question",
-    why: "Start from your real goal so Agnes can shape onboarding around what you need.",
+    why: "Start from your real goal so Kai can shape onboarding around what you need.",
   },
   stack_setup_done: {
     label: "Set up your Stack",
-    why: "Agnes needs the right company knowledge in your Stack to answer usefully.",
+    why: "Kai needs the right company knowledge in your Stack to answer usefully.",
     href: "/stack",
     launchTour: "stack",
   },
   explored_stack: {
     label: "Explore My Stack",
-    why: "My Stack shows what Agnes can already use and what you added.",
+    why: "My Stack shows what Kai can already use and what you added.",
     href: "/stack",
     launchTour: "stack",
   },
@@ -59,13 +59,17 @@ const STEP_META = {
   use_anywhere: {
     label: "Use Agnes from other AI tools",
     why: "Reuse the same trusted company context in Claude Code, Cursor, and VS Code.",
-    href: "/setup",
+    href: "/me/ai-connector",
   },
 };
 
 let journey = { ...DEFAULT_JOURNEY };
 let hooks = {};
 let ready = false;
+// Soft, in-memory "not now" for the inline journey panel — set by the head's
+// "×" and honored by renderJourneyPanel so a later patch can't re-pop it.
+// Resets on reload (the panel is meant to come back next visit).
+let dismissed = false;
 // chatMode: on /chat the module has the full chat hooks (greeting, gap
 // resolver, in-thread replay). On other rail pages it's mounted standalone
 // (mountJourneyPanel) as a navigable tracker only — the chat-only affordances
@@ -141,7 +145,7 @@ function inStackCount(items) {
 function renderJourneyPanel() {
   const el = document.getElementById("chat-journey");
   if (!el) return;
-  if (!ready) {
+  if (!ready || dismissed) {
     el.hidden = true;
     return;
   }
@@ -176,12 +180,12 @@ function renderJourneyPanel() {
     <div class="cloud-chat-journey-head">
       <h3>Your Journey</h3>
       ${complete ? '<span class="cloud-chat-journey-badge">Complete ✓</span>' : ""}
-      ${
-        chatMode
-          ? `<button type="button" class="cloud-chat-journey-restart" data-journey-restart
-              title="Replay Agnes's welcome" aria-label="Restart onboarding">?</button>`
-          : ""
-      }
+      <div class="cloud-chat-journey-actions">
+        <button type="button" class="cloud-chat-journey-iconbtn" data-journey-replay
+          title="Replay Kai's tour" aria-label="Replay the tour">↻</button>
+        <button type="button" class="cloud-chat-journey-iconbtn" data-journey-close
+          title="Close" aria-label="Close onboarding">×</button>
+      </div>
     </div>
     <p class="cloud-chat-journey-sub">Learn what Agnes is and make it yours.</p>
     <div class="cloud-chat-journey-list">${rows}</div>
@@ -249,8 +253,10 @@ function renderJourneyPanel() {
     });
   }
 
-  const restartBtn = el.querySelector("[data-journey-restart]");
-  if (restartBtn) restartBtn.addEventListener("click", restartOnboarding);
+  const replayBtn = el.querySelector("[data-journey-replay]");
+  if (replayBtn) replayBtn.addEventListener("click", replayTour);
+  const closeBtn = el.querySelector("[data-journey-close]");
+  if (closeBtn) closeBtn.addEventListener("click", dismissJourney);
 }
 
 // Reflect journey progress on the rail's "Get started" launcher (the button in
@@ -267,7 +273,7 @@ function updateGetStartedIndicator(done, total, complete) {
 function greetOnce(synced) {
   if (journey.onboarded) return;
   hooks.renderAssistant(
-    "Hi, I'm **Agnes** 👋 I'll answer using the company knowledge in your Stack, and I'll always say where an answer came from.",
+    "Hi, I'm **Kai** 👋 I'll answer using the company knowledge in your Stack, and I'll always say where an answer came from.",
   );
   if (synced === false) {
     hooks.renderAssistant(
@@ -277,29 +283,40 @@ function greetOnce(synced) {
   patchJourney({ onboarded: true });
 }
 
-// Replay onboarding on demand — the "?" in the journey head clears the
-// one-time greeting guard so greetOnce() shows Agnes's welcome again and
-// re-renders the panel. Earned step progress is preserved.
-function restartOnboarding() {
-  if (!ready) return;
-  // Defensive: the "?" click handler has no other guard, so a render hiccup
-  // here (e.g. a hook throwing) must never leave the button looking dead and
-  // swallow the cause. Wrap the whole replay and surface any failure.
-  try {
-    // Collapse the empty-state hero first (same as the normal first-message
-    // flow) so the replayed welcome is visible even from a brand-new chat —
-    // otherwise the greeting renders behind the capability panel.
-    hooks.revealConversation?.();
-    journey = { ...journey, onboarded: false };
-    greetOnce();
-    hooks.scrollToBottom?.();
-    // Fallback: if scrollToBottom is a no-op (user scrolled up, or the
-    // empty-state hero had the thread off-screen) force the freshly rendered
-    // welcome into view so the "?" always produces a visible result.
-    hooks.scrollLastIntoView?.();
-  } catch (err) {
-    console.error("[onboarding] restart failed:", err);
+// Replay the guided tour on demand — the "↻" in the journey head relaunches
+// Kai's spotlight tour from step 0. The tour is cross-page (it stashes +
+// navigates to /stack itself), so this works from any page the panel is
+// mounted on. Uses window._agTourUrl (stamped by the tour boot script in
+// base_ds.html) with a bare-path fallback, mirroring the journey-step launch.
+function replayTour() {
+  const tourUrl = window._agTourUrl || "/static/js/tour.js";
+  import(tourUrl)
+    .then((mod) => mod.launchTour("stack", 0))
+    .catch(() => {
+      // Module load failed — fall back to just landing on the Stack page.
+      window.location.href = "/stack";
+    });
+}
+
+// Dismiss the Journey panel — the "×" in the journey head. When the panel is
+// rendered inside the rail's "Get started" popover we simply close the popover
+// (it reopens from the rail launcher). When it's inline (the /chat sidebar on
+// topnav) we hide it for this page load; `dismissed` guards re-renders so a
+// later patchJourney() doesn't pop it back. It's in-memory, so a reload brings
+// the panel back — a soft "not now", not a permanent opt-out.
+function dismissJourney() {
+  const el = document.getElementById("chat-journey");
+  const popover = el && el.closest(".rail-getstarted-panel");
+  if (popover) {
+    popover.hidden = true;
+    const wrap = document.getElementById("railGetStarted");
+    if (wrap) wrap.classList.remove("is-open");
+    const toggle = document.getElementById("rail-getstarted-toggle");
+    if (toggle) toggle.setAttribute("aria-expanded", "false");
+    return;
   }
+  dismissed = true;
+  if (el) el.hidden = true;
 }
 
 // ── Gap resolver ─────────────────────────────────────────────────────────────

@@ -43,37 +43,28 @@ export const TOURS = {
         'Private to you unless you choose to share it.',
       ],
     },
-    // Step 2: /stack — Catalog nav item (in rail)
+    // Step 2: /stack — Marketplace nav item (in rail). Framed as the community
+    // sharing surface: see what colleagues built, add it, and share back.
     {
       page: '/stack',
       selector: '#nav-catalog',
-      title: 'Need something I don\'t have?',
-      desc: 'When a question needs data or a tool that isn\'t in your Stack yet, add it from the Catalog. My Stack is what you already have; the Catalog is what you can add.',
+      title: 'Here\'s the Marketplace',
+      desc: 'See what your colleagues have already built and shared — data packages, skills, and plugins you can add to your Stack in one click. Spot a gap? Build something useful and share it back for the whole team.',
       points: [
-        'When a question needs something new, I\'ll usually point you here right in the chat.',
+        'When a question needs something you don\'t have yet, I\'ll usually point you here right in the chat.',
       ],
     },
-    // Step 3: /catalog — the catalog listing zone
-    {
-      page: '/catalog',
-      selector: '#browse-catalog-zone',
-      title: 'This is the Catalog',
-      desc: 'Browse everything your organization has published, then click Add to put it in your Stack so I can use it.',
-      points: [
-        'Prefer to type? Just ask me in chat — "add Salesforce" does the same thing.',
-      ],
-    },
-    // Step 4: /catalog — the submit CTA
+    // Step 3: /catalog — the submit CTA
     {
       page: '/catalog',
       selector: '#browse-submit-btn',
       title: 'Share what you build',
-      desc: 'Built a skill or plugin your team could reuse? Publish it here so others can add it from the Catalog.',
+      desc: 'Built a skill or plugin your team could reuse? Publish it here so others can add it from the Marketplace.',
       points: [
         'Publishing to the Flea Market is separate from adding something to your own Stack.',
       ],
     },
-    // Step 5: final centered step — no anchor
+    // Step 4: final centered step — no anchor
     {
       page: '/catalog',
       centered: true,
@@ -264,7 +255,7 @@ function _buildPopover(step, index, total) {
     <span class="tour-popover-header-orb" aria-hidden="true">
       <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="3.5" fill="currentColor" opacity=".6"/></svg>
     </span>
-    <span class="tour-popover-header-label">Agnes is showing you around</span>`;
+    <span class="tour-popover-header-label">Kai is showing you around</span>`;
 
   // Body
   const body = document.createElement('div');
@@ -338,7 +329,11 @@ function _buildPopover(step, index, total) {
     connectBtn.addEventListener('click', () => {
       markSeen(_active ? _active.id : 'stack');
       _endTour(true);
-      window.location.href = '/setup';
+      // The AI Connector page (/me/ai-connector) is the per-tool MCP guide
+      // (Claude Code · Cursor · VS Code · …) that matches this button's intent
+      // and the main-page "Connect your tools" CTA. /setup is the narrower
+      // CLI-install page, reached from getting-started, not from here.
+      window.location.href = '/me/ai-connector';
     });
 
     actions.appendChild(backBtn);
