@@ -137,14 +137,16 @@ __all__ = [
     "ticket_repo",
     # Job queue (wave-2B worker runtime foundation)
     "jobs_repo",
-    # Agent profiles + agent-as-API (v96)
+    # Data apps (hosted user web apps registry)
+    "data_apps_repo",
+    # Agent profiles + agent-as-API (v100)
     "agents_repo",
     "llm_usage_repo",
     "idempotency_repo",
-    # Agent webhooks + artifacts (v97, agent-api V1b)
+    # Agent webhooks + artifacts (v101, agent-api V1b)
     "agent_webhooks_repo",
     "agent_artifacts_repo",
-    # Agent memories (v98, agent-api V1c)
+    # Agent memories (v102, agent-api V1c)
     "agent_memories_repo",
 ]
 
@@ -475,7 +477,12 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.jobs", "JobsRepository"),
         PG: ("src.repositories.jobs_pg", "JobsPgRepository"),
     },
-    # Agent profiles + agent-as-API (v96)
+    # Data apps (hosted user web apps registry)
+    "data_apps": {
+        DUCKDB: ("src.repositories.data_apps", "DataAppsRepository"),
+        PG: ("src.repositories.data_apps_pg", "DataAppsPgRepository"),
+    },
+    # Agent profiles + agent-as-API (v100)
     "agents": {
         DUCKDB: ("src.repositories.agents", "AgentsRepository"),
         PG: ("src.repositories.agents_pg", "AgentsPgRepository"),
@@ -488,7 +495,7 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.idempotency", "IdempotencyRepository"),
         PG: ("src.repositories.idempotency_pg", "IdempotencyPgRepository"),
     },
-    # Agent webhooks + artifacts (v97, agent-api V1b)
+    # Agent webhooks + artifacts (v101, agent-api V1b)
     "agent_webhooks": {
         DUCKDB: ("src.repositories.agent_webhooks", "AgentWebhooksRepository"),
         PG: ("src.repositories.agent_webhooks_pg", "AgentWebhooksPgRepository"),
@@ -497,7 +504,7 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.agent_artifacts", "AgentArtifactsRepository"),
         PG: ("src.repositories.agent_artifacts_pg", "AgentArtifactsPgRepository"),
     },
-    # Agent memories (v98, agent-api V1c)
+    # Agent memories (v102, agent-api V1c)
     "agent_memories": {
         DUCKDB: ("src.repositories.agent_memories", "AgentMemoriesRepository"),
         PG: ("src.repositories.agent_memories_pg", "AgentMemoriesPgRepository"),
@@ -778,7 +785,12 @@ def jobs_repo() -> Any:
     return _build("jobs")
 
 
-# Agent profiles + agent-as-API (v96)
+# data apps (hosted user web apps registry)
+def data_apps_repo() -> Any:
+    return _build("data_apps")
+
+
+# Agent profiles + agent-as-API (v100)
 def agents_repo() -> Any:
     return _build("agents")
 
@@ -791,7 +803,7 @@ def idempotency_repo() -> Any:
     return _build("idempotency")
 
 
-# Agent webhooks + artifacts (v97, agent-api V1b)
+# Agent webhooks + artifacts (v101, agent-api V1b)
 def agent_webhooks_repo() -> Any:
     return _build("agent_webhooks")
 
@@ -800,6 +812,6 @@ def agent_artifacts_repo() -> Any:
     return _build("agent_artifacts")
 
 
-# Agent memories (v98, agent-api V1c)
+# Agent memories (v102, agent-api V1c)
 def agent_memories_repo() -> Any:
     return _build("agent_memories")

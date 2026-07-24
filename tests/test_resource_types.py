@@ -185,6 +185,63 @@ class TestDataPackageResourceType:
         assert block["items"][0]["name"] == "Sales bundle"
 
 
+class TestDataAppResourceType:
+    """v96: ``data_app`` grants access to a hosted user web app (resource_id
+    = slug, per Task 2 of the Data Apps feature)."""
+
+    def test_data_app_in_enum(self):
+        assert ResourceType.DATA_APP.value == "data_app"
+
+    def test_data_app_in_registry(self):
+        assert ResourceType.DATA_APP in RESOURCE_TYPES
+        spec = RESOURCE_TYPES[ResourceType.DATA_APP]
+        assert spec.key is ResourceType.DATA_APP
+        assert spec.id_format == "<slug>"
+        assert callable(spec.list_blocks)
+
+    def test_data_app_blocks_empty_when_no_apps(self, system_conn):
+        from app.resource_types import _data_app_blocks
+
+        assert _data_app_blocks() == []
+
+    def test_data_app_blocks_includes_apps(self, system_conn):
+        from app.resource_types import _data_app_blocks
+
+        system_conn.execute(
+            "INSERT INTO data_apps(id, slug, name, description, owner_user_id) "
+            "VALUES ('app_test1', 'my-app', 'My App', 'A test app', 'u_owner')"
+        )
+        blocks = _data_app_blocks()
+        assert len(blocks) == 1
+        block = blocks[0]
+        assert block["items"][0]["resource_id"] == "my-app"
+        assert block["items"][0]["name"] == "My App"
+        assert block["items"][0]["description"] == "A test app"
+        assert block["items"][0]["slug"] == "my-app"
+
+    def test_data_app_blocks_excludes_drafts(self, system_conn):
+        """Drafts are working copies layered on a parent app, not
+        independently grantable resources -- they must not clutter the
+        admin grant picker (mirrors the `include_drafts=False` filter on
+        every other data-apps listing surface)."""
+        from app.resource_types import _data_app_blocks
+
+        system_conn.execute(
+            "INSERT INTO data_apps(id, slug, name, description, owner_user_id) "
+            "VALUES ('app_test1', 'my-app', 'My App', 'A test app', 'u_owner')"
+        )
+        system_conn.execute(
+            "INSERT INTO data_apps(id, slug, name, description, owner_user_id,"
+            " parent_app_id, is_draft, draft_branch) "
+            "VALUES ('app_test2', 'my-app--init', 'My App (draft)', '', 'u_owner',"
+            " 'app_test1', TRUE, 'init')"
+        )
+        blocks = _data_app_blocks()
+        assert len(blocks) == 1
+        slugs = [item["resource_id"] for item in blocks[0]["items"]]
+        assert slugs == ["my-app"]
+
+
 class TestAccessOverviewIncludesTables:
     """v19+ — TABLE is unconditionally enabled (no env-gate)."""
 

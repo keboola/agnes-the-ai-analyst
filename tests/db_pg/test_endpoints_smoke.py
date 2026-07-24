@@ -1511,6 +1511,9 @@ KNOWN_UNTESTED = {
     "POST /api/broker/anthropic/{subpath}",
     "POST /api/broker/agnes-api",
     "POST /api/broker/agnes-mcp",
+    # Sandboxed data-apps authoring replay (Task 7, wave 3B) — same
+    # ticket-authed, never parameter-free shape as the broker routes above.
+    "POST /api/broker/data-apps",
     # Collections (bring-your-files) — behaviorally covered in the dedicated
     # suites tests/test_api_collections.py (CRUD/upload/search/reingest, RBAC fail-closed,
     # SessionPrincipal) and tests/test_web_library.py (/library pages), plus the
@@ -1596,6 +1599,39 @@ KNOWN_UNTESTED = {
     # dulwich smart-HTTP git bridge — requires git repo on disk, explicit non-goal
     "GET /marketplace.git/{path}",
     "POST /marketplace.git/{path}",
+    # Per-app git-over-HTTP hosting (Task 6, data apps) — same "requires a
+    # git repo on disk" non-goal; auth-matrix behavior covered by
+    # tests/test_data_apps_git.py.
+    "GET /data-apps.git/{slug}/{path}",
+    "POST /data-apps.git/{slug}/{path}",
+    # Control-plane REST for hosted data apps (Task 7) — every mutating route
+    # needs a real `data_apps` row (+ owner/Admin/grant RBAC, and deploy needs
+    # a seeded git repo + runner stub), so none of these are parameter-free.
+    # Full CRUD/RBAC/deploy/stop/delete/secrets/logs/readiness/reap-idle
+    # coverage lives in tests/test_data_apps_api.py.
+    "GET /api/data-apps",
+    "POST /api/data-apps",
+    "GET /api/data-apps/{slug}",
+    "POST /api/data-apps/{slug}/deploy",
+    "POST /api/data-apps/{slug}/stop",
+    "DELETE /api/data-apps/{slug}",
+    "PUT /api/data-apps/{slug}/secrets",
+    "GET /api/data-apps/{slug}/logs",
+    "GET /api/data-apps/{slug}/readiness",
+    "POST /api/data-apps/reap-idle",
+    # Wave 3B AI-authoring flow (git-credential + drafts) — same "needs a
+    # real data_apps row + owner/Admin RBAC" non-goal as the rest of this
+    # block. Full coverage lives in tests/test_data_apps_api.py
+    # (TestGitCredential, TestDrafts).
+    "POST /api/data-apps/{slug}/git-credential",
+    "POST /api/data-apps/{slug}/drafts",
+    "DELETE /api/data-apps/{slug}/drafts/{draft_slug}",
+    # Data apps web UI (Task 12) — HTML pages, not part of the parameter-free
+    # API smoke sweep (same convention as the other `GET /admin/*` / `GET
+    # /library*` web routes above). RBAC/rendering/feature-flag/route-collision
+    # behaviour covered by tests/test_web_data_apps.py.
+    "GET /apps",
+    "GET /apps/detail/{slug}",
     # Google OAuth — requires live credentials
     "GET /auth/google/login",
     "GET /auth/google/callback",
@@ -2194,6 +2230,14 @@ KNOWN_UNTESTED = {
     # sweep.
     "GET /api/v1/sessions/{session_id}/artifacts",
     "GET /api/v1/sessions/{session_id}/artifacts/{artifact_id}",
+    # Data-apps ingress proxy (Task 8) — `GET /apps/{slug}` (redirect to the
+    # trailing-slash form) is the only piece of this surface that still
+    # appears in the OpenAPI schema: the catch-all proxy/wake/holding-page
+    # route (`/apps/{slug}/{path}`, all methods) is registered with
+    # `include_in_schema=False` (see app/api/data_apps_proxy.py's
+    # `proxy_app` docstring for why) and so never reaches `all_routes`
+    # here at all. Behaviour covered in tests/test_data_apps_proxy.py.
+    "GET /apps/{slug}",
 }
 
 

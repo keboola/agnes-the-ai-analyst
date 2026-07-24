@@ -1,0 +1,271 @@
+"""apps-runner — the only process holding the Docker socket.
+
+Deliberately dumb: no registry access, no RBAC, no policy. The Agnes app
+decides *what* should run; this sidecar only translates to Docker calls.
+Bound on the internal compose network only; token-gated.
+"""
+
+from __future__ import annotations
+
+import functools
+import json
+import os
+import socket
+from pathlib import Path
+
+from fastapi import Body, FastAPI, Header, HTTPException
+
+app = FastAPI(title="agnes-apps-runner", docs_url=None, redoc_url=None)
+
+
+def _docker():
+    import docker
+
+    return docker.from_env()
+
+
+def _check_token(x_runner_token: str | None) -> None:
+    expected = os.environ.get("APPS_RUNNER_TOKEN", "")
+    if not expected or x_runner_token != expected:
+        raise HTTPException(status_code=401, detail="bad_runner_token")
+
+
+def _container(name: str):
+    import docker.errors
+
+    try:
+        return _docker().containers.get(name)
+    except docker.errors.NotFound:
+        return None
+
+
+# The upstream runtime image runs its entire entrypoint as a fixed non-root
+# `app` user (uid/gid 1000) — it never runs as, or elevates to, root.
+_CACHE_VOLUME_OWNER = "1000:1000"
+
+
+def _ensure_cache_volume(client, spec: dict) -> None:
+    """Create the per-app cache volume if missing, and chown it to the
+    runtime image's non-root ``app`` user.
+
+    A fresh Docker named volume is created empty and root-owned. Nothing is
+    baked into the image at ``/home/app/.cache`` for Docker to inherit
+    ownership from on first mount (there's no directory there at all), and
+    the upstream entrypoint never runs as root — so on a brand-new volume
+    `uv sync` (and any other cache-writing setup step) fails with
+    `Permission denied`. Fixed up once, at creation, via a throwaway
+    container using the *same* allowlisted runtime image (no new image
+    dependency, no change to the app container's own non-root ``user``).
+    """
+    import docker.errors
+
+    name = spec["cache_volume"]
+    try:
+        client.volumes.get(name)
+        return  # already exists — already fixed up on a prior `up()`
+    except docker.errors.NotFound:
+        pass
+    client.volumes.create(name)
+    client.containers.run(
+        spec["image"],
+        entrypoint=["chown", "-R", _CACHE_VOLUME_OWNER, "/cache"],
+        user="0:0",
+        volumes={name: {"bind": "/cache", "mode": "rw"}},
+        remove=True,
+    )
+
+
+def _resolve_host_path(container_path: str) -> str:
+    """Translate a path inside *this* apps-runner container to the path the
+    Docker daemon must use as a bind-mount *source* for a new container.
+
+    Docker resolves bind-mount sources against the daemon's host filesystem
+    namespace, never the calling container's — but in production apps-runner
+    is itself a container whose own ``/data`` is the named volume ``data``
+    (see docker-compose.yml), so a path like ``/data/apps/<slug>`` computed
+    inside this process is meaningless to the daemon as a bind source and
+    silently resolves to an empty, unrelated directory.
+
+    Finds *this* container (Docker sets the container hostname to its own
+    id; ``HOSTNAME`` carries the same value) via the daemon, and walks its
+    ``Mounts`` for the entry whose ``Destination`` is the longest prefix of
+    ``container_path`` — that mount's ``Source`` is what the daemon
+    understands (a named-volume mountpoint or a host directory, either
+    way). Returns ``container_path`` unchanged when this process isn't
+    itself a container the daemon knows about (bare host/dev/E2E process
+    talking to the same daemon) — the historical, already-correct behavior
+    for that case.
+    """
+    import docker.errors
+
+    hostname = os.environ.get("HOSTNAME") or socket.gethostname()
+    try:
+        self_container = _docker().containers.get(hostname)
+    except (docker.errors.NotFound, docker.errors.APIError):
+        return container_path
+
+    best_dest = ""
+    best_source = ""
+    for mount in self_container.attrs.get("Mounts", []) or []:
+        dest = (mount.get("Destination") or "").rstrip("/")
+        if not dest:
+            continue
+        if container_path == dest or container_path.startswith(dest + "/"):
+            if len(dest) > len(best_dest):
+                best_dest, best_source = dest, mount.get("Source") or ""
+
+    if not best_dest:
+        return container_path
+    return best_source + container_path[len(best_dest) :]
+
+
+def _docker_errors(fn):
+    """Map Docker SDK / transport errors to structured HTTP responses.
+
+    ``docker.errors.ImageNotFound`` -> 400 ``image_not_found`` (bad spec, the
+    caller's fault). Anything else that means "couldn't talk to Docker" —
+    ``docker.errors.APIError`` (covers ``NotFound`` races too),
+    ``docker.errors.DockerException``, or a raw
+    ``requests.exceptions.ConnectionError`` from the transport — becomes a
+    502 ``docker_error: <message>``. ``HTTPException`` raised deliberately by
+    the handler (401/400/404) passes through unchanged.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        import docker.errors
+        import requests.exceptions
+
+        try:
+            return fn(*args, **kwargs)
+        except docker.errors.ImageNotFound as exc:
+            raise HTTPException(status_code=400, detail="image_not_found") from exc
+        except (docker.errors.APIError, docker.errors.DockerException, requests.exceptions.ConnectionError) as exc:
+            raise HTTPException(status_code=502, detail=f"docker_error: {exc}") from exc
+
+    return wrapper
+
+
+@app.post("/apps/{slug}/up")
+@_docker_errors
+def up(slug: str, payload: dict = Body(...), x_runner_token: str | None = Header(default=None)):
+    """Start (or replace) the container for ``slug``.
+
+    ``spec["ports"]`` is an optional Docker port-publish mapping (e.g.
+    ``{"8888/tcp": 18888}``, the same shape `docker-py`'s
+    ``containers.run(ports=...)`` accepts) — a test-only escape hatch so
+    ``tests/test_data_apps_e2e_docker.py`` can reach the runtime container's
+    nginx directly from the host without standing up the ingress proxy.
+    Production specs (`src/data_apps/spec.py::build_container_spec`) never
+    set this key; apps are reached exclusively through the ingress proxy.
+    """
+    _check_token(x_runner_token)
+    spec, config_json = payload["spec"], payload["config_json"]
+    prefix = os.environ.get("APPS_RUNNER_IMAGE_PREFIX", "")
+    if not prefix or not str(spec["image"]).startswith(prefix + ":"):
+        raise HTTPException(status_code=400, detail="image_not_allowed")
+    cfg_dir = Path(spec["config_dir"])
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.json").write_text(json.dumps(config_json, indent=2))
+    client = _docker()
+    if not client.networks.list(names=[spec["network"]]):
+        client.networks.create(spec["network"], driver="bridge")
+    _ensure_cache_volume(client, spec)
+    old = _container(spec["name"])
+    if old is not None:
+        old.remove(force=True)
+    client.containers.run(
+        spec["image"],
+        name=spec["name"],
+        detach=True,
+        labels=spec["labels"],
+        network=spec["network"],
+        environment=spec["env"],
+        mem_limit=spec["mem_limit"],
+        nano_cpus=int(float(spec["cpus"]) * 1e9),
+        ports=spec.get("ports"),
+        volumes={
+            _resolve_host_path(str(cfg_dir)): {"bind": "/data", "mode": "rw"},
+            spec["cache_volume"]: {"bind": "/home/app/.cache", "mode": "rw"},
+        },
+        restart_policy={"Name": "unless-stopped"},
+    )
+    return {"status": "started"}
+
+
+@app.post("/apps/{slug}/stop")
+@_docker_errors
+def stop(slug: str, payload: dict = Body(...), x_runner_token: str | None = Header(default=None)):
+    _check_token(x_runner_token)
+    c = _container(f"agnes-dataapp-{slug}")
+    if c is None:
+        return {"status": "absent"}
+    if payload.get("mode") == "pause":
+        c.pause()
+        return {"status": "paused"}
+    c.remove(force=True)
+    return {"status": "removed"}
+
+
+@app.post("/apps/{slug}/resume")
+@_docker_errors
+def resume(slug: str, x_runner_token: str | None = Header(default=None)):
+    _check_token(x_runner_token)
+    c = _container(f"agnes-dataapp-{slug}")
+    if c is None:
+        raise HTTPException(status_code=404, detail="absent")
+    c.unpause()
+    return {"status": "running"}
+
+
+@app.get("/apps/{slug}/status")
+@_docker_errors
+def status(slug: str, x_runner_token: str | None = Header(default=None)):
+    """Container status contract — exactly one of:
+
+    ``"running" | "paused" | "stopped" | "absent"``
+
+    Any other Docker-reported state (``exited``, ``created``, ``restarting``,
+    ``dead``, ...) for a container that still exists is folded into
+    ``"stopped"``; ``ready`` is only ever true for ``"running"``.
+    """
+    _check_token(x_runner_token)
+    c = _container(f"agnes-dataapp-{slug}")
+    if c is None:
+        return {"container": "absent", "ready": False}
+    if c.status == "paused":
+        state = "paused"
+    elif c.status == "running":
+        state = "running"
+    else:
+        state = "stopped"
+    ready = False
+    if state == "running":
+        try:
+            with socket.create_connection((f"agnes-dataapp-{slug}", 8888), timeout=2):
+                ready = True
+        except OSError:
+            ready = False
+    return {"container": state, "ready": ready}
+
+
+@app.get("/apps/{slug}/logs")
+@_docker_errors
+def logs(slug: str, tail: int = 200, x_runner_token: str | None = Header(default=None)):
+    _check_token(x_runner_token)
+    c = _container(f"agnes-dataapp-{slug}")
+    if c is None:
+        raise HTTPException(status_code=404, detail="absent")
+    return {"logs": c.logs(tail=tail).decode("utf-8", errors="replace")}
+
+
+@app.get("/apps")
+@_docker_errors
+def list_apps(x_runner_token: str | None = Header(default=None)):
+    _check_token(x_runner_token)
+    rows = [
+        {"name": c.name, "status": c.status}
+        for c in _docker().containers.list(all=True)
+        if c.name.startswith("agnes-dataapp-")
+    ]
+    return {"apps": rows}

@@ -24,7 +24,8 @@ Full step-by-step (local dev, Docker, TLS) lives in [`docs/QUICKSTART.md`](docs/
 │   ├── orchestrator.py     # SyncOrchestrator — ATTACHes extract.duckdb files
 │   ├── repositories/       # DuckDB-backed CRUD (sync_state, table_registry, users, etc.)
 │   ├── profiler.py         # Data profiling
-│   └── catalog_export.py   # OpenMetadata catalog export
+│   ├── catalog_export.py   # OpenMetadata catalog export
+│   └── data_apps/          # Hosted data-apps registry: config.json + container spec builders
 ├── app/                    # FastAPI application
 │   ├── main.py             # App setup, router registration
 │   ├── api/                # REST API (sync, data, catalog, admin, auth)
@@ -35,7 +36,7 @@ Full step-by-step (local dev, Docker, TLS) lives in [`docs/QUICKSTART.md`](docs/
 │   └── jira/               # Jira: webhook + incremental parquet → extract.duckdb
 ├── cli/                    # CLI tool (`agnes pull`, `agnes query`, `agnes admin`)
 ├── app/auth/               # Authentication (FastAPI-based providers)
-├── services/               # Standalone services (scheduler, telegram_bot, etc.)
+├── services/               # Standalone services (scheduler, telegram_bot, apps_runner sidecar, etc.)
 ├── server/                 # Legacy deployment infrastructure
 ├── scripts/                # Utility + migration scripts
 ├── config/                 # Configuration templates (instance.yaml.example)
@@ -332,6 +333,9 @@ Auth providers in `app/auth/` (FastAPI-based):
 ### Web pages
 HTML dashboard pages use the design-system **page shell** (#367/#482): `{% extends "base_page.html" %}` (gradient hero + `{% block toolbar %}` + `{% block page %}`) or `{% extends "base_ds.html" %}` (everything else; body in `{% block content %}`). **Never `base.html`** — it is legacy. The base auto-imports the `ds.*` macros (no `{% import "_components.html" %}`), sets theme/favicon/nav/global-JS, and provides the canonical `.container`; page CSS goes in `{% block head_extra %}`, never inline in the body. Contract guards in `tests/test_design_system_contract.py` reject `.container:has()` opt-outs, bare `:root{}`, raw `#hex`, and `var(--primary)` (use `var(--ds-primary)`). Full step-by-step recipe: [`docs/architecture.md`](docs/architecture.md) → *Extending the Platform → New Web Page*.
 
+### Hosted Data Apps
+`src/data_apps/` (registry + spec builders) + `services/apps_runner/` (the sidecar that alone holds the Docker socket) host user web apps next to the data — off by default (`data_apps.enabled`), compose profile `apps`. See [`docs/architecture.md`](docs/architecture.md#hosted-data-apps) and [`docs/superpowers/specs/2026-07-21-data-apps-design.md`](docs/superpowers/specs/2026-07-21-data-apps-design.md).
+
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
@@ -389,6 +393,7 @@ the right tool:
 
 | Need | Use | How |
 |---|---|---|
+| Verify a change before claiming it's done | `verify-agnes-change` | cheapest-first loop: `scripts/verify_syncmap.py` (instant, the sync-map rows no test guards) → the guards your diff touches → full suite → `/agnes-review`. Fix and re-run each gate until it passes. |
 | Review a change before merge | `/agnes-review` | scope-gated review **team** (rules / architecture / rbac / parity — only the in-scope subset fires) + `agnes-review-consolidator` → one advisory report (`file:line` + severity, ≤15 findings). Read-only working tree; optional comment-only PR post. |
 | Implement a whole plan in parallel | `/agnes-build` | decomposes a plan into independent tasks (sync-map coupling), builds each in its own git worktree via `agnes-builder`, integrates (migration serialized last), then runs `/agnes-review`. |
 | Implement a feature (connector / endpoint / web page / repo method / migration) | `agnes-builder` | disciplined implementer (TDD-first, DuckDB↔PG parity in the same change, migration-ladder sync, CHANGELOG, vendor-agnostic, scope discipline). Routes to the `agnes-conventions` playbooks. |
@@ -405,7 +410,8 @@ the right tool:
 
 **Skills** (`.claude/skills/`): knowledge — `agnes-orchestrator`, `agnes-rbac`,
 `agnes-connectors`, `agnes-release-process`; implementation playbooks —
-`agnes-conventions` (`SKILL.md` + `references/{connector,repo-parity,migration,endpoint-rbac,web-page}.md`).
+`agnes-conventions` (`SKILL.md` + `references/{connector,repo-parity,migration,endpoint-rbac,web-page}.md`);
+verification — `verify-agnes-change` (the pre-merge loop).
 Read the relevant one before editing that part of the codebase.
 
 **Invariants & guards:** the change-safety **sync-map** lives in `CONTRIBUTING.md`

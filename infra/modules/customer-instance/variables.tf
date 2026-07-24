@@ -43,8 +43,14 @@ variable "prod_instance" {
     data_disk_gb = optional(number, 50)
     image_tag    = optional(string, "stable")
     upgrade_mode = optional(string, "auto")
-    tls_mode     = optional(string, "caddy")
-    domain       = optional(string, "")
+    # Standard 5-field cron expression consumed by startup-script.sh.tpl's
+    # crontab install line. Default matches the historical fixed cadence —
+    # override to reduce upgrade-triggered blips on a customer-facing
+    # instance (e.g. a nightly window) while dev/staging instances stay on fast
+    # iteration.
+    upgrade_schedule = optional(string, "*/5 * * * *")
+    tls_mode         = optional(string, "caddy")
+    domain           = optional(string, "")
     # Container memory caps written to /opt/agnes/.env and read by
     # docker-compose.yml (mem_limit: $${AGNES_APP_MEM_LIMIT:-4g}). Defaults
     # match the compose defaults; raise on a larger VM together with the
@@ -101,6 +107,8 @@ variable "dev_instances" {
     app_cpus            = optional(string, "2.0")
     scheduler_cpus      = optional(string, "1.0")
     dispatcher_enabled  = optional(bool, false)
+    # See prod_instance for the rationale; same default.
+    upgrade_schedule = optional(string, "*/5 * * * *")
   }))
   default = []
 }
@@ -245,6 +253,12 @@ variable "home_route" {
     condition     = var.home_route == "" || contains(["/home", "/dashboard", "/setup", "/catalog"], var.home_route)
     error_message = "home_route must be empty or one of: /home, /dashboard, /setup, /catalog"
   }
+}
+
+variable "studio_enabled" {
+  description = "Expose the authoring Studio (/admin/studio). Set false to hide it and close its routes for this instance (plumbed to the app as AGNES_STUDIO_ENABLED)."
+  type        = bool
+  default     = true
 }
 
 variable "enable_watchdog" {

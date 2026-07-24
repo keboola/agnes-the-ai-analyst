@@ -42,6 +42,20 @@ _COHORT: dict[str, tuple[str, str]] = {
     # Markdown-first skill publish (studio Skill Builder direct-publish flow,
     # issue #688). CLI: `store publish-md`. MCP: `store_publish_markdown`.
     "/api/store/entities/from-markdown": ("store publish-md", "store_publish_markdown"),
+    # Full agent/skill lifecycle parity — an agent can discover, inspect,
+    # install/remove marketplace items and edit/delete its own store entities
+    # over any of the three surfaces. Binary siblings (ZIP upload/replace,
+    # photo, `store mine` bundle) stay CLI-only — see the grandfathered
+    # /api/store/entities POST path and _EXEMPT reasoning patterns.
+    "/api/marketplace/items": ("marketplace search", "marketplace_search"),
+    "/api/marketplace/flea/{entity_id}/detail": ("marketplace detail", "marketplace_detail"),
+    "/api/marketplace/curated/{marketplace_id}/{plugin_name}": ("marketplace detail", "marketplace_detail"),
+    "/api/marketplace/curated/{marketplace_id}/{plugin_name}/install": ("marketplace add", "marketplace_add"),
+    "/api/store/entities/{entity_id}/install": ("marketplace add", "marketplace_add"),
+    # PUT (metadata edit) → store_update; DELETE → store_delete. One cohort
+    # row per path — the MCP column names the edit tool; store_delete is
+    # asserted in FOUNDATION_TOOL_NAMES / test_mcp_http's exact-set check.
+    "/api/store/entities/{entity_id}": ("store update", "store_update"),
     # Collections — bring-your-files (Slice 2). The read surfaces are
     # triple-surface; the multipart-upload + file-mutation paths are _EXEMPT
     # below (binary upload has no MCP analogue).
@@ -93,6 +107,21 @@ _COHORT: dict[str, tuple[str, str]] = {
     # Agent-as-API monthly usage (agent-api V1b, Task 8). CLI
     # `agnes agent usage` + MCP `agent_usage` both map to this GET.
     "/api/v1/agents/{slug}/usage": ("agent usage", "agent_usage"),
+    # Hosted data apps control-plane (data-apps platform plan, Task 7/10/11) —
+    # list/get are any-authenticated-user (RBAC-filtered by view access);
+    # deploy/logs are owner-or-Admin. CLI landed in Task 10 (`agnes app …`),
+    # MCP tools in Task 11 — all three surfaces now agree.
+    "/api/data-apps": ("app list", "data_apps_list"),
+    "/api/data-apps/{slug}": ("app show", "data_app_get"),
+    "/api/data-apps/{slug}/deploy": ("app deploy", "data_app_deploy"),
+    "/api/data-apps/{slug}/logs": ("app logs", "data_app_logs"),
+    # Wave 3B draft-iteration model (Task 8) — CLI (`agnes app draft
+    # create/delete`, `agnes app git-credential`) and MCP tools
+    # (`data_app_create_draft`/`data_app_delete_draft`/`data_app_git_credential`)
+    # landed together; all three surfaces now agree.
+    "/api/data-apps/{slug}/drafts": ("app draft create", "data_app_create_draft"),
+    "/api/data-apps/{slug}/drafts/{draft_slug}": ("app draft delete", "data_app_delete_draft"),
+    "/api/data-apps/{slug}/git-credential": ("app git-credential", "data_app_git_credential"),
 }
 
 
@@ -352,6 +381,27 @@ _AGENT_MEMORY_ADMIN_REASON = (
     "posture as _AGENT_SCOPE_REASON and _AGENT_TOKENS_REASON above."
 )
 
+_DATA_APPS_REASON = (
+    "control-plane REST for hosted data apps (data-apps platform plan, Task 7). "
+    "CLI landed in Task 10 (`agnes app list/show/create/deploy/stop/delete/logs`, "
+    "cli/commands/data_apps.py); list/show/deploy/logs got MCP tools in Task 11 "
+    "and moved to _COHORT. `create`/`delete`/`stop` have no MCP analogue planned "
+    "(create/delete piggy-back on the list/show cohort paths' REST+CLI-only "
+    "methods; `stop` is its own path with no MCP tool — mirrors the "
+    "list(GET)/create(POST) and show(GET)/delete(DELETE) shared-path pattern "
+    "already used for /api/jobs and /api/collections/{collection_id})."
+)
+_DATA_APPS_SECRETS_REASON = (
+    "secrets are set once via an operator/automation flow (`PUT .../secrets`), "
+    "not a routine interactive analyst action — no CLI command planned (mirrors "
+    "the write-only /api/admin/datasource-secrets exemption) and no MCP analogue."
+)
+_DATA_APPS_READINESS_REASON = (
+    "polling primitive consumed by the ingress-proxy waking page "
+    "(app/api/data_apps_proxy.py's holding-page poll loop), not an interactive "
+    "analyst action; `agnes app show`/`agnes app open` (Task 10) cover the "
+    "human-facing state check. No CLI/MCP analogue planned."
+)
 _EXEMPT: dict[str, str] = {
     "/api/v1/agents/{agent_id}": _AGENT_DETAIL_REASON,
     "/api/v1/agents/{agent_id}/scope": _AGENT_SCOPE_REASON,
@@ -474,6 +524,38 @@ _EXEMPT: dict[str, str] = {
         "get-by-id glossary read, reachable via `agnes glossary show` — no "
         "MCP analogue (glossary_search is the agent-facing tool; an agent "
         "resolves a term by searching, not by a known id)"
+    ),
+    # Data apps control-plane REST (2026-07-21 data-apps platform plan,
+    # Task 7). `/api/data-apps` (list+create) and `/api/data-apps/{slug}`
+    # (show+delete) now carry the triple-surface contract in _COHORT via
+    # their GET methods (`data_apps_list`/`data_app_get`) — `create`/`delete`
+    # have no MCP analogue but piggy-back on the same path entries, the same
+    # shared-path pattern already used for /api/jobs (list+enqueue) and
+    # /api/collections/{collection_id} (show+delete-file). `deploy` and
+    # `logs` also moved to _COHORT (Task 11: `data_app_deploy`/
+    # `data_app_logs`). `stop` has its own path and no MCP tool planned.
+    # `secrets`/`readiness` have their own reasons below.
+    "/api/data-apps/{slug}/stop": _DATA_APPS_REASON,
+    "/api/data-apps/{slug}/secrets": _DATA_APPS_SECRETS_REASON,
+    "/api/data-apps/{slug}/readiness": _DATA_APPS_READINESS_REASON,
+    # git-credential/drafts got their CLI + MCP surfaces in wave 3B Task 8 —
+    # see the /api/data-apps/{slug}/drafts* and /git-credential entries in
+    # _COHORT above.
+    "/api/broker/data-apps": (
+        "broker replay surface for the sandboxed authoring agent; not a "
+        "user-facing API — internal sandbox->server route confined to the "
+        "/api/data-apps control-plane prefix, ticket-gated (not user auth) "
+        "like the other /api/broker/* routes. No analyst CLI/MCP analogue: "
+        "the agent calls the real /api/data-apps* endpoints through this "
+        "relay, which already carry their own triple-surface contract."
+    ),
+    # reap-idle is a scheduler-triggered admin maintenance op (Task 9) —
+    # mirrors the run-knowledge-digests/run-corporate-memory exemptions
+    # regardless of the CLI/MCP question above; no analyst CLI/MCP analogue.
+    "/api/data-apps/reap-idle": (
+        "scheduler-driven idle-app reaper trigger (data-apps platform Task 9) — "
+        "admin/scheduler maintenance op, mirrors the run-knowledge-digests / "
+        "run-corporate-memory exemptions; no analyst CLI/MCP analogue"
     ),
 }
 

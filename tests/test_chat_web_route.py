@@ -3,10 +3,10 @@
 Fixture pattern: build a minimal FastAPI app with the web router attached,
 set app.state.chat_config manually, and override get_current_user.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -37,6 +37,7 @@ def _make_app(*, chat_enabled: bool = True) -> FastAPI:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def _grant_chat_access(monkeypatch, tmp_path):
@@ -80,6 +81,7 @@ def logged_in_user():
 # Tests (per Task 9.1 Step 1)
 # ---------------------------------------------------------------------------
 
+
 def test_chat_route_html(api_client: TestClient, logged_in_user):
     r = api_client.get("/chat")
     assert r.status_code == 200
@@ -122,14 +124,50 @@ def test_can_chat_computed_without_conn_threaded():
     # Minimal ASGI scope + an app whose state carries an enabled chat_config.
     app = _NS(state=_NS(chat_config=_NS(enabled=True)))
     scope = {
-        "type": "http", "app": app, "method": "GET", "path": "/",
-        "query_string": b"", "headers": [], "server": ("test", 80),
-        "scheme": "http", "client": ("1.2.3.4", 9),
+        "type": "http",
+        "app": app,
+        "method": "GET",
+        "path": "/",
+        "query_string": b"",
+        "headers": [],
+        "server": ("test", 80),
+        "scheme": "http",
+        "client": ("1.2.3.4", 9),
     }
     request = Request(scope)
 
     # Mirror the common route call: user supplied, but NO conn threaded.
     ctx = _build_context(request, user=TEST_USER)
+    assert ctx["can_chat"] is True
+
+
+def test_chrome_ctx_includes_can_chat():
+    """Regression: pages rendered through ``_chrome_ctx`` (the studio pages,
+    /me/memory-mining, /admin/store/lint) dropped the Chat nav link — the
+    helper never computed ``can_chat``, so the header's ``{% if can_chat %}``
+    gate saw Jinja-undefined and hid the link while every ``_build_context``
+    page showed it. Visibility must be identical across the two context
+    builders. ``has_explicit_grant`` is patched True by the autouse fixture."""
+    from types import SimpleNamespace as _NS
+
+    from starlette.requests import Request
+    from app.web.router import _chrome_ctx
+
+    app = _NS(state=_NS(chat_config=_NS(enabled=True)))
+    scope = {
+        "type": "http",
+        "app": app,
+        "method": "GET",
+        "path": "/admin/studio",
+        "query_string": b"",
+        "headers": [],
+        "server": ("test", 80),
+        "scheme": "http",
+        "client": ("1.2.3.4", 9),
+    }
+    request = Request(scope)
+
+    ctx = _chrome_ctx(request, TEST_USER)
     assert ctx["can_chat"] is True
 
 
@@ -151,12 +189,68 @@ def test_can_chat_hidden_for_admin_without_explicit_grant(monkeypatch):
 
     app = _NS(state=_NS(chat_config=_NS(enabled=True)))
     scope = {
-        "type": "http", "app": app, "method": "GET", "path": "/",
-        "query_string": b"", "headers": [], "server": ("test", 80),
-        "scheme": "http", "client": ("1.2.3.4", 9),
+        "type": "http",
+        "app": app,
+        "method": "GET",
+        "path": "/",
+        "query_string": b"",
+        "headers": [],
+        "server": ("test", 80),
+        "scheme": "http",
+        "client": ("1.2.3.4", 9),
     }
     request = Request(scope)
 
     admin_user = {"id": "admin1", "email": "admin@test.com", "is_admin": True}
     ctx = _build_context(request, user=admin_user)
     assert ctx["can_chat"] is False
+
+
+def test_studio_page_keeps_chat_nav_tab(api_client: TestClient, logged_in_user):
+    """Regression: the Studio landing page (``/admin/studio``) renders via the
+    reduced-context ``_chrome_ctx`` builder, which used to omit ``can_chat``.
+    The header's ``{% if can_chat %}`` gate then evaluated undefined→falsy and
+    the Chat nav tab disappeared the moment you clicked Studio — even though the
+    user had chat access (patched True by the autouse fixture). It must stay.
+    """
+    r = api_client.get("/admin/studio")
+    assert r.status_code == 200
+    # Chat nav tab present (the thing that regressed) …
+    assert 'data-tour="nav-chat"' in r.text
+    assert 'href="/chat"' in r.text
+    # … alongside the Studio tab, proving we didn't just render a bare page.
+    assert 'data-tour="nav-studio"' in r.text
+    # And the header carries a real brand object, not the 'Data Analyst Portal'
+    # fallback that a missing ``config`` produced on _chrome_ctx pages.
+    assert "Data Analyst Portal" not in r.text
+
+
+def test_chrome_ctx_matches_build_context_can_chat_and_config():
+    """Anti-drift unit test: the two chrome builders must agree on ``can_chat``
+    and both must provide ``config`` for the SAME user. Divergence here is
+    exactly what hid the Chat tab (and flipped the brand) on the Studio pages,
+    so pin them together.
+    """
+    from types import SimpleNamespace as _NS
+
+    from starlette.requests import Request
+    from app.web.router import _build_context, _chrome_ctx
+
+    app = _NS(state=_NS(chat_config=_NS(enabled=True)))
+    scope = {
+        "type": "http", "app": app, "method": "GET", "path": "/admin/studio",
+        "query_string": b"", "headers": [], "server": ("test", 80),
+        "scheme": "http", "client": ("1.2.3.4", 9),
+    }
+    request = Request(scope)
+
+    full = _build_context(request, user=TEST_USER)
+    chrome = _chrome_ctx(request, TEST_USER)
+
+    # can_chat is patched True by the autouse fixture; the point is that the two
+    # builders return the SAME value, not the specific truthiness.
+    assert chrome["can_chat"] == full["can_chat"] is True
+    # Both expose a config object with the branding attributes the header reads.
+    assert chrome["config"] is not None
+    assert hasattr(chrome["config"], "INSTANCE_NAME")
+    assert hasattr(chrome["config"], "LOGO_SVG")

@@ -203,6 +203,23 @@ class JobsPgRepository:
         assert row is not None  # inserted (first try or a retry), or the conflicting row was found
         result = self._decode(dict(row))
         result["deduped"] = deduped
+        if not deduped:
+            # Low-latency worker wakeup (three-plane §3.3): a fresh enqueue
+            # pings the ``agnes_jobs`` channel so an idle worker lane slot
+            # (LISTENing via ``app.worker.wakeup``) claims immediately
+            # instead of waiting out its poll interval. Separate short
+            # transaction — a NOTIFY need not be atomic with the insert (a
+            # spurious early wake just costs one claim attempt), and this
+            # keeps it clear of the ON CONFLICT retry loop above. Channel
+            # literal must match ``app.worker.wakeup.NOTIFY_CHANNEL``;
+            # duplicated rather than imported so this repo carries no
+            # dependency on the ``app`` package. Best-effort: a NOTIFY
+            # failure must never fail the enqueue (polling is the floor).
+            try:
+                with self._engine.begin() as conn:
+                    conn.execute(sa.text("NOTIFY agnes_jobs"))
+            except Exception:
+                pass
         return result
 
     def get(self, job_id: str) -> Optional[Dict[str, Any]]:

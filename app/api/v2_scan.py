@@ -179,10 +179,21 @@ def _build_bq_sql(
     we get here, but reserved words (`order`, `group`, `timestamp`, …) still
     need backticks to parse as identifiers in BQ.
     """
+    from connectors.bigquery.extractor import parse_bq_fqn
     from src.identifier_validation import validate_quoted_identifier
 
-    bucket = table_row.get("bucket") or ""
-    src_table = table_row.get("source_table") or req.table_id
+    # v51 (issue #343): ``bq_fqn`` carries a per-row fully-qualified path and
+    # overrides the legacy configured-project + bucket + source_table triplet
+    # the same precedence the extractor applies when building master views.
+    # Without it a row whose data lives in another project resolves to a
+    # non-existent table and the row is unscannable. Malformed values raise
+    # rather than falling back, so a typo can't silently scan a wrong table.
+    parsed_fqn = parse_bq_fqn(table_row.get("bq_fqn"))
+    if parsed_fqn is not None:
+        project_id, bucket, src_table = parsed_fqn
+    else:
+        bucket = table_row.get("bucket") or ""
+        src_table = table_row.get("source_table") or req.table_id
     if not (
         validate_quoted_identifier(project_id, "BQ project")
         and validate_quoted_identifier(bucket, "BQ dataset")

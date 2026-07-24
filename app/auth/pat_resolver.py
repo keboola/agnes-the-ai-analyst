@@ -42,6 +42,7 @@ ResolutionReason = Literal[
     "pat_mismatch",
     "agent_pat_wrong_surface",
     "agent_pat_agent_deleted",
+    "pat_scope_forbidden",
 ]
 
 # Path prefixes an agent PAT (typ="agent_pat") is allowed to authenticate
@@ -80,6 +81,17 @@ def _stash_payload(request: Optional[Request], payload: dict) -> None:
             pass
 
 
+# Scope prefix minted by `app.api.data_apps._mint_git_credential` for the
+# data-app git-over-HTTP authoring surface. A token carrying this scope must
+# never authenticate the JSON API (or any other git-over-HTTP surface, e.g.
+# the marketplace's) — only `app/api/data_apps_git.py` may pass
+# `allow_data_app_git_scope=True` to accept it. Without this check the
+# credential is, in practice, a full-privilege user PAT: nothing else reads
+# the `scope` claim, so a sandboxed authoring agent holding it could call any
+# non-admin (or admin, if the owner is Admin) REST/MCP endpoint.
+DATA_APP_GIT_SCOPE_PREFIX = "data-app-git:"
+
+
 def _client_ip(request: Optional[Request]) -> Optional[str]:
     """See app/auth/dependencies._client_ip — same trust model (Caddy-fronted)."""
     if request is None:
@@ -95,6 +107,8 @@ def resolve_token_to_user(
     conn: Optional[duckdb.DuckDBPyConnection],
     token: str,
     request: Optional[Request] = None,
+    *,
+    allow_data_app_git_scope: bool = False,
 ) -> Tuple[Optional[dict], Optional[ResolutionReason]]:
     """Validate a bearer token and return (user_dict, None) on success.
 
@@ -106,6 +120,12 @@ def resolve_token_to_user(
     ``conn`` is retained for signature stability — repositories are looked
     up via the factory in ``src.repositories`` (DuckDB or Postgres per
     ``AGNES_DB_URL``), so this argument is ignored.
+
+    ``allow_data_app_git_scope`` gates whether a token carrying the
+    ``data-app-git:<slug>`` scope (minted by
+    ``app.api.data_apps._mint_git_credential``) is accepted. Every caller
+    defaults to ``False`` (fail closed) except ``app/api/data_apps_git.py``,
+    the one surface that credential is meant to authenticate.
     """
     if not token:
         return None, "no_token"
@@ -113,6 +133,10 @@ def resolve_token_to_user(
     payload = verify_token(token)
     if not payload:
         return None, "invalid_token"
+
+    scope = payload.get("scope") or ""
+    if scope.startswith(DATA_APP_GIT_SCOPE_PREFIX) and not allow_data_app_git_scope:
+        return None, "pat_scope_forbidden"
 
     if payload.get("typ") == "agent_pat":
         # Callers that omit `request` (git smart-HTTP in

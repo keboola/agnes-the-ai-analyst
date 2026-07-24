@@ -1056,8 +1056,19 @@
                             </label>
                             <input type="text" class="form-input" id="bqDataset" list="bqDatasetList" placeholder="e.g. analytics">
                             <datalist id="bqDatasetList"></datalist>
-                            <div class="form-hint">BigQuery dataset name (no project prefix — read from instance.yaml).
+                            <div class="form-hint">BigQuery dataset name (no project prefix — read from instance.yaml,
+                                or from the Project field below for Live access to another project).
                                 Click <strong>Discover</strong> to populate the autocomplete from the BQ project's dataset list.</div>
+                        </div>
+                        <div class="form-group bq-access-live">
+                            <label class="form-label" for="bqProject">Project <span class="optional">(optional)</span></label>
+                            <input type="text" class="form-input" id="bqProject" placeholder="defaults to the configured data project">
+                            <div class="form-hint">Live access only — leave blank unless the table lives in a
+                                <strong>different</strong> GCP project than the one configured in server config. Filling
+                                it in registers the row with an explicit <code>project.dataset.table</code> path, which
+                                is the only supported way to reach another project: analyst SQL cannot name one
+                                directly. Not available for synced tables — the scheduled copy always reads the
+                                configured project.</div>
                         </div>
                         <div class="form-group bq-source-table">
                             <label class="form-label" for="bqSourceTable">
@@ -1246,6 +1257,15 @@
                             <input type="text" class="form-input" id="editBqDataset"
                                    list="editBqDatasetList" placeholder="e.g. analytics">
                             <datalist id="editBqDatasetList"></datalist>
+                        </div>
+                        <div class="form-group bq-edit-access-live" style="display:none;">
+                            <label class="form-label" for="editBqProject">Project <span class="optional">(optional)</span></label>
+                            <input type="text" class="form-input" id="editBqProject" placeholder="defaults to the configured data project">
+                            <div class="form-hint">Live access only — leave blank unless the table lives in a
+                                <strong>different</strong> GCP project than the one configured in server config. Filling
+                                it in (re)composes an explicit <code>project.dataset.table</code> path; clearing it
+                                reverts to the configured project. Not available for synced tables — the scheduled
+                                copy always reads the configured project.</div>
                         </div>
                         <div class="form-group bq-edit-source-table" style="display:none;">
                             <label class="form-label" for="editBqSourceTable">
@@ -3665,6 +3685,7 @@
         document.getElementById('bqDataset').value = table.bucket || '';
         document.getElementById('bqSourceTable').value = table.source_table || table.name || '';
         document.getElementById('bqViewName').value = table.name || '';
+        document.getElementById('bqProject').value = '';
         document.getElementById('bqDescription').value = '';
         document.getElementById('bqFolder').value = '';
         document.getElementById('bqSyncSchedule').value = '';
@@ -4450,6 +4471,15 @@
 
         var dataset = document.getElementById('bqDataset').value.trim();
         var sourceTable = document.getElementById('bqSourceTable').value.trim();
+        // Optional cross-project override. Blank keeps the legacy path
+        // (configured project + bucket + source_table); filled in sends an
+        // explicit `bq_fqn`, which the extractor, the --remote rewriter and
+        // /api/v2/scan all resolve in preference to that triplet.
+        var projectEl = document.getElementById('bqProject');
+        var project = projectEl ? projectEl.value.trim() : '';
+        var bqFqn = (project && dataset && sourceTable)
+            ? project + '.' + dataset + '.' + sourceTable
+            : null;
 
         if (accessMode === 'synced' && syncMode === 'whole') {
             // Whole-table sync. We don't ship the project to the browser, so
@@ -4488,6 +4518,7 @@
             source_type: 'bigquery',
             bucket: dataset,
             source_table: sourceTable,
+            bq_fqn: bqFqn,
             query_mode: 'remote',
             profile_after_sync: false,
             description: description,
@@ -4778,6 +4809,29 @@
         if (el) el.checked = true;
     }
 
+    // Recover the project segment from a stored bq_fqn ("project.dataset.
+    // table") for the Edit modal's Project field. parse_bq_fqn (server
+    // side) requires exactly three non-empty, dot-free segments, so the
+    // text before the first dot is always the project.
+    function _projectFromBqFqn(fqn) {
+        if (!fqn) return '';
+        var idx = fqn.indexOf('.');
+        return idx > -1 ? fqn.substring(0, idx) : '';
+    }
+
+    // Recover the dataset segment (middle of 3) from a stored bq_fqn.
+    // `bq_fqn` intentionally decouples the physical BigQuery dataset from
+    // the RBAC/UX `bucket` label (issue #343) — a row can legitimately have
+    // bucket !== bq_fqn's own dataset segment. saveBqTabEdit needs this to
+    // avoid silently overwriting a decoupled row's real dataset with the
+    // bucket label on an unrelated edit (see the Dataset field's prefill,
+    // which shows `bucket`, not this).
+    function _datasetFromBqFqn(fqn) {
+        if (!fqn) return '';
+        var parts = fqn.split('.');
+        return parts.length === 3 ? parts[1] : '';
+    }
+
     // ── Edit-modal architecture (v55 review of #L61) ──────────────────
     // We dispatch by ``table.source_type`` to one of three per-source
     // modals because their inner forms genuinely differ:
@@ -4865,6 +4919,19 @@
         }
         document.getElementById('editBqDataset').value = preDataset;
         document.getElementById('editBqSourceTable').value = preSourceTable;
+        // Cross-project rows (Live access only — see saveBqTabEdit) carry
+        // their project in bq_fqn ("project.dataset.table") rather than a
+        // dedicated column. Surface it so re-saving after a Dataset/Source
+        // Table edit recomposes bq_fqn instead of silently keeping the old
+        // one (exclude_unset on the PUT means an omitted key persists
+        // unchanged).
+        document.getElementById('editBqProject').value = _projectFromBqFqn(table.bq_fqn);
+        // Pristine snapshot for saveBqTabEdit's dataset-unchanged check —
+        // see that function for why bq_fqn's own dataset segment (not the
+        // Dataset field's bucket-label prefill) must be reused when the
+        // admin didn't actually retype Dataset.
+        _editBqOriginalBqFqn = table.bq_fqn || '';
+        _editBqOriginalDataset = preDataset;
         document.getElementById('editBqSourceQuery').value = sq;
         document.getElementById('editBqSyncSchedule').value = table.sync_schedule || '';
         document.getElementById('editBqServerOnly').checked = !!table.server_only;
@@ -4902,6 +4969,12 @@
     var _editGenericOriginalPackageIds = new Set();
     var _editBqOriginalPackageIds = new Set();
     var _editKbOriginalPackageIds = new Set();
+
+    // The row's pristine bq_fqn at modal-open time, so saveBqTabEdit can
+    // tell whether the admin actually retyped the Dataset field or is just
+    // re-saving an unrelated change — see saveBqTabEdit's Live branch.
+    var _editBqOriginalBqFqn = '';
+    var _editBqOriginalDataset = '';
 
     function _openEditGenericModal(table) {
         // Catch-all fallback for source_types that aren't bigquery or keboola
@@ -5017,6 +5090,9 @@
         var accessMode = _getEditBqAccessMode();
         document.querySelectorAll('.bq-edit-access-synced').forEach(function(el) {
             el.style.display = (accessMode === 'synced') ? '' : 'none';
+        });
+        document.querySelectorAll('.bq-edit-access-live').forEach(function(el) {
+            el.style.display = (accessMode === 'live') ? '' : 'none';
         });
 
         if (accessMode === 'synced') {
@@ -5182,12 +5258,34 @@
             payload.bucket = dataset || null;
             payload.source_table = sourceTable || null;
         } else {
-            // Live.
+            // Live. Recompose bq_fqn from the Project field the same way
+            // _buildBigQueryPayload does at register time — sent explicitly
+            // (not omitted) so a blank Project clears a stale cross-project
+            // bq_fqn instead of the PUT's exclude_unset preserving it
+            // unchanged after a Dataset/Source Table edit.
+            var project = document.getElementById('editBqProject').value.trim();
+            // bq_fqn intentionally decouples the physical BigQuery dataset
+            // from the RBAC/UX `bucket` label the Dataset field shows
+            // (issue #343) — a row can have bucket !== bq_fqn's own dataset
+            // segment. If the admin didn't actually retype Dataset (still
+            // equals its bucket-label prefill), reuse the pristine bq_fqn's
+            // own dataset segment instead of `dataset`, so an unrelated
+            // edit (description, Source Table, …) can't silently overwrite
+            // a decoupled row's real dataset with the bucket label.
+            var datasetForFqn = dataset;
+            if (_editBqOriginalBqFqn && dataset === _editBqOriginalDataset) {
+                var origFqnDataset = _datasetFromBqFqn(_editBqOriginalBqFqn);
+                if (origFqnDataset) datasetForFqn = origFqnDataset;
+            }
+            var bqFqn = (project && datasetForFqn && sourceTable)
+                ? project + '.' + datasetForFqn + '.' + sourceTable
+                : null;
             payload.query_mode = 'remote';
             payload.server_only = false;
             payload.bucket = dataset || null;
             payload.source_table = sourceTable || null;
             payload.source_query = null;
+            payload.bq_fqn = bqFqn;
         }
 
         (async function () {

@@ -954,3 +954,227 @@ class TestBundleUpload:
         )
         assert hits.status_code == 200
         assert any("notes.md" in str(h) for h in hits.json()["results"])
+
+
+class TestFileUpsert:
+    """Upsert-on-upload: `paths` form field gives a file a logical identity so
+    re-uploading the same (corpus_id, path) replaces instead of duplicating."""
+
+    def _create_and_grant(self, seeded_app, name: str = "Upsert Target"):
+        c = seeded_app["client"]
+        cr = c.post(
+            "/api/collections",
+            json={"name": name},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        corpus_id = cr.json()["id"]
+        _seed_collection_grant(corpus_id, "analyst1")
+        return corpus_id
+
+    def test_reupload_same_path_replaces_row(self, seeded_app):
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app, "Upsert Replace")
+
+        first = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files={"files": ("a.md", io.BytesIO(b"alpha"), "text/markdown")},
+            data={"paths": "docs/a.md"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert first.status_code == 201, first.text
+        fid1 = first.json()[0]["file_id"]
+        assert first.json()[0]["path"] == "docs/a.md"
+
+        second = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files={"files": ("a.md", io.BytesIO(b"bravo beta gamma"), "text/markdown")},
+            data={"paths": "docs/a.md"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert second.status_code == 201, second.text
+        fid2 = second.json()[0]["file_id"]
+        assert fid2 != fid1  # replaced, not updated-in-place
+
+        listing = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        files = listing.json()["files"]
+        # Exactly one row survives for that path — the new one.
+        assert len(files) == 1
+        assert files[0]["file_id"] == fid2
+        assert files[0]["path"] == "docs/a.md"
+        assert files[0]["size_bytes"] == len(b"bravo beta gamma")
+
+    def test_uploads_without_path_do_not_upsert(self, seeded_app):
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app, "No Path No Upsert")
+        for _ in range(2):
+            r = c.post(
+                f"/api/collections/{corpus_id}/files",
+                files={"files": ("same.md", io.BytesIO(b"x"), "text/markdown")},
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            assert r.status_code == 201, r.text
+            assert r.json()[0]["path"] is None
+        listing = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        # Legacy behavior: two rows, no replacement.
+        assert len(listing.json()["files"]) == 2
+
+    def test_distinct_paths_coexist(self, seeded_app):
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app, "Distinct Paths")
+        for p in ("apis/x.md", "concepts/x.md"):
+            r = c.post(
+                f"/api/collections/{corpus_id}/files",
+                files={"files": ("x.md", io.BytesIO(b"data"), "text/markdown")},
+                data={"paths": p},
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            assert r.status_code == 201, r.text
+        listing = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        # Same basename, different logical path → both kept (no collision).
+        paths = {f["path"] for f in listing.json()["files"]}
+        assert paths == {"apis/x.md", "concepts/x.md"}
+
+    def test_reupload_bundle_same_path_purges_old_children(self, seeded_app):
+        """Re-uploading a zip at the same path must not orphan the previous
+        archive's extracted member rows."""
+        import zipfile
+
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app, "Bundle Upsert")
+
+        def _zip(members: dict[str, str]) -> io.BytesIO:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                for name, body in members.items():
+                    zf.writestr(name, body)
+            buf.seek(0)
+            return buf
+
+        first = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files={"files": ("dump.zip", _zip({"a.md": "# A", "b.md": "# B"}), "application/zip")},
+            data={"paths": "bundles/dump.zip"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert first.status_code == 201, first.text
+        listing = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        ).json()["files"]
+        # archive + 2 members
+        assert len(listing) == 3
+
+        # Re-upload a different archive (one member) at the same logical path.
+        second = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files={"files": ("dump.zip", _zip({"c.md": "# C"}), "application/zip")},
+            data={"paths": "bundles/dump.zip"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert second.status_code == 201, second.text
+
+        files = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        ).json()["files"]
+        # Old archive + its 2 members purged; new archive + 1 member remain.
+        assert len(files) == 2, [f["filename"] for f in files]
+        by_name = {f["filename"]: f for f in files}
+        assert set(by_name) == {"dump.zip", "c.md"}
+        # No orphaned member points at a vanished archive.
+        ids = {f["file_id"] for f in files}
+        for f in files:
+            if f["parent_file_id"] is not None:
+                assert f["parent_file_id"] in ids
+
+    def test_replace_keeps_blob_shared_with_another_file(self, seeded_app):
+        """A content-addressed blob shared by two files (different paths, same
+        bytes) survives when one of them is replaced."""
+        import os
+
+        from src.repositories import corpus_files_repo
+
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app, "Shared Blob")
+        shared = b"identical shared bytes"
+
+        for p in ("a.md", "b.md"):
+            r = c.post(
+                f"/api/collections/{corpus_id}/files",
+                files={"files": (p, io.BytesIO(shared), "text/markdown")},
+                data={"paths": p},
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            assert r.status_code == 201, r.text
+
+        row_b = corpus_files_repo().get_by_path(corpus_id, "b.md")
+        blob_b = row_b["storage_path"]
+        assert blob_b and os.path.exists(blob_b)
+
+        # Replace a.md with different content — must not wipe the shared blob.
+        r = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files={"files": ("a.md", io.BytesIO(b"now different"), "text/markdown")},
+            data={"paths": "a.md"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert r.status_code == 201, r.text
+
+        # b.md still points at the (still-present) shared blob.
+        assert os.path.exists(blob_b)
+        assert corpus_files_repo().get_by_path(corpus_id, "b.md")["storage_path"] == blob_b
+
+    def test_paths_length_mismatch_rejected(self, seeded_app):
+        """`paths` must pair 1:1 with `files`; a misaligned list is a 400."""
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app, "Paths Mismatch")
+        resp = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files=[
+                ("files", ("a.md", io.BytesIO(b"a"), "text/markdown")),
+                ("files", ("b.md", io.BytesIO(b"b"), "text/markdown")),
+            ],
+            data={"paths": "docs/only-one.md"},  # 1 path for 2 files
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 400, resp.text
+        assert "paths_length_mismatch" in resp.text
+        # Nothing was created.
+        listing = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert listing.json()["files"] == []
+
+    def test_duplicate_path_in_same_batch_rejected(self, seeded_app):
+        """Two files in one request sharing a path would have the second
+        purge the first's already-queued row mid-request — reject up front
+        instead of silently dropping a file (Devin Review on #1004)."""
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app, "Duplicate Path Batch")
+        resp = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files=[
+                ("files", ("a.md", io.BytesIO(b"a"), "text/markdown")),
+                ("files", ("b.md", io.BytesIO(b"b"), "text/markdown")),
+            ],
+            data={"paths": ["docs/same.md", "docs/same.md"]},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 400, resp.text
+        assert "duplicate_path_in_batch" in resp.text
+        # Nothing was created.
+        listing = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert listing.json()["files"] == []

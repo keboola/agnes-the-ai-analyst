@@ -1123,9 +1123,12 @@ const _TOOL_RESULT_PREVIEW_ROWS = 5;
 const _TOOL_RESULT_TEXT_PREVIEW_CHARS = 280;
 
 function _toolCallId(frame) {
-  // Prefer a unique id (e.g. tool_use_id) so two concurrent calls to
-  // the same tool don't share a DOM node; fall back to the tool name.
-  return frame.id || frame.tool_use_id || frame.tool;
+  // Pair tool_call ↔ tool_result via the runner's dedicated tool_use_id:
+  // frame.id is NOT usable — the server's frame envelope overwrites it
+  // with "chat_id:seq", which differs between the call and result frames,
+  // so pairing on it left every tool block stuck on "running…" forever.
+  // Fall back to id (pre-envelope runners) then tool name.
+  return frame.tool_use_id || frame.id || frame.tool;
 }
 
 function _summarizeArgs(args) {

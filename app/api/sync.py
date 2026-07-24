@@ -151,6 +151,23 @@ def _materialize_table(
     )
 
 
+def _is_permanent_upstream_error(exc: Exception) -> bool:
+    """True when retrying the table can never succeed — the upstream object
+    is gone (Keboola Storage ``storage.tables.notFound`` → HTTP 404, e.g. a
+    table deleted or moved to another bucket after registration).
+
+    Used to stamp ``permanent: True`` on the per-table error entry so
+    ``_run_sync`` can exclude these from the job-failure decision: a
+    ``data-refresh`` job that retries a deleted upstream table stays red
+    forever and masks real (transient) failures from monitoring. The fix for
+    a permanent failure is registry surgery (re-point or unregister), which a
+    retry loop cannot perform.
+    """
+    from connectors.keboola.storage_api import StorageApiError
+
+    return isinstance(exc, StorageApiError) and exc.status == 404
+
+
 def _run_materialized_pass(
     conn: duckdb.DuckDBPyConnection,
     bq,
@@ -470,7 +487,15 @@ def _run_materialized_pass(
             continue
         except Exception as e:
             logger.exception("Materialize failed for %s", ref_name)
-            summary["errors"].append({"table": ref_name, "error": str(e)})
+            entry: dict = {"table": ref_name, "error": str(e)}
+            if _is_permanent_upstream_error(e):
+                # Upstream object is gone — retries can't heal this row, so
+                # mark it permanent; _run_sync excludes these from the
+                # job-failure decision (registry surgery is the fix, not a
+                # retry). sync_state still records the error below, so the
+                # admin registry UI keeps surfacing it per-table.
+                entry["permanent"] = True
+            summary["errors"].append(entry)
             state.set_error(ref_name, str(e))
             continue
 
@@ -531,12 +556,16 @@ def _run_sync(
 
     Returns:
         ``True`` if the sync ran to completion with no fatal exception and
-        no per-table failure recorded in ``collected_errors``; ``False`` if
-        a fatal exception was caught (subprocess timeout or otherwise) OR
-        any per-table failure was recorded; ``None`` if this call
-        short-circuited because another ``_run_sync`` already held
-        ``_sync_lock`` in this same process (a no-op, not a failure — the
-        in-flight run produces its own outcome).
+        no *transient* per-table failure recorded in ``collected_errors``
+        (entries stamped ``permanent: True`` — upstream object deleted, see
+        ``_is_permanent_upstream_error`` — do not fail the run: retrying
+        cannot heal them, and they stay visible via per-table ``sync_state``
+        errors + the operator notifier); ``False`` if a fatal exception was
+        caught (subprocess timeout or otherwise) OR any transient per-table
+        failure was recorded; ``None`` if this call short-circuited because
+        another ``_run_sync`` already held ``_sync_lock`` in this same
+        process (a no-op, not a failure — the in-flight run produces its
+        own outcome).
 
         This function used to swallow every failure internally (log +
         best-effort webhook notify) and return nothing — fine for the old
@@ -1090,9 +1119,23 @@ sys.exit(compute_exit_code(result, len(configs)))
                 logger.exception("sync-failure notifier raised on per-table path")
 
         # Honest outcome for the `data-refresh` job path (see docstring):
-        # a clean run (no fatal exception below, no per-table failures
-        # collected above) is the only case that returns True.
-        return not collected_errors
+        # only *transient* per-table failures flip the run to False (job
+        # 'failed', retry engages). Entries stamped `permanent: True`
+        # (upstream object gone — see _is_permanent_upstream_error) are
+        # excluded: retrying can never heal them, so failing the job would
+        # keep it red forever and mask real failures from monitoring. They
+        # stay visible via sync_state per-table errors + the operator
+        # notifier above.
+        transient_errors = [e for e in collected_errors if not e.get("permanent")]
+        if collected_errors and not transient_errors:
+            logger.warning(
+                "sync completed with %d permanently-failing table(s) (upstream "
+                "object gone): %s — not failing the data-refresh job; re-point "
+                "or unregister these registry rows",
+                len(collected_errors),
+                ", ".join(str(e.get("table")) for e in collected_errors),
+            )
+        return not transient_errors
 
     except subprocess.TimeoutExpired as e:
         # Outer-handler fallback for any subprocess.run call site (e.g.

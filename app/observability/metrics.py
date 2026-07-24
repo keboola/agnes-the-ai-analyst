@@ -250,6 +250,23 @@ job_failures_total = Counter(
     registry=REGISTRY,
 )
 
+#: Spec §3.7 metrics list ("DuckLake snapshot age"). Populated by
+#: `app.worker.kinds._run_ducklake_maintenance` after each maintenance
+#: pass — NOT a scrape-time Collector like `agnes_jobs_queued`, since a
+#: DuckLake snapshot's age only ever changes on the maintenance job's own
+#: (daily) cadence; a scrape-time query would pay a DuckLake round trip on
+#: every `/metrics` poll to answer a value that is stale between
+#: maintenance runs regardless. Absent entirely when `analytics.backend`
+#: is not `ducklake` (the maintenance handler no-ops before ever calling
+#: `record_ducklake_snapshot_age`).
+ducklake_snapshot_age_seconds = Gauge(
+    "agnes_ducklake_snapshot_age_seconds",
+    "Age in seconds of the newest DuckLake snapshot, refreshed each time "
+    "the ducklake-maintenance job runs. Absent when analytics.backend != ducklake.",
+    ["role", "replica"],
+    registry=REGISTRY,
+)
+
 
 def replica_id() -> str:
     """Stable per-process identity for multi-replica scrape disambiguation."""
@@ -372,6 +389,17 @@ def end_job_running(kind: str, lane: str) -> None:
         worker_lane_active.labels(lane=lane, role=role, replica=_REPLICA_ID).dec()
     except Exception:
         logger.exception("metrics: end_job_running failed (non-fatal)")
+
+
+def record_ducklake_snapshot_age(age_seconds: float) -> None:
+    """Record the current DuckLake snapshot age, in seconds — called by
+    `app.worker.kinds._run_ducklake_maintenance` after a maintenance pass
+    completes. Never raises — a metrics bug must never fail the
+    maintenance job."""
+    try:
+        ducklake_snapshot_age_seconds.labels(role=role_label(), replica=_REPLICA_ID).set(age_seconds)
+    except Exception:
+        logger.exception("metrics: record_ducklake_snapshot_age failed (non-fatal)")
 
 
 class _QueuedJobsCollector:

@@ -96,8 +96,26 @@ _FOUNDATION_TOOL_NAMES = register_foundation_tools(mcp, base_url=_BASE, headers_
 # @mcp.tool() decorator returns the original function unchanged, so the
 # implementation lives in foundation_tools.py but stays reachable here.
 for _name in _FOUNDATION_TOOL_NAMES:
-    globals()[_name] = mcp._tool_manager.get_tool(_name).fn
+    _tool = mcp._tool_manager.get_tool(_name)
+    assert _tool is not None, f"foundation tool {_name!r} missing after registration"
+    globals()[_name] = _tool.fn
 del _name
+
+
+_query_param_token_warned = False
+
+
+def _warn_query_param_token_once() -> None:
+    """Warn once per process when an MCP SSE request authenticates via the
+    ?token= query param (the token then lands in access logs — CWE-598)."""
+    global _query_param_token_warned
+    if not _query_param_token_warned:
+        _query_param_token_warned = True
+        logger.warning(
+            "MCP SSE auth used the ?token= query param — the token appears in "
+            "access logs (CWE-598). Prefer the Authorization header; configure "
+            "the reverse proxy to redact the 'token' query param from logs."
+        )
 
 
 # ── auth middleware ─────────────────────────────────────────────────────────────
@@ -125,6 +143,13 @@ class _AuthMiddleware:
             t = qs.get("token", [""])[0]
             if t:
                 auth = f"bearer {t}"
+                # CWE-598: a token in the query string is captured by every
+                # request-logging intermediary (reverse proxy, uvicorn access
+                # log, SIEM). We keep the fallback for header-incapable SSE GET
+                # clients, but warn once so operators configure log redaction /
+                # prefer the Authorization header. (Full fix — a short-lived
+                # header-exchanged connect ticket — is tracked as a follow-up.)
+                _warn_query_param_token_once()
 
         if not auth.lower().startswith("bearer "):
             await _send_401(scope, send)

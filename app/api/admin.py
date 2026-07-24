@@ -410,6 +410,29 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             "kind": "object",
             "hint": "BigQuery connection knobs (read more in docs/DEPLOYMENT.md)",
             "fields": {
+                "project": {
+                    "kind": "string",
+                    "hint": (
+                        "GCP project holding the data. Every registered BigQuery "
+                        "row resolves under it unless the row sets `bq_fqn` "
+                        "(`project.dataset.table`), which overrides all three "
+                        "parts for that row alone. Register a table living in "
+                        "another project that way rather than repointing this "
+                        "global. Analyst `--remote` SQL may only name this "
+                        "project directly; other projects are reachable only "
+                        "through a registered row."
+                    ),
+                },
+                "location": {
+                    "kind": "string",
+                    "hint": (
+                        "BigQuery location/region the datasets live in (e.g. "
+                        "`us-central1`, `EU`). Must match the data's actual "
+                        "location: a mismatch surfaces as `404 Not found: "
+                        "Table ... was not found in location <location>` even "
+                        "when the table exists."
+                    ),
+                },
                 "billing_project": {
                     "kind": "string",
                     "hint": (
@@ -930,7 +953,15 @@ _SECRET_KEY_PATTERNS: tuple[str, ...] = (
     "secret",
     "token",
     "password",
+    "passwd",
     "api_key",
+    # #19 hardening: mask credentials stored under keys that the original
+    # four-pattern list missed — private keys, generic credential fields, and
+    # DB DSNs with embedded userinfo. ("pat" is intentionally omitted: it would
+    # substring-match innocuous keys like "path"/"data_path" and over-redact.)
+    "private",
+    "credential",
+    "dsn",
 )
 
 
@@ -2575,13 +2606,44 @@ def _materialize_bigquery_extract_bg() -> None:
         )
 
 
+def _schedule_bq_materialize(background: BackgroundTasks) -> bool:
+    """Route a fire-and-forget BQ post-register/update rebuild to the right
+    executor.
+
+    Worker-role process (single-box ``all``) → FastAPI BackgroundTask, the
+    original behavior. Process WITHOUT the worker role (role-split ``api``
+    replica) → enqueue the ``analytics-rebuild`` job so the worker plane does
+    the write — the api plane must stay analytics-write-free (three-plane
+    spec §3.1). Idempotency-keyed so a burst of registers/updates coalesces
+    into one queued rebuild (the rebuild is registry-wide anyway).
+
+    Returns ``True`` when the work was enqueued (job path), ``False`` when it
+    was scheduled on the BackgroundTask (in-process path).
+    """
+    from app.roles import Role, role_enabled
+
+    if role_enabled(Role.WORKER):
+        background.add_task(_materialize_bigquery_extract_bg)
+        return False
+    from src.repositories import jobs_repo
+
+    row = jobs_repo().enqueue("analytics-rebuild", payload={}, idempotency_key="analytics-rebuild")
+    logger.info(
+        "api-role replica: BQ rebuild enqueued as analytics-rebuild job %s (deduped=%s)",
+        row.get("id"),
+        row.get("deduped"),
+    )
+    return True
+
+
 def _run_bigquery_materialize_with_timeout(
     background: BackgroundTasks,
 ) -> Dict[str, Any]:
     """Try to materialize synchronously within the wall-clock budget.
 
     Returns a dict with:
-      - ``status`` ∈ {"ok", "errors", "timeout"} — caller maps to HTTP code
+      - ``status`` ∈ {"ok", "errors", "timeout", "enqueued"} — caller maps
+        to HTTP code
       - ``errors``: list of {table, error} surfaced by ``rebuild_from_registry``
         (only present on ``status="errors"``)
 
@@ -2591,6 +2653,9 @@ def _run_bigquery_materialize_with_timeout(
                      the operator knows the registry row exists but the
                      view wasn't created)
       - "timeout"  → 202 (rebuild still running on a BackgroundTask)
+      - "enqueued" → 202 (process lacks the worker role — the rebuild rides
+                     the ``analytics-rebuild`` job on the worker plane; the
+                     api plane is analytics-write-free per three-plane §3.1)
 
     The synchronous worker runs on a daemon thread (so a hung GCE call
     can't park the request) that opens its OWN system DB connection (see
@@ -2600,6 +2665,14 @@ def _run_bigquery_materialize_with_timeout(
     even if `rebuild_from_registry` ignores its own timeouts.
     """
     import threading
+
+    from app.roles import Role, role_enabled
+
+    if not role_enabled(Role.WORKER):
+        # Role-split api replica: never run (or thread off) the rebuild in
+        # this process — hand it to the worker plane via the job queue.
+        _schedule_bq_materialize(background)
+        return {"status": "enqueued"}
 
     done = threading.Event()
     err_holder: Dict[str, Any] = {}
@@ -2917,7 +2990,10 @@ def register_table(
                 ),
             },
         )
-    # Default: timeout — rebuild continues on a BackgroundTask.
+    # Default: "timeout" (rebuild continues on a BackgroundTask) or
+    # "enqueued" (api-role replica — rebuild rides the analytics-rebuild
+    # job on the worker plane). Both are the same 202 contract: the row is
+    # registered, the view materializes asynchronously.
     return JSONResponse(
         status_code=202,
         content={
@@ -3343,7 +3419,7 @@ async def update_table(
     # return values).
     after = repo.get(table_id) or {}
     if after.get("source_type") == "bigquery":
-        background.add_task(_materialize_bigquery_extract_bg)
+        _schedule_bq_materialize(background)
 
     from app.api.v2_catalog import invalidate_for_table
 
@@ -3557,7 +3633,7 @@ async def unregister_table(
     invalidate_for_table(table_id)
 
     if was_bigquery:
-        background.add_task(_materialize_bigquery_extract_bg)
+        _schedule_bq_materialize(background)
 
 
 @router.post("/configure")
@@ -3686,6 +3762,21 @@ async def configure_instance(
         secrets_to_persist["KEBOOLA_STACK_URL"] = request.keboola_url
 
     if secrets_to_persist:
+        # SECURITY (#12): this path writes KEBOOLA_STORAGE_TOKEN to the plaintext
+        # .env_overlay even when the Fernet vault is configured, bypassing
+        # encryption-at-rest. Warn so it's visible; full fix (route datasource
+        # tokens through system_secrets_repo()/persist_overlay_token, which needs
+        # the token read-path audited so resolution doesn't break) is a tracked
+        # follow-up. chmod 0o600 below limits exposure to same-uid readers only.
+        from app.secrets_vault import vault_key_configured
+
+        if request.keboola_token and vault_key_configured():
+            logger.warning(
+                "Persisting KEBOOLA_STORAGE_TOKEN to plaintext .env_overlay while "
+                "AGNES_VAULT_KEY is configured — this bypasses the encrypted vault "
+                "(tracked follow-up: route datasource tokens through the vault)."
+            )
+
         # Resolve via _state_dir() so the path matches app/main.py's
         # startup-time read of the same overlay. Without this, an operator
         # on the flat-mount layout (STATE_DIR=/data-state) would write

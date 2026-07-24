@@ -1172,6 +1172,7 @@ def _make_pause_manager(tmp_path, linger_seconds=0):
             concurrency_per_user=5,
             on_detach="pause",
             detach_linger_seconds=linger_seconds,
+            idle_grace_seconds=linger_seconds,
             paused_ttl_seconds=7 * 24 * 3600,
             idle_ttl_seconds=10**9,
         ),
@@ -1193,6 +1194,7 @@ def _make_kill_manager(tmp_path):
             concurrency_per_user=5,
             on_detach="kill",
             detach_linger_seconds=0,
+            idle_grace_seconds=0,
             paused_ttl_seconds=7 * 24 * 3600,
             idle_ttl_seconds=10**9,
         ),
@@ -1872,10 +1874,10 @@ def test_resume_from_row_co_session_uses_ephemeral_dir(manager: ChatManager, mon
     """Cold-start resume of a co-session must rebuild the ephemeral
     grant-intersection workspace (SR-6), not a personal one.
 
-    A cold-start ``_resume_from_row`` call is, by definition, a session this
-    process has no ``_known_protocol_sessions`` record for (nothing spawned
-    or ticket-pushed it in this process) — so per AC-G-resume-legacy it now
-    goes through the fresh-spawn path (``_spawn_live``), not
+    A cold-start ``_resume_from_row`` call whose row's ``relay_protocol_version``
+    is unknown/legacy (NULL — e.g. a pre-Tier-1-migration row, simulated here
+    by nulling the column after ``set_sandbox_ref`` stamps it) goes through
+    the fresh-spawn path (``_spawn_live``) per AC-G-resume-legacy, not
     ``provider.resume()``. That path shares the same co-session ephemeral-dir
     selection this test guards."""
     import app.chat.manager as manager_mod
@@ -1888,6 +1890,9 @@ def test_resume_from_row_co_session_uses_ephemeral_dir(manager: ChatManager, mon
         manager._repo.add_session_participant(session_id=s.id, user_email="owner@x", user_id="u1", role="owner")
         manager._repo.add_session_participant(session_id=s.id, user_email="peer@x", user_id="u2", role="collaborator")
         manager._repo.set_sandbox_ref(s.id, sandbox_id="sbx-co", runner_pid=42)
+        # set_sandbox_ref stamps relay_protocol_version=current (Tier 1) — null
+        # it back out to simulate a genuinely legacy/unknown row for this test.
+        manager._repo._conn.execute("UPDATE chat_sessions SET relay_protocol_version = NULL WHERE id = ?", [s.id])
 
         handle = FakeHandle()
         manager._provider.spawn = AsyncMock(return_value=handle)
@@ -1906,6 +1911,90 @@ def test_resume_from_row_co_session_uses_ephemeral_dir(manager: ChatManager, mon
         eph.assert_called_once()
         personal.assert_not_called()
         assert sorted(live.participant_emails) == ["owner@x", "peer@x"]
+        await manager.kill(s.id, reason="test_done")
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Tier 1: restart-invariant sandbox reuse (relay_protocol_version column)
+# ---------------------------------------------------------------------------
+
+
+def test_resume_from_row_reconnects_after_restart(manager: ChatManager, monkeypatch):
+    """A row whose ``relay_protocol_version`` is current (stamped by
+    ``set_sandbox_ref``) must be reconnected via ``provider.resume()`` —
+    NOT force-respawned — even though this is a brand-new ``ChatManager``
+    with an empty ``_known_protocol_sessions`` (i.e. simulating a genuine
+    process restart). This is the headline Tier 1 fix: before the
+    persisted column existed, EVERY restart force-respawned every
+    resumable session regardless of its runner's actual protocol."""
+    import app.chat.manager as manager_mod
+    from app.chat.types import RELAY_PROTOCOL_VERSION
+
+    fake_tickets = _FakeTicketRepo()
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: fake_tickets)
+
+    async def _run():
+        from datetime import datetime as _dt, timezone as _tz
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        manager._repo.set_sandbox_ref(s.id, sandbox_id="sbx-restart", runner_pid=555)
+        manager._repo.set_sandbox_paused_at(s.id, _dt.now(_tz.utc))
+        row = manager._repo.get_session(s.id)
+        assert row is not None
+        assert row.relay_protocol_version == RELAY_PROTOCOL_VERSION
+        # Precondition: this manager never spawned/ticket-pushed this
+        # session in-process — the fast-confirm set is genuinely empty,
+        # exactly like right after a process restart.
+        assert s.id not in manager._known_protocol_sessions
+
+        handle = FakeHandle()
+        manager._provider.resume = AsyncMock(return_value=handle)
+
+        live = await manager._resume_from_row(row)
+
+        assert live is not None
+        manager._provider.resume.assert_awaited_once_with(sandbox_id="sbx-restart", runner_pid=555, env={})
+        manager._provider.spawn.assert_not_awaited()
+        assert live.state == SessionState.ACTIVE
+        await manager.kill(s.id, reason="test_done")
+
+    asyncio.run(_run())
+
+
+def test_resume_from_row_null_protocol_version_forces_fresh_spawn(manager: ChatManager, monkeypatch):
+    """The inverse of the above: a row whose ``relay_protocol_version`` is
+    NULL (unknown/legacy — e.g. a pre-Tier-1-migration row) must still be
+    force-respawned via ``_spawn_live``, never reconnected via
+    ``provider.resume()`` — the conservative AC-G-resume-legacy behavior
+    this migration preserves for genuinely unknown runners."""
+    import app.chat.manager as manager_mod
+
+    fake_tickets = _FakeTicketRepo()
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: fake_tickets)
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        manager._repo.set_sandbox_ref(s.id, sandbox_id="sbx-legacy", runner_pid=111)
+        # Simulate a genuinely legacy/unknown row: NULL relay_protocol_version.
+        manager._repo._conn.execute("UPDATE chat_sessions SET relay_protocol_version = NULL WHERE id = ?", [s.id])
+        row = manager._repo.get_session(s.id)
+        assert row is not None
+        assert row.relay_protocol_version is None
+
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        manager._provider.resume = AsyncMock(side_effect=AssertionError("resume must not be called"))
+        manager._provider.destroy = AsyncMock()
+
+        live = await manager._resume_from_row(row)
+
+        assert live is not None
+        manager._provider.spawn.assert_awaited_once()
+        manager._provider.resume.assert_not_awaited()
+        manager._provider.destroy.assert_awaited_once_with(sandbox_id="sbx-legacy")
+        assert live.state == SessionState.ACTIVE
         await manager.kill(s.id, reason="test_done")
 
     asyncio.run(_run())
@@ -1982,6 +2071,53 @@ def test_spawn_agnes_server_falls_back_to_internal_url(manager: ChatManager, tmp
     asyncio.run(_run())
 
     assert captured["env"]["AGNES_SERVER"] == "http://10.0.0.5:8000"
+
+
+def test_spawn_uploads_wheel_before_workspace_and_sets_sentinel_env(manager: ChatManager, tmp_path, monkeypatch):
+    """The wheel is a single small write whose sentinel unblocks the runner's
+    in-sandbox pip install — it must be staged BEFORE the (much slower)
+    workspace push so the install overlaps the upload. The runner env carries
+    the workspace-ready sentinel path so the runner knows to gate the agent
+    CLI spawn on it (empty when the provider mounts the workspace itself)."""
+    monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "tok")
+
+    import app.chat.e2b_workspace_sync as sync_mod
+    from app.chat.e2b_workspace_sync import SANDBOX_WORKSPACE_READY
+
+    order: list[str] = []
+
+    async def fake_wheel(sandbox):
+        order.append("wheel")
+
+    async def fake_workspace(sandbox, root, *, max_bytes):
+        order.append("workspace")
+        return 0
+
+    monkeypatch.setattr(sync_mod, "upload_agnes_wheel", fake_wheel)
+    monkeypatch.setattr(sync_mod, "upload_workspace", fake_workspace)
+
+    handle = FakeHandle()
+    handle._sandbox = MagicMock()  # sandbox present → E2B sync branch taken
+    captured = {}
+
+    async def fake_spawn(**kw):
+        captured.update(kw)
+        return handle
+
+    manager._provider.spawn = fake_spawn
+    # The fixture's provider is a MagicMock whose auto-attribute would be
+    # truthy — pin the real E2BProvider value so the sync branch runs.
+    manager._provider.syncs_workspace = False
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        sess = manager._repo.get_session(s.id)
+        await manager._spawn_runner(sess, tmp_path)
+
+    asyncio.run(_run())
+
+    assert order == ["wheel", "workspace"]
+    assert captured["env"]["AGNES_WORKSPACE_SYNC_SENTINEL"] == SANDBOX_WORKSPACE_READY
 
 
 def test_agnes_server_url_resolution_chain(monkeypatch):
@@ -2088,9 +2224,9 @@ def test_spawn_pushes_ticket_frame(manager: ChatManager, monkeypatch):
     frames = [json.loads(b) for b in handle._stdin_buf]
     ticket_frames = [f for f in frames if f.get("type") == "ticket_push"]
     assert ticket_frames, f"expected a ticket_push frame on stdin; got {frames}"
-    assert ticket_frames[0]["main"] and ticket_frames[0]["mcp"]
+    assert ticket_frames[0]["main"] and ticket_frames[0]["mcp"] and ticket_frames[0]["data_apps"]
     scopes = {scope for (_sid, scope) in fake_tickets.minted}
-    assert scopes == {"main", "mcp"}
+    assert scopes == {"main", "mcp", "data_apps"}
 
 
 def test_resume_pushes_fresh_ticket_before_messages(tmp_path, monkeypatch):
@@ -2134,7 +2270,7 @@ def test_resume_pushes_fresh_ticket_before_messages(tmp_path, monkeypatch):
             f"expected the FIRST stdin frame after resume to be ticket_push; got {frames}"
         )
         scopes = {scope for (_sid, scope) in fake_tickets.minted}
-        assert scopes == {"main", "mcp"}
+        assert scopes == {"main", "mcp", "data_apps"}
         assert fake_tickets.revoked == [s.id]
 
         await mgr.kill(s.id, reason="test_done")
@@ -2173,8 +2309,11 @@ def test_legacy_runner_force_respawned(tmp_path, monkeypatch):
         assert len(provider.spawned) == 1
 
         # Simulate a pre-broker (legacy) runner: this process never recorded
-        # having pushed it a current-protocol ticket.
+        # having pushed it a current-protocol ticket, AND the persisted
+        # relay_protocol_version is unknown (nulled here — set_sandbox_ref
+        # would otherwise have stamped it current at spawn time above).
         mgr._known_protocol_sessions.discard(s.id)
+        mgr._repo._conn.execute("UPDATE chat_sessions SET relay_protocol_version = NULL WHERE id = ?", [s.id])
 
         ws2 = FakeWS()
         attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
@@ -2218,6 +2357,9 @@ def test_legacy_resume_destroys_old_sandbox_before_clearing(tmp_path):
         monkeypatch_workdir(mgr)
         session = mgr._repo.create_session(user_email="leak@test.com", surface=Surface.WEB)
         mgr._repo.set_sandbox_ref(session.id, sandbox_id="old-sbx-123", runner_pid=999)
+        # set_sandbox_ref stamps relay_protocol_version=current (Tier 1) — null
+        # it back out to simulate the legacy/unknown row this test targets.
+        mgr._repo._conn.execute("UPDATE chat_sessions SET relay_protocol_version = NULL WHERE id = ?", [session.id])
         row = mgr._repo.get_session(session.id)
 
         order: list = []
@@ -2972,5 +3114,33 @@ def test_reap_once_paused_sweep_runs_even_if_kill_raises(tmp_path):
         # the expired sandbox and cleared its ref.
         assert "sbx-paused" in provider.destroyed, "paused sweep did not run after kill raised"
         assert mgr._repo.get_session(s.id).sandbox_id is None
+
+    asyncio.run(_run())
+
+
+def test_turn_buffer_holds_tool_results_for_midturn_replay(manager: ChatManager):
+    """tool_result frames must ride the turn_buffer alongside token and
+    tool_call: a mid-turn reconnect replays the buffer, and replaying the
+    calls without their results left every tool block stuck on "running…"
+    after a refresh."""
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await _wait_until(lambda: _ws_seated(manager, s.id, ws))
+        handle.emit({"type": "tool_call", "tool_use_id": "toolu_1", "tool": "Bash", "args": {}})
+        handle.emit({"type": "tool_result", "tool_use_id": "toolu_1", "result": "ok"})
+        await _wait_until(
+            lambda: len(manager._live[s.id].turn_buffer) >= 2,
+        )
+        types = [f["type"] for f in manager._live[s.id].turn_buffer]
+        assert types == ["tool_call", "tool_result"]
+        # The runner's pairing key survives the envelope stamp untouched.
+        assert all(f.get("tool_use_id") == "toolu_1" for f in manager._live[s.id].turn_buffer)
+        attach_task.cancel()
 
     asyncio.run(_run())

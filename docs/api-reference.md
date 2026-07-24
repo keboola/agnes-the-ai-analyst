@@ -1006,6 +1006,62 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/connectors/manifest
 - /api/connectors/params
 
+### `/api/data-apps` — Hosted data apps control plane
+
+Control-plane REST for hosted user web apps (`data_apps` registry, v96) — a
+user-owned app (internal template or external git repo) deployed to a
+runtime container and put to sleep after an idle timeout. RBAC: owner,
+Admin, or a group holding a `resource_grants` row on `(data_app, <slug>)`
+may view; only owner or Admin may mutate. Gated behind
+`data_apps.enabled` in `instance.yaml` (404 `data_apps_disabled` when off).
+CLI: `agnes app list/show/create/deploy/stop/delete/logs/git-credential`
+plus `agnes app draft create/delete`. MCP tools (list/show/deploy/logs plus
+the wave 3B AI-authoring flow, matching the view-vs-mutate RBAC split
+above): `data_apps_list`, `data_app_get`, `data_app_deploy`,
+`data_app_logs`, `data_app_create_draft`, `data_app_delete_draft`,
+`data_app_git_credential` — no MCP analogue for
+create/stop/delete/secrets/reap-idle.
+
+- /api/data-apps
+- /api/data-apps/reap-idle
+- /api/data-apps/{slug}
+- /api/data-apps/{slug}/deploy
+- /api/data-apps/{slug}/drafts
+- /api/data-apps/{slug}/drafts/{draft_slug}
+- /api/data-apps/{slug}/git-credential
+- /api/data-apps/{slug}/logs
+- /api/data-apps/{slug}/readiness
+- /api/data-apps/{slug}/secrets
+- /api/data-apps/{slug}/stop
+
+`POST /{slug}/deploy` fast-forwards the app's internal git repo's
+`agnes-live` branch, mints a fresh PAT scoped to `data-app:<slug>` (revoking
+the previous one), decrypts the app's stored secrets, builds the runtime
+`config.json` + container spec, and hands both to the `apps-runner` sidecar.
+A dead/erroring sidecar sets the app's state to `error` and returns 502
+`runner_unavailable`. `POST /reap-idle` is `require_admin`-gated (the
+scheduler's shared-secret token resolves to a synthetic Admin user) and
+stops any `running` app idle longer than its own `idle_timeout_s`.
+
+`POST /{slug}/git-credential` mints a 24h-scoped PAT (`data-app-git:<slug>`)
+for an AI-authoring session and returns it embedded in a `git+https` clone
+URL, so an agent can push to the app's internal repo without a standing
+credential. `POST /{slug}/drafts` (wave 3B AI-authoring flow) creates a
+draft copy of a prod app on a new git branch — `ensure_branch` creates the
+branch on the *parent's* repo (a draft has no repo of its own, just a
+`data_apps` row with `is_draft=True` and `parent_app_id` set), and the
+returned `git_clone_url` is minted against that same parent repo. Drafts
+are excluded from `GET /api/data-apps`'s default listing and instead
+surface inlined as `"drafts": [...]` on the parent's `GET /{slug}` detail
+response (empty/omitted for a draft's own detail — drafts can't themselves
+be drafted from, 400 `parent_is_draft`). `DELETE /{slug}/drafts/{draft_slug}`
+tears one down — owner/Admin of the *parent* — via the same teardown as
+`DELETE /{slug}` (container stop, token revoke, registry row delete) plus
+deleting the draft branch on the parent's repo; 400 `not_a_draft` if
+`draft_slug` isn't a draft of `slug`. Deleting a prod app with `DELETE
+/{slug}` cascades: any live drafts are torn down first, so a parent delete
+never leaves orphaned draft rows/branches/containers behind.
+
 ### `/api/data-packages` — Public data packages
 
 - /api/data-packages/{slug}

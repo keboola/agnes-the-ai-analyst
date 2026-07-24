@@ -68,7 +68,7 @@ def jobs_db(tmp_path, monkeypatch):
 
 
 class TestRegisterAllKinds:
-    #: The nine kinds that register UNCONDITIONALLY, regardless of whether
+    #: The kinds that register UNCONDITIONALLY, regardless of whether
     #: this process has a live chat manager — everything except
     #: ``agent_response`` (role-split review carry-over; see
     #: ``TestAgentResponseRoleSplitRegistration`` below for that one).
@@ -83,10 +83,12 @@ class TestRegisterAllKinds:
         "ducklake-maintenance",
         "analytics-migrate",
         "distribution-mirror",
+        "analytics-rebuild",
+        "collections-purge",
         "webhook-deliver",
     }
 
-    def test_registers_nine_kinds_without_chat_manager(self):
+    def test_registers_unconditional_kinds_without_chat_manager(self):
         """No live chat manager (the `clean_job_kinds_registry` fixture
         already reset the singleton to `None`) — a worker-only/non-gateway
         process. `agent_response` must NOT be in the registry."""
@@ -113,6 +115,8 @@ class TestRegisterAllKinds:
         assert JOB_KINDS["analytics-migrate"].lane == HEAVY_LANE
         assert JOB_KINDS["distribution-mirror"].lane == LIGHT_LANE
         assert JOB_KINDS["webhook-deliver"].lane == LIGHT_LANE
+        assert JOB_KINDS["analytics-rebuild"].lane == HEAVY_LANE
+        assert JOB_KINDS["collections-purge"].lane == HEAVY_LANE
 
     def test_idempotent_reregistration(self):
         """Calling register_all_kinds() twice (e.g. test re-imports, or a

@@ -311,6 +311,33 @@ def test_list_sessions_for_participant(sessions, participants):
     assert s.id in {x.id for x in found}
 
 
+def test_participant_session_hydration_matches_main_repo(sessions, participants):
+    """Regression: the participants-repo ``_row_to_session`` must hydrate the
+    sandbox lifecycle columns (sandbox_id / runner_pid / sandbox_paused_at)
+    exactly like ``chat_sessions_pg._row_to_session``.
+
+    A prior gap silently defaulted the three fields to None, so a co-session
+    with a live sandbox looked sandbox-less when reached via the participant
+    path — latent breakage for pause/resume takeover of co-driven sessions.
+    """
+    s = sessions.create_session(user_email="o@x.com", surface=Surface.WEB)
+    participants.add_session_participant(session_id=s.id, user_email="c@x.com", user_id="u-c", role="collaborator")
+    # Give the session a live sandbox ref plus a paused marker.
+    sessions.set_sandbox_ref(s.id, sandbox_id="sbx_co", runner_pid=4242)
+    ts = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+    sessions.set_sandbox_paused_at(s.id, ts)
+
+    via_main = sessions.get_session(s.id)
+    via_participant = next(x for x in participants.list_sessions_for_participant("c@x.com") if x.id == s.id)
+
+    # Field-for-field equality (ChatSession is a dataclass).
+    assert via_participant == via_main
+    # ...and the sandbox fields are actually populated, not trivially both-None.
+    assert via_participant.sandbox_id == "sbx_co"
+    assert via_participant.runner_pid == 4242
+    assert via_participant.sandbox_paused_at is not None
+
+
 def test_fork_session_as_co_session_pg(sessions, participants, messages):
     s0 = sessions.create_session(user_email="o@x.com", surface=Surface.WEB)
     s1 = participants.fork_session_as_co_session(
@@ -511,3 +538,23 @@ def test_sandbox_ref_roundtrip_after_messages(_chat_env):
     repo.clear_sandbox_ref(s.id)
     got2 = repo.get_session(s.id)
     assert (got2.sandbox_id, got2.runner_pid, got2.sandbox_paused_at) == (None, None, None)
+
+
+def test_relay_protocol_version_roundtrip(_chat_env):
+    """Tier 1 restart-invariant sandbox reuse: ``set_sandbox_ref`` stamps
+    ``relay_protocol_version`` with ``RELAY_PROTOCOL_VERSION`` on both
+    backends, and ``clear_sandbox_ref`` clears it back to NULL alongside
+    the other three sandbox columns. A brand-new session starts with NULL
+    (unknown/legacy)."""
+    from app.chat.types import RELAY_PROTOCOL_VERSION
+
+    repo = _chat_env
+    s = repo.create_session(user_email="u@example.com", surface=Surface.WEB)
+    assert repo.get_session(s.id).relay_protocol_version is None
+
+    repo.set_sandbox_ref(s.id, sandbox_id="sbx_relay", runner_pid=42)
+    got = repo.get_session(s.id)
+    assert got.relay_protocol_version == RELAY_PROTOCOL_VERSION
+
+    repo.clear_sandbox_ref(s.id)
+    assert repo.get_session(s.id).relay_protocol_version is None

@@ -38,6 +38,7 @@ _AUTH_DETAIL_BY_REASON = {
     "pat_revoked": "Token revoked",
     "pat_expired": "Token expired",
     "pat_mismatch": "Token mismatch",
+    "pat_scope_forbidden": "git_scope_token_not_allowed",
     "invalid_token": "Invalid or expired token",
     "no_token": "Invalid or expired token",
     "agent_pat_wrong_surface": "Agent token not valid on this surface",

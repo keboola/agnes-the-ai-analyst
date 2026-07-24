@@ -28,11 +28,17 @@ def _parse_id(item_id: str) -> tuple[str, str, str]:
 
     Curated: "/" in ID → ("curated", marketplace_id, plugin_name)
     Flea:    no slash  → ("flea", entity_id, "")
+
+    `agnes marketplace search` prints the ids exactly as `/api/marketplace/items`
+    returns them — tab-prefixed (``curated-<mid>/<plugin>``, ``flea-<uuid>``) —
+    while the detail/install endpoints take the bare forms. Strip the prefix so
+    a copy-pasted search id works as-is (same normalization as the MCP tools'
+    ``_split_marketplace_id``).
     """
     if "/" in item_id:
         parts = item_id.split("/", 1)
-        return "curated", parts[0], parts[1]
-    return "flea", item_id, ""
+        return "curated", parts[0].removeprefix("curated-"), parts[1]
+    return "flea", item_id.removeprefix("flea-"), ""
 
 
 @marketplace_app.command("search")

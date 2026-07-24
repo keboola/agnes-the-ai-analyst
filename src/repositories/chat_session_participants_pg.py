@@ -53,6 +53,12 @@ def _row_to_session(row) -> ChatSession:
         is_co_session=bool(row["is_co_session"]),
         ephemeral=bool(row["ephemeral"]),
         agent_id=row["agent_id"],
+        sandbox_id=row["sandbox_id"],
+        runner_pid=int(row["runner_pid"]) if row["runner_pid"] is not None else None,
+        sandbox_paused_at=row["sandbox_paused_at"],
+        relay_protocol_version=(
+            int(row["relay_protocol_version"]) if row["relay_protocol_version"] is not None else None
+        ),
     )
 
 

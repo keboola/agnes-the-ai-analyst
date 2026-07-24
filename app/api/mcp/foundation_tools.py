@@ -24,6 +24,22 @@ from typing import Any, Callable
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+
+def _split_marketplace_id(item_id: str) -> tuple[str, str, str]:
+    """Split a marketplace item id into ``(source, part1, part2)``.
+
+    ``GET /api/marketplace/items`` prefixes row ids with their tab
+    (``curated-<marketplace_id>/<plugin_name>``, ``flea-<entity_uuid>``), while
+    the REST detail/install paths take the bare forms. Accept both, so an id
+    can be passed straight from ``marketplace_search`` output — same
+    normalization as the CLI's ``_parse_id`` in ``cli/commands/marketplace.py``.
+    """
+    if "/" in item_id:
+        head, plugin = item_id.split("/", 1)
+        return "curated", head.removeprefix("curated-"), plugin
+    return "flea", item_id.removeprefix("flea-"), ""
+
+
 FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "server_info",
     "catalog",
@@ -44,6 +60,16 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "store_rate",
     "store_status",
     "store_publish_markdown",
+    # Full agent/skill lifecycle parity (REST × CLI × MCP): discover, inspect,
+    # install/remove, edit, delete — an agent can manage its own store
+    # entities and stack without leaving the chat. Binary paths (ZIP upload,
+    # photo, bundle download) stay CLI-only.
+    "marketplace_search",
+    "marketplace_detail",
+    "marketplace_add",
+    "marketplace_remove",
+    "store_update",
+    "store_delete",
     "admin_store_lint_findings",
     "admin_store_lint_audit",
     "admin_store_lint_dismiss",
@@ -80,6 +106,19 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     # Agent-as-API monthly usage (agent-api V1b, Task 8) — triple-surface
     # with GET /api/v1/agents/{slug}/usage + `agnes agent usage`.
     "agent_usage",
+    # Hosted data apps (data-apps platform plan, Task 11) — triple-surface
+    # with /api/data-apps* + `agnes app list/show/deploy/logs`.
+    "data_apps_list",
+    "data_app_get",
+    "data_app_deploy",
+    "data_app_logs",
+    # Wave 3B draft-iteration model (Task 8) — create/delete a draft copy of
+    # a prod app on an iteration branch, and mint a fresh git push credential.
+    # Triple-surface with /api/data-apps/{slug}/drafts* + /git-credential and
+    # `agnes app draft create/delete` + `agnes app git-credential`.
+    "data_app_create_draft",
+    "data_app_delete_draft",
+    "data_app_git_credential",
 )
 
 
@@ -558,6 +597,203 @@ def register_foundation_tools(
             )
             r.raise_for_status()
             return r.json()
+
+    @mcp.tool()
+    async def marketplace_search(
+        query: str = "",
+        type: str = "",
+        source: str = "",
+        sort: str = "recent",
+        limit: int = 24,
+    ) -> dict:
+        """Search the marketplace — Curated and Flea Market — for installable items.
+
+        Default scope is EVERYWHERE: both the curated marketplaces and the Flea
+        Market are searched, and every result carries a ``source`` label
+        (``curated`` | ``flea``) plus an ``installed`` flag so you can tell what
+        is already in the caller's stack. Results are RBAC-filtered to what the
+        caller may access. Mirrors ``GET /api/marketplace/items`` and
+        ``agnes marketplace search``.
+
+        Args:
+            query:  Search text (empty = browse all).
+            type:   Filter: ``skill`` | ``agent`` | ``plugin`` (empty = all).
+            source: Restrict to one tab: ``curated`` | ``flea`` (empty = both).
+            sort:   ``recent`` (default) | ``most_used`` | ``trending``.
+            limit:  Max results per tab (1–100).
+
+        Returns ``{"items": [{"id", "type", "source", "name", "owner",
+        "installed", …}], "total"}``. Install an item with ``marketplace_add``;
+        inspect one with ``marketplace_detail``.
+        """
+        tabs = [source] if source else ["curated", "flea"]
+        items: list = []
+        async with httpx.AsyncClient() as c:
+            for tab in tabs:
+                params: dict = {"tab": tab, "sort": sort, "page_size": max(1, min(limit, 100))}
+                if query:
+                    params["q"] = query
+                if type:
+                    params["type"] = type
+                r = await c.get(
+                    f"{base_url}/api/marketplace/items",
+                    headers=headers_fn(),
+                    params=params,
+                    timeout=30,
+                )
+                r.raise_for_status()
+                items.extend(r.json().get("items", []))
+        return {"items": items, "total": len(items)}
+
+    @mcp.tool()
+    async def marketplace_detail(item_id: str) -> dict:
+        """Show full details for one marketplace item (curated or flea).
+
+        Accepts the same id shapes as ``agnes marketplace detail``: a curated id
+        is ``<marketplace_id>/<plugin_name>`` (contains a slash), a Flea Market
+        id is the bare entity UUID. Returns the enriched detail — description,
+        contents (skills / agents / commands / MCP servers), install state.
+        Mirrors ``GET /api/marketplace/curated/{mid}/{plugin}`` /
+        ``GET /api/marketplace/flea/{entity_id}/detail``.
+
+        Args:
+            item_id: ``<marketplace_id>/<plugin_name>`` or a flea entity UUID —
+                     the tab-prefixed forms printed by ``marketplace_search``
+                     (``curated-<mid>/<plugin>``, ``flea-<uuid>``) work as-is.
+        """
+        source, part1, part2 = _split_marketplace_id(item_id)
+        if source == "curated":
+            path = f"/api/marketplace/curated/{part1}/{part2}"
+        else:
+            path = f"/api/marketplace/flea/{part1}/detail"
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}{path}", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def marketplace_add(item_id: str) -> dict:
+        """Add a marketplace item (plugin, skill, or agent) to the caller's stack.
+
+        Persistent, like clicking "Add" in the web UI — applies to all future
+        sessions. Same id shapes as ``marketplace_detail``. Flea items must have
+        passed guardrail review (``approved``) — pending/blocked entities return
+        409. Mirrors ``POST /api/store/entities/{id}/install`` (flea) /
+        ``POST /api/marketplace/curated/{mid}/{plugin}/install`` (curated) and
+        ``agnes marketplace add``.
+
+        Args:
+            item_id: ``<marketplace_id>/<plugin_name>`` or a flea entity UUID
+                     (tab-prefixed ``marketplace_search`` ids work as-is).
+
+        Returns ``{"installed": true, "next_step": …}`` — the plugin activates
+        after the user's next plugin refresh.
+        """
+        source, part1, part2 = _split_marketplace_id(item_id)
+        if source == "curated":
+            path = f"/api/marketplace/curated/{part1}/{part2}/install"
+        else:
+            path = f"/api/store/entities/{part1}/install"
+        async with httpx.AsyncClient() as c:
+            r = await c.post(f"{base_url}{path}", json={}, headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+        return {
+            "installed": True,
+            "next_step": "Run /update-agnes-plugins in Claude Code (or `agnes update`) to activate it.",
+        }
+
+    @mcp.tool()
+    async def marketplace_remove(item_id: str) -> dict:
+        """Remove a marketplace item from the caller's stack.
+
+        Inverse of ``marketplace_add``; same id shapes. System plugins pinned by
+        an admin cannot be removed (409). Mirrors the DELETE install endpoints
+        and ``agnes marketplace remove``.
+
+        Args:
+            item_id: ``<marketplace_id>/<plugin_name>`` or a flea entity UUID
+                     (tab-prefixed ``marketplace_search`` ids work as-is).
+        """
+        source, part1, part2 = _split_marketplace_id(item_id)
+        if source == "curated":
+            path = f"/api/marketplace/curated/{part1}/{part2}/install"
+        else:
+            path = f"/api/store/entities/{part1}/install"
+        async with httpx.AsyncClient() as c:
+            r = await c.delete(f"{base_url}{path}", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+        return {
+            "removed": True,
+            "next_step": "Run /update-agnes-plugins in Claude Code (or `agnes update`) to apply it.",
+        }
+
+    @mcp.tool()
+    async def store_update(
+        entity_id: str,
+        description: str = "",
+        category: str = "",
+        video_url: str = "",
+    ) -> dict:
+        """Edit the metadata of an owned Flea Market entity (owner or admin).
+
+        Metadata-only: text fields update in place with no version bump or
+        re-review. Binary replacements (new ZIP bundle, photo) have no MCP
+        analogue — use ``agnes store update --zip/--photo``. Omitted (empty)
+        fields are left untouched. Mirrors ``PUT /api/store/entities/{id}`` and
+        ``agnes store update``.
+
+        Args:
+            entity_id:   The store entity id (from ``store_publish_markdown``
+                         output or ``marketplace_search``).
+            description: New description (empty = unchanged).
+            category:    New category, case-insensitive (empty = unchanged).
+            video_url:   New demo-video URL (empty = unchanged).
+
+        Returns the updated entity ``{"id", "version", …}``.
+        """
+        data: dict = {}
+        if description:
+            data["description"] = description
+        if category:
+            data["category"] = category
+        if video_url:
+            data["video_url"] = video_url
+        if not data:
+            return {
+                "error": "nothing_to_update",
+                "hint": "Pass at least one of description / category / video_url.",
+            }
+        async with httpx.AsyncClient() as c:
+            r = await c.put(
+                f"{base_url}/api/store/entities/{entity_id}",
+                data=data,
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def store_delete(entity_id: str) -> dict:
+        """Delete an owned Flea Market entity (owner or admin).
+
+        Soft-archives the entity by default (reversible): it is hidden from
+        browse and refuses new installs, but the bundle stays on disk so users
+        who already installed it keep it. Hard delete (drops the bundle and
+        removes existing installs) is admin-only via the web/CLI. Mirrors
+        ``DELETE /api/store/entities/{id}`` and ``agnes store delete``.
+
+        Args:
+            entity_id: The store entity id to delete.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.delete(
+                f"{base_url}/api/store/entities/{entity_id}",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+        return {"deleted": True, "entity_id": entity_id}
 
     @mcp.tool()
     async def admin_store_lint_findings(include_dismissed: bool = False) -> dict:
@@ -1147,6 +1383,173 @@ def register_foundation_tools(
                 f"{base_url}/api/v1/agents/{slug}/usage",
                 headers=headers_fn(),
                 params=params,
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_apps_list() -> dict:
+        """List hosted data apps you can see (RBAC-filtered).
+
+        Visible to any authenticated user: apps you own, apps a group you're
+        in has a ``resource_grants`` row for, or (Admin) all apps. Returns a
+        list of app summaries — ``slug``, ``name``, ``state``
+        (``stopped``/``deploying``/``running``/``sleeping``/``error``),
+        ``url``, and metadata; secrets are never included. Mirrors
+        ``GET /api/data-apps`` and ``agnes app list``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}/api/data-apps", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_get(slug: str) -> dict:
+        """Show one hosted data app's detail.
+
+        Any authenticated user with view access to the app (owner, Admin, or
+        a group granted access via ``resource_grants``) may call this.
+
+        Args:
+            slug: The app's slug (from ``data_apps_list``).
+
+        Mirrors ``GET /api/data-apps/{slug}`` and ``agnes app show``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}/api/data-apps/{slug}", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_deploy(slug: str, sha: str = "", mode: str = "") -> dict:
+        """Deploy (or redeploy) a hosted data app — app owner or Admin only.
+
+        Fast-forwards the app's ``agnes-live`` ref (to ``sha`` if given,
+        otherwise the tracked branch's latest), mints a fresh service token,
+        and hands the build off to the runner sidecar. ``mode="dev"`` deploys
+        a draft app on its pinned iteration branch instead — a draft has no
+        ``agnes-live`` ref to fast-forward, so ``sha`` is ignored in that mode.
+
+        Args:
+            slug: The app's slug (a prod app's slug, or a draft's own slug
+                  when ``mode="dev"``).
+            sha:  Optional commit sha to deploy. Empty (default) fast-forwards
+                  to the tracked branch's latest commit. Ignored for draft
+                  deploys.
+            mode: ``"dev"`` deploys a draft's branch; empty (default) deploys
+                  prod. A draft app rejects anything but ``mode="dev"``.
+
+        Returns ``{"state": "running", "deployed_sha": "..."}``. Mirrors
+        ``POST /api/data-apps/{slug}/deploy`` and ``agnes app deploy``.
+        """
+        payload: dict = {}
+        if sha:
+            payload["sha"] = sha
+        if mode:
+            payload["mode"] = mode
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/data-apps/{slug}/deploy",
+                json=payload,
+                headers=headers_fn(),
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_create_draft(slug: str, branch: str = "init") -> dict:
+        """Create a draft of a prod data app on an iteration branch — app owner or Admin only.
+
+        The draft shares the prod app's git repo (no second repo, no copy):
+        it is a registry sibling row pinned to ``branch`` on the parent's
+        repo, deployable with ``data_app_deploy(draft_slug, mode="dev")``.
+        Drafts are hidden from ``data_apps_list`` — reach them via the
+        parent's ``drafts`` field in ``data_app_get``.
+
+        Args:
+            slug:   The PROD app's slug (must not itself be a draft).
+            branch: Iteration branch name (default ``"init"``).
+
+        Returns ``{"id", "slug", "branch", "git_clone_url"}`` — the draft's
+        slug and a git push credential embedded in the clone URL. Mirrors
+        ``POST /api/data-apps/{slug}/drafts`` and ``agnes app draft create``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/data-apps/{slug}/drafts",
+                headers=headers_fn(),
+                json={"branch": branch},
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_delete_draft(slug: str, draft_slug: str) -> dict:
+        """Tear down a draft of a prod data app — app owner or Admin only.
+
+        Stops the draft's container, revokes its service token, deletes the
+        iteration branch on the parent's repo, and removes the draft's
+        registry row.
+
+        Args:
+            slug:       The PROD app's slug (the draft's parent).
+            draft_slug: The draft's own slug (from ``data_app_create_draft``
+                        or the parent's ``drafts`` field).
+
+        Returns ``{"status": "deleted"}``. Mirrors
+        ``DELETE /api/data-apps/{slug}/drafts/{draft_slug}`` and
+        ``agnes app draft delete``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.request(
+                "DELETE",
+                f"{base_url}/api/data-apps/{slug}/drafts/{draft_slug}",
+                headers=headers_fn(),
+                timeout=60,
+            )
+            r.raise_for_status()
+            return {"status": "deleted"}
+
+    @mcp.tool()
+    async def data_app_git_credential(slug: str) -> dict:
+        """Mint a fresh git push credential for a data app — app owner or Admin only.
+
+        Args:
+            slug: The app's slug (a prod app; drafts push through the same
+                  parent-repo credential minted here or at draft-create time).
+
+        Returns ``{"git_clone_url": "..."}`` with an embedded, time-scoped
+        push credential. Mirrors ``POST /api/data-apps/{slug}/git-credential``
+        and ``agnes app git-credential``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/data-apps/{slug}/git-credential",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_logs(slug: str, tail: int = 200) -> dict:
+        """Show the last N lines of runner logs for a hosted data app — app owner or Admin only.
+
+        Args:
+            slug: The app's slug.
+            tail: Number of trailing log lines to return (default 200).
+
+        Returns ``{"logs": "..."}``. Mirrors ``GET /api/data-apps/{slug}/logs``
+        and ``agnes app logs``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/data-apps/{slug}/logs",
+                headers=headers_fn(),
+                params={"tail": tail},
                 timeout=30,
             )
             r.raise_for_status()
