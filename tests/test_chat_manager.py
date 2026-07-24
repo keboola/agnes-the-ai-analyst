@@ -1209,6 +1209,20 @@ def monkeypatch_workdir(mgr: ChatManager) -> None:
     mgr._workdir_mgr.prepare_session_dir = mock.MagicMock(return_value=Path("/tmp/fake-session-dir"))
 
 
+def _stdin_user_texts(handle) -> list[str]:
+    """Texts of user_msg frames written to a FakeHandle's stdin (ignores
+    ticket_push and other control frames)."""
+    out = []
+    for raw in handle._stdin_buf:
+        try:
+            frame = json.loads(raw.decode("utf-8"))
+        except Exception:
+            continue
+        if frame.get("type") == "user_msg":
+            out.append(frame.get("text", ""))
+    return out
+
+
 def _ws_seated(mgr: ChatManager, chat_id: str, ws) -> bool:
     """True once ``ws`` is registered as a sink on ``chat_id``'s live session.
 
@@ -3251,5 +3265,72 @@ class TestRestoreContext:
             assert "owner question" in ctx
             assert "guest secret question" not in ctx, "departed participant's turn leaked into restored context"
             assert "shared answer" in ctx
+
+        asyncio.run(_run())
+
+    def test_crash_respawn_redelivers_trailing_unanswered_question(self, manager: ChatManager, monkeypatch):
+        """A crash mid-turn leaves a persisted user turn with no assistant
+        reply (send_user_message persists BEFORE delivering). The respawn
+        must re-deliver exactly that one question as a LIVE turn — the
+        restored transcript is read-only by instruction, so without this the
+        user saw a crash notice and then silence (Devin review on #1030)."""
+        monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "tok")
+
+        async def _run():
+            handles = [FakeHandle(), FakeHandle()]
+            spawn_calls = iter(handles)
+
+            async def fake_spawn(**kw):
+                return next(spawn_calls)
+
+            manager._provider.spawn = fake_spawn
+
+            s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+            ws = FakeWS()
+            attach_task = asyncio.create_task(manager.attach(s.id, ws))
+            await _wait_until(lambda: _ws_seated(manager, s.id, ws))
+            # Pending question: persisted, never answered (crash follows).
+            manager._repo.append_message(session_id=s.id, role="user", content="pending question?")
+            handles[0].emit_eof()
+            handles[0].killed = True
+            await _wait_until(lambda: any(m.get("type") == "ready" for m in ws.sent))
+            # The fresh runner got EXACTLY the one pending question, live.
+            await _wait_until(lambda: "pending question?" in _stdin_user_texts(handles[1]))
+            assert _stdin_user_texts(handles[1]).count("pending question?") == 1
+
+            await manager.kill(s.id, reason="test_done")
+            handles[1].emit_eof()
+            await attach_task
+
+        asyncio.run(_run())
+
+    def test_crash_respawn_skips_redelivery_when_last_turn_answered(self, manager: ChatManager, monkeypatch):
+        """No trailing unanswered turn → nothing is re-delivered (the old
+        3-turn replay re-answered already-answered questions)."""
+        monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "tok")
+
+        async def _run():
+            handles = [FakeHandle(), FakeHandle()]
+            spawn_calls = iter(handles)
+
+            async def fake_spawn(**kw):
+                return next(spawn_calls)
+
+            manager._provider.spawn = fake_spawn
+
+            s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+            ws = FakeWS()
+            attach_task = asyncio.create_task(manager.attach(s.id, ws))
+            await _wait_until(lambda: _ws_seated(manager, s.id, ws))
+            manager._repo.append_message(session_id=s.id, role="user", content="answered question")
+            manager._repo.append_message(session_id=s.id, role="assistant", content="the answer")
+            handles[0].emit_eof()
+            handles[0].killed = True
+            await _wait_until(lambda: any(m.get("type") == "ready" for m in ws.sent))
+            assert _stdin_user_texts(handles[1]) == []
+
+            await manager.kill(s.id, reason="test_done")
+            handles[1].emit_eof()
+            await attach_task
 
         asyncio.run(_run())

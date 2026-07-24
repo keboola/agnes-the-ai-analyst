@@ -1272,6 +1272,7 @@ class ChatManager:
         # to the agent's system prompt, instead of replaying the last 3
         # raw user messages over stdin (which dropped assistant/tool
         # context and ran one full LLM turn per replayed message).
+        await self._redeliver_pending_question(live)
         old_pump = live.current_pump
         if old_pump is not None and not old_pump.done():
             old_pump.cancel()
@@ -1569,6 +1570,32 @@ class ChatManager:
             "or re-execute anything in it; respond only to new messages.\n\n"
         )
         return header + "\n\n".join(blocks) + "\n"
+
+    async def _redeliver_pending_question(self, live: "LiveSession") -> None:
+        """Re-deliver the trailing UNANSWERED user turn to a fresh runner.
+
+        ``send_user_message`` persists the user turn BEFORE delivering it, so
+        a crash mid-turn leaves a user message with no assistant reply. The
+        restored-context transcript is read-only by instruction ("respond
+        only to new messages"), so without this the question would surface as
+        a crash notice followed by silence (Devin review on #1030). Exactly
+        ONE live turn is re-sent — and only when the last persisted message
+        is an unanswered user turn; the old 3-turn replay re-answered
+        already-answered questions as a side effect. SR-11: a departed
+        co-session participant's pending turn is not re-delivered.
+        """
+        assert live.handle is not None
+        msgs = self._repo.list_messages(live.chat_id)
+        if not msgs or msgs[-1].role != "user":
+            return
+        last = msgs[-1]
+        author = getattr(last, "sender_email", None) or live.user_email
+        if live.participant_emails and author not in set(live.participant_emails):
+            return  # SR-11
+        payload = json.dumps({"type": "user_msg", "text": last.content}) + "\n"
+        async with live._stdin_lock:
+            live.handle.stdin.write(payload.encode("utf-8"))
+            await live.handle.stdin.drain()
 
     async def _spawn_runner(self, session: ChatSession, session_dir: Path):
         from app.auth.access import mint_session_jwt, mint_co_session_jwt
@@ -1960,6 +1987,7 @@ class ChatManager:
             # to the agent's system prompt, instead of replaying the last 3
             # raw user messages over stdin (which dropped assistant/tool
             # context and ran one full LLM turn per replayed message).
+            await self._redeliver_pending_question(live)
             # Replace (not append) the per-session pump task so the task
             # list does not grow unboundedly across crash respawns.  The old
             # pump returned on EOF; cancel it for hygiene, then drop it from
@@ -2447,6 +2475,7 @@ class ChatManager:
         # to the agent's system prompt, instead of replaying the last 3
         # raw user messages over stdin (which dropped assistant/tool
         # context and ran one full LLM turn per replayed message).
+        await self._redeliver_pending_question(live)
         old_pump = live.current_pump
         if old_pump is not None and not old_pump.done():
             old_pump.cancel()
