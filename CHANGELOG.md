@@ -22,7 +22,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.76.19] - 2026-07-24
+## [0.76.23] - 2026-07-24
 
 ### Fixed
 
@@ -36,6 +36,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   its `sleeping` state transition before releasing it so a concurrent
   deploy/wake can't have its state clobbered by a stale reap write landing
   after it.
+
 ## [0.76.20] - 2026-07-24
 
 ### Internal
