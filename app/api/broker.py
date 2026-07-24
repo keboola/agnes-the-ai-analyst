@@ -34,7 +34,6 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
-from starlette.background import BackgroundTask
 
 from app.auth.access import mint_co_session_jwt, require_admin
 from app.auth.jwt import create_access_token
@@ -424,7 +423,7 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
     # collapsed every token delta of the model's answer into one burst at
     # turn end, so the user stared at silence and then got the entire text
     # at once. No ``async with``: the client must outlive this handler for
-    # the streaming case; the BackgroundTask below closes it.
+    # the streaming case; the pass-through iterator's ``finally`` closes it.
     client = httpx.AsyncClient(timeout=_ANTHROPIC_TIMEOUT)
     try:
         upstream_req = client.build_request(
@@ -452,18 +451,27 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
         # to call before the body has been consumed.
         _record_llm_health(request.app.state, resp)
 
-        async def _close_upstream() -> None:
-            await resp.aclose()
-            await client.aclose()
-
         # ``aiter_bytes`` (not ``aiter_raw``) so httpx undoes any upstream
         # ``Content-Encoding`` — that header is not forwarded, so passing
         # still-compressed raw bytes through would corrupt the stream.
+        # Cleanup lives in a try/finally INSIDE the iterator, not a Starlette
+        # ``background=`` task: the background callback only runs on the
+        # happy path, so a client disconnect or upstream drop mid-stream
+        # (routine for completions running tens of seconds) would leak the
+        # upstream response + per-request client — the finalized/abandoned
+        # generator still runs its ``finally`` (RBAC review on #1020).
+        async def _passthrough():
+            try:
+                async for chunk in resp.aiter_bytes():
+                    yield chunk
+            finally:
+                await resp.aclose()
+                await client.aclose()
+
         return StreamingResponse(
-            resp.aiter_bytes(),
+            _passthrough(),
             status_code=resp.status_code,
             media_type=ctype,
-            background=BackgroundTask(_close_upstream),
         )
 
     # Non-stream responses (JSON endpoints such as count_tokens, upstream

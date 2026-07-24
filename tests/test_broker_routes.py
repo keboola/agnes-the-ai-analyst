@@ -804,3 +804,70 @@ def test_anthropic_sse_streams_through_without_buffering(broker_app, monkeypatch
     assert calls["stream"] is True, "outbound forward must open with stream=True"
     assert "aread" not in calls, "SSE body must not be buffered server-side"
     assert calls.get("closed") is True, "upstream must be closed after the stream drains"
+
+
+def test_anthropic_sse_upstream_closed_even_when_stream_breaks(broker_app, monkeypatch):
+    """Regression (RBAC review on #1020): Starlette's ``background=`` callback
+    only runs on the happy path — if the SSE body iterator raises mid-stream
+    (upstream drop) or the client walks away, a background-task cleanup never
+    fires and the upstream response + per-request client leak. Cleanup lives
+    in the pass-through iterator's ``finally``, which runs even when the
+    stream breaks."""
+    import app.api.broker as broker_mod
+
+    calls: dict = {}
+    real_cls = httpx.AsyncClient
+
+    class _BreakingSSEClient(_StreamShimMixin):
+        def __init__(self, *a, **k):
+            self._real = real_cls(*a, **k) if "transport" in k else None
+
+        async def __aenter__(self):
+            return await self._real.__aenter__() if self._real else self
+
+        async def __aexit__(self, *a):
+            return await self._real.__aexit__(*a) if self._real else False
+
+        async def send(self, req, stream=False):
+            class _R:
+                status_code = 200
+                headers = {"content-type": "text/event-stream"}
+
+                async def aiter_bytes(self):
+                    yield b"event: message_start\n\n"
+                    raise RuntimeError("simulated upstream drop mid-stream")
+
+                async def aread(self):
+                    return b""
+
+                async def aclose(self):
+                    calls["resp_closed"] = True
+
+            return _R()
+
+        async def aclose(self):
+            calls["client_closed"] = True
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _BreakingSSEClient)
+    tok = ticket_repo().mint("chat_sse_break", "main", ttl_seconds=60)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            try:
+                await c.post(
+                    "/api/broker/anthropic/v1/messages",
+                    headers={"Authorization": f"Bearer {tok}"},
+                    content=b'{"model":"x","stream":true}',
+                )
+            except Exception:
+                # The mid-stream break propagates through the ASGI transport —
+                # expected; the assertion is about cleanup, not the error.
+                pass
+
+    asyncio.run(_run())
+    assert calls.get("resp_closed") is True, "upstream response must close when the stream breaks"
+    assert calls.get("client_closed") is True, "per-request client must close when the stream breaks"
