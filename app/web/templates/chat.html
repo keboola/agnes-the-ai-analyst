@@ -183,20 +183,17 @@
        follows the composer in the DOM and auto-hides with
        #chat-capabilities (sibling rule) the moment a conversation starts —
        so "New chat" simply returns here. #}
-    {# One cohesive hero: greeting → headline/diagram/CTAs (the bare
-       Knowledge Layer banner) → composer → Stack context line — all flat
-       on the page surface (no enclosing box), aligned to the shared
-       --rdb-col content column (see the "HERO" section of chat.css). #}
+    {# Dashboard landing (issue #896): greeting → Kai composer → suggested
+       actions → the Knowledge Layer banner docked at the FOOT. The greeting
+       alone is the hero so the composer + its suggestions lead; the banner
+       (moved to #chat-empty-dock below) closes the page. Blocks share the one
+       centered --rdb-col column (see the "HERO" section of chat.css). #}
     <aside id="chat-capabilities" class="cloud-chat-capabilities">
       {% set _first_name = ((current_user.name or '').split(' ') | first) or '' %}
       <h1 class="rdb-greet">
         <span id="rdb-greeting-tod">{{ greeting }}</span>{% if _first_name %}, {{ _first_name }}{% endif %}
         <span aria-hidden="true">&#x1F44B;</span>
       </h1>
-      {# The product-model hero (macros/_knowledge_layer.html): company
-         knowledge lives in Agnes; use Kai here OR the same knowledge from
-         your own AI tools. bare=True — this hero container owns the box. #}
-      {{ knowledge_layer_banner(bare=True) }}
     </aside>
     {% else %}
     <aside id="chat-capabilities" class="cloud-chat-capabilities">
@@ -265,7 +262,7 @@
          the wrapper would break its grid composer. #}
       {% if ui_layout == 'rail' %}
       <div class="cloud-chat-composer">
-      <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Kai anything... (try: summarize revenue trends)" rows="2"></textarea>
+      <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Kai anything... (try: summarize revenue trends)" rows="1"></textarea>
       {% else %}
       <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes… (try / for skills)" rows="2"></textarea>
       {% endif %}
@@ -462,14 +459,13 @@
     </div>
 
     {% if ui_layout == 'rail' %}
-    {# Empty-state extras that sit BELOW the composer — the rest of the
-       Dashboard: Stack context line, the three activity panels, the guided
-       task starters, and the connect banner. Placed after #chat-form in the
+    {# Empty-state extras that sit BELOW the composer — the Stack status line
+       and the Suggested-next-actions card row. Placed after #chat-form in the
        DOM; flex order (chat.css) renders it below the composer. Auto-hides
        once a conversation starts via the
        ``#chat-capabilities[hidden] ~ #chat-empty-extras`` rule. #}
     <div id="chat-empty-extras" class="cloud-chat-empty-extras">
-      {# Stack context line — flat under the composer (chat_dashboard.css).
+      {# Stack status line — flat under the composer (chat_dashboard.css).
          Content renders (with a layers icon) whenever either count is
          non-zero; at 0/0 the strip is just empty spacing. #}
       <p class="rdb-context">
@@ -486,22 +482,14 @@
       </p>
 
       <div class="rdb">
-        {# ── Suggested next actions ────────────────────────────────────────
-           One personalized, action-oriented list — guided Kai conversation
-           starters, NOT separate tools. Rows render from the typed action
-           model in js/chat_dashboard.js (buildSuggestedActions — the
-           explicit personalization boundary: the resume row comes from the
-           caller's real recent conversations; the rest are the static
-           guided-task defaults until a backend recommendation source
-           exists). Selecting a row collects any missing input in the
-           existing dialog primitive and submits through chat.js's
-           submitUserMessage — the one conversation flow. State elements
-           below are toggled by the renderer so loading / empty / partial
-           failure all degrade section-locally. #}
-        <section class="rdb-actions" id="rdb-actions" aria-labelledby="rdb-actions-title">
-          <header class="rdb-panel-head">
-            <h2 id="rdb-actions-title" class="rdb-panel-title">Suggested next actions</h2>
-          </header>
+        {# Guided Kai conversation-starters, sitting directly under the composer
+           (no heading) so they read as suggestions FOR the input. Items render
+           from the typed task model in js/chat_dashboard.js — each collects any
+           missing input in the shared dialog primitive and submits through
+           chat.js's submitUserMessage (the one conversation flow). The renderer
+           toggles the state elements below so loading / empty degrade
+           section-locally. #}
+        <section class="rdb-actions" id="rdb-actions" aria-label="Suggested actions">
           <ul id="rdb-actions-list" class="rdb-actions-list" role="list"></ul>
           <p id="rdb-actions-loading" class="rdb-panel-note">Loading suggestions&hellip;</p>
           <div id="rdb-actions-empty" class="rdb-actions-empty" hidden>
@@ -515,10 +503,17 @@
       </div>
     </div>
 
-    {# Footer lives inside the empty-state card (not the page-level footer,
-       which stays hidden on chat): it narrows with the card when history
-       opens and disappears once a conversation starts. Same credit as
-       every other page. #}
+    {# Knowledge Layer banner — floated to the VERY TOP via flex order (chat.css);
+       the greeting + composer + suggestions center in the free space below it,
+       and the Keboola credit pins to the very bottom. bare=True: no outer box,
+       "Connect your tools" inside the tools card. Both the banner and the credit
+       are placed after #chat-capabilities in the DOM so the empty-state hide
+       rule (#chat-capabilities[hidden] ~ …) still catches them. #}
+    <div id="chat-empty-banner" class="cloud-chat-empty-banner">
+      {{ knowledge_layer_banner(bare=True, compact=True) }}
+    </div>
+
+    {# Keboola credit — pinned to the very bottom of the page. #}
     <footer class="cloud-chat-empty-foot">
       {% include '_footer_keboola.html' %}
     </footer>

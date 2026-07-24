@@ -384,14 +384,13 @@ class TestRailDashboard:
         assert 'data-ui-layout="rail"' in text
         for anchor in (
             'id="rdb-greeting-tod"',  # greeting
-            'class="klb klb--bare"',  # Knowledge Layer banner fused into the hero box
+            'class="klb klb--bare klb--compact"',  # Knowledge Layer banner fused into the hero box (compact variant)
             "One knowledge layer. Everywhere you work.",  # banner headline
             "Ask Kai in Agnes",  # banner LEFT card
             "Use your own AI tools",  # banner RIGHT card
             "Agnes Knowledge Layer",  # banner CENTER hub
-            'class="klb-cta-primary" href="/me/ai-connector"',  # banner primary CTA → connect page
-            'class="klb-cta-secondary" href="/home"',  # banner secondary CTA → how-it-works walkthrough
-            "Suggested next actions",  # the one personalized section
+            'class="klb-cta-primary klb-card-cta" href="/me/ai-connector"',  # "Connect your tools" CTA now lives in the tools card
+            'id="rdb-actions"',  # the one personalized section (heading retired)
             'id="rdb-actions-list"',  # suggested-actions list
             "css/chat_dashboard.css",  # dashboard styles
             'id="chat-input"',  # the REAL composer serves the dashboard
@@ -400,6 +399,11 @@ class TestRailDashboard:
         # The retired three-panel layout is gone (one actions list instead).
         for retired in ('id="rdb-continue-list"', 'id="rdb-tasks"', "Recent updates"):
             assert retired not in text, f"retired dashboard panel leaked back: {retired}"
+        # The banner's old two-button CTA row is retired: "Connect your tools"
+        # moved into the tools card (klb-card-cta), "Learn how it works" into
+        # the user menu. Neither the CTA row nor the outline secondary remain.
+        assert 'class="klb-ctas"' not in text
+        assert "klb-cta-secondary" not in text
         # One composer only — the retired standalone dashboard's look-alike
         # input and its prompt-handoff module must be gone.
         assert 'id="rdb-composer"' not in text
@@ -433,30 +437,46 @@ class TestRailDashboard:
         assert 'id="rdb-tasks"' not in resp.text
         assert "chat_dashboard" not in resp.text
 
-    def test_rail_nav_shows_dashboard_first(self, web_client, admin_cookie, monkeypatch):
-        """Dashboard sits ABOVE New chat in the rail nav, and the rail logo
-        lands on it (href = home_route, default /dashboard)."""
+    def test_rail_nav_new_chat_is_the_single_chat_entry(self, web_client, admin_cookie, monkeypatch):
+        """There is no separate Dashboard nav item — /dashboard is just Chat's
+        pre-conversation state, so it and New chat pointed at the same surface.
+        New chat is the single chat entry point; the only /dashboard href left
+        is the rail logo (href = home_route, default /dashboard)."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
         text = resp.text
-        dash = text.find('href="/dashboard"')
-        newchat = text.find('id="new-chat"')
-        assert dash != -1, "rail nav is missing the Dashboard item"
-        assert newchat != -1
-        assert dash < newchat, "Dashboard must be the first nav item, above New chat"
+        assert 'id="new-chat"' in text
+        assert "New chat" in text
+        # The retired Dashboard nav item is gone: the only /dashboard href is
+        # the logo (even with a chat grant), never a second nav-item occurrence.
+        assert text.count('href="/dashboard"') == 1
         assert 'class="rail-logo" href="/dashboard"' in text
 
-    def test_rail_nav_hides_dashboard_without_chat_grant(self, web_client, admin_cookie, monkeypatch):
-        """Without a chat grant /dashboard 302s to /stack, so the nav item
-        would be a link that bounces — it must not render."""
+    def test_rail_nav_new_chat_active_on_empty_chat(self, web_client, admin_cookie, monkeypatch):
+        """New chat carries the `.on` active state (folded over from the retired
+        Dashboard item) exactly while the pre-conversation state is showing —
+        /chat with no session deep link."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(web_client, monkeypatch)
+        # Empty /chat → New chat is active.
+        resp = web_client.get("/chat", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert re.search(r'class="rail-i rail-newchat-item[^"]*\bon\b[^"]*"\s+id="new-chat"', resp.text)
+        # Deep-linked into a conversation → New chat is not active.
+        resp = web_client.get("/chat?session=abc", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert not re.search(r'rail-newchat-item[^"]*\bon\b[^"]*"\s+id="new-chat"', resp.text)
+
+    def test_rail_nav_hides_new_chat_without_chat_grant(self, web_client, admin_cookie, monkeypatch):
+        """Without a chat grant the chat slot renders nothing; the only
+        /dashboard href left is the logo (whose route bounces grant-less
+        callers to /stack)."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
-        # Exactly one /dashboard href remains: the logo (whose home_route
-        # target is fine — the route itself bounces grant-less users to
-        # /stack). The nav item would be a second occurrence.
+        assert 'id="new-chat"' not in resp.text
         assert resp.text.count('href="/dashboard"') == 1
 
     def test_topnav_nav_untouched(self, web_client, admin_cookie, monkeypatch):

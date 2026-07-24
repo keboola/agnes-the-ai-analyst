@@ -76,10 +76,12 @@ html[data-ui-layout="rail"] .rail-nav {
     flex-shrink: 0;
 }
 
-/* "New chat" — the primary chat action, folded into the nav as the first
-   item (the standalone +New chat button above the nav was retired). Given a
-   subtle primary-tinted treatment so it reads as the CTA of the group without
-   the weight of a filled button, and never carries the `.on` active state. */
+/* "New chat" — the primary chat action AND the rail landing item (the
+   standalone +New chat button above the nav, and the separate Dashboard nav
+   item, were both retired; /dashboard is just Chat's pre-conversation state).
+   Given a subtle primary-tinted treatment so it reads as the CTA of the group
+   without the weight of a filled button; it carries the `.on` active state
+   (via the shared .rail-i.on rule) exactly while that empty state is showing. */
 html[data-ui-layout="rail"] .rail-newchat-item {
     color: var(--ds-primary-dark);
     font-weight: 600;

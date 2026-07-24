@@ -4834,21 +4834,21 @@ async def chat_page(
     if not can_access(user["id"], ResourceType.CHAT.value, "chat", conn):
         return RedirectResponse("/")
     # Rail pre-conversation state = the Dashboard (issue #896): greeting,
-    # the real composer, an RBAC-filtered "Kai is using N knowledge sources
-    # and M capabilities" context line, activity panels, and guided task
-    # starters — rendered by chat.html's rail empty-state blocks and hidden
-    # the moment a conversation starts. Counts are best-effort: a repo
-    # failure degrades them to 0 (the context line hides) instead of taking
-    # down the page.
-    from src.marketplace_filter import resolve_allowed_plugins
-
+    # the real composer, a "Kai is using N knowledge sources and M
+    # capabilities from your Stack" context line, activity panels, and
+    # guided task starters — rendered by chat.html's rail empty-state
+    # blocks and hidden the moment a conversation starts. The counts are
+    # the caller's ACTUAL Stack contents (same reads as the /stack page
+    # the line links to), not everything RBAC lets them browse. Best-
+    # effort: a repo failure degrades them to 0 (the context line hides)
+    # instead of taking down the page.
     try:
-        knowledge_source_count = _ask_knowledge_source_count(user, conn)
+        knowledge_source_count = _stack_knowledge_source_count(user)
     except Exception:
         logger.exception("chat empty state: knowledge source count failed")
         knowledge_source_count = 0
     try:
-        capability_count = len(resolve_allowed_plugins(conn, user))
+        capability_count = _stack_capability_count(conn, user)
     except Exception:
         logger.exception("chat empty state: capability count failed")
         capability_count = 0
@@ -4931,65 +4931,54 @@ def _chat_capability_snapshot(conn: duckdb.DuckDBPyConnection, user: dict) -> di
     }
 
 
-def _ask_knowledge_source_count(user: dict, conn: duckdb.DuckDBPyConnection) -> int:
-    """RBAC-filtered count of "knowledge sources" for the /ask landing's
-    source pill — data packages + memory domains (the same
-    ``StackResolver`` browse used by /catalog and /stack) plus the Library
-    surfaces (collections, recipes, maintained knowledge digests — the
-    resource types the "Library" area of the catalog covers).
+def _stack_knowledge_source_count(user: dict) -> int:
+    """Count of knowledge sources actually IN the caller's Stack — data
+    packages + memory domains through the same ``StackResolver.stack()``
+    reads the /stack page renders, so the number agrees with the page the
+    context line links to. (Replaces the retired /ask landing count, which
+    summed everything the caller could *browse* — admin god-mode counted
+    every package in the instance — plus the Library surfaces; those
+    numbers never matched /stack.)
 
-    Best-effort per category: a failure counting one resource type (e.g. a
-    repo error) must not blank the whole pill, so each block is wrapped and
-    logged rather than propagated.
+    No ``conn``: like the /stack route, the resolver goes through the
+    factory repos so it observes just-written subscription rows.
+
+    Best-effort per resource type: a repo failure counting one type must
+    not blank the whole line, so each block is logged rather than
+    propagated.
     """
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
-    from src.rbac import get_accessible_ids
 
-    is_admin = is_user_admin(user["id"], conn)
-    resolver = StackResolver(conn)
+    resolver = StackResolver()
     total = 0
-
-    # Data packages + memory domains — admin sees every entry (god-mode
-    # browse_admin), everyone else sees only what their groups are granted.
     for rt in (ResourceType.DATA_PACKAGE, ResourceType.MEMORY_DOMAIN):
         try:
-            entries = resolver.browse_admin(user["id"], rt) if is_admin else resolver.browse(user["id"], rt)
-            total += len(entries)
+            total += len(resolver.stack(user["id"], rt))
         except Exception:
-            logger.warning("ask landing: knowledge source count failed for %s", rt.value)
-
-    # Library: file collections (mirrors GET /library's visibility).
-    try:
-        allowed = get_accessible_ids(user, ResourceType.COLLECTION.value, conn)
-        cols = file_corpora_repo().list()
-        total += len(cols) if allowed is None else sum(1 for c in cols if c["id"] in allowed)
-    except Exception:
-        logger.warning("ask landing: knowledge source count failed for collections")
-
-    # Library: recipes (mirrors GET /api/recipes' visibility — admin sees
-    # every row, everyone else only granted 'prod' rows).
-    try:
-        rows = recipes_repo().list()
-        allowed = get_accessible_ids(user, ResourceType.RECIPE.value, conn)
-        if allowed is None:
-            total += len(rows)
-        else:
-            total += sum(1 for r in rows if (r.get("status") or "prod") == "prod" and r["id"] in allowed)
-    except Exception:
-        logger.warning("ask landing: knowledge source count failed for recipes")
-
-    # Library: maintained knowledge digests — reuses the same fail-closed
-    # per-row grant check the content endpoint gates on.
-    try:
-        from src.repositories import knowledge_digests_repo
-        from app.api.knowledge_search import _caller_can_read_digest
-
-        total += sum(1 for d in knowledge_digests_repo().list() if _caller_can_read_digest(user, d["id"]))
-    except Exception:
-        logger.warning("ask landing: knowledge source count failed for knowledge digests")
-
+            logger.warning("chat empty state: stack count failed for %s", rt.value)
     return total
+
+
+def _stack_capability_count(conn: duckdb.DuckDBPyConnection, user: dict) -> int:
+    """Count of capabilities actually IN the caller's Stack — the same
+    roster ``GET /api/marketplace/items?tab=my`` serves to /stack's Plugins
+    tab: curated plugins the caller subscribed to (or is required into via
+    a group grant), intersected with what RBAC actually resolves for them,
+    plus their Store installs. NOT ``resolve_allowed_plugins`` alone —
+    that is everything the caller *could* add, not what's in the Stack.
+    """
+    from src.marketplace_filter import required_plugin_keys, resolve_allowed_plugins
+    from src.repositories import user_curated_subscriptions_repo, user_store_installs_repo
+
+    granted = resolve_allowed_plugins(conn, user)
+    # Same (rbac ∩ (subscriptions ∪ required)) composition as
+    # ``resolve_user_marketplace`` — but counted per item (each Store
+    # install counts one), matching the ?tab=my card count.
+    in_stack = user_curated_subscriptions_repo().subscribed_set(user["id"]) | required_plugin_keys(conn, user["id"])
+    curated = sum(1 for p in granted if (p["marketplace_id"], p["original_name"]) in in_stack)
+    store = len(user_store_installs_repo().list_for_user(user["id"]))
+    return curated + store
 
 
 @router.get("/ask", include_in_schema=False)
@@ -5000,8 +4989,9 @@ async def ask_landing(user: dict = Depends(get_current_user)):
     lands users on the working chat (``/chat``) or ``/stack``, so ``/ask`` has
     no job. Kept as a 302 to ``/`` (not deleted) so any bookmarked/linked
     ``/ask`` resolves through the canonical home route instead of 404ing.
-    The RBAC-filtered pill helpers it introduced (``_ask_knowledge_source_count``,
-    ``_ASK_SUGGESTED_QUESTIONS``) live on — ``/chat``'s empty state uses them.
+    Its context-line idea lives on in ``/chat``'s empty state, now counting
+    the caller's actual Stack (``_stack_knowledge_source_count`` /
+    ``_stack_capability_count``) instead of everything browsable.
     """
     return RedirectResponse(url="/", status_code=302)
 

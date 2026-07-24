@@ -1,9 +1,11 @@
-"""Primary nav: AI Connector in primary nav for all authenticated users.
+"""User dropdown: "Learn how it works" link for all authenticated users.
 
-The /me/ai-connector page is user-facing (bundle setup, tools reference) and must
-be reachable from the primary nav for every authenticated user, not gated
-behind the admin-only Admin dropdown. The legacy /me/mcp URL 301-redirects
-to /me/ai-connector.
+The user account dropdown carries a "Learn how it works" link (→ /home) for
+every authenticated user, replacing the former "AI Connector" menu item —
+the AI Connector page is now reached from the "Connect your tools" CTA on the
+chat dashboard's tools card. The /me/ai-connector page itself stays
+user-facing (bundle setup, tools reference); the legacy /me/mcp URL
+301-redirects to it.
 """
 
 from __future__ import annotations
@@ -13,30 +15,33 @@ def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_cowork_link_in_user_dropdown_for_non_admin(seeded_app):
-    """Non-admin users see the AI Connector link in the user dropdown menu."""
+def test_learn_link_in_user_dropdown_for_non_admin(seeded_app):
+    """Non-admin users see the "Learn how it works" link in the user dropdown."""
     c = seeded_app["client"]
     token = seeded_app["analyst_token"]
     resp = c.get("/dashboard", headers=_auth(token))
     assert resp.status_code == 200
     body = resp.text
 
-    assert 'href="/me/ai-connector"' in body
-    assert ">AI Connector<" in body
+    assert 'href="/home"' in body
+    assert ">Learn how it works<" in body
     # Must carry .app-user-menu-item (user dropdown), not .app-nav-link (primary nav).
     assert "app-user-menu-item" in body
+    # The former "AI Connector" dropdown item is gone (moved to the tools card CTA).
+    assert ">AI Connector<" not in body
 
 
-def test_cowork_link_in_user_dropdown_for_admin(seeded_app):
-    """Admin users also see the AI Connector link in the user dropdown menu."""
+def test_learn_link_in_user_dropdown_for_admin(seeded_app):
+    """Admin users also see the "Learn how it works" link in the user dropdown."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     resp = c.get("/dashboard", headers=_auth(token))
     assert resp.status_code == 200
     body = resp.text
 
-    assert 'href="/me/ai-connector"' in body
-    assert ">AI Connector<" in body
+    assert 'href="/home"' in body
+    assert ">Learn how it works<" in body
+    assert ">AI Connector<" not in body
     # Cowork must NOT appear in the Admin dropdown or as a primary nav link.
     assert 'href="/me/mcp"' not in body
 

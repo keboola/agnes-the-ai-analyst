@@ -1,13 +1,17 @@
 """Web UI route — the ``/chat`` pre-conversation Dashboard (issue #896).
 
-The rail empty state is the Dashboard: greeting, the real composer, an
-RBAC-filtered "Kai is using N knowledge sources and M capabilities from
-your Stack" context line, activity panels, and guided task starters.
-(Its ancestors — the standalone ``/ask`` hero, then the ``/chat``
-"Ask anything." hero with the "Operated by Kai" pill — are retired; the
-counts still come from the same ``_ask_knowledge_source_count`` helper.)
-These tests follow the live surface: they render ``/chat``'s rail empty
-state and assert the context line's RBAC counting + pluralization.
+The rail empty state is the Dashboard: greeting, the real composer, a
+"Kai is using N knowledge sources and M capabilities from your Stack"
+context line, activity panels, and guided task starters. (Its ancestors —
+the standalone ``/ask`` hero, then the ``/chat`` "Ask anything." hero with
+the "Operated by Kai" pill — are retired.) The counts are the caller's
+ACTUAL Stack contents, matching the /stack page the line links to:
+knowledge sources = ``StackResolver.stack()`` over data packages + memory
+domains (``_stack_knowledge_source_count``); capabilities = the
+``?tab=my`` plugin roster — subscribed/required curated plugins ∩ RBAC,
+plus Store installs (``_stack_capability_count``). NOT everything the
+caller could browse or add. These tests render ``/chat``'s rail empty
+state and assert that counting + pluralization.
 
 Rendering it needs three things: rail layout, an enabled chat backend,
 and CHAT *access* (admin clears it via god-mode; a normal user needs a
@@ -93,19 +97,23 @@ class TestChatEmptyStatePill:
     def test_renders_dashboard_and_context_line(self, seeded_app, monkeypatch):
         """Rail ``/chat`` empty state renders the Dashboard — greeting,
         activity panels, guided task starters — and the Stack context
-        line (admin has seeded packages, so both counts are non-zero)."""
+        line (a package granted to the admin's group puts it in their
+        Stack, so the knowledge-source count is non-zero)."""
         _enable_rail_chat(seeded_app, monkeypatch)
+        pkg_id = _make_pkg("dash-ctx-pkg", "Dash ctx pkg")
+        _grant("Admin", "data_package", pkg_id)
         c = seeded_app["client"]
         resp = c.get("/chat", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 200, resp.text
         body = resp.text
         assert 'id="rdb-greeting-tod"' in body
-        assert "Use Kai here, or connect your favorite AI tools" in body
-        # The Knowledge Layer banner — the product-model hero.
+        # The Knowledge Layer banner — the product-model hero (compact mode
+        # drops the headline lead; the aria-label + cards remain).
         assert "One knowledge layer. Everywhere you work." in body
         assert "Ask Kai in Agnes" in body
         assert "Use your own AI tools" in body
-        assert "Suggested next actions" in body
+        assert "Connect your tools" in body
+        assert 'id="rdb-actions"' in body
         assert "Kai is using" in body and "from your Stack" in body
         # The retired hero copy must be gone.
         assert "Ask anything." not in body
@@ -124,7 +132,7 @@ class TestChatEmptyStatePill:
         assert resp.status_code == 200, resp.text
         assert "Kai is using" not in resp.text
         # The rest of the dashboard still renders.
-        assert "Suggested next actions" in resp.text
+        assert 'id="rdb-actions"' in resp.text
 
     def test_context_line_reflects_rbac_grant(self, seeded_app, monkeypatch):
         """A required data-package grant on the analyst's group bumps N —
@@ -141,40 +149,55 @@ class TestChatEmptyStatePill:
         # Singular, not plural — the plural fragment must be absent.
         assert "1 knowledge sources</a>" not in resp.text
 
-    def test_source_pill_admin_sees_all_packages(self, seeded_app, monkeypatch):
-        """Admin god-mode counts every data package regardless of grants —
-        matches the /catalog Browse admin behavior. The instance seeds a
-        fixed set of canonical system memory domains (also god-mode
-        visible to admin), so assert the *delta* from adding one package
-        rather than an absolute count."""
+    def test_admin_counts_stack_not_catalog(self, seeded_app, monkeypatch):
+        """The line reads the caller's ACTUAL Stack, not the whole catalog:
+        creating a package does NOT bump the admin's count (god-mode lets
+        admin browse everything, but browse ≠ Stack); an admin self-serve
+        subscribe (POST /api/stack/subscribe, no grant needed) does."""
         import re
 
         _enable_rail_chat(seeded_app, monkeypatch)
         c = seeded_app["client"]
         headers = _auth(seeded_app["admin_token"])
-        before = c.get("/chat", headers=headers)
-        assert before.status_code == 200, before.text
-        before_n = int(re.search(r">(\d+) knowledge source", before.text).group(1))
 
-        _make_pkg("ask-landing-pkg-admin", "Ask landing pkg admin")
-        after = c.get("/chat", headers=headers)
-        assert after.status_code == 200, after.text
-        after_n = int(re.search(r">(\d+) knowledge source", after.text).group(1))
-        assert after_n == before_n + 1
+        def _count() -> int:
+            resp = c.get("/chat", headers=headers)
+            assert resp.status_code == 200, resp.text
+            m = re.search(r">(\d+) knowledge source", resp.text)
+            return int(m.group(1)) if m else 0
+
+        before_n = _count()
+        pkg_id = _make_pkg("stack-count-pkg", "Stack count pkg")
+        assert _count() == before_n  # catalog growth alone isn't the Stack
+
+        resp = c.post(
+            "/api/stack/subscribe",
+            headers=headers,
+            json={"resource_type": "data_package", "resource_id": pkg_id},
+        )
+        assert resp.status_code == 200, resp.text
+        assert _count() == before_n + 1
 
     def test_capabilities_count_pluralization(self, seeded_app, monkeypatch):
         """capability_count == 1 renders the singular "1 capability from your
-        Stack". Assert the exact pill fragment — the empty-state DOM also
-        carries an ``id="chat-capabilities"``, so a bare "capabilities"
-        substring check would be a false negative."""
+        Stack" — and only SUBSCRIBED plugins count: RBAC resolves two
+        plugins for the caller, one subscription row exists, so M == 1.
+        Assert the exact pill fragment — the empty-state DOM also carries
+        an ``id="chat-capabilities"``, so a bare "capabilities" substring
+        check would be a false negative."""
         from src import marketplace_filter
+        from src.repositories import user_curated_subscriptions_repo
 
         _enable_rail_chat(seeded_app, monkeypatch)
         monkeypatch.setattr(
             marketplace_filter,
             "resolve_allowed_plugins",
-            lambda conn, user: [{"manifest_name": "demo-plugin"}],
+            lambda conn, user: [
+                {"marketplace_id": "mp1", "original_name": "demo-plugin", "manifest_name": "demo-plugin", "raw": {}},
+                {"marketplace_id": "mp1", "original_name": "other-plugin", "manifest_name": "other-plugin", "raw": {}},
+            ],
         )
+        user_curated_subscriptions_repo().subscribe("admin1", "mp1", "demo-plugin")
         c = seeded_app["client"]
         resp = c.get("/chat", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 200, resp.text

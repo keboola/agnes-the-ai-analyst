@@ -148,12 +148,13 @@ function setThreadTitle(title) {
   // thread (hidden in the empty state) — see chat.css.
   const shell = document.querySelector(".cloud-chat-shell");
   if (shell) shell.classList.toggle("has-thread", !!title);
-  // Rail nav: the Dashboard item is "where you are" exactly when the
-  // pre-conversation dashboard is showing (no thread). Server-rendered for
-  // the initial load (_app_rail.html); kept in sync here across in-page
-  // open-session / new-chat transitions. Absent on topnav — no-op.
-  const railDash = document.getElementById("rail-dashboard-item");
-  if (railDash) railDash.classList.toggle("on", !title);
+  // Rail nav: the "New chat" item is "where you are" exactly when the
+  // pre-conversation dashboard is showing (no thread) — it's the single chat
+  // entry point and the rail landing item (there's no separate Dashboard item).
+  // Server-rendered for the initial load (_app_rail.html); kept in sync here
+  // across in-page open-session / new-chat transitions. Absent on topnav — no-op.
+  const railNewChat = document.getElementById("new-chat");
+  if (railNewChat) railNewChat.classList.toggle("on", !title);
 }
 
 function readCapabilitySnapshot() {
@@ -2721,7 +2722,7 @@ function renderCoPresence(host, participants) {
     _composer.value = _seededQ;
     autosizeComposer();
     _composer.focus();
-  } else if (_composer && $("rdb-tasks")) {
+  } else if (_composer && $("rdb-actions")) {
     // Dashboard empty state — the Kai input is the page's main affordance.
     _composer.focus();
   }
