@@ -164,9 +164,7 @@ def build_filter_clause(table: InternalTable, user: dict[str, Any], is_admin: bo
     return f"WHERE {table.filter_column} = '{safe}'"
 
 
-def sample_internal_rows(
-    table: InternalTable, where_clause: str, n: int
-) -> list[dict[str, Any]]:
+def sample_internal_rows(table: InternalTable, where_clause: str, n: int) -> list[dict[str, Any]]:
     """Read up to ``n`` rows from an internal table's physical source on the
     ACTIVE state backend (DuckDB or Postgres), applying the RBAC ``where_clause``.
 
@@ -210,6 +208,23 @@ _TABLE_REF_RE = re.compile(
     re.IGNORECASE,
 )
 
+# DuckDB dollar-quoted string literals: $$...$$ or $tag$...$tag$. Their body
+# can contain single quotes, so they MUST be stripped before the single-quote
+# scanner runs — otherwise a `'` inside a dollar-quoted block desyncs it,
+# blanking the wrong span and hiding a state-table reference from the scanners
+# below while DuckDB still executes it as live SQL.
+_SQL_DOLLAR_QUOTE_RE = re.compile(r"\$(\w*)\$[\s\S]*?\$\1\$")
+
+# DuckDB Postgres-style escape strings: E'...' / e'...' where a backslash
+# escapes the next char (so `E'\''` is the literal `'`). The plain single-quote
+# regex mis-lexes these (it treats the escaped `'` as a real close), so strip
+# them explicitly too. Together with the dollar-quote form these are the known
+# lexer-desync vectors against a regex string-stripper; the PRIMARY defense for
+# non-admin queries is allowlist-by-construction (see
+# _materialized_internal_duckdb_from_duckdb) — this keeps the routing scan and
+# the denylist honest as defense-in-depth.
+_SQL_ESCAPE_STRING_RE = re.compile(r"(?<![A-Za-z0-9_])[eE]'(?:\\.|''|[^'])*'")
+
 # Single-quoted SQL string literals (with `''` escape handling). Stripped
 # before reference detection so a non-admin can't trigger the internal
 # privileged code path by smuggling the alias inside a literal.
@@ -224,11 +239,13 @@ _SQL_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
 
 def _strip_sql_noise(sql: str) -> str:
     """Strip string literals + block + line comments so the identifier
-    scanners that follow see only structural SQL. Order matters: strip
-    literals first (they can contain comment-looking text), then
-    comments (which can contain literal-looking text). String content
-    is replaced with empty `''` to keep token spacing intact."""
-    s = _SQL_STRING_LITERAL_RE.sub("''", sql)
+    scanners that follow see only structural SQL. Order matters: dollar-quoted
+    and E'' escape strings first (their bodies can contain `'` and would desync
+    the single-quote scanner), then single-quoted literals, then comments.
+    String content is replaced with empty `''` to keep token spacing intact."""
+    s = _SQL_DOLLAR_QUOTE_RE.sub("''", sql)
+    s = _SQL_ESCAPE_STRING_RE.sub("''", s)
+    s = _SQL_STRING_LITERAL_RE.sub("''", s)
     s = _SQL_BLOCK_COMMENT_RE.sub(" ", s)
     s = _SQL_LINE_COMMENT_RE.sub(" ", s)
     return s
@@ -262,9 +279,7 @@ def _state_table_denylist() -> list[str]:
     # handle per call (matches the sibling get_schema() below).
     cursor = get_system_db()
     try:
-        rows = cursor.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
-        ).fetchall()
+        rows = cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'").fetchall()
     finally:
         cursor.close()
     return [name for (name,) in rows if name is not None]
@@ -341,10 +356,7 @@ def _materialized_internal_duckdb(refs, user, is_admin):
             for table_id in refs:
                 table = INTERNAL_TABLES_BY_ID[table_id]
                 where_clause = build_filter_clause(table, user, is_admin)
-                q = (
-                    f'SELECT * FROM "{table.source_table}" {where_clause} '
-                    f"LIMIT {_PG_MATERIALIZE_ROW_CAP + 1}"
-                )
+                q = f'SELECT * FROM "{table.source_table}" {where_clause} LIMIT {_PG_MATERIALIZE_ROW_CAP + 1}'
                 result = pg.exec_driver_sql(q)
                 col_names = list(result.keys())
                 fetched = result.mappings().all()
@@ -356,20 +368,66 @@ def _materialized_internal_duckdb(refs, user, is_admin):
                     )
                 # Empty result → keep the column names so the user SQL's column
                 # references still resolve (COUNT/GROUP BY return empty).
-                src_df = (
-                    pd.DataFrame(list(fetched))
-                    if fetched
-                    else pd.DataFrame(columns=col_names)
-                )
+                src_df = pd.DataFrame(list(fetched)) if fetched else pd.DataFrame(columns=col_names)
                 conn.register("_pg_src_df", src_df)
-                conn.execute(
-                    f'CREATE TABLE "{table.source_table}" AS SELECT * FROM _pg_src_df'
-                )
+                conn.execute(f'CREATE TABLE "{table.source_table}" AS SELECT * FROM _pg_src_df')
                 conn.unregister("_pg_src_df")
         return conn, conn.close
     except Exception:
         conn.close()
         raise
+
+
+def _materialized_internal_duckdb_from_duckdb(refs, user, is_admin):
+    """DuckDB-backend analog of :func:`_materialized_internal_duckdb`.
+
+    Reads the caller's RBAC-filtered rows from the shared ``system.duckdb`` and
+    copies them into a FRESH ``:memory:`` DuckDB holding ONLY the referenced
+    ``agnes_*`` source tables. Returns ``(connection, close_callable)``.
+
+    Security by construction (used for NON-admin queries): base state tables
+    (``users``, ``personal_access_tokens``, ``audit_log``, ``resource_grants``,
+    …) simply do not exist in this connection, so any reference to them fails to
+    resolve — no string-stripping / denylist is load-bearing, and the SQL-lexer
+    desync bypasses (dollar-quoted ``$$…$$`` or ``E'\\''`` escape strings that
+    can smuggle a base-table reference past a regex scanner) are structurally
+    impossible. Admins keep the shared read path (they are authorised to read
+    the raw tables and their unscoped queries should not be row-capped here).
+
+    We do NOT open a second (read-only) handle to the system.duckdb FILE: DuckDB
+    serialises file handles process-wide, so a second handle/ATTACH to the
+    already-open system.duckdb is rejected (see the handle-conflict history in
+    ``execute_internal_query``'s docstring). Copying rows via the existing shared
+    connection into an independent ``:memory:`` db sidesteps that entirely.
+    """
+    from src.db import _open_duckdb, get_system_db
+
+    src = get_system_db()
+    mem = _open_duckdb(":memory:")
+    try:
+        for table_id in refs:
+            table = INTERNAL_TABLES_BY_ID[table_id]
+            where_clause = build_filter_clause(table, user, is_admin)
+            q = f"SELECT * FROM {table.source_table} {where_clause} LIMIT {_PG_MATERIALIZE_ROW_CAP + 1}"
+            src_df = src.execute(q).fetch_df()
+            if len(src_df) > _PG_MATERIALIZE_ROW_CAP:
+                raise InternalAccessError(
+                    f"internal query over {table.source_table!r} exceeds the "
+                    f"{_PG_MATERIALIZE_ROW_CAP}-row materialisation cap; "
+                    f"add a more selective WHERE clause"
+                )
+            mem.register("_src_df", src_df)
+            mem.execute(f'CREATE TABLE "{table.source_table}" AS SELECT * FROM _src_df')
+            mem.unregister("_src_df")
+        return mem, mem.close
+    except Exception:
+        mem.close()
+        raise
+    finally:
+        # The shared-singleton cursor is only needed for the copy above; close
+        # it so a non-admin internal query doesn't leak one handle per call
+        # (the returned :memory: connection stays open for the caller).
+        src.close()
 
 
 def execute_internal_query(
@@ -461,17 +519,28 @@ def execute_internal_query(
 
     if pg:
         conn, _close = _materialized_internal_duckdb(refs, user, is_admin)
-        cursor = conn.cursor()
-
-        def _cleanup() -> None:
-            try:
-                cursor.close()
-            finally:
-                _close()
+    elif not is_admin:
+        # DuckDB backend, non-admin: allowlist-by-construction. Materialise ONLY
+        # the RBAC-filtered agnes_* source tables into a fresh :memory: DuckDB so
+        # a reference to any non-agnes_* state table cannot resolve. This is the
+        # PRIMARY defense against the SQL-lexer desync class (dollar-quoted / E''
+        # escape strings smuggling a base-table reference past the regex
+        # denylist above, which is kept only as defense-in-depth).
+        conn, _close = _materialized_internal_duckdb_from_duckdb(refs, user, is_admin)
     else:
+        # DuckDB backend, admin: read directly against the shared system.duckdb
+        # singleton (authorised to read raw rows; no row-cap materialisation).
+        # _close stays None so _cleanup never closes the shared connection.
         conn = get_system_db()
-        cursor = conn.cursor()
-        _cleanup = cursor.close
+        _close = None
+    cursor = conn.cursor()
+
+    def _cleanup() -> None:
+        try:
+            cursor.close()
+        finally:
+            if _close is not None:
+                _close()
 
     try:
         rows = cursor.execute(wrapped).fetchmany(limit + 1)

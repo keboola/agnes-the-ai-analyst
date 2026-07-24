@@ -353,7 +353,11 @@ from app.api.db_state import router as db_state_router
 from app.api.admin_analytics import router as admin_analytics_router
 from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import router as marketplace_git_router
+from app.api.data_apps import router as data_apps_router
+from app.api.data_apps_git import router as data_apps_git_router
+from app.api.data_apps_proxy import router as data_apps_proxy_router
 from app.web.router import router as web_router
+from app.web.router import apps_web_router as data_apps_web_router
 from app.api.chat import router as chat_router
 from app.api.chat_copresence import router as chat_copresence_router
 from app.api.slack import router as slack_router
@@ -1137,13 +1141,28 @@ async def lifespan(app):
             # pass None so the system DuckDB is never opened (forbidden).
             conn = None if use_pg() else get_system_db()
             try:
-                repo = users_repo()
-                all_users = repo.list_all()
-                has_password = any(u.get("password_hash") for u in all_users)
-                if not has_password:
+                from app.auth.scheduler_token import SCHEDULER_USER_EMAIL
+                from src.db import SYSTEM_ADMIN_GROUP
+
+                admin_group = user_groups_repo().get_by_name(SYSTEM_ADMIN_GROUP)
+                admin_members = (
+                    user_group_members_repo().list_members_for_group(admin_group["id"]) if admin_group else []
+                )
+                # Exclude the synthetic scheduler service user — mirrors the
+                # /auth/bootstrap lock so this warning agrees with actual
+                # reachability (the scheduler user is auto-added to Admin but
+                # doesn't count as a human admin).
+                admin_exists = any(m.get("email") != SCHEDULER_USER_EMAIL for m in admin_members)
+                has_password = any(u.get("password_hash") for u in users_repo().list_all())
+                # /auth/bootstrap is reachable UNAUTHENTICATED only until an admin
+                # exists (or a password-holding user does); after that it is locked
+                # unless AGNES_BOOTSTRAP_TOKEN is presented. Surface the open window.
+                if not admin_exists and not has_password:
                     logger.warning(
-                        "No user has a password set — /auth/bootstrap is reachable. "
-                        "Claim the seed admin (or set SEED_ADMIN_PASSWORD) to close this window."
+                        "No admin exists yet — /auth/bootstrap is reachable UNAUTHENTICATED. "
+                        "Provision the first admin (SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD, or a "
+                        "one-time bootstrap) before exposing the URL; set AGNES_BOOTSTRAP_TOKEN to "
+                        "gate later re-bootstraps."
                     )
             finally:
                 if conn is not None:
@@ -1827,14 +1846,56 @@ def create_app() -> FastAPI:
     app.add_middleware(SessionMiddleware, secret_key=session_secret)
 
     # CORS for CLI and external clients
-    cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000").split(",")
+    cors_origins = [
+        o.strip()
+        for o in os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000").split(",")
+        if o.strip()
+    ]
+    cors_allow_credentials = True
+    if "*" in cors_origins:
+        # SECURITY: Starlette's CORSMiddleware, when allow_origins contains "*"
+        # AND allow_credentials=True, reflects the caller's Origin into
+        # Access-Control-Allow-Origin and returns Allow-Credentials: true — an
+        # any-origin-with-credentials policy (cookies / Authorization usable
+        # from any website), not the browser-rejected literal "*". Refuse that
+        # combination: keep the wildcard but drop credentials, so a
+        # misconfigured CORS_ORIGINS can't expose authenticated endpoints
+        # cross-origin. Operators who need credentialed CORS must list explicit
+        # origins.
+        logger.error(
+            "CORS_ORIGINS contains '*': disabling allow_credentials to avoid an "
+            "any-origin-with-credentials CORS policy. Set an explicit origin allowlist."
+        )
+        cors_allow_credentials = False
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[o.strip() for o in cors_origins],
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Data-apps subdomain rewrite (Task 8): `<slug>.<subdomain_base>` host
+    # requests get `scope["path"]` rewritten to `/apps/<slug>/...` before
+    # routing. Pure passthrough (a no-op) unless `data_apps.subdomain_base`
+    # is configured. Position among the other middlewares doesn't matter —
+    # routing itself is innermost regardless of add_middleware order — but
+    # it must run for both "http" and "websocket" scopes (the data-app WS
+    # bridge lives at the same rewritten path), which rules out
+    # http-only middlewares like CORSMiddleware/SessionMiddleware as a
+    # model to imitate ordering from.
+    from app.data_apps_subdomain import DataAppSubdomainMiddleware
+
+    app.add_middleware(DataAppSubdomainMiddleware)
+
+    # Baseline security response headers (non-breaking CSP subset,
+    # X-Frame-Options, nosniff, Referrer-Policy, HSTS on https) — set at the app
+    # layer so protection is independent of which TLS terminator is deployed,
+    # not only the bundled Caddy. Pure ASGI (SSE-safe). See
+    # app/middleware/security_headers.py.
+    from app.middleware.security_headers import SecurityHeadersMiddleware
+
+    app.add_middleware(SecurityHeadersMiddleware)
 
     # RequestIdMiddleware mounted LAST — Starlette inserts middleware at
     # index 0, so the last add_middleware call ends up OUTERMOST and runs
@@ -2198,6 +2259,30 @@ def create_app() -> FastAPI:
     # binary (CGI protocol) — see app/marketplace_server/git_router.py for
     # why this replaced the dulwich/WSGI bridge.
     app.include_router(marketplace_git_router)
+
+    # Git smart-HTTP endpoint for internal-mode data apps:
+    # /data-apps.git/{slug}/* — same CGI-subprocess mechanism as
+    # marketplace_git_router, gated on per-app owner/Admin/grant RBAC
+    # instead of a per-caller filtered repo. See app/api/data_apps_git.py.
+    app.include_router(data_apps_git_router)
+
+    # Control-plane REST for hosted data apps: CRUD, deploy, stop, delete,
+    # secrets, logs, readiness, admin reap-idle. See app/api/data_apps.py.
+    app.include_router(data_apps_router)
+
+    # Web UI for hosted data apps: GET /apps (list) + GET /apps/detail/{slug}
+    # (detail) — see app/web/router.py's `apps_web_router`. MUST be
+    # registered BEFORE data_apps_proxy_router below: Starlette matches
+    # routes in registration-list order (not by specificity), and the
+    # proxy's catch-all `/apps/{slug}/{path:path}` would otherwise swallow
+    # `/apps/detail/<slug>` as slug="detail", path="<slug>" before these
+    # literal routes ever got a look.
+    app.include_router(data_apps_web_router)
+
+    # Ingress proxy for hosted data apps: /apps/{slug}/... (+ the matching
+    # websocket bridge) — auth-gated stream proxy, wake-on-request, and the
+    # holding page. See app/api/data_apps_proxy.py.
+    app.include_router(data_apps_proxy_router)
 
     # Authenticated Swagger / ReDoc / OpenAPI JSON — requires a valid session
     # so the full admin API surface is not visible to unauthenticated callers.

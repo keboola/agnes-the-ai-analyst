@@ -410,6 +410,29 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             "kind": "object",
             "hint": "BigQuery connection knobs (read more in docs/DEPLOYMENT.md)",
             "fields": {
+                "project": {
+                    "kind": "string",
+                    "hint": (
+                        "GCP project holding the data. Every registered BigQuery "
+                        "row resolves under it unless the row sets `bq_fqn` "
+                        "(`project.dataset.table`), which overrides all three "
+                        "parts for that row alone. Register a table living in "
+                        "another project that way rather than repointing this "
+                        "global. Analyst `--remote` SQL may only name this "
+                        "project directly; other projects are reachable only "
+                        "through a registered row."
+                    ),
+                },
+                "location": {
+                    "kind": "string",
+                    "hint": (
+                        "BigQuery location/region the datasets live in (e.g. "
+                        "`us-central1`, `EU`). Must match the data's actual "
+                        "location: a mismatch surfaces as `404 Not found: "
+                        "Table ... was not found in location <location>` even "
+                        "when the table exists."
+                    ),
+                },
                 "billing_project": {
                     "kind": "string",
                     "hint": (
@@ -930,7 +953,15 @@ _SECRET_KEY_PATTERNS: tuple[str, ...] = (
     "secret",
     "token",
     "password",
+    "passwd",
     "api_key",
+    # #19 hardening: mask credentials stored under keys that the original
+    # four-pattern list missed — private keys, generic credential fields, and
+    # DB DSNs with embedded userinfo. ("pat" is intentionally omitted: it would
+    # substring-match innocuous keys like "path"/"data_path" and over-redact.)
+    "private",
+    "credential",
+    "dsn",
 )
 
 
@@ -3731,6 +3762,21 @@ async def configure_instance(
         secrets_to_persist["KEBOOLA_STACK_URL"] = request.keboola_url
 
     if secrets_to_persist:
+        # SECURITY (#12): this path writes KEBOOLA_STORAGE_TOKEN to the plaintext
+        # .env_overlay even when the Fernet vault is configured, bypassing
+        # encryption-at-rest. Warn so it's visible; full fix (route datasource
+        # tokens through system_secrets_repo()/persist_overlay_token, which needs
+        # the token read-path audited so resolution doesn't break) is a tracked
+        # follow-up. chmod 0o600 below limits exposure to same-uid readers only.
+        from app.secrets_vault import vault_key_configured
+
+        if request.keboola_token and vault_key_configured():
+            logger.warning(
+                "Persisting KEBOOLA_STORAGE_TOKEN to plaintext .env_overlay while "
+                "AGNES_VAULT_KEY is configured — this bypasses the encrypted vault "
+                "(tracked follow-up: route datasource tokens through the vault)."
+            )
+
         # Resolve via _state_dir() so the path matches app/main.py's
         # startup-time read of the same overlay. Without this, an operator
         # on the flat-mount layout (STATE_DIR=/data-state) would write
