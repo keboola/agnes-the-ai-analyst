@@ -16,28 +16,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **Materialized Keboola tables no longer OOM the sync on large results.**
+  The typed-parquet retype (the all-VARCHAR fix) loaded the whole
+  materialized parquet into one in-memory `pyarrow.Table` before casting —
+  peak memory scaled 2–3× with the result size (pyarrow copy + pandas
+  fallback copies) and OOM-killed syncs of large materialized tables,
+  leaving them stale. The retype now streams through a memory-capped DuckDB
+  `COPY` with per-column `TRY_CAST`, so peak memory is bounded by the
+  consolidation cap regardless of table size. Cast semantics keep the
+  coerce-to-NULL behavior (uncastable values → NULL, now with a
+  footer-stats warning per affected column); DATE columns additionally
+  retype correctly now (previously a single bad value left the whole
+  column VARCHAR), and an already-typed parquet skips the rewrite
+  entirely.
+
 ### Removed
 
 ### Internal
 
 ### Security
-
-## [0.76.25] - 2026-07-24
-
-### Changed
-
-- **Cloud chat reuses a paused sandbox across process restarts instead of
-  respawning fresh.** The resume-vs-respawn decision was gated on an
-  in-process set (`_known_protocol_sessions`) that is empty after any
-  restart/deploy, so every resumable session paid a full cold spawn (~6–8 s)
-  *and* lost conversation context on the first message after a restart. The
-  relay-protocol version a runner speaks is now persisted per session
-  (`chat_sessions.relay_protocol_version`, DuckDB v98 + Alembic `0045`), so a
-  current-protocol sandbox reconnects after a restart while a legacy
-  (pre-broker) runner still force-respawns — preserving the safety invariant
-  the in-process gate provided. A configurable grace window
-  (`chat.idle_grace_seconds`, default 60 s) keeps the sandbox warm through a
-  likely follow-up before it pauses.
 
 ## [0.76.26] - 2026-07-24
 
@@ -55,6 +52,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   falls back to the previous in-memory behavior. The persisted-file write uses
   a per-process tmp filename so two scheduler containers sharing `DATA_DIR`
   can't race on the same tmp path.
+
+## [0.76.25] - 2026-07-24
+
+### Changed
+
+- **Cloud chat reuses a paused sandbox across process restarts instead of
+  respawning fresh.** The resume-vs-respawn decision was gated on an
+  in-process set (`_known_protocol_sessions`) that is empty after any
+  restart/deploy, so every resumable session paid a full cold spawn (~6–8 s)
+  *and* lost conversation context on the first message after a restart. The
+  relay-protocol version a runner speaks is now persisted per session
+  (`chat_sessions.relay_protocol_version`, DuckDB v98 + Alembic `0045`), so a
+  current-protocol sandbox reconnects after a restart while a legacy
+  (pre-broker) runner still force-respawns — preserving the safety invariant
+  the in-process gate provided. A configurable grace window
+  (`chat.idle_grace_seconds`, default 60 s) keeps the sandbox warm through a
+  likely follow-up before it pauses.
 
 ## [0.76.23] - 2026-07-24
 
