@@ -46,7 +46,7 @@ variable "prod_instance" {
     # Standard 5-field cron expression consumed by startup-script.sh.tpl's
     # crontab install line. Default matches the historical fixed cadence —
     # override to reduce upgrade-triggered blips on a customer-facing
-    # instance (e.g. a nightly window) while dev/monika stay on fast
+    # instance (e.g. a nightly window) while dev/staging instances stay on fast
     # iteration.
     upgrade_schedule = optional(string, "*/5 * * * *")
     tls_mode         = optional(string, "caddy")
