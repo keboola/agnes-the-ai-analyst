@@ -45,13 +45,14 @@ COPY . .
 #     (applies compose lifecycle changes when /data/state/db-state-target.flag changes)
 #   - docker-compose.{yml,prod.yml,host-mount.yml,tls.yml} — host runtime
 #   - Caddyfile — TLS reverse proxy config
+#   - static/maintenance.html — Caddy's handle_errors 502/503 fallback page
 #
 # Why a copy out of /app instead of pointing at /app directly:
 #   /app is owned by uid 999 (USER agnes below); /opt/agnes-host is
 #   root-owned, mode 0755 across the board, stable path that won't
 #   shift if /app structure refactors. Stable contract for `docker cp`
 #   consumers.
-RUN mkdir -p /opt/agnes-host && \
+RUN mkdir -p /opt/agnes-host/static /opt/agnes-host && \
     cp /app/scripts/ops/agnes-auto-upgrade.sh \
        /app/scripts/ops/agnes-tls-rotate.sh \
        /app/scripts/ops/agnes-state-applier.sh \
@@ -65,6 +66,7 @@ RUN mkdir -p /opt/agnes-host && \
        /app/docker-compose.postgres.yml \
        /app/docker-compose.postgres-host-mount.yml \
        /app/Caddyfile /opt/agnes-host/ && \
+    cp /app/static/maintenance.html /opt/agnes-host/static/ && \
     chmod 0755 /opt/agnes-host/agnes-auto-upgrade.sh \
               /opt/agnes-host/agnes-tls-rotate.sh \
               /opt/agnes-host/agnes-state-applier.sh \
@@ -78,7 +80,8 @@ RUN mkdir -p /opt/agnes-host && \
               /opt/agnes-host/docker-compose.tls.yml \
               /opt/agnes-host/docker-compose.postgres.yml \
               /opt/agnes-host/docker-compose.postgres-host-mount.yml \
-              /opt/agnes-host/Caddyfile
+              /opt/agnes-host/Caddyfile \
+              /opt/agnes-host/static/maintenance.html
 
 # Build wheel artifact (served at /cli/download)
 RUN uv build --wheel --out-dir /app/dist
